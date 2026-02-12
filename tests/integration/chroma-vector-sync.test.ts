@@ -9,7 +9,8 @@
  * - MCP patterns from the Chroma MCP server
  */
 
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest';
+import { execSync } from 'child_process';
 import { logger } from '../../src/utils/logger.js';
 import path from 'path';
 import os from 'os';
@@ -22,16 +23,7 @@ let skipReason = '';
 async function checkChromaAvailability(): Promise<{ available: boolean; reason: string }> {
   try {
     // Check if uvx is available
-    const uvxCheck = Bun.spawn(['uvx', '--version'], {
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    await uvxCheck.exited;
-
-    if (uvxCheck.exitCode !== 0) {
-      return { available: false, reason: 'uvx not installed' };
-    }
-
+    execSync('uvx --version', { stdio: 'pipe', encoding: 'utf-8' });
     return { available: true, reason: '' };
   } catch (error) {
     return { available: false, reason: `uvx check failed: ${error}` };
@@ -39,7 +31,7 @@ async function checkChromaAvailability(): Promise<{ available: boolean; reason: 
 }
 
 // Suppress logger output during tests
-let loggerSpies: ReturnType<typeof spyOn>[] = [];
+let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
 
 describe('ChromaSync Vector Sync Integration', () => {
   const testProject = `test-project-${Date.now()}`;
@@ -69,10 +61,10 @@ describe('ChromaSync Vector Sync Integration', () => {
 
   beforeEach(() => {
     loggerSpies = [
-      spyOn(logger, 'info').mockImplementation(() => {}),
-      spyOn(logger, 'debug').mockImplementation(() => {}),
-      spyOn(logger, 'warn').mockImplementation(() => {}),
-      spyOn(logger, 'error').mockImplementation(() => {}),
+      vi.spyOn(logger, 'info').mockImplementation(() => {}),
+      vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      vi.spyOn(logger, 'warn').mockImplementation(() => {}),
+      vi.spyOn(logger, 'error').mockImplementation(() => {}),
     ];
   });
 

@@ -3,7 +3,7 @@
  * Extracted from SessionStore.ts for modular organization
  */
 
-import { Database } from 'bun:sqlite';
+import { Database } from '../sqlite-compat.js';
 import { logger } from '../../../utils/logger.js';
 import type { SessionFilesResult } from './types.js';
 

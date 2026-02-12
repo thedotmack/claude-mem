@@ -8,7 +8,7 @@
  *
  * What's NOT mocked: AppError class, createErrorResponse function (tested directly)
  */
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import { logger } from '../../src/utils/logger.js';
 
@@ -21,21 +21,21 @@ import {
 
 // Spy on logger methods to suppress output during tests
 // Using spyOn instead of mock.module to avoid polluting global module cache
-let loggerSpies: ReturnType<typeof spyOn>[] = [];
+let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
 
 describe('ErrorHandler', () => {
   beforeEach(() => {
     loggerSpies = [
-      spyOn(logger, 'info').mockImplementation(() => {}),
-      spyOn(logger, 'debug').mockImplementation(() => {}),
-      spyOn(logger, 'warn').mockImplementation(() => {}),
-      spyOn(logger, 'error').mockImplementation(() => {}),
+      vi.spyOn(logger, 'info').mockImplementation(() => {}),
+      vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      vi.spyOn(logger, 'warn').mockImplementation(() => {}),
+      vi.spyOn(logger, 'error').mockImplementation(() => {}),
     ];
   });
 
   afterEach(() => {
     loggerSpies.forEach(spy => spy.mockRestore());
-    mock.restore();
+    vi.restoreAllMocks();
   });
 
   describe('AppError', () => {
@@ -139,8 +139,8 @@ describe('ErrorHandler', () => {
     let jsonSpy: ReturnType<typeof mock>;
 
     beforeEach(() => {
-      statusSpy = mock(() => mockResponse);
-      jsonSpy = mock(() => mockResponse);
+      statusSpy = vi.fn(() => mockResponse);
+      jsonSpy = vi.fn(() => mockResponse);
 
       mockRequest = {
         method: 'GET',
@@ -152,7 +152,7 @@ describe('ErrorHandler', () => {
         json: jsonSpy as unknown as Response['json'],
       };
 
-      mockNext = mock(() => {});
+      mockNext = vi.fn(() => {});
     });
 
     it('should handle AppError with custom status code', () => {
@@ -256,8 +256,8 @@ describe('ErrorHandler', () => {
     let jsonSpy: ReturnType<typeof mock>;
 
     beforeEach(() => {
-      statusSpy = mock(() => mockResponse);
-      jsonSpy = mock(() => mockResponse);
+      statusSpy = vi.fn(() => mockResponse);
+      jsonSpy = vi.fn(() => mockResponse);
 
       mockResponse = {
         status: statusSpy as unknown as Response['status'],

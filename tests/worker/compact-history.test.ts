@@ -1,16 +1,16 @@
-import { describe, it, expect, mock, beforeEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { logger } from '../../src/utils/logger.js';
 
 // Mock modules that cause import chain issues
-mock.module('../../src/shared/worker-utils.js', () => ({
+vi.mock('../../src/shared/worker-utils.js', () => ({
   getWorkerPort: () => 37777,
 }));
 
-mock.module('../../src/services/worker-service.js', () => ({
+vi.mock('../../src/services/worker-service.js', () => ({
   updateCursorContextForProject: () => Promise.resolve(),
 }));
 
-mock.module('../../src/services/domain/ModeManager.js', () => ({
+vi.mock('../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
     getInstance: () => ({
       getActiveMode: () => ({
@@ -29,7 +29,7 @@ import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.
 import type { SessionManager } from '../../src/services/worker/SessionManager.js';
 
 // Suppress logger output during tests
-let loggerSpies: ReturnType<typeof spyOn>[] = [];
+let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
 
 function makeHistory(count: number): ConversationMessage[] {
   const history: ConversationMessage[] = [];
@@ -71,14 +71,14 @@ describe('OpenAICompatAgent.compactHistory', () => {
 
   beforeEach(() => {
     loggerSpies = [
-      spyOn(logger, 'info').mockImplementation(() => {}),
-      spyOn(logger, 'debug').mockImplementation(() => {}),
-      spyOn(logger, 'warn').mockImplementation(() => {}),
-      spyOn(logger, 'error').mockImplementation(() => {}),
-      spyOn(logger, 'success').mockImplementation(() => {}),
+      vi.spyOn(logger, 'info').mockImplementation(() => {}),
+      vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      vi.spyOn(logger, 'warn').mockImplementation(() => {}),
+      vi.spyOn(logger, 'error').mockImplementation(() => {}),
+      vi.spyOn(logger, 'success').mockImplementation(() => {}),
     ];
 
-    mockGetSummaryForSession = mock(() => ({
+    mockGetSummaryForSession = vi.fn(() => ({
       request: 'Fix the auth bug',
       investigated: 'auth service',
       learned: 'Token expiry issue',
@@ -187,7 +187,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
   });
 
   it('should handle DB error gracefully with empty summary context', () => {
-    mockGetSummaryForSession = mock(() => {
+    mockGetSummaryForSession = vi.fn(() => {
       throw new Error('Database is locked');
     });
     mockDbManager = {
@@ -207,7 +207,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
   });
 
   it('should handle no existing summary in DB', () => {
-    mockGetSummaryForSession = mock(() => null);
+    mockGetSummaryForSession = vi.fn(() => null);
     mockDbManager = {
       getSessionStore: () => ({
         getSummaryForSession: mockGetSummaryForSession,
@@ -239,7 +239,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
     expect(session.conversationHistory.length).toBe(18);
 
     // Update the mock to return an updated summary
-    mockGetSummaryForSession = mock(() => ({
+    mockGetSummaryForSession = vi.fn(() => ({
       request: 'Fix the auth bug',
       investigated: 'auth service and session store',
       learned: 'Token expiry and refresh both broken',

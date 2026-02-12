@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';

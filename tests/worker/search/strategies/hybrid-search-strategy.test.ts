@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { HybridSearchStrategy } from '../../../../src/services/worker/search/strategies/HybridSearchStrategy.js';
 import type { StrategySearchOptions, ObservationSearchResult, SessionSummarySearchResult } from '../../../../src/services/worker/search/types.js';
 
@@ -86,7 +86,7 @@ describe('HybridSearchStrategy', () => {
 
   beforeEach(() => {
     mockChromaSync = {
-      queryChroma: mock(() => Promise.resolve({
+      queryChroma: vi.fn(() => Promise.resolve({
         ids: [2, 1, 3], // Chroma returns in semantic relevance order
         distances: [0.1, 0.2, 0.3],
         metadatas: []
@@ -94,19 +94,19 @@ describe('HybridSearchStrategy', () => {
     };
 
     mockSessionStore = {
-      getObservationsByIds: mock((ids: number[]) => {
+      getObservationsByIds: vi.fn((ids: number[]) => {
         // Return in the order we stored them (not Chroma order)
         const allObs = [mockObservation1, mockObservation2, mockObservation3];
         return allObs.filter(obs => ids.includes(obs.id));
       }),
-      getSessionSummariesByIds: mock(() => [mockSession]),
-      getUserPromptsByIds: mock(() => [])
+      getSessionSummariesByIds: vi.fn(() => [mockSession]),
+      getUserPromptsByIds: vi.fn(() => [])
     };
 
     mockSessionSearch = {
-      findByConcept: mock(() => [mockObservation1, mockObservation2, mockObservation3]),
-      findByType: mock(() => [mockObservation1, mockObservation2]),
-      findByFile: mock(() => ({
+      findByConcept: vi.fn(() => [mockObservation1, mockObservation2, mockObservation3]),
+      findByType: vi.fn(() => [mockObservation1, mockObservation2]),
+      findByFile: vi.fn(() => ({
         observations: [mockObservation1, mockObservation2],
         sessions: [mockSession]
       }))
@@ -221,7 +221,7 @@ describe('HybridSearchStrategy', () => {
     it('should only include observations that match both metadata and Chroma', async () => {
       // Metadata returns ids [1, 2, 3]
       // Chroma returns ids [2, 4, 5] (4 and 5 don't exist in metadata results)
-      mockChromaSync.queryChroma = mock(() => Promise.resolve({
+      mockChromaSync.queryChroma = vi.fn(() => Promise.resolve({
         ids: [2, 4, 5],
         distances: [0.1, 0.2, 0.3],
         metadatas: []
@@ -239,7 +239,7 @@ describe('HybridSearchStrategy', () => {
     });
 
     it('should return empty when no metadata matches', async () => {
-      mockSessionSearch.findByConcept = mock(() => []);
+      mockSessionSearch.findByConcept = vi.fn(() => []);
 
       const options: StrategySearchOptions = {
         limit: 10
@@ -252,7 +252,7 @@ describe('HybridSearchStrategy', () => {
     });
 
     it('should fall back to metadata-only on Chroma error', async () => {
-      mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma failed')));
+      mockChromaSync.queryChroma = vi.fn(() => Promise.reject(new Error('Chroma failed')));
 
       const options: StrategySearchOptions = {
         limit: 10
@@ -292,7 +292,7 @@ describe('HybridSearchStrategy', () => {
     });
 
     it('should preserve Chroma ranking order for types', async () => {
-      mockChromaSync.queryChroma = mock(() => Promise.resolve({
+      mockChromaSync.queryChroma = vi.fn(() => Promise.resolve({
         ids: [2, 1], // Chroma order
         distances: [0.1, 0.2],
         metadatas: []
@@ -308,7 +308,7 @@ describe('HybridSearchStrategy', () => {
     });
 
     it('should fall back on Chroma error', async () => {
-      mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma unavailable')));
+      mockChromaSync.queryChroma = vi.fn(() => Promise.reject(new Error('Chroma unavailable')));
 
       const options: StrategySearchOptions = {
         limit: 10
@@ -322,7 +322,7 @@ describe('HybridSearchStrategy', () => {
     });
 
     it('should return empty when no metadata matches', async () => {
-      mockSessionSearch.findByType = mock(() => []);
+      mockSessionSearch.findByType = vi.fn(() => []);
 
       const options: StrategySearchOptions = {
         limit: 10
@@ -361,7 +361,7 @@ describe('HybridSearchStrategy', () => {
     });
 
     it('should apply semantic ranking only to observations', async () => {
-      mockChromaSync.queryChroma = mock(() => Promise.resolve({
+      mockChromaSync.queryChroma = vi.fn(() => Promise.resolve({
         ids: [2, 1], // Chroma ranking for observations
         distances: [0.1, 0.2],
         metadatas: []
@@ -379,7 +379,7 @@ describe('HybridSearchStrategy', () => {
     });
 
     it('should return usedChroma: false when no observations to rank', async () => {
-      mockSessionSearch.findByFile = mock(() => ({
+      mockSessionSearch.findByFile = vi.fn(() => ({
         observations: [],
         sessions: [mockSession]
       }));
@@ -395,7 +395,7 @@ describe('HybridSearchStrategy', () => {
     });
 
     it('should fall back on Chroma error', async () => {
-      mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma down')));
+      mockChromaSync.queryChroma = vi.fn(() => Promise.reject(new Error('Chroma down')));
 
       const options: StrategySearchOptions = {
         limit: 10

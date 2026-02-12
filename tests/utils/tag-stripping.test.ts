@@ -9,20 +9,20 @@
  * - Privacy patterns from src/services/worker/http/routes/SessionRoutes.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
 // Suppress logger output during tests
-let loggerSpies: ReturnType<typeof spyOn>[] = [];
+let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
 
 describe('Tag Stripping Utilities', () => {
   beforeEach(() => {
     loggerSpies = [
-      spyOn(logger, 'info').mockImplementation(() => {}),
-      spyOn(logger, 'debug').mockImplementation(() => {}),
-      spyOn(logger, 'warn').mockImplementation(() => {}),
-      spyOn(logger, 'error').mockImplementation(() => {}),
+      vi.spyOn(logger, 'info').mockImplementation(() => {}),
+      vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      vi.spyOn(logger, 'warn').mockImplementation(() => {}),
+      vi.spyOn(logger, 'error').mockImplementation(() => {}),
     ];
   });
 

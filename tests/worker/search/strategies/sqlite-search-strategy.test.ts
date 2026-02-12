@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SQLiteSearchStrategy } from '../../../../src/services/worker/search/strategies/SQLiteSearchStrategy.js';
 import type { StrategySearchOptions, ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../../../../src/services/worker/search/types.js';
 
@@ -55,12 +55,12 @@ describe('SQLiteSearchStrategy', () => {
 
   beforeEach(() => {
     mockSessionSearch = {
-      searchObservations: mock(() => [mockObservation]),
-      searchSessions: mock(() => [mockSession]),
-      searchUserPrompts: mock(() => [mockPrompt]),
-      findByConcept: mock(() => [mockObservation]),
-      findByType: mock(() => [mockObservation]),
-      findByFile: mock(() => ({ observations: [mockObservation], sessions: [mockSession] }))
+      searchObservations: vi.fn(() => [mockObservation]),
+      searchSessions: vi.fn(() => [mockSession]),
+      searchUserPrompts: vi.fn(() => [mockPrompt]),
+      findByConcept: vi.fn(() => [mockObservation]),
+      findByType: vi.fn(() => [mockObservation]),
+      findByFile: vi.fn(() => ({ observations: [mockObservation], sessions: [mockSession] }))
     };
     strategy = new SQLiteSearchStrategy(mockSessionSearch);
   });
@@ -211,7 +211,7 @@ describe('SQLiteSearchStrategy', () => {
     });
 
     it('should handle search errors gracefully', async () => {
-      mockSessionSearch.searchObservations = mock(() => {
+      mockSessionSearch.searchObservations = vi.fn(() => {
         throw new Error('Database error');
       });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect } from 'vitest';
 import { buildTimeline } from '../../src/services/context/index.js';
 import type { Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
 

@@ -9,7 +9,7 @@
  * - Type definitions from src/services/sqlite/observations/types.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
 import {
   storeObservation,
@@ -21,7 +21,7 @@ import {
   updateMemorySessionId,
 } from '../../src/services/sqlite/Sessions.js';
 import type { ObservationInput } from '../../src/services/sqlite/observations/types.js';
-import type { Database } from 'bun:sqlite';
+import type { Database } from '../../src/services/sqlite/sqlite-compat.js';
 
 describe('Observations Module', () => {
   let db: Database;

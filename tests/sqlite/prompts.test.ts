@@ -8,14 +8,14 @@
  * - Test pattern from tests/session_store.test.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
 import {
   saveUserPrompt,
   getPromptNumberFromUserPrompts,
 } from '../../src/services/sqlite/Prompts.js';
 import { createSDKSession } from '../../src/services/sqlite/Sessions.js';
-import type { Database } from 'bun:sqlite';
+import type { Database } from '../../src/services/sqlite/sqlite-compat.js';
 
 describe('Prompts Module', () => {
   let db: Database;

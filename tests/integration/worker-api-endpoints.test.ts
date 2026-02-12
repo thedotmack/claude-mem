@@ -10,11 +10,11 @@
  * - Search routes from src/services/worker/http/routes/SearchRoutes.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { logger } from '../../src/utils/logger.js';
 
 // Mock middleware to avoid complex dependencies
-mock.module('../../src/services/worker/http/middleware.js', () => ({
+vi.mock('../../src/services/worker/http/middleware.js', () => ({
   createMiddleware: () => [],
   requireLocalhost: (_req: any, _res: any, next: any) => next(),
   summarizeRequestBody: () => 'test body',
@@ -25,7 +25,7 @@ import { Server } from '../../src/services/server/Server.js';
 import type { ServerOptions } from '../../src/services/server/Server.js';
 
 // Suppress logger output during tests
-let loggerSpies: ReturnType<typeof spyOn>[] = [];
+let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
 
 describe('Worker API Endpoints Integration', () => {
   let server: Server;
@@ -34,17 +34,17 @@ describe('Worker API Endpoints Integration', () => {
 
   beforeEach(() => {
     loggerSpies = [
-      spyOn(logger, 'info').mockImplementation(() => {}),
-      spyOn(logger, 'debug').mockImplementation(() => {}),
-      spyOn(logger, 'warn').mockImplementation(() => {}),
-      spyOn(logger, 'error').mockImplementation(() => {}),
+      vi.spyOn(logger, 'info').mockImplementation(() => {}),
+      vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      vi.spyOn(logger, 'warn').mockImplementation(() => {}),
+      vi.spyOn(logger, 'error').mockImplementation(() => {}),
     ];
 
     mockOptions = {
       getInitializationComplete: () => true,
       getMcpReady: () => true,
-      onShutdown: mock(() => Promise.resolve()),
-      onRestart: mock(() => Promise.resolve()),
+      onShutdown: vi.fn(() => Promise.resolve()),
+      onRestart: vi.fn(() => Promise.resolve()),
     };
 
     testPort = 40000 + Math.floor(Math.random() * 10000);
@@ -60,7 +60,7 @@ describe('Worker API Endpoints Integration', () => {
         // Ignore cleanup errors
       }
     }
-    mock.restore();
+    vi.restoreAllMocks();
   });
 
   describe('Health/Readiness/Version Endpoints', () => {
@@ -86,8 +86,8 @@ describe('Worker API Endpoints Integration', () => {
         const uninitOptions: ServerOptions = {
           getInitializationComplete: () => false,
           getMcpReady: () => false,
-          onShutdown: mock(() => Promise.resolve()),
-          onRestart: mock(() => Promise.resolve()),
+          onShutdown: vi.fn(() => Promise.resolve()),
+          onRestart: vi.fn(() => Promise.resolve()),
         };
 
         server = new Server(uninitOptions);
@@ -119,8 +119,8 @@ describe('Worker API Endpoints Integration', () => {
         const uninitOptions: ServerOptions = {
           getInitializationComplete: () => false,
           getMcpReady: () => false,
-          onShutdown: mock(() => Promise.resolve()),
-          onRestart: mock(() => Promise.resolve()),
+          onShutdown: vi.fn(() => Promise.resolve()),
+          onRestart: vi.fn(() => Promise.resolve()),
         };
 
         server = new Server(uninitOptions);
@@ -234,8 +234,8 @@ describe('Worker API Endpoints Integration', () => {
       const dynamicOptions: ServerOptions = {
         getInitializationComplete: () => initialized,
         getMcpReady: () => true,
-        onShutdown: mock(() => Promise.resolve()),
-        onRestart: mock(() => Promise.resolve()),
+        onShutdown: vi.fn(() => Promise.resolve()),
+        onRestart: vi.fn(() => Promise.resolve()),
       };
 
       server = new Server(dynamicOptions);
@@ -258,8 +258,8 @@ describe('Worker API Endpoints Integration', () => {
       const dynamicOptions: ServerOptions = {
         getInitializationComplete: () => true,
         getMcpReady: () => mcpReady,
-        onShutdown: mock(() => Promise.resolve()),
-        onRestart: mock(() => Promise.resolve()),
+        onShutdown: vi.fn(() => Promise.resolve()),
+        onRestart: vi.fn(() => Promise.resolve()),
       };
 
       server = new Server(dynamicOptions);
@@ -361,7 +361,7 @@ describe('Worker API Endpoints Integration', () => {
     it('should register route handlers', () => {
       server = new Server(mockOptions);
 
-      const setupRoutesMock = mock(() => {});
+      const setupRoutesMock = vi.fn(() => {});
       const mockRouteHandler = {
         setupRoutes: setupRoutesMock,
       };
@@ -375,8 +375,8 @@ describe('Worker API Endpoints Integration', () => {
     it('should register multiple route handlers', () => {
       server = new Server(mockOptions);
 
-      const handler1Mock = mock(() => {});
-      const handler2Mock = mock(() => {});
+      const handler1Mock = vi.fn(() => {});
+      const handler2Mock = vi.fn(() => {});
 
       server.registerRoutes({ setupRoutes: handler1Mock });
       server.registerRoutes({ setupRoutes: handler2Mock });

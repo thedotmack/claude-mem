@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ChromaSearchStrategy } from '../../../../src/services/worker/search/strategies/ChromaSearchStrategy.js';
 import type { StrategySearchOptions, ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../../../../src/services/worker/search/types.js';
 
@@ -58,7 +58,7 @@ describe('ChromaSearchStrategy', () => {
     const recentEpoch = Date.now() - 1000 * 60 * 60 * 24; // 1 day ago (within 90-day window)
 
     mockChromaSync = {
-      queryChroma: mock(() => Promise.resolve({
+      queryChroma: vi.fn(() => Promise.resolve({
         ids: [1, 2, 3],
         distances: [0.1, 0.2, 0.3],
         metadatas: [
@@ -70,9 +70,9 @@ describe('ChromaSearchStrategy', () => {
     };
 
     mockSessionStore = {
-      getObservationsByIds: mock(() => [mockObservation]),
-      getSessionSummariesByIds: mock(() => [mockSession]),
-      getUserPromptsByIds: mock(() => [mockPrompt])
+      getObservationsByIds: vi.fn(() => [mockObservation]),
+      getSessionSummariesByIds: vi.fn(() => [mockSession]),
+      getUserPromptsByIds: vi.fn(() => [mockPrompt])
     };
 
     strategy = new ChromaSearchStrategy(mockChromaSync, mockSessionStore);
@@ -227,7 +227,7 @@ describe('ChromaSearchStrategy', () => {
     });
 
     it('should return empty result when Chroma returns no matches', async () => {
-      mockChromaSync.queryChroma = mock(() => Promise.resolve({
+      mockChromaSync.queryChroma = vi.fn(() => Promise.resolve({
         ids: [],
         distances: [],
         metadatas: []
@@ -246,7 +246,7 @@ describe('ChromaSearchStrategy', () => {
     it('should filter out old results (beyond 90-day window)', async () => {
       const oldEpoch = Date.now() - 1000 * 60 * 60 * 24 * 100; // 100 days ago
 
-      mockChromaSync.queryChroma = mock(() => Promise.resolve({
+      mockChromaSync.queryChroma = vi.fn(() => Promise.resolve({
         ids: [1],
         distances: [0.1],
         metadatas: [
@@ -265,7 +265,7 @@ describe('ChromaSearchStrategy', () => {
     });
 
     it('should handle Chroma errors gracefully (returns usedChroma: false)', async () => {
-      mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma connection failed')));
+      mockChromaSync.queryChroma = vi.fn(() => Promise.reject(new Error('Chroma connection failed')));
 
       const options: StrategySearchOptions = {
         query: 'test query'
@@ -281,7 +281,7 @@ describe('ChromaSearchStrategy', () => {
     });
 
     it('should handle SQLite hydration errors gracefully', async () => {
-      mockSessionStore.getObservationsByIds = mock(() => {
+      mockSessionStore.getObservationsByIds = vi.fn(() => {
         throw new Error('SQLite error');
       });
 

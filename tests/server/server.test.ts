@@ -1,8 +1,8 @@
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { logger } from '../../src/utils/logger.js';
 
 // Mock middleware to avoid complex dependencies
-mock.module('../../src/services/worker/http/middleware.js', () => ({
+vi.mock('../../src/services/worker/http/middleware.js', () => ({
   createMiddleware: () => [],
   requireLocalhost: (_req: any, _res: any, next: any) => next(),
   summarizeRequestBody: () => 'test body',
@@ -13,7 +13,7 @@ import { Server } from '../../src/services/server/Server.js';
 import type { RouteHandler, ServerOptions } from '../../src/services/server/Server.js';
 
 // Spy on logger methods to suppress output during tests
-let loggerSpies: ReturnType<typeof spyOn>[] = [];
+let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
 
 describe('Server', () => {
   let server: Server;
@@ -21,17 +21,17 @@ describe('Server', () => {
 
   beforeEach(() => {
     loggerSpies = [
-      spyOn(logger, 'info').mockImplementation(() => {}),
-      spyOn(logger, 'debug').mockImplementation(() => {}),
-      spyOn(logger, 'warn').mockImplementation(() => {}),
-      spyOn(logger, 'error').mockImplementation(() => {}),
+      vi.spyOn(logger, 'info').mockImplementation(() => {}),
+      vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      vi.spyOn(logger, 'warn').mockImplementation(() => {}),
+      vi.spyOn(logger, 'error').mockImplementation(() => {}),
     ];
 
     mockOptions = {
       getInitializationComplete: () => true,
       getMcpReady: () => true,
-      onShutdown: mock(() => Promise.resolve()),
-      onRestart: mock(() => Promise.resolve()),
+      onShutdown: vi.fn(() => Promise.resolve()),
+      onRestart: vi.fn(() => Promise.resolve()),
     };
   });
 
@@ -45,7 +45,7 @@ describe('Server', () => {
         // Ignore errors on cleanup
       }
     }
-    mock.restore();
+    vi.restoreAllMocks();
   });
 
   describe('constructor', () => {
@@ -198,7 +198,7 @@ describe('Server', () => {
     it('should call setupRoutes on route handler', () => {
       server = new Server(mockOptions);
 
-      const setupRoutesMock = mock(() => {});
+      const setupRoutesMock = vi.fn(() => {});
       const mockRouteHandler: RouteHandler = {
         setupRoutes: setupRoutesMock,
       };
@@ -212,8 +212,8 @@ describe('Server', () => {
     it('should register multiple route handlers', () => {
       server = new Server(mockOptions);
 
-      const handler1Mock = mock(() => {});
-      const handler2Mock = mock(() => {});
+      const handler1Mock = vi.fn(() => {});
+      const handler2Mock = vi.fn(() => {});
 
       const handler1: RouteHandler = { setupRoutes: handler1Mock };
       const handler2: RouteHandler = { setupRoutes: handler2Mock };
@@ -267,8 +267,8 @@ describe('Server', () => {
       const dynamicOptions: ServerOptions = {
         getInitializationComplete: () => isInitialized,
         getMcpReady: () => true,
-        onShutdown: mock(() => Promise.resolve()),
-        onRestart: mock(() => Promise.resolve()),
+        onShutdown: vi.fn(() => Promise.resolve()),
+        onRestart: vi.fn(() => Promise.resolve()),
       };
 
       server = new Server(dynamicOptions);
@@ -324,8 +324,8 @@ describe('Server', () => {
       const uninitializedOptions: ServerOptions = {
         getInitializationComplete: () => false,
         getMcpReady: () => false,
-        onShutdown: mock(() => Promise.resolve()),
-        onRestart: mock(() => Promise.resolve()),
+        onShutdown: vi.fn(() => Promise.resolve()),
+        onRestart: vi.fn(() => Promise.resolve()),
       };
 
       server = new Server(uninitializedOptions);

@@ -8,7 +8,7 @@
  *
  * Value: Validates core persistence layer without filesystem dependencies
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
 
 describe('SessionStore', () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
@@ -60,29 +60,29 @@ describe('GracefulShutdown', () => {
       const callOrder: string[] = [];
 
       const mockServer = {
-        closeAllConnections: mock(() => {
+        closeAllConnections: vi.fn(() => {
           callOrder.push('closeAllConnections');
         }),
-        close: mock((cb: (err?: Error) => void) => {
+        close: vi.fn((cb: (err?: Error) => void) => {
           callOrder.push('serverClose');
           cb();
         })
       } as unknown as http.Server;
 
       const mockSessionManager: ShutdownableService = {
-        shutdownAll: mock(async () => {
+        shutdownAll: vi.fn(async () => {
           callOrder.push('sessionManager.shutdownAll');
         })
       };
 
       const mockMcpClient: CloseableClient = {
-        close: mock(async () => {
+        close: vi.fn(async () => {
           callOrder.push('mcpClient.close');
         })
       };
 
       const mockDbManager: CloseableDatabase = {
-        close: mock(async () => {
+        close: vi.fn(async () => {
           callOrder.push('dbManager.close');
         })
       };
@@ -119,7 +119,7 @@ describe('GracefulShutdown', () => {
 
     it('should remove PID file during shutdown', async () => {
       const mockSessionManager: ShutdownableService = {
-        shutdownAll: mock(async () => {})
+        shutdownAll: vi.fn(async () => {})
       };
 
       // Create PID file
@@ -139,7 +139,7 @@ describe('GracefulShutdown', () => {
 
     it('should handle missing optional services gracefully', async () => {
       const mockSessionManager: ShutdownableService = {
-        shutdownAll: mock(async () => {})
+        shutdownAll: vi.fn(async () => {})
       };
 
       const config: GracefulShutdownConfig = {
@@ -157,7 +157,7 @@ describe('GracefulShutdown', () => {
 
     it('should handle null server gracefully', async () => {
       const mockSessionManager: ShutdownableService = {
-        shutdownAll: mock(async () => {})
+        shutdownAll: vi.fn(async () => {})
       };
 
       const config: GracefulShutdownConfig = {
@@ -171,7 +171,7 @@ describe('GracefulShutdown', () => {
 
     it('should call sessionManager.shutdownAll even without server', async () => {
       const mockSessionManager: ShutdownableService = {
-        shutdownAll: mock(async () => {})
+        shutdownAll: vi.fn(async () => {})
       };
 
       const config: GracefulShutdownConfig = {
@@ -188,19 +188,19 @@ describe('GracefulShutdown', () => {
       const callOrder: string[] = [];
 
       const mockSessionManager: ShutdownableService = {
-        shutdownAll: mock(async () => {
+        shutdownAll: vi.fn(async () => {
           callOrder.push('sessionManager');
         })
       };
 
       const mockMcpClient: CloseableClient = {
-        close: mock(async () => {
+        close: vi.fn(async () => {
           callOrder.push('mcpClient');
         })
       };
 
       const mockDbManager: CloseableDatabase = {
-        close: mock(async () => {
+        close: vi.fn(async () => {
           callOrder.push('dbManager');
         })
       };
@@ -223,7 +223,7 @@ describe('GracefulShutdown', () => {
       expect(existsSync(PID_FILE)).toBe(false);
 
       const mockSessionManager: ShutdownableService = {
-        shutdownAll: mock(async () => {})
+        shutdownAll: vi.fn(async () => {})
       };
 
       const config: GracefulShutdownConfig = {

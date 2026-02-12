@@ -1,9 +1,8 @@
-import { describe, it, expect, mock, afterEach } from 'bun:test';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 
 // Mock logger BEFORE imports (required pattern)
-// NOTE: mock.module replaces the module globally in Bun's test runner,
-// so all methods used by other test files must be stubbed here too.
-mock.module('../../src/utils/logger.js', () => ({
+// NOTE: vi.mock replaces the module globally, so all methods must be stubbed.
+vi.mock('../../src/utils/logger.js', () => ({
   logger: {
     info: () => {},
     debug: () => {},
@@ -29,7 +28,7 @@ mock.module('../../src/utils/logger.js', () => ({
 import { extractFirstFile, groupByDate } from '../../src/shared/timeline-formatting.js';
 
 afterEach(() => {
-  mock.restore();
+  vi.restoreAllMocks();
 });
 
 describe('extractFirstFile', () => {

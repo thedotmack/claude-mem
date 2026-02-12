@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect } from 'vitest';
 import { buildSummaryContextPrompt } from '../../src/sdk/prompts.js';
 import type { SessionSummary } from '../../src/services/sqlite/summaries/types.js';
 

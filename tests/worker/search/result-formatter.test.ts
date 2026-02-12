@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Mock the ModeManager before imports
-mock.module('../../../src/services/domain/ModeManager.js', () => ({
+vi.mock('../../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
     getInstance: () => ({
       getActiveMode: () => ({

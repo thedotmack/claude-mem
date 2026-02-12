@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { SessionQueueProcessor, CreateIteratorOptions } from '../../../src/services/queue/SessionQueueProcessor.js';
 import type { PendingMessageStore, PersistentPendingMessage } from '../../../src/services/sqlite/PendingMessageStore.js';
@@ -9,8 +9,8 @@ import type { PendingMessageStore, PersistentPendingMessage } from '../../../src
  */
 function createMockStore(): PendingMessageStore {
   return {
-    claimAndDelete: mock(() => null),
-    toPendingMessage: mock((msg: PersistentPendingMessage) => ({
+    claimAndDelete: vi.fn(() => null),
+    toPendingMessage: vi.fn((msg: PersistentPendingMessage) => ({
       type: msg.message_type,
       tool_name: msg.tool_name || undefined,
       tool_input: msg.tool_input ? JSON.parse(msg.tool_input) : undefined,
@@ -74,7 +74,7 @@ describe('SessionQueueProcessor', () => {
 
         // Mock the private waitForMessage to use short timeout
         // We'll test with real timing but short durations
-        const onIdleTimeout = mock(() => {});
+        const onIdleTimeout = vi.fn(() => {});
 
         const options: CreateIteratorOptions = {
           sessionDbId: 123,
@@ -109,7 +109,7 @@ describe('SessionQueueProcessor', () => {
         // This test verifies the callback mechanism works
         // We can't easily test the full 3-minute timeout, so we verify the wiring
 
-        const onIdleTimeout = mock(() => {
+        const onIdleTimeout = vi.fn(() => {
           // Callback should trigger abort in real usage
           abortController.abort();
         });
@@ -136,11 +136,11 @@ describe('SessionQueueProcessor', () => {
       });
 
       it('should reset idle timer when message arrives', async () => {
-        const onIdleTimeout = mock(() => abortController.abort());
+        const onIdleTimeout = vi.fn(() => abortController.abort());
         let callCount = 0;
 
         // Return a message on first call, then null
-        (store.claimAndDelete as any) = mock(() => {
+        (store.claimAndDelete as any) = vi.fn(() => {
           callCount++;
           if (callCount === 1) {
             return createMockMessage({ id: 1 });
@@ -178,7 +178,7 @@ describe('SessionQueueProcessor', () => {
 
     describe('abort signal handling', () => {
       it('should exit immediately when abort signal is triggered', async () => {
-        const onIdleTimeout = mock(() => {});
+        const onIdleTimeout = vi.fn(() => {});
 
         const options: CreateIteratorOptions = {
           sessionDbId: 123,
@@ -203,10 +203,10 @@ describe('SessionQueueProcessor', () => {
       });
 
       it('should take precedence over timeout when both could fire', async () => {
-        const onIdleTimeout = mock(() => {});
+        const onIdleTimeout = vi.fn(() => {});
 
         // Return null to trigger wait
-        (store.claimAndDelete as any) = mock(() => null);
+        (store.claimAndDelete as any) = vi.fn(() => null);
 
         const options: CreateIteratorOptions = {
           sessionDbId: 123,
@@ -242,7 +242,7 @@ describe('SessionQueueProcessor', () => {
         // First call: return null (queue empty)
         // After message event: return message
         // Then return null again
-        (store.claimAndDelete as any) = mock(() => {
+        (store.claimAndDelete as any) = vi.fn(() => {
           callCount++;
           if (callCount === 1) {
             // First check - queue empty, will wait
@@ -312,7 +312,7 @@ describe('SessionQueueProcessor', () => {
 
       it('should clean up event listeners when message received', async () => {
         // Return a message immediately
-        (store.claimAndDelete as any) = mock(() => createMockMessage({ id: 1 }));
+        (store.claimAndDelete as any) = vi.fn(() => createMockMessage({ id: 1 }));
 
         const options: CreateIteratorOptions = {
           sessionDbId: 123,
@@ -344,7 +344,7 @@ describe('SessionQueueProcessor', () => {
       it('should continue after store error with backoff', async () => {
         let callCount = 0;
 
-        (store.claimAndDelete as any) = mock(() => {
+        (store.claimAndDelete as any) = vi.fn(() => {
           callCount++;
           if (callCount === 1) {
             throw new Error('Database error');
@@ -377,7 +377,7 @@ describe('SessionQueueProcessor', () => {
       });
 
       it('should exit cleanly if aborted during error backoff', async () => {
-        (store.claimAndDelete as any) = mock(() => {
+        (store.claimAndDelete as any) = vi.fn(() => {
           throw new Error('Database error');
         });
 
@@ -413,7 +413,7 @@ describe('SessionQueueProcessor', () => {
           created_at_epoch: 1704067200000
         });
 
-        (store.claimAndDelete as any) = mock(() => mockPersistentMessage);
+        (store.claimAndDelete as any) = vi.fn(() => mockPersistentMessage);
 
         const options: CreateIteratorOptions = {
           sessionDbId: 123,

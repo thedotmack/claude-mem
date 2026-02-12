@@ -1,7 +1,7 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Mock the ModeManager before imports
-mock.module('../../../src/services/domain/ModeManager.js', () => ({
+vi.mock('../../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
     getInstance: () => ({
       getActiveMode: () => ({
@@ -99,22 +99,22 @@ describe('SearchOrchestrator', () => {
 
   beforeEach(() => {
     mockSessionSearch = {
-      searchObservations: mock(() => [mockObservation]),
-      searchSessions: mock(() => [mockSession]),
-      searchUserPrompts: mock(() => [mockPrompt]),
-      findByConcept: mock(() => [mockObservation]),
-      findByType: mock(() => [mockObservation]),
-      findByFile: mock(() => ({ observations: [mockObservation], sessions: [mockSession] }))
+      searchObservations: vi.fn(() => [mockObservation]),
+      searchSessions: vi.fn(() => [mockSession]),
+      searchUserPrompts: vi.fn(() => [mockPrompt]),
+      findByConcept: vi.fn(() => [mockObservation]),
+      findByType: vi.fn(() => [mockObservation]),
+      findByFile: vi.fn(() => ({ observations: [mockObservation], sessions: [mockSession] }))
     };
 
     mockSessionStore = {
-      getObservationsByIds: mock(() => [mockObservation]),
-      getSessionSummariesByIds: mock(() => [mockSession]),
-      getUserPromptsByIds: mock(() => [mockPrompt])
+      getObservationsByIds: vi.fn(() => [mockObservation]),
+      getSessionSummariesByIds: vi.fn(() => [mockSession]),
+      getUserPromptsByIds: vi.fn(() => [mockPrompt])
     };
 
     mockChromaSync = {
-      queryChroma: mock(() => Promise.resolve({
+      queryChroma: vi.fn(() => Promise.resolve({
         ids: [1],
         distances: [0.1],
         metadatas: [{ sqlite_id: 1, doc_type: 'observation', created_at_epoch: Date.now() - 1000 }]
@@ -151,7 +151,7 @@ describe('SearchOrchestrator', () => {
       });
 
       it('should fall back to SQLite when Chroma fails', async () => {
-        mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma unavailable')));
+        mockChromaSync.queryChroma = vi.fn(() => Promise.reject(new Error('Chroma unavailable')));
 
         const result = await orchestrator.search({
           query: 'test query'

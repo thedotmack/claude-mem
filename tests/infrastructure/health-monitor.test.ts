@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   isPortInUse,
   waitForHealth,
@@ -14,7 +14,7 @@ describe('HealthMonitor', () => {
 
   describe('isPortInUse', () => {
     it('should return true for occupied port (health check succeeds)', async () => {
-      global.fetch = mock(() => Promise.resolve({ ok: true } as Response));
+      global.fetch = vi.fn(() => Promise.resolve({ ok: true } as Response));
 
       const result = await isPortInUse(37777);
 
@@ -23,7 +23,7 @@ describe('HealthMonitor', () => {
     });
 
     it('should return false for free port (connection refused)', async () => {
-      global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
+      global.fetch = vi.fn(() => Promise.reject(new Error('ECONNREFUSED')));
 
       const result = await isPortInUse(39999);
 
@@ -31,7 +31,7 @@ describe('HealthMonitor', () => {
     });
 
     it('should return false when health check returns non-ok', async () => {
-      global.fetch = mock(() => Promise.resolve({ ok: false, status: 503 } as Response));
+      global.fetch = vi.fn(() => Promise.resolve({ ok: false, status: 503 } as Response));
 
       const result = await isPortInUse(37777);
 
@@ -39,7 +39,7 @@ describe('HealthMonitor', () => {
     });
 
     it('should return false on network timeout', async () => {
-      global.fetch = mock(() => Promise.reject(new Error('ETIMEDOUT')));
+      global.fetch = vi.fn(() => Promise.reject(new Error('ETIMEDOUT')));
 
       const result = await isPortInUse(37777);
 
@@ -47,7 +47,7 @@ describe('HealthMonitor', () => {
     });
 
     it('should return false on fetch failed error', async () => {
-      global.fetch = mock(() => Promise.reject(new Error('fetch failed')));
+      global.fetch = vi.fn(() => Promise.reject(new Error('fetch failed')));
 
       const result = await isPortInUse(37777);
 
@@ -57,7 +57,7 @@ describe('HealthMonitor', () => {
 
   describe('waitForHealth', () => {
     it('should succeed immediately when server responds', async () => {
-      global.fetch = mock(() => Promise.resolve({ ok: true } as Response));
+      global.fetch = vi.fn(() => Promise.resolve({ ok: true } as Response));
 
       const start = Date.now();
       const result = await waitForHealth(37777, 5000);
@@ -69,7 +69,7 @@ describe('HealthMonitor', () => {
     });
 
     it('should timeout when no server responds', async () => {
-      global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
+      global.fetch = vi.fn(() => Promise.reject(new Error('ECONNREFUSED')));
 
       const start = Date.now();
       const result = await waitForHealth(39999, 1500);
@@ -83,7 +83,7 @@ describe('HealthMonitor', () => {
 
     it('should succeed after server becomes available', async () => {
       let callCount = 0;
-      global.fetch = mock(() => {
+      global.fetch = vi.fn(() => {
         callCount++;
         // Fail first 2 calls, succeed on third
         if (callCount < 3) {
@@ -99,7 +99,7 @@ describe('HealthMonitor', () => {
     });
 
     it('should check health endpoint for liveness', async () => {
-      const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+      const fetchMock = vi.fn(() => Promise.resolve({ ok: true } as Response));
       global.fetch = fetchMock;
 
       await waitForHealth(37777, 1000);
@@ -113,7 +113,7 @@ describe('HealthMonitor', () => {
     });
 
     it('should use default timeout when not specified', async () => {
-      global.fetch = mock(() => Promise.resolve({ ok: true } as Response));
+      global.fetch = vi.fn(() => Promise.resolve({ ok: true } as Response));
 
       // Just verify it doesn't throw and returns quickly
       const result = await waitForHealth(37777);
@@ -124,7 +124,7 @@ describe('HealthMonitor', () => {
 
   describe('waitForPortFree', () => {
     it('should return true immediately when port is already free', async () => {
-      global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
+      global.fetch = vi.fn(() => Promise.reject(new Error('ECONNREFUSED')));
 
       const start = Date.now();
       const result = await waitForPortFree(39999, 5000);
@@ -136,7 +136,7 @@ describe('HealthMonitor', () => {
     });
 
     it('should timeout when port remains occupied', async () => {
-      global.fetch = mock(() => Promise.resolve({ ok: true } as Response));
+      global.fetch = vi.fn(() => Promise.resolve({ ok: true } as Response));
 
       const start = Date.now();
       const result = await waitForPortFree(37777, 1500);
@@ -150,7 +150,7 @@ describe('HealthMonitor', () => {
 
     it('should succeed when port becomes free', async () => {
       let callCount = 0;
-      global.fetch = mock(() => {
+      global.fetch = vi.fn(() => {
         callCount++;
         // Port occupied for first 2 checks, then free
         if (callCount < 3) {
@@ -166,7 +166,7 @@ describe('HealthMonitor', () => {
     });
 
     it('should use default timeout when not specified', async () => {
-      global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
+      global.fetch = vi.fn(() => Promise.reject(new Error('ECONNREFUSED')));
 
       // Just verify it doesn't throw and returns quickly
       const result = await waitForPortFree(39999);

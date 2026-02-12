@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect } from 'vitest';
 import { Logger } from '../../src/utils/logger.js';
 
 // Create a fresh Logger instance to avoid mock.module poisoning

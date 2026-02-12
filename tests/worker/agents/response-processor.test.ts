@@ -1,18 +1,18 @@
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { logger } from '../../../src/utils/logger.js';
 
 // Mock modules that cause import chain issues - MUST be before imports
 // Use full paths from test file location
-mock.module('../../../src/services/worker-service.js', () => ({
+vi.mock('../../../src/services/worker-service.js', () => ({
   updateCursorContextForProject: () => Promise.resolve(),
 }));
 
-mock.module('../../../src/shared/worker-utils.js', () => ({
+vi.mock('../../../src/shared/worker-utils.js', () => ({
   getWorkerPort: () => 37777,
 }));
 
 // Mock the ModeManager
-mock.module('../../../src/services/domain/ModeManager.js', () => ({
+vi.mock('../../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
     getInstance: () => ({
       getActiveMode: () => ({
@@ -37,7 +37,7 @@ import type { DatabaseManager } from '../../../src/services/worker/DatabaseManag
 import type { SessionManager } from '../../../src/services/worker/SessionManager.js';
 
 // Spy on logger methods to suppress output during tests
-let loggerSpies: ReturnType<typeof spyOn>[] = [];
+let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
 
 describe('ResponseProcessor', () => {
   // Mocks
@@ -53,21 +53,21 @@ describe('ResponseProcessor', () => {
   beforeEach(() => {
     // Spy on logger to suppress output
     loggerSpies = [
-      spyOn(logger, 'info').mockImplementation(() => {}),
-      spyOn(logger, 'debug').mockImplementation(() => {}),
-      spyOn(logger, 'warn').mockImplementation(() => {}),
-      spyOn(logger, 'error').mockImplementation(() => {}),
+      vi.spyOn(logger, 'info').mockImplementation(() => {}),
+      vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      vi.spyOn(logger, 'warn').mockImplementation(() => {}),
+      vi.spyOn(logger, 'error').mockImplementation(() => {}),
     ];
 
     // Create fresh mocks for each test
-    mockStoreObservations = mock(() => ({
+    mockStoreObservations = vi.fn(() => ({
       observationIds: [1, 2],
       summaryId: 1,
       createdAtEpoch: 1700000000000,
     } as StorageResult));
 
-    mockChromaSyncObservation = mock(() => Promise.resolve());
-    mockChromaSyncSummary = mock(() => Promise.resolve());
+    mockChromaSyncObservation = vi.fn(() => Promise.resolve());
+    mockChromaSyncSummary = vi.fn(() => Promise.resolve());
 
     mockDbManager = {
       getSessionStore: () => ({
@@ -84,14 +84,14 @@ describe('ResponseProcessor', () => {
         yield* [];
       },
       getPendingMessageStore: () => ({
-        markProcessed: mock(() => {}),
-        cleanupProcessed: mock(() => 0),
-        resetStuckMessages: mock(() => 0),
+        markProcessed: vi.fn(() => {}),
+        cleanupProcessed: vi.fn(() => 0),
+        resetStuckMessages: vi.fn(() => 0),
       }),
     } as unknown as SessionManager;
 
-    mockBroadcast = mock(() => {});
-    mockBroadcastProcessingStatus = mock(() => {});
+    mockBroadcast = vi.fn(() => {});
+    mockBroadcastProcessingStatus = vi.fn(() => {});
 
     mockWorker = {
       sseBroadcaster: {
@@ -103,7 +103,7 @@ describe('ResponseProcessor', () => {
 
   afterEach(() => {
     loggerSpies.forEach(spy => spy.mockRestore());
-    mock.restore();
+    vi.restoreAllMocks();
   });
 
   // Helper to create mock session
@@ -264,7 +264,7 @@ describe('ResponseProcessor', () => {
       `;
 
       // Mock to return result without summary
-      mockStoreObservations = mock(() => ({
+      mockStoreObservations = vi.fn(() => ({
         observationIds: [1],
         summaryId: null,
         createdAtEpoch: 1700000000000,
@@ -363,7 +363,7 @@ describe('ResponseProcessor', () => {
       `;
 
       // Mock returning single observation ID
-      mockStoreObservations = mock(() => ({
+      mockStoreObservations = vi.fn(() => ({
         observationIds: [42],
         summaryId: null,
         createdAtEpoch: 1700000000000,
@@ -443,7 +443,7 @@ describe('ResponseProcessor', () => {
       const responseText = '';
 
       // Mock to handle empty observations
-      mockStoreObservations = mock(() => ({
+      mockStoreObservations = vi.fn(() => ({
         observationIds: [],
         summaryId: null,
         createdAtEpoch: 1700000000000,
@@ -474,7 +474,7 @@ describe('ResponseProcessor', () => {
       const session = createMockSession();
       const responseText = 'This is just plain text without any XML tags.';
 
-      mockStoreObservations = mock(() => ({
+      mockStoreObservations = vi.fn(() => ({
         observationIds: [],
         summaryId: null,
         createdAtEpoch: 1700000000000,
@@ -516,7 +516,7 @@ describe('ResponseProcessor', () => {
         </observation>
       `;
 
-      mockStoreObservations = mock(() => ({
+      mockStoreObservations = vi.fn(() => ({
         observationIds: [1],
         summaryId: null,
         createdAtEpoch: 1700000000000,
@@ -552,7 +552,7 @@ describe('ResponseProcessor', () => {
         </observation>
       `;
 
-      mockStoreObservations = mock(() => ({
+      mockStoreObservations = vi.fn(() => ({
         observationIds: [1],
         summaryId: null,
         createdAtEpoch: 1700000000000,
@@ -592,7 +592,7 @@ describe('ResponseProcessor', () => {
         </observation>
       `;
 
-      mockStoreObservations = mock(() => ({
+      mockStoreObservations = vi.fn(() => ({
         observationIds: [1],
         summaryId: null,
         createdAtEpoch: 1700000000000,

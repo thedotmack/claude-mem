@@ -9,25 +9,48 @@
  *
  * No mocks needed - tests a pure function directly and captures real CLI output.
  */
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, vi, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import path from 'path';
+
+// worker-service.ts installs signal handlers that call process.exit on SIGTERM/SIGINT.
+// Intercept process.exit BEFORE importing worker-service to prevent vitest crashes.
+const originalExit = process.exit;
+process.exit = vi.fn() as unknown as typeof process.exit;
+
+afterAll(() => {
+  process.exit = originalExit;
+});
+
 import { buildStatusOutput, StatusOutput } from '../../src/services/worker-service.js';
 
-const WORKER_SCRIPT = path.join(__dirname, '../../plugin/scripts/worker-service.cjs');
+const WORKER_SCRIPT = path.join(import.meta.dirname, '../../plugin/scripts/worker-service.cjs');
+
+/**
+ * Check if worker script is runnable with node (not still bundled for bun)
+ */
+function isWorkerRunnable(): boolean {
+  if (!existsSync(WORKER_SCRIPT)) return false;
+  // Check if the script still requires bun:sqlite (pre-migration build artifact)
+  const content = readFileSync(WORKER_SCRIPT, 'utf-8');
+  if (content.includes('bun:sqlite') || content.includes('#!/usr/bin/env bun')) return false;
+  return true;
+}
 
 /**
  * Run worker CLI command and return stdout + exit code
  * Uses spawnSync for synchronous output capture
  */
 function runWorkerStart(): { stdout: string; exitCode: number } {
-  const result = spawnSync('bun', [WORKER_SCRIPT, 'start'], {
+  const result = spawnSync('node', [WORKER_SCRIPT, 'start'], {
     encoding: 'utf-8',
     timeout: 60000
   });
   return { stdout: result.stdout?.trim() || '', exitCode: result.status || 0 };
 }
+
+const workerRunnable = isWorkerRunnable();
 
 describe('worker-json-status', () => {
   describe('buildStatusOutput', () => {
@@ -189,7 +212,7 @@ describe('worker-json-status', () => {
     describe('when worker already healthy', () => {
       it('should output valid JSON with status: ready', () => {
         // Skip if worker script doesn't exist (not built)
-        if (!existsSync(WORKER_SCRIPT)) {
+        if (!workerRunnable) {
           console.log('Skipping CLI test - worker script not built');
           return;
         }
@@ -211,7 +234,7 @@ describe('worker-json-status', () => {
       });
 
       it('should match expected JSON structure when worker is healthy', () => {
-        if (!existsSync(WORKER_SCRIPT)) {
+        if (!workerRunnable) {
           console.log('Skipping CLI test - worker script not built');
           return;
         }
@@ -283,7 +306,7 @@ describe('worker-json-status', () => {
      * communicate the error via JSON { status: 'error', message: '...' }
      */
     it('should always exit with code 0', () => {
-      if (!existsSync(WORKER_SCRIPT)) {
+      if (!workerRunnable) {
         console.log('Skipping CLI test - worker script not built');
         return;
       }
@@ -305,12 +328,12 @@ describe('worker-json-status', () => {
      * Structure: { status, continue, suppressOutput, message? }
      */
     it('should output JSON on stdout (not stderr)', () => {
-      if (!existsSync(WORKER_SCRIPT)) {
+      if (!workerRunnable) {
         console.log('Skipping CLI test - worker script not built');
         return;
       }
 
-      const result = spawnSync('bun', [WORKER_SCRIPT, 'start'], {
+      const result = spawnSync('node', [WORKER_SCRIPT, 'start'], {
         encoding: 'utf-8',
         timeout: 60000
       });
@@ -347,7 +370,7 @@ describe('worker-json-status', () => {
      * Code to fail processing the hook output.
      */
     it('should be parseable as valid JSON', () => {
-      if (!existsSync(WORKER_SCRIPT)) {
+      if (!workerRunnable) {
         console.log('Skipping CLI test - worker script not built');
         return;
       }
@@ -381,7 +404,7 @@ describe('worker-json-status', () => {
      * type - it can never be false.
      */
     it('should always include continue: true (required for Claude Code to proceed)', () => {
-      if (!existsSync(WORKER_SCRIPT)) {
+      if (!workerRunnable) {
         console.log('Skipping CLI test - worker script not built');
         return;
       }
@@ -408,7 +431,7 @@ describe('worker-json-status', () => {
      * is infrastructure noise, not conversation content.
      */
     it('should include suppressOutput: true to hide from transcript mode', () => {
-      if (!existsSync(WORKER_SCRIPT)) {
+      if (!workerRunnable) {
         console.log('Skipping CLI test - worker script not built');
         return;
       }
@@ -431,7 +454,7 @@ describe('worker-json-status', () => {
      * the issue.
      */
     it('should include a valid status field', () => {
-      if (!existsSync(WORKER_SCRIPT)) {
+      if (!workerRunnable) {
         console.log('Skipping CLI test - worker script not built');
         return;
       }

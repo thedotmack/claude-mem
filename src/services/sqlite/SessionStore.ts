@@ -1,4 +1,4 @@
-import { Database } from 'bun:sqlite';
+import { Database } from './sqlite-compat.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
@@ -683,7 +683,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(project, limit);
+    return stmt.all(project, limit) as ReturnType<typeof this.getRecentSummaries>;
   }
 
   /**
@@ -708,7 +708,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(project, limit);
+    return stmt.all(project, limit) as ReturnType<typeof this.getRecentSummariesWithSessionInfo>;
   }
 
   /**
@@ -728,7 +728,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(project, limit);
+    return stmt.all(project, limit) as ReturnType<typeof this.getRecentObservations>;
   }
 
   /**
@@ -752,7 +752,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(limit);
+    return stmt.all(limit) as ReturnType<typeof this.getAllRecentObservations>;
   }
 
   /**
@@ -782,7 +782,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(limit);
+    return stmt.all(limit) as ReturnType<typeof this.getAllRecentSummaries>;
   }
 
   /**
@@ -812,7 +812,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(limit);
+    return stmt.all(limit) as ReturnType<typeof this.getAllRecentUserPrompts>;
   }
 
   /**
@@ -887,7 +887,7 @@ export class SessionStore {
       ORDER BY started_at_epoch ASC
     `);
 
-    return stmt.all(project, limit);
+    return stmt.all(project, limit) as ReturnType<typeof this.getRecentSessionsWithStatus>;
   }
 
   /**
@@ -906,7 +906,7 @@ export class SessionStore {
       ORDER BY created_at_epoch ASC
     `);
 
-    return stmt.all(memorySessionId);
+    return stmt.all(memorySessionId) as ReturnType<typeof this.getObservationsForSession>;
   }
 
   /**
@@ -1022,7 +1022,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(memorySessionId) || null;
+    return (stmt.get(memorySessionId) as ReturnType<typeof this.getSummaryForSession>) || null;
   }
 
   /**
@@ -1087,7 +1087,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(id) || null;
+    return (stmt.get(id) as ReturnType<typeof this.getSessionById>) || null;
   }
 
   /**
@@ -1859,7 +1859,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(id) || null;
+    return (stmt.get(id) as ReturnType<typeof this.getPromptById>) || null;
   }
 
   /**
@@ -1935,7 +1935,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(id) || null;
+    return (stmt.get(id) as ReturnType<typeof this.getSessionSummaryById>) || null;
   }
 
   /**
