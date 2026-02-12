@@ -643,9 +643,13 @@ configure_memory_slot() {
   info "Updating OpenClaw configuration to use claude-mem memory slot..."
 
   # Use node for reliable JSON manipulation
-  node -e "
+  info "Updating OpenClaw configuration to use claude-mem memory slot..."
+
+  # Use node for reliable JSON manipulation
+  INSTALLER_CONFIG_FILE="$config_file" node -e "
     const fs = require('fs');
-    const config = JSON.parse(fs.readFileSync('${config_file}', 'utf8'));
+    const configPath = process.env.INSTALLER_CONFIG_FILE;
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
     // Ensure plugins structure exists
     if (!config.plugins) config.plugins = {};
@@ -668,7 +672,7 @@ configure_memory_slot() {
       config.plugins.entries['claude-mem'].enabled = true;
     }
 
-    fs.writeFileSync('${config_file}', JSON.stringify(config, null, 2));
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   "
 
   success "Memory slot set to claude-mem in ${config_file}"
