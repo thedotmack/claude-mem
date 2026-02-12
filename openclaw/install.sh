@@ -949,37 +949,78 @@ write_observation_feed_config() {
 
   info "Writing observation feed configuration..."
 
-  # Pass values via environment variables to avoid injection
-  INSTALLER_FEED_CHANNEL="$FEED_CHANNEL" \
-  INSTALLER_FEED_TARGET_ID="$FEED_TARGET_ID" \
-  INSTALLER_CONFIG_FILE="$config_file" \
-  node -e "
-    const fs = require('fs');
-    const configPath = process.env.INSTALLER_CONFIG_FILE;
-    const channel = process.env.INSTALLER_FEED_CHANNEL;
-    const targetId = process.env.INSTALLER_FEED_TARGET_ID;
+  # Use jq if available, fall back to python3, then node for JSON manipulation
+  if command -v jq &>/dev/null; then
+    local tmp_file
+    tmp_file="$(mktemp)"
+    jq --arg channel "$FEED_CHANNEL" --arg target "$FEED_TARGET_ID" '
+      .plugins //= {} |
+      .plugins.entries //= {} |
+      .plugins.entries["claude-mem"] //= {"enabled": true, "config": {}} |
+      .plugins.entries["claude-mem"].config //= {} |
+      .plugins.entries["claude-mem"].config.observationFeed = {
+        "enabled": true,
+        "channel": $channel,
+        "to": $target
+      }
+    ' "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
+  elif command -v python3 &>/dev/null; then
+    INSTALLER_FEED_CHANNEL="$FEED_CHANNEL" \
+    INSTALLER_FEED_TARGET_ID="$FEED_TARGET_ID" \
+    INSTALLER_CONFIG_FILE="$config_file" \
+    python3 -c "
+import json, os
+config_path = os.environ['INSTALLER_CONFIG_FILE']
+channel = os.environ['INSTALLER_FEED_CHANNEL']
+target_id = os.environ['INSTALLER_FEED_TARGET_ID']
 
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+with open(config_path) as f:
+    config = json.load(f)
 
-    // Ensure nested structure exists
-    if (!config.plugins) config.plugins = {};
-    if (!config.plugins.entries) config.plugins.entries = {};
-    if (!config.plugins.entries['claude-mem']) {
-      config.plugins.entries['claude-mem'] = { enabled: true, config: {} };
-    }
-    if (!config.plugins.entries['claude-mem'].config) {
-      config.plugins.entries['claude-mem'].config = {};
-    }
+config.setdefault('plugins', {})
+config['plugins'].setdefault('entries', {})
+config['plugins']['entries'].setdefault('claude-mem', {'enabled': True, 'config': {}})
+config['plugins']['entries']['claude-mem'].setdefault('config', {})
+config['plugins']['entries']['claude-mem']['config']['observationFeed'] = {
+    'enabled': True,
+    'channel': channel,
+    'to': target_id
+}
 
-    // Set observation feed config
-    config.plugins.entries['claude-mem'].config.observationFeed = {
-      enabled: true,
-      channel: channel,
-      to: targetId
-    };
+with open(config_path, 'w') as f:
+    json.dump(config, f, indent=2)
+"
+  else
+    # Fallback to node (always available since it's a dependency)
+    INSTALLER_FEED_CHANNEL="$FEED_CHANNEL" \
+    INSTALLER_FEED_TARGET_ID="$FEED_TARGET_ID" \
+    INSTALLER_CONFIG_FILE="$config_file" \
+    node -e "
+      const fs = require('fs');
+      const configPath = process.env.INSTALLER_CONFIG_FILE;
+      const channel = process.env.INSTALLER_FEED_CHANNEL;
+      const targetId = process.env.INSTALLER_FEED_TARGET_ID;
 
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-  "
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+      if (!config.plugins) config.plugins = {};
+      if (!config.plugins.entries) config.plugins.entries = {};
+      if (!config.plugins.entries['claude-mem']) {
+        config.plugins.entries['claude-mem'] = { enabled: true, config: {} };
+      }
+      if (!config.plugins.entries['claude-mem'].config) {
+        config.plugins.entries['claude-mem'].config = {};
+      }
+
+      config.plugins.entries['claude-mem'].config.observationFeed = {
+        enabled: true,
+        channel: channel,
+        to: targetId
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    "
+  fi
 
   success "Observation feed config written to ${config_file}"
   echo ""
