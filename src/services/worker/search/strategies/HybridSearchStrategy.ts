@@ -142,7 +142,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       logger.debug('SEARCH', 'HybridSearchStrategy: findByType', { type: typeStr });
 
       // Step 1: SQLite metadata filter
-      const metadataResults = this.sessionSearch.findByType(type as any, filterOptions);
+      const metadataResults = this.sessionSearch.findByType(type as import('../../../sqlite/types.js').ObservationRow['type'] | import('../../../sqlite/types.js').ObservationRow['type'][], filterOptions);
       logger.debug('SEARCH', 'HybridSearchStrategy: Found metadata matches', {
         count: metadataResults.length
       });
@@ -181,7 +181,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     } catch (error) {
       logger.error('SEARCH', 'HybridSearchStrategy: findByType failed', {}, error as Error);
-      const results = this.sessionSearch.findByType(type as any, filterOptions);
+      const results = this.sessionSearch.findByType(type as import('../../../sqlite/types.js').ObservationRow['type'] | import('../../../sqlite/types.js').ObservationRow['type'][], filterOptions);
       return {
         results: { observations: results, sessions: [], prompts: [] },
         usedChroma: false,

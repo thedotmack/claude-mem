@@ -91,8 +91,8 @@ ${mode.prompts.header_memory_start}`;
  */
 export function buildObservationPrompt(obs: Observation): string {
   // Safely parse tool_input and tool_output - they're already JSON strings
-  let toolInput: any;
-  let toolOutput: any;
+  let toolInput: unknown;
+  let toolOutput: unknown;
 
   try {
     toolInput = typeof obs.tool_input === 'string' ? JSON.parse(obs.tool_input) : obs.tool_input;

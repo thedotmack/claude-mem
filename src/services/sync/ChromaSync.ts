@@ -129,7 +129,7 @@ export class ChromaSync {
       const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
       const isWindows = process.platform === 'win32';
 
-      const transportOptions: any = {
+      const transportOptions: Record<string, unknown> = {
         command: 'uvx',
         args: [
           '--python', pythonVersion,
@@ -147,7 +147,7 @@ export class ChromaSync {
         logger.debug('CHROMA_SYNC', 'Windows detected, attempting to hide console window', { project: this.project });
       }
 
-      this.transport = new StdioClientTransport(transportOptions);
+      this.transport = new StdioClientTransport(transportOptions as ConstructorParameters<typeof StdioClientTransport>[0]);
 
       // Empty capabilities object: this client only calls Chroma tools, doesn't expose any
       this.client = new Client({
@@ -598,8 +598,8 @@ export class ChromaSync {
           throw new Error('Unexpected response type from chroma_get_documents');
         }
 
-        const parsed = JSON.parse(data.text);
-        const metadatas = parsed.metadatas || [];
+        const parsed = JSON.parse(data.text) as { metadatas?: Array<{ sqlite_id?: number; doc_type?: string }> };
+        const metadatas = parsed.metadatas ?? [];
 
         if (metadatas.length === 0) {
           break; // No more documents
@@ -821,8 +821,8 @@ export class ChromaSync {
   async queryChroma(
     query: string,
     limit: number,
-    whereFilter?: Record<string, any>
-  ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
+    whereFilter?: Record<string, unknown>
+  ): Promise<{ ids: number[]; distances: number[]; metadatas: Record<string, unknown>[] }> {
     if (this.disabled) {
       return { ids: [], distances: [], metadatas: [] };
     }
@@ -879,9 +879,9 @@ export class ChromaSync {
     })();
 
     // Parse JSON response
-    let parsed: any;
+    let parsed: Record<string, unknown>;
     try {
-      parsed = JSON.parse(resultText);
+      parsed = JSON.parse(resultText) as Record<string, unknown>;
     } catch (error) {
       logger.error('CHROMA_SYNC', 'Failed to parse Chroma response', { project: this.project }, error as Error);
       return { ids: [], distances: [], metadatas: [] };
@@ -889,7 +889,8 @@ export class ChromaSync {
 
     // Extract unique IDs from document IDs
     const ids: number[] = [];
-    const docIds = parsed.ids?.[0] || [];
+    const parsedIds = parsed.ids as string[][] | undefined;
+    const docIds: string[] = (parsedIds?.[0] as string[] | undefined) ?? [];
     for (const docId of docIds) {
       // Extract sqlite_id from document ID (supports three formats):
       // - obs_{id}_narrative, obs_{id}_fact_0, etc (observations)
@@ -913,8 +914,10 @@ export class ChromaSync {
       }
     }
 
-    const distances = parsed.distances?.[0] || [];
-    const metadatas = parsed.metadatas?.[0] || [];
+    const parsedDistances = parsed.distances as number[][] | undefined;
+    const distances: number[] = parsedDistances?.[0] ?? [];
+    const parsedMetadatas = parsed.metadatas as Record<string, unknown>[][] | undefined;
+    const metadatas: Record<string, unknown>[] = parsedMetadatas?.[0] ?? [];
 
     return { ids, distances, metadatas };
   }

@@ -36,7 +36,7 @@ export function getObservationsByIds(
 
   // Build placeholders for IN clause
   const placeholders = ids.map(() => '?').join(',');
-  const params: any[] = [...ids];
+  const params: (string | number)[] = [...ids];
   const additionalConditions: string[] = [];
 
   // Apply project filter

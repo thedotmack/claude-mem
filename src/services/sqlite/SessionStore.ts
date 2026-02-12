@@ -936,7 +936,7 @@ export class SessionStore {
 
     // Build placeholders for IN clause
     const placeholders = ids.map(() => '?').join(',');
-    const params: any[] = [...ids];
+    const params: (string | number)[] = [...ids];
     const additionalConditions: string[] = [];
 
     // Apply project filter
@@ -1116,7 +1116,7 @@ export class SessionStore {
       ORDER BY started_at_epoch DESC
     `);
 
-    return stmt.all(...memorySessionIds) as any[];
+    return stmt.all(...memorySessionIds) as ReturnType<typeof this.getSdkSessionsBySessionIds>;
   }
 
 
@@ -1619,7 +1619,7 @@ export class SessionStore {
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
     const limitClause = limit ? `LIMIT ${limit}` : '';
     const placeholders = ids.map(() => '?').join(',');
-    const params: any[] = [...ids];
+    const params: (string | number)[] = [...ids];
 
     // Apply project filter
     const whereClause = project
@@ -1651,7 +1651,7 @@ export class SessionStore {
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
     const limitClause = limit ? `LIMIT ${limit}` : '';
     const placeholders = ids.map(() => '?').join(',');
-    const params: any[] = [...ids];
+    const params: (string | number)[] = [...ids];
 
     // Apply project filter
     const projectFilter = project ? 'AND s.project = ?' : '';
@@ -1686,9 +1686,9 @@ export class SessionStore {
     depthAfter: number = 10,
     project?: string
   ): {
-    observations: any[];
-    sessions: any[];
-    prompts: any[];
+    observations: ObservationRecord[];
+    sessions: Array<{ id: number; memory_session_id: string; project: string; request: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
+    prompts: Array<{ id: number; content_session_id: string; prompt_number: number; prompt_text: string; project: string | undefined; created_at: string; created_at_epoch: number }>;
   } {
     return this.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project);
   }
@@ -1704,9 +1704,9 @@ export class SessionStore {
     depthAfter: number = 10,
     project?: string
   ): {
-    observations: any[];
-    sessions: any[];
-    prompts: any[];
+    observations: ObservationRecord[];
+    sessions: Array<{ id: number; memory_session_id: string; project: string; request: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
+    prompts: Array<{ id: number; content_session_id: string; prompt_number: number; prompt_text: string; project: string | undefined; created_at: string; created_at_epoch: number }>;
   } {
     const projectFilter = project ? 'AND project = ?' : '';
     const projectParams = project ? [project] : [];
@@ -1742,7 +1742,7 @@ export class SessionStore {
 
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
-      } catch (err: any) {
+      } catch (err: unknown) {
         logger.error('DB', 'Error getting boundary observations', undefined, { error: err, project });
         return { observations: [], sessions: [], prompts: [] };
       }
@@ -1774,7 +1774,7 @@ export class SessionStore {
 
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
-      } catch (err: any) {
+      } catch (err: unknown) {
         logger.error('DB', 'Error getting boundary timestamps', undefined, { error: err, project });
         return { observations: [], sessions: [], prompts: [] };
       }

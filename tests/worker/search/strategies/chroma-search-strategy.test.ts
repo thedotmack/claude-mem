@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ChromaSearchStrategy } from '../../../../src/services/worker/search/strategies/ChromaSearchStrategy.js';
 import type { StrategySearchOptions, ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../../../../src/services/worker/search/types.js';
+import type { ChromaSync } from '../../../../src/services/sync/ChromaSync.js';
+import type { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 
 // Mock observation data
 const mockObservation: ObservationSearchResult = {
@@ -51,8 +53,8 @@ const mockPrompt: UserPromptSearchResult = {
 
 describe('ChromaSearchStrategy', () => {
   let strategy: ChromaSearchStrategy;
-  let mockChromaSync: any;
-  let mockSessionStore: any;
+  let mockChromaSync: ChromaSync;
+  let mockSessionStore: SessionStore;
 
   beforeEach(() => {
     const recentEpoch = Date.now() - 1000 * 60 * 60 * 24; // 1 day ago (within 90-day window)
@@ -67,13 +69,13 @@ describe('ChromaSearchStrategy', () => {
           { sqlite_id: 3, doc_type: 'user_prompt', created_at_epoch: recentEpoch }
         ]
       }))
-    };
+    } as unknown as ChromaSync;
 
     mockSessionStore = {
       getObservationsByIds: vi.fn(() => [mockObservation]),
       getSessionSummariesByIds: vi.fn(() => [mockSession]),
       getUserPromptsByIds: vi.fn(() => [mockPrompt])
-    };
+    } as unknown as SessionStore;
 
     strategy = new ChromaSearchStrategy(mockChromaSync, mockSessionStore);
   });

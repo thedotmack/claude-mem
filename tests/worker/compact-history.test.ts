@@ -28,6 +28,11 @@ import type { ActiveSession, ConversationMessage } from '../../src/services/work
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { SessionManager } from '../../src/services/worker/SessionManager.js';
 
+/** Type-safe accessor for private compactHistory method */
+interface AgentWithCompactHistory {
+  compactHistory(session: ActiveSession): void;
+}
+
 // Suppress logger output during tests
 let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
 
@@ -67,7 +72,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
   let agent: OpenAICompatAgent;
   let mockDbManager: DatabaseManager;
   let mockSessionManager: SessionManager;
-  let mockGetSummaryForSession: ReturnType<typeof mock>;
+  let mockGetSummaryForSession: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     loggerSpies = [
@@ -108,7 +113,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
     const originalHistory = [...session.conversationHistory];
 
     // Access private method
-    (agent as any).compactHistory(session);
+    (agent as unknown as AgentWithCompactHistory).compactHistory(session);
 
     expect(session.conversationHistory.length).toBe(14);
     expect(session.conversationHistory).toEqual(originalHistory);
@@ -119,7 +124,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
     const session = makeSession(4);
     const originalLength = session.conversationHistory.length;
 
-    (agent as any).compactHistory(session);
+    (agent as unknown as AgentWithCompactHistory).compactHistory(session);
 
     expect(session.conversationHistory.length).toBe(originalLength);
   });
@@ -127,7 +132,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
   it('should compact when history exceeds threshold', () => {
     const session = makeSession(20);
 
-    (agent as any).compactHistory(session);
+    (agent as unknown as AgentWithCompactHistory).compactHistory(session);
 
     // Should be: init(1) + summary(1) + recent(6) = 8
     expect(session.conversationHistory.length).toBe(8);
@@ -137,7 +142,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
     const session = makeSession(20);
     const initPrompt = session.conversationHistory[0];
 
-    (agent as any).compactHistory(session);
+    (agent as unknown as AgentWithCompactHistory).compactHistory(session);
 
     expect(session.conversationHistory[0]).toEqual(initPrompt);
     expect(session.conversationHistory[0].content).toContain('INIT_PROMPT');
@@ -146,7 +151,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
   it('should inject summary context as second message', () => {
     const session = makeSession(20);
 
-    (agent as any).compactHistory(session);
+    (agent as unknown as AgentWithCompactHistory).compactHistory(session);
 
     const summaryMsg = session.conversationHistory[1];
     expect(summaryMsg.role).toBe('user');
@@ -159,7 +164,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
     const session = makeSession(20);
     const last6 = session.conversationHistory.slice(-6);
 
-    (agent as any).compactHistory(session);
+    (agent as unknown as AgentWithCompactHistory).compactHistory(session);
 
     const recentAfterCompact = session.conversationHistory.slice(2); // Skip init + summary
     expect(recentAfterCompact).toEqual(last6);
@@ -169,7 +174,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
     const session = makeSession(20);
     session.memorySessionId = 'my-specific-session-id';
 
-    (agent as any).compactHistory(session);
+    (agent as unknown as AgentWithCompactHistory).compactHistory(session);
 
     expect(mockGetSummaryForSession).toHaveBeenCalledWith('my-specific-session-id');
   });
@@ -178,7 +183,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
     const session = makeSession(20);
     session.memorySessionId = null;
 
-    (agent as any).compactHistory(session);
+    (agent as unknown as AgentWithCompactHistory).compactHistory(session);
 
     // Should still compact, just with empty summary context
     expect(session.conversationHistory.length).toBe(8);
@@ -199,7 +204,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
 
     const session = makeSession(20);
 
-    (agent as any).compactHistory(session);
+    (agent as unknown as AgentWithCompactHistory).compactHistory(session);
 
     // Should still compact, using empty summary
     expect(session.conversationHistory.length).toBe(8);
@@ -217,7 +222,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
 
     const session = makeSession(16);
 
-    (agent as any).compactHistory(session);
+    (agent as unknown as AgentWithCompactHistory).compactHistory(session);
 
     expect(session.conversationHistory.length).toBe(8);
     expect(session.conversationHistory[1].content).toContain('No summary exists yet');
@@ -227,7 +232,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
     const session = makeSession(20);
 
     // First compaction
-    (agent as any).compactHistory(session);
+    (agent as unknown as AgentWithCompactHistory).compactHistory(session);
     expect(session.conversationHistory.length).toBe(8);
     expect(session.conversationHistory[1].content).toContain('Fix the auth bug');
 
@@ -252,12 +257,12 @@ describe('OpenAICompatAgent.compactHistory', () => {
       created_at: '2026-01-01',
       created_at_epoch: 2000,
     }));
-    (mockDbManager.getSessionStore as any) = () => ({
+    (mockDbManager as unknown as { getSessionStore: () => { getSummaryForSession: typeof mockGetSummaryForSession } }).getSessionStore = () => ({
       getSummaryForSession: mockGetSummaryForSession,
     });
 
     // Second compaction
-    (agent as any).compactHistory(session);
+    (agent as unknown as AgentWithCompactHistory).compactHistory(session);
     expect(session.conversationHistory.length).toBe(8);
 
     // The old summary context should be gone, replaced by updated one
@@ -268,13 +273,13 @@ describe('OpenAICompatAgent.compactHistory', () => {
   it('should log compaction details', () => {
     const session = makeSession(20);
 
-    (agent as any).compactHistory(session);
+    (agent as unknown as AgentWithCompactHistory).compactHistory(session);
 
     const infoCall = loggerSpies[0]; // logger.info
     expect(infoCall).toHaveBeenCalled();
     // Find the compaction log call
     const calls = infoCall.mock.calls;
-    const compactCall = calls.find((c: any[]) => c[1] === 'Compacted history');
+    const compactCall = calls.find((c: unknown[]) => c[1] === 'Compacted history');
     expect(compactCall).toBeTruthy();
     expect(compactCall![2]).toEqual({
       sessionId: 1,

@@ -108,7 +108,7 @@ export class PaginationHelper {
       FROM session_summaries ss
       JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
     `;
-    const params: any[] = [];
+    const params: (string | number)[] = [];
 
     if (project) {
       query += ' WHERE ss.project = ?';
@@ -140,7 +140,7 @@ export class PaginationHelper {
       FROM user_prompts up
       JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
     `;
-    const params: any[] = [];
+    const params: (string | number)[] = [];
 
     if (project) {
       query += ' WHERE s.project = ?';
@@ -174,7 +174,7 @@ export class PaginationHelper {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `SELECT ${columns} FROM ${table}`;
-    const params: any[] = [];
+    const params: (string | number)[] = [];
 
     if (project) {
       query += ' WHERE project = ?';

@@ -43,6 +43,9 @@ vi.mock('../../../src/services/domain/ModeManager.js', () => ({
 
 import { SearchOrchestrator } from '../../../src/services/worker/search/SearchOrchestrator.js';
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../../../src/services/worker/search/types.js';
+import type { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
+import type { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import type { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
 
 // Mock data
 const mockObservation: ObservationSearchResult = {
@@ -93,9 +96,9 @@ const mockPrompt: UserPromptSearchResult = {
 
 describe('SearchOrchestrator', () => {
   let orchestrator: SearchOrchestrator;
-  let mockSessionSearch: any;
-  let mockSessionStore: any;
-  let mockChromaSync: any;
+  let mockSessionSearch: SessionSearch;
+  let mockSessionStore: SessionStore;
+  let mockChromaSync: ChromaSync;
 
   beforeEach(() => {
     mockSessionSearch = {
@@ -105,13 +108,13 @@ describe('SearchOrchestrator', () => {
       findByConcept: vi.fn(() => [mockObservation]),
       findByType: vi.fn(() => [mockObservation]),
       findByFile: vi.fn(() => ({ observations: [mockObservation], sessions: [mockSession] }))
-    };
+    } as unknown as SessionSearch;
 
     mockSessionStore = {
       getObservationsByIds: vi.fn(() => [mockObservation]),
       getSessionSummariesByIds: vi.fn(() => [mockSession]),
       getUserPromptsByIds: vi.fn(() => [mockPrompt])
-    };
+    } as unknown as SessionStore;
 
     mockChromaSync = {
       queryChroma: vi.fn(() => Promise.resolve({
@@ -119,7 +122,7 @@ describe('SearchOrchestrator', () => {
         distances: [0.1],
         metadatas: [{ sqlite_id: 1, doc_type: 'observation', created_at_epoch: Date.now() - 1000 }]
       }))
-    };
+    } as unknown as ChromaSync;
   });
 
   describe('with Chroma available', () => {

@@ -55,7 +55,7 @@ export class SettingsRoutes extends BaseRouteHandler {
    */
   private handleUpdateSettings = this.wrapHandler((req: Request, res: Response): void => {
     // Validate all settings
-    const validation = this.validateSettings(req.body);
+    const validation = this.validateSettings(req.body as Record<string, unknown>);
     if (!validation.valid) {
       res.status(400).json({
         success: false,
@@ -67,12 +67,12 @@ export class SettingsRoutes extends BaseRouteHandler {
     // Read existing settings
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
     this.ensureSettingsFile(settingsPath);
-    let settings: any = {};
+    let settings: Record<string, unknown> = {};
 
     if (existsSync(settingsPath)) {
       const settingsData = readFileSync(settingsPath, 'utf-8');
       try {
-        settings = JSON.parse(settingsData);
+        settings = JSON.parse(settingsData) as Record<string, unknown>;
       } catch (parseError) {
         logger.error('SETTINGS', 'Failed to parse settings file', { settingsPath }, parseError as Error);
         res.status(500).json({
@@ -123,9 +123,10 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
     ];
 
+    const body = req.body as Record<string, unknown>;
     for (const key of settingKeys) {
-      if (req.body[key] !== undefined) {
-        settings[key] = req.body[key];
+      if (body[key] !== undefined) {
+        settings[key] = body[key];
       }
     }
 
@@ -230,11 +231,14 @@ export class SettingsRoutes extends BaseRouteHandler {
   /**
    * Validate all settings from request body (single source of truth)
    */
-  private validateSettings(settings: any): { valid: boolean; error?: string } {
+  private validateSettings(settings: Record<string, unknown>): { valid: boolean; error?: string } {
+    // Helper to safely get string values from settings
+    const str = (key: string): string => String(settings[key] ?? '');
+
     // Validate CLAUDE_MEM_PROVIDER
     if (settings.CLAUDE_MEM_PROVIDER) {
     const validProviders = ['claude', 'gemini', 'openai-compat'];
-    if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
+    if (!validProviders.includes(str('CLAUDE_MEM_PROVIDER'))) {
       return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openai-compat"' };
       }
     }
@@ -242,14 +246,14 @@ export class SettingsRoutes extends BaseRouteHandler {
     // Validate CLAUDE_MEM_GEMINI_MODEL
     if (settings.CLAUDE_MEM_GEMINI_MODEL) {
       const validGeminiModels = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3-flash'];
-      if (!validGeminiModels.includes(settings.CLAUDE_MEM_GEMINI_MODEL)) {
+      if (!validGeminiModels.includes(str('CLAUDE_MEM_GEMINI_MODEL'))) {
         return { valid: false, error: 'CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-3-flash' };
       }
     }
 
     // Validate CLAUDE_MEM_CONTEXT_OBSERVATIONS
     if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
-      const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
+      const obsCount = parseInt(str('CLAUDE_MEM_CONTEXT_OBSERVATIONS'), 10);
       if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
       }
@@ -257,7 +261,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Validate CLAUDE_MEM_WORKER_PORT
     if (settings.CLAUDE_MEM_WORKER_PORT) {
-      const port = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+      const port = parseInt(str('CLAUDE_MEM_WORKER_PORT'), 10);
       if (isNaN(port) || port < 1024 || port > 65535) {
         return { valid: false, error: 'CLAUDE_MEM_WORKER_PORT must be between 1024 and 65535' };
       }
@@ -265,7 +269,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Validate CLAUDE_MEM_WORKER_HOST (IP address or 0.0.0.0)
     if (settings.CLAUDE_MEM_WORKER_HOST) {
-      const host = settings.CLAUDE_MEM_WORKER_HOST;
+      const host = str('CLAUDE_MEM_WORKER_HOST');
       // Allow localhost variants and valid IP patterns
       const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
       if (!validHostPattern.test(host)) {
@@ -276,7 +280,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     // Validate CLAUDE_MEM_LOG_LEVEL
     if (settings.CLAUDE_MEM_LOG_LEVEL) {
       const validLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'SILENT'];
-      if (!validLevels.includes(settings.CLAUDE_MEM_LOG_LEVEL.toUpperCase())) {
+      if (!validLevels.includes(str('CLAUDE_MEM_LOG_LEVEL').toUpperCase())) {
         return { valid: false, error: 'CLAUDE_MEM_LOG_LEVEL must be one of: DEBUG, INFO, WARN, ERROR, SILENT' };
       }
     }
@@ -284,7 +288,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     // Validate CLAUDE_MEM_PYTHON_VERSION (must be valid Python version format)
     if (settings.CLAUDE_MEM_PYTHON_VERSION) {
       const pythonVersionRegex = /^3\.\d{1,2}$/;
-      if (!pythonVersionRegex.test(settings.CLAUDE_MEM_PYTHON_VERSION)) {
+      if (!pythonVersionRegex.test(str('CLAUDE_MEM_PYTHON_VERSION'))) {
         return { valid: false, error: 'CLAUDE_MEM_PYTHON_VERSION must be in format "3.X" or "3.XX" (e.g., "3.13")' };
       }
     }
@@ -300,14 +304,14 @@ export class SettingsRoutes extends BaseRouteHandler {
     ];
 
     for (const key of booleanSettings) {
-      if (settings[key] && !['true', 'false'].includes(settings[key])) {
+      if (settings[key] && !['true', 'false'].includes(str(key))) {
         return { valid: false, error: `${key} must be "true" or "false"` };
       }
     }
 
     // Validate FULL_COUNT (0-20)
     if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT) {
-      const count = parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10);
+      const count = parseInt(str('CLAUDE_MEM_CONTEXT_FULL_COUNT'), 10);
       if (isNaN(count) || count < 0 || count > 20) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_COUNT must be between 0 and 20' };
       }
@@ -315,7 +319,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Validate SESSION_COUNT (1-50)
     if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT) {
-      const count = parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10);
+      const count = parseInt(str('CLAUDE_MEM_CONTEXT_SESSION_COUNT'), 10);
       if (isNaN(count) || count < 1 || count > 50) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 1 and 50' };
       }
@@ -323,14 +327,14 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Validate FULL_FIELD
     if (settings.CLAUDE_MEM_CONTEXT_FULL_FIELD) {
-      if (!['narrative', 'facts'].includes(settings.CLAUDE_MEM_CONTEXT_FULL_FIELD)) {
+      if (!['narrative', 'facts'].includes(str('CLAUDE_MEM_CONTEXT_FULL_FIELD'))) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_FIELD must be "narrative" or "facts"' };
       }
     }
 
     // Validate CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES
     if (settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES) {
-      const count = parseInt(settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES, 10);
+      const count = parseInt(str('CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES'), 10);
       if (isNaN(count) || count < 1 || count > 100) {
         return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES must be between 1 and 100' };
       }
@@ -338,7 +342,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Validate CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS
     if (settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS) {
-      const tokens = parseInt(settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS, 10);
+      const tokens = parseInt(str('CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS'), 10);
       if (isNaN(tokens) || tokens < 1000 || tokens > 1000000) {
         return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS must be between 1000 and 1000000' };
       }
@@ -347,10 +351,10 @@ export class SettingsRoutes extends BaseRouteHandler {
     // Validate CLAUDE_MEM_OPENAI_COMPAT_SITE_URL if provided
     if (settings.CLAUDE_MEM_OPENAI_COMPAT_SITE_URL) {
       try {
-        new URL(settings.CLAUDE_MEM_OPENAI_COMPAT_SITE_URL);
+        new URL(str('CLAUDE_MEM_OPENAI_COMPAT_SITE_URL'));
       } catch (error) {
         // Invalid URL format
-        logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENAI_COMPAT_SITE_URL, error: error instanceof Error ? error.message : String(error) });
+        logger.debug('SETTINGS', 'Invalid URL format', { url: str('CLAUDE_MEM_OPENAI_COMPAT_SITE_URL'), error: error instanceof Error ? error.message : String(error) });
         return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_SITE_URL must be a valid URL' };
       }
     }

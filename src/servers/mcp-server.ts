@@ -16,7 +16,7 @@ import { logger } from '../utils/logger.js';
 // CRITICAL: Redirect console to stderr BEFORE other imports
 // MCP uses stdio transport where stdout is reserved for JSON-RPC protocol messages.
 // Any logs to stdout break the protocol (Claude Desktop parses "[2025..." as JSON array).
-console['log'] = (...args: any[]) => {
+console['log'] = (...args: unknown[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
 };
 
@@ -48,7 +48,7 @@ const TOOL_ENDPOINT_MAP: Record<string, string> = {
  */
 async function callWorkerAPI(
   endpoint: string,
-  params: Record<string, any>
+  params: Record<string, unknown>
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint, params });
 
@@ -93,7 +93,7 @@ async function callWorkerAPI(
  */
 async function callWorkerAPIPost(
   endpoint: string,
-  body: Record<string, any>
+  body: Record<string, unknown>
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('HTTP', 'Worker API request (POST)', undefined, { endpoint });
 
@@ -196,7 +196,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       properties: {},
       additionalProperties: true
     },
-    handler: async (args: any) => {
+    handler: async (args: Record<string, unknown>) => {
       const endpoint = TOOL_ENDPOINT_MAP['search'];
       return await callWorkerAPI(endpoint, args);
     }
@@ -209,7 +209,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       properties: {},
       additionalProperties: true
     },
-    handler: async (args: any) => {
+    handler: async (args: Record<string, unknown>) => {
       const endpoint = TOOL_ENDPOINT_MAP['timeline'];
       return await callWorkerAPI(endpoint, args);
     }
@@ -229,7 +229,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['ids'],
       additionalProperties: true
     },
-    handler: async (args: any) => {
+    handler: async (args: Record<string, unknown>) => {
       return await callWorkerAPIPost('/api/observations/batch', args);
     }
   }

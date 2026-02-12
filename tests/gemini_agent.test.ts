@@ -4,6 +4,8 @@ import { DatabaseManager } from '../src/services/worker/DatabaseManager';
 import { SessionManager } from '../src/services/worker/SessionManager';
 import { ModeManager } from '../src/services/domain/ModeManager';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager';
+import type { ActiveSession } from '../src/services/worker-types';
+import type { FallbackAgent } from '../src/services/worker/agents/types';
 
 // Track rate limiting setting (controls Gemini RPM throttling)
 // Set to 'false' to disable rate limiting for faster tests
@@ -32,15 +34,15 @@ describe('GeminiAgent', () => {
   let originalFetch: typeof global.fetch;
 
   // Mocks
-  let mockStoreObservation: any;
-  let mockStoreObservations: any; // Plural - atomic transaction method used by ResponseProcessor
-  let mockStoreSummary: any;
-  let mockMarkSessionCompleted: any;
-  let mockSyncObservation: any;
-  let mockSyncSummary: any;
-  let mockMarkProcessed: any;
-  let mockCleanupProcessed: any;
-  let mockResetStuckMessages: any;
+  let mockStoreObservation: ReturnType<typeof vi.fn>;
+  let mockStoreObservations: ReturnType<typeof vi.fn>; // Plural - atomic transaction method used by ResponseProcessor
+  let mockStoreSummary: ReturnType<typeof vi.fn>;
+  let mockMarkSessionCompleted: ReturnType<typeof vi.fn>;
+  let mockSyncObservation: ReturnType<typeof vi.fn>;
+  let mockSyncSummary: ReturnType<typeof vi.fn>;
+  let mockMarkProcessed: ReturnType<typeof vi.fn>;
+  let mockCleanupProcessed: ReturnType<typeof vi.fn>;
+  let mockResetStuckMessages: ReturnType<typeof vi.fn>;
   let mockDbManager: DatabaseManager;
   let mockSessionManager: SessionManager;
 
@@ -52,7 +54,7 @@ describe('GeminiAgent', () => {
     modeManagerSpy = vi.spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
       getActiveMode: () => mockMode,
       loadMode: () => {},
-    } as any));
+    } as unknown as ModeManager));
 
     // Mock SettingsDefaultsManager methods using spyOn (restores properly)
     loadFromFileSpy = vi.spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
@@ -147,7 +149,7 @@ describe('GeminiAgent', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now()
-    } as any;
+    } as ActiveSession;
 
     global.fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       candidates: [{
@@ -161,7 +163,7 @@ describe('GeminiAgent', () => {
     await agent.startSession(session);
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
-    const url = (global.fetch as any).mock.calls[0][0];
+    const url = vi.mocked(global.fetch).mock.calls[0][0];
     expect(url).toContain('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent');
     expect(url).toContain('key=test-api-key');
   });
@@ -183,7 +185,7 @@ describe('GeminiAgent', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now()
-    } as any;
+    } as ActiveSession;
 
     global.fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       candidates: [{ content: { parts: [{ text: 'response' }] } }]
@@ -191,7 +193,7 @@ describe('GeminiAgent', () => {
 
     await agent.startSession(session);
 
-    const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
+    const body = JSON.parse((vi.mocked(global.fetch).mock.calls[0][1] as RequestInit).body as string);
     expect(body.contents).toHaveLength(3);
     expect(body.contents[0].role).toBe('user');
     expect(body.contents[1].role).toBe('model');
@@ -215,7 +217,7 @@ describe('GeminiAgent', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now()
-    } as any;
+    } as ActiveSession;
 
     const observationXml = `
       <observation>
@@ -260,11 +262,11 @@ describe('GeminiAgent', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now()
-    } as any;
+    } as ActiveSession;
 
     global.fetch = vi.fn(() => Promise.resolve(new Response('Resource has been exhausted (e.g. check quota).', { status: 429 })));
 
-    const fallbackAgent = {
+    const fallbackAgent: FallbackAgent = {
       startSession: vi.fn(() => Promise.resolve())
     };
     agent.setFallbackAgent(fallbackAgent);
@@ -293,11 +295,11 @@ describe('GeminiAgent', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now()
-    } as any;
+    } as ActiveSession;
 
     global.fetch = vi.fn(() => Promise.resolve(new Response('Invalid argument', { status: 400 })));
 
-    const fallbackAgent = {
+    const fallbackAgent: FallbackAgent = {
       startSession: vi.fn(() => Promise.resolve())
     };
     agent.setFallbackAgent(fallbackAgent);
@@ -312,8 +314,8 @@ describe('GeminiAgent', () => {
     rateLimitingEnabled = 'true';
 
     const originalSetTimeout = global.setTimeout;
-    const mockSetTimeout = vi.fn((cb: any) => cb());
-    global.setTimeout = mockSetTimeout as any;
+    const mockSetTimeout = vi.fn((cb: () => void) => cb());
+    global.setTimeout = mockSetTimeout as unknown as typeof global.setTimeout;
 
     try {
       const session = {
@@ -332,7 +334,7 @@ describe('GeminiAgent', () => {
         earliestPendingTimestamp: null,
         currentProvider: null,
         startTime: Date.now()
-      } as any;
+      } as ActiveSession;
 
       global.fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
         candidates: [{ content: { parts: [{ text: 'ok' }] } }]
@@ -384,7 +386,7 @@ describe('GeminiAgent', () => {
         earliestPendingTimestamp: null,
         currentProvider: null,
         startTime: Date.now()
-      } as any;
+      } as ActiveSession;
 
       global.fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
         candidates: [{ content: { parts: [{ text: 'ok' }] } }],

@@ -25,7 +25,8 @@ import type {
   StrategySearchOptions,
   StrategySearchResult,
   SearchResults,
-  ObservationSearchResult
+  ObservationSearchResult,
+  SessionSummarySearchResult
 } from './types.js';
 import { logger } from '../../../utils/logger.js';
 
@@ -65,7 +66,7 @@ export class SearchOrchestrator {
   /**
    * Main search entry point
    */
-  async search(args: any): Promise<StrategySearchResult> {
+  async search(args: Record<string, unknown>): Promise<StrategySearchResult> {
     const options = this.normalizeParams(args);
 
     // Decision tree for strategy selection
@@ -120,7 +121,7 @@ export class SearchOrchestrator {
   /**
    * Find by concept with hybrid search
    */
-  async findByConcept(concept: string, args: any): Promise<StrategySearchResult> {
+  async findByConcept(concept: string, args: Record<string, unknown>): Promise<StrategySearchResult> {
     const options = this.normalizeParams(args);
 
     if (this.hybridStrategy) {
@@ -140,7 +141,7 @@ export class SearchOrchestrator {
   /**
    * Find by type with hybrid search
    */
-  async findByType(type: string | string[], args: any): Promise<StrategySearchResult> {
+  async findByType(type: string | string[], args: Record<string, unknown>): Promise<StrategySearchResult> {
     const options = this.normalizeParams(args);
 
     if (this.hybridStrategy) {
@@ -160,9 +161,9 @@ export class SearchOrchestrator {
   /**
    * Find by file with hybrid search
    */
-  async findByFile(filePath: string, args: any): Promise<{
+  async findByFile(filePath: string, args: Record<string, unknown>): Promise<{
     observations: ObservationSearchResult[];
-    sessions: any[];
+    sessions: SessionSummarySearchResult[];
     usedChroma: boolean;
   }> {
     const options = this.normalizeParams(args);
@@ -233,8 +234,8 @@ export class SearchOrchestrator {
   /**
    * Normalize query parameters from URL-friendly format
    */
-  private normalizeParams(args: any): NormalizedParams {
-    const normalized: any = { ...args };
+  private normalizeParams(args: Record<string, unknown>): NormalizedParams {
+    const normalized: Record<string, unknown> = { ...args };
 
     // Parse comma-separated concepts into array
     if (normalized.concepts && typeof normalized.concepts === 'string') {
@@ -259,7 +260,7 @@ export class SearchOrchestrator {
 
     // Map 'type' param to 'searchType' for API consistency
     if (normalized.type && !normalized.searchType) {
-      if (['observations', 'sessions', 'prompts'].includes(normalized.type)) {
+      if (typeof normalized.type === 'string' && ['observations', 'sessions', 'prompts'].includes(normalized.type)) {
         normalized.searchType = normalized.type;
         delete normalized.type;
       }
@@ -268,14 +269,14 @@ export class SearchOrchestrator {
     // Flatten dateStart/dateEnd into dateRange object
     if (normalized.dateStart || normalized.dateEnd) {
       normalized.dateRange = {
-        start: normalized.dateStart,
-        end: normalized.dateEnd
+        start: normalized.dateStart as string | number | undefined,
+        end: normalized.dateEnd as string | number | undefined
       };
       delete normalized.dateStart;
       delete normalized.dateEnd;
     }
 
-    return normalized;
+    return normalized as NormalizedParams;
   }
 
   /**

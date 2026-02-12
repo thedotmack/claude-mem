@@ -18,7 +18,7 @@ import { logger } from '../../../utils/logger.js';
  * @returns Array of middleware functions
  */
 export function createMiddleware(
-  summarizeRequestBody: (method: string, path: string, body: any) => string
+  summarizeRequestBody: (method: string, path: string, body: Record<string, unknown>) => string
 ): RequestHandler[] {
   const middlewares: RequestHandler[] = [];
 
@@ -42,12 +42,12 @@ export function createMiddleware(
     const requestId = `${req.method}-${Date.now()}`;
 
     // Log incoming request with body summary
-    const bodySummary = summarizeRequestBody(req.method, req.path, req.body);
+    const bodySummary = summarizeRequestBody(req.method, req.path, req.body as Record<string, unknown>);
     logger.info('HTTP', `→ ${req.method} ${req.path}`, { requestId }, bodySummary);
 
     // Capture response
     const originalSend = res.send.bind(res);
-    res.send = function(body: any) {
+    res.send = function(body: unknown) {
       const duration = Date.now() - start;
       logger.info('HTTP', `← ${res.statusCode} ${req.path}`, { requestId, duration: `${duration}ms` });
       return originalSend(body);
@@ -96,7 +96,7 @@ export function requireLocalhost(req: Request, res: Response, next: NextFunction
  * Summarize request body for logging
  * Used to avoid logging sensitive data or large payloads
  */
-export function summarizeRequestBody(method: string, path: string, body: any): string {
+export function summarizeRequestBody(method: string, path: string, body: Record<string, unknown>): string {
   if (!body || Object.keys(body).length === 0) return '';
 
   // Session init
@@ -106,7 +106,7 @@ export function summarizeRequestBody(method: string, path: string, body: any): s
 
   // Observations
   if (path.includes('/observations')) {
-    const toolName = body.tool_name || '?';
+    const toolName = typeof body.tool_name === 'string' ? body.tool_name : '?';
     const toolInput = body.tool_input;
     const toolSummary = logger.formatTool(toolName, toolInput);
     return `tool=${toolSummary}`;

@@ -110,7 +110,7 @@ export function getTimelineAroundObservation(
 
       startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
       endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
-    } catch (err: any) {
+    } catch (err: unknown) {
       logger.error('DB', 'Error getting boundary observations', undefined, { error: err, project });
       return { observations: [], sessions: [], prompts: [] };
     }
@@ -142,7 +142,7 @@ export function getTimelineAroundObservation(
 
       startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
       endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
-    } catch (err: any) {
+    } catch (err: unknown) {
       logger.error('DB', 'Error getting boundary timestamps', undefined, { error: err, project });
       return { observations: [], sessions: [], prompts: [] };
     }

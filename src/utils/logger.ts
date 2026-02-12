@@ -22,7 +22,7 @@ interface LogContext {
   sessionId?: number;
   memorySessionId?: string;
   correlationId?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // NOTE: This default must match DEFAULT_DATA_DIR in src/shared/SettingsDefaultsManager.ts
@@ -110,7 +110,7 @@ export class Logger {
   /**
    * Format data for logging - create compact summaries instead of full dumps
    */
-  private formatData(data: any): string {
+  private formatData(data: unknown): string {
     if (data === null || data === undefined) return '';
     if (typeof data === 'string') return data;
     if (typeof data === 'number') return data.toString();
@@ -131,7 +131,7 @@ export class Logger {
       }
 
       // For objects, show key count
-      const keys = Object.keys(data);
+      const keys = Object.keys(data as Record<string, unknown>);
       if (keys.length === 0) return '{}';
       if (keys.length <= 3) {
         // Show small objects inline
@@ -146,10 +146,10 @@ export class Logger {
   /**
    * Format a tool name and input for compact display
    */
-  formatTool(toolName: string, toolInput?: any): string {
+  formatTool(toolName: string, toolInput?: unknown): string {
     if (!toolInput) return toolName;
 
-    let input = toolInput;
+    let input: unknown = toolInput;
     if (typeof toolInput === 'string') {
       try {
         input = JSON.parse(toolInput);
@@ -159,42 +159,46 @@ export class Logger {
       }
     }
 
+    // Type guard for object property access
+    const isObj = (v: unknown): v is Record<string, unknown> =>
+      typeof v === 'object' && v !== null;
+
     // Bash: show full command
-    if (toolName === 'Bash' && input.command) {
+    if (toolName === 'Bash' && isObj(input) && input.command) {
       return `${toolName}(${input.command})`;
     }
 
     // File operations: show full path
-    if (input.file_path) {
+    if (isObj(input) && input.file_path) {
       return `${toolName}(${input.file_path})`;
     }
 
     // NotebookEdit: show full notebook path
-    if (input.notebook_path) {
+    if (isObj(input) && input.notebook_path) {
       return `${toolName}(${input.notebook_path})`;
     }
 
     // Glob: show full pattern
-    if (toolName === 'Glob' && input.pattern) {
+    if (toolName === 'Glob' && isObj(input) && input.pattern) {
       return `${toolName}(${input.pattern})`;
     }
 
     // Grep: show full pattern
-    if (toolName === 'Grep' && input.pattern) {
+    if (toolName === 'Grep' && isObj(input) && input.pattern) {
       return `${toolName}(${input.pattern})`;
     }
 
     // WebFetch/WebSearch: show full URL or query
-    if (input.url) {
+    if (isObj(input) && input.url) {
       return `${toolName}(${input.url})`;
     }
 
-    if (input.query) {
+    if (isObj(input) && input.query) {
       return `${toolName}(${input.query})`;
     }
 
     // Task: show subagent_type or full description
-    if (toolName === 'Task') {
+    if (toolName === 'Task' && isObj(input)) {
       if (input.subagent_type) {
         return `${toolName}(${input.subagent_type})`;
       }
@@ -204,12 +208,12 @@ export class Logger {
     }
 
     // Skill: show skill name
-    if (toolName === 'Skill' && input.skill) {
+    if (toolName === 'Skill' && isObj(input) && input.skill) {
       return `${toolName}(${input.skill})`;
     }
 
     // LSP: show operation type
-    if (toolName === 'LSP' && input.operation) {
+    if (toolName === 'LSP' && isObj(input) && input.operation) {
       return `${toolName}(${input.operation})`;
     }
 
@@ -239,7 +243,7 @@ export class Logger {
     component: Component,
     message: string,
     context?: LogContext,
-    data?: any
+    data?: unknown
   ): void {
     if (level < this.getLevel()) return;
 
@@ -293,7 +297,7 @@ export class Logger {
       } catch (error) {
         // Logger can't log its own failures - use stderr as last resort
         // This is expected during disk full / permission errors
-        process.stderr.write(`[LOGGER] Failed to write to log file: ${error}\n`);
+        process.stderr.write(`[LOGGER] Failed to write to log file: ${String(error)}\n`);
       }
     } else {
       // If no log file available, write to stderr as fallback
@@ -302,47 +306,47 @@ export class Logger {
   }
 
   // Public logging methods
-  debug(component: Component, message: string, context?: LogContext, data?: any): void {
+  debug(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.log(LogLevel.DEBUG, component, message, context, data);
   }
 
-  info(component: Component, message: string, context?: LogContext, data?: any): void {
+  info(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.log(LogLevel.INFO, component, message, context, data);
   }
 
-  warn(component: Component, message: string, context?: LogContext, data?: any): void {
+  warn(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.log(LogLevel.WARN, component, message, context, data);
   }
 
-  error(component: Component, message: string, context?: LogContext, data?: any): void {
+  error(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.log(LogLevel.ERROR, component, message, context, data);
   }
 
   /**
    * Log data flow: input → processing
    */
-  dataIn(component: Component, message: string, context?: LogContext, data?: any): void {
+  dataIn(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.info(component, `→ ${message}`, context, data);
   }
 
   /**
    * Log data flow: processing → output
    */
-  dataOut(component: Component, message: string, context?: LogContext, data?: any): void {
+  dataOut(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.info(component, `← ${message}`, context, data);
   }
 
   /**
    * Log successful completion
    */
-  success(component: Component, message: string, context?: LogContext, data?: any): void {
+  success(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.info(component, `✓ ${message}`, context, data);
   }
 
   /**
    * Log failure
    */
-  failure(component: Component, message: string, context?: LogContext, data?: any): void {
+  failure(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.error(component, `✗ ${message}`, context, data);
   }
 
@@ -379,7 +383,7 @@ export class Logger {
     component: Component,
     message: string,
     context?: LogContext,
-    data?: any,
+    data?: unknown,
     fallback: T = '' as T
   ): T {
     // Capture stack trace to get caller location

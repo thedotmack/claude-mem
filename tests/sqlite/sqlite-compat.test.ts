@@ -36,9 +36,9 @@ describe('sqlite-compat', () => {
   describe('db.run() - multi-statement exec', () => {
     it('executes single DDL statements', () => {
       db.run('CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)');
-      const result = db.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'test') as any;
+      const result = db.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'test') as Record<string, unknown> | undefined;
       expect(result).toBeDefined();
-      expect(result.name).toBe('test');
+      expect(result!.name).toBe('test');
     });
 
     it('executes multi-statement SQL', () => {
@@ -46,7 +46,7 @@ describe('sqlite-compat', () => {
         CREATE TABLE test1 (id INTEGER PRIMARY KEY);
         CREATE TABLE test2 (id INTEGER PRIMARY KEY);
       `);
-      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as any[];
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Record<string, unknown>[];
       const tableNames = tables.map(t => t.name);
       expect(tableNames).toContain('test1');
       expect(tableNames).toContain('test2');
@@ -55,14 +55,14 @@ describe('sqlite-compat', () => {
     it('executes PRAGMA statements', () => {
       db.run('PRAGMA journal_mode = WAL');
       db.run('PRAGMA foreign_keys = ON');
-      const fk = db.prepare('PRAGMA foreign_keys').get() as any;
+      const fk = db.prepare('PRAGMA foreign_keys').get() as Record<string, unknown>;
       expect(fk.foreign_keys).toBe(1);
     });
 
     it('executes ALTER TABLE statements', () => {
       db.run('CREATE TABLE test (id INTEGER PRIMARY KEY)');
       db.run('ALTER TABLE test ADD COLUMN name TEXT');
-      const cols = db.query('PRAGMA table_info(test)').all() as any[];
+      const cols = db.query('PRAGMA table_info(test)').all() as Record<string, unknown>[];
       const colNames = cols.map(c => c.name);
       expect(colNames).toContain('name');
     });
@@ -74,7 +74,7 @@ describe('sqlite-compat', () => {
       db.prepare('INSERT INTO test (name) VALUES (?)').run('alice');
       db.prepare('INSERT INTO test (name) VALUES (?)').run('bob');
 
-      const rows = db.query('SELECT * FROM test ORDER BY id').all() as any[];
+      const rows = db.query('SELECT * FROM test ORDER BY id').all() as Record<string, unknown>[];
       expect(rows).toHaveLength(2);
       expect(rows[0].name).toBe('alice');
       expect(rows[1].name).toBe('bob');
@@ -84,7 +84,7 @@ describe('sqlite-compat', () => {
       db.run('CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)');
       db.prepare('INSERT INTO test (name) VALUES (?)').run('alice');
 
-      const row = db.query('SELECT * FROM test WHERE name = ?').get('alice') as any;
+      const row = db.query('SELECT * FROM test WHERE name = ?').get('alice') as Record<string, unknown> | undefined;
       expect(row).toBeDefined();
       expect(row.name).toBe('alice');
     });
@@ -151,7 +151,7 @@ describe('sqlite-compat', () => {
 
       insertMany(['a', 'b', 'c']);
 
-      const rows = db.prepare('SELECT * FROM items').all() as any[];
+      const rows = db.prepare('SELECT * FROM items').all() as Record<string, unknown>[];
       expect(rows).toHaveLength(3);
     });
 
@@ -164,14 +164,14 @@ describe('sqlite-compat', () => {
 
       expect(() => { insertBad(); }).toThrow();
 
-      const rows = db.prepare('SELECT * FROM items').all() as any[];
+      const rows = db.prepare('SELECT * FROM items').all() as Record<string, unknown>[];
       expect(rows).toHaveLength(0);
     });
 
     it('supports transaction functions with arguments', () => {
       const claimAndDelete = db.transaction((sessionId: number) => {
         db.prepare('INSERT INTO items (name) VALUES (?)').run(`session-${sessionId}`);
-        const item = db.prepare('SELECT * FROM items WHERE name = ?').get(`session-${sessionId}`) as any;
+        const item = db.prepare('SELECT * FROM items WHERE name = ?').get(`session-${sessionId}`) as Record<string, unknown>;
         return item;
       });
 
@@ -183,15 +183,15 @@ describe('sqlite-compat', () => {
   describe('PRAGMA introspection (used by migration runner)', () => {
     it('table_info returns column metadata', () => {
       db.run('CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT NOT NULL, value REAL)');
-      const cols = db.query('PRAGMA table_info(test)').all() as any[];
+      const cols = db.query('PRAGMA table_info(test)').all() as Record<string, unknown>[];
       expect(cols).toHaveLength(3);
-      expect(cols.find((c: any) => c.name === 'name').notnull).toBe(1);
-      expect(cols.find((c: any) => c.name === 'value').notnull).toBe(0);
+      expect(cols.find((c) => c.name === 'name')!.notnull).toBe(1);
+      expect(cols.find((c) => c.name === 'value')!.notnull).toBe(0);
     });
 
     it('index_list returns index metadata', () => {
       db.run('CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT UNIQUE)');
-      const indexes = db.query('PRAGMA index_list(test)').all() as any[];
+      const indexes = db.query('PRAGMA index_list(test)').all() as Record<string, unknown>[];
       expect(indexes.length).toBeGreaterThanOrEqual(1);
     });
   });
@@ -206,7 +206,7 @@ describe('sqlite-compat', () => {
       db.prepare('INSERT INTO docs (content) VALUES (?)').run('hello world');
       db.prepare('INSERT INTO docs_fts (rowid, content) VALUES (?, ?)').run(1, 'hello world');
 
-      const results = db.prepare("SELECT * FROM docs_fts WHERE docs_fts MATCH 'hello'").all() as any[];
+      const results = db.prepare("SELECT * FROM docs_fts WHERE docs_fts MATCH 'hello'").all() as Record<string, unknown>[];
       expect(results).toHaveLength(1);
     });
   });

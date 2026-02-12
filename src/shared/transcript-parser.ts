@@ -36,8 +36,8 @@ export function extractLastMessage(
           text = msgContent;
         } else if (Array.isArray(msgContent)) {
           text = msgContent
-            .filter((c: any) => c.type === 'text')
-            .map((c: any) => c.text)
+            .filter((c: unknown) => typeof c === 'object' && c !== null && 'type' in c && c.type === 'text')
+            .map((c: unknown) => (c as { text: string }).text)
             .join('\n');
         } else {
           // Unknown content format - throw error

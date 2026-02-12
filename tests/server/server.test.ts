@@ -4,7 +4,7 @@ import { logger } from '../../src/utils/logger.js';
 // Mock middleware to avoid complex dependencies
 vi.mock('../../src/services/worker/http/middleware.js', () => ({
   createMiddleware: () => [],
-  requireLocalhost: (_req: any, _res: any, next: any) => next(),
+  requireLocalhost: (_req: unknown, _res: unknown, next: () => void) => next(),
   summarizeRequestBody: () => 'test body',
 }));
 
@@ -120,9 +120,9 @@ describe('Server', () => {
       // because closeAllConnections() might immediately close the server
       try {
         await server.close();
-      } catch (e: any) {
+      } catch (e: unknown) {
         // ERR_SERVER_NOT_RUNNING is acceptable - closeAllConnections() already closed it
-        if (e.code !== 'ERR_SERVER_NOT_RUNNING') {
+        if ((e as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
           throw e;
         }
       }
@@ -150,9 +150,9 @@ describe('Server', () => {
       // Close the server
       try {
         await server.close();
-      } catch (e: any) {
+      } catch (e: unknown) {
         // ERR_SERVER_NOT_RUNNING is acceptable
-        if (e.code !== 'ERR_SERVER_NOT_RUNNING') {
+        if ((e as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
           throw e;
         }
       }

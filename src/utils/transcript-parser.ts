@@ -177,8 +177,8 @@ export class TranscriptParser {
   /**
    * Get all tool use operations from assistant entries
    */
-  getToolUseHistory(): Array<{ name: string; timestamp: string; input: any }> {
-    const toolUses: Array<{ name: string; timestamp: string; input: any }> = [];
+  getToolUseHistory(): Array<{ name: string; timestamp: string; input: Record<string, unknown> }> {
+    const toolUses: Array<{ name: string; timestamp: string; input: Record<string, unknown> }> = [];
 
     for (const entry of this.getAssistantEntries()) {
       if (Array.isArray(entry.message.content)) {

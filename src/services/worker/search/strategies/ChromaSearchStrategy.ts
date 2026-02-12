@@ -93,7 +93,10 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       }
 
       // Step 2: Filter by recency (90 days)
-      const recentItems = this.filterByRecency(chromaResults);
+      const recentItems = this.filterByRecency({
+        ids: chromaResults.ids,
+        metadatas: chromaResults.metadatas as unknown as ChromaMetadata[]
+      });
       logger.debug('SEARCH', 'ChromaSearchStrategy: Filtered by recency', {
         count: recentItems.length
       });
@@ -157,7 +160,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
   /**
    * Build Chroma where filter for document type
    */
-  private buildWhereFilter(searchType: string): Record<string, any> | undefined {
+  private buildWhereFilter(searchType: string): Record<string, unknown> | undefined {
     switch (searchType) {
       case 'observations':
         return { doc_type: 'observation' };

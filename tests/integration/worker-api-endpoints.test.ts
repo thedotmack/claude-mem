@@ -16,7 +16,7 @@ import { logger } from '../../src/utils/logger.js';
 // Mock middleware to avoid complex dependencies
 vi.mock('../../src/services/worker/http/middleware.js', () => ({
   createMiddleware: () => [],
-  requireLocalhost: (_req: any, _res: any, next: any) => next(),
+  requireLocalhost: (_req: unknown, _res: unknown, next: () => void) => next(),
   summarizeRequestBody: () => 'test body',
 }));
 
@@ -301,8 +301,8 @@ describe('Worker API Endpoints Integration', () => {
       // Close
       try {
         await server.close();
-      } catch (e: any) {
-        if (e.code !== 'ERR_SERVER_NOT_RUNNING') throw e;
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') throw e;
       }
 
       // Verify closed
@@ -335,8 +335,8 @@ describe('Worker API Endpoints Integration', () => {
       // Close first server
       try {
         await server.close();
-      } catch (e: any) {
-        if (e.code !== 'ERR_SERVER_NOT_RUNNING') throw e;
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') throw e;
       }
 
       // Wait for port to be released

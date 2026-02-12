@@ -167,7 +167,7 @@ export class DatabaseManager {
     if (!this.db) return;
 
     const query = this.db.query('SELECT version FROM schema_versions ORDER BY version');
-    const appliedVersions = query.all().map((row: any) => row.version);
+    const appliedVersions = query.all().map((row: unknown) => (row as { version: number }).version);
 
     const maxApplied = appliedVersions.length > 0 ? Math.max(...appliedVersions) : 0;
 

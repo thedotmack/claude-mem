@@ -16,7 +16,7 @@ export interface UsageInfo {
   cache_read_input_tokens?: number;
   output_tokens?: number;
   service_tier?: string;
-  server_tool_use?: any;
+  server_tool_use?: unknown;
 }
 
 export interface TextContent {
@@ -28,13 +28,13 @@ export interface ToolUseContent {
   type: 'tool_use';
   id: string;
   name: string;
-  input: Record<string, any>;
+  input: Record<string, unknown>;
 }
 
 export interface ToolResultContent {
   type: 'tool_result';
   tool_use_id: string;
-  content: string | Array<Record<string, any>>;
+  content: string | Array<Record<string, unknown>>;
   is_error?: boolean;
 }
 
@@ -108,7 +108,7 @@ export interface EditResult {
   newString?: string;
   replaceAll?: boolean;
   originalFile?: string;
-  structuredPatch?: any;
+  structuredPatch?: unknown;
   userModified?: boolean;
 }
 

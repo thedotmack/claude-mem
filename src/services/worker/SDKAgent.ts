@@ -163,7 +163,7 @@ export class SDKAgent {
       if (message.type === 'assistant') {
         const content = message.message.content;
         const textContent = Array.isArray(content)
-          ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
+          ? content.filter((c: { type: string }) => c.type === 'text').map((c: { type: string; text?: string }) => c.text ?? '').join('\n')
           : typeof content === 'string' ? content : '';
 
         const responseSize = textContent.length;

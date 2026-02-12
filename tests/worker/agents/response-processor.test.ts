@@ -41,11 +41,11 @@ let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
 
 describe('ResponseProcessor', () => {
   // Mocks
-  let mockStoreObservations: ReturnType<typeof mock>;
-  let mockChromaSyncObservation: ReturnType<typeof mock>;
-  let mockChromaSyncSummary: ReturnType<typeof mock>;
-  let mockBroadcast: ReturnType<typeof mock>;
-  let mockBroadcastProcessingStatus: ReturnType<typeof mock>;
+  let mockStoreObservations: ReturnType<typeof vi.fn>;
+  let mockChromaSyncObservation: ReturnType<typeof vi.fn>;
+  let mockChromaSyncSummary: ReturnType<typeof vi.fn>;
+  let mockBroadcast: ReturnType<typeof vi.fn>;
+  let mockBroadcastProcessingStatus: ReturnType<typeof vi.fn>;
   let mockDbManager: DatabaseManager;
   let mockSessionManager: SessionManager;
   let mockWorker: WorkerRef;
@@ -270,7 +270,7 @@ describe('ResponseProcessor', () => {
         summaryId: null,
         createdAtEpoch: 1700000000000,
       }));
-      (mockDbManager.getSessionStore as any) = () => ({
+      (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
       });
 
@@ -369,7 +369,7 @@ describe('ResponseProcessor', () => {
         summaryId: null,
         createdAtEpoch: 1700000000000,
       }));
-      (mockDbManager.getSessionStore as any) = () => ({
+      (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
       });
 
@@ -389,7 +389,7 @@ describe('ResponseProcessor', () => {
 
       // Find the observation broadcast call
       const observationCall = mockBroadcast.mock.calls.find(
-        (call: any[]) => call[0].type === 'new_observation'
+        (call: unknown[]) => (call[0] as Record<string, unknown>).type === 'new_observation'
       );
       expect(observationCall).toBeDefined();
       expect(observationCall[0].observation.id).toBe(42);
@@ -431,7 +431,7 @@ describe('ResponseProcessor', () => {
 
       // Find the summary broadcast call
       const summaryCall = mockBroadcast.mock.calls.find(
-        (call: any[]) => call[0].type === 'new_summary'
+        (call: unknown[]) => (call[0] as Record<string, unknown>).type === 'new_summary'
       );
       expect(summaryCall).toBeDefined();
       expect(summaryCall[0].summary.request).toBe('Build feature');
@@ -449,7 +449,7 @@ describe('ResponseProcessor', () => {
         summaryId: null,
         createdAtEpoch: 1700000000000,
       }));
-      (mockDbManager.getSessionStore as any) = () => ({
+      (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
       });
 
@@ -480,7 +480,7 @@ describe('ResponseProcessor', () => {
         summaryId: null,
         createdAtEpoch: 1700000000000,
       }));
-      (mockDbManager.getSessionStore as any) = () => ({
+      (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
       });
 
@@ -522,7 +522,7 @@ describe('ResponseProcessor', () => {
         summaryId: null,
         createdAtEpoch: 1700000000000,
       }));
-      (mockDbManager.getSessionStore as any) = () => ({
+      (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
       });
 
@@ -558,7 +558,7 @@ describe('ResponseProcessor', () => {
         summaryId: null,
         createdAtEpoch: 1700000000000,
       }));
-      (mockDbManager.getSessionStore as any) = () => ({
+      (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
       });
 
@@ -598,7 +598,7 @@ describe('ResponseProcessor', () => {
         summaryId: null,
         createdAtEpoch: 1700000000000,
       }));
-      (mockDbManager.getSessionStore as any) = () => ({
+      (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
       });
 

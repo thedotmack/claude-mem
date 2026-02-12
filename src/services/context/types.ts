@@ -13,7 +13,7 @@ export interface ContextInput {
   source?: "startup" | "resume" | "clear" | "compact";
   /** Array of projects to query (for worktree support: [parent, worktree]) */
   projects?: string[];
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 /**

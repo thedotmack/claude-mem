@@ -56,6 +56,7 @@ export class Database {
    * Create a transaction function.
    * Identical API between bun:sqlite and better-sqlite3.
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Generic constraint must be `any` to match better-sqlite3's Transaction type signature
   transaction<T extends (...args: any[]) => any>(fn: T): T {
     return this._db.transaction(fn) as unknown as T;
   }

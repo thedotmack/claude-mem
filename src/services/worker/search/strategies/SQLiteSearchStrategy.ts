@@ -119,7 +119,7 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
    */
   findByType(type: string | string[], options: StrategySearchOptions): ObservationSearchResult[] {
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy = 'date_desc' } = options;
-    return this.sessionSearch.findByType(type as any, { limit, project, dateRange, orderBy });
+    return this.sessionSearch.findByType(type as import('../../../sqlite/types.js').ObservationRow['type'] | import('../../../sqlite/types.js').ObservationRow['type'][], { limit, project, dateRange, orderBy });
   }
 
   /**

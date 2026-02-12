@@ -16,7 +16,7 @@ import { logger } from '../../src/utils/logger.js';
 // Mock middleware to avoid complex dependencies
 vi.mock('../../src/services/worker/http/middleware.js', () => ({
   createMiddleware: () => [],
-  requireLocalhost: (_req: any, _res: any, next: any) => next(),
+  requireLocalhost: (_req: unknown, _res: unknown, next: () => void) => next(),
   summarizeRequestBody: () => 'test body',
 }));
 
@@ -138,8 +138,8 @@ describe('Hook Execution E2E', () => {
       // Close server
       try {
         await server.close();
-      } catch (e: any) {
-        if (e.code !== 'ERR_SERVER_NOT_RUNNING') {
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
           throw e;
         }
       }

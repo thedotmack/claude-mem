@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { SessionQueueProcessor, CreateIteratorOptions } from '../../../src/services/queue/SessionQueueProcessor.js';
 import type { PendingMessageStore, PersistentPendingMessage } from '../../../src/services/sqlite/PendingMessageStore.js';
+import type { PendingMessageWithId } from '../../../src/services/worker-types.js';
 
 /**
  * Mock PendingMessageStore that returns null (empty queue) by default.
@@ -84,7 +85,7 @@ describe('SessionQueueProcessor', () => {
         // Store returns null (empty queue), so iterator waits for message event
         // With no messages arriving, it should eventually timeout
 
-        const results: any[] = [];
+        const results: PendingMessageWithId[] = [];
 
         // We need to trigger the timeout scenario
         // The iterator uses IDLE_TIMEOUT_MS (3 minutes) which is too long for tests
@@ -123,7 +124,7 @@ describe('SessionQueueProcessor', () => {
         // Simulate external abort (which is what onIdleTimeout should do)
         setTimeout(() => { abortController.abort(); }, 50);
 
-        const results: any[] = [];
+        const results: PendingMessageWithId[] = [];
         for await (const message of iterator) {
           results.push(message);
         }
@@ -136,7 +137,7 @@ describe('SessionQueueProcessor', () => {
         let callCount = 0;
 
         // Return a message on first call, then null
-        (store.claimAndDelete as any) = vi.fn(() => {
+        vi.mocked(store.claimAndDelete).mockImplementation(() => {
           callCount++;
           if (callCount === 1) {
             return createMockMessage({ id: 1 });
@@ -151,7 +152,7 @@ describe('SessionQueueProcessor', () => {
         };
 
         const iterator = processor.createIterator(options);
-        const results: any[] = [];
+        const results: PendingMessageWithId[] = [];
 
         // First message should be yielded
         // Then queue is empty, wait for more
@@ -187,7 +188,7 @@ describe('SessionQueueProcessor', () => {
         // Abort immediately
         abortController.abort();
 
-        const results: any[] = [];
+        const results: PendingMessageWithId[] = [];
         for await (const message of iterator) {
           results.push(message);
         }
@@ -202,7 +203,7 @@ describe('SessionQueueProcessor', () => {
         const onIdleTimeout = vi.fn(() => {});
 
         // Return null to trigger wait
-        (store.claimAndDelete as any) = vi.fn(() => null);
+        vi.mocked(store.claimAndDelete).mockImplementation(() => null);
 
         const options: CreateIteratorOptions = {
           sessionDbId: 123,
@@ -215,7 +216,7 @@ describe('SessionQueueProcessor', () => {
         // Abort very quickly - before any timeout could fire
         setTimeout(() => { abortController.abort(); }, 10);
 
-        const results: any[] = [];
+        const results: PendingMessageWithId[] = [];
         for await (const message of iterator) {
           results.push(message);
         }
@@ -238,7 +239,7 @@ describe('SessionQueueProcessor', () => {
         // First call: return null (queue empty)
         // After message event: return message
         // Then return null again
-        (store.claimAndDelete as any) = vi.fn(() => {
+        vi.mocked(store.claimAndDelete).mockImplementation(() => {
           callCount++;
           if (callCount === 1) {
             // First check - queue empty, will wait
@@ -259,7 +260,7 @@ describe('SessionQueueProcessor', () => {
         };
 
         const iterator = processor.createIterator(options);
-        const results: any[] = [];
+        const results: PendingMessageWithId[] = [];
 
         // Emit message event after a short delay to wake up the iterator
         setTimeout(() => events.emit('message'), 50);
@@ -295,7 +296,7 @@ describe('SessionQueueProcessor', () => {
         abortController.abort();
 
         // Consume the iterator
-        const results: any[] = [];
+        const results: PendingMessageWithId[] = [];
         for await (const message of iterator) {
           results.push(message);
         }
@@ -308,7 +309,7 @@ describe('SessionQueueProcessor', () => {
 
       it('should clean up event listeners when message received', async () => {
         // Return a message immediately
-        (store.claimAndDelete as any) = vi.fn(() => createMockMessage({ id: 1 }));
+        vi.mocked(store.claimAndDelete).mockImplementation(() => createMockMessage({ id: 1 }));
 
         const options: CreateIteratorOptions = {
           sessionDbId: 123,
@@ -341,7 +342,7 @@ describe('SessionQueueProcessor', () => {
       it('should continue after store error with backoff', async () => {
         let callCount = 0;
 
-        (store.claimAndDelete as any) = vi.fn(() => {
+        vi.mocked(store.claimAndDelete).mockImplementation(() => {
           callCount++;
           if (callCount === 1) {
             throw new Error('Database error');
@@ -358,7 +359,7 @@ describe('SessionQueueProcessor', () => {
         };
 
         const iterator = processor.createIterator(options);
-        const results: any[] = [];
+        const results: PendingMessageWithId[] = [];
 
         // Abort after giving time for retry
         setTimeout(() => { abortController.abort(); }, 1500);
@@ -374,7 +375,7 @@ describe('SessionQueueProcessor', () => {
       });
 
       it('should exit cleanly if aborted during error backoff', async () => {
-        (store.claimAndDelete as any) = vi.fn(() => {
+        vi.mocked(store.claimAndDelete).mockImplementation(() => {
           throw new Error('Database error');
         });
 
@@ -388,7 +389,7 @@ describe('SessionQueueProcessor', () => {
         // Abort during the backoff period
         setTimeout(() => { abortController.abort(); }, 100);
 
-        const results: any[] = [];
+        const results: PendingMessageWithId[] = [];
         for await (const message of iterator) {
           results.push(message);
         }
@@ -410,7 +411,7 @@ describe('SessionQueueProcessor', () => {
           created_at_epoch: 1704067200000
         });
 
-        (store.claimAndDelete as any) = vi.fn(() => mockPersistentMessage);
+        vi.mocked(store.claimAndDelete).mockImplementation(() => mockPersistentMessage);
 
         const options: CreateIteratorOptions = {
           sessionDbId: 123,

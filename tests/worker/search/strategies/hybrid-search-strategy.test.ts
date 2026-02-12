@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { HybridSearchStrategy } from '../../../../src/services/worker/search/strategies/HybridSearchStrategy.js';
 import type { StrategySearchOptions, ObservationSearchResult, SessionSummarySearchResult } from '../../../../src/services/worker/search/types.js';
+import type { ChromaSync } from '../../../../src/services/sync/ChromaSync.js';
+import type { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
+import type { SessionSearch } from '../../../../src/services/sqlite/SessionSearch.js';
 
 // Mock observation data
 const mockObservation1: ObservationSearchResult = {
@@ -80,9 +83,9 @@ const mockSession: SessionSummarySearchResult = {
 
 describe('HybridSearchStrategy', () => {
   let strategy: HybridSearchStrategy;
-  let mockChromaSync: any;
-  let mockSessionStore: any;
-  let mockSessionSearch: any;
+  let mockChromaSync: ChromaSync;
+  let mockSessionStore: SessionStore;
+  let mockSessionSearch: SessionSearch;
 
   beforeEach(() => {
     mockChromaSync = {
@@ -91,7 +94,7 @@ describe('HybridSearchStrategy', () => {
         distances: [0.1, 0.2, 0.3],
         metadatas: []
       }))
-    };
+    } as unknown as ChromaSync;
 
     mockSessionStore = {
       getObservationsByIds: vi.fn((ids: number[]) => {
@@ -101,7 +104,7 @@ describe('HybridSearchStrategy', () => {
       }),
       getSessionSummariesByIds: vi.fn(() => [mockSession]),
       getUserPromptsByIds: vi.fn(() => [])
-    };
+    } as unknown as SessionStore;
 
     mockSessionSearch = {
       findByConcept: vi.fn(() => [mockObservation1, mockObservation2, mockObservation3]),
@@ -110,7 +113,7 @@ describe('HybridSearchStrategy', () => {
         observations: [mockObservation1, mockObservation2],
         sessions: [mockSession]
       }))
-    };
+    } as unknown as SessionSearch;
 
     strategy = new HybridSearchStrategy(mockChromaSync, mockSessionStore, mockSessionSearch);
   });
@@ -154,7 +157,7 @@ describe('HybridSearchStrategy', () => {
 
     it('should return false for filter-only without Chroma', () => {
       // Create strategy without Chroma
-      const strategyNoChroma = new HybridSearchStrategy(null as any, mockSessionStore, mockSessionSearch);
+      const strategyNoChroma = new HybridSearchStrategy(null as unknown as ChromaSync, mockSessionStore, mockSessionSearch);
 
       const options: StrategySearchOptions = {
         concepts: ['test-concept']

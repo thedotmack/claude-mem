@@ -97,7 +97,7 @@ export class ModeManager {
 
       if (this.isPlainObject(overrideValue) && this.isPlainObject(baseValue)) {
         // Recursively merge nested objects
-        result[key] = this.deepMerge(baseValue, overrideValue as any);
+        result[key] = this.deepMerge(baseValue, overrideValue as Partial<T[Extract<keyof T, string>]>);
       } else {
         // Replace arrays and primitives completely
         result[key] = overrideValue as T[Extract<keyof T, string>];

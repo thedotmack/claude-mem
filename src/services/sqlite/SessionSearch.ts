@@ -150,7 +150,7 @@ export class SessionSearch {
    */
   private buildFilterClause(
     filters: SearchFilters,
-    params: any[],
+    params: (string | number)[],
     tableAlias: string = 'o'
   ): string {
     const conditions: string[] = [];
@@ -241,7 +241,7 @@ export class SessionSearch {
    * Vector search is handled by ChromaDB - this only supports filtering without query text.
    */
   searchObservations(query: string | undefined, options: SearchOptions = {}): ObservationSearchResult[] {
-    const params: any[] = [];
+    const params: (string | number)[] = [];
     const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
 
     // FILTER-ONLY PATH: When no query text, query table directly
@@ -277,7 +277,7 @@ export class SessionSearch {
    * Vector search is handled by ChromaDB - this only supports filtering without query text.
    */
   searchSessions(query: string | undefined, options: SearchOptions = {}): SessionSummarySearchResult[] {
-    const params: any[] = [];
+    const params: (string | number)[] = [];
     const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
 
     // FILTER-ONLY PATH: When no query text, query session_summaries table directly
@@ -315,7 +315,7 @@ export class SessionSearch {
    * Find observations by concept tag
    */
   findByConcept(concept: string, options: SearchOptions = {}): ObservationSearchResult[] {
-    const params: any[] = [];
+    const params: (string | number)[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', ...filters } = options;
 
     // Add concept to filters
@@ -380,7 +380,7 @@ export class SessionSearch {
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];
   } {
-    const params: any[] = [];
+    const params: (string | number)[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', isFolder = false, ...filters } = options;
 
     // Query more results if we're filtering to direct children
@@ -409,7 +409,7 @@ export class SessionSearch {
     }
 
     // For session summaries, search files_read and files_edited
-    const sessionParams: any[] = [];
+    const sessionParams: (string | number)[] = [];
     const sessionFilters = { ...filters };
     delete sessionFilters.type; // Remove type filter for sessions
 
@@ -467,7 +467,7 @@ export class SessionSearch {
     type: ObservationRow['type'] | ObservationRow['type'][],
     options: SearchOptions = {}
   ): ObservationSearchResult[] {
-    const params: any[] = [];
+    const params: (string | number)[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', ...filters } = options;
 
     // Add type to filters
@@ -493,7 +493,7 @@ export class SessionSearch {
    * Vector search is handled by ChromaDB - this only supports filtering without query text.
    */
   searchUserPrompts(query: string | undefined, options: SearchOptions = {}): UserPromptSearchResult[] {
-    const params: any[] = [];
+    const params: (string | number)[] = [];
     const { limit = 20, offset = 0, orderBy = 'relevance', ...filters } = options;
 
     // Build filter conditions (join with sdk_sessions for project filtering)

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SQLiteSearchStrategy } from '../../../../src/services/worker/search/strategies/SQLiteSearchStrategy.js';
 import type { StrategySearchOptions, ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../../../../src/services/worker/search/types.js';
+import type { SessionSearch } from '../../../../src/services/sqlite/SessionSearch.js';
 
 // Mock observation data
 const mockObservation: ObservationSearchResult = {
@@ -51,7 +52,7 @@ const mockPrompt: UserPromptSearchResult = {
 
 describe('SQLiteSearchStrategy', () => {
   let strategy: SQLiteSearchStrategy;
-  let mockSessionSearch: any;
+  let mockSessionSearch: SessionSearch;
 
   beforeEach(() => {
     mockSessionSearch = {
@@ -61,7 +62,7 @@ describe('SQLiteSearchStrategy', () => {
       findByConcept: vi.fn(() => [mockObservation]),
       findByType: vi.fn(() => [mockObservation]),
       findByFile: vi.fn(() => ({ observations: [mockObservation], sessions: [mockSession] }))
-    };
+    } as unknown as SessionSearch;
     strategy = new SQLiteSearchStrategy(mockSessionSearch);
   });
 
