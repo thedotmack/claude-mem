@@ -13,7 +13,7 @@
  */
 import { spawnSync, spawn } from 'child_process';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { homedir } from 'os';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -70,14 +70,24 @@ if (!bunPath) {
   process.exit(1);
 }
 
+// Extract the script path and its directory for cwd
+// This prevents EPERM errors when hooks run from C:\WINDOWS\system32
+// by ensuring Bun always runs from a valid working directory
+const scriptPath = args[0];
+const scriptDir = scriptPath ? dirname(scriptPath) : homedir();
+
 // Spawn Bun with the provided script and args
 // Use spawn (not spawnSync) to properly handle stdio
 // Note: Don't use shell mode on Windows - it breaks paths with spaces in usernames
-// Use windowsHide to prevent a visible console window from spawning on Windows
+// Set cwd to script directory to avoid inheriting C:\WINDOWS\system32
+// Set CLAUDE_MEM_SHOW_CONSOLE=1 to show Bun console window (Windows only)
+const showConsole = process.env.CLAUDE_MEM_SHOW_CONSOLE === '1';
+
 const child = spawn(bunPath, args, {
   stdio: 'inherit',
-  windowsHide: true,
-  env: process.env
+  windowsHide: !showConsole,  // Show console if env var is set
+  env: process.env,
+  cwd: scriptDir
 });
 
 child.on('error', (err) => {

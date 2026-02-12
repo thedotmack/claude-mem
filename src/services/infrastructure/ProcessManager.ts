@@ -101,8 +101,8 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
 
   try {
     // PowerShell Get-Process instead of WMIC (deprecated in Windows 11)
-    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-Process | Where-Object { \\$_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty Id"`;
-    const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-Process | Where-Object { \$_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty Id"`;
+    const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, cwd: process.env.USERPROFILE || process.env.HOME || 'C:\\' });
     // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
     return stdout
       .split('\n')
@@ -226,11 +226,11 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
     if (isWindows) {
       // Windows: Use PowerShell Get-CimInstance with JSON output for age filtering
       const patternConditions = ORPHAN_PROCESS_PATTERNS
-        .map(p => `\\$_.CommandLine -like '*${p}*'`)
+        .map(p => `\$_.CommandLine -like '*${p}*'`)
         .join(' -or ');
 
-      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { (${patternConditions}) -and \\$_.ProcessId -ne ${currentPid} } | Select-Object ProcessId, CreationDate | ConvertTo-Json"`;
-      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { (${patternConditions}) -and \$_.ProcessId -ne ${currentPid} } | Select-Object ProcessId, CreationDate | ConvertTo-Json"`;
+      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, cwd: process.env.USERPROFILE || process.env.HOME || 'C:\\' });
 
       if (!stdout.trim() || stdout.trim() === 'null') {
         logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Windows)');
@@ -361,22 +361,31 @@ export function spawnDaemon(
   };
 
   if (isWindows) {
-    // Use WMIC to spawn a process that's independent of the parent console
-    // This avoids the console popup that occurs with detached: true
-    // Paths must be individually quoted for WMIC when they contain spaces
-    const execPath = process.execPath;
-    const script = scriptPath;
-    // WMIC command format: wmic process call create "\"path1\" \"path2\" args"
-    const command = `wmic process call create "\\"${execPath}\\" \\"${script}\\" --daemon"`;
+    // Use PowerShell Start-Process to spawn an independent daemon process
+    // WMIC was removed in Windows 11 24H2+, so we use PowerShell instead
+    // Start-Process -WindowStyle Hidden prevents console popups
+    const execPath = process.execPath.replace(/'/g, "''");
+    const script = scriptPath.replace(/'/g, "''");
+
+    // Build env string for PowerShell: set each extraEnv var before spawning
+    const envSetters = Object.entries({ CLAUDE_MEM_WORKER_PORT: String(port), ...extraEnv })
+      .map(([k, v]) => `\$env:${k}='${v.replace(/'/g, "''")}'`)
+      .join('; ');
+
+    // PowerShell Start-Process with -PassThru to get the PID
+    const psCommand = `${envSetters}; $p = Start-Process -FilePath '${execPath}' -ArgumentList '"${script}"','--daemon' -WindowStyle Hidden -PassThru; $p.Id`;
+    const cmd = `powershell -NoProfile -NonInteractive -Command "${psCommand.replace(/"/g, '\"')}"`;
 
     try {
-      execSync(command, {
-        stdio: 'ignore',
-        windowsHide: true
+      const result = execSync(cmd, {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+        env,
+        cwd: process.env.USERPROFILE || process.env.HOME || 'C:\\'
       });
-      // WMIC returns immediately, we can't get the spawned PID easily
-      // Worker will write its own PID file after listen()
-      return 0;
+      const pid = parseInt(result.toString().trim(), 10);
+      // Return undefined for invalid PIDs (0, NaN, negative) so caller detects failure
+      return pid > 0 ? pid : undefined;
     } catch {
       return undefined;
     }
@@ -386,7 +395,8 @@ export function spawnDaemon(
   const child = spawn(process.execPath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
-    env
+    env,
+    cwd: process.env.HOME || '/tmp'
   });
 
   if (child.pid === undefined) {

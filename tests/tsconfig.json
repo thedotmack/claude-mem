@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "types": ["@types/bun", "node"],
+    "noEmit": true
+  },
+  "include": [
+    "./**/*"
+  ],
+  "exclude": []
+}

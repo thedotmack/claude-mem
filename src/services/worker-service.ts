@@ -10,18 +10,68 @@
  */
 
 import path from 'path';
-import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { existsSync, writeFileSync, unlinkSync, statSync, openSync, closeSync } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
+import { withTimeout } from '../utils/with-timeout.js';
 
 // Windows: avoid repeated spawn popups when startup fails (issue #921)
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
+const SPAWN_LOCK_TIMEOUT_MS = 2 * 60 * 1000;
 
 function getWorkerSpawnLockPath(): string {
   return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
+}
+
+function getWorkerSpawnLockFile(): string {
+  return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start.lock');
+}
+
+function tryAcquireSpawnLock(): boolean {
+  const lockPath = getWorkerSpawnLockFile();
+  try {
+    if (existsSync(lockPath)) {
+      try {
+        const modifiedTimeMs = statSync(lockPath).mtimeMs;
+        if (Date.now() - modifiedTimeMs < SPAWN_LOCK_TIMEOUT_MS) {
+          return false;
+        }
+      } catch {
+        return false;
+      }
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        return false;
+      }
+    }
+
+    const fd = openSync(lockPath, 'wx');
+    try {
+      writeFileSync(fd, JSON.stringify({
+        pid: process.pid,
+        startedAt: new Date().toISOString()
+      }));
+    } finally {
+      closeSync(fd);
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseSpawnLock(): void {
+  const lockPath = getWorkerSpawnLockFile();
+  try {
+    if (existsSync(lockPath)) unlinkSync(lockPath);
+  } catch {
+    // Best-effort cleanup
+  }
 }
 
 function shouldSkipSpawnOnWindows(): boolean {
@@ -216,18 +266,24 @@ export class WorkerService {
 
   /**
    * Register signal handlers for graceful shutdown
+   *
+   * Uses a shared ref object that bridges createSignalHandler's deduplication
+   * with the class-level isShuttingDown flag. The ref is the single source of truth;
+   * the instance field is kept in sync via a getter in the signal wrappers.
    */
+  private shutdownRef = { value: false };
+
   private registerSignalHandlers(): void {
-    const shutdownRef = { value: this.isShuttingDown };
-    const handler = createSignalHandler(() => this.shutdown(), shutdownRef);
+    // Share the ref so createSignalHandler's guard and the instance field stay in sync
+    const handler = createSignalHandler(() => this.shutdown(), this.shutdownRef);
 
     process.on('SIGTERM', () => {
-      this.isShuttingDown = shutdownRef.value;
       handler('SIGTERM');
+      this.isShuttingDown = this.shutdownRef.value;
     });
     process.on('SIGINT', () => {
-      this.isShuttingDown = shutdownRef.value;
       handler('SIGINT');
+      this.isShuttingDown = this.shutdownRef.value;
     });
   }
 
@@ -239,31 +295,43 @@ export class WorkerService {
 
     // Early handler for /api/context/inject — fail open if not yet initialized
     this.server.app.get('/api/context/inject', async (req, res, next) => {
+      if (this.initializationCompleteFlag && this.searchRoutes) {
+        next();
+        return;
+      }
+
+      try {
+        await withTimeout(this.initializationComplete, 30000, 'Context initialization');
+      } catch (error) {
+        logger.warn('SYSTEM', 'Context requested before initialization complete, returning empty', {}, error as Error);
+        res.status(200).json({ content: [{ type: 'text', text: '' }] });
+        return;
+      }
+
       if (!this.initializationCompleteFlag || !this.searchRoutes) {
         logger.warn('SYSTEM', 'Context requested before initialization complete, returning empty');
         res.status(200).json({ content: [{ type: 'text', text: '' }] });
         return;
       }
 
-      next(); // Delegate to SearchRoutes handler
+      next();
     });
 
-    // Guard ALL /api/* routes during initialization — wait for DB with timeout
+    // Guard DB-dependent /api/* routes during initialization — wait for DB with timeout
+    // Routes that DON'T need DB: /api/logs, /api/settings, /api/admin/*
     // Exceptions: /api/health, /api/readiness, /api/version (handled by Server.ts core routes)
     // and /api/context/inject (handled above with fail-open)
+    const DB_DEPENDENT_PREFIXES = ['/sessions', '/data', '/search', '/memory', '/viewer'];
     this.server.app.use('/api', async (req, res, next) => {
-      if (this.initializationCompleteFlag) {
+      // Skip guard for routes that don't need the database
+      const needsDb = DB_DEPENDENT_PREFIXES.some(prefix => req.path.startsWith(prefix));
+      if (!needsDb || this.initializationCompleteFlag) {
         next();
         return;
       }
 
-      const timeoutMs = 30000;
-      const timeoutPromise = new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error('Database initialization timeout')), timeoutMs)
-      );
-
       try {
-        await Promise.race([this.initializationComplete, timeoutPromise]);
+        await withTimeout(this.initializationComplete, 30000, 'Database initialization');
         next();
       } catch (error) {
         logger.error('HTTP', `Request to ${req.method} ${req.path} rejected — DB not initialized`, {}, error as Error);
@@ -307,6 +375,8 @@ export class WorkerService {
     // Do slow initialization in background (non-blocking)
     this.initializeBackground().catch((error) => {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
+      // Resolve the promise so waiting requests get unblocked (they'll see initializationCompleteFlag=false)
+      this.resolveInitialization();
     });
   }
 
@@ -359,13 +429,11 @@ export class WorkerService {
         env: process.env
       });
 
-      const MCP_INIT_TIMEOUT_MS = 300000;
-      const mcpConnectionPromise = this.mcpClient.connect(transport);
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('MCP connection timeout after 5 minutes')), MCP_INIT_TIMEOUT_MS)
+      await withTimeout(
+        this.mcpClient.connect(transport),
+        300000,
+        'MCP connection'
       );
-
-      await Promise.race([mcpConnectionPromise, timeoutPromise]);
       this.mcpReady = true;
       logger.success('WORKER', 'Connected to MCP server');
 
@@ -402,8 +470,12 @@ export class WorkerService {
   }
 
   /**
-   * Get the appropriate agent based on provider settings.
-   * Same logic as SessionRoutes.getActiveAgent() for consistency.
+   * Get the appropriate agent based on provider settings (silent fallback to SDK).
+   *
+   * Unlike SessionRoutes.getActiveAgent() which throws when a provider is selected
+   * but not configured (appropriate for user-facing HTTP requests), this version
+   * silently falls back to SDK — used for background startup recovery where
+   * throwing would leave pending messages stuck.
    */
   private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
@@ -787,28 +859,44 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
     return false;
   }
 
+  const spawnLockAcquired = tryAcquireSpawnLock();
+  if (!spawnLockAcquired) {
+    logger.info('SYSTEM', 'Worker spawn already in progress, waiting for health');
+    const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+    if (healthy) {
+      logger.info('SYSTEM', 'Worker is now healthy');
+      return true;
+    }
+    logger.error('SYSTEM', 'Worker spawn lock held but worker did not become healthy');
+    return false;
+  }
+
   // Spawn new worker daemon
-  logger.info('SYSTEM', 'Starting worker daemon');
-  markWorkerSpawnAttempted();
-  const pid = spawnDaemon(__filename, port);
-  if (pid === undefined) {
-    logger.error('SYSTEM', 'Failed to spawn worker daemon');
-    return false;
+  try {
+    logger.info('SYSTEM', 'Starting worker daemon');
+    markWorkerSpawnAttempted();
+    const pid = spawnDaemon(__filename, port);
+    if (pid === undefined) {
+      logger.error('SYSTEM', 'Failed to spawn worker daemon');
+      return false;
+    }
+
+    // PID file is written by the worker itself after listen() succeeds
+    // This is race-free and works correctly on Windows where cmd.exe PID is useless
+
+    const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+    if (!healthy) {
+      removePidFile();
+      logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
+      return false;
+    }
+
+    clearWorkerSpawnAttempted();
+    logger.info('SYSTEM', 'Worker started successfully');
+    return true;
+  } finally {
+    releaseSpawnLock();
   }
-
-  // PID file is written by the worker itself after listen() succeeds
-  // This is race-free and works correctly on Windows where cmd.exe PID is useless
-
-  const healthy = await waitForHealth(port, getPlatformTimeout(30000));
-  if (!healthy) {
-    removePidFile();
-    logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
-    return false;
-  }
-
-  clearWorkerSpawnAttempted();
-  logger.info('SYSTEM', 'Worker started successfully');
-  return true;
 }
 
 // ============================================================================

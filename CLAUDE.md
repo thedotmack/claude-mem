@@ -1,90 +1,131 @@
-# Claude-Mem: AI Development Instructions
+# CLAUDE.md
 
-Claude-mem is a Claude Code plugin providing persistent memory across sessions. It captures tool usage, compresses observations using the Claude Agent SDK, and injects relevant context into future sessions.
+Este archivo orienta a Claude Code (claude.ai/code) al trabajar con el codigo de este repositorio.
 
-## Architecture
+Claude-mem es un plugin de Claude Code que provee memoria persistente entre sesiones. Captura el uso de herramientas, comprime observaciones usando el Claude Agent SDK e inyecta contexto relevante en sesiones futuras.
 
-**5 Lifecycle Hooks**: SessionStart → UserPromptSubmit → PostToolUse → Summary → SessionEnd
-
-**Hooks** (`src/hooks/*.ts`) - TypeScript → ESM, built to `plugin/scripts/*-hook.js`
-
-**Worker Service** (`src/services/worker-service.ts`) - Express API on port 37777, Bun-managed, handles AI processing asynchronously
-
-**Database** (`src/services/sqlite/`) - SQLite3 at `~/.claude-mem/claude-mem.db`
-
-**Search Skill** (`plugin/skills/mem-search/SKILL.md`) - HTTP API for searching past work, auto-invoked when users ask about history
-
-**Chroma** (`src/services/sync/ChromaSync.ts`) - Vector embeddings for semantic search
-
-**Viewer UI** (`src/ui/viewer/`) - React interface at http://localhost:37777, built to `plugin/ui/viewer.html`
-
-## Privacy Tags
-- `<private>content</private>` - User-level privacy control (manual, prevents storage)
-
-**Implementation**: Tag stripping happens at hook layer (edge processing) before data reaches worker/database. See `src/utils/tag-stripping.ts` for shared utilities.
-
-## Build Commands
+## Comandos de Build y Desarrollo
 
 ```bash
-npm run build-and-sync        # Build, sync to marketplace, restart worker
+npm run build-and-sync        # Ciclo completo: build → sync a marketplace → reiniciar worker
+npm run build                  # Solo build (esbuild: hooks + worker + viewer + MCP server)
+npm run sync-marketplace       # Sincronizar plugin/ a ~/.claude/plugins/marketplaces/thedotmack/
+npm run worker:restart         # Reiniciar el servicio worker
+npm run worker:logs            # Ver log del worker de hoy
+npm run worker:tail            # Seguir log del worker en tiempo real
 ```
 
-## Configuration
+## Testing
 
-Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
+Los tests usan **Bun test runner** (nativo: `describe`/`it`/`expect`/`mock`/`spyOn`).
 
-## File Locations
+```bash
+bun test                       # Correr todos los tests
+bun test tests/sqlite/         # Tests de base de datos
+bun test tests/worker/agents/  # Tests de procesamiento de agentes
+bun test tests/worker/search/  # Tests de estrategias de busqueda
+bun test tests/context/        # Tests de formateo de contexto
+bun test tests/infrastructure/ # Tests de gestion de procesos
+bun test tests/server/         # Tests del servidor HTTP
+bun test tests/path/to/file.test.ts  # Un solo archivo de test
+```
 
-- **Source**: `<project-root>/src/`
-- **Built Plugin**: `<project-root>/plugin/`
-- **Installed Plugin**: `~/.claude/plugins/marketplaces/thedotmack/`
-- **Database**: `~/.claude-mem/claude-mem.db`
-- **Chroma**: `~/.claude-mem/chroma/`
+## Arquitectura
 
-## Exit Code Strategy
+### Flujo de Datos
 
-Claude-mem hooks use specific exit codes per Claude Code's hook contract:
+```
+Sesion de Claude Code
+  → Hook (SessionStart/UserPromptSubmit/PostToolUse/Stop)
+    → bun-runner.js → worker-service.cjs hook <adapter> <handler>
+      → HTTP POST a Worker API (localhost:37777)
+        → Almacenamiento en SQLite + Chroma
+          → Broadcast SSE al Viewer UI
+```
 
-- **Exit 0**: Success or graceful shutdown (Windows Terminal closes tabs)
-- **Exit 1**: Non-blocking error (stderr shown to user, continues)
-- **Exit 2**: Blocking error (stderr fed to Claude for processing)
+### Pipeline de Build
 
-**Philosophy**: Worker/hook errors exit with code 0 to prevent Windows Terminal tab accumulation. The wrapper/plugin layer handles restart logic. ERROR-level logging is maintained for diagnostics.
+`scripts/build-hooks.js` usa esbuild para producir 4 bundles desde TypeScript:
 
-See `private/context/claude-code/exit-codes.md` for full hook behavior matrix.
+| Entrada | Salida | Formato | Notas |
+|---------|--------|---------|-------|
+| `src/services/worker-service.ts` | `plugin/scripts/worker-service.cjs` | CJS | `#!/usr/bin/env bun`, `bun:sqlite` externo |
+| `src/servers/mcp-server.ts` | `plugin/scripts/mcp-server.cjs` | CJS | `#!/usr/bin/env node` |
+| `src/services/context-generator.ts` | `plugin/scripts/context-generator.cjs` | CJS | Generacion de contexto |
+| `src/ui/viewer/index.tsx` | `plugin/ui/viewer-bundle.js` | IIFE | App React del viewer |
 
-## Requirements
+Todos los builds apuntan a Node 18, estan minificados e inyectan `__DEFAULT_PACKAGE_VERSION__` en build time.
 
-- **Bun** (all platforms - auto-installed if missing)
-- **uv** (all platforms - auto-installed if missing, provides Python for Chroma)
-- Node.js
+### Ciclo de Vida de Hooks
 
-## Documentation
+Definido en `plugin/hooks/hooks.json`. Cada hook invoca `bun-runner.js → worker-service.cjs hook claude-code <handler>`:
 
-**Public Docs**: https://docs.claude-mem.ai (Mintlify)
-**Source**: `docs/public/` - MDX files, edit `docs.json` for navigation
-**Deploy**: Auto-deploys from GitHub on push to main
+| Hook | Handler | Proposito |
+|------|---------|-----------|
+| SessionStart | `context` | Inyectar contexto de memoria en nueva sesion |
+| UserPromptSubmit | `session-init` | Inicializar tracking de sesion |
+| PostToolUse | `observation` | Capturar uso de herramientas para memoria |
+| Stop | `summarize` → `session-complete` | Generar resumen, finalizar sesion |
 
-## Pro Features Architecture
+Cada hook tambien llama a `worker-service.cjs start` primero para asegurar que el worker este corriendo.
 
-Claude-mem is designed with a clean separation between open-source core functionality and optional Pro features.
+### Worker Service (`src/services/worker-service.ts`)
 
-**Open-Source Core** (this repository):
+Orquestador de ~300 lineas (refactorizado de un monolito de 2000+) que delega a:
+- `src/services/server/` - Setup HTTP con Express, middleware
+- `src/services/infrastructure/` - Gestion de PID, health checks, shutdown graceful
+- `src/services/worker/http/routes/` - Handlers de rutas (Session, Search, Settings, Data, Memory, Logs, Viewer)
+- `src/services/worker/agents/` - Procesamiento de respuestas (SDKAgent, GeminiAgent, OpenRouterAgent)
+- `src/services/worker/search/` - Orquestacion de busqueda hibrida (estrategias Chroma + SQLite)
 
-- All worker API endpoints on localhost:37777 remain fully open and accessible
-- Pro features are headless - no proprietary UI elements in this codebase
-- Pro integration points are minimal: settings for license keys, tunnel provisioning logic
-- The architecture ensures Pro features extend rather than replace core functionality
+La API corre en **puerto 37777** con streaming SSE en `/stream`.
 
-**Pro Features** (coming soon, external):
+### Base de Datos (`src/services/sqlite/`)
 
-- Enhanced UI (Memory Stream) connects to the same localhost:37777 endpoints as the open viewer
-- Additional features like advanced filtering, timeline scrubbing, and search tools
-- Access gated by license validation, not by modifying core endpoints
-- Users without Pro licenses continue using the full open-source viewer UI without limitation
+SQLite via `bun:sqlite` (modo WAL, 256MB mmap, 10k page cache). Migraciones de schema en `migrations/` (v1-v7). Stores principales: `SessionStore`, `Observations`, `Sessions`, `Summaries`, `SessionSearch` (FTS5).
 
-This architecture preserves the open-source nature of the project while enabling sustainable development through optional paid features.
+### Sistema Dual de Session ID
 
-## Important
+Dos session IDs distintos atraviesan el sistema:
+- `content_session_id` - Sesion del transcript de Claude
+- `memory_session_id` - Sesion interna del sistema de memoria (inicializado en NULL, capturado en la primera respuesta del SDK)
 
-No need to edit the changelog ever, it's generated automatically.
+Esto previene que el contexto del sistema de memoria se inyecte en los transcripts del usuario.
+
+### Tags de Privacidad
+
+- `<private>contenido</private>` - Nivel usuario, previene almacenamiento
+- `<claude-mem-context>contenido</claude-mem-context>` - Nivel sistema, previene almacenamiento recursivo
+
+El stripping de tags ocurre en la capa de hooks (procesamiento en el borde) antes de que los datos lleguen al worker. Implementacion en `src/utils/tag-stripping.ts` con proteccion contra ReDoS (MAX_TAG_COUNT = 100).
+
+## Estrategia de Exit Codes
+
+Segun el contrato de hooks de Claude Code:
+- **Exit 0**: Exito o shutdown graceful (errores de worker/hook tambien usan 0 para evitar acumulacion de tabs en Windows Terminal)
+- **Exit 1**: Error no bloqueante (stderr mostrado al usuario)
+- **Exit 2**: Error bloqueante (stderr enviado a Claude para procesamiento)
+
+## Ubicacion de Archivos
+
+- **Codigo fuente**: `src/`
+- **Plugin compilado**: `plugin/`
+- **Plugin instalado**: `~/.claude/plugins/marketplaces/thedotmack/`
+- **Datos de usuario**: `~/.claude-mem/` (database, chroma, logs, settings.json)
+
+## Configuracion
+
+Settings en `~/.claude-mem/settings.json` (auto-creado con valores por defecto). Gestionado por `src/shared/SettingsDefaultsManager.ts`. Soporta overrides por variables de entorno via `src/shared/EnvManager.ts`.
+
+## Documentacion
+
+**Docs publicos**: https://docs.claude-mem.ai (Mintlify)
+**Fuente**: `docs/public/` - Archivos MDX, editar `docs.json` para navegacion
+
+## Arquitectura Pro Features
+
+El core open-source expone todos los endpoints de la API del worker en localhost:37777. Las Pro features (proximamente, externas) se conectan a los mismos endpoints con UI mejorada. El acceso se controla por validacion de licencia, no modificando los endpoints del core.
+
+## Importante
+
+No es necesario editar el changelog nunca, se genera automaticamente.

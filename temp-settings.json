@@ -1,0 +1,5 @@
+{
+  "environmentVariables": {
+    "CLAUDE_MEM_SHOW_CONSOLE": "1"
+  }
+}

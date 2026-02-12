@@ -1,5 +1,7 @@
 {
-  "env": {},
+  "env": {
+    "CLAUDE_MEM_SHOW_CONSOLE": "1"
+  },
   "permissions": {
     "deny": [
       "Read(./package-lock.json)",

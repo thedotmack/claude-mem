@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build-and-sync:*)",
+      "Bash(robocopy:*)",
+      "Bash(powershell -Command \"robocopy ''C:\\\\Users\\\\Facu\\\\claude-mem\\\\plugin'' ''$env:USERPROFILE\\\\.claude\\\\plugins\\\\marketplaces\\\\thedotmack'' /MIR /XD .git /XF .mcp.json /NFL /NDL /NJH /NJS; if \\($LASTEXITCODE -le 7\\) { exit 0 } else { exit $LASTEXITCODE }\")",
+      "Bash(powershell.exe -NoProfile -Command \"robocopy ''C:\\\\Users\\\\Facu\\\\claude-mem\\\\plugin'' ''C:\\\\Users\\\\Facu\\\\.claude\\\\plugins\\\\marketplaces\\\\thedotmack'' /MIR /XD .git /XF .mcp.json /NFL /NDL /NJH /NJS; if \\($LASTEXITCODE -le 7\\) { exit 0 } else { exit $LASTEXITCODE }\")",
+      "Bash(powershell.exe -NoProfile -Command:*)"
+    ]
+  }
+}

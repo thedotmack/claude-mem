@@ -34,12 +34,19 @@ export async function isPortInUse(port: number): Promise<boolean> {
  * - /api/health returns 200 as soon as HTTP server is listening
  * - /api/readiness waits for full initialization (MCP connection can take 5+ minutes)
  * See: https://github.com/thedotmack/claude-mem/issues/811
+ *
+ * Uses exponential backoff: 200ms → 400ms → 800ms → 1600ms → capped at 2000ms
+ * to reduce wasted fetch requests during long startups.
+ *
  * @param port Worker port to check
  * @param timeoutMs Maximum time to wait in milliseconds
  * @returns true if worker became responsive, false if timeout
  */
 export async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<boolean> {
   const start = Date.now();
+  let delay = 200; // Start with 200ms, backoff to 2s max
+  const MAX_DELAY = 2000;
+
   while (Date.now() - start < timeoutMs) {
     try {
       // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
@@ -47,9 +54,10 @@ export async function waitForHealth(port: number, timeoutMs: number = 30000): Pr
       if (response.ok) return true;
     } catch (error) {
       // [ANTI-PATTERN IGNORED]: Retry loop - expected failures during startup, will retry
-      logger.debug('SYSTEM', 'Service not ready yet, will retry', { port }, error as Error);
+      logger.debug('SYSTEM', 'Service not ready yet, will retry', { port, nextDelayMs: delay }, error as Error);
     }
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, delay));
+    delay = Math.min(delay * 2, MAX_DELAY);
   }
   return false;
 }
