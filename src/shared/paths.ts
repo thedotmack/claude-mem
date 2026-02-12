@@ -28,8 +28,43 @@ export const DATA_DIR = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
 // Note: CLAUDE_CONFIG_DIR is a Claude Code setting, not claude-mem, so leave as env var
 export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 
-// Plugin installation directory - respects CLAUDE_CONFIG_DIR for users with custom Claude locations
-export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces', 'thedotmack');
+/**
+ * Detect plugin installation directory dynamically
+ * Works for any marketplace name, not just 'thedotmack'
+ * 
+ * Priority:
+ * 1. CLAUDE_PLUGIN_ROOT env var (set by Claude Code when running hooks)
+ * 2. Detect from script location (for both marketplaces/ and cache/ installs)
+ * 3. Fallback to thedotmack for backwards compatibility
+ */
+function detectMarketplaceRoot(): string {
+  // Priority 1: Use CLAUDE_PLUGIN_ROOT if available (most reliable)
+  if (process.env.CLAUDE_PLUGIN_ROOT) {
+    return process.env.CLAUDE_PLUGIN_ROOT;
+  }
+  
+  // Priority 2: Detect from current script location
+  // This file is at: <plugin-root>/src/shared/paths.ts (compiled) or dist/shared/paths.js
+  // So we go up 2-3 levels to find plugin root
+  let currentDir = _dirname;
+  
+  // If we're in dist/, go up one more level
+  if (basename(currentDir) === 'shared' && basename(dirname(currentDir)) === 'dist') {
+    return dirname(dirname(currentDir)); // plugin root
+  }
+  
+  // If we're in src/, go up two levels
+  if (basename(currentDir) === 'shared' && basename(dirname(currentDir)) === 'src') {
+    return dirname(dirname(currentDir)); // plugin root
+  }
+  
+  // Priority 3: Fallback to original hardcoded path for backwards compatibility
+  logger.warn('SYSTEM', 'Could not detect plugin root dynamically, using fallback', { dirname: _dirname });
+  return join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces', 'thedotmack');
+}
+
+// Plugin installation directory - dynamically detected
+export const MARKETPLACE_ROOT = detectMarketplaceRoot();
 
 // Data subdirectories
 export const ARCHIVES_DIR = join(DATA_DIR, 'archives');
