@@ -572,7 +572,8 @@ install_plugin() {
   cp "${plugin_src}/openclaw.plugin.json" "${installable_dir}/"
 
   # Generate the installable package.json with openclaw.extensions field
-  node -e "
+  # Generate the installable package.json with openclaw.extensions field
+  INSTALLER_PACKAGE_DIR="$installable_dir" node -e "
     const pkg = {
       name: 'claude-mem',
       version: '1.0.0',
@@ -580,7 +581,7 @@ install_plugin() {
       main: 'dist/index.js',
       openclaw: { extensions: ['./dist/index.js'] }
     };
-    require('fs').writeFileSync('${installable_dir}/package.json', JSON.stringify(pkg, null, 2));
+    require('fs').writeFileSync(process.env.INSTALLER_PACKAGE_DIR + '/package.json', JSON.stringify(pkg, null, 2));
   "
 
   # Install the plugin using OpenClaw's CLI
