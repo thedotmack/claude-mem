@@ -124,7 +124,7 @@ interface ObservationSSEPayload {
   concepts: string | null;
   files_read: string | null;
   files_modified: string | null;
-  project: string;
+  project: string | null;
   prompt_number: number;
   created_at_epoch: number;
 }
@@ -159,6 +159,44 @@ interface ClaudeMemPluginConfig {
 const MAX_SSE_BUFFER_SIZE = 1024 * 1024; // 1MB
 const DEFAULT_WORKER_PORT = 37777;
 const TOOL_RESULT_MAX_LENGTH = 1000;
+
+// Agent emoji map for observation feed messages.
+// When creating a new OpenClaw agent, add its agentId and emoji here.
+const AGENT_EMOJI_MAP: Record<string, string> = {
+  "main":          "🦞",
+  "openclaw":      "🦞",
+  "devops":        "🔧",
+  "architect":     "📐",
+  "researcher":    "🔍",
+  "code-reviewer": "🔎",
+  "coder":         "💻",
+  "tester":        "🧪",
+  "debugger":      "🐛",
+  "opsec":         "🛡️",
+  "cloudfarm":     "☁️",
+  "extractor":     "📦",
+};
+
+// Project prefixes that indicate Claude Code sessions (not OpenClaw agents)
+const CLAUDE_CODE_EMOJI = "⌨️";
+const OPENCLAW_DEFAULT_EMOJI = "🦀";
+
+function getSourceLabel(project: string | null | undefined): string {
+  if (!project) return OPENCLAW_DEFAULT_EMOJI;
+  // OpenClaw agent projects are formatted as "openclaw-<agentId>"
+  if (project.startsWith("openclaw-")) {
+    const agentId = project.slice("openclaw-".length);
+    const emoji = AGENT_EMOJI_MAP[agentId] || OPENCLAW_DEFAULT_EMOJI;
+    return `${emoji} ${agentId}`;
+  }
+  // OpenClaw project without agent suffix
+  if (project === "openclaw") {
+    return `🦞 openclaw`;
+  }
+  // Everything else is from Claude Code (project = working directory name)
+  const emoji = CLAUDE_CODE_EMOJI;
+  return `${emoji} ${project}`;
+}
 
 // ============================================================================
 // Worker HTTP Client
@@ -233,7 +271,8 @@ async function workerGetText(
 
 function formatObservationMessage(observation: ObservationSSEPayload): string {
   const title = observation.title || "Untitled";
-  let message = `🧠 Claude-Mem Observation\n**${title}**`;
+  const source = getSourceLabel(observation.project);
+  let message = `${source}\n**${title}**`;
   if (observation.subtitle) {
     message += `\n${observation.subtitle}`;
   }
@@ -387,7 +426,14 @@ async function connectToSSEStream(
 export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   const userConfig = (api.pluginConfig || {}) as ClaudeMemPluginConfig;
   const workerPort = userConfig.workerPort || DEFAULT_WORKER_PORT;
-  const projectName = userConfig.project || "openclaw";
+  const baseProjectName = userConfig.project || "openclaw";
+
+  function getProjectName(ctx: EventContext): string {
+    if (ctx.agentId) {
+      return `openclaw-${ctx.agentId}`;
+    }
+    return baseProjectName;
+  }
 
   // ------------------------------------------------------------------
   // Session tracking for observation I/O
@@ -407,7 +453,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   async function syncMemoryToWorkspace(workspaceDir: string): Promise<void> {
     const contextText = await workerGetText(
       workerPort,
-      `/api/context/inject?projects=${encodeURIComponent(projectName)}`,
+      `/api/context/inject?projects=${encodeURIComponent(baseProjectName)}`,
       api.logger
     );
     if (contextText && contextText.trim().length > 0) {
@@ -429,7 +475,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
     await workerPost(workerPort, "/api/sessions/init", {
       contentSessionId,
-      project: projectName,
+      project: getProjectName(ctx),
       prompt: "",
     }, api.logger);
 
@@ -444,7 +490,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
     await workerPost(workerPort, "/api/sessions/init", {
       contentSessionId,
-      project: projectName,
+      project: getProjectName(ctx),
       prompt: "",
     }, api.logger);
 
@@ -452,13 +498,22 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   });
 
   // ------------------------------------------------------------------
-  // Event: before_agent_start — sync MEMORY.md + track workspace
+  // Event: before_agent_start — init session + sync MEMORY.md + track workspace
   // ------------------------------------------------------------------
   api.on("before_agent_start", async (_event, ctx) => {
     // Track workspace dir so tool_result_persist can sync MEMORY.md later
     if (ctx.workspaceDir) {
       workspaceDirsBySessionKey.set(ctx.sessionKey || "default", ctx.workspaceDir);
     }
+
+    // Initialize session in the worker so observations are not skipped
+    // (the privacy check requires a stored user prompt to exist)
+    const contentSessionId = getContentSessionId(ctx.sessionKey);
+    await workerPost(workerPort, "/api/sessions/init", {
+      contentSessionId,
+      project: getProjectName(ctx),
+      prompt: ctx.sessionKey || "agent run",
+    }, api.logger);
 
     // Sync MEMORY.md before agent runs (provides context to agent)
     if (syncMemoryFile && ctx.workspaceDir) {
@@ -470,6 +525,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // Event: tool_result_persist — record tool observations + sync MEMORY.md
   // ------------------------------------------------------------------
   api.on("tool_result_persist", (event, ctx) => {
+    api.logger.info(`[claude-mem] tool_result_persist fired: tool=${event.toolName ?? "unknown"} agent=${ctx.agentId ?? "none"} session=${ctx.sessionKey ?? "none"}`);
     const toolName = event.toolName;
     if (!toolName || toolName.startsWith("memory_")) return;
 
@@ -527,7 +583,10 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       }
     }
 
-    workerPostFireAndForget(workerPort, "/api/sessions/summarize", {
+    // Await summarize so the worker receives it before complete.
+    // This also gives in-flight tool_result_persist observations time to arrive
+    // (they use fire-and-forget and may still be in transit).
+    await workerPost(workerPort, "/api/sessions/summarize", {
       contentSessionId,
       last_assistant_message: lastAssistantMessage,
     }, api.logger);

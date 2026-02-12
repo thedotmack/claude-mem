@@ -9,6 +9,7 @@
  */
 
 import http from 'http';
+import { execFileSync } from 'child_process';
 import { logger } from '../../utils/logger.js';
 import {
   getChildProcesses,
@@ -74,6 +75,21 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
   // STEP 5: Close database connection (includes ChromaSync cleanup)
   if (config.dbManager) {
     await config.dbManager.close();
+  }
+
+  // STEP 5.5: Kill any chroma-mcp children that survived transport.close() (Unix only)
+  // On Unix, getChildProcesses() returns [] (Windows-only), so chroma-mcp
+  // subprocesses spawned via StdioClientTransport may escape STEP 5 cleanup
+  if (process.platform !== 'win32') {
+    try {
+      execFileSync('pkill', ['-P', String(process.pid), '-f', 'chroma-mcp'], {
+        timeout: 3000,
+        stdio: 'ignore'
+      });
+      logger.info('SYSTEM', 'Killed chroma-mcp child processes');
+    } catch {
+      // pkill returns exit code 1 if no processes matched — that's fine
+    }
   }
 
   // STEP 6: Force kill any remaining child processes (Windows zombie port fix)

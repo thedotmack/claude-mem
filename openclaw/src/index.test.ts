@@ -346,7 +346,7 @@ describe("Observation I/O event handlers", () => {
     assert.equal(initRequests.length, 1, "should re-init after compaction");
   });
 
-  it("before_agent_start does not call init", async () => {
+  it("before_agent_start calls init for session privacy check", async () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
@@ -354,7 +354,7 @@ describe("Observation I/O event handlers", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const initRequests = receivedRequests.filter((r) => r.url === "/api/sessions/init");
-    assert.equal(initRequests.length, 0, "before_agent_start should not init");
+    assert.equal(initRequests.length, 1, "before_agent_start should init session");
   });
 
   it("tool_result_persist sends observation to worker", async () => {

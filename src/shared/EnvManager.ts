@@ -18,33 +18,15 @@ import { logger } from '../utils/logger.js';
 const DATA_DIR = join(homedir(), '.claude-mem');
 export const ENV_FILE_PATH = join(DATA_DIR, '.env');
 
-// Essential system environment variables that subprocesses need to function
-const ESSENTIAL_SYSTEM_VARS = [
-  'PATH',
-  'HOME',
-  'USER',
-  'SHELL',
-  'TMPDIR',
-  'TMP',
-  'TEMP',
-  'LANG',
-  'LC_ALL',
-  'LC_CTYPE',
-  // Node.js specific
-  'NODE_ENV',
-  'NODE_PATH',
-  // Platform specific
-  'SYSTEMROOT',      // Windows
-  'WINDIR',          // Windows
-  'PROGRAMFILES',    // Windows
-  'APPDATA',         // Windows
-  'LOCALAPPDATA',    // Windows
-  'XDG_RUNTIME_DIR', // Linux
-  'XDG_CONFIG_HOME', // Linux
-  'XDG_DATA_HOME',   // Linux
-  // Claude Code specific (not credentials)
-  'CLAUDE_CONFIG_DIR',
-  'CLAUDE_CODE_DEBUG_LOGS_DIR',
+// Environment variables to STRIP from subprocess environment (blocklist approach)
+// Only ANTHROPIC_API_KEY is stripped because it's the specific variable that causes
+// Issue #733: project .env files set ANTHROPIC_API_KEY which the SDK auto-discovers,
+// causing memory operations to bill personal API accounts instead of CLI subscription.
+//
+// All other env vars (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL, system vars, etc.)
+// are passed through to avoid breaking CLI authentication, proxies, and platform features.
+const BLOCKED_ENV_VARS = [
+  'ANTHROPIC_API_KEY',  // Issue #733: Prevent auto-discovery from project .env files
 ];
 
 // Credential keys that claude-mem manages
@@ -191,44 +173,57 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
 }
 
 /**
- * Build a clean, isolated environment for spawning SDK subprocesses
+ * Build a clean environment for spawning SDK subprocesses
  *
- * This is the key function that prevents Issue #733:
- * - Includes only essential system variables (PATH, HOME, etc.)
- * - Adds credentials ONLY from claude-mem's .env file
- * - Does NOT inherit random ANTHROPIC_API_KEY from user's shell
+ * Uses a BLOCKLIST approach: inherits the full process environment but strips
+ * only ANTHROPIC_API_KEY to prevent Issue #733 (accidental billing from project .env files).
  *
- * @param includeCredentials - Whether to include API keys (default: true)
+ * All other variables pass through, including:
+ * - ANTHROPIC_AUTH_TOKEN (CLI subscription auth)
+ * - ANTHROPIC_BASE_URL (custom proxy endpoints)
+ * - Platform-specific vars (USERPROFILE, XDG_*, etc.)
+ *
+ * If claude-mem has an explicit ANTHROPIC_API_KEY in ~/.claude-mem/.env, it's re-injected
+ * after stripping, so the managed credential takes precedence over any ambient value.
+ *
+ * @param includeCredentials - Whether to include API keys from ~/.claude-mem/.env (default: true)
  */
 export function buildIsolatedEnv(includeCredentials: boolean = true): Record<string, string> {
+  // 1. Start with full process environment
   const isolatedEnv: Record<string, string> = {};
-
-  // 1. Copy essential system variables from current process
-  for (const key of ESSENTIAL_SYSTEM_VARS) {
-    const value = process.env[key];
-    if (value !== undefined) {
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && !BLOCKED_ENV_VARS.includes(key)) {
       isolatedEnv[key] = value;
     }
   }
 
-  // 2. Add SDK entrypoint marker
+  // 2. Override SDK entrypoint marker
   isolatedEnv.CLAUDE_CODE_ENTRYPOINT = 'sdk-ts';
 
-  // 3. Add credentials from claude-mem's .env file (NOT from process.env)
+  // 3. Re-inject managed credentials from claude-mem's .env file
   if (includeCredentials) {
     const credentials = loadClaudeMemEnv();
 
     // Only add ANTHROPIC_API_KEY if explicitly configured in claude-mem
-    // If not configured, CLI billing will be used (via pathToClaudeCodeExecutable)
+    // If not configured, CLI billing will be used (via ANTHROPIC_AUTH_TOKEN passthrough)
     if (credentials.ANTHROPIC_API_KEY) {
       isolatedEnv.ANTHROPIC_API_KEY = credentials.ANTHROPIC_API_KEY;
     }
-    // Note: GEMINI_API_KEY and OPENROUTER_API_KEY are handled by their respective agents
+    // Note: GEMINI_API_KEY and OPENROUTER_API_KEY pass through from process.env,
+    // but claude-mem's .env takes precedence if configured
     if (credentials.GEMINI_API_KEY) {
       isolatedEnv.GEMINI_API_KEY = credentials.GEMINI_API_KEY;
     }
     if (credentials.OPENROUTER_API_KEY) {
       isolatedEnv.OPENROUTER_API_KEY = credentials.OPENROUTER_API_KEY;
+    }
+
+    // 4. Pass through Claude CLI's OAuth token if available (fallback for CLI subscription billing)
+    // When no ANTHROPIC_API_KEY is configured, the spawned CLI uses subscription billing
+    // which requires either ~/.claude/.credentials.json or CLAUDE_CODE_OAUTH_TOKEN.
+    // The worker inherits this token from the Claude Code session that started it.
+    if (!isolatedEnv.ANTHROPIC_API_KEY && process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+      isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
     }
   }
 
@@ -269,6 +264,9 @@ export function hasAnthropicApiKey(): boolean {
 export function getAuthMethodDescription(): string {
   if (hasAnthropicApiKey()) {
     return 'API key (from ~/.claude-mem/.env)';
+  }
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+    return 'Claude Code OAuth token (from parent process)';
   }
   return 'Claude Code CLI (subscription billing)';
 }

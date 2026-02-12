@@ -2,6 +2,156 @@
 
 All notable changes to claude-mem.
 
+## [v10.0.3] - 2026-02-11
+
+## Fix: Prevent chroma-mcp spawn storm (PR #1065)
+
+Fixes a critical bug where killing the worker daemon during active sessions caused **641 chroma-mcp Python processes** to spawn in ~5 minutes, consuming 75%+ CPU and ~64GB virtual memory.
+
+### Root Cause
+
+`ChromaSync.ensureConnection()` had no connection mutex. Concurrent fire-and-forget `syncObservation()` calls from multiple sessions raced through the check-then-act guard, each spawning a chroma-mcp subprocess via `StdioClientTransport`. Error-driven reconnection created a positive feedback loop.
+
+### 5-Layer Defense
+
+| Layer | Mechanism | Purpose |
+|-------|-----------|---------|
+| **0** | Connection mutex via promise memoization | Coalesces concurrent callers onto a single spawn attempt |
+| **1** | Pre-spawn process count guard (`execFileSync('ps')`) | Kills excess chroma-mcp processes before spawning new ones |
+| **2** | Hardened `close()` with try-finally + Unix `pkill -P` fallback | Guarantees state reset even on error, kills orphaned children |
+| **3** | Count-based orphan reaper in `ProcessManager` | Kills by count (not age), catches spawn storms where all processes are young |
+| **4** | Circuit breaker (3 failures → 60s cooldown) | Stops error-driven reconnection positive feedback loop |
+
+### Additional Fix
+
+- Process guards now use `etime`-based sorting instead of PID ordering for reliable age determination (PIDs wrap and don't guarantee ordering)
+
+### Testing
+
+- 16 new tests for mutex, circuit breaker, close() hardening, and count guard
+- All tests pass (947 pass, 3 skip)
+
+Closes #1063, closes #695. Relates to #1010, #707.
+
+**Contributors:** @rodboev
+
+## [v10.0.2] - 2026-02-11
+
+## Bug Fixes
+
+- **Prevent daemon silent death from SIGHUP + unhandled errors** — Worker process could silently die when receiving SIGHUP signals or encountering unhandled errors, leaving hooks without a backend. Now properly handles these signals and prevents silent crashes.
+- **Hook resilience and worker lifecycle improvements** — Comprehensive fixes for hook command error classification, addressing issues #957, #923, #984, #987, and #1042. Hooks now correctly distinguish between worker unavailability errors and other failures.
+- **Clarify TypeError order dependency in error classifier** — Fixed error classification logic to properly handle TypeError ordering edge cases.
+
+## New Features
+
+- **Project-scoped statusline counter utility** — Added `statusline-counts.js` for tracking observation counts per project in the Claude Code status line.
+
+## Internal
+
+- Added test coverage for hook command error classification and process manager
+- Worker service and MCP server lifecycle improvements
+- Process manager enhancements for better cross-platform stability
+
+### Contributors
+- @rodboev — Hook resilience and worker lifecycle fixes (PR #1056)
+
+## [v10.0.1] - 2026-02-11
+
+## What's Changed
+
+### OpenClaw Observation Feed
+- Enabled SSE observation feed for OpenClaw agent sessions, allowing real-time streaming of observations to connected OpenClaw clients
+- Fixed `ObservationSSEPayload.project` type to be nullable, preventing type errors when project context is unavailable
+- Added `EnvManager` support for OpenClaw environment configuration
+
+### Build Artifacts
+- Rebuilt worker service and MCP server with latest changes
+
+## [v10.0.0] - 2026-02-11
+
+## OpenClaw Plugin — Persistent Memory for OpenClaw Agents
+
+Claude-mem now has an official [OpenClaw](https://openclaw.ai) plugin, bringing persistent memory to agents running on the OpenClaw gateway. This is a major milestone — claude-mem's memory system is no longer limited to Claude Code sessions.
+
+### What It Does
+
+The plugin bridges claude-mem's observation pipeline with OpenClaw's embedded runner (`pi-embedded`), which calls the Anthropic API directly without spawning a `claude` process. Three core capabilities:
+
+1. **Observation Recording** — Captures every tool call from OpenClaw agents and sends it to the claude-mem worker for AI-powered compression and storage
+2. **MEMORY.md Live Sync** — Writes a continuously-updated memory timeline to each agent's workspace, so agents start every session with full context from previous work
+3. **Observation Feed** — Streams new observations to messaging channels (Telegram, Discord, Slack, Signal, WhatsApp, LINE) in real-time via SSE
+
+### Quick Start
+
+Add claude-mem to your OpenClaw gateway config:
+
+```json
+{
+  "plugins": {
+    "claude-mem": {
+      "enabled": true,
+      "config": {
+        "project": "my-project",
+        "syncMemoryFile": true,
+        "observationFeed": {
+          "enabled": true,
+          "channel": "telegram",
+          "to": "your-chat-id"
+        }
+      }
+    }
+  }
+}
+```
+
+The claude-mem worker service must be running on the same machine (`localhost:37777`).
+
+### Commands
+
+- `/claude-mem-status` — Worker health check, active sessions, feed connection state
+- `/claude-mem-feed` — Show/toggle observation feed status
+- `/claude-mem-feed on|off` — Enable/disable feed
+
+### How the Event Lifecycle Works
+
+```
+OpenClaw Gateway
+  ├── session_start ──────────→ Init claude-mem session
+  ├── before_agent_start ─────→ Sync MEMORY.md + track workspace
+  ├── tool_result_persist ────→ Record observation + re-sync MEMORY.md
+  ├── agent_end ──────────────→ Summarize + complete session
+  ├── session_end ────────────→ Clean up session tracking
+  └── gateway_start ──────────→ Reset all tracking
+```
+
+All observation recording and MEMORY.md syncs are fire-and-forget — they never block the agent.
+
+📖 Full documentation: [OpenClaw Integration Guide](https://docs.claude-mem.ai/docs/openclaw-integration)
+
+---
+
+## Windows Platform Improvements
+
+- **ProcessManager**: Migrated daemon spawning from deprecated WMIC to PowerShell `Start-Process` with `-WindowStyle Hidden`
+- **ChromaSync**: Re-enabled vector search on Windows (was previously disabled entirely)
+- **Worker Service**: Added unified DB-ready gate middleware — all DB-dependent endpoints now wait for initialization instead of returning "Database not initialized" errors
+- **EnvManager**: Switched from fragile allowlist to simple blocklist for subprocess env vars (only strips `ANTHROPIC_API_KEY` per Issue #733)
+
+## Session Management Fixes
+
+- Fixed unbounded session tracking map growth — maps are now cleaned up on `session_end`
+- Session init moved to `session_start` and `after_compaction` hooks for correct lifecycle handling
+
+## SSE Fixes
+
+- Fixed stream URL consistency across the codebase
+- Fixed multi-line SSE data frame parsing (concatenates `data:` lines per SSE spec)
+
+## Issue Triage
+
+Closed 37+ duplicate/stale/invalid issues across multiple triage phases, significantly cleaning up the issue tracker.
+
 ## [v9.1.1] - 2026-02-07
 
 ## Critical Bug Fix: Worker Initialization Failure
@@ -1372,94 +1522,4 @@ Refactored context loading logic to differentiate between code and non-code mode
 ## [v8.0.3] - 2025-12-23
 
 Fix critical worker crashes on startup (v8.0.2 regression)
-
-## [v8.0.2] - 2025-12-23
-
-New "chill" remix of code mode for users who want fewer, more selective observations.
-
-## Features
-
-- **code--chill mode**: A behavioral variant that produces fewer observations
-  - Only records things "painful to rediscover" - shipped features, architectural decisions, non-obvious gotchas
-  - Skips routine work, straightforward implementations, and obvious changes
-  - Philosophy: "When in doubt, skip it"
-
-## Documentation
-
-- Updated modes.mdx with all 28 language modes (was 10)
-- Added Code Mode Variants section documenting chill mode
-
-## Usage
-
-Set in ~/.claude-mem/settings.json:
-```json
-{
-  "CLAUDE_MEM_MODE": "code--chill"
-}
-```
-
-## [v8.0.1] - 2025-12-23
-
-## 🎨 UI Improvements
-
-- **Header Redesign**: Moved documentation and X (Twitter) links from settings modal to main header for better accessibility
-- **Removed Product Hunt Badge**: Cleaned up header layout by removing the Product Hunt badge
-- **Icon Reorganization**: Reordered header icons for improved UX flow (Docs → X → Discord → GitHub)
-
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v8.0.0] - 2025-12-23
-
-## 🌍 Major Features
-
-### **Mode System**: Context-aware observation capture tailored to different workflows
-- **Code Development mode** (default): Tracks bugfixes, features, refactors, and more
-- **Email Investigation mode**: Optimized for email analysis workflows
-- Extensible architecture for custom domains
-
-### **28 Language Support**: Full multilingual memory
-- Arabic, Bengali, Chinese, Czech, Danish, Dutch, Finnish, French, German, Greek
-- Hebrew, Hindi, Hungarian, Indonesian, Italian, Japanese, Korean, Norwegian, Polish
-- Portuguese (Brazilian), Romanian, Russian, Spanish, Swedish, Thai, Turkish
-- Ukrainian, Vietnamese
-- All observations, summaries, and narratives generated in your chosen language
-
-### **Inheritance Architecture**: Language modes inherit from base modes
-- Consistent observation types across languages
-- Locale-specific output while maintaining structural integrity
-- JSON-based configuration for easy customization
-
-## 🔧 Technical Improvements
-
-- **ModeManager**: Centralized mode loading and configuration validation
-- **Dynamic Prompts**: SDK prompts now adapt based on active mode
-- **Mode-Specific Icons**: Observation types display contextual icons/emojis per mode
-- **Fail-Fast Error Handling**: Complete removal of silent failures across all layers
-
-## 📚 Documentation
-
-- New docs/public/modes.mdx documenting the mode system
-- 28 translated README files for multilingual community support
-- Updated configuration guide for mode selection
-
-## 🔨 Breaking Changes
-
-- **None** - Mode system is fully backward compatible
-- Default mode is 'code' (existing behavior)
-- Settings: New `CLAUDE_MEM_MODE` option (defaults to 'code')
-
----
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.4.5...v8.0.0
-**View PR**: https://github.com/thedotmack/claude-mem/pull/412
-
-## [v7.4.5] - 2025-12-21
-
-## Bug Fixes
-
-- Fix missing `formatDateTime` import in SearchManager that broke `get_context_timeline` mem-search function
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 

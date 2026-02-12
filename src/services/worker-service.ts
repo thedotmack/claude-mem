@@ -14,6 +14,7 @@ import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
 
@@ -66,6 +67,8 @@ import {
   removePidFile,
   getPlatformTimeout,
   cleanupOrphanedProcesses,
+  cleanupExcessChromaProcesses,
+  cleanStalePidFile,
   spawnDaemon,
   createSignalHandler
 } from './infrastructure/ProcessManager.js';
@@ -247,6 +250,22 @@ export class WorkerService {
       this.isShuttingDown = shutdownRef.value;
       handler('SIGINT');
     });
+
+    // SIGHUP: sent by kernel when controlling terminal closes.
+    // Daemon mode: ignore it (survive parent shell exit).
+    // Interactive mode: treat like SIGTERM (graceful shutdown).
+    if (process.platform !== 'win32') {
+      if (process.argv.includes('--daemon')) {
+        process.on('SIGHUP', () => {
+          logger.debug('SYSTEM', 'Ignoring SIGHUP in daemon mode');
+        });
+      } else {
+        process.on('SIGHUP', () => {
+          this.isShuttingDown = shutdownRef.value;
+          handler('SIGHUP');
+        });
+      }
+    }
   }
 
   /**
@@ -334,6 +353,7 @@ export class WorkerService {
   private async initializeBackground(): Promise<void> {
     try {
       await cleanupOrphanedProcesses();
+      await cleanupExcessChromaProcesses();
 
       // Load mode configuration
       const { ModeManager } = await import('./domain/ModeManager.js');
@@ -805,6 +825,9 @@ export class WorkerService {
  * @returns true if worker is healthy (existing or newly started), false on failure
  */
 async function ensureWorkerStarted(port: number): Promise<boolean> {
+  // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
+  cleanStalePidFile();
+
   // Check if worker is already running and healthy
   if (await waitForHealth(port, 1000)) {
     const versionCheck = await checkVersionMatch(port);
@@ -815,7 +838,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
       });
 
       await httpShutdown(port);
-      const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+      const freed = await waitForPortFree(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
       if (!freed) {
         logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port });
         return false;
@@ -831,7 +854,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   const portInUse = await isPortInUse(port);
   if (portInUse) {
     logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
-    const healthy = await waitForHealth(port, getPlatformTimeout(15000));
+    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
     if (healthy) {
       logger.info('SYSTEM', 'Worker is now healthy');
       return true;
@@ -858,7 +881,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   // PID file is written by the worker itself after listen() succeeds
   // This is race-free and works correctly on Windows where cmd.exe PID is useless
 
-  const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+  const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
   if (!healthy) {
     removePidFile();
     logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
@@ -930,7 +953,7 @@ async function main() {
       // PID file is written by the worker itself after listen() succeeds
       // This is race-free and works correctly on Windows where cmd.exe PID is useless
 
-      const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+      const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
       if (!healthy) {
         removePidFile();
         logger.error('SYSTEM', 'Worker failed to restart');
@@ -1025,6 +1048,18 @@ async function main() {
 
     case '--daemon':
     default: {
+      // Prevent daemon from dying silently on unhandled errors.
+      // The HTTP server can continue serving even if a background task throws.
+      process.on('unhandledRejection', (reason) => {
+        logger.error('SYSTEM', 'Unhandled rejection in daemon', {
+          reason: reason instanceof Error ? reason.message : String(reason)
+        });
+      });
+      process.on('uncaughtException', (error) => {
+        logger.error('SYSTEM', 'Uncaught exception in daemon', {}, error as Error);
+        // Don't exit — keep the HTTP server running
+      });
+
       const worker = new WorkerService();
       worker.start().catch((error) => {
         logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);

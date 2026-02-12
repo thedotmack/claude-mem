@@ -2,7 +2,7 @@
   "id": "claude-mem",
   "name": "Claude-Mem (Persistent Memory)",
   "description": "Official OpenClaw plugin for Claude-Mem. Records observations from embedded runner sessions and streams them to messaging channels.",
-  "kind": "memory",
+  "kind": "integration",
   "version": "1.0.0",
   "author": "thedotmack",
   "homepage": "https://claude-mem.com",
