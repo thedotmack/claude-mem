@@ -69,11 +69,22 @@ async function isWorkerHealthy(): Promise<boolean> {
 
 /**
  * Get the current plugin version from package.json
+ * @returns Plugin version string, or '0.0.0-unknown' if package.json cannot be read
  */
 function getPluginVersion(): string {
-  const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-  return packageJson.version;
+  try {
+    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    return packageJson.version;
+  } catch (error) {
+    // Graceful fallback: return unknown version instead of crashing
+    // This prevents hook failures during plugin updates or temporary file access issues
+    logger.warn('SYSTEM', 'Could not read plugin version from package.json', {
+      path: path.join(MARKETPLACE_ROOT, 'package.json'),
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return '0.0.0-unknown';
+  }
 }
 
 /**
