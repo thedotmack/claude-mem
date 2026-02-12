@@ -2,7 +2,7 @@
 
 **Total: 132 anti-patterns to fix**
 
-Run detector: `bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts`
+Run detector: `npx tsx scripts/anti-pattern-test/detect-error-handling-antipatterns.ts`
 
 ## Progress Tracker
 

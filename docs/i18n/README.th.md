@@ -145,7 +145,7 @@
 - **[วิวัฒนาการของสถาปัตยกรรม](https://docs.claude-mem.ai/architecture-evolution)** - การเดินทางจาก v3 สู่ v5
 - **[สถาปัตยกรรม Hooks](https://docs.claude-mem.ai/hooks-architecture)** - วิธีที่ Claude-Mem ใช้ lifecycle hooks
 - **[การอ้างอิง Hooks](https://docs.claude-mem.ai/architecture/hooks)** - อธิบาย hook scripts ทั้ง 7 ตัว
-- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API และการจัดการ Bun
+- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API และการจัดการ Node.js
 - **[ฐานข้อมูล](https://docs.claude-mem.ai/architecture/database)** - SQLite schema และการค้นหา FTS5
 - **[สถาปัตยกรรมการค้นหา](https://docs.claude-mem.ai/architecture/search-architecture)** - การค้นหาแบบไฮบริดด้วยฐานข้อมูลเวกเตอร์ Chroma
 
@@ -163,7 +163,7 @@
 
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook scripts)
 2. **Smart Install** - ตัวตรวจสอบการพึ่งพาที่ถูกแคช (pre-hook script, ไม่ใช่ lifecycle hook)
-3. **Worker Service** - HTTP API บนพอร์ต 37777 พร้อม web viewer UI และ 10 search endpoints, จัดการโดย Bun
+3. **Worker Service** - HTTP API บนพอร์ต 37777 พร้อม web viewer UI และ 10 search endpoints, จัดการโดย Node.js
 4. **SQLite Database** - จัดเก็บเซสชัน การสังเกต สรุป
 5. **mem-search Skill** - คิวรีภาษาธรรมชาติพร้อมการเปิดเผยแบบก้าวหน้า
 6. **Chroma Vector Database** - การค้นหาแบบไฮบริดทางความหมาย + คีย์เวิร์ดสำหรับการดึงบริบทอัจฉริยะ
@@ -219,7 +219,6 @@ Claude-Mem นำเสนอ **beta channel** พร้อมคุณสมบ
 
 - **Node.js**: 18.0.0 หรือสูงกว่า
 - **Claude Code**: เวอร์ชันล่าสุดพร้อมการสนับสนุนปลั๊กอิน
-- **Bun**: JavaScript runtime และตัวจัดการกระบวนการ (ติดตั้งอัตโนมัติหากไม่มี)
 - **uv**: ตัวจัดการแพ็คเกจ Python สำหรับการค้นหาเวกเตอร์ (ติดตั้งอัตโนมัติหากไม่มี)
 - **SQLite 3**: สำหรับการจัดเก็บถาวร (รวมอยู่)
 

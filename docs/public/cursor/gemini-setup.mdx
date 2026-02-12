@@ -32,10 +32,10 @@ git clone https://github.com/thedotmack/claude-mem.git
 cd claude-mem
 
 # Install dependencies
-bun install
+npm install
 
 # Build the project
-bun run build
+npm run build
 ```
 
 ## Step 3: Configure Gemini Provider
@@ -45,7 +45,7 @@ bun run build
 Run the setup wizard which guides you through everything:
 
 ```bash
-bun run cursor:setup
+npm run cursor:setup
 ```
 
 The wizard will:
@@ -77,8 +77,8 @@ Replace `YOUR_GEMINI_API_KEY` with your actual API key.
 Then install hooks and start the worker:
 
 ```bash
-bun run cursor:install
-bun run worker:start
+npm run cursor:install
+npm run worker:start
 ```
 
 ## Step 4: Restart Cursor
@@ -89,10 +89,10 @@ Close and reopen Cursor IDE for the hooks to take effect.
 
 ```bash
 # Check worker is running
-bun run worker:status
+npm run worker:status
 
 # Check hooks are installed
-bun run cursor:status
+npm run cursor:status
 ```
 
 Open http://localhost:37777 to see the memory viewer.
@@ -169,7 +169,7 @@ You're exceeding the free tier limits. Options:
 Check the worker logs:
 
 ```bash
-bun run worker:logs
+npm run worker:logs
 ```
 
 Look for error messages related to Gemini API calls.

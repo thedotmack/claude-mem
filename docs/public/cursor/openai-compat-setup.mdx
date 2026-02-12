@@ -37,10 +37,10 @@ git clone https://github.com/thedotmack/claude-mem.git
 cd claude-mem
 
 # Install dependencies
-bun install
+npm install
 
 # Build the project
-bun run build
+npm run build
 ```
 
 ## Step 3: Configure OpenAI-Compatible Provider
@@ -50,7 +50,7 @@ bun run build
 Run the setup wizard which guides you through everything:
 
 ```bash
-bun run cursor:setup
+npm run cursor:setup
 ```
 
 When prompted for provider, select **OpenAI-Compatible**.
@@ -90,8 +90,8 @@ EOF
 Then install hooks and start the worker:
 
 ```bash
-bun run cursor:install
-bun run worker:start
+npm run cursor:install
+npm run worker:start
 ```
 
 ## Step 4: Restart Cursor
@@ -102,10 +102,10 @@ Close and reopen Cursor IDE for the hooks to take effect.
 
 ```bash
 # Check worker is running
-bun run worker:status
+npm run worker:status
 
 # Check hooks are installed
-bun run cursor:status
+npm run cursor:status
 ```
 
 Open http://localhost:37777 to see the memory viewer.
@@ -185,7 +185,7 @@ Rate limits vary by model and your account tier. If you hit limits:
 Check the worker logs for details:
 
 ```bash
-bun run worker:logs
+npm run worker:logs
 ```
 
 Common issues:

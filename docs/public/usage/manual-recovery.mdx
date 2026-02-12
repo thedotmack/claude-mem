@@ -28,7 +28,7 @@ The interactive CLI tool is the safest and easiest way to recover stuck observat
 
 ```bash
 # Check status and prompt for recovery
-bun scripts/check-pending-queue.ts
+npx tsx scripts/check-pending-queue.ts
 ```
 
 This will:
@@ -44,10 +44,10 @@ For scripting or when you're confident recovery is needed:
 
 ```bash
 # Auto-process without prompting
-bun scripts/check-pending-queue.ts --process
+npx tsx scripts/check-pending-queue.ts --process
 
 # Limit to 5 sessions
-bun scripts/check-pending-queue.ts --process --limit 5
+npx tsx scripts/check-pending-queue.ts --process --limit 5
 ```
 
 ## Understanding Queue States
@@ -74,7 +74,7 @@ Messages in `processing` state for **>5 minutes** are considered stuck:
 **Best for**: Regular users, interactive sessions, when you want visibility into what's happening
 
 ```bash
-bun scripts/check-pending-queue.ts
+npx tsx scripts/check-pending-queue.ts
 ```
 
 **Example Output**:
@@ -179,14 +179,14 @@ curl -X POST http://localhost:37777/api/pending-queue/process \
 curl http://localhost:37777/api/pending-queue
 
 # Or use CLI tool which checks automatically
-bun scripts/check-pending-queue.ts
+npx tsx scripts/check-pending-queue.ts
 ```
 
 ### 2. Start with Low Session Limits
 
 ```bash
 # Process only 5 sessions at a time
-bun scripts/check-pending-queue.ts --process --limit 5
+npx tsx scripts/check-pending-queue.ts --process --limit 5
 ```
 
 This prevents overwhelming the worker with too many concurrent SDK agents.
@@ -281,7 +281,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 "
 
 # Then trigger recovery
-bun scripts/check-pending-queue.ts --process
+npx tsx scripts/check-pending-queue.ts --process
 ```
 
 ### Worker Crashes During Recovery
@@ -297,7 +297,7 @@ bun scripts/check-pending-queue.ts --process
 
 2. **Reduce session limit**:
    ```bash
-   bun scripts/check-pending-queue.ts --process --limit 3
+   npx tsx scripts/check-pending-queue.ts --process --limit 3
    ```
 
 3. **Check for SDK errors in logs**:
@@ -386,7 +386,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 # Check if worker is healthy
 if curl -f http://localhost:37777/health > /dev/null 2>&1; then
   # Auto-process up to 5 sessions
-  bun scripts/check-pending-queue.ts --process --limit 5
+  npx tsx scripts/check-pending-queue.ts --process --limit 5
 else
   echo "Worker not healthy, skipping recovery"
   exit 1
@@ -414,7 +414,7 @@ fi
 # Process pending queues before system shutdown
 
 echo "Processing pending queues before shutdown..."
-bun scripts/check-pending-queue.ts --process --limit 20
+npx tsx scripts/check-pending-queue.ts --process --limit 20
 
 echo "Waiting for processing to complete..."
 sleep 10
@@ -439,8 +439,8 @@ If you're upgrading from v4.x to v5.x:
 
 **Migration Steps**:
 1. Upgrade to v5.x
-2. Check for stuck messages: `bun scripts/check-pending-queue.ts`
-3. Process if needed: `bun scripts/check-pending-queue.ts --process`
+2. Check for stuck messages: `npx tsx scripts/check-pending-queue.ts`
+3. Process if needed: `npx tsx scripts/check-pending-queue.ts --process`
 4. Add recovery to your workflow (cron job, pre-shutdown script, etc.)
 
 ## See Also

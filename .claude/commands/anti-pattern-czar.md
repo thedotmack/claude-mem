@@ -10,7 +10,7 @@ Help the user systematically fix error handling anti-patterns detected by the au
 
 1. **Run the detector:**
    ```bash
-   bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts
+   npx tsx scripts/anti-pattern-test/detect-error-handling-antipatterns.ts
    ```
 
 2. **Analyze the results:**

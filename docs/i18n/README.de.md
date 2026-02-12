@@ -146,7 +146,7 @@ Starten Sie Claude Code neu. Kontext aus vorherigen Sitzungen wird automatisch i
 - **[Architekturentwicklung](https://docs.claude-mem.ai/architecture-evolution)** - Die Reise von v3 zu v5
 - **[Hooks-Architektur](https://docs.claude-mem.ai/hooks-architecture)** - Wie Claude-Mem Lifecycle-Hooks verwendet
 - **[Hooks-Referenz](https://docs.claude-mem.ai/architecture/hooks)** - 7 Hook-Skripte erklärt
-- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & Bun-Verwaltung
+- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & Node.js-Verwaltung
 - **[Datenbank](https://docs.claude-mem.ai/architecture/database)** - SQLite-Schema & FTS5-Suche
 - **[Such-Architektur](https://docs.claude-mem.ai/architecture/search-architecture)** - Hybride Suche mit Chroma-Vektordatenbank
 
@@ -164,7 +164,7 @@ Starten Sie Claude Code neu. Kontext aus vorherigen Sitzungen wird automatisch i
 
 1. **5 Lifecycle-Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 Hook-Skripte)
 2. **Smart Install** - Gecachter Abhängigkeitsprüfer (Pre-Hook-Skript, kein Lifecycle-Hook)
-3. **Worker Service** - HTTP API auf Port 37777 mit Web-Viewer-UI und 10 Such-Endpunkten, verwaltet von Bun
+3. **Worker Service** - HTTP API auf Port 37777 mit Web-Viewer-UI und 10 Such-Endpunkten, verwaltet von Node.js
 4. **SQLite-Datenbank** - Speichert Sitzungen, Beobachtungen, Zusammenfassungen
 5. **mem-search Skill** - Natürlichsprachliche Abfragen mit progressiver Offenlegung
 6. **Chroma-Vektordatenbank** - Hybride semantische + Stichwortsuche für intelligenten Kontextabruf
@@ -220,7 +220,6 @@ Siehe **[Beta-Funktionen-Dokumentation](https://docs.claude-mem.ai/beta-features
 
 - **Node.js**: 18.0.0 oder höher
 - **Claude Code**: Neueste Version mit Plugin-Unterstützung
-- **Bun**: JavaScript-Laufzeitumgebung und Prozessmanager (wird automatisch installiert, falls fehlend)
 - **uv**: Python-Paketmanager für Vektorsuche (wird automatisch installiert, falls fehlend)
 - **SQLite 3**: Für persistente Speicherung (enthalten)
 

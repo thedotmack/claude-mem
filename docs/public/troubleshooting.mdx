@@ -200,10 +200,10 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
    npm run worker:start
    ```
 
-5. Verify Bun is installed:
+5. Verify Node.js is installed:
    ```bash
-   which bun
-   bun --version
+   which node
+   node --version
    ```
 
 ### Port Allocation Failed
@@ -254,9 +254,9 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
    sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
    ```
 
-4. Verify Bun installation:
+4. Verify Node.js installation:
    ```bash
-   bun --version
+   node --version
    ```
 
 ### Worker Not Processing Observations
@@ -299,13 +299,13 @@ The interactive CLI tool provides the safest and most user-friendly recovery exp
 
 ```bash
 # Check queue status and prompt for recovery
-bun scripts/check-pending-queue.ts
+npx tsx scripts/check-pending-queue.ts
 
 # Auto-process without prompting
-bun scripts/check-pending-queue.ts --process
+npx tsx scripts/check-pending-queue.ts --process
 
 # Process up to 5 sessions
-bun scripts/check-pending-queue.ts --process --limit 5
+npx tsx scripts/check-pending-queue.ts --process --limit 5
 ```
 
 **What it does**:
@@ -425,7 +425,7 @@ If recovery fails or messages remain stuck:
 
    Then trigger recovery:
    ```bash
-   bun scripts/check-pending-queue.ts --process
+   npx tsx scripts/check-pending-queue.ts --process
    ```
 
 5. **Check worker logs for SDK errors**:

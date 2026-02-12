@@ -146,7 +146,7 @@ Reporniți Claude Code. Contextul din sesiunile anterioare va apărea automat î
 - **[Evoluția Arhitecturii](https://docs.claude-mem.ai/architecture-evolution)** - Parcursul de la v3 la v5
 - **[Arhitectura Hooks](https://docs.claude-mem.ai/hooks-architecture)** - Cum folosește Claude-Mem hook-urile de ciclu de viață
 - **[Referință Hooks](https://docs.claude-mem.ai/architecture/hooks)** - 7 scripturi de hook explicate
-- **[Serviciu Worker](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API și gestionare Bun
+- **[Serviciu Worker](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API și gestionare Node.js
 - **[Baza de Date](https://docs.claude-mem.ai/architecture/database)** - Schemă SQLite și căutare FTS5
 - **[Arhitectura Căutării](https://docs.claude-mem.ai/architecture/search-architecture)** - Căutare hibridă cu baza de date vectorială Chroma
 
@@ -164,7 +164,7 @@ Reporniți Claude Code. Contextul din sesiunile anterioare va apărea automat î
 
 1. **5 Hook-uri de Ciclu de Viață** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 scripturi de hook)
 2. **Instalare Inteligentă** - Verificator de dependențe în cache (script pre-hook, nu un hook de ciclu de viață)
-3. **Serviciu Worker** - HTTP API pe portul 37777 cu interfață web viewer și 10 endpoint-uri de căutare, gestionat de Bun
+3. **Serviciu Worker** - HTTP API pe portul 37777 cu interfață web viewer și 10 endpoint-uri de căutare, gestionat de Node.js
 4. **Bază de Date SQLite** - Stochează sesiuni, observații, rezumate
 5. **Abilitatea mem-search** - Interogări în limbaj natural cu dezvăluire progresivă
 6. **Bază de Date Vectorială Chroma** - Căutare hibridă semantică + cuvinte cheie pentru recuperare inteligentă a contextului
@@ -220,7 +220,6 @@ Consultați **[Documentația Funcțiilor Beta](https://docs.claude-mem.ai/beta-f
 
 - **Node.js**: 18.0.0 sau superior
 - **Claude Code**: Versiunea cea mai recentă cu suport pentru plugin-uri
-- **Bun**: Runtime JavaScript și manager de procese (instalat automat dacă lipsește)
 - **uv**: Manager de pachete Python pentru căutare vectorială (instalat automat dacă lipsește)
 - **SQLite 3**: Pentru stocare persistentă (inclus)
 

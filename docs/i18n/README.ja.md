@@ -146,7 +146,7 @@ Claude Codeを再起動します。以前のセッションからのコンテキ
 - **[アーキテクチャの進化](https://docs.claude-mem.ai/architecture-evolution)** - v3からv5への道のり
 - **[フックアーキテクチャ](https://docs.claude-mem.ai/hooks-architecture)** - Claude-Memがライフサイクルフックを使用する方法
 - **[フックリファレンス](https://docs.claude-mem.ai/architecture/hooks)** - 7つのフックスクリプトの説明
-- **[ワーカーサービス](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP APIとBun管理
+- **[ワーカーサービス](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP APIとNode.js管理
 - **[データベース](https://docs.claude-mem.ai/architecture/database)** - SQLiteスキーマとFTS5検索
 - **[検索アーキテクチャ](https://docs.claude-mem.ai/architecture/search-architecture)** - Chromaベクトルデータベースを使用したハイブリッド検索
 
@@ -164,7 +164,7 @@ Claude Codeを再起動します。以前のセッションからのコンテキ
 
 1. **5つのライフサイクルフック** - SessionStart、UserPromptSubmit、PostToolUse、Stop、SessionEnd(6つのフックスクリプト)
 2. **スマートインストール** - キャッシュされた依存関係チェッカー(プレフックスクリプト、ライフサイクルフックではない)
-3. **ワーカーサービス** - ポート37777上のHTTP API、WebビューアUIと10の検索エンドポイント、Bunで管理
+3. **ワーカーサービス** - ポート37777上のHTTP API、WebビューアUIと10の検索エンドポイント、Node.jsで管理
 4. **SQLiteデータベース** - セッション、観察、サマリーを保存
 5. **mem-searchスキル** - プログレッシブディスクロージャーを備えた自然言語クエリ
 6. **Chromaベクトルデータベース** - インテリジェントなコンテキスト取得のためのハイブリッドセマンティック+キーワード検索
@@ -220,7 +220,6 @@ Endless Modeと試用方法の詳細については、**[ベータ機能ドキ�
 
 - **Node.js**: 18.0.0以上
 - **Claude Code**: プラグインサポートを備えた最新バージョン
-- **Bun**: JavaScriptランタイムおよびプロセスマネージャー(不足している場合は自動インストール)
 - **uv**: ベクトル検索用のPythonパッケージマネージャー(不足している場合は自動インストール)
 - **SQLite 3**: 永続ストレージ用(バンドル済み)
 

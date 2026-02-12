@@ -145,7 +145,7 @@ Uruchom ponownie Claude Code. Kontekst z poprzednich sesji automatycznie pojawi 
 - **[Ewolucja Architektury](https://docs.claude-mem.ai/architecture-evolution)** - Droga od v3 do v5
 - **[Architektura Hooków](https://docs.claude-mem.ai/hooks-architecture)** - Jak Claude-Mem wykorzystuje hooki cyklu życia
 - **[Dokumentacja Hooków](https://docs.claude-mem.ai/architecture/hooks)** - 7 skryptów hooków wyjaśnionych
-- **[Usługa Worker](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API i zarządzanie Bun
+- **[Usługa Worker](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API i zarządzanie Node.js
 - **[Baza Danych](https://docs.claude-mem.ai/architecture/database)** - Schemat SQLite i wyszukiwanie FTS5
 - **[Architektura Wyszukiwania](https://docs.claude-mem.ai/architecture/search-architecture)** - Hybrydowe wyszukiwanie z bazą wektorów Chroma
 
@@ -163,7 +163,7 @@ Uruchom ponownie Claude Code. Kontekst z poprzednich sesji automatycznie pojawi 
 
 1. **5 Hooków Cyklu Życia** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 skryptów hooków)
 2. **Inteligentna Instalacja** - Buforowany sprawdzacz zależności (skrypt pre-hook, nie hook cyklu życia)
-3. **Usługa Worker** - HTTP API na porcie 37777 z interfejsem przeglądarki internetowej i 10 punktami końcowymi wyszukiwania, zarządzana przez Bun
+3. **Usługa Worker** - HTTP API na porcie 37777 z interfejsem przeglądarki internetowej i 10 punktami końcowymi wyszukiwania, zarządzana przez Node.js
 4. **Baza Danych SQLite** - Przechowuje sesje, obserwacje, podsumowania
 5. **Umiejętność mem-search** - Zapytania w języku naturalnym ze stopniowym ujawnianiem
 6. **Baza Wektorów Chroma** - Hybrydowe wyszukiwanie semantyczne + słowa kluczowe dla inteligentnego pobierania kontekstu
@@ -219,7 +219,6 @@ Zobacz **[Dokumentacja Funkcji Beta](https://docs.claude-mem.ai/beta-features)**
 
 - **Node.js**: 18.0.0 lub wyższy
 - **Claude Code**: Najnowsza wersja z obsługą wtyczek
-- **Bun**: Środowisko uruchomieniowe JavaScript i menedżer procesów (automatycznie instalowany, jeśli brakuje)
 - **uv**: Menedżer pakietów Python do wyszukiwania wektorowego (automatycznie instalowany, jeśli brakuje)
 - **SQLite 3**: Do trwałego przechowywania (dołączony)
 

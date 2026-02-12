@@ -146,7 +146,7 @@ Claude Code를 재시작하세요. 이전 세션의 컨텍스트가 자동으로
 - **[아키텍처 진화](https://docs.claude-mem.ai/architecture-evolution)** - v3에서 v5로의 여정
 - **[후크 아키텍처](https://docs.claude-mem.ai/hooks-architecture)** - Claude-Mem이 라이프사이클 후크를 사용하는 방법
 - **[후크 참조](https://docs.claude-mem.ai/architecture/hooks)** - 7개 후크 스크립트 설명
-- **[워커 서비스](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API 및 Bun 관리
+- **[워커 서비스](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API 및 Node.js 관리
 - **[데이터베이스](https://docs.claude-mem.ai/architecture/database)** - SQLite 스키마 및 FTS5 검색
 - **[검색 아키텍처](https://docs.claude-mem.ai/architecture/search-architecture)** - Chroma 벡터 데이터베이스를 활용한 하이브리드 검색
 
@@ -164,7 +164,7 @@ Claude Code를 재시작하세요. 이전 세션의 컨텍스트가 자동으로
 
 1. **5개 라이프사이클 후크** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6개 후크 스크립트)
 2. **스마트 설치** - 캐시된 종속성 검사기 (사전 후크 스크립트, 라이프사이클 후크 아님)
-3. **워커 서비스** - 웹 뷰어 UI와 10개 검색 엔드포인트를 갖춘 포트 37777의 HTTP API, Bun으로 관리
+3. **워커 서비스** - 웹 뷰어 UI와 10개 검색 엔드포인트를 갖춘 포트 37777의 HTTP API, Node.js로 관리
 4. **SQLite 데이터베이스** - 세션, 관찰, 요약 저장
 5. **mem-search 스킬** - 점진적 공개를 통한 자연어 쿼리
 6. **Chroma 벡터 데이터베이스** - 지능형 컨텍스트 검색을 위한 하이브리드 의미론적 + 키워드 검색
@@ -220,7 +220,6 @@ Endless Mode 및 사용 방법에 대한 자세한 내용은 **[베타 기능 �
 
 - **Node.js**: 18.0.0 이상
 - **Claude Code**: 플러그인 지원이 있는 최신 버전
-- **Bun**: JavaScript 런타임 및 프로세스 관리자 (누락 시 자동 설치)
 - **uv**: 벡터 검색을 위한 Python 패키지 관리자 (누락 시 자동 설치)
 - **SQLite 3**: 영구 저장을 위한 데이터베이스 (번들 포함)
 

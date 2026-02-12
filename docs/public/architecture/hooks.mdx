@@ -198,11 +198,11 @@ Hooks are configured in `plugin/hooks/hooks.json`:
         "timeout": 300
       }, {
         "type": "command",
-        "command": "bun ${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs start",
+        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs start",
         "timeout": 60
       }, {
         "type": "command",
-        "command": "bun ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
+        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
         "timeout": 60
       }]
     }],
@@ -902,7 +902,7 @@ For developers implementing this pattern on other platforms:
 
 ### Worker Service
 - [ ] HTTP server on configurable port (default 37777)
-- [ ] Bun runtime for process management
+- [ ] Node.js runtime for process management
 - [ ] 3 core services: SessionManager, SDKAgent, DatabaseManager
 
 ### Hook Implementation

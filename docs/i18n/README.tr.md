@@ -145,7 +145,7 @@ Claude Code'u yeniden başlatın. Önceki oturumlardaki bağlam otomatik olarak 
 - **[Mimari Evrimi](https://docs.claude-mem.ai/architecture-evolution)** - v3'ten v5'e yolculuk
 - **[Hooks Mimarisi](https://docs.claude-mem.ai/hooks-architecture)** - Claude-Mem yaşam döngüsü hook'larını nasıl kullanır
 - **[Hooks Referansı](https://docs.claude-mem.ai/architecture/hooks)** - 7 hook betiği açıklandı
-- **[Worker Servisi](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API ve Bun yönetimi
+- **[Worker Servisi](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API ve Node.js yönetimi
 - **[Veritabanı](https://docs.claude-mem.ai/architecture/database)** - SQLite şeması ve FTS5 arama
 - **[Arama Mimarisi](https://docs.claude-mem.ai/architecture/search-architecture)** - Chroma vektör veritabanı ile hibrit arama
 
@@ -163,7 +163,7 @@ Claude Code'u yeniden başlatın. Önceki oturumlardaki bağlam otomatik olarak 
 
 1. **5 Yaşam Döngüsü Hook'u** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook betiği)
 2. **Akıllı Kurulum** - Önbelleğe alınmış bağımlılık kontrolcüsü (ön-hook betiği, yaşam döngüsü hook'u değil)
-3. **Worker Servisi** - Web görüntüleyici arayüzü ve 10 arama uç noktası ile 37777 portunda HTTP API, Bun tarafından yönetilir
+3. **Worker Servisi** - Web görüntüleyici arayüzü ve 10 arama uç noktası ile 37777 portunda HTTP API, Node.js tarafından yönetilir
 4. **SQLite Veritabanı** - Oturumları, gözlemleri, özetleri saklar
 5. **mem-search Becerisi** - Aşamalı açıklama ile doğal dil sorguları
 6. **Chroma Vektör Veritabanı** - Akıllı bağlam erişimi için hibrit anlamsal + anahtar kelime arama
@@ -219,7 +219,6 @@ Endless Mode hakkında detaylar ve nasıl deneyeceğiniz için **[Beta Özellikl
 
 - **Node.js**: 18.0.0 veya üzeri
 - **Claude Code**: Plugin desteği olan en son sürüm
-- **Bun**: JavaScript çalışma zamanı ve işlem yöneticisi (eksikse otomatik kurulur)
 - **uv**: Vektör arama için Python paket yöneticisi (eksikse otomatik kurulur)
 - **SQLite 3**: Kalıcı depolama için (dahildir)
 

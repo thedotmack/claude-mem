@@ -1,141 +1,120 @@
-# Fix All 296 TypeScript Compilation Errors
+# Update Documentation: Bun → Node.js Migration
 
 ## Context
 
-After completing the Bun → Node.js + better-sqlite3 migration, `tsc --noEmit` reports 296 pre-existing TypeScript errors across 42 files. These errors were masked because the project relied on esbuild (which ignores types) and bun:test (which has looser type checking). Fixing them improves code quality and enables stricter type checking going forward.
+The codebase was migrated from Bun runtime to Node.js + better-sqlite3 (commit `6005f1ac`). All user-facing and technical documentation still references Bun as the runtime, `bun:sqlite` as the database driver, and `bun run`/`bun install` as commands. This plan updates ~45 documentation files to reflect the new Node.js-based architecture.
 
-## Error Inventory (296 total)
+## Replacement Rules
 
-| Category | Count | Root Cause |
-|----------|-------|------------|
-| Missing Component literals | 148 | Logger `Component` type missing 13 string values |
-| DOM lib missing | 42 | tsconfig.json `lib` lacks `"dom"` for React viewer |
-| `unknown` data from fetch | 32 | `res.json()` returns `unknown` in strict TS |
-| Record vs SearchResult types | 26 | `ObservationRecord[]` assigned to `ObservationSearchResult[]` |
-| `value` on EventTarget | 16 | DOM lib missing (HTMLElement props) |
-| Null possibly errors | 6 | Refs possibly null in useSpinningFavicon |
-| WorkerRef visibility | 2 | `private sseBroadcaster` vs interface contract |
-| ProcessEnv typing | 1 | `process.env` has `undefined` values |
-| SDKAgent null vs undefined | 2 | `null` passed where `undefined` expected |
-| Missing module | 1 | Wrong import path for ModeManager |
-| HOOK_EXIT_CODES | 1 | Missing `USER_MESSAGE_ONLY` value |
-| EventType string cast | 1 | `string` not assignable to `EventType` |
-| `orderBy: 'relevance'` | 2 | Literal not in union type |
-| Feed entries `any` | 1 | IntersectionObserver callback param |
-| App.tsx state setters | 3 | `DataItem[]` returned instead of specific type |
-| Misc type mismatches | 12 | Various minor issues |
+| Old | New |
+|-----|-----|
+| `bun install` | `npm install` |
+| `bun run <script>` | `npm run <script>` |
+| `bun scripts/<file>.ts` | `npx tsx scripts/<file>.ts` |
+| `bun:sqlite` | `better-sqlite3` |
+| `Bun` (as runtime/process manager) | `Node.js` |
+| Bun installation links (`bun.sh`) | Remove (Node.js already required) |
+| `bun test` | `npm test` (uses vitest) |
 
-## Fix 1: Add missing Component literals (148 errors → 0)
+## Phase 1: High-Priority User-Facing Docs (7 files)
 
-**File:** `src/utils/logger.ts:18`
+### 1. `README.md`
+- Line 156: `Bun management` → `Node.js management`
+- Line 174: `managed by Bun` → `managed by Node.js`
+- Line 235: Replace Bun system requirement with note that Node.js >= 18 is the only JS runtime needed (Bun line removed)
 
-Add 13 missing string literals to the `Component` type:
+### 2. `docs/public/introduction.mdx`
+- Line 64: `managed by Bun` → `managed by Node.js`
+- Line 75: Remove Bun requirement line
+- Lines 88-90: Update v7.1.0 section to note the subsequent Node.js migration, or rewrite as historical
 
-```
-Current:  'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'FOLDER_INDEX'
-Add:      'SEARCH' | 'CHROMA_SYNC' | 'BRANCH' | 'PROCESS' | 'CURSOR' | 'QUEUE' | 'IMPORT' | 'CONSOLE' | 'SECURITY' | 'SETTINGS' | 'ENV' | 'CONFIG' | 'PROJECT_NAME'
-```
+### 3. `docs/public/installation.mdx`
+- Line 29: Remove Bun requirement
+- Line 100: Update v7.1.0 note to reflect Node.js is now used
 
-## Fix 2: Add `dom` lib to tsconfig.json (~60 errors → 0)
+### 4. `docs/public/cursor/index.mdx` (~18 edits)
+- Line 51: `bun install && bun run build` → `npm install && npm run build`
+- Line 54: `bun run cursor:setup` → `npm run cursor:setup`
+- Lines 86,91,96: Remove Bun installation prerequisites (3 platform-specific Bun install lines)
+- Lines 109-115: All `bun run` → `npm run` in command table
+- Lines 123,128: `bun run` → `npm run`
+- Line 157: `bun run worker:stop && bun run worker:start` → `npm run worker:stop && npm run worker:start`
+- Line 160: `bun run worker:logs` → `npm run worker:logs`
+- Lines 166,171: `bun run` → `npm run`
 
-**File:** `tsconfig.json:7`
+### 5. `docs/public/cursor/gemini-setup.mdx` (~8 edits)
+- Lines 35,38: `bun install`/`bun run build` → `npm install`/`npm run build`
+- Line 48: `bun run cursor:setup` → `npm run cursor:setup`
+- Lines 80,81: `bun run` → `npm run`
+- Lines 92,95: `bun run` → `npm run`
+- Line 172: `bun run worker:logs` → `npm run worker:logs`
 
-Change `"lib": ["ES2022"]` → `"lib": ["ES2022", "dom", "dom.iterable"]`
+### 6. `docs/public/cursor/openai-compat-setup.mdx` (~8 edits)
+- Same pattern as gemini-setup.mdx
 
-This fixes: TS2304 (window, document, Image, etc.), TS2812 (scrollTop, scrollHeight), TS2339 (.value on HTMLInputElement/HTMLSelectElement), TS2584 (document not found), TS7006 (IntersectionObserver entries), and TS18047 (null ref checks become valid).
+### 7. `docs/public/usage/manual-recovery.mdx` (~11 edits)
+- All `bun scripts/check-pending-queue.ts` → `npx tsx scripts/check-pending-queue.ts`
+- All `bun scripts/clear-failed-queue.ts` → `npx tsx scripts/clear-failed-queue.ts`
 
-## Fix 3: Type-assert fetch responses in viewer hooks (~32 errors → 0)
+## Phase 2: Architecture & Technical Docs (7 files)
 
-**Files:**
-- `src/ui/viewer/hooks/useSettings.ts` — cast `data` from `.json()` as `Partial<Settings>`
-- `src/ui/viewer/hooks/useContextPreview.ts` — cast `data` as expected shape
-- `src/ui/viewer/hooks/useStats.ts` — cast `data` as stats shape
-- `src/ui/viewer/components/LogsModal.tsx` — cast `data` as log entries
-- `src/services/sync/ChromaSync.ts` — cast `result.content` (2 sites)
+### 8. `docs/public/architecture/worker-service.mdx`
+- Line 3: `managed natively by Bun` → `managed by Node.js`
+- Line 13: `Native Bun process management` → `Native Node.js process management`
+- Line 670: `bun:sqlite` → `better-sqlite3`
 
-Pattern: `.then(res => res.json()).then((data: ExpectedType) => ...)` or `.then((data) => { const typed = data as ExpectedType; ... })`
+### 9. `docs/public/architecture/database.mdx`
+- Line 8: `bun:sqlite native module` → `better-sqlite3`
+- Line 18: `bun:sqlite` → `better-sqlite3`
+- Line 21: Update legacy note
+- Line 304: `bun:sqlite reuses connections` → `better-sqlite3 reuses connections`
 
-## Fix 4: Fix ObservationRecord → ObservationSearchResult (26 errors → 0)
+### 10. `docs/public/architecture/overview.mdx`
+- Line 25: Process Manager `Bun` → `Node.js`
+- Line 208: `Auto-managed by Bun` → `Auto-managed by Node.js`
 
-**Root cause:** `ObservationRecord` (database.ts) is missing fields that `ObservationSearchResult` (types.ts) requires: `subtitle`, `facts`, `narrative`, `concepts`, `files_read`, `files_modified`. Same for `SessionSummaryRecord` missing `files_read`, `files_edited`, `notes`.
+### 11. `docs/public/hooks-architecture.mdx`
+- Lines 93-94: `Starts Bun worker service` → `Starts Node.js worker service`
+- Line 172: Same replacement
+- Lines 473-500: Rewrite "Bun Process Management" section → "Node.js Process Management"
+- Line 577: Update cleanup reference
 
-**Fix approach:** Add the missing optional fields to `ObservationRecord` and `SessionSummaryRecord` in `src/types/database.ts`. These fields exist in the database schema (added by migrations) but were never added to the Record types:
+### 12. `docs/public/configuration.mdx`
+- Line 229: `managed by Bun` → `managed by Node.js`
+- Line 424: `managed by Bun` → `managed by Node.js`
 
-```typescript
-// ObservationRecord — add:
-subtitle?: string | null;
-facts?: string | null;
-narrative?: string | null;
-concepts?: string | null;
-files_read?: string | null;
-files_modified?: string | null;
+### 13. `docs/public/architecture-evolution.mdx`
+- Lines 56,62: Update "Current Approach" to reference Node.js
+- Line 159: `bun:sqlite which requires no installation` → `better-sqlite3 (auto-installed)`
 
-// SessionSummaryRecord — add:
-files_read?: string | null;
-files_edited?: string | null;
-notes?: string | null;
-```
+### 14. `docs/public/usage/search-tools.mdx`
+- Line 443: `managed by Bun` → `managed by Node.js`
 
-Then update return types in `SearchManager.ts` and search strategies to accept `ObservationRecord[]` where `ObservationSearchResult[]` is expected (add `as` casts at the ~15 assignment sites), OR better: change the variable types from `ObservationSearchResult[]` to `ObservationRecord[]` where FTS rank/score fields aren't used.
+## Phase 3: Historical Migration Doc (1 file)
 
-## Fix 5: Add `USER_MESSAGE_ONLY` to HOOK_EXIT_CODES (1 error → 0)
+### 15. `docs/public/architecture/pm2-to-bun-migration.mdx`
+- Update the `<Note>` at the top to indicate Bun has since been replaced by Node.js
+- Add a clear notice: "As of v8.x, the project has migrated from Bun to Node.js + better-sqlite3. This document is preserved for historical reference only."
+- No need to rewrite the entire 560-line doc - just frame it as historical
 
-**File:** `src/shared/hook-constants.ts`
+## Phase 4: Translated READMEs (28 files)
 
-Add `USER_MESSAGE_ONLY: 0` (or appropriate value) to `HOOK_EXIT_CODES`.
+All 28 files in `docs/i18n/README.*.md` have the same 3 Bun references matching the English README pattern:
+- Worker Service line: `managed by Bun` → `managed by Node.js` (or translated equivalent)
+- System requirement: Remove Bun requirement line
+- Architecture link: `Bun management` → `Node.js management`
 
-## Fix 6: Cast `event` string to `EventType` (1 error → 0)
+**Approach:** Use `replace_all` with exact English strings since these appear verbatim even in translations (code/technical terms aren't translated). For truly translated strings, handle per-file.
 
-**File:** `src/cli/hook-command.ts:14`
+## Execution Strategy
 
-Change `getEventHandler(event)` → `getEventHandler(event as EventType)`
-
-## Fix 7: Fix WorkerRef interface mismatch (2 errors → 0)
-
-**File:** `src/services/worker-service.ts`
-
-The `sseBroadcaster` property is `private` in `WorkerService` but the `WorkerRef` interface expects it public. Fix: pass `this as unknown as WorkerRef` at the 2 call sites, OR change `private sseBroadcaster` to `public sseBroadcaster` (simpler, since it's already exposed via the interface contract).
-
-## Fix 8: Fix ProcessEnv typing (1 error → 0)
-
-**File:** `src/services/worker-service.ts:296`
-
-Change `env: process.env` → `env: process.env as Record<string, string>`
-
-## Fix 9: Fix SDKAgent null → undefined (2 errors → 0)
-
-**File:** `src/services/worker/SDKAgent.ts`
-
-Change `session.memorySessionId` (which is `string | null`) to use `?? undefined` or `|| undefined` at the 2 usage sites (lines 89, 117).
-
-## Fix 10: Fix ModeManager import path (1 error → 0)
-
-**File:** `src/services/worker/http/routes/SettingsRoutes.ts:16`
-
-Change `../../domain/ModeManager.js` → `../../../domain/ModeManager.js` (needs one more `../` to reach `src/services/domain/`).
-
-## Fix 11: Fix `orderBy: 'relevance'` type mismatch (2 errors → 0)
-
-**File:** `src/services/worker/search/strategies/ChromaSearchStrategy.ts`
-
-The `orderBy` value `'relevance'` isn't in the accepted union for the SessionStore methods. Fix: filter it out before passing, or add `'relevance'` to the accepted type.
-
-## Fix 12: Fix App.tsx state setter types (3 errors → 0)
-
-**File:** `src/ui/viewer/App.tsx` (lines 73, 76, 79)
-
-The `loadMore()` returns `DataItem[]` but state expects specific types. Fix: add type assertions on the spread results, or type the `loadMore` return more precisely.
-
-## Execution Order
-
-1. **Fix 1** (Component type) — single line change, eliminates 148 errors
-2. **Fix 2** (dom lib) — single line change, eliminates ~60 errors
-3. **Fix 4** (Record types) — extend database types, eliminates 26 errors
-4. **Fix 3** (fetch unknown) — type assertions in 5 files, eliminates 32 errors
-5. **Fixes 5-12** (misc) — one-liner fixes across 7 files, eliminates ~13 errors
+1. Use parallel subagents to update files in batches
+2. Group by similarity (cursor guides share same patterns)
+3. Translated READMEs can be batch-processed with grep/sed patterns
+4. Run `npm run build` at end to verify no broken MDX
 
 ## Verification
 
-1. `npx tsc --noEmit` — zero errors
-2. `npx vitest run` — 805+ tests still pass
-3. `npm run build` — esbuild succeeds
+1. `grep -r "bun" docs/ README.md --include="*.md" --include="*.mdx" -l` — should return only CHANGELOG.md and pm2-to-bun-migration.mdx
+2. Review key files manually for coherent reading
+3. No build/test impact (docs only)

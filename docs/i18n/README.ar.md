@@ -149,7 +149,7 @@ Claude-Mem هو نظام متطور مصمم لضغط وحفظ الذاكرة ل
 - **[تطور البنية المعمارية](https://docs.claude-mem.ai/architecture-evolution)** - تطور المعمارية من v3 إلى v5
 - **[بنية برامج الربط (Hooks)](https://docs.claude-mem.ai/hooks-architecture)** - كيف يستخدم Claude-Mem خطافات دورة الحياة
 - **[مرجع برامج الربط (Hooks)](https://docs.claude-mem.ai/architecture/hooks)** - شرح 7 سكريبتات خطافات
-- **[خدمة العامل](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API وإدارة Bun
+- **[خدمة العامل](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API وإدارة Node.js
 - **[قاعدة البيانات](https://docs.claude-mem.ai/architecture/database)** - مخطط SQLite وبحث FTS5
 - **[بنية البحث](https://docs.claude-mem.ai/architecture/search-architecture)** - البحث المختلط مع قاعدة بيانات المتجهات Chroma
 
@@ -167,7 +167,7 @@ Claude-Mem هو نظام متطور مصمم لضغط وحفظ الذاكرة ل
 
 1. **5 برامج ربط (Hooks)** - SessionStart، UserPromptSubmit، PostToolUse، Stop، SessionEnd
 2. **تثبيت ذكي** - فاحص التبعيات المخزنة مؤقتًا
-3. **خدمة العامل** - HTTP API على المنفذ 37777 مع واجهة مستخدم عارض الويب و10 نقاط نهاية للبحث، تديرها Bun
+3. **خدمة العامل** - HTTP API على المنفذ 37777 مع واجهة مستخدم عارض الويب و10 نقاط نهاية للبحث، تديرها Node.js
 4. **قاعدة بيانات SQLite** - تخزن الجلسات، الملاحظات، الملخصات
 5. **مهارة mem-search** - استعلامات اللغة الطبيعية مع الكشف التدريجي
 6. **قاعدة بيانات المتجهات Chroma** - البحث الدلالي الهجين + الكلمات المفتاحية لاسترجاع السياق الذكي
@@ -222,7 +222,7 @@ Claude-Mem هو نظام متطور مصمم لضغط وحفظ الذاكرة ل
 
 - **Node.js**: 18.0.0 أو أعلى
 - **Claude Code**: أحدث إصدار مع دعم الإضافات
-- **Bun & uv**: (يتم تثبيتهما تلقائياً) لإدارة العمليات والبحث المتجه.
+- **uv**: (يتم تثبيته تلقائياً) للبحث المتجه.
 - **SQLite 3**: للتخزين المستمر (مدمج)
 
 ---

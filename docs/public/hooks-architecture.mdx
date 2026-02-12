@@ -90,7 +90,7 @@ Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. SessionStart r
    - First-time installation
    - Version changed in package.json
 3. Provides Windows-specific error messages
-4. Starts Bun worker service
+4. Starts Node.js worker service
 
 **Configuration:**
 ```json
@@ -169,7 +169,7 @@ Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. SessionStart r
 1. Reads user prompt and session ID from stdin
 2. Creates new session record in SQLite
 3. Saves raw user prompt for full-text search (v4.2.0+)
-4. Starts Bun worker service if not running
+4. Starts Node.js worker service if not running
 5. Returns immediately (non-blocking)
 
 **Configuration:**
@@ -470,15 +470,14 @@ As of Claude Code 2.1.0 (ultrathink update), SessionStart hooks no longer displa
 └─────────────────────────────────────────────────────────┘
 ```
 
-### Bun Process Management
+### Node.js Process Management
 
-**Technology:** Bun (JavaScript runtime and process manager)
+**Technology:** Node.js (JavaScript runtime and process manager)
 
-**Why Bun:**
+**Why Node.js:**
 - Auto-restart on failure
-- Fast startup and low memory footprint
-- Built-in TypeScript support
-- Cross-platform (works on macOS, Linux, Windows)
+- Broad platform compatibility (macOS, Linux, Windows including WSL2)
+- Native better-sqlite3 support without Bun-specific modules
 - No separate process manager needed
 
 **Worker lifecycle:**
@@ -574,7 +573,7 @@ try {
 
 **Failure modes:**
 - Database locked → Skip observation, log error
-- Worker crashed → Auto-restart via Bun
+- Worker crashed → Auto-restart via Node.js
 - Network issue → Retry with exponential backoff
 - Disk full → Warn user, disable memory
 

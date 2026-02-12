@@ -146,7 +146,7 @@ Riavvia Claude Code. Il contesto delle sessioni precedenti apparirà automaticam
 - **[Evoluzione dell'Architettura](https://docs.claude-mem.ai/architecture-evolution)** - Il percorso dalla v3 alla v5
 - **[Architettura degli Hook](https://docs.claude-mem.ai/hooks-architecture)** - Come Claude-Mem utilizza gli hook del ciclo di vita
 - **[Riferimento Hook](https://docs.claude-mem.ai/architecture/hooks)** - Spiegazione dei 7 script hook
-- **[Servizio Worker](https://docs.claude-mem.ai/architecture/worker-service)** - API HTTP e gestione Bun
+- **[Servizio Worker](https://docs.claude-mem.ai/architecture/worker-service)** - API HTTP e gestione Node.js
 - **[Database](https://docs.claude-mem.ai/architecture/database)** - Schema SQLite e ricerca FTS5
 - **[Architettura di Ricerca](https://docs.claude-mem.ai/architecture/search-architecture)** - Ricerca ibrida con database vettoriale Chroma
 
@@ -164,7 +164,7 @@ Riavvia Claude Code. Il contesto delle sessioni precedenti apparirà automaticam
 
 1. **5 Hook del Ciclo di Vita** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 script hook)
 2. **Installazione Intelligente** - Controllo delle dipendenze in cache (script pre-hook, non un hook del ciclo di vita)
-3. **Servizio Worker** - API HTTP sulla porta 37777 con interfaccia web viewer e 10 endpoint di ricerca, gestita da Bun
+3. **Servizio Worker** - API HTTP sulla porta 37777 con interfaccia web viewer e 10 endpoint di ricerca, gestita da Node.js
 4. **Database SQLite** - Memorizza sessioni, osservazioni, riepiloghi
 5. **Skill mem-search** - Query in linguaggio naturale con divulgazione progressiva
 6. **Database Vettoriale Chroma** - Ricerca ibrida semantica + keyword per recupero intelligente del contesto
@@ -220,7 +220,6 @@ Vedi **[Documentazione delle Funzionalità Beta](https://docs.claude-mem.ai/beta
 
 - **Node.js**: 18.0.0 o superiore
 - **Claude Code**: Ultima versione con supporto plugin
-- **Bun**: Runtime JavaScript e process manager (installato automaticamente se mancante)
 - **uv**: Gestore di pacchetti Python per la ricerca vettoriale (installato automaticamente se mancante)
 - **SQLite 3**: Per l'archiviazione persistente (incluso)
 

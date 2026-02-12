@@ -146,7 +146,7 @@ Restartujte Claude Code. Kontext z předchozích sezení se automaticky objeví 
 - **[Evoluce architektury](https://docs.claude-mem.ai/architecture-evolution)** - Cesta z v3 na v5
 - **[Architektura háčků](https://docs.claude-mem.ai/hooks-architecture)** - Jak Claude-Mem používá lifecycle hooks
 - **[Reference háčků](https://docs.claude-mem.ai/architecture/hooks)** - Vysvětlení 7 hook skriptů
-- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API a správa Bun
+- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API a správa Node.js
 - **[Databáze](https://docs.claude-mem.ai/architecture/database)** - SQLite schéma a FTS5 vyhledávání
 - **[Architektura vyhledávání](https://docs.claude-mem.ai/architecture/search-architecture)** - Hybridní vyhledávání s vektorovou databází Chroma
 
@@ -164,7 +164,7 @@ Restartujte Claude Code. Kontext z předchozích sezení se automaticky objeví 
 
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook skriptů)
 2. **Chytrá instalace** - Kontrola cachovaných závislostí (pre-hook skript, ne lifecycle hook)
-3. **Worker Service** - HTTP API na portu 37777 s webovým prohlížečem a 10 vyhledávacími endpointy, spravováno pomocí Bun
+3. **Worker Service** - HTTP API na portu 37777 s webovým prohlížečem a 10 vyhledávacími endpointy, spravováno pomocí Node.js
 4. **SQLite databáze** - Ukládá sezení, pozorování, souhrny
 5. **mem-search dovednost** - Dotazy v přirozeném jazyce s postupným odhalováním
 6. **Chroma vektorová databáze** - Hybridní sémantické + klíčové vyhledávání pro inteligentní vyhledávání kontextu
@@ -220,7 +220,6 @@ Podrobnosti o Endless Mode a jak jej vyzkoušet najdete v **[Dokumentaci beta fu
 
 - **Node.js**: 18.0.0 nebo vyšší
 - **Claude Code**: Nejnovější verze s podporou pluginů
-- **Bun**: JavaScript runtime a správce procesů (automaticky nainstalován, pokud chybí)
 - **uv**: Python správce balíčků pro vektorové vyhledávání (automaticky nainstalován, pokud chybí)
 - **SQLite 3**: Pro trvalé úložiště (součástí balíčku)
 

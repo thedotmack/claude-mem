@@ -145,7 +145,7 @@
 - **[התפתחות הארכיטקטורה](https://docs.claude-mem.ai/architecture-evolution)** - המסע מגרסה 3 לגרסה 5
 - **[ארכיטקטורת Hooks](https://docs.claude-mem.ai/hooks-architecture)** - איך Claude-Mem משתמש ב-lifecycle hooks
 - **[מדריך Hooks](https://docs.claude-mem.ai/architecture/hooks)** - 7 סקריפטי hook מוסברים
-- **[שירות Worker](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API וניהול Bun
+- **[שירות Worker](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API וניהול Node.js
 - **[מסד נתונים](https://docs.claude-mem.ai/architecture/database)** - סכמת SQLite וחיפוש FTS5
 - **[ארכיטקטורת חיפוש](https://docs.claude-mem.ai/architecture/search-architecture)** - חיפוש היברידי עם מסד נתוני וקטורים Chroma
 
@@ -163,7 +163,7 @@
 
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 סקריפטי hook)
 2. **התקנה חכמה** - בודק תלויות עם מטמון (סקריפט pre-hook, לא lifecycle hook)
-3. **שירות Worker** - HTTP API על פורט 37777 עם ממשק צופה אינטרנט ו-10 נקודות קצה לחיפוש, מנוהל על ידי Bun
+3. **שירות Worker** - HTTP API על פורט 37777 עם ממשק צופה אינטרנט ו-10 נקודות קצה לחיפוש, מנוהל על ידי Node.js
 4. **מסד נתוני SQLite** - מאחסן הפעלות, תצפיות, סיכומים
 5. **מיומנות mem-search** - שאילתות בשפה טבעית עם גילוי מדורג
 6. **מסד נתוני וקטורים Chroma** - חיפוש היברידי סמנטי + מילות מפתח לאחזור הקשר חכם
@@ -219,7 +219,6 @@ Claude-Mem מציע **ערוץ בטא** עם תכונות ניסיוניות כ�
 
 - **Node.js**: 18.0.0 ומעלה
 - **Claude Code**: גרסה אחרונה עם תמיכה בתוספים
-- **Bun**: סביבת ריצה ומנהל תהליכים של JavaScript (מותקן אוטומטית אם חסר)
 - **uv**: מנהל חבילות Python לחיפוש וקטורי (מותקן אוטומטית אם חסר)
 - **SQLite 3**: לאחסון מתמשך (מצורף)
 
