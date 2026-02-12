@@ -51,6 +51,11 @@ const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
   'gemini-3-flash': 5,
 };
 
+// Context window management constants (defaults, overridable via settings)
+const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  // Maximum messages to keep in conversation history
+const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  // ~100k tokens max context (safety limit)
+const CHARS_PER_TOKEN_ESTIMATE = 4;  // Conservative estimate: 1 token = 4 chars
+
 // History compaction constants
 const COMPACT_THRESHOLD = 14;  // Compact when history exceeds 14 messages (7 turns)
 const KEEP_RECENT = 6;         // Keep last 6 messages (3 recent turns) after compaction
@@ -171,6 +176,69 @@ export class GeminiAgent {
       after: session.conversationHistory.length,
       keptRecent: KEEP_RECENT
     });
+  }
+
+  /**
+   * Estimate token count from text (conservative estimate)
+   */
+  private estimateTokens(text: string): number {
+    return Math.ceil(text.length / CHARS_PER_TOKEN_ESTIMATE);
+  }
+
+  /**
+   * Truncate conversation history to prevent runaway context costs.
+   * Structure-aware: always preserves the compacted head (init prompt +
+   * summary context) and only trims recent messages from the middle.
+   */
+  private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+    const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
+    const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
+
+    const totalTokens = history.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
+    if (history.length <= MAX_CONTEXT_MESSAGES && totalTokens <= MAX_ESTIMATED_TOKENS) {
+      return history;
+    }
+
+    // Preserve the compacted head: init prompt (index 0) and summary context (index 1 if present)
+    const HEAD_SIZE = Math.min(2, history.length);
+    const head = history.slice(0, HEAD_SIZE);
+    const tail = history.slice(HEAD_SIZE);
+
+    let headTokens = head.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
+    const remainingTokenBudget = MAX_ESTIMATED_TOKENS - headTokens;
+    const remainingMessageBudget = MAX_CONTEXT_MESSAGES - HEAD_SIZE;
+
+    const kept: ConversationMessage[] = [];
+    let tokenCount = 0;
+
+    for (let i = tail.length - 1; i >= 0; i--) {
+      const msg = tail[i];
+      const msgTokens = this.estimateTokens(msg.content);
+
+      if (kept.length >= remainingMessageBudget || tokenCount + msgTokens > remainingTokenBudget) {
+        break;
+      }
+
+      kept.unshift(msg);
+      tokenCount += msgTokens;
+    }
+
+    const result = [...head, ...kept];
+
+    if (result.length < history.length) {
+      logger.warn('SDK', 'Context window truncated (head preserved)', {
+        originalMessages: history.length,
+        keptMessages: result.length,
+        headPreserved: HEAD_SIZE,
+        estimatedTokens: headTokens + tokenCount,
+        tokenLimit: MAX_ESTIMATED_TOKENS
+      });
+    }
+
+    return result;
   }
 
   /**
@@ -394,8 +462,10 @@ export class GeminiAgent {
     model: GeminiModel,
     rateLimitingEnabled: boolean
   ): Promise<{ content: string; tokensUsed?: number }> {
-    const contents = this.conversationToGeminiContents(history);
-    const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
+    // Truncate history to prevent runaway costs (preserves compacted head)
+    const truncatedHistory = this.truncateHistory(history);
+    const contents = this.conversationToGeminiContents(truncatedHistory);
+    const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
 
     logger.debug('SDK', `Querying Gemini multi-turn (${model})`, {
       turns: history.length,

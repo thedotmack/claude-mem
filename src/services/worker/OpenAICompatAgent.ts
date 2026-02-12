@@ -340,8 +340,9 @@ export class OpenAICompatAgent {
   }
 
   /**
-   * Truncate conversation history to prevent runaway context costs
-   * Keeps most recent messages within token budget
+   * Truncate conversation history to prevent runaway context costs.
+   * Structure-aware: always preserves the compacted head (init prompt +
+   * summary context) and only trims recent messages from the middle.
    */
   private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -349,39 +350,50 @@ export class OpenAICompatAgent {
     const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
     const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
 
-    if (history.length <= MAX_CONTEXT_MESSAGES) {
-      // Check token count even if message count is ok
-      const totalTokens = history.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
-      if (totalTokens <= MAX_ESTIMATED_TOKENS) {
-        return history;
-      }
+    const totalTokens = history.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
+    if (history.length <= MAX_CONTEXT_MESSAGES && totalTokens <= MAX_ESTIMATED_TOKENS) {
+      return history;
     }
 
-    // Sliding window: keep most recent messages within limits
-    const truncated: ConversationMessage[] = [];
+    // Preserve the compacted head: init prompt (index 0) and summary context (index 1 if present)
+    // compactHistory produces [initPrompt, summaryContext, ...recentMessages]
+    const HEAD_SIZE = Math.min(2, history.length);
+    const head = history.slice(0, HEAD_SIZE);
+    const tail = history.slice(HEAD_SIZE);
+
+    let headTokens = head.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
+    const remainingTokenBudget = MAX_ESTIMATED_TOKENS - headTokens;
+    const remainingMessageBudget = MAX_CONTEXT_MESSAGES - HEAD_SIZE;
+
+    // Fill from tail in reverse (most recent first) within remaining budget
+    const kept: ConversationMessage[] = [];
     let tokenCount = 0;
 
-    // Process messages in reverse (most recent first)
-    for (let i = history.length - 1; i >= 0; i--) {
-      const msg = history[i];
+    for (let i = tail.length - 1; i >= 0; i--) {
+      const msg = tail[i];
       const msgTokens = this.estimateTokens(msg.content);
 
-      if (truncated.length >= MAX_CONTEXT_MESSAGES || tokenCount + msgTokens > MAX_ESTIMATED_TOKENS) {
-        logger.warn('SDK', 'Context window truncated to prevent runaway costs', {
-          originalMessages: history.length,
-          keptMessages: truncated.length,
-          droppedMessages: i + 1,
-          estimatedTokens: tokenCount,
-          tokenLimit: MAX_ESTIMATED_TOKENS
-        });
+      if (kept.length >= remainingMessageBudget || tokenCount + msgTokens > remainingTokenBudget) {
         break;
       }
 
-      truncated.unshift(msg);  // Add to beginning
+      kept.unshift(msg);
       tokenCount += msgTokens;
     }
 
-    return truncated;
+    const result = [...head, ...kept];
+
+    if (result.length < history.length) {
+      logger.warn('SDK', 'Context window truncated (head preserved)', {
+        originalMessages: history.length,
+        keptMessages: result.length,
+        headPreserved: HEAD_SIZE,
+        estimatedTokens: headTokens + tokenCount,
+        tokenLimit: MAX_ESTIMATED_TOKENS
+      });
+    }
+
+    return result;
   }
 
   /**
