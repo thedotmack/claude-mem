@@ -78,6 +78,249 @@ source_install_functions() {
 source_install_functions
 
 ###############################################################################
+# Test: detect_platform() — returns a valid platform string
+###############################################################################
+
+echo ""
+echo "=== detect_platform() ==="
+
+test_detect_platform_returns_valid_string() {
+  PLATFORM=""
+  IS_WSL=""
+  detect_platform >/dev/null 2>&1
+
+  case "$PLATFORM" in
+    macos|linux|windows)
+      test_pass "detect_platform sets PLATFORM='${PLATFORM}'"
+      ;;
+    *)
+      test_fail "detect_platform returned unexpected PLATFORM='${PLATFORM}'" "expected macos, linux, or windows"
+      ;;
+  esac
+}
+
+test_detect_platform_returns_valid_string
+
+test_detect_platform_is_idempotent() {
+  PLATFORM=""
+  IS_WSL=""
+  detect_platform >/dev/null 2>&1
+  local first_platform="$PLATFORM"
+
+  PLATFORM=""
+  IS_WSL=""
+  detect_platform >/dev/null 2>&1
+  local second_platform="$PLATFORM"
+
+  assert_eq "$first_platform" "$second_platform" "detect_platform returns consistent results"
+}
+
+test_detect_platform_is_idempotent
+
+test_detect_platform_sets_iswsl_empty_on_non_wsl() {
+  # Unless actually running on WSL, IS_WSL should be empty
+  PLATFORM=""
+  IS_WSL=""
+  detect_platform >/dev/null 2>&1
+
+  if [[ "$PLATFORM" == "linux" ]] && grep -qi microsoft /proc/version 2>/dev/null; then
+    assert_eq "true" "$IS_WSL" "IS_WSL is 'true' on WSL"
+  else
+    assert_eq "" "${IS_WSL:-}" "IS_WSL is empty on non-WSL platform"
+  fi
+}
+
+test_detect_platform_sets_iswsl_empty_on_non_wsl
+
+###############################################################################
+# Test: check_bun() — correctly detects bun presence/absence
+###############################################################################
+
+echo ""
+echo "=== check_bun() ==="
+
+test_check_bun_detects_installed_bun() {
+  # If bun is installed on this system, check_bun should succeed
+  if command -v bun &>/dev/null; then
+    BUN_PATH=""
+    if check_bun >/dev/null 2>&1; then
+      test_pass "check_bun succeeds when bun is installed"
+    else
+      test_fail "check_bun should succeed when bun is installed"
+    fi
+
+    if [[ -n "$BUN_PATH" ]]; then
+      test_pass "check_bun sets BUN_PATH='${BUN_PATH}'"
+    else
+      test_fail "check_bun should set BUN_PATH when bun is found"
+    fi
+  else
+    test_pass "check_bun test (installed): skipped (bun not installed)"
+    test_pass "check_bun BUN_PATH test: skipped (bun not installed)"
+  fi
+}
+
+test_check_bun_detects_installed_bun
+
+test_check_bun_fails_when_not_found() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  local exit_code=0
+  bash -c '
+    set -euo pipefail
+    TERM=dumb
+    export HOME="'"$fake_home"'"
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    source "$tmp"
+    rm -f "$tmp"
+    PATH="/nonexistent"
+    BUN_PATH=""
+    check_bun
+  ' >/dev/null 2>&1 || exit_code=$?
+  rm -rf "$fake_home"
+
+  if [[ "$exit_code" -ne 0 ]]; then
+    test_pass "check_bun returns failure when bun is not in PATH"
+  else
+    test_fail "check_bun should return failure when bun is not in PATH"
+  fi
+}
+
+test_check_bun_fails_when_not_found
+
+test_find_bun_path_checks_home_bun_bin() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  local saved_home="$HOME"
+  HOME="$fake_home"
+  BUN_PATH=""
+
+  # Create a fake bun binary in ~/.bun/bin/
+  mkdir -p "${fake_home}/.bun/bin"
+  cat > "${fake_home}/.bun/bin/bun" <<'FAKEBUN'
+#!/bin/bash
+echo "1.2.0"
+FAKEBUN
+  chmod +x "${fake_home}/.bun/bin/bun"
+
+  # Hide bun from PATH
+  local saved_path="$PATH"
+  PATH="/nonexistent"
+
+  if find_bun_path 2>/dev/null; then
+    assert_eq "${fake_home}/.bun/bin/bun" "$BUN_PATH" "find_bun_path finds bun in ~/.bun/bin/"
+  else
+    test_fail "find_bun_path should find bun in ~/.bun/bin/"
+  fi
+
+  HOME="$saved_home"
+  PATH="$saved_path"
+  rm -rf "$fake_home"
+}
+
+test_find_bun_path_checks_home_bun_bin
+
+###############################################################################
+# Test: check_uv() — correctly detects uv presence/absence
+###############################################################################
+
+echo ""
+echo "=== check_uv() ==="
+
+test_check_uv_detects_installed_uv() {
+  # If uv is installed on this system, check_uv should succeed
+  if command -v uv &>/dev/null; then
+    UV_PATH=""
+    if check_uv >/dev/null 2>&1; then
+      test_pass "check_uv succeeds when uv is installed"
+    else
+      test_fail "check_uv should succeed when uv is installed"
+    fi
+
+    if [[ -n "$UV_PATH" ]]; then
+      test_pass "check_uv sets UV_PATH='${UV_PATH}'"
+    else
+      test_fail "check_uv should set UV_PATH when uv is found"
+    fi
+  else
+    test_pass "check_uv test (installed): skipped (uv not installed)"
+    test_pass "check_uv UV_PATH test: skipped (uv not installed)"
+  fi
+}
+
+test_check_uv_detects_installed_uv
+
+test_check_uv_fails_when_not_found() {
+  # find_uv_path checks hardcoded system paths (/usr/local/bin/uv,
+  # /opt/homebrew/bin/uv) that we can't override without root.
+  # Skip if uv exists at any of those absolute paths.
+  if [[ -x "/usr/local/bin/uv" ]] || [[ -x "/opt/homebrew/bin/uv" ]]; then
+    test_pass "check_uv not-found test: skipped (uv installed at system path)"
+    return 0
+  fi
+
+  local fake_home
+  fake_home="$(mktemp -d)"
+  local exit_code=0
+  bash -c '
+    set -euo pipefail
+    TERM=dumb
+    export HOME="'"$fake_home"'"
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    source "$tmp"
+    rm -f "$tmp"
+    PATH="/nonexistent"
+    UV_PATH=""
+    check_uv
+  ' >/dev/null 2>&1 || exit_code=$?
+  rm -rf "$fake_home"
+
+  if [[ "$exit_code" -ne 0 ]]; then
+    test_pass "check_uv returns failure when uv is not in PATH"
+  else
+    test_fail "check_uv should return failure when uv is not in PATH"
+  fi
+}
+
+test_check_uv_fails_when_not_found
+
+test_find_uv_path_checks_local_bin() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  local saved_home="$HOME"
+  HOME="$fake_home"
+  UV_PATH=""
+
+  # Create a fake uv binary in ~/.local/bin/
+  mkdir -p "${fake_home}/.local/bin"
+  cat > "${fake_home}/.local/bin/uv" <<'FAKEUV'
+#!/bin/bash
+echo "uv 0.4.0"
+FAKEUV
+  chmod +x "${fake_home}/.local/bin/uv"
+
+  # Hide uv from PATH
+  local saved_path="$PATH"
+  PATH="/nonexistent"
+
+  if find_uv_path 2>/dev/null; then
+    assert_eq "${fake_home}/.local/bin/uv" "$UV_PATH" "find_uv_path finds uv in ~/.local/bin/"
+  else
+    test_fail "find_uv_path should find uv in ~/.local/bin/"
+  fi
+
+  HOME="$saved_home"
+  PATH="$saved_path"
+  rm -rf "$fake_home"
+}
+
+test_find_uv_path_checks_local_bin
+
+###############################################################################
 # Test: find_openclaw() — not found scenario
 ###############################################################################
 
