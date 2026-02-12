@@ -19,7 +19,6 @@
 import { spawn, exec, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
-import { cleanupExcessChromaProcesses } from '../infrastructure/ProcessManager.js';
 
 const execAsync = promisify(exec);
 
@@ -213,7 +212,7 @@ async function killSystemOrphans(): Promise<number> {
 
   try {
     const { stdout } = await execAsync(
-      'ps -eo pid,ppid,args 2>/dev/null | grep -E "claude.*haiku|claude.*output-format|chroma-mcp" | grep -v grep'
+      'ps -eo pid,ppid,args 2>/dev/null | grep -E "claude.*haiku|claude.*output-format" | grep -v grep'
     );
 
     let killed = 0;
@@ -262,9 +261,6 @@ export async function reapOrphanedProcesses(activeSessionIds: Set<number>): Prom
 
   // Daemon children: find idle SDK processes that didn't terminate
   killed += await killIdleDaemonChildren();
-
-  // Count-based: kill excess chroma-mcp processes regardless of age
-  killed += await cleanupExcessChromaProcesses();
 
   return killed;
 }
