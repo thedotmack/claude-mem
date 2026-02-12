@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/setup.js\"",
             "timeout": 120
           }
         ]
