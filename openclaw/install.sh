@@ -572,7 +572,6 @@ install_plugin() {
   cp "${plugin_src}/openclaw.plugin.json" "${installable_dir}/"
 
   # Generate the installable package.json with openclaw.extensions field
-  # Generate the installable package.json with openclaw.extensions field
   INSTALLER_PACKAGE_DIR="$installable_dir" node -e "
     const pkg = {
       name: 'claude-mem',
@@ -617,7 +616,6 @@ configure_memory_slot() {
   if [[ ! -f "$config_file" ]]; then
     # No config file exists — create one with the memory slot
     info "Creating OpenClaw configuration with claude-mem memory slot..."
-    info "Creating OpenClaw configuration with claude-mem memory slot..."
     INSTALLER_CONFIG_FILE="$config_file" node -e "
       const config = {
         plugins: {
@@ -640,9 +638,6 @@ configure_memory_slot() {
   fi
 
   # Config file exists — update it to set the memory slot
-  info "Updating OpenClaw configuration to use claude-mem memory slot..."
-
-  # Use node for reliable JSON manipulation
   info "Updating OpenClaw configuration to use claude-mem memory slot..."
 
   # Use node for reliable JSON manipulation
@@ -989,9 +984,6 @@ start_worker() {
     >> "$log_file" 2>&1 &
   WORKER_PID=$!
 
-  # Write PID file for future management
-  local pid_file="${HOME}/.claude-mem/worker.pid"
-  mkdir -p "${HOME}/.claude-mem"
   # Write PID file for future management
   local pid_file="${HOME}/.claude-mem/worker.pid"
   mkdir -p "${HOME}/.claude-mem"
