@@ -590,7 +590,7 @@ export class MigrationRunner {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(17, new Date().toISOString());
 
     if (renamesPerformed > 0) {
-      logger.debug('DB', `Successfully renamed ${renamesPerformed} session ID columns`);
+      logger.debug('DB', `Successfully renamed ${String(renamesPerformed)} session ID columns`);
     } else {
       logger.debug('DB', 'No session ID column renames needed (already up to date)');
     }

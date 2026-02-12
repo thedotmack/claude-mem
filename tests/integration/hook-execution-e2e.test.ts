@@ -68,7 +68,7 @@ describe('Hook Execution E2E', () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       expect(response.status).toBe(200);
 
       const body = await response.json();
@@ -83,7 +83,7 @@ describe('Hook Execution E2E', () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
       expect(response.status).toBe(200);
 
       const body = await response.json();
@@ -101,7 +101,7 @@ describe('Hook Execution E2E', () => {
       server = new Server(uninitializedOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
       expect(response.status).toBe(503);
 
       const body = await response.json();
@@ -113,7 +113,7 @@ describe('Hook Execution E2E', () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/version`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/version`);
       expect(response.status).toBe(200);
 
       const body = await response.json();
@@ -132,7 +132,7 @@ describe('Hook Execution E2E', () => {
       expect(httpServer!.listening).toBe(true);
 
       // Verify health endpoint works
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       expect(response.status).toBe(200);
 
       // Close server
@@ -163,7 +163,7 @@ describe('Hook Execution E2E', () => {
       await server.listen(testPort, '127.0.0.1');
 
       // Check when not initialized
-      let response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      let response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       let body = await response.json();
       expect(body.initialized).toBe(false);
 
@@ -171,7 +171,7 @@ describe('Hook Execution E2E', () => {
       isInitialized = true;
 
       // Check when initialized
-      response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       body = await response.json();
       expect(body.initialized).toBe(true);
     });
@@ -183,7 +183,7 @@ describe('Hook Execution E2E', () => {
       server.finalizeRoutes();
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/nonexistent`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/nonexistent`);
       expect(response.status).toBe(404);
 
       const body = await response.json();
@@ -196,7 +196,7 @@ describe('Hook Execution E2E', () => {
       await server.listen(testPort, '127.0.0.1');
 
       // Even though this endpoint doesn't exist, verify JSON handling
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/test-json`, {
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/test-json`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ test: 'data' })

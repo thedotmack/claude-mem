@@ -43,7 +43,7 @@ function makeHistory(count: number): ConversationMessage[] {
   // Alternate user/assistant for remaining messages
   for (let i = 1; i < count; i++) {
     const role = i % 2 === 1 ? 'assistant' : 'user';
-    history.push({ role, content: `Message ${i} (${role})` });
+    history.push({ role, content: `Message ${String(i)} (${role})` });
   }
   return history;
 }
@@ -239,7 +239,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
     // Simulate adding more messages to exceed threshold again
     for (let i = 0; i < 10; i++) {
       const role = i % 2 === 0 ? 'user' : 'assistant';
-      session.conversationHistory.push({ role, content: `New message ${i}` });
+      session.conversationHistory.push({ role, content: `New message ${String(i)}` });
     }
     expect(session.conversationHistory.length).toBe(18);
 

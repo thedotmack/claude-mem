@@ -32,7 +32,7 @@ interface PidInfo {
  */
 async function isPortInUse(port: number): Promise<boolean> {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+    const response = await fetch(`http://127.0.0.1:${String(port)}/api/health`, {
       signal: AbortSignal.timeout(2000)
     });
     return response.ok;

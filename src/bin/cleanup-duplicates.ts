@@ -30,7 +30,7 @@ function main() {
     ids: string;
   }>;
 
-  console.log(`Found ${duplicateObs.length} duplicate observation groups\n`);
+  console.log(`Found ${String(duplicateObs.length)} duplicate observation groups\n`);
 
   let deletedObs = 0;
   for (const dup of duplicateObs) {
@@ -39,7 +39,7 @@ function main() {
     const deleteIds = ids.filter(id => id !== keepId);
 
     console.log(`Observation "${(dup.title || '(no title)').substring(0, 60)}..."`);
-    console.log(`  Found ${dup.count} copies, keeping ID ${keepId}, deleting ${deleteIds.length} duplicates`);
+    console.log(`  Found ${String(dup.count)} copies, keeping ID ${String(keepId)}, deleting ${String(deleteIds.length)} duplicates`);
 
     const deleteStmt = db['db'].prepare(`DELETE FROM observations WHERE id IN (${deleteIds.join(',')})`);
     deleteStmt.run();
@@ -65,7 +65,7 @@ function main() {
     ids: string;
   }>;
 
-  console.log(`Found ${duplicateSum.length} duplicate summary groups\n`);
+  console.log(`Found ${String(duplicateSum.length)} duplicate summary groups\n`);
 
   let deletedSum = 0;
   for (const dup of duplicateSum) {
@@ -74,7 +74,7 @@ function main() {
     const deleteIds = ids.filter(id => id !== keepId);
 
     console.log(`Summary "${(dup.request || '(no request)').substring(0, 60)}..."`);
-    console.log(`  Found ${dup.count} copies, keeping ID ${keepId}, deleting ${deleteIds.length} duplicates`);
+    console.log(`  Found ${String(dup.count)} copies, keeping ID ${String(keepId)}, deleting ${String(deleteIds.length)} duplicates`);
 
     const deleteStmt = db['db'].prepare(`DELETE FROM session_summaries WHERE id IN (${deleteIds.join(',')})`);
     deleteStmt.run();
@@ -98,7 +98,7 @@ function main() {
     ids: string;
   }>;
 
-  console.log(`Found ${perSessionDups.length} sessions with multiple summaries\n`);
+  console.log(`Found ${String(perSessionDups.length)} sessions with multiple summaries\n`);
 
   let deletedPerSession = 0;
   for (const dup of perSessionDups) {
@@ -106,7 +106,7 @@ function main() {
     const deleteIds = ids.filter(id => id !== dup.keep_id);
 
     console.log(`Session ${dup.memory_session_id.substring(0, 20)}...`);
-    console.log(`  Found ${dup.count} summaries, keeping ID ${dup.keep_id} (latest), deleting ${deleteIds.length}`);
+    console.log(`  Found ${String(dup.count)} summaries, keeping ID ${String(dup.keep_id)} (latest), deleting ${String(deleteIds.length)}`);
 
     if (deleteIds.length > 0) {
       const deleteStmt = db['db'].prepare(`DELETE FROM session_summaries WHERE id IN (${deleteIds.join(',')})`);
@@ -122,9 +122,9 @@ function main() {
   console.log('\n' + '='.repeat(60));
   console.log('Cleanup Complete!');
   console.log('='.repeat(60));
-  console.log(`🗑️  Deleted: ${deletedObs} duplicate observations`);
-  console.log(`🗑️  Deleted: ${deletedSum} duplicate summaries`);
-  console.log(`🗑️  Total: ${deletedObs + deletedSum} duplicates removed`);
+  console.log(`🗑️  Deleted: ${String(deletedObs)} duplicate observations`);
+  console.log(`🗑️  Deleted: ${String(deletedSum)} duplicate summaries`);
+  console.log(`🗑️  Total: ${String(deletedObs + deletedSum)} duplicates removed`);
   console.log('='.repeat(60));
 }
 

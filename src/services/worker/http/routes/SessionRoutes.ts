@@ -288,7 +288,7 @@ export class SessionRoutes extends BaseRouteHandler {
           : promptText;
         logger.debug('CHROMA', 'User prompt synced', {
           promptId: latestPrompt.id,
-          duration: `${chromaDuration}ms`,
+          duration: `${String(chromaDuration)}ms`,
           prompt: truncatedPrompt
         });
       }).catch((error) => {
@@ -573,7 +573,7 @@ export class SessionRoutes extends BaseRouteHandler {
     // Verify session creation with DB lookup
     const dbSession = store.getSessionById(sessionDbId);
     const isNewSession = !dbSession?.memory_session_id;
-    logger.info('SESSION', `CREATED | contentSessionId=${contentSessionId} → sessionDbId=${sessionDbId} | isNew=${isNewSession} | project=${project}`, {
+    logger.info('SESSION', `CREATED | contentSessionId=${String(contentSessionId)} → sessionDbId=${String(sessionDbId)} | isNew=${String(isNewSession)} | project=${String(project)}`, {
       sessionId: sessionDbId
     });
 
@@ -584,9 +584,9 @@ export class SessionRoutes extends BaseRouteHandler {
     // Debug-level alignment logs for detailed tracing
     const memorySessionId = dbSession?.memory_session_id || null;
     if (promptNumber > 1) {
-      logger.debug('HTTP', `[ALIGNMENT] DB Lookup Proof | contentSessionId=${contentSessionId} → memorySessionId=${memorySessionId || '(not yet captured)'} | prompt#=${promptNumber}`);
+      logger.debug('HTTP', `[ALIGNMENT] DB Lookup Proof | contentSessionId=${String(contentSessionId)} → memorySessionId=${memorySessionId || '(not yet captured)'} | prompt#=${String(promptNumber)}`);
     } else {
-      logger.debug('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${promptNumber} | memorySessionId will be captured on first SDK response`);
+      logger.debug('HTTP', `[ALIGNMENT] New Session | contentSessionId=${String(contentSessionId)} | prompt#=${String(promptNumber)} | memorySessionId will be captured on first SDK response`);
     }
 
     // Step 3: Strip privacy tags from prompt

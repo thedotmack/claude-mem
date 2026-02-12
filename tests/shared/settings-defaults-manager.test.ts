@@ -23,7 +23,7 @@ describe('SettingsDefaultsManager', () => {
 
   beforeEach(() => {
     // Create unique temp directory for each test
-    tempDir = join(tmpdir(), `settings-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tempDir = join(tmpdir(), `settings-test-${String(Date.now())}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
     settingsPath = join(tempDir, 'settings.json');
   });

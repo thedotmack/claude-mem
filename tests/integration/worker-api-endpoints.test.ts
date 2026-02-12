@@ -69,7 +69,7 @@ describe('Worker API Endpoints Integration', () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
         expect(response.status).toBe(200);
 
         const body = await response.json();
@@ -93,7 +93,7 @@ describe('Worker API Endpoints Integration', () => {
         server = new Server(uninitOptions);
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
         const body = await response.json();
 
         expect(body.status).toBe('ok'); // Health always returns ok
@@ -107,7 +107,7 @@ describe('Worker API Endpoints Integration', () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
         expect(response.status).toBe(200);
 
         const body = await response.json();
@@ -126,7 +126,7 @@ describe('Worker API Endpoints Integration', () => {
         server = new Server(uninitOptions);
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
         expect(response.status).toBe(503);
 
         const body = await response.json();
@@ -140,7 +140,7 @@ describe('Worker API Endpoints Integration', () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/version`);
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/version`);
         expect(response.status).toBe(200);
 
         const body = await response.json();
@@ -157,7 +157,7 @@ describe('Worker API Endpoints Integration', () => {
         server.finalizeRoutes();
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/unknown-endpoint`);
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/unknown-endpoint`);
         expect(response.status).toBe(404);
 
         const body = await response.json();
@@ -169,7 +169,7 @@ describe('Worker API Endpoints Integration', () => {
         server.finalizeRoutes();
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/unknown-endpoint`, {
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/unknown-endpoint`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ test: 'data' })
@@ -182,7 +182,7 @@ describe('Worker API Endpoints Integration', () => {
         server.finalizeRoutes();
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/search/nonexistent/nested`);
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/search/nonexistent/nested`);
         expect(response.status).toBe(404);
       });
     });
@@ -192,7 +192,7 @@ describe('Worker API Endpoints Integration', () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/health`, {
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`, {
           method: 'OPTIONS'
         });
         // OPTIONS should either return 200 or 204 (CORS preflight)
@@ -207,7 +207,7 @@ describe('Worker API Endpoints Integration', () => {
       server.finalizeRoutes();
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/nonexistent`, {
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/nonexistent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key: 'value' })
@@ -221,7 +221,7 @@ describe('Worker API Endpoints Integration', () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       const contentType = response.headers.get('content-type');
 
       expect(contentType).toContain('application/json');
@@ -242,14 +242,14 @@ describe('Worker API Endpoints Integration', () => {
       await server.listen(testPort, '127.0.0.1');
 
       // Check uninitialized
-      let response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+      let response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
       expect(response.status).toBe(503);
 
       // Initialize
       initialized = true;
 
       // Check initialized
-      response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+      response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
       expect(response.status).toBe(200);
     });
 
@@ -266,7 +266,7 @@ describe('Worker API Endpoints Integration', () => {
       await server.listen(testPort, '127.0.0.1');
 
       // Check MCP not ready
-      let response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      let response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       let body = await response.json();
       expect(body.mcpReady).toBe(false);
 
@@ -274,7 +274,7 @@ describe('Worker API Endpoints Integration', () => {
       mcpReady = true;
 
       // Check MCP ready
-      response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       body = await response.json();
       expect(body.mcpReady).toBe(true);
     });
@@ -295,7 +295,7 @@ describe('Worker API Endpoints Integration', () => {
       await server.listen(testPort, '127.0.0.1');
 
       // Verify it's running
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       expect(response.status).toBe(200);
 
       // Close

@@ -26,7 +26,7 @@ function checkChromaAvailability(): { available: boolean; reason: string } {
     execSync('uvx --version', { stdio: 'pipe', encoding: 'utf-8' });
     return { available: true, reason: '' };
   } catch (error) {
-    return { available: false, reason: `uvx check failed: ${error}` };
+    return { available: false, reason: `uvx check failed: ${error instanceof Error ? error.message : String(error)}` };
   }
 }
 
@@ -34,8 +34,8 @@ function checkChromaAvailability(): { available: boolean; reason: string } {
 let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
 
 describe('ChromaSync Vector Sync Integration', () => {
-  const testProject = `test-project-${Date.now()}`;
-  const testVectorDbDir = path.join(os.tmpdir(), `chroma-test-${Date.now()}`);
+  const testProject = `test-project-${String(Date.now())}`;
+  const testVectorDbDir = path.join(os.tmpdir(), `chroma-test-${String(Date.now())}`);
 
   beforeAll(() => {
     const check = checkChromaAvailability();

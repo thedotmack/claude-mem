@@ -241,7 +241,7 @@ describe('Server', () => {
 
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
 
       expect(response.status).toBe(200);
 
@@ -255,7 +255,7 @@ describe('Server', () => {
 
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       const body = await response.json();
 
       expect(body.initialized).toBe(true);
@@ -277,7 +277,7 @@ describe('Server', () => {
       await server.listen(testPort, '127.0.0.1');
 
       // Check when not initialized
-      let response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      let response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       let body = await response.json();
       expect(body.initialized).toBe(false);
 
@@ -285,7 +285,7 @@ describe('Server', () => {
       isInitialized = true;
 
       // Check when initialized
-      response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       body = await response.json();
       expect(body.initialized).toBe(true);
     });
@@ -296,7 +296,7 @@ describe('Server', () => {
 
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       const body = await response.json();
 
       expect(body.platform).toBeDefined();
@@ -312,7 +312,7 @@ describe('Server', () => {
 
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
 
       expect(response.status).toBe(200);
 
@@ -333,7 +333,7 @@ describe('Server', () => {
 
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
 
       expect(response.status).toBe(503);
 
@@ -350,7 +350,7 @@ describe('Server', () => {
 
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/version`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/version`);
 
       expect(response.status).toBe(200);
 
@@ -368,7 +368,7 @@ describe('Server', () => {
       const testPort = 40000 + Math.floor(Math.random() * 10000);
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/nonexistent`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/nonexistent`);
 
       expect(response.status).toBe(404);
 

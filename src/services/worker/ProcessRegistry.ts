@@ -38,7 +38,7 @@ const processRegistry = new Map<number, TrackedProcess>();
  */
 export function registerProcess(pid: number, sessionDbId: number, process: ChildProcess): void {
   processRegistry.set(pid, { pid, sessionDbId, spawnedAt: Date.now(), process });
-  logger.info('PROCESS', `Registered PID ${pid} for session ${sessionDbId}`, { pid, sessionDbId });
+  logger.info('PROCESS', `Registered PID ${String(pid)} for session ${String(sessionDbId)}`, { pid, sessionDbId });
 }
 
 /**
@@ -46,7 +46,7 @@ export function registerProcess(pid: number, sessionDbId: number, process: Child
  */
 export function unregisterProcess(pid: number): void {
   processRegistry.delete(pid);
-  logger.debug('PROCESS', `Unregistered PID ${pid}`, { pid });
+  logger.debug('PROCESS', `Unregistered PID ${String(pid)}`, { pid });
 }
 
 /**
@@ -59,7 +59,7 @@ export function getProcessBySession(sessionDbId: number): TrackedProcess | undef
     if (info.sessionDbId === sessionDbId) matches.push(info);
   }
   if (matches.length > 1) {
-    logger.warn('PROCESS', `Multiple processes found for session ${sessionDbId}`, {
+    logger.warn('PROCESS', `Multiple processes found for session ${String(sessionDbId)}`, {
       count: matches.length,
       pids: matches.map(m => m.pid)
     });
@@ -110,7 +110,7 @@ export async function ensureProcessExit(tracked: TrackedProcess, timeoutMs: numb
   }
 
   // Timeout: escalate to SIGKILL
-  logger.warn('PROCESS', `PID ${pid} did not exit after ${timeoutMs}ms, sending SIGKILL`, { pid, timeoutMs });
+  logger.warn('PROCESS', `PID ${String(pid)} did not exit after ${String(timeoutMs)}ms, sending SIGKILL`, { pid, timeoutMs });
   try {
     proc.kill('SIGKILL');
   } catch {
@@ -142,7 +142,7 @@ async function killSystemOrphans(): Promise<number> {
       const match = line.trim().match(/^(\d+)\s+(\d+)/);
       if (match && parseInt(match[2]) === 1) { // ppid=1 = orphan
         const orphanPid = parseInt(match[1]);
-        logger.warn('PROCESS', `Killing system orphan PID ${orphanPid}`, { pid: orphanPid });
+        logger.warn('PROCESS', `Killing system orphan PID ${String(orphanPid)}`, { pid: orphanPid });
         try {
           process.kill(orphanPid, 'SIGKILL');
           killed++;
@@ -167,7 +167,7 @@ export async function reapOrphanedProcesses(activeSessionIds: Set<number>): Prom
   for (const [pid, info] of processRegistry) {
     if (activeSessionIds.has(info.sessionDbId)) continue; // Active = safe
 
-    logger.warn('PROCESS', `Killing orphan PID ${pid} (session ${info.sessionDbId} gone)`, { pid, sessionDbId: info.sessionDbId });
+    logger.warn('PROCESS', `Killing orphan PID ${String(pid)} (session ${String(info.sessionDbId)} gone)`, { pid, sessionDbId: info.sessionDbId });
     try {
       info.process.kill('SIGKILL');
       killed++;
@@ -244,7 +244,7 @@ export function startOrphanReaper(getActiveSessionIds: () => Set<number>, interv
       const activeIds = getActiveSessionIds();
       const killed = await reapOrphanedProcesses(activeIds);
       if (killed > 0) {
-        logger.info('PROCESS', `Reaper cleaned up ${killed} orphaned processes`, { killed });
+        logger.info('PROCESS', `Reaper cleaned up ${String(killed)} orphaned processes`, { killed });
       }
     } catch (error) {
       logger.error('PROCESS', 'Reaper error', {}, error as Error);

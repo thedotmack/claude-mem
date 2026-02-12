@@ -43,8 +43,8 @@ export class ClaudeMemDatabase {
     this.db.run('PRAGMA synchronous = NORMAL');
     this.db.run('PRAGMA foreign_keys = ON');
     this.db.run('PRAGMA temp_store = memory');
-    this.db.run(`PRAGMA mmap_size = ${SQLITE_MMAP_SIZE_BYTES}`);
-    this.db.run(`PRAGMA cache_size = ${SQLITE_CACHE_SIZE_PAGES}`);
+    this.db.run(`PRAGMA mmap_size = ${String(SQLITE_MMAP_SIZE_BYTES)}`);
+    this.db.run(`PRAGMA cache_size = ${String(SQLITE_CACHE_SIZE_PAGES)}`);
 
     // Run all migrations
     const migrationRunner = new MigrationRunner(this.db);
@@ -102,8 +102,8 @@ export class DatabaseManager {
     this.db.run('PRAGMA synchronous = NORMAL');
     this.db.run('PRAGMA foreign_keys = ON');
     this.db.run('PRAGMA temp_store = memory');
-    this.db.run(`PRAGMA mmap_size = ${SQLITE_MMAP_SIZE_BYTES}`);
-    this.db.run(`PRAGMA cache_size = ${SQLITE_CACHE_SIZE_PAGES}`);
+    this.db.run(`PRAGMA mmap_size = ${String(SQLITE_MMAP_SIZE_BYTES)}`);
+    this.db.run(`PRAGMA cache_size = ${String(SQLITE_CACHE_SIZE_PAGES)}`);
 
     // Initialize schema_versions table
     this.initializeSchemaVersions();
@@ -173,7 +173,7 @@ export class DatabaseManager {
 
     for (const migration of this.migrations) {
       if (migration.version > maxApplied) {
-        logger.info('DB', `Applying migration ${migration.version}`);
+        logger.info('DB', `Applying migration ${String(migration.version)}`);
 
         const transaction = this.db.transaction(() => {
           migration.up(this.db!);
@@ -183,7 +183,7 @@ export class DatabaseManager {
         });
 
         transaction();
-        logger.info('DB', `Migration ${migration.version} applied successfully`);
+        logger.info('DB', `Migration ${String(migration.version)} applied successfully`);
       }
     }
   }

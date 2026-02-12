@@ -39,7 +39,7 @@ export const fileEditHandler: EventHandler = {
 
     // Send to worker as an observation with file edit metadata
     // The observation handler on the worker will process this appropriately
-    const response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
+    const response = await fetch(`http://127.0.0.1:${String(port)}/api/sessions/observations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -53,7 +53,7 @@ export const fileEditHandler: EventHandler = {
     });
 
     if (!response.ok) {
-      throw new Error(`File edit observation storage failed: ${response.status}`);
+      throw new Error(`File edit observation storage failed: ${String(response.status)}`);
     }
 
     logger.debug('HOOK', 'File edit observation sent successfully', { filePath });

@@ -269,7 +269,7 @@ export class ChromaSync {
     // Narrative as separate document
     if (obs.narrative) {
       documents.push({
-        id: `obs_${obs.id}_narrative`,
+        id: `obs_${String(obs.id)}_narrative`,
         document: obs.narrative,
         metadata: { ...baseMetadata, field_type: 'narrative' }
       });
@@ -278,7 +278,7 @@ export class ChromaSync {
     // Text as separate document (legacy field)
     if (obs.text) {
       documents.push({
-        id: `obs_${obs.id}_text`,
+        id: `obs_${String(obs.id)}_text`,
         document: obs.text,
         metadata: { ...baseMetadata, field_type: 'text' }
       });
@@ -287,7 +287,7 @@ export class ChromaSync {
     // Each fact as separate document
     facts.forEach((fact: string, index: number) => {
       documents.push({
-        id: `obs_${obs.id}_fact_${index}`,
+        id: `obs_${String(obs.id)}_fact_${String(index)}`,
         document: fact,
         metadata: { ...baseMetadata, field_type: 'fact', fact_index: index }
       });
@@ -315,7 +315,7 @@ export class ChromaSync {
     // Each field becomes a separate document
     if (summary.request) {
       documents.push({
-        id: `summary_${summary.id}_request`,
+        id: `summary_${String(summary.id)}_request`,
         document: summary.request,
         metadata: { ...baseMetadata, field_type: 'request' }
       });
@@ -323,7 +323,7 @@ export class ChromaSync {
 
     if (summary.investigated) {
       documents.push({
-        id: `summary_${summary.id}_investigated`,
+        id: `summary_${String(summary.id)}_investigated`,
         document: summary.investigated,
         metadata: { ...baseMetadata, field_type: 'investigated' }
       });
@@ -331,7 +331,7 @@ export class ChromaSync {
 
     if (summary.learned) {
       documents.push({
-        id: `summary_${summary.id}_learned`,
+        id: `summary_${String(summary.id)}_learned`,
         document: summary.learned,
         metadata: { ...baseMetadata, field_type: 'learned' }
       });
@@ -339,7 +339,7 @@ export class ChromaSync {
 
     if (summary.completed) {
       documents.push({
-        id: `summary_${summary.id}_completed`,
+        id: `summary_${String(summary.id)}_completed`,
         document: summary.completed,
         metadata: { ...baseMetadata, field_type: 'completed' }
       });
@@ -347,7 +347,7 @@ export class ChromaSync {
 
     if (summary.next_steps) {
       documents.push({
-        id: `summary_${summary.id}_next_steps`,
+        id: `summary_${String(summary.id)}_next_steps`,
         document: summary.next_steps,
         metadata: { ...baseMetadata, field_type: 'next_steps' }
       });
@@ -355,7 +355,7 @@ export class ChromaSync {
 
     if (summary.notes) {
       documents.push({
-        id: `summary_${summary.id}_notes`,
+        id: `summary_${String(summary.id)}_notes`,
         document: summary.notes,
         metadata: { ...baseMetadata, field_type: 'notes' }
       });
@@ -503,7 +503,7 @@ export class ChromaSync {
    */
   private formatUserPromptDoc(prompt: StoredUserPrompt): ChromaDocument {
     return {
-      id: `prompt_${prompt.id}`,
+      id: `prompt_${String(prompt.id)}`,
       document: prompt.prompt_text,
       metadata: {
         sqlite_id: prompt.id,
@@ -697,7 +697,7 @@ export class ChromaSync {
 
         logger.debug('CHROMA_SYNC', 'Backfill progress', {
           project: this.project,
-          progress: `${Math.min(i + this.BATCH_SIZE, allDocs.length)}/${allDocs.length}`
+          progress: `${String(Math.min(i + this.BATCH_SIZE, allDocs.length))}/${String(allDocs.length)}`
         });
       }
 
@@ -738,7 +738,7 @@ export class ChromaSync {
 
         logger.debug('CHROMA_SYNC', 'Backfill progress', {
           project: this.project,
-          progress: `${Math.min(i + this.BATCH_SIZE, summaryDocs.length)}/${summaryDocs.length}`
+          progress: `${String(Math.min(i + this.BATCH_SIZE, summaryDocs.length))}/${String(summaryDocs.length)}`
         });
       }
 
@@ -787,7 +787,7 @@ export class ChromaSync {
 
         logger.debug('CHROMA_SYNC', 'Backfill progress', {
           project: this.project,
-          progress: `${Math.min(i + this.BATCH_SIZE, promptDocs.length)}/${promptDocs.length}`
+          progress: `${String(Math.min(i + this.BATCH_SIZE, promptDocs.length))}/${String(promptDocs.length)}`
         });
       }
 

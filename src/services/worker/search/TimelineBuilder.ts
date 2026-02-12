@@ -148,17 +148,17 @@ export class TimelineBuilder {
         ? ((anchorObs.data as ObservationSearchResult).title || 'Untitled')
         : 'Unknown';
       lines.push(`# Timeline for query: "${query}"`);
-      lines.push(`**Anchor:** Observation #${anchorId} - ${anchorTitle}`);
+      lines.push(`**Anchor:** Observation #${String(anchorId)} - ${anchorTitle}`);
     } else if (anchorId) {
-      lines.push(`# Timeline around anchor: ${anchorId}`);
+      lines.push(`# Timeline around anchor: ${String(anchorId)}`);
     } else {
       lines.push(`# Timeline`);
     }
 
     if (depthBefore !== undefined && depthAfter !== undefined) {
-      lines.push(`**Window:** ${depthBefore} records before -> ${depthAfter} records after | **Items:** ${items.length}`);
+      lines.push(`**Window:** ${String(depthBefore)} records before -> ${String(depthAfter)} records after | **Items:** ${String(items.length)}`);
     } else {
-      lines.push(`**Items:** ${items.length}`);
+      lines.push(`**Items:** ${String(items.length)}`);
     }
     lines.push('');
 
@@ -191,7 +191,7 @@ export class TimelineBuilder {
           const title = sess.request || 'Session summary';
           const marker = isAnchor ? ' <- **ANCHOR**' : '';
 
-          lines.push(`**\uD83C\uDFAF #S${sess.id}** ${title} (${formatDateTime(item.epoch)})${marker}`);
+          lines.push(`**\uD83C\uDFAF #S${String(sess.id)}** ${title} (${formatDateTime(item.epoch)})${marker}`);
           lines.push('');
 
         } else if (item.type === 'prompt') {
@@ -207,7 +207,7 @@ export class TimelineBuilder {
             ? prompt.prompt_text.substring(0, 100) + '...'
             : prompt.prompt_text;
 
-          lines.push(`**\uD83D\uDCAC User Prompt #${prompt.prompt_number}** (${formatDateTime(item.epoch)})`);
+          lines.push(`**\uD83D\uDCAC User Prompt #${String(prompt.prompt_number)}** (${formatDateTime(item.epoch)})`);
           lines.push(`> ${truncated}`);
           lines.push('');
 
@@ -239,7 +239,7 @@ export class TimelineBuilder {
           lastTime = time;
 
           const anchorMarker = isAnchor ? ' <- **ANCHOR**' : '';
-          lines.push(`| #${obs.id} | ${timeDisplay} | ${icon} | ${title}${anchorMarker} | ~${tokens} |`);
+          lines.push(`| #${String(obs.id)} | ${timeDisplay} | ${icon} | ${title}${anchorMarker} | ~${String(tokens)} |`);
         }
       }
 
@@ -292,7 +292,7 @@ export class TimelineBuilder {
     }
 
     if (typeof anchorId === 'string' && anchorId.startsWith('S') && item.type === 'session') {
-      return `S${(item.data as SessionSummarySearchResult).id}` === anchorId;
+      return `S${String((item.data as SessionSummarySearchResult).id)}` === anchorId;
     }
 
     return false;

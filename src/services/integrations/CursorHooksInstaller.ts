@@ -104,7 +104,7 @@ export async function updateCursorContextForProject(projectName: string, port: n
   try {
     // Fetch fresh context from worker
     const response = await fetch(
-      `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
+      `http://127.0.0.1:${String(port)}/api/context/inject?project=${encodeURIComponent(projectName)}`
     );
 
     if (!response.ok) return;
@@ -393,11 +393,11 @@ async function setupProjectContext(targetDir: string, workspaceRoot: string): Pr
 
   try {
     // Check if worker is running
-    const healthResponse = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+    const healthResponse = await fetch(`http://127.0.0.1:${String(port)}/api/readiness`);
     if (healthResponse.ok) {
       // Fetch context
       const contextResponse = await fetch(
-        `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
+        `http://127.0.0.1:${String(port)}/api/context/inject?project=${encodeURIComponent(projectName)}`
       );
       if (contextResponse.ok) {
         const context = await contextResponse.text();

@@ -89,17 +89,17 @@ export class TimelineService {
       const anchorObs = items.find(item => item.type === 'observation' && (item.data as ObservationSearchResult).id === anchorId);
       const anchorTitle = anchorObs ? ((anchorObs.data as ObservationSearchResult).title || 'Untitled') : 'Unknown';
       lines.push(`# Timeline for query: "${query}"`);
-      lines.push(`**Anchor:** Observation #${anchorId} - ${anchorTitle}`);
+      lines.push(`**Anchor:** Observation #${String(anchorId)} - ${anchorTitle}`);
     } else if (anchorId) {
-      lines.push(`# Timeline around anchor: ${anchorId}`);
+      lines.push(`# Timeline around anchor: ${String(anchorId)}`);
     } else {
       lines.push(`# Timeline`);
     }
 
     if (depth_before !== undefined && depth_after !== undefined) {
-      lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${items.length}`);
+      lines.push(`**Window:** ${String(depth_before)} records before → ${String(depth_after)} records after | **Items:** ${String(items.length)}`);
     } else {
-      lines.push(`**Items:** ${items.length}`);
+      lines.push(`**Items:** ${String(items.length)}`);
     }
     lines.push('');
 
@@ -136,7 +136,7 @@ export class TimelineService {
       for (const item of dayItems) {
         const isAnchor = (
           (typeof anchorId === 'number' && item.type === 'observation' && (item.data as ObservationSearchResult).id === anchorId) ||
-          (typeof anchorId === 'string' && anchorId.startsWith('S') && item.type === 'session' && `S${(item.data as SessionSummarySearchResult).id}` === anchorId)
+          (typeof anchorId === 'string' && anchorId.startsWith('S') && item.type === 'session' && `S${String((item.data as SessionSummarySearchResult).id)}` === anchorId)
         );
 
         if (item.type === 'session') {
@@ -151,7 +151,7 @@ export class TimelineService {
           const title = sess.request || 'Session summary';
           const marker = isAnchor ? ' ← **ANCHOR**' : '';
 
-          lines.push(`**🎯 #S${sess.id}** ${title} (${this.formatDateTime(item.epoch)})${marker}`);
+          lines.push(`**🎯 #S${String(sess.id)}** ${title} (${this.formatDateTime(item.epoch)})${marker}`);
           lines.push('');
         } else if (item.type === 'prompt') {
           if (tableOpen) {
@@ -164,7 +164,7 @@ export class TimelineService {
           const prompt = item.data as UserPromptSearchResult;
           const truncated = prompt.prompt_text.length > 100 ? prompt.prompt_text.substring(0, 100) + '...' : prompt.prompt_text;
 
-          lines.push(`**💬 User Prompt #${prompt.prompt_number}** (${this.formatDateTime(item.epoch)})`);
+          lines.push(`**💬 User Prompt #${String(prompt.prompt_number)}** (${this.formatDateTime(item.epoch)})`);
           lines.push(`> ${truncated}`);
           lines.push('');
         } else if (item.type === 'observation') {
@@ -195,7 +195,7 @@ export class TimelineService {
           lastTime = time;
 
           const anchorMarker = isAnchor ? ' ← **ANCHOR**' : '';
-          lines.push(`| #${obs.id} | ${timeDisplay} | ${icon} | ${title}${anchorMarker} | ~${tokens} |`);
+          lines.push(`| #${String(obs.id)} | ${timeDisplay} | ${icon} | ${title}${anchorMarker} | ~${String(tokens)} |`);
         }
       }
 

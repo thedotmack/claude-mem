@@ -41,7 +41,7 @@ export const summarizeHandler: EventHandler = {
     });
 
     // Send to worker - worker handles privacy check and database operations
-    const response = await fetch(`http://127.0.0.1:${port}/api/sessions/summarize`, {
+    const response = await fetch(`http://127.0.0.1:${String(port)}/api/sessions/summarize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

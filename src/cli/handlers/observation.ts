@@ -58,7 +58,7 @@ export const observationHandler: EventHandler = {
     }
 
     // Send to worker - worker handles privacy check and database operations
-    const response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
+    const response = await fetch(`http://127.0.0.1:${String(port)}/api/sessions/observations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -72,7 +72,7 @@ export const observationHandler: EventHandler = {
     });
 
     if (!response.ok) {
-      throw new Error(`Observation storage failed: ${response.status}`);
+      throw new Error(`Observation storage failed: ${String(response.status)}`);
     }
 
     logger.debug('HOOK', 'Observation sent successfully', { toolName });

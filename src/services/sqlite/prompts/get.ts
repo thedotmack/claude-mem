@@ -145,7 +145,7 @@ export function getUserPromptsByIds(
 
   const { orderBy = 'date_desc', limit, project } = options;
   const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
-  const limitClause = limit ? `LIMIT ${limit}` : '';
+  const limitClause = limit ? `LIMIT ${String(limit)}` : '';
   const placeholders = ids.map(() => '?').join(',');
   const params: (number | string)[] = [...ids];
 

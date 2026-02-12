@@ -33,7 +33,7 @@ import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
  */
 const WORKER_PORT = getWorkerPort();
 const WORKER_HOST = getWorkerHost();
-const WORKER_BASE_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
+const WORKER_BASE_URL = `http://${WORKER_HOST}:${String(WORKER_PORT)}`;
 
 /**
  * Map tool names to Worker HTTP endpoints
@@ -67,7 +67,7 @@ async function callWorkerAPI(
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
+      throw new Error(`Worker API error (${String(response.status)}): ${errorText}`);
     }
 
     const data = await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
@@ -109,7 +109,7 @@ async function callWorkerAPIPost(
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
+      throw new Error(`Worker API error (${String(response.status)}): ${errorText}`);
     }
 
     const data = await response.json();

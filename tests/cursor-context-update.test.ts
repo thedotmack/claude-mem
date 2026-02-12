@@ -19,7 +19,7 @@ describe('Cursor Context Update', () => {
 
   beforeEach(() => {
     // Create unique temp directory for each test
-    tempDir = join(tmpdir(), `cursor-context-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tempDir = join(tmpdir(), `cursor-context-test-${String(Date.now())}-${Math.random().toString(36).slice(2)}`);
     workspacePath = join(tempDir, 'my-project');
     mkdirSync(workspacePath, { recursive: true });
   });

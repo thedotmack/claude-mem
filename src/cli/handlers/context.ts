@@ -31,14 +31,14 @@ export const contextHandler: EventHandler = {
 
     // Pass all projects (parent + worktree if applicable) for unified timeline
     const projectsParam = context.allProjects.join(',');
-    const url = `http://127.0.0.1:${port}/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
+    const url = `http://127.0.0.1:${String(port)}/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
 
     // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
     // Worker service has its own timeouts, so client-side timeout is redundant
     const response = await fetch(url);
 
     if (!response.ok) {
-      throw new Error(`Context generation failed: ${response.status}`);
+      throw new Error(`Context generation failed: ${String(response.status)}`);
     }
 
     const result = await response.text();

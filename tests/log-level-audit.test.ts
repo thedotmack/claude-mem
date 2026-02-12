@@ -98,7 +98,7 @@ function extractLoggerCalls(content: string, filePath: string): LoggerCall[] {
       errorParam = errorMatch[0].replace(/^\s*,\s*/, '').replace(/\s*\)\s*$/, '');
     }
 
-    const key = `${filePath}:${lineNum}:${method}:${message.substring(0, 50)}`;
+    const key = `${filePath}:${String(lineNum)}:${method}:${message.substring(0, 50)}`;
     if (!seenCalls.has(key)) {
       seenCalls.add(key);
       calls.push({
@@ -159,7 +159,7 @@ function generateReport(calls: LoggerCall[]): string {
 
   const lines: string[] = [];
   lines.push('\n=== LOG LEVEL AUDIT REPORT ===\n');
-  lines.push(`Total logger calls found: ${calls.length}\n`);
+  lines.push(`Total logger calls found: ${String(calls.length)}\n`);
 
   // ERROR level
   lines.push('');
@@ -169,7 +169,7 @@ function generateReport(calls: LoggerCall[]): string {
     lines.push('  (none found)');
   } else {
     for (const call of byLevel['ERROR'].sort((a, b) => a.file.localeCompare(b.file))) {
-      lines.push(`  ${call.file}:${call.line} [${call.component}]`);
+      lines.push(`  ${call.file}:${String(call.line)} [${call.component}]`);
       lines.push(`    message: "${formatMessage(call.message)}"`);
       if (call.errorParam) {
         lines.push(`    error: ${call.errorParam}`);
@@ -178,7 +178,7 @@ function generateReport(calls: LoggerCall[]): string {
       lines.push('');
     }
   }
-  lines.push(`  Count: ${byLevel['ERROR'].length}`);
+  lines.push(`  Count: ${String(byLevel['ERROR'].length)}`);
 
   // WARN level
   lines.push('');
@@ -188,7 +188,7 @@ function generateReport(calls: LoggerCall[]): string {
     lines.push('  (none found)');
   } else {
     for (const call of byLevel['WARN'].sort((a, b) => a.file.localeCompare(b.file))) {
-      lines.push(`  ${call.file}:${call.line} [${call.component}]`);
+      lines.push(`  ${call.file}:${String(call.line)} [${call.component}]`);
       lines.push(`    message: "${formatMessage(call.message)}"`);
       if (call.errorParam) {
         lines.push(`    error: ${call.errorParam}`);
@@ -197,7 +197,7 @@ function generateReport(calls: LoggerCall[]): string {
       lines.push('');
     }
   }
-  lines.push(`  Count: ${byLevel['WARN'].length}`);
+  lines.push(`  Count: ${String(byLevel['WARN'].length)}`);
 
   // INFO level
   lines.push('');
@@ -207,7 +207,7 @@ function generateReport(calls: LoggerCall[]): string {
     lines.push('  (none found)');
   } else {
     for (const call of byLevel['INFO'].sort((a, b) => a.file.localeCompare(b.file))) {
-      lines.push(`  ${call.file}:${call.line} [${call.component}]`);
+      lines.push(`  ${call.file}:${String(call.line)} [${call.component}]`);
       lines.push(`    message: "${formatMessage(call.message)}"`);
       if (call.errorParam) {
         lines.push(`    error: ${call.errorParam}`);
@@ -216,7 +216,7 @@ function generateReport(calls: LoggerCall[]): string {
       lines.push('');
     }
   }
-  lines.push(`  Count: ${byLevel['INFO'].length}`);
+  lines.push(`  Count: ${String(byLevel['INFO'].length)}`);
 
   // DEBUG level
   lines.push('');
@@ -226,7 +226,7 @@ function generateReport(calls: LoggerCall[]): string {
     lines.push('  (none found)');
   } else {
     for (const call of byLevel['DEBUG'].sort((a, b) => a.file.localeCompare(b.file))) {
-      lines.push(`  ${call.file}:${call.line} [${call.component}]`);
+      lines.push(`  ${call.file}:${String(call.line)} [${call.component}]`);
       lines.push(`    message: "${formatMessage(call.message)}"`);
       if (call.errorParam) {
         lines.push(`    error: ${call.errorParam}`);
@@ -235,16 +235,16 @@ function generateReport(calls: LoggerCall[]): string {
       lines.push('');
     }
   }
-  lines.push(`  Count: ${byLevel['DEBUG'].length}`);
+  lines.push(`  Count: ${String(byLevel['DEBUG'].length)}`);
 
   // Summary
   lines.push('');
   lines.push('=== SUMMARY ===');
-  lines.push(`  ERROR: ${byLevel['ERROR'].length}`);
-  lines.push(`  WARN:  ${byLevel['WARN'].length}`);
-  lines.push(`  INFO:  ${byLevel['INFO'].length}`);
-  lines.push(`  DEBUG: ${byLevel['DEBUG'].length}`);
-  lines.push(`  TOTAL: ${calls.length}`);
+  lines.push(`  ERROR: ${String(byLevel['ERROR'].length)}`);
+  lines.push(`  WARN:  ${String(byLevel['WARN'].length)}`);
+  lines.push(`  INFO:  ${String(byLevel['INFO'].length)}`);
+  lines.push(`  DEBUG: ${String(byLevel['DEBUG'].length)}`);
+  lines.push(`  TOTAL: ${String(calls.length)}`);
   lines.push('');
 
   return lines.join('\n');
@@ -296,10 +296,10 @@ describe('Log Level Audit', () => {
     }
 
     console.log('\n📊 Log Level Distribution:');
-    console.log(`  ERROR: ${byLevel['ERROR']} (${((byLevel['ERROR'] / allCalls.length) * 100).toFixed(1)}%)`);
-    console.log(`  WARN:  ${byLevel['WARN']} (${((byLevel['WARN'] / allCalls.length) * 100).toFixed(1)}%)`);
-    console.log(`  INFO:  ${byLevel['INFO']} (${((byLevel['INFO'] / allCalls.length) * 100).toFixed(1)}%)`);
-    console.log(`  DEBUG: ${byLevel['DEBUG']} (${((byLevel['DEBUG'] / allCalls.length) * 100).toFixed(1)}%)`);
+    console.log(`  ERROR: ${String(byLevel['ERROR'])} (${((byLevel['ERROR'] / allCalls.length) * 100).toFixed(1)}%)`);
+    console.log(`  WARN:  ${String(byLevel['WARN'])} (${((byLevel['WARN'] / allCalls.length) * 100).toFixed(1)}%)`);
+    console.log(`  INFO:  ${String(byLevel['INFO'])} (${((byLevel['INFO'] / allCalls.length) * 100).toFixed(1)}%)`);
+    console.log(`  DEBUG: ${String(byLevel['DEBUG'])} (${((byLevel['DEBUG'] / allCalls.length) * 100).toFixed(1)}%)`);
 
     // Log distribution health check - not a hard failure, just informational
     // A healthy codebase typically has: DEBUG > INFO > WARN > ERROR

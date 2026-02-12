@@ -181,7 +181,7 @@ describe("Logger Usage Standards", () => {
         .join("\n");
 
       throw new Error(
-        `❌ CRITICAL: Found console.log/console.error in ${filesWithConsole.length} background service file(s):\n${report}\n\n` +
+        `❌ CRITICAL: Found console.log/console.error in ${String(filesWithConsole.length)} background service file(s):\n${report}\n\n` +
         `These logs are INVISIBLE - they run in background processes where console output goes nowhere.\n` +
         `Replace with logger.debug/info/warn/error calls immediately.\n\n` +
         `Only hook files (src/hooks/*) should use console.log for their output response.`
@@ -199,7 +199,7 @@ describe("Logger Usage Standards", () => {
         .join("\n");
 
       throw new Error(
-        `High-priority files missing logger import (${withoutLogger.length}):\n${report}\n\n` +
+        `High-priority files missing logger import (${String(withoutLogger.length)}):\n${report}\n\n` +
         `These files should import and use logger for debugging and observability.`
       );
     }
@@ -213,11 +213,11 @@ describe("Logger Usage Standards", () => {
     const coverage = ((withLogger.length / relevantFiles.length) * 100).toFixed(1);
 
     console.log("\n📊 Logger Coverage Report:");
-    console.log(`  Total files analyzed: ${relevantFiles.length}`);
-    console.log(`  Files with logger: ${withLogger.length} (${coverage}%)`);
-    console.log(`  Files without logger: ${withoutLogger.length}`);
-    console.log(`  Total logger calls: ${totalCalls}`);
-    console.log(`  Excluded files: ${allFiles.length - relevantFiles.length}`);
+    console.log(`  Total files analyzed: ${String(relevantFiles.length)}`);
+    console.log(`  Files with logger: ${String(withLogger.length)} (${coverage}%)`);
+    console.log(`  Files without logger: ${String(withoutLogger.length)}`);
+    console.log(`  Total logger calls: ${String(totalCalls)}`);
+    console.log(`  Excluded files: ${String(allFiles.length - relevantFiles.length)}`);
 
     if (withoutLogger.length > 0) {
       console.log("\n📝 Files without logger:");

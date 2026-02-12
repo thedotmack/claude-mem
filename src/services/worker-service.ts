@@ -270,7 +270,7 @@ export class WorkerService {
       const STUCK_THRESHOLD_MS = 5 * 60 * 1000;
       const resetCount = pendingStore.resetStuckMessages(STUCK_THRESHOLD_MS);
       if (resetCount > 0) {
-        logger.info('SYSTEM', `Recovered ${resetCount} stuck messages from previous session`, { thresholdMinutes: 5 });
+        logger.info('SYSTEM', `Recovered ${String(resetCount)} stuck messages from previous session`, { thresholdMinutes: 5 });
       }
 
       // Initialize search services
@@ -322,7 +322,7 @@ export class WorkerService {
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
         if (result.sessionsStarted > 0) {
-          logger.info('SYSTEM', `Auto-recovered ${result.sessionsStarted} sessions with pending work`, {
+          logger.info('SYSTEM', `Auto-recovered ${String(result.sessionsStarted)} sessions with pending work`, {
             totalPending: result.totalPendingSessions,
             started: result.sessionsStarted,
             sessionIds: result.startedSessionIds
@@ -402,7 +402,7 @@ export class WorkerService {
 
     if (orphanedSessionIds.length === 0) return result;
 
-    logger.info('SYSTEM', `Processing up to ${sessionLimit} of ${orphanedSessionIds.length} pending session queues`);
+    logger.info('SYSTEM', `Processing up to ${String(sessionLimit)} of ${String(orphanedSessionIds.length)} pending session queues`);
 
     for (const sessionDbId of orphanedSessionIds) {
       if (result.sessionsStarted >= sessionLimit) break;
@@ -415,7 +415,7 @@ export class WorkerService {
         }
 
         const session = this.sessionManager.initializeSession(sessionDbId);
-        logger.info('SYSTEM', `Starting processor for session ${sessionDbId}`, {
+        logger.info('SYSTEM', `Starting processor for session ${String(sessionDbId)}`, {
           project: session.project,
           pendingCount: pendingStore.getPendingCount(sessionDbId)
         });
@@ -426,7 +426,7 @@ export class WorkerService {
 
         await new Promise(resolve => setTimeout(resolve, 100));
       } catch (error) {
-        logger.error('SYSTEM', `Failed to process session ${sessionDbId}`, {}, error as Error);
+        logger.error('SYSTEM', `Failed to process session ${String(sessionDbId)}`, {}, error as Error);
         result.sessionsSkipped++;
       }
     }
@@ -621,8 +621,8 @@ async function main() {
       const pidInfo = readPidFile();
       if (running && pidInfo) {
         console.log('Worker is running');
-        console.log(`  PID: ${pidInfo.pid}`);
-        console.log(`  Port: ${pidInfo.port}`);
+        console.log(`  PID: ${String(pidInfo.pid)}`);
+        console.log(`  Port: ${String(pidInfo.port)}`);
         console.log(`  Started: ${pidInfo.startedAt}`);
       } else {
         console.log('Worker is not running');

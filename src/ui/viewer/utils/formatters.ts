@@ -21,7 +21,7 @@ export function formatUptime(seconds?: number): string {
   if (!seconds) return '-';
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
-  return `${hours}h ${minutes}m`;
+  return `${String(hours)}h ${String(minutes)}m`;
 }
 
 /**

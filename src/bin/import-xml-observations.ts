@@ -50,7 +50,7 @@ function buildTimestampMap(): TimestampMapping {
   console.log(`Reading transcript files from ${transcriptDir}...`);
 
   const files = readdirSync(transcriptDir).filter(f => f.endsWith('.jsonl'));
-  console.log(`Found ${files.length} transcript files`);
+  console.log(`Found ${String(files.length)} transcript files`);
 
   for (const filename of files) {
     const filepath = join(transcriptDir, filename);
@@ -86,7 +86,7 @@ function buildTimestampMap(): TimestampMapping {
     }
   }
 
-  console.log(`Built timestamp map with ${Object.keys(map).length} unique seconds`);
+  console.log(`Built timestamp map with ${String(Object.keys(map).length)} unique seconds`);
   return map;
 }
 
@@ -253,7 +253,7 @@ function main() {
     }
   }
 
-  console.log(`Prepared ${claudeSessionToSdkSession.size} SDK sessions\n`);
+  console.log(`Prepared ${String(claudeSessionToSdkSession.size)} SDK sessions\n`);
 
   // Read XML file
   const xmlPath = join(process.cwd(), 'actual_xml_only_with_timestamps.xml');
@@ -262,7 +262,7 @@ function main() {
 
   // Split into blocks by comment markers
   const blocks = xmlContent.split(/(?=<!-- Block \d+)/);
-  console.log(`Found ${blocks.length} blocks in XML file\n`);
+  console.log(`Found ${String(blocks.length)} blocks in XML file\n`);
 
   let importedObs = 0;
   let importedSum = 0;
@@ -324,7 +324,7 @@ function main() {
         importedObs++;
 
         if (importedObs % 50 === 0) {
-          console.log(`Imported ${importedObs} observations...`);
+          console.log(`Imported ${String(importedObs)} observations...`);
         }
       } catch (e) {
         console.error(`Error storing observation:`, e);
@@ -356,7 +356,7 @@ function main() {
         importedSum++;
 
         if (importedSum % 10 === 0) {
-          console.log(`Imported ${importedSum} summaries...`);
+          console.log(`Imported ${String(importedSum)} summaries...`);
         }
       } catch (e) {
         console.error(`Error storing summary:`, e);
@@ -374,12 +374,12 @@ function main() {
   console.log('\n' + '='.repeat(60));
   console.log('Import Complete!');
   console.log('='.repeat(60));
-  console.log(`✓ Imported: ${importedObs} observations`);
-  console.log(`✓ Imported: ${importedSum} summaries`);
-  console.log(`✓ Total: ${importedObs + importedSum} items`);
-  console.log(`⊘ Skipped: ${skipped} blocks (not full observations or summaries)`);
-  console.log(`⊘ Duplicates skipped: ${duplicateObs} observations, ${duplicateSum} summaries`);
-  console.log(`⚠️  No session: ${noSession} blocks (timestamp not in transcripts)`);
+  console.log(`✓ Imported: ${String(importedObs)} observations`);
+  console.log(`✓ Imported: ${String(importedSum)} summaries`);
+  console.log(`✓ Total: ${String(importedObs + importedSum)} items`);
+  console.log(`⊘ Skipped: ${String(skipped)} blocks (not full observations or summaries)`);
+  console.log(`⊘ Duplicates skipped: ${String(duplicateObs)} observations, ${String(duplicateSum)} summaries`);
+  console.log(`⚠️  No session: ${String(noSession)} blocks (timestamp not in transcripts)`);
   console.log('='.repeat(60));
 }
 

@@ -100,7 +100,7 @@ export class PendingMessageStore {
         deleteStmt.run(msg.id);
 
         // Log claim with minimal info (avoid logging full payload)
-        logger.info('QUEUE', `CLAIMED | sessionDbId=${sessionId} | messageId=${msg.id} | type=${msg.message_type}`, {
+        logger.info('QUEUE', `CLAIMED | sessionDbId=${String(sessionId)} | messageId=${String(msg.id)} | type=${msg.message_type}`, {
           sessionId: sessionId
         });
       }

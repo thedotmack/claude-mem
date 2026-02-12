@@ -99,7 +99,7 @@ export class DatabaseManager {
   } {
     const session = this.getSessionStore().getSessionById(sessionDbId);
     if (!session) {
-      throw new Error(`Session ${sessionDbId} not found`);
+      throw new Error(`Session ${String(sessionDbId)} not found`);
     }
     return session;
   }

@@ -74,7 +74,7 @@ export function useSettings() {
       setSaveStatus('✓ Saved');
       setTimeout(() => { setSaveStatus(''); }, TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
     } else {
-      setSaveStatus(`✗ Error: ${result.error}`);
+      setSaveStatus(`✗ Error: ${String(result.error)}`);
     }
 
     setIsSaving(false);

@@ -361,7 +361,7 @@ export class SearchManager {
       return {
         content: [{
           type: 'text' as const,
-          text: `No results found matching "${query}"`
+          text: `No results found matching "${query ?? ''}"`
         }]
       };
     }
@@ -411,7 +411,7 @@ export class SearchManager {
 
     // Build output with date/file grouping
     const lines: string[] = [];
-    lines.push(`Found ${totalResults} result(s) matching "${query}" (${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts)`);
+    lines.push(`Found ${String(totalResults)} result(s) matching "${query ?? ''}" (${String(observations.length)} obs, ${String(sessions.length)} sessions, ${String(prompts.length)} prompts)`);
     lines.push('');
 
     for (const [day, dayResults] of resultsByDate) {
@@ -553,7 +553,7 @@ export class SearchManager {
         return {
           content: [{
             type: 'text' as const,
-            text: `Observation #${anchor} not found`
+            text: `Observation #${String(anchor)} not found`
           }],
           isError: true
         };
@@ -571,13 +571,13 @@ export class SearchManager {
           return {
             content: [{
               type: 'text' as const,
-              text: `Session #${sessionNum} not found`
+              text: `Session #${String(sessionNum)} not found`
             }],
             isError: true
           };
         }
         anchorEpoch = sessions[0].created_at_epoch;
-        anchorId = `S${sessionNum}`;
+        anchorId = `S${String(sessionNum)}`;
         timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
       } else {
         // ISO timestamp
@@ -619,8 +619,8 @@ export class SearchManager {
         content: [{
           type: 'text' as const,
           text: query
-            ? `Found observation matching "${query}", but no timeline context available (${depth_before} records before, ${depth_after} records after).`
-            : `No context found around anchor (${depth_before} records before, ${depth_after} records after)`
+            ? `Found observation matching "${query}", but no timeline context available (${String(depth_before)} records before, ${String(depth_after)} records after).`
+            : `No context found around anchor (${String(depth_before)} records before, ${String(depth_after)} records after)`
         }]
       };
     }
@@ -633,12 +633,12 @@ export class SearchManager {
       const anchorObs = filteredItems.find(item => item.type === 'observation' && item.data.id === anchorId);
       const anchorTitle = anchorObs && anchorObs.type === 'observation' ? ((anchorObs.data as ObservationSearchResult).title || 'Untitled') : 'Unknown';
       lines.push(`# Timeline for query: "${query}"`);
-      lines.push(`**Anchor:** Observation #${anchorId} - ${anchorTitle}`);
+      lines.push(`**Anchor:** Observation #${String(anchorId)} - ${anchorTitle}`);
     } else {
-      lines.push(`# Timeline around anchor: ${anchorId}`);
+      lines.push(`# Timeline around anchor: ${String(anchorId)}`);
     }
 
-    lines.push(`**Window:** ${depth_before} records before -> ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
+    lines.push(`**Window:** ${String(depth_before)} records before -> ${String(depth_after)} records after | **Items:** ${String(filteredItems?.length ?? 0)}`);
     lines.push('');
 
 
@@ -671,7 +671,7 @@ export class SearchManager {
       for (const item of dayItems) {
         const isAnchor = (
           (typeof anchorId === 'number' && item.type === 'observation' && item.data.id === anchorId) ||
-          (typeof anchorId === 'string' && anchorId.startsWith('S') && item.type === 'session' && `S${item.data.id}` === anchorId)
+          (typeof anchorId === 'string' && anchorId.startsWith('S') && item.type === 'session' && `S${String(item.data.id)}` === anchorId)
         );
 
         if (item.type === 'session') {
@@ -686,7 +686,7 @@ export class SearchManager {
           const title = sess.request || 'Session summary';
           const marker = isAnchor ? ' <- **ANCHOR**' : '';
 
-          lines.push(`**\uD83C\uDFAF #S${sess.id}** ${title} (${formatDateTime(item.epoch)})${marker}`);
+          lines.push(`**\uD83C\uDFAF #S${String(sess.id)}** ${title} (${formatDateTime(item.epoch)})${marker}`);
           lines.push('');
         } else if (item.type === 'prompt') {
           if (tableOpen) {
@@ -699,7 +699,7 @@ export class SearchManager {
           const prompt = item.data as UserPromptSearchResult;
           const truncated = prompt.prompt_text.length > 100 ? prompt.prompt_text.substring(0, 100) + '...' : prompt.prompt_text;
 
-          lines.push(`**\uD83D\uDCAC User Prompt #${prompt.prompt_number}** (${formatDateTime(item.epoch)})`);
+          lines.push(`**\uD83D\uDCAC User Prompt #${String(prompt.prompt_number)}** (${formatDateTime(item.epoch)})`);
           lines.push(`> ${truncated}`);
           lines.push('');
         } else if (item.type === 'observation') {
@@ -731,7 +731,7 @@ export class SearchManager {
           lastTime = time;
 
           const anchorMarker = isAnchor ? ' <- **ANCHOR**' : '';
-          lines.push(`| #${obs.id} | ${timeDisplay} | ${icon} | ${title}${anchorMarker} | ~${tokens} |`);
+          lines.push(`| #${String(obs.id)} | ${timeDisplay} | ${icon} | ${title}${anchorMarker} | ~${String(tokens)} |`);
         }
       }
 
@@ -812,7 +812,7 @@ export class SearchManager {
     }
 
     // Format as table
-    const header = `Found ${results.length} decision(s)\n\n${this.formatter.formatTableHeader()}`;
+    const header = `Found ${String(results.length)} decision(s)\n\n${this.formatter.formatTableHeader()}`;
     const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
     return {
@@ -894,7 +894,7 @@ export class SearchManager {
     }
 
     // Format as table
-    const header = `Found ${results.length} change-related observation(s)\n\n${this.formatter.formatTableHeader()}`;
+    const header = `Found ${String(results.length)} change-related observation(s)\n\n${this.formatter.formatTableHeader()}`;
     const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
     return {
@@ -951,7 +951,7 @@ export class SearchManager {
     }
 
     // Format as table
-    const header = `Found ${results.length} "how it works" observation(s)\n\n${this.formatter.formatTableHeader()}`;
+    const header = `Found ${String(results.length)} "how it works" observation(s)\n\n${this.formatter.formatTableHeader()}`;
     const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
     return {
@@ -1009,7 +1009,7 @@ export class SearchManager {
     }
 
     // Format as table
-    const header = `Found ${results.length} observation(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
+    const header = `Found ${String(results.length)} observation(s) matching "${query ?? ''}"\n\n${this.formatter.formatTableHeader()}`;
     const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
     return {
@@ -1061,13 +1061,13 @@ export class SearchManager {
       return {
         content: [{
           type: 'text' as const,
-          text: `No sessions found matching "${query}"`
+          text: `No sessions found matching "${query ?? ''}"`
         }]
       };
     }
 
     // Format as table
-    const header = `Found ${results.length} session(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
+    const header = `Found ${String(results.length)} session(s) matching "${query ?? ''}"\n\n${this.formatter.formatTableHeader()}`;
     const formattedResults = results.map((session, i) => this.formatter.formatSessionIndex(session, i));
 
     return {
@@ -1125,7 +1125,7 @@ export class SearchManager {
     }
 
     // Format as table
-    const header = `Found ${results.length} user prompt(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
+    const header = `Found ${String(results.length)} user prompt(s) matching "${query ?? ''}"\n\n${this.formatter.formatTableHeader()}`;
     const formattedResults = results.map((prompt, i) => this.formatter.formatUserPromptIndex(prompt, i));
 
     return {
@@ -1194,7 +1194,7 @@ export class SearchManager {
     }
 
     // Format as table
-    const header = `Found ${results.length} observation(s) with concept "${concept}"\n\n${this.formatter.formatTableHeader()}`;
+    const header = `Found ${String(results.length)} observation(s) with concept "${concept}"\n\n${this.formatter.formatTableHeader()}`;
     const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
     return {
@@ -1302,7 +1302,7 @@ export class SearchManager {
 
     // Format with date headers for proper date parsing by folder CLAUDE.md generator
     const lines: string[] = [];
-    lines.push(`Found ${totalResults} result(s) for file "${filePath}"`);
+    lines.push(`Found ${String(totalResults)} result(s) for file "${filePath}"`);
     lines.push('');
 
     for (const [day, dayResults] of resultsByDate) {
@@ -1388,7 +1388,7 @@ export class SearchManager {
     }
 
     // Format as table
-    const header = `Found ${results.length} observation(s) with type "${typeStr}"\n\n${this.formatter.formatTableHeader()}`;
+    const header = `Found ${String(results.length)} observation(s) with type "${typeStr}"\n\n${this.formatter.formatTableHeader()}`;
     const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
     return {
@@ -1421,7 +1421,7 @@ export class SearchManager {
     const lines: string[] = [];
     lines.push('# Recent Session Context');
     lines.push('');
-    lines.push(`Showing last ${sessions.length} session(s) for **${project}**:`);
+    lines.push(`Showing last ${String(sessions.length)} session(s) for **${project}**:`);
     lines.push('');
 
     for (const session of sessions) {
@@ -1433,7 +1433,7 @@ export class SearchManager {
       if (session.has_summary) {
         const summary = this.sessionStore.getSummaryForSession(session.memory_session_id);
         if (summary) {
-          const promptLabel = summary.prompt_number ? ` (Prompt #${summary.prompt_number})` : '';
+          const promptLabel = summary.prompt_number ? ` (Prompt #${String(summary.prompt_number)})` : '';
           lines.push(`**Summary${promptLabel}**`);
           lines.push('');
 
@@ -1486,7 +1486,7 @@ export class SearchManager {
         const observations = this.sessionStore.getObservationsForSession(session.memory_session_id);
         if (observations.length > 0) {
           lines.push('');
-          lines.push(`**Observations (${observations.length}):**`);
+          lines.push(`**Observations (${String(observations.length)}):**`);
           for (const obs of observations) {
             lines.push(`- ${obs.title}`);
           }
@@ -1547,7 +1547,7 @@ export class SearchManager {
         return {
           content: [{
             type: 'text' as const,
-            text: `Observation #${anchor} not found`
+            text: `Observation #${String(anchor)} not found`
           }],
           isError: true
         };
@@ -1564,13 +1564,13 @@ export class SearchManager {
           return {
             content: [{
               type: 'text' as const,
-              text: `Session #${sessionNum} not found`
+              text: `Session #${String(sessionNum)} not found`
             }],
             isError: true
           };
         }
         anchorEpoch = sessions[0].created_at_epoch;
-        anchorId = `S${sessionNum}`;
+        anchorId = `S${String(sessionNum)}`;
         timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
       } else {
         // ISO timestamp
@@ -1611,7 +1611,7 @@ export class SearchManager {
       return {
         content: [{
           type: 'text' as const,
-          text: `No context found around ${anchorDate} (${depth_before} records before, ${depth_after} records after)`
+          text: `No context found around ${anchorDate} (${String(depth_before)} records before, ${String(depth_after)} records after)`
         }]
       };
     }
@@ -1620,8 +1620,8 @@ export class SearchManager {
     const lines: string[] = [];
 
     // Header
-    lines.push(`# Timeline around anchor: ${anchorId}`);
-    lines.push(`**Window:** ${depth_before} records before -> ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
+    lines.push(`# Timeline around anchor: ${String(anchorId)}`);
+    lines.push(`**Window:** ${String(depth_before)} records before -> ${String(depth_after)} records after | **Items:** ${String(filteredItems?.length ?? 0)}`);
     lines.push('');
 
 
@@ -1654,7 +1654,7 @@ export class SearchManager {
       for (const item of dayItems) {
         const isAnchor = (
           (typeof anchorId === 'number' && item.type === 'observation' && item.data.id === anchorId) ||
-          (typeof anchorId === 'string' && anchorId.startsWith('S') && item.type === 'session' && `S${item.data.id}` === anchorId)
+          (typeof anchorId === 'string' && anchorId.startsWith('S') && item.type === 'session' && `S${String(item.data.id)}` === anchorId)
         );
 
         if (item.type === 'session') {
@@ -1671,7 +1671,7 @@ export class SearchManager {
           const title = sess.request || 'Session summary';
           const marker = isAnchor ? ' <- **ANCHOR**' : '';
 
-          lines.push(`**\uD83C\uDFAF #S${sess.id}** ${title} (${formatDateTime(item.epoch)})${marker}`);
+          lines.push(`**\uD83C\uDFAF #S${String(sess.id)}** ${title} (${formatDateTime(item.epoch)})${marker}`);
           lines.push('');
         } else if (item.type === 'prompt') {
           // Close any open table
@@ -1686,7 +1686,7 @@ export class SearchManager {
           const prompt = item.data as UserPromptSearchResult;
           const truncated = prompt.prompt_text.length > 100 ? prompt.prompt_text.substring(0, 100) + '...' : prompt.prompt_text;
 
-          lines.push(`**\uD83D\uDCAC User Prompt #${prompt.prompt_number}** (${formatDateTime(item.epoch)})`);
+          lines.push(`**\uD83D\uDCAC User Prompt #${String(prompt.prompt_number)}** (${formatDateTime(item.epoch)})`);
           lines.push(`> ${truncated}`);
           lines.push('');
         } else if (item.type === 'observation') {
@@ -1723,7 +1723,7 @@ export class SearchManager {
           lastTime = time;
 
           const anchorMarker = isAnchor ? ' <- **ANCHOR**' : '';
-          lines.push(`| #${obs.id} | ${timeDisplay} | ${icon} | ${title}${anchorMarker} | ~${tokens} |`);
+          lines.push(`| #${String(obs.id)} | ${timeDisplay} | ${icon} | ${title}${anchorMarker} | ~${String(tokens)} |`);
         }
       }
 
@@ -1794,21 +1794,21 @@ export class SearchManager {
       const lines: string[] = [];
       lines.push(`# Timeline Anchor Search Results`);
       lines.push('');
-      lines.push(`Found ${results.length} observation(s) matching "${query}"`);
+      lines.push(`Found ${String(results.length)} observation(s) matching "${query}"`);
       lines.push('');
       lines.push(`To get timeline context around any of these observations, use the \`get_context_timeline\` tool with the observation ID as the anchor.`);
       lines.push('');
-      lines.push(`**Top ${results.length} matches:**`);
+      lines.push(`**Top ${String(results.length)} matches:**`);
       lines.push('');
 
       for (let i = 0; i < results.length; i++) {
         const obs = results[i];
-        const title = obs.title || `Observation #${obs.id}`;
+        const title = obs.title || `Observation #${String(obs.id)}`;
         const date = new Date(obs.created_at_epoch).toLocaleString();
         const type = obs.type ? `[${obs.type}]` : '';
 
-        lines.push(`${i + 1}. **${type} ${title}**`);
-        lines.push(`   - ID: ${obs.id}`);
+        lines.push(`${String(i + 1)}. **${type} ${title}**`);
+        lines.push(`   - ID: ${String(obs.id)}`);
         lines.push(`   - Date: ${date}`);
         if (obs.subtitle) {
           lines.push(`   - ${obs.subtitle}`);
@@ -1849,7 +1849,7 @@ export class SearchManager {
         return {
           content: [{
             type: 'text' as const,
-            text: `Found observation #${topResult.id} matching "${query}", but no timeline context available (${depth_before} records before, ${depth_after} records after).`
+            text: `Found observation #${String(topResult.id)} matching "${query}", but no timeline context available (${String(depth_before)} records before, ${String(depth_after)} records after).`
           }]
         };
       }
@@ -1859,8 +1859,8 @@ export class SearchManager {
 
       // Header
       lines.push(`# Timeline for query: "${query}"`);
-      lines.push(`**Anchor:** Observation #${topResult.id} - ${topResult.title || 'Untitled'}`);
-      lines.push(`**Window:** ${depth_before} records before -> ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
+      lines.push(`**Anchor:** Observation #${String(topResult.id)} - ${topResult.title || 'Untitled'}`);
+      lines.push(`**Window:** ${String(depth_before)} records before -> ${String(depth_after)} records after | **Items:** ${String(filteredItems?.length ?? 0)}`);
       lines.push('');
 
 
@@ -1906,7 +1906,7 @@ export class SearchManager {
             const sess = item.data as SessionSummarySearchResult;
             const title = sess.request || 'Session summary';
 
-            lines.push(`**\uD83C\uDFAF #S${sess.id}** ${title} (${formatDateTime(item.epoch)})`);
+            lines.push(`**\uD83C\uDFAF #S${String(sess.id)}** ${title} (${formatDateTime(item.epoch)})`);
             lines.push('');
           } else if (item.type === 'prompt') {
             // Close any open table
@@ -1921,7 +1921,7 @@ export class SearchManager {
             const prompt = item.data as UserPromptSearchResult;
             const truncated = prompt.prompt_text.length > 100 ? prompt.prompt_text.substring(0, 100) + '...' : prompt.prompt_text;
 
-            lines.push(`**\uD83D\uDCAC User Prompt #${prompt.prompt_number}** (${formatDateTime(item.epoch)})`);
+            lines.push(`**\uD83D\uDCAC User Prompt #${String(prompt.prompt_number)}** (${formatDateTime(item.epoch)})`);
             lines.push(`> ${truncated}`);
             lines.push('');
           } else if (item.type === 'observation') {
@@ -1958,7 +1958,7 @@ export class SearchManager {
             lastTime = time;
 
             const anchorMarker = isAnchor ? ' <- **ANCHOR**' : '';
-            lines.push(`| #${obs.id} | ${timeDisplay} | ${icon} | ${title}${anchorMarker} | ~${tokens} |`);
+            lines.push(`| #${String(obs.id)} | ${timeDisplay} | ${icon} | ${title}${anchorMarker} | ~${String(tokens)} |`);
           }
         }
 

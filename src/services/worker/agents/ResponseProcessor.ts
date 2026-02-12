@@ -66,13 +66,13 @@ export function processAgentResponse(
   // Deduplicate observations within the same batch (smaller models sometimes emit duplicate XML blocks)
   const seen = new Set<string>();
   const deduplicated = rawObservations.filter(obs => {
-    const key = `${obs.title}|${obs.narrative}`;
+    const key = `${String(obs.title)}|${String(obs.narrative)}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
   if (deduplicated.length < rawObservations.length) {
-    logger.info('PARSER', `Deduplicated ${rawObservations.length - deduplicated.length} observation(s) in batch`, {
+    logger.info('PARSER', `Deduplicated ${String(rawObservations.length - deduplicated.length)} observation(s) in batch`, {
       sessionId: session.sessionDbId,
       before: rawObservations.length,
       after: deduplicated.length
@@ -83,7 +83,7 @@ export function processAgentResponse(
   // Require at minimum a narrative — title-only or facts-only observations have no useful context
   const observations = deduplicated.filter(obs => !!obs.narrative?.trim());
   if (observations.length < deduplicated.length) {
-    logger.warn('PARSER', `Dropped ${deduplicated.length - observations.length} observation(s) missing narrative (context truncation)`, {
+    logger.warn('PARSER', `Dropped ${String(deduplicated.length - observations.length)} observation(s) missing narrative (context truncation)`, {
       sessionId: session.sessionDbId,
       before: deduplicated.length,
       after: observations.length
@@ -104,7 +104,7 @@ export function processAgentResponse(
   }
 
   // Log pre-storage with session ID chain for verification
-  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
+  logger.info('DB', `STORING | sessionDbId=${String(session.sessionDbId)} | memorySessionId=${String(session.memorySessionId)} | obsCount=${String(observations.length)} | hasSummary=${String(!!summaryForStore)}`, {
     sessionId: session.sessionDbId,
     memorySessionId: session.memorySessionId
   });
@@ -122,7 +122,7 @@ export function processAgentResponse(
   );
 
   // Log storage result with IDs for end-to-end traceability
-  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
+  logger.info('DB', `STORED | sessionDbId=${String(session.sessionDbId)} | memorySessionId=${String(session.memorySessionId)} | obsCount=${String(result.observationIds.length)} | obsIds=[${result.observationIds.join(',')}] | summaryId=${String(result.summaryId || 'none')}`, {
     sessionId: session.sessionDbId,
     memorySessionId: session.memorySessionId
   });
@@ -209,7 +209,7 @@ function syncAndBroadcastObservations(
       const chromaDuration = Date.now() - chromaStart;
       logger.debug('CHROMA', 'Observation synced', {
         obsId,
-        duration: `${chromaDuration}ms`,
+        duration: `${String(chromaDuration)}ms`,
         type: obs.type,
         title: obs.title || '(untitled)'
       });
@@ -276,7 +276,7 @@ function syncAndBroadcastSummary(
     const chromaDuration = Date.now() - chromaStart;
     logger.debug('CHROMA', 'Summary synced', {
       summaryId: result.summaryId,
-      duration: `${chromaDuration}ms`,
+      duration: `${String(chromaDuration)}ms`,
       request: summaryForStore.request || '(no request)'
     });
   }).catch((error) => {

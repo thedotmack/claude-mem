@@ -82,7 +82,7 @@ async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled:
 
   if (timeSinceLastRequest < minimumDelayMs) {
     const waitTime = minimumDelayMs - timeSinceLastRequest;
-    logger.debug('SDK', `Rate limiting: waiting ${waitTime}ms before Gemini request`, { model, rpm });
+    logger.debug('SDK', `Rate limiting: waiting ${String(waitTime)}ms before Gemini request`, { model, rpm });
     await new Promise(resolve => setTimeout(resolve, waitTime));
   }
 
@@ -493,7 +493,7 @@ export class GeminiAgent {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Gemini API error: ${response.status} - ${error}`);
+      throw new Error(`Gemini API error: ${String(response.status)} - ${error}`);
     }
 
     const data = await response.json() as GeminiResponse;

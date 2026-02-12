@@ -332,7 +332,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   };
 
   return (
-    <div className="console-drawer" style={{ height: `${height}px` }}>
+    <div className="console-drawer" style={{ height: `${String(height)}px` }}>
       <div
         className="console-resize-handle"
         onMouseDown={handleMouseDown}

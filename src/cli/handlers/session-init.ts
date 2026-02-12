@@ -31,7 +31,7 @@ export const sessionInitHandler: EventHandler = {
     logger.debug('HOOK', 'session-init: Calling /api/sessions/init', { contentSessionId: sessionId, project });
 
     // Initialize session via HTTP - handles DB operations and privacy checks
-    const initResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
+    const initResponse = await fetch(`http://127.0.0.1:${String(port)}/api/sessions/init`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -43,7 +43,7 @@ export const sessionInitHandler: EventHandler = {
     });
 
     if (!initResponse.ok) {
-      throw new Error(`Session initialization failed: ${initResponse.status}`);
+      throw new Error(`Session initialization failed: ${String(initResponse.status)}`);
     }
 
     const initResult = await initResponse.json() as {
@@ -58,11 +58,11 @@ export const sessionInitHandler: EventHandler = {
     logger.debug('HOOK', 'session-init: Received from /api/sessions/init', { sessionDbId, promptNumber, skipped: initResult.skipped });
 
     // Debug-level alignment log for detailed tracing
-    logger.debug('HOOK', `[ALIGNMENT] Hook Entry | contentSessionId=${sessionId} | prompt#=${promptNumber} | sessionDbId=${sessionDbId}`);
+    logger.debug('HOOK', `[ALIGNMENT] Hook Entry | contentSessionId=${sessionId} | prompt#=${String(promptNumber)} | sessionDbId=${String(sessionDbId)}`);
 
     // Check if prompt was entirely private (worker performs privacy check)
     if (initResult.skipped && initResult.reason === 'private') {
-      logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | skipped=true | reason=private`, {
+      logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${String(sessionDbId)} | promptNumber=${String(promptNumber)} | skipped=true | reason=private`, {
         sessionId: sessionDbId
       });
       return { continue: true, suppressOutput: true };
@@ -78,7 +78,7 @@ export const sessionInitHandler: EventHandler = {
       logger.debug('HOOK', 'session-init: Calling /sessions/{sessionDbId}/init', { sessionDbId, promptNumber });
 
       // Initialize SDK agent session via HTTP (starts the agent!)
-      const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
+      const response = await fetch(`http://127.0.0.1:${String(port)}/sessions/${String(sessionDbId)}/init`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber })
@@ -86,13 +86,13 @@ export const sessionInitHandler: EventHandler = {
       });
 
       if (!response.ok) {
-        throw new Error(`SDK agent start failed: ${response.status}`);
+        throw new Error(`SDK agent start failed: ${String(response.status)}`);
       }
     } else if (input.platform === 'cursor') {
       logger.debug('HOOK', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
     }
 
-    logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | project=${project}`, {
+    logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${String(sessionDbId)} | promptNumber=${String(promptNumber)} | project=${project}`, {
       sessionId: sessionDbId
     });
 

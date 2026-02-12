@@ -20,7 +20,7 @@ import { logger } from '../../utils/logger.js';
 export async function isPortInUse(port: number): Promise<boolean> {
   try {
     // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+    const response = await fetch(`http://127.0.0.1:${String(port)}/api/health`);
     return response.ok;
   } catch {
     // [ANTI-PATTERN IGNORED]: Health check polls every 500ms, logging would flood
@@ -43,7 +43,7 @@ export async function waitForHealth(port: number, timeoutMs: number = 30000): Pr
   while (Date.now() - start < timeoutMs) {
     try {
       // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-      const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${String(port)}/api/health`);
       if (response.ok) return true;
     } catch (error) {
       // [ANTI-PATTERN IGNORED]: Retry loop - expected failures during startup, will retry
@@ -75,7 +75,7 @@ export async function waitForPortFree(port: number, timeoutMs: number = 10000): 
 export async function httpShutdown(port: number): Promise<boolean> {
   try {
     // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-    const response = await fetch(`http://127.0.0.1:${port}/api/admin/shutdown`, {
+    const response = await fetch(`http://127.0.0.1:${String(port)}/api/admin/shutdown`, {
       method: 'POST'
     });
     if (!response.ok) {
@@ -112,7 +112,7 @@ export function getInstalledPluginVersion(): string {
  */
 export async function getRunningWorkerVersion(port: number): Promise<string | null> {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/version`);
+    const response = await fetch(`http://127.0.0.1:${String(port)}/api/version`);
     if (!response.ok) return null;
     const data = await response.json() as { version: string };
     return data.version;

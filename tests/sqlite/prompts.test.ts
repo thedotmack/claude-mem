@@ -120,7 +120,7 @@ describe('Prompts Module', () => {
       const contentSessionId = createSession('many-prompts-session');
 
       for (let i = 1; i <= 100; i++) {
-        saveUserPrompt(db, contentSessionId, i, `Prompt ${i}`);
+        saveUserPrompt(db, contentSessionId, i, `Prompt ${String(i)}`);
       }
 
       expect(getPromptNumberFromUserPrompts(db, contentSessionId)).toBe(100);

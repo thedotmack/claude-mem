@@ -23,7 +23,7 @@ describe('Cursor Project Registry', () => {
 
   beforeEach(() => {
     // Create unique temp directory for each test
-    tempDir = join(tmpdir(), `cursor-registry-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tempDir = join(tmpdir(), `cursor-registry-test-${String(Date.now())}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
     registryFile = join(tempDir, 'cursor-projects.json');
   });

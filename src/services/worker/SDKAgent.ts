@@ -96,13 +96,13 @@ export class SDKAgent {
     // Debug-level alignment logs for detailed tracing
     if (session.lastPromptNumber > 1) {
       const willResume = hasRealMemorySessionId;
-      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | willResume=${willResume} | resumeWith=${willResume ? session.memorySessionId : 'NONE'}`);
+      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${String(session.memorySessionId)} | prompt#=${String(session.lastPromptNumber)} | hasRealMemorySessionId=${String(hasRealMemorySessionId)} | willResume=${String(willResume)} | resumeWith=${willResume ? String(session.memorySessionId) : 'NONE'}`);
     } else {
       // INIT prompt - never resume even if memorySessionId exists (stale from previous session)
       const hasStaleMemoryId = hasRealMemorySessionId;
-      logger.debug('SDK', `[ALIGNMENT] First Prompt (INIT) | contentSessionId=${session.contentSessionId} | prompt#=${session.lastPromptNumber} | hasStaleMemoryId=${hasStaleMemoryId} | action=START_FRESH | Will capture new memorySessionId from SDK response`);
+      logger.debug('SDK', `[ALIGNMENT] First Prompt (INIT) | contentSessionId=${session.contentSessionId} | prompt#=${String(session.lastPromptNumber)} | hasStaleMemoryId=${String(hasStaleMemoryId)} | action=START_FRESH | Will capture new memorySessionId from SDK response`);
       if (hasStaleMemoryId) {
-        logger.warn('SDK', `Skipping resume for INIT prompt despite existing memorySessionId=${session.memorySessionId} - SDK context was lost (worker restart or crash recovery)`);
+        logger.warn('SDK', `Skipping resume for INIT prompt despite existing memorySessionId=${String(session.memorySessionId)} - SDK context was lost (worker restart or crash recovery)`);
       }
     }
 
@@ -146,12 +146,12 @@ export class SDKAgent {
         // Verify the update by reading back from DB
         const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
         const dbVerified = verification?.memory_session_id === message.session_id;
-        logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}`, {
+        logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${String(session.sessionDbId)} | memorySessionId=${message.session_id} | dbVerified=${String(dbVerified)}`, {
           sessionId: session.sessionDbId,
           memorySessionId: message.session_id
         });
         if (!dbVerified) {
-          logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${session.sessionDbId} | expected=${message.session_id} | got=${verification?.memory_session_id}`, {
+          logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${String(session.sessionDbId)} | expected=${message.session_id} | got=${String(verification?.memory_session_id)}`, {
             sessionId: session.sessionDbId
           });
         }
@@ -204,7 +204,7 @@ export class SDKAgent {
           const truncatedResponse = responseSize > 100
             ? textContent.substring(0, 100) + '...'
             : textContent;
-          logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
+          logger.dataOut('SDK', `Response received (${String(responseSize)} chars)`, {
             sessionId: session.sessionDbId,
             promptNumber: session.lastPromptNumber
           }, truncatedResponse);

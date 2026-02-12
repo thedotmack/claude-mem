@@ -48,7 +48,7 @@ export class ResultFormatter {
 
     // Build output with date/file grouping
     const lines: string[] = [];
-    lines.push(`Found ${totalResults} result(s) matching "${query}" (${results.observations.length} obs, ${results.sessions.length} sessions, ${results.prompts.length} prompts)`);
+    lines.push(`Found ${String(totalResults)} result(s) matching "${query}" (${String(results.observations.length)} obs, ${String(results.sessions.length)} sessions, ${String(results.prompts.length)} prompts)`);
     lines.push('');
 
     for (const [day, dayResults] of resultsByDate) {
@@ -156,7 +156,7 @@ export class ResultFormatter {
     obs: ObservationSearchResult,
     lastTime: string
   ): { row: string; time: string } {
-    const id = `#${obs.id}`;
+    const id = `#${String(obs.id)}`;
     const time = formatTime(obs.created_at_epoch);
     const icon = ModeManager.getInstance().getTypeIcon(obs.type);
     const title = obs.title || 'Untitled';
@@ -165,7 +165,7 @@ export class ResultFormatter {
     const timeDisplay = time === lastTime ? '"' : time;
 
     return {
-      row: `| ${id} | ${timeDisplay} | ${icon} | ${title} | ~${readTokens} |`,
+      row: `| ${id} | ${timeDisplay} | ${icon} | ${title} | ~${String(readTokens)} |`,
       time
     };
   }
@@ -177,7 +177,7 @@ export class ResultFormatter {
     session: SessionSummarySearchResult,
     lastTime: string
   ): { row: string; time: string } {
-    const id = `#S${session.id}`;
+    const id = `#S${String(session.id)}`;
     const time = formatTime(session.created_at_epoch);
     const icon = '\uD83C\uDFAF'; // Target emoji
     const title = session.request ||
@@ -198,7 +198,7 @@ export class ResultFormatter {
     prompt: UserPromptSearchResult,
     lastTime: string
   ): { row: string; time: string } {
-    const id = `#P${prompt.id}`;
+    const id = `#P${String(prompt.id)}`;
     const time = formatTime(prompt.created_at_epoch);
     const icon = '\uD83D\uDCAC'; // Speech bubble emoji
     const title = prompt.prompt_text.length > 60
@@ -217,23 +217,23 @@ export class ResultFormatter {
    * Format observation as index row (with Work column)
    */
   formatObservationIndex(obs: ObservationSearchResult, _index: number): string {
-    const id = `#${obs.id}`;
+    const id = `#${String(obs.id)}`;
     const time = formatTime(obs.created_at_epoch);
     const icon = ModeManager.getInstance().getTypeIcon(obs.type);
     const title = obs.title || 'Untitled';
     const readTokens = this.estimateReadTokens(obs);
     const workEmoji = ModeManager.getInstance().getWorkEmoji(obs.type);
     const workTokens = obs.discovery_tokens || 0;
-    const workDisplay = workTokens > 0 ? `${workEmoji} ${workTokens}` : '-';
+    const workDisplay = workTokens > 0 ? `${workEmoji} ${String(workTokens)}` : '-';
 
-    return `| ${id} | ${time} | ${icon} | ${title} | ~${readTokens} | ${workDisplay} |`;
+    return `| ${id} | ${time} | ${icon} | ${title} | ~${String(readTokens)} | ${workDisplay} |`;
   }
 
   /**
    * Format session as index row
    */
   formatSessionIndex(session: SessionSummarySearchResult, _index: number): string {
-    const id = `#S${session.id}`;
+    const id = `#S${String(session.id)}`;
     const time = formatTime(session.created_at_epoch);
     const icon = '\uD83C\uDFAF';
     const title = session.request ||
@@ -246,7 +246,7 @@ export class ResultFormatter {
    * Format user prompt as index row
    */
   formatPromptIndex(prompt: UserPromptSearchResult, _index: number): string {
-    const id = `#P${prompt.id}`;
+    const id = `#P${String(prompt.id)}`;
     const time = formatTime(prompt.created_at_epoch);
     const icon = '\uD83D\uDCAC';
     const title = prompt.prompt_text.length > 60

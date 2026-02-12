@@ -39,7 +39,7 @@ export function createMiddleware(
     }
 
     const start = Date.now();
-    const requestId = `${req.method}-${Date.now()}`;
+    const requestId = `${req.method}-${String(Date.now())}`;
 
     // Log incoming request with body summary
     const bodySummary = summarizeRequestBody(req.method, req.path, req.body as Record<string, unknown>);
@@ -49,7 +49,7 @@ export function createMiddleware(
     const originalSend = res.send.bind(res);
     res.send = function(body: unknown) {
       const duration = Date.now() - start;
-      logger.info('HTTP', `← ${res.statusCode} ${req.path}`, { requestId, duration: `${duration}ms` });
+      logger.info('HTTP', `← ${String(res.statusCode)} ${req.path}`, { requestId, duration: `${String(duration)}ms` });
       return originalSend(body);
     };
 

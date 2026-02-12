@@ -102,7 +102,7 @@ export class DataRoutes extends BaseRouteHandler {
     const observation = store.getObservationById(id);
 
     if (!observation) {
-      this.notFound(res, `Observation #${id} not found`);
+      this.notFound(res, `Observation #${String(id)} not found`);
       return;
     }
 
@@ -151,7 +151,7 @@ export class DataRoutes extends BaseRouteHandler {
     const sessions = store.getSessionSummariesByIds([id]);
 
     if (sessions.length === 0) {
-      this.notFound(res, `Session #${id} not found`);
+      this.notFound(res, `Session #${String(id)} not found`);
       return;
     }
 
@@ -188,7 +188,7 @@ export class DataRoutes extends BaseRouteHandler {
     const prompts = store.getUserPromptsByIds([id]);
 
     if (prompts.length === 0) {
-      this.notFound(res, `Prompt #${id} not found`);
+      this.notFound(res, `Prompt #${String(id)} not found`);
       return;
     }
 

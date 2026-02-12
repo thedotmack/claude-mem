@@ -9,7 +9,7 @@ export async function readJsonFromStdin(): Promise<unknown> {
       try {
         resolve(input.trim() ? JSON.parse(input) : undefined);
       } catch (e) {
-        reject(new Error(`Failed to parse hook input: ${e}`));
+        reject(new Error(`Failed to parse hook input: ${e instanceof Error ? e.message : String(e)}`));
       }
     });
   });

@@ -65,7 +65,7 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
       <ScrollToTop targetRef={feedRef} />
       <div className="feed-content">
         {items.map(item => {
-          const key = `${item.itemType}-${item.id}`;
+          const key = `${item.itemType}-${String(item.id)}`;
           if (item.itemType === 'observation') {
             return <ObservationCard key={key} observation={item} />;
           } else if (item.itemType === 'summary') {

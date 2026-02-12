@@ -257,7 +257,7 @@ describe('Cursor Hooks JSON Utilities', () => {
       const port = 37777;
       const encoded = urlEncode(projectName);
 
-      const url = `http://127.0.0.1:${port}/api/context/inject?project=${encoded}`;
+      const url = `http://127.0.0.1:${String(port)}/api/context/inject?project=${encoded}`;
 
       expect(url).toBe('http://127.0.0.1:37777/api/context/inject?project=my%20project%20(v2)');
     });

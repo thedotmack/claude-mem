@@ -170,8 +170,8 @@ describe('sqlite-compat', () => {
 
     it('supports transaction functions with arguments', () => {
       const claimAndDelete = db.transaction((sessionId: number) => {
-        db.prepare('INSERT INTO items (name) VALUES (?)').run(`session-${sessionId}`);
-        const item = db.prepare('SELECT * FROM items WHERE name = ?').get(`session-${sessionId}`) as Record<string, unknown>;
+        db.prepare('INSERT INTO items (name) VALUES (?)').run(`session-${String(sessionId)}`);
+        const item = db.prepare('SELECT * FROM items WHERE name = ?').get(`session-${String(sessionId)}`) as Record<string, unknown>;
         return item;
       });
 

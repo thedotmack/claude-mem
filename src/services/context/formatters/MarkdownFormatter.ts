@@ -25,7 +25,7 @@ function formatHeaderDateTime(): string {
     hour12: true
   }).toLowerCase().replace(' ', '');
   const tz = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
-  return `${date} ${time} ${tz}`;
+  return `${date} ${time} ${String(tz)}`;
 }
 
 /**
@@ -88,17 +88,17 @@ export function renderMarkdownContextEconomics(
   const output: string[] = [];
 
   output.push(`**Context Economics**:`);
-  output.push(`- Loading: ${economics.totalObservations} observations (${economics.totalReadTokens.toLocaleString()} tokens to read)`);
+  output.push(`- Loading: ${String(economics.totalObservations)} observations (${economics.totalReadTokens.toLocaleString()} tokens to read)`);
   output.push(`- Work investment: ${economics.totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions`);
 
   if (economics.totalDiscoveryTokens > 0 && (config.showSavingsAmount || config.showSavingsPercent)) {
     let savingsLine = '- Your savings: ';
     if (config.showSavingsAmount && config.showSavingsPercent) {
-      savingsLine += `${economics.savings.toLocaleString()} tokens (${economics.savingsPercent}% reduction from reuse)`;
+      savingsLine += `${economics.savings.toLocaleString()} tokens (${String(economics.savingsPercent)}% reduction from reuse)`;
     } else if (config.showSavingsAmount) {
       savingsLine += `${economics.savings.toLocaleString()} tokens`;
     } else {
-      savingsLine += `${economics.savingsPercent}% reduction from reuse`;
+      savingsLine += `${String(economics.savingsPercent)}% reduction from reuse`;
     }
     output.push(savingsLine);
   }
@@ -140,10 +140,10 @@ export function renderMarkdownTableRow(
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const { readTokens, discoveryDisplay } = formatObservationTokenDisplay(obs, config);
 
-  const readCol = config.showReadTokens ? `~${readTokens}` : '';
+  const readCol = config.showReadTokens ? `~${String(readTokens)}` : '';
   const workCol = config.showWorkTokens ? discoveryDisplay : '';
 
-  return `| #${obs.id} | ${timeDisplay || '"'} | ${icon} | ${title} | ${readCol} | ${workCol} |`;
+  return `| #${String(obs.id)} | ${timeDisplay || '"'} | ${icon} | ${title} | ${readCol} | ${workCol} |`;
 }
 
 /**
@@ -160,7 +160,7 @@ export function renderMarkdownFullObservation(
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const { readTokens, discoveryDisplay } = formatObservationTokenDisplay(obs, config);
 
-  output.push(`**#${obs.id}** ${timeDisplay || '"'} ${icon} **${title}**`);
+  output.push(`**#${String(obs.id)}** ${timeDisplay || '"'} ${icon} **${title}**`);
   if (detailField) {
     output.push('');
     output.push(detailField);
@@ -169,7 +169,7 @@ export function renderMarkdownFullObservation(
 
   const tokenParts: string[] = [];
   if (config.showReadTokens) {
-    tokenParts.push(`Read: ~${readTokens}`);
+    tokenParts.push(`Read: ~${String(readTokens)}`);
   }
   if (config.showWorkTokens) {
     tokenParts.push(`Work: ${discoveryDisplay}`);
@@ -191,7 +191,7 @@ export function renderMarkdownSummaryItem(
 ): string[] {
   const summaryTitle = `${summary.request || 'Session started'} (${formattedTime})`;
   return [
-    `**#S${summary.id}** ${summaryTitle}`,
+    `**#S${String(summary.id)}** ${summaryTitle}`,
     ''
   ];
 }
@@ -228,7 +228,7 @@ export function renderMarkdownFooter(totalDiscoveryTokens: number, totalReadToke
   const workTokensK = Math.round(totalDiscoveryTokens / 1000);
   return [
     '',
-    `Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use MCP search tools to access memories by ID.`
+    `Access ${String(workTokensK)}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use MCP search tools to access memories by ID.`
   ];
 }
 

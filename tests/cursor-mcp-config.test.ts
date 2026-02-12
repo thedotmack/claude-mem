@@ -24,7 +24,7 @@ describe('Cursor MCP Configuration', () => {
 
   beforeEach(() => {
     // Create unique temp directory for each test
-    tempDir = join(tmpdir(), `cursor-mcp-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tempDir = join(tmpdir(), `cursor-mcp-test-${String(Date.now())}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
     mcpJsonPath = join(tempDir, '.cursor', 'mcp.json');
   });

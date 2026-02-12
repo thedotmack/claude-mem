@@ -26,7 +26,7 @@ export async function hookCommand(platform: string, event: string, options: Hook
     }
     return exitCode;
   } catch (error) {
-    console.error(`Hook error: ${error}`);
+    console.error(`Hook error: ${error instanceof Error ? error.message : String(error)}`);
     // Use exit code 2 (blocking error) so users see the error message
     // Exit code 1 only shows in verbose mode per Claude Code docs
     if (!options.skipExit) {

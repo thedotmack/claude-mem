@@ -67,7 +67,7 @@ describe('Tag Stripping Utilities', () => {
       it('should handle many interleaved tags', () => {
         let input = 'start';
         for (let i = 0; i < 10; i++) {
-          input += ` <private>p${i}</private> <claude-mem-context>c${i}</claude-mem-context>`;
+          input += ` <private>p${String(i)}</private> <claude-mem-context>c${String(i)}</claude-mem-context>`;
         }
         input += ' end';
         const result = stripMemoryTagsFromPrompt(input);
@@ -161,7 +161,7 @@ finish`;
         // Generate content with many tags
         let content = '';
         for (let i = 0; i < 150; i++) {
-          content += `<private>secret${i}</private> text${i} `;
+          content += `<private>secret${String(i)}</private> text${String(i)} `;
         }
 
         const startTime = Date.now();

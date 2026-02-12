@@ -450,14 +450,14 @@ export class OpenAICompatAgent {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`OpenAI-compat API error: ${response.status} - ${errorText}`);
+      throw new Error(`OpenAI-compat API error: ${String(response.status)} - ${errorText}`);
     }
 
     const data = await response.json() as OpenAICompatResponse;
 
     // Check for API error in response body
     if (data.error) {
-      throw new Error(`OpenAI-compat API error: ${data.error.code} - ${data.error.message}`);
+      throw new Error(`OpenAI-compat API error: ${data.error.code ?? ''} - ${data.error.message ?? ''}`);
     }
 
     if (!data.choices?.[0]?.message?.content) {

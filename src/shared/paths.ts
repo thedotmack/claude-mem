@@ -58,7 +58,7 @@ export function getProjectArchiveDir(projectName: string): string {
  * Get worker socket path for a session
  */
 export function getWorkerSocketPath(sessionId: number): string {
-  return join(DATA_DIR, `worker-${sessionId}.sock`);
+  return join(DATA_DIR, `worker-${String(sessionId)}.sock`);
 }
 
 /**

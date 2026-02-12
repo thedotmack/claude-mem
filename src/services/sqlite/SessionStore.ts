@@ -606,7 +606,7 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(17, new Date().toISOString());
 
     if (renamesPerformed > 0) {
-      logger.debug('DB', `Successfully renamed ${renamesPerformed} session ID columns`);
+      logger.debug('DB', `Successfully renamed ${String(renamesPerformed)} session ID columns`);
     } else {
       logger.debug('DB', 'No session ID column renames needed (already up to date)');
     }
@@ -932,7 +932,7 @@ export class SessionStore {
 
     const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
-    const limitClause = limit ? `LIMIT ${limit}` : '';
+    const limitClause = limit ? `LIMIT ${String(limit)}` : '';
 
     // Build placeholders for IN clause
     const placeholders = ids.map(() => '?').join(',');
@@ -1617,7 +1617,7 @@ export class SessionStore {
 
     const { orderBy = 'date_desc', limit, project } = options;
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
-    const limitClause = limit ? `LIMIT ${limit}` : '';
+    const limitClause = limit ? `LIMIT ${String(limit)}` : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: (string | number)[] = [...ids];
 
@@ -1649,7 +1649,7 @@ export class SessionStore {
 
     const { orderBy = 'date_desc', limit, project } = options;
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
-    const limitClause = limit ? `LIMIT ${limit}` : '';
+    const limitClause = limit ? `LIMIT ${String(limit)}` : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: (string | number)[] = [...ids];
 

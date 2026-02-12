@@ -97,14 +97,14 @@ export class Logger {
    * Create correlation ID for tracking an observation through the pipeline
    */
   correlationId(sessionId: number, observationNum: number): string {
-    return `obs-${sessionId}-${observationNum}`;
+    return `obs-${String(sessionId)}-${String(observationNum)}`;
   }
 
   /**
    * Create session correlation ID
    */
   sessionId(sessionId: number): string {
-    return `session-${sessionId}`;
+    return `session-${String(sessionId)}`;
   }
 
   /**
@@ -121,13 +121,13 @@ export class Logger {
       // If it's an error, show message and stack in debug mode
       if (data instanceof Error) {
         return this.getLevel() === LogLevel.DEBUG
-          ? `${data.message}\n${data.stack}`
+          ? `${data.message}\n${String(data.stack)}`
           : data.message;
       }
 
       // For arrays, show count
       if (Array.isArray(data)) {
-        return `[${data.length} items]`;
+        return `[${String(data.length)} items]`;
       }
 
       // For objects, show key count
@@ -137,7 +137,7 @@ export class Logger {
         // Show small objects inline
         return JSON.stringify(data);
       }
-      return `{${keys.length} keys: ${keys.slice(0, 3).join(', ')}...}`;
+      return `{${String(keys.length)} keys: ${keys.slice(0, 3).join(', ')}...}`;
     }
 
     return String(data);
@@ -165,56 +165,56 @@ export class Logger {
 
     // Bash: show full command
     if (toolName === 'Bash' && isObj(input) && input.command) {
-      return `${toolName}(${input.command})`;
+      return `${toolName}(${String(input.command)})`;
     }
 
     // File operations: show full path
     if (isObj(input) && input.file_path) {
-      return `${toolName}(${input.file_path})`;
+      return `${toolName}(${String(input.file_path)})`;
     }
 
     // NotebookEdit: show full notebook path
     if (isObj(input) && input.notebook_path) {
-      return `${toolName}(${input.notebook_path})`;
+      return `${toolName}(${String(input.notebook_path)})`;
     }
 
     // Glob: show full pattern
     if (toolName === 'Glob' && isObj(input) && input.pattern) {
-      return `${toolName}(${input.pattern})`;
+      return `${toolName}(${String(input.pattern)})`;
     }
 
     // Grep: show full pattern
     if (toolName === 'Grep' && isObj(input) && input.pattern) {
-      return `${toolName}(${input.pattern})`;
+      return `${toolName}(${String(input.pattern)})`;
     }
 
     // WebFetch/WebSearch: show full URL or query
     if (isObj(input) && input.url) {
-      return `${toolName}(${input.url})`;
+      return `${toolName}(${String(input.url)})`;
     }
 
     if (isObj(input) && input.query) {
-      return `${toolName}(${input.query})`;
+      return `${toolName}(${String(input.query)})`;
     }
 
     // Task: show subagent_type or full description
     if (toolName === 'Task' && isObj(input)) {
       if (input.subagent_type) {
-        return `${toolName}(${input.subagent_type})`;
+        return `${toolName}(${String(input.subagent_type)})`;
       }
       if (input.description) {
-        return `${toolName}(${input.description})`;
+        return `${toolName}(${String(input.description)})`;
       }
     }
 
     // Skill: show skill name
     if (toolName === 'Skill' && isObj(input) && input.skill) {
-      return `${toolName}(${input.skill})`;
+      return `${toolName}(${String(input.skill)})`;
     }
 
     // LSP: show operation type
     if (toolName === 'LSP' && isObj(input) && input.operation) {
-      return `${toolName}(${input.operation})`;
+      return `${toolName}(${String(input.operation)})`;
     }
 
     // Default: just show tool name
@@ -232,7 +232,7 @@ export class Logger {
     const minutes = String(date.getMinutes()).padStart(2, '0');
     const seconds = String(date.getSeconds()).padStart(2, '0');
     const ms = String(date.getMilliseconds()).padStart(3, '0');
-    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms}`;
+    return `${String(year)}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms}`;
   }
 
   /**
@@ -259,7 +259,7 @@ export class Logger {
     if (context?.correlationId) {
       correlationStr = `[${context.correlationId}] `;
     } else if (context?.sessionId) {
-      correlationStr = `[session-${context.sessionId}] `;
+      correlationStr = `[session-${String(context.sessionId)}] `;
     }
 
     // Build data part
@@ -268,7 +268,7 @@ export class Logger {
       // Handle Error objects specially - they don't JSON.stringify properly
       if (data instanceof Error) {
         dataStr = this.getLevel() === LogLevel.DEBUG
-          ? `\n${data.message}\n${data.stack}`
+          ? `\n${data.message}\n${String(data.stack)}`
           : ` ${data.message}`;
       } else if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
         // In debug mode, show full JSON for objects
@@ -283,7 +283,7 @@ export class Logger {
     if (context) {
       const { sessionId: _sessionId, memorySessionId: _memorySessionId, correlationId: _correlationId, ...rest } = context;
       if (Object.keys(rest).length > 0) {
-        const pairs = Object.entries(rest).map(([k, v]) => `${k}=${v}`);
+        const pairs = Object.entries(rest).map(([k, v]) => `${k}=${String(v)}`);
         contextStr = ` {${pairs.join(', ')}}`;
       }
     }
@@ -354,7 +354,7 @@ export class Logger {
    * Log timing information
    */
   timing(component: Component, message: string, durationMs: number, context?: LogContext): void {
-    this.info(component, `⏱ ${message}`, context, { duration: `${durationMs}ms` });
+    this.info(component, `⏱ ${message}`, context, { duration: `${String(durationMs)}ms` });
   }
 
   /**
@@ -395,7 +395,7 @@ export class Logger {
     const callerLine = stackLines[2] || '';
     const callerMatch = callerLine.match(/at\s+(?:.*\s+)?\(?([^:]+):(\d+):(\d+)\)?/);
     const location = callerMatch
-      ? `${callerMatch[1].split('/').pop()}:${callerMatch[2]}`
+      ? `${String(callerMatch[1].split('/').pop())}:${callerMatch[2]}`
       : 'unknown';
 
     // Log as a warning with location info
