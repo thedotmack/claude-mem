@@ -76,7 +76,7 @@ BANNER
 ###############################################################################
 
 PLATFORM=""
-IS_WSL=false
+IS_WSL=""
 
 detect_platform() {
   local uname_out
@@ -89,7 +89,7 @@ detect_platform() {
     Linux*)
       if grep -qi microsoft /proc/version 2>/dev/null; then
         PLATFORM="linux"
-        IS_WSL=true
+        IS_WSL="true"
       else
         PLATFORM="linux"
       fi
@@ -575,26 +575,17 @@ write_settings() {
 
   mkdir -p "$settings_dir"
 
-  # Build the provider-specific settings
-  local provider_json=""
-  case "$AI_PROVIDER" in
-    claude)
-      provider_json="\"CLAUDE_MEM_PROVIDER\": \"claude\", \"CLAUDE_MEM_CLAUDE_AUTH_METHOD\": \"cli\""
-      ;;
-    gemini)
-      provider_json="\"CLAUDE_MEM_PROVIDER\": \"gemini\", \"CLAUDE_MEM_GEMINI_API_KEY\": \"${AI_PROVIDER_API_KEY}\", \"CLAUDE_MEM_GEMINI_MODEL\": \"gemini-2.5-flash-lite\""
-      ;;
-    openrouter)
-      provider_json="\"CLAUDE_MEM_PROVIDER\": \"openrouter\", \"CLAUDE_MEM_OPENROUTER_API_KEY\": \"${AI_PROVIDER_API_KEY}\", \"CLAUDE_MEM_OPENROUTER_MODEL\": \"xiaomi/mimo-v2-flash:free\""
-      ;;
-  esac
-
-  # Use node to generate settings JSON with all defaults + provider overrides
-  # This ensures the JSON is valid and matches SettingsDefaultsManager.ts defaults
+  # Pass provider and API key via environment variables to avoid shell-to-JS injection
+  INSTALLER_AI_PROVIDER="$AI_PROVIDER" \
+  INSTALLER_AI_API_KEY="$AI_PROVIDER_API_KEY" \
+  INSTALLER_SETTINGS_FILE="$settings_file" \
   node -e "
     const fs = require('fs');
     const path = require('path');
     const homedir = require('os').homedir();
+    const provider = process.env.INSTALLER_AI_PROVIDER;
+    const apiKey = process.env.INSTALLER_AI_API_KEY || '';
+    const settingsPath = process.env.INSTALLER_SETTINGS_FILE;
 
     // All defaults from SettingsDefaultsManager.ts
     const defaults = {
@@ -635,12 +626,21 @@ write_settings() {
       CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]'
     };
 
-    // Apply provider-specific overrides
-    const overrides = {${provider_json}};
+    // Build provider-specific overrides safely from environment variables
+    const overrides = { CLAUDE_MEM_PROVIDER: provider };
+    if (provider === 'claude') {
+      overrides.CLAUDE_MEM_CLAUDE_AUTH_METHOD = 'cli';
+    } else if (provider === 'gemini') {
+      overrides.CLAUDE_MEM_GEMINI_API_KEY = apiKey;
+      overrides.CLAUDE_MEM_GEMINI_MODEL = 'gemini-2.5-flash-lite';
+    } else if (provider === 'openrouter') {
+      overrides.CLAUDE_MEM_OPENROUTER_API_KEY = apiKey;
+      overrides.CLAUDE_MEM_OPENROUTER_MODEL = 'xiaomi/mimo-v2-flash:free';
+    }
+
     const settings = Object.assign(defaults, overrides);
 
     // If settings file already exists, merge (preserve user customizations)
-    const settingsPath = '${settings_file}';
     if (fs.existsSync(settingsPath)) {
       try {
         let existing = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
