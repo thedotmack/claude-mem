@@ -2206,6 +2206,124 @@ test_usage_comment_includes_upgrade() {
 test_usage_comment_includes_upgrade
 
 ###############################################################################
+# Test: Distribution readiness — URL, usage comment, SKILL.md reference
+###############################################################################
+
+echo ""
+echo "=== Distribution readiness ==="
+
+test_install_sh_has_shebang() {
+  local first_line
+  first_line="$(head -1 "$INSTALL_SCRIPT")"
+  assert_eq "#!/usr/bin/env bash" "$first_line" "install.sh has correct shebang line"
+}
+
+test_install_sh_has_shebang
+
+test_install_sh_has_set_euo_pipefail() {
+  if grep -q 'set -euo pipefail' "$INSTALL_SCRIPT"; then
+    test_pass "install.sh uses set -euo pipefail for safety"
+  else
+    test_fail "install.sh should use set -euo pipefail"
+  fi
+}
+
+test_install_sh_has_set_euo_pipefail
+
+test_install_sh_has_stable_url_in_usage() {
+  if grep -q 'raw.githubusercontent.com/thedotmack/claude-mem/main/openclaw/install.sh' "$INSTALL_SCRIPT"; then
+    test_pass "install.sh usage comment has stable raw.githubusercontent.com URL"
+  else
+    test_fail "install.sh should reference stable raw.githubusercontent.com URL in usage"
+  fi
+}
+
+test_install_sh_has_stable_url_in_usage
+
+test_install_sh_documents_all_flags() {
+  local missing_flags=()
+
+  for flag in "--non-interactive" "--upgrade" "--provider" "--api-key"; do
+    if ! grep -Fq -- "$flag" "$INSTALL_SCRIPT"; then
+      missing_flags+=("$flag")
+    fi
+  done
+
+  if [[ ${#missing_flags[@]} -eq 0 ]]; then
+    test_pass "install.sh documents all CLI flags (--non-interactive, --upgrade, --provider, --api-key)"
+  else
+    test_fail "install.sh missing documentation for flags: ${missing_flags[*]}"
+  fi
+}
+
+test_install_sh_documents_all_flags
+
+test_install_sh_has_installer_version() {
+  if grep -q 'INSTALLER_VERSION=' "$INSTALL_SCRIPT"; then
+    test_pass "install.sh defines INSTALLER_VERSION constant"
+  else
+    test_fail "install.sh should define INSTALLER_VERSION"
+  fi
+}
+
+test_install_sh_has_installer_version
+
+test_skill_md_references_one_liner() {
+  local skill_file="${SCRIPT_DIR}/SKILL.md"
+  if [[ ! -f "$skill_file" ]]; then
+    test_fail "SKILL.md not found at ${skill_file}"
+    return
+  fi
+
+  if grep -q 'curl -fsSL.*raw.githubusercontent.com.*install.sh | bash' "$skill_file"; then
+    test_pass "SKILL.md references the one-liner installer"
+  else
+    test_fail "SKILL.md should reference the one-liner installer"
+  fi
+}
+
+test_skill_md_references_one_liner
+
+test_skill_md_has_quick_install_section() {
+  local skill_file="${SCRIPT_DIR}/SKILL.md"
+  if [[ ! -f "$skill_file" ]]; then
+    test_fail "SKILL.md not found at ${skill_file}"
+    return
+  fi
+
+  if grep -q 'Quick Install' "$skill_file"; then
+    test_pass "SKILL.md has Quick Install section"
+  else
+    test_fail "SKILL.md should have Quick Install section"
+  fi
+}
+
+test_skill_md_has_quick_install_section
+
+test_skill_md_documents_options() {
+  local skill_file="${SCRIPT_DIR}/SKILL.md"
+  if [[ ! -f "$skill_file" ]]; then
+    test_fail "SKILL.md not found at ${skill_file}"
+    return
+  fi
+
+  local missing=()
+  for option in "--provider" "--non-interactive" "--upgrade"; do
+    if ! grep -Fq -- "$option" "$skill_file"; then
+      missing+=("$option")
+    fi
+  done
+
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    test_pass "SKILL.md documents all installer options (--provider, --non-interactive, --upgrade)"
+  else
+    test_fail "SKILL.md missing documentation for: ${missing[*]}"
+  fi
+}
+
+test_skill_md_documents_options
+
+###############################################################################
 # Summary
 ###############################################################################
 
