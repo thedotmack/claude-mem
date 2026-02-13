@@ -4,8 +4,7 @@
  * Provides utilities for filtering search results by date range.
  */
 
-import type { DateRange, SearchResult, CombinedResult } from '../types.js';
-import { logger } from '../../../../utils/logger.js';
+import type { DateRange } from '../types.js';
 import { SEARCH_CONSTANTS } from '../types.js';
 
 /**

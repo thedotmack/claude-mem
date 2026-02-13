@@ -1,12 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { GeminiAgent } from '../src/services/worker/GeminiAgent';
-import { DatabaseManager } from '../src/services/worker/DatabaseManager';
-import { SessionManager } from '../src/services/worker/SessionManager';
+import type { DatabaseManager } from '../src/services/worker/DatabaseManager';
+import type { SessionManager } from '../src/services/worker/SessionManager';
 import { ModeManager } from '../src/services/domain/ModeManager';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager';
+import type { ActiveSession } from '../src/services/worker-types';
+import type { FallbackAgent } from '../src/services/worker/agents/types';
 
 // Track rate limiting setting (controls Gemini RPM throttling)
 // Set to 'false' to disable rate limiting for faster tests
@@ -26,24 +25,25 @@ const mockMode = {
 
 // Use spyOn for all dependencies to avoid affecting other test files
 // spyOn restores automatically, unlike mock.module which persists
-let loadFromFileSpy: ReturnType<typeof spyOn>;
-let getSpy: ReturnType<typeof spyOn>;
-let modeManagerSpy: ReturnType<typeof spyOn>;
+import type { MockInstance } from 'vitest';
+let loadFromFileSpy: MockInstance;
+let getSpy: MockInstance;
+let modeManagerSpy: MockInstance;
 
 describe('GeminiAgent', () => {
   let agent: GeminiAgent;
   let originalFetch: typeof global.fetch;
 
   // Mocks
-  let mockStoreObservation: any;
-  let mockStoreObservations: any; // Plural - atomic transaction method used by ResponseProcessor
-  let mockStoreSummary: any;
-  let mockMarkSessionCompleted: any;
-  let mockSyncObservation: any;
-  let mockSyncSummary: any;
-  let mockMarkProcessed: any;
-  let mockCleanupProcessed: any;
-  let mockResetStuckMessages: any;
+  let mockStoreObservation: ReturnType<typeof vi.fn>;
+  let mockStoreObservations: ReturnType<typeof vi.fn>; // Plural - atomic transaction method used by ResponseProcessor
+  let mockStoreSummary: ReturnType<typeof vi.fn>;
+  let mockMarkSessionCompleted: ReturnType<typeof vi.fn>;
+  let mockSyncObservation: ReturnType<typeof vi.fn>;
+  let mockSyncSummary: ReturnType<typeof vi.fn>;
+  let mockMarkProcessed: ReturnType<typeof vi.fn>;
+  let mockCleanupProcessed: ReturnType<typeof vi.fn>;
+  let mockResetStuckMessages: ReturnType<typeof vi.fn>;
   let mockDbManager: DatabaseManager;
   let mockSessionManager: SessionManager;
 
@@ -52,13 +52,13 @@ describe('GeminiAgent', () => {
     rateLimitingEnabled = 'false';
 
     // Mock ModeManager using spyOn (restores properly)
-    modeManagerSpy = spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
+    modeManagerSpy = vi.spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
       getActiveMode: () => mockMode,
       loadMode: () => {},
-    } as any));
+    } as unknown as ModeManager));
 
     // Mock SettingsDefaultsManager methods using spyOn (restores properly)
-    loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+    loadFromFileSpy = vi.spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
       ...SettingsDefaultsManager.getAllDefaults(),
       CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
       CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
@@ -66,26 +66,26 @@ describe('GeminiAgent', () => {
       CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
     }));
 
-    getSpy = spyOn(SettingsDefaultsManager, 'get').mockImplementation((key: string) => {
+    getSpy = vi.spyOn(SettingsDefaultsManager, 'get').mockImplementation((key: string) => {
       if (key === 'CLAUDE_MEM_GEMINI_API_KEY') return 'test-api-key';
       if (key === 'CLAUDE_MEM_GEMINI_MODEL') return 'gemini-2.5-flash-lite';
       if (key === 'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED') return rateLimitingEnabled;
       if (key === 'CLAUDE_MEM_DATA_DIR') return '/tmp/claude-mem-test';
-      return SettingsDefaultsManager.getAllDefaults()[key as keyof ReturnType<typeof SettingsDefaultsManager.getAllDefaults>] ?? '';
+      return SettingsDefaultsManager.getAllDefaults()[key as keyof ReturnType<typeof SettingsDefaultsManager.getAllDefaults>];
     });
 
     // Initialize mocks
-    mockStoreObservation = mock(() => ({ id: 1, createdAtEpoch: Date.now() }));
-    mockStoreSummary = mock(() => ({ id: 1, createdAtEpoch: Date.now() }));
-    mockMarkSessionCompleted = mock(() => {});
-    mockSyncObservation = mock(() => Promise.resolve());
-    mockSyncSummary = mock(() => Promise.resolve());
-    mockMarkProcessed = mock(() => {});
-    mockCleanupProcessed = mock(() => 0);
-    mockResetStuckMessages = mock(() => 0);
+    mockStoreObservation = vi.fn(() => ({ id: 1, createdAtEpoch: Date.now() }));
+    mockStoreSummary = vi.fn(() => ({ id: 1, createdAtEpoch: Date.now() }));
+    mockMarkSessionCompleted = vi.fn(() => {});
+    mockSyncObservation = vi.fn(() => Promise.resolve());
+    mockSyncSummary = vi.fn(() => Promise.resolve());
+    mockMarkProcessed = vi.fn(() => {});
+    mockCleanupProcessed = vi.fn(() => 0);
+    mockResetStuckMessages = vi.fn(() => 0);
 
     // Mock for storeObservations (plural) - the atomic transaction method called by ResponseProcessor
-    mockStoreObservations = mock(() => ({
+    mockStoreObservations = vi.fn(() => ({
       observationIds: [1],
       summaryId: 1,
       createdAtEpoch: Date.now()
@@ -115,6 +115,7 @@ describe('GeminiAgent', () => {
     };
 
     mockSessionManager = {
+      // eslint-disable-next-line @typescript-eslint/require-await
       getMessageIterator: async function* () { yield* []; },
       getPendingMessageStore: () => mockPendingMessageStore
     } as unknown as SessionManager;
@@ -125,11 +126,11 @@ describe('GeminiAgent', () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
-    // Restore spied methods
-    if (modeManagerSpy) modeManagerSpy.mockRestore();
-    if (loadFromFileSpy) loadFromFileSpy.mockRestore();
-    if (getSpy) getSpy.mockRestore();
-    mock.restore();
+    // Restore spied methods (always assigned in beforeEach, vi.restoreAllMocks handles all)
+    modeManagerSpy.mockRestore();
+    loadFromFileSpy.mockRestore();
+    getSpy.mockRestore();
+    vi.restoreAllMocks();
   });
 
   it('should initialize with correct config', async () => {
@@ -149,9 +150,9 @@ describe('GeminiAgent', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now()
-    } as any;
+    } as ActiveSession;
 
-    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+    global.fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       candidates: [{
         content: {
           parts: [{ text: '<observation><type>discovery</type><title>Test</title></observation>' }]
@@ -163,7 +164,7 @@ describe('GeminiAgent', () => {
     await agent.startSession(session);
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
-    const url = (global.fetch as any).mock.calls[0][0];
+    const url = vi.mocked(global.fetch).mock.calls[0][0];
     expect(url).toContain('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent');
     expect(url).toContain('key=test-api-key');
   });
@@ -185,15 +186,15 @@ describe('GeminiAgent', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now()
-    } as any;
+    } as ActiveSession;
 
-    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+    global.fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       candidates: [{ content: { parts: [{ text: 'response' }] } }]
     }))));
 
     await agent.startSession(session);
 
-    const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
+    const body = JSON.parse((vi.mocked(global.fetch).mock.calls[0][1] as RequestInit).body as string) as { contents: Array<{ role: string }> };
     expect(body.contents).toHaveLength(3);
     expect(body.contents[0].role).toBe('user');
     expect(body.contents[1].role).toBe('model');
@@ -217,7 +218,7 @@ describe('GeminiAgent', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now()
-    } as any;
+    } as ActiveSession;
 
     const observationXml = `
       <observation>
@@ -232,7 +233,7 @@ describe('GeminiAgent', () => {
       </observation>
     `;
 
-    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+    global.fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       candidates: [{ content: { parts: [{ text: observationXml }] } }],
       usageMetadata: { totalTokenCount: 50 }
     }))));
@@ -262,18 +263,19 @@ describe('GeminiAgent', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now()
-    } as any;
+    } as ActiveSession;
 
-    global.fetch = mock(() => Promise.resolve(new Response('Resource has been exhausted (e.g. check quota).', { status: 429 })));
+    global.fetch = vi.fn(() => Promise.resolve(new Response('Resource has been exhausted (e.g. check quota).', { status: 429 })));
 
-    const fallbackAgent = {
-      startSession: mock(() => Promise.resolve())
+    const fallbackAgent: FallbackAgent = {
+      startSession: vi.fn(() => Promise.resolve())
     };
     agent.setFallbackAgent(fallbackAgent);
 
     await agent.startSession(session);
 
     // Verify fallback to Claude was triggered
+    // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(fallbackAgent.startSession).toHaveBeenCalledWith(session, undefined);
     // Note: resetStuckMessages is called by worker-service.ts, not by GeminiAgent
   });
@@ -295,16 +297,17 @@ describe('GeminiAgent', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now()
-    } as any;
+    } as ActiveSession;
 
-    global.fetch = mock(() => Promise.resolve(new Response('Invalid argument', { status: 400 })));
+    global.fetch = vi.fn(() => Promise.resolve(new Response('Invalid argument', { status: 400 })));
 
-    const fallbackAgent = {
-      startSession: mock(() => Promise.resolve())
+    const fallbackAgent: FallbackAgent = {
+      startSession: vi.fn(() => Promise.resolve())
     };
     agent.setFallbackAgent(fallbackAgent);
 
     await expect(agent.startSession(session)).rejects.toThrow('Gemini API error: 400 - Invalid argument');
+    // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(fallbackAgent.startSession).not.toHaveBeenCalled();
   });
 
@@ -314,8 +317,8 @@ describe('GeminiAgent', () => {
     rateLimitingEnabled = 'true';
 
     const originalSetTimeout = global.setTimeout;
-    const mockSetTimeout = mock((cb: any) => cb());
-    global.setTimeout = mockSetTimeout as any;
+    const mockSetTimeout = vi.fn((cb: () => void) => { cb(); });
+    global.setTimeout = mockSetTimeout as unknown as typeof global.setTimeout;
 
     try {
       const session = {
@@ -334,9 +337,9 @@ describe('GeminiAgent', () => {
         earliestPendingTimestamp: null,
         currentProvider: null,
         startTime: Date.now()
-      } as any;
+      } as ActiveSession;
 
-      global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      global.fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
         candidates: [{ content: { parts: [{ text: 'ok' }] } }]
       }))));
 
@@ -350,7 +353,7 @@ describe('GeminiAgent', () => {
   });
 
   describe('gemini-3-flash model support', () => {
-    it('should accept gemini-3-flash as a valid model', async () => {
+    it('should accept gemini-3-flash as a valid model', () => {
       // The GeminiModel type includes gemini-3-flash - compile-time check
       const validModels = [
         'gemini-2.5-flash-lite',
@@ -386,9 +389,9 @@ describe('GeminiAgent', () => {
         earliestPendingTimestamp: null,
         currentProvider: null,
         startTime: Date.now()
-      } as any;
+      } as ActiveSession;
 
-      global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      global.fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
         candidates: [{ content: { parts: [{ text: 'ok' }] } }],
         usageMetadata: { totalTokenCount: 10 }
       }))));

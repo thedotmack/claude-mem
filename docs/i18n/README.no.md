@@ -146,7 +146,7 @@ Start Claude Code på nytt. Kontekst fra tidligere økter vil automatisk vises i
 - **[Arkitekturutvikling](https://docs.claude-mem.ai/architecture-evolution)** - Reisen fra v3 til v5
 - **[Hooks-arkitektur](https://docs.claude-mem.ai/hooks-architecture)** - Hvordan Claude-Mem bruker livssyklus-hooks
 - **[Hooks-referanse](https://docs.claude-mem.ai/architecture/hooks)** - 7 hook-skript forklart
-- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API og Bun-administrasjon
+- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API og Node.js-administrasjon
 - **[Database](https://docs.claude-mem.ai/architecture/database)** - SQLite-skjema og FTS5-søk
 - **[Søkearkitektur](https://docs.claude-mem.ai/architecture/search-architecture)** - Hybridsøk med Chroma vektordatabase
 
@@ -164,7 +164,7 @@ Start Claude Code på nytt. Kontekst fra tidligere økter vil automatisk vises i
 
 1. **5 Livssyklus-Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook-skript)
 2. **Smart Installasjon** - Bufret avhengighetssjekker (pre-hook-skript, ikke en livssyklus-hook)
-3. **Worker Service** - HTTP API på port 37777 med nettleser UI og 10 søkeendepunkter, administrert av Bun
+3. **Worker Service** - HTTP API på port 37777 med nettleser UI og 10 søkeendepunkter, administrert av Node.js
 4. **SQLite Database** - Lagrer økter, observasjoner, sammendrag
 5. **mem-search-ferdighet** - Naturligspråklige spørringer med progressiv avsløring
 6. **Chroma Vektordatabase** - Hybrid semantisk + nøkkelordsøk for intelligent konteksthenting
@@ -220,7 +220,6 @@ Se **[Beta-funksjoner Dokumentasjon](https://docs.claude-mem.ai/beta-features)**
 
 - **Node.js**: 18.0.0 eller høyere
 - **Claude Code**: Nyeste versjon med plugin-støtte
-- **Bun**: JavaScript-runtime og prosessadministrator (autoinstalleres hvis mangler)
 - **uv**: Python-pakkeadministrator for vektorsøk (autoinstalleres hvis mangler)
 - **SQLite 3**: For vedvarende lagring (inkludert)
 

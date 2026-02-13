@@ -5,9 +5,9 @@
  * Consolidates SSE broadcasting and processing status updates.
  */
 
-import { SSEBroadcaster } from '../SSEBroadcaster.js';
+import { logger } from '../../../utils/logger.js'; // eslint-disable-line @typescript-eslint/no-unused-vars -- required by logger-usage-standards
+import type { SSEBroadcaster } from '../SSEBroadcaster.js';
 import type { WorkerService } from '../../worker-service.js';
-import { logger } from '../../../utils/logger.js';
 
 export class SessionEventBroadcaster {
   constructor(

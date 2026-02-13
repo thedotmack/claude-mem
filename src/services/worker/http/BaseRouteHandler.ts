@@ -9,7 +9,7 @@
  * - Centralized error handling
  */
 
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
 import { logger } from '../../../utils/logger.js';
 
 export abstract class BaseRouteHandler {
@@ -23,7 +23,7 @@ export abstract class BaseRouteHandler {
       try {
         const result = handler(req, res);
         if (result instanceof Promise) {
-          result.catch(error => this.handleError(res, error as Error));
+          result.catch((error: unknown) => { this.handleError(res, error instanceof Error ? error : new Error(String(error))); });
         }
       } catch (error) {
         logger.error('HTTP', 'Route handler error', { path: req.path }, error as Error);
@@ -50,8 +50,9 @@ export abstract class BaseRouteHandler {
    * Returns true if all required params present, sends 400 error otherwise
    */
   protected validateRequired(req: Request, res: Response, params: string[]): boolean {
+    const body = req.body as Record<string, unknown>;
     for (const param of params) {
-      if (req.body[param] === undefined || req.body[param] === null) {
+      if (body[param] === undefined || body[param] === null) {
         this.badRequest(res, `Missing ${param}`);
         return false;
       }

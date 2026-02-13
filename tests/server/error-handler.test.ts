@@ -8,7 +8,7 @@
  *
  * What's NOT mocked: AppError class, createErrorResponse function (tested directly)
  */
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import { logger } from '../../src/utils/logger.js';
 
@@ -19,23 +19,32 @@ import {
   notFoundHandler,
 } from '../../src/services/server/ErrorHandler.js';
 
+/** ErrorResponse shape returned by jsonSpy */
+interface ErrorResponseBody {
+  error?: string;
+  message?: string;
+  code?: string;
+  details?: unknown;
+}
+
 // Spy on logger methods to suppress output during tests
 // Using spyOn instead of mock.module to avoid polluting global module cache
-let loggerSpies: ReturnType<typeof spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 describe('ErrorHandler', () => {
   beforeEach(() => {
     loggerSpies = [
-      spyOn(logger, 'info').mockImplementation(() => {}),
-      spyOn(logger, 'debug').mockImplementation(() => {}),
-      spyOn(logger, 'warn').mockImplementation(() => {}),
-      spyOn(logger, 'error').mockImplementation(() => {}),
+      vi.spyOn(logger, 'info').mockImplementation(() => {}),
+      vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      vi.spyOn(logger, 'warn').mockImplementation(() => {}),
+      vi.spyOn(logger, 'error').mockImplementation(() => {}),
     ];
   });
 
   afterEach(() => {
-    loggerSpies.forEach(spy => spy.mockRestore());
-    mock.restore();
+    loggerSpies.forEach(spy => { spy.mockRestore(); });
+    vi.restoreAllMocks();
   });
 
   describe('AppError', () => {
@@ -135,12 +144,12 @@ describe('ErrorHandler', () => {
     let mockRequest: Partial<Request>;
     let mockResponse: Partial<Response>;
     let mockNext: NextFunction;
-    let statusSpy: ReturnType<typeof mock>;
-    let jsonSpy: ReturnType<typeof mock>;
+    let statusSpy: MockInstance;
+    let jsonSpy: MockInstance;
 
     beforeEach(() => {
-      statusSpy = mock(() => mockResponse);
-      jsonSpy = mock(() => mockResponse);
+      statusSpy = vi.fn(() => mockResponse);
+      jsonSpy = vi.fn(() => mockResponse);
 
       mockRequest = {
         method: 'GET',
@@ -152,7 +161,7 @@ describe('ErrorHandler', () => {
         json: jsonSpy as unknown as Response['json'],
       };
 
-      mockNext = mock(() => {});
+      mockNext = vi.fn(() => {});
     });
 
     it('should handle AppError with custom status code', () => {
@@ -168,7 +177,7 @@ describe('ErrorHandler', () => {
       expect(statusSpy).toHaveBeenCalledWith(404);
       expect(jsonSpy).toHaveBeenCalled();
 
-      const responseBody = jsonSpy.mock.calls[0][0];
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.error).toBe('AppError');
       expect(responseBody.message).toBe('Not found');
       expect(responseBody.code).toBe('NOT_FOUND');
@@ -185,7 +194,7 @@ describe('ErrorHandler', () => {
         mockNext
       );
 
-      const responseBody = jsonSpy.mock.calls[0][0];
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.details).toEqual(details);
     });
 
@@ -201,7 +210,7 @@ describe('ErrorHandler', () => {
 
       expect(statusSpy).toHaveBeenCalledWith(500);
 
-      const responseBody = jsonSpy.mock.calls[0][0];
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.error).toBe('Error');
       expect(responseBody.message).toBe('Something went wrong');
       expect(responseBody.code).toBeUndefined();
@@ -231,7 +240,7 @@ describe('ErrorHandler', () => {
         mockNext
       );
 
-      const responseBody = jsonSpy.mock.calls[0][0];
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.error).toBe('TypeError');
     });
 
@@ -252,12 +261,12 @@ describe('ErrorHandler', () => {
   describe('notFoundHandler', () => {
     let mockRequest: Partial<Request>;
     let mockResponse: Partial<Response>;
-    let statusSpy: ReturnType<typeof mock>;
-    let jsonSpy: ReturnType<typeof mock>;
+    let statusSpy: MockInstance;
+    let jsonSpy: MockInstance;
 
     beforeEach(() => {
-      statusSpy = mock(() => mockResponse);
-      jsonSpy = mock(() => mockResponse);
+      statusSpy = vi.fn(() => mockResponse);
+      jsonSpy = vi.fn(() => mockResponse);
 
       mockResponse = {
         status: statusSpy as unknown as Response['status'],
@@ -284,7 +293,7 @@ describe('ErrorHandler', () => {
 
       notFoundHandler(mockRequest as Request, mockResponse as Response);
 
-      const responseBody = jsonSpy.mock.calls[0][0];
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.error).toBe('NotFound');
       expect(responseBody.message).toBe('Cannot POST /api/users');
     });
@@ -297,7 +306,7 @@ describe('ErrorHandler', () => {
 
       notFoundHandler(mockRequest as Request, mockResponse as Response);
 
-      const responseBody = jsonSpy.mock.calls[0][0];
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.message).toBe('Cannot DELETE /api/items/123');
     });
 
@@ -309,7 +318,7 @@ describe('ErrorHandler', () => {
 
       notFoundHandler(mockRequest as Request, mockResponse as Response);
 
-      const responseBody = jsonSpy.mock.calls[0][0];
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.message).toBe('Cannot PUT /api/config');
     });
 
@@ -321,8 +330,8 @@ describe('ErrorHandler', () => {
 
       notFoundHandler(mockRequest as Request, mockResponse as Response);
 
-      const responseBody = jsonSpy.mock.calls[0][0];
-      expect(Object.keys(responseBody)).toEqual(['error', 'message']);
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
+      expect(Object.keys(responseBody as Record<string, unknown>)).toEqual(['error', 'message']);
     });
   });
 });

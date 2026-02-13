@@ -25,7 +25,7 @@ Every Cursor session starts fresh - your AI doesn't remember what it worked on y
 </CardGroup>
 
 <Info>
-**No Claude Code subscription required.** Use Gemini (free tier) or OpenRouter as your AI provider.
+**No Claude Code subscription required.** Use Gemini (free tier) or an OpenAI-compatible endpoint as your AI provider.
 </Info>
 
 ## How It Works
@@ -48,10 +48,10 @@ If you're using Cursor without a Claude Code subscription:
 ```bash
 # Clone and build
 git clone https://github.com/thedotmack/claude-mem.git
-cd claude-mem && bun install && bun run build
+cd claude-mem && npm install && npm run build
 
 # Run interactive setup wizard
-bun run cursor:setup
+npm run cursor:setup
 ```
 
 The setup wizard will:
@@ -62,7 +62,7 @@ The setup wizard will:
 
 **Detailed guides:**
 - [Gemini Setup](/cursor/gemini-setup) - Recommended free option (1500 req/day)
-- [OpenRouter Setup](/cursor/openrouter-setup) - 100+ models including free options
+- [OpenAI-Compatible Setup](/cursor/openai-compat-setup) - 100+ models including free options
 
 ### Path B: Claude Code Users
 
@@ -77,23 +77,23 @@ If you have Claude Code installed:
 claude-mem cursor install
 ```
 
-The plugin uses Claude's SDK by default but you can switch to Gemini or OpenRouter anytime.
+The plugin uses Claude's SDK by default but you can switch to Gemini or an OpenAI-compatible endpoint anytime.
 
 ## Prerequisites
 
 <AccordionGroup>
   <Accordion title="macOS">
-    - [Bun](https://bun.sh): `curl -fsSL https://bun.sh/install | bash`
+    - [Node.js](https://nodejs.org) >= 18.0.0
     - Cursor IDE
     - jq and curl: `brew install jq curl`
   </Accordion>
   <Accordion title="Linux">
-    - [Bun](https://bun.sh): `curl -fsSL https://bun.sh/install | bash`
+    - [Node.js](https://nodejs.org) >= 18.0.0
     - Cursor IDE
     - jq and curl: `apt install jq curl` or `dnf install jq curl`
   </Accordion>
   <Accordion title="Windows">
-    - [Bun](https://bun.sh): `powershell -c "irm bun.sh/install.ps1 | iex"`
+    - [Node.js](https://nodejs.org) >= 18.0.0
     - Cursor IDE
     - PowerShell 5.1+ (included in Windows 10/11)
     - Git for Windows
@@ -106,13 +106,13 @@ After installation, these commands are available from the claude-mem directory:
 
 | Command | Description |
 |---------|-------------|
-| `bun run cursor:setup` | Interactive setup wizard |
-| `bun run cursor:install` | Install Cursor hooks |
-| `bun run cursor:uninstall` | Remove Cursor hooks |
-| `bun run cursor:status` | Check hook installation status |
-| `bun run worker:start` | Start the worker service |
-| `bun run worker:stop` | Stop the worker service |
-| `bun run worker:status` | Check worker status |
+| `npm run cursor:setup` | Interactive setup wizard |
+| `npm run cursor:install` | Install Cursor hooks |
+| `npm run cursor:uninstall` | Remove Cursor hooks |
+| `npm run cursor:status` | Check hook installation status |
+| `npm run worker:start` | Start the worker service |
+| `npm run worker:stop` | Stop the worker service |
+| `npm run worker:status` | Check worker status |
 
 ## Verifying Installation
 
@@ -120,12 +120,12 @@ After setup, verify everything is working:
 
 1. **Check worker status:**
    ```bash
-   bun run worker:status
+   npm run worker:status
    ```
 
 2. **Check hook installation:**
    ```bash
-   bun run cursor:status
+   npm run cursor:status
    ```
 
 3. **Open the memory viewer:**
@@ -138,11 +138,11 @@ After setup, verify everything is working:
 | Provider | Cost | Rate Limit | Best For |
 |----------|------|------------|----------|
 | Gemini | Free tier | 1500 req/day | Individual use, getting started |
-| OpenRouter | Pay-per-use + free models | Varies by model | Model variety, high volume |
+| OpenAI-Compatible | Pay-per-use + free models | Varies by model | Model variety, custom endpoints |
 | Claude SDK | Included with Claude Code | Unlimited | Claude Code subscribers |
 
 <Tip>
-**Recommendation:** Start with Gemini's free tier. It handles typical individual usage well. Switch to OpenRouter or Claude SDK if you need higher limits.
+**Recommendation:** Start with Gemini's free tier. It handles typical individual usage well. Switch to an OpenAI-compatible endpoint or Claude SDK if you need higher limits.
 </Tip>
 
 ## Troubleshooting
@@ -154,27 +154,27 @@ After setup, verify everything is working:
 lsof -i :37777
 
 # Force restart
-bun run worker:stop && bun run worker:start
+npm run worker:stop && npm run worker:start
 
 # Check logs
-bun run worker:logs
+npm run worker:logs
 ```
 
 ### Hooks not firing
 
 1. Restart Cursor IDE after installation
-2. Check hooks are installed: `bun run cursor:status`
+2. Check hooks are installed: `npm run cursor:status`
 3. Verify hooks.json exists in `.cursor/` directory
 
 ### No context appearing
 
-1. Ensure worker is running: `bun run worker:status`
+1. Ensure worker is running: `npm run worker:status`
 2. Check that you have observations: visit http://localhost:37777
 3. Verify your API key is configured correctly
 
 ## Next Steps
 
 - [Gemini Setup Guide](/cursor/gemini-setup) - Detailed free tier setup
-- [OpenRouter Setup Guide](/cursor/openrouter-setup) - Configure OpenRouter
+- [OpenAI-Compatible Setup Guide](/cursor/openai-compat-setup) - Configure OpenAI-compatible endpoint
 - [Configuration Reference](../configuration) - All settings options
 - [Troubleshooting](../troubleshooting) - Common issues and solutions

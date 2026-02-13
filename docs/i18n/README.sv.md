@@ -146,7 +146,7 @@ Starta om Claude Code. Kontext från tidigare sessioner kommer automatiskt att v
 - **[Arkitekturutveckling](https://docs.claude-mem.ai/architecture-evolution)** - Resan från v3 till v5
 - **[Hooks-arkitektur](https://docs.claude-mem.ai/hooks-architecture)** - Hur Claude-Mem använder livscykelkrokar
 - **[Hooks-referens](https://docs.claude-mem.ai/architecture/hooks)** - 7 hook-skript förklarade
-- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API och Bun-hantering
+- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API och Node.js-hantering
 - **[Databas](https://docs.claude-mem.ai/architecture/database)** - SQLite-schema och FTS5-sökning
 - **[Sökarkitektur](https://docs.claude-mem.ai/architecture/search-architecture)** - Hybridsökning med Chroma-vektordatabas
 
@@ -164,7 +164,7 @@ Starta om Claude Code. Kontext från tidigare sessioner kommer automatiskt att v
 
 1. **5 livscykelkrokar** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook-skript)
 2. **Smart installation** - Cachad beroendekontrollant (pre-hook-skript, inte en livscykelkrok)
-3. **Worker Service** - HTTP API på port 37777 med webbvy-gränssnitt och 10 sökändpunkter, hanterat av Bun
+3. **Worker Service** - HTTP API på port 37777 med webbvy-gränssnitt och 10 sökändpunkter, hanterat av Node.js
 4. **SQLite-databas** - Lagrar sessioner, observationer, sammanfattningar
 5. **mem-search-färdighet** - Naturligspråkssökningar med progressiv visning
 6. **Chroma-vektordatabas** - Hybrid semantisk + nyckelordssökning för intelligent kontexthämtning
@@ -220,7 +220,6 @@ Se **[Dokumentation för betafunktioner](https://docs.claude-mem.ai/beta-feature
 
 - **Node.js**: 18.0.0 eller högre
 - **Claude Code**: Senaste versionen med plugin-stöd
-- **Bun**: JavaScript-runtime och processhanterare (installeras automatiskt om den saknas)
 - **uv**: Python-pakethanterare för vektorsökning (installeras automatiskt om den saknas)
 - **SQLite 3**: För persistent lagring (ingår)
 

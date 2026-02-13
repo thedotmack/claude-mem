@@ -43,7 +43,6 @@ import { Server } from './server/Server.js';
 
 // Integration imports
 import {
-  updateCursorContextForProject,
   handleCursorCommand
 } from './integrations/CursorHooksInstaller.js';
 
@@ -53,7 +52,8 @@ import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { GeminiAgent } from './worker/GeminiAgent.js';
-import { OpenRouterAgent } from './worker/OpenRouterAgent.js';
+import { OpenAICompatAgent, isOpenAICompatSelected, isOpenAICompatAvailable } from './worker/OpenAICompatAgent.js';
+import { isGeminiSelected, isGeminiAvailable } from './worker/GeminiAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
@@ -70,7 +70,7 @@ import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 
 // Process management for zombie cleanup (Issue #737)
-import { startOrphanReaper, reapOrphanedProcesses } from './worker/ProcessRegistry.js';
+import { startOrphanReaper } from './worker/ProcessRegistry.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -109,10 +109,10 @@ export class WorkerService {
   // Service layer
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
-  private sseBroadcaster: SSEBroadcaster;
+  sseBroadcaster: SSEBroadcaster;
   private sdkAgent: SDKAgent;
   private geminiAgent: GeminiAgent;
-  private openRouterAgent: OpenRouterAgent;
+  private openaiCompatAgent: OpenAICompatAgent;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -139,7 +139,7 @@ export class WorkerService {
     this.sseBroadcaster = new SSEBroadcaster();
     this.sdkAgent = new SDKAgent(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiAgent(this.dbManager, this.sessionManager);
-    this.openRouterAgent = new OpenRouterAgent(this.dbManager, this.sessionManager);
+    this.openaiCompatAgent = new OpenAICompatAgent(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
@@ -181,11 +181,11 @@ export class WorkerService {
 
     process.on('SIGTERM', () => {
       this.isShuttingDown = shutdownRef.value;
-      handler('SIGTERM');
+      void handler('SIGTERM');
     });
     process.on('SIGINT', () => {
       this.isShuttingDown = shutdownRef.value;
-      handler('SIGINT');
+      void handler('SIGINT');
     });
   }
 
@@ -195,26 +195,28 @@ export class WorkerService {
   private registerRoutes(): void {
     // Standard routes
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
+    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openaiCompatAgent, this.sessionEventBroadcaster, this));
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
 
     // Early handler for /api/context/inject to avoid 404 during startup
-    this.server.app.get('/api/context/inject', async (req, res, next) => {
+    this.server.app.get('/api/context/inject', (req, res, next) => {
       const timeoutMs = 300000; // 5 minute timeout for slow systems
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)
+        setTimeout(() => { reject(new Error('Initialization timeout')); }, timeoutMs)
       );
 
-      await Promise.race([this.initializationComplete, timeoutPromise]);
+      Promise.race([this.initializationComplete, timeoutPromise]).then(() => {
+        if (!this.searchRoutes) {
+          res.status(503).json({ error: 'Search routes not initialized' });
+          return;
+        }
 
-      if (!this.searchRoutes) {
-        res.status(503).json({ error: 'Search routes not initialized' });
-        return;
-      }
-
-      next(); // Delegate to SearchRoutes handler
+        next(); // Delegate to SearchRoutes handler
+      }).catch((error: unknown) => {
+        res.status(503).json({ error: error instanceof Error ? error.message : 'Initialization failed' });
+      });
     });
   }
 
@@ -240,8 +242,8 @@ export class WorkerService {
     logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
 
     // Do slow initialization in background (non-blocking)
-    this.initializeBackground().catch((error) => {
-      logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
+    this.initializeBackground().catch((error: unknown) => {
+      logger.error('SYSTEM', 'Background initialization failed', {}, error instanceof Error ? error : new Error(String(error)));
     });
   }
 
@@ -262,7 +264,7 @@ export class WorkerService {
       ModeManager.getInstance().loadMode(modeId);
       logger.info('SYSTEM', `Mode loaded: ${modeId}`);
 
-      await this.dbManager.initialize();
+      this.dbManager.initialize();
 
       // Recover stuck messages from previous crashes
       const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
@@ -270,7 +272,7 @@ export class WorkerService {
       const STUCK_THRESHOLD_MS = 5 * 60 * 1000;
       const resetCount = pendingStore.resetStuckMessages(STUCK_THRESHOLD_MS);
       if (resetCount > 0) {
-        logger.info('SYSTEM', `Recovered ${resetCount} stuck messages from previous session`, { thresholdMinutes: 5 });
+        logger.info('SYSTEM', `Recovered ${String(resetCount)} stuck messages from previous session`, { thresholdMinutes: 5 });
       }
 
       // Initialize search services
@@ -292,13 +294,13 @@ export class WorkerService {
       const transport = new StdioClientTransport({
         command: 'node',
         args: [mcpServerPath],
-        env: process.env
+        env: process.env as Record<string, string>
       });
 
       const MCP_INIT_TIMEOUT_MS = 300000;
       const mcpConnectionPromise = this.mcpClient.connect(transport);
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('MCP connection timeout after 5 minutes')), MCP_INIT_TIMEOUT_MS)
+        setTimeout(() => { reject(new Error('MCP connection timeout after 5 minutes')); }, MCP_INIT_TIMEOUT_MS)
       );
 
       await Promise.race([mcpConnectionPromise, timeoutPromise]);
@@ -322,19 +324,33 @@ export class WorkerService {
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
         if (result.sessionsStarted > 0) {
-          logger.info('SYSTEM', `Auto-recovered ${result.sessionsStarted} sessions with pending work`, {
+          logger.info('SYSTEM', `Auto-recovered ${String(result.sessionsStarted)} sessions with pending work`, {
             totalPending: result.totalPendingSessions,
             started: result.sessionsStarted,
             sessionIds: result.startedSessionIds
           });
         }
-      }).catch(error => {
-        logger.error('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
+      }).catch((error: unknown) => {
+        logger.error('SYSTEM', 'Auto-recovery of pending queues failed', {}, error instanceof Error ? error : new Error(String(error)));
       });
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
       throw error;
     }
+  }
+
+  /**
+   * Get the appropriate agent based on provider settings.
+   * Mirrors SessionRoutes.getActiveAgent() to ensure recovery uses the same provider.
+   */
+  private getActiveAgent(): SDKAgent | GeminiAgent | OpenAICompatAgent {
+    if (isOpenAICompatSelected() && isOpenAICompatAvailable()) {
+      return this.openaiCompatAgent;
+    }
+    if (isGeminiSelected() && isGeminiAvailable()) {
+      return this.geminiAgent;
+    }
+    return this.sdkAgent;
   }
 
   /**
@@ -347,14 +363,18 @@ export class WorkerService {
     if (!session) return;
 
     const sid = session.sessionDbId;
-    logger.info('SYSTEM', `Starting generator (${source})`, { sessionId: sid });
+    const agent = this.getActiveAgent();
+    const providerName = agent instanceof OpenAICompatAgent ? 'OpenAI-Compat'
+      : agent instanceof GeminiAgent ? 'Gemini' : 'Claude SDK';
+    logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
 
-    session.generatorPromise = this.sdkAgent.startSession(session, this)
-      .catch(error => {
+    session.generatorPromise = agent.startSession(session, this)
+      .catch((error: unknown) => {
         logger.error('SDK', 'Session generator failed', {
           sessionId: session.sessionDbId,
-          project: session.project
-        }, error as Error);
+          project: session.project,
+          provider: providerName
+        }, error instanceof Error ? error : new Error(String(error)));
       })
       .finally(() => {
         session.generatorPromise = null;
@@ -384,7 +404,7 @@ export class WorkerService {
 
     if (orphanedSessionIds.length === 0) return result;
 
-    logger.info('SYSTEM', `Processing up to ${sessionLimit} of ${orphanedSessionIds.length} pending session queues`);
+    logger.info('SYSTEM', `Processing up to ${String(sessionLimit)} of ${String(orphanedSessionIds.length)} pending session queues`);
 
     for (const sessionDbId of orphanedSessionIds) {
       if (result.sessionsStarted >= sessionLimit) break;
@@ -397,7 +417,7 @@ export class WorkerService {
         }
 
         const session = this.sessionManager.initializeSession(sessionDbId);
-        logger.info('SYSTEM', `Starting processor for session ${sessionDbId}`, {
+        logger.info('SYSTEM', `Starting processor for session ${String(sessionDbId)}`, {
           project: session.project,
           pendingCount: pendingStore.getPendingCount(sessionDbId)
         });
@@ -408,7 +428,7 @@ export class WorkerService {
 
         await new Promise(resolve => setTimeout(resolve, 100));
       } catch (error) {
-        logger.error('SYSTEM', `Failed to process session ${sessionDbId}`, {}, error as Error);
+        logger.error('SYSTEM', `Failed to process session ${String(sessionDbId)}`, {}, error as Error);
         result.sessionsSkipped++;
       }
     }
@@ -549,6 +569,7 @@ async function main() {
       } else {
         exitWithStatus('error', 'Failed to start worker');
       }
+      break;
     }
 
     case 'stop': {
@@ -560,6 +581,7 @@ async function main() {
       removePidFile();
       logger.info('SYSTEM', 'Worker stopped successfully');
       process.exit(0);
+      break;
     }
 
     case 'restart': {
@@ -596,6 +618,7 @@ async function main() {
 
       logger.info('SYSTEM', 'Worker restarted successfully');
       process.exit(0);
+      break;
     }
 
     case 'status': {
@@ -603,19 +626,21 @@ async function main() {
       const pidInfo = readPidFile();
       if (running && pidInfo) {
         console.log('Worker is running');
-        console.log(`  PID: ${pidInfo.pid}`);
-        console.log(`  Port: ${pidInfo.port}`);
+        console.log(`  PID: ${String(pidInfo.pid)}`);
+        console.log(`  Port: ${String(pidInfo.port)}`);
         console.log(`  Started: ${pidInfo.startedAt}`);
       } else {
         console.log('Worker is not running');
       }
       process.exit(0);
+      break;
     }
 
     case 'cursor': {
       const subcommand = process.argv[3];
       const cursorResult = await handleCursorCommand(subcommand, process.argv.slice(4));
       process.exit(cursorResult);
+      break;
     }
 
     case 'hook': {
@@ -667,8 +692,8 @@ async function main() {
     case '--daemon':
     default: {
       const worker = new WorkerService();
-      worker.start().catch((error) => {
-        logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
+      worker.start().catch((error: unknown) => {
+        logger.failure('SYSTEM', 'Worker failed to start', {}, error instanceof Error ? error : new Error(String(error)));
         removePidFile();
         // Exit gracefully: Windows Terminal won't keep tab open on exit 0
         // The wrapper/plugin will handle restart logic if needed
@@ -680,9 +705,10 @@ async function main() {
 
 // Check if running as main module in both ESM and CommonJS
 const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefined'
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- module.parent needed for CommonJS compatibility check
   ? require.main === module || !module.parent
   : import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('worker-service');
 
 if (isMainModule) {
-  main();
+  void main();
 }

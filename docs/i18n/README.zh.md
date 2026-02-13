@@ -146,7 +146,7 @@
 - **[架构演进](https://docs.claude-mem.ai/architecture-evolution)** - 从 v3 到 v5 的旅程
 - **[钩子架构](https://docs.claude-mem.ai/hooks-architecture)** - Claude-Mem 如何使用生命周期钩子
 - **[钩子参考](https://docs.claude-mem.ai/architecture/hooks)** - 7 个钩子脚本详解
-- **[Worker 服务](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API 与 Bun 管理
+- **[Worker 服务](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API 与 Node.js 管理
 - **[数据库](https://docs.claude-mem.ai/architecture/database)** - SQLite 模式与 FTS5 搜索
 - **[搜索架构](https://docs.claude-mem.ai/architecture/search-architecture)** - 使用 Chroma 向量数据库的混合搜索
 
@@ -164,7 +164,7 @@
 
 1. **5 个生命周期钩子** - SessionStart、UserPromptSubmit、PostToolUse、Stop、SessionEnd(6 个钩子脚本)
 2. **智能安装** - 缓存依赖检查器(预钩子脚本,不是生命周期钩子)
-3. **Worker 服务** - 在端口 37777 上的 HTTP API,带有 Web 查看器界面和 10 个搜索端点,由 Bun 管理
+3. **Worker 服务** - 在端口 37777 上的 HTTP API,带有 Web 查看器界面和 10 个搜索端点,由 Node.js 管理
 4. **SQLite 数据库** - 存储会话、观察、摘要
 5. **mem-search 技能** - 具有渐进式披露的自然语言查询
 6. **Chroma 向量数据库** - 混合语义 + 关键词搜索,实现智能上下文检索
@@ -220,7 +220,6 @@ Claude-Mem 提供**测试版渠道**,包含实验性功能,如**无尽模式**(�
 
 - **Node.js**: 18.0.0 或更高版本
 - **Claude Code**: 支持插件的最新版本
-- **Bun**: JavaScript 运行时和进程管理器(如缺失会自动安装)
 - **uv**: 用于向量搜索的 Python 包管理器(如缺失会自动安装)
 - **SQLite 3**: 用于持久化存储(已内置)
 

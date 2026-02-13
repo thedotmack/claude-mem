@@ -54,7 +54,7 @@ export function useTheme() {
     };
 
     mediaQuery.addEventListener('change', handleChange);
-    return () => mediaQuery.removeEventListener('change', handleChange);
+    return () => { mediaQuery.removeEventListener('change', handleChange); };
   }, [preference]);
 
   const setThemePreference = (newPreference: ThemePreference) => {

@@ -13,7 +13,7 @@ Your AI stops forgetting. It remembers the patterns, decisions, and context from
 
 ## Don't Have Claude Code?
 
-If you're using Cursor without Claude Code, see [STANDALONE-SETUP.md](STANDALONE-SETUP.md) for setup with free-tier providers like Gemini or OpenRouter.
+If you're using Cursor without Claude Code, see [STANDALONE-SETUP.md](STANDALONE-SETUP.md) for setup with free-tier providers like Gemini or OpenAI-compatible endpoints.
 
 ---
 
@@ -39,14 +39,14 @@ If you don't have Claude Code, configure a provider for AI summarization:
 claude-mem settings set CLAUDE_MEM_PROVIDER gemini
 claude-mem settings set CLAUDE_MEM_GEMINI_API_KEY your-api-key
 
-# Option B: OpenRouter (free models available)
-claude-mem settings set CLAUDE_MEM_PROVIDER openrouter
-claude-mem settings set CLAUDE_MEM_OPENROUTER_API_KEY your-api-key
+# Option B: OpenAI-Compatible (free models available via OpenRouter)
+claude-mem settings set CLAUDE_MEM_PROVIDER openai-compat
+claude-mem settings set CLAUDE_MEM_OPENAI_COMPAT_API_KEY your-api-key
 ```
 
 **Get free API keys**:
 - Gemini: https://aistudio.google.com/apikey
-- OpenRouter: https://openrouter.ai/keys
+- OpenRouter (for OpenAI-compat): https://openrouter.ai/keys
 
 ## Start Worker
 
@@ -97,7 +97,7 @@ Restart Cursor to load the hooks.
 **Worker not responding?**
 - Check if worker is running: `curl http://127.0.0.1:37777/api/readiness`
 - Check logs: `tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log`
-- Restart worker: `bun run worker:restart`
+- Restart worker: `npm run worker:restart`
 
 **Observations not saving?**
 - Check worker logs for errors

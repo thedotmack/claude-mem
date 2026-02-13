@@ -12,7 +12,6 @@ import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { logger } from '../../utils/logger.js';
-import type { DBSession } from '../worker-types.js';
 
 export class DatabaseManager {
   private sessionStore: SessionStore | null = null;
@@ -22,7 +21,7 @@ export class DatabaseManager {
   /**
    * Initialize database connection (once, stays open)
    */
-  async initialize(): Promise<void> {
+  initialize(): void {
     // Open database connection (ONCE)
     this.sessionStore = new SessionStore();
     this.sessionSearch = new SessionSearch();
@@ -100,7 +99,7 @@ export class DatabaseManager {
   } {
     const session = this.getSessionStore().getSessionById(sessionDbId);
     if (!session) {
-      throw new Error(`Session ${sessionDbId} not found`);
+      throw new Error(`Session ${String(sessionDbId)} not found`);
     }
     return session;
   }

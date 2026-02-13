@@ -146,7 +146,7 @@ Indítsa újra a Claude Code-ot. A korábbi munkamenetek kontextusa automatikusa
 - **[Architektúra fejlődés](https://docs.claude-mem.ai/architecture-evolution)** - Az út a v3-tól a v5-ig
 - **[Hooks architektúra](https://docs.claude-mem.ai/hooks-architecture)** - Hogyan használja a Claude-Mem az életciklus hookokat
 - **[Hooks referencia](https://docs.claude-mem.ai/architecture/hooks)** - 7 hook szkript magyarázata
-- **[Worker szolgáltatás](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API és Bun kezelés
+- **[Worker szolgáltatás](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API és Node.js kezelés
 - **[Adatbázis](https://docs.claude-mem.ai/architecture/database)** - SQLite séma és FTS5 keresés
 - **[Keresési architektúra](https://docs.claude-mem.ai/architecture/search-architecture)** - Hibrid keresés Chroma vektor adatbázissal
 
@@ -164,7 +164,7 @@ Indítsa újra a Claude Code-ot. A korábbi munkamenetek kontextusa automatikusa
 
 1. **5 életciklus hook** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook szkript)
 2. **Intelligens telepítés** - Gyorsítótárazott függőség ellenőrző (pre-hook szkript, nem életciklus hook)
-3. **Worker szolgáltatás** - HTTP API a 37777-es porton webes megjelenítő felülettel és 10 keresési végponttal, Bun által kezelve
+3. **Worker szolgáltatás** - HTTP API a 37777-es porton webes megjelenítő felülettel és 10 keresési végponttal, Node.js által kezelve
 4. **SQLite adatbázis** - Munkamenetek, megfigyelések, összefoglalók tárolása
 5. **mem-search Skill** - Természetes nyelvi lekérdezések progresszív felfedéssel
 6. **Chroma vektor adatbázis** - Hibrid szemantikus + kulcsszó keresés intelligens kontextus visszakereséshez
@@ -220,7 +220,6 @@ További részletekért az Endless Mode-ról és annak kipróbálásáról lásd
 
 - **Node.js**: 18.0.0 vagy újabb
 - **Claude Code**: Legújabb verzió plugin támogatással
-- **Bun**: JavaScript futtatókörnyezet és folyamatkezelő (automatikusan települ, ha hiányzik)
 - **uv**: Python csomagkezelő vektor kereséshez (automatikusan települ, ha hiányzik)
 - **SQLite 3**: Tartós tároláshoz (mellékelve)
 

@@ -2,8 +2,6 @@
  * Session-related type definitions
  * Standalone types for session query results
  */
-import { logger } from '../../../utils/logger.js';
-
 /**
  * Basic session info (minimal fields)
  */

@@ -32,10 +32,10 @@ git clone https://github.com/thedotmack/claude-mem.git
 cd claude-mem
 
 # Install dependencies
-bun install
+npm install
 
 # Build the project
-bun run build
+npm run build
 ```
 
 ## Step 3: Configure Gemini Provider
@@ -45,7 +45,7 @@ bun run build
 Run the setup wizard which guides you through everything:
 
 ```bash
-bun run cursor:setup
+npm run cursor:setup
 ```
 
 The wizard will:
@@ -77,8 +77,8 @@ Replace `YOUR_GEMINI_API_KEY` with your actual API key.
 Then install hooks and start the worker:
 
 ```bash
-bun run cursor:install
-bun run worker:start
+npm run cursor:install
+npm run worker:start
 ```
 
 ## Step 4: Restart Cursor
@@ -89,10 +89,10 @@ Close and reopen Cursor IDE for the hooks to take effect.
 
 ```bash
 # Check worker is running
-bun run worker:status
+npm run worker:status
 
 # Check hooks are installed
-bun run cursor:status
+npm run cursor:status
 ```
 
 Open http://localhost:37777 to see the memory viewer.
@@ -156,7 +156,7 @@ Should output something like:
 You're exceeding the free tier limits. Options:
 1. Wait a few minutes for the rate limit to reset
 2. Enable billing on Google Cloud to unlock higher limits
-3. Switch to OpenRouter for higher volume needs
+3. Switch to an OpenAI-compatible endpoint for higher volume needs
 
 ### API key invalid
 
@@ -169,23 +169,23 @@ You're exceeding the free tier limits. Options:
 Check the worker logs:
 
 ```bash
-bun run worker:logs
+npm run worker:logs
 ```
 
 Look for error messages related to Gemini API calls.
 
 ## Switching Providers Later
 
-You can switch between Gemini, OpenRouter, and Claude SDK at any time by updating your settings. No restart required - changes take effect on the next observation.
+You can switch between Gemini, OpenAI-compatible, and Claude SDK at any time by updating your settings. No restart required - changes take effect on the next observation.
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "openrouter"
+  "CLAUDE_MEM_PROVIDER": "openai-compat"
 }
 ```
 
 ## Next Steps
 
 - [Cursor Integration Overview](/cursor/index) - All Cursor features
-- [OpenRouter Setup](/cursor/openrouter-setup) - Alternative provider with 100+ models
+- [OpenAI-Compatible Setup](/cursor/openai-compat-setup) - Alternative provider with 100+ models
 - [Configuration Reference](../configuration) - All settings options

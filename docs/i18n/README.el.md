@@ -146,7 +146,7 @@
 - **[Εξέλιξη Αρχιτεκτονικής](https://docs.claude-mem.ai/architecture-evolution)** - Το ταξίδι από το v3 στο v5
 - **[Αρχιτεκτονική Hooks](https://docs.claude-mem.ai/hooks-architecture)** - Πώς το Claude-Mem χρησιμοποιεί lifecycle hooks
 - **[Αναφορά Hooks](https://docs.claude-mem.ai/architecture/hooks)** - Επεξήγηση 7 hook scripts
-- **[Υπηρεσία Worker](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & διαχείριση Bun
+- **[Υπηρεσία Worker](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & διαχείριση Node.js
 - **[Βάση Δεδομένων](https://docs.claude-mem.ai/architecture/database)** - Σχήμα SQLite & αναζήτηση FTS5
 - **[Αρχιτεκτονική Αναζήτησης](https://docs.claude-mem.ai/architecture/search-architecture)** - Υβριδική αναζήτηση με βάση δεδομένων διανυσμάτων Chroma
 
@@ -164,7 +164,7 @@
 
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook scripts)
 2. **Έξυπνη Εγκατάσταση** - Έλεγχος εξαρτήσεων με cache (pre-hook script, όχι lifecycle hook)
-3. **Υπηρεσία Worker** - HTTP API στη θύρα 37777 με διεπαφή web viewer και 10 endpoints αναζήτησης, διαχειριζόμενη από το Bun
+3. **Υπηρεσία Worker** - HTTP API στη θύρα 37777 με διεπαφή web viewer και 10 endpoints αναζήτησης, διαχειριζόμενη από το Node.js
 4. **Βάση Δεδομένων SQLite** - Αποθηκεύει συνεδρίες, παρατηρήσεις, περιλήψεις
 5. **Δεξιότητα mem-search** - Ερωτήματα φυσικής γλώσσας με προοδευτική αποκάλυψη
 6. **Βάση Δεδομένων Διανυσμάτων Chroma** - Υβριδική σημασιολογική + αναζήτηση λέξεων-κλειδιών για έξυπνη ανάκτηση πλαισίου
@@ -220,7 +220,6 @@
 
 - **Node.js**: 18.0.0 ή νεότερο
 - **Claude Code**: Τελευταία έκδοση με υποστήριξη plugin
-- **Bun**: JavaScript runtime και διαχειριστής διεργασιών (εγκαθίσταται αυτόματα αν λείπει)
 - **uv**: Διαχειριστής πακέτων Python για αναζήτηση διανυσμάτων (εγκαθίσταται αυτόματα αν λείπει)
 - **SQLite 3**: Για μόνιμη αποθήκευση (συμπεριλαμβάνεται)
 

@@ -384,7 +384,7 @@ Claude-mem relies on **real-world usage and manual testing** rather than traditi
 This approach was chosen because:
 - Hook behavior depends heavily on Claude Code's runtime environment
 - SDK interactions require real API calls and responses
-- SQLite and Bun runtime provide stability guarantees
+- SQLite and Node.js runtime provide stability guarantees
 - Manual testing catches integration issues that unit tests miss
 
 ### Manual Testing Workflow
@@ -415,7 +415,7 @@ When developing new features:
 
 5. **Verify queue health** (for recovery features):
    ```bash
-   bun scripts/check-pending-queue.ts
+   npx tsx scripts/check-pending-queue.ts
    ```
 
 ### Testing Tools
@@ -477,7 +477,7 @@ For manual recovery features specifically:
 
 2. **Test recovery**:
    ```bash
-   bun scripts/check-pending-queue.ts
+   npx tsx scripts/check-pending-queue.ts
    ```
 
 3. **Verify results**:

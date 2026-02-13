@@ -8,7 +8,7 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Hooks** (`src/hooks/*.ts`) - TypeScript → ESM, built to `plugin/scripts/*-hook.js`
 
-**Worker Service** (`src/services/worker-service.ts`) - Express API on port 37777, Bun-managed, handles AI processing asynchronously
+**Worker Service** (`src/services/worker-service.ts`) - Express API on port 37777, Node.js-managed, handles AI processing asynchronously
 
 **Database** (`src/services/sqlite/`) - SQLite3 at `~/.claude-mem/claude-mem.db`
 
@@ -55,9 +55,8 @@ See `private/context/claude-code/exit-codes.md` for full hook behavior matrix.
 
 ## Requirements
 
-- **Bun** (all platforms - auto-installed if missing)
+- **Node.js** >= 18.0.0
 - **uv** (all platforms - auto-installed if missing, provides Python for Chroma)
-- Node.js
 
 ## Documentation
 

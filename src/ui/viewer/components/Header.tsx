@@ -1,6 +1,6 @@
 import React from 'react';
 import { ThemeToggle } from './ThemeToggle';
-import { ThemePreference } from '../hooks/useTheme';
+import type { ThemePreference } from '../hooks/useTheme';
 import { GitHubStarsButton } from './GitHubStarsButton';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
 
@@ -17,7 +17,7 @@ interface HeaderProps {
 }
 
 export function Header({
-  isConnected,
+  isConnected: _isConnected,
   projects,
   currentFilter,
   onFilterChange,
@@ -80,7 +80,7 @@ export function Header({
         <GitHubStarsButton username="thedotmack" repo="claude-mem" />
         <select
           value={currentFilter}
-          onChange={e => onFilterChange(e.target.value)}
+          onChange={e => { onFilterChange(e.target.value); }}
         >
           <option value="">All Projects</option>
           {projects.map(project => (

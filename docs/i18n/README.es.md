@@ -147,7 +147,7 @@ Reinicia Claude Code. El contexto de sesiones anteriores aparecerá automáticam
 - **[Evolución de la Arquitectura](https://docs.claude-mem.ai/architecture-evolution)** - El viaje de v3 a v5
 - **[Arquitectura de Hooks](https://docs.claude-mem.ai/hooks-architecture)** - Cómo Claude-Mem usa hooks de ciclo de vida
 - **[Referencia de Hooks](https://docs.claude-mem.ai/architecture/hooks)** - 7 scripts de hooks explicados
-- **[Servicio Worker](https://docs.claude-mem.ai/architecture/worker-service)** - API HTTP y gestión de Bun
+- **[Servicio Worker](https://docs.claude-mem.ai/architecture/worker-service)** - API HTTP y gestión de Node.js
 - **[Base de Datos](https://docs.claude-mem.ai/architecture/database)** - Esquema SQLite y búsqueda FTS5
 - **[Arquitectura de Búsqueda](https://docs.claude-mem.ai/architecture/search-architecture)** - Búsqueda híbrida con base de datos vectorial Chroma
 
@@ -165,7 +165,7 @@ Reinicia Claude Code. El contexto de sesiones anteriores aparecerá automáticam
 
 1. **5 Hooks de Ciclo de Vida** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 scripts de hooks)
 2. **Instalación Inteligente** - Verificador de dependencias en caché (script pre-hook, no un hook de ciclo de vida)
-3. **Servicio Worker** - API HTTP en el puerto 37777 con interfaz de visor web y 10 endpoints de búsqueda, gestionado por Bun
+3. **Servicio Worker** - API HTTP en el puerto 37777 con interfaz de visor web y 10 endpoints de búsqueda, gestionado por Node.js
 4. **Base de Datos SQLite** - Almacena sesiones, observaciones, resúmenes
 5. **Habilidad mem-search** - Consultas en lenguaje natural con divulgación progresiva
 6. **Base de Datos Vectorial Chroma** - Búsqueda híbrida semántica + palabras clave para recuperación inteligente de contexto
@@ -221,7 +221,6 @@ Ver **[Documentación de Características Beta](https://docs.claude-mem.ai/beta-
 
 - **Node.js**: 18.0.0 o superior
 - **Claude Code**: Última versión con soporte de plugins
-- **Bun**: Runtime de JavaScript y gestor de procesos (se instala automáticamente si falta)
 - **uv**: Gestor de paquetes de Python para búsqueda vectorial (se instala automáticamente si falta)
 - **SQLite 3**: Para almacenamiento persistente (incluido)
 

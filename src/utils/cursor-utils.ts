@@ -40,7 +40,7 @@ export interface CursorMcpConfig {
 export function readCursorRegistry(registryFile: string): CursorProjectRegistry {
   try {
     if (!existsSync(registryFile)) return {};
-    return JSON.parse(readFileSync(registryFile, 'utf-8'));
+    return JSON.parse(readFileSync(registryFile, 'utf-8')) as CursorProjectRegistry;
   } catch (error) {
     logger.error('CONFIG', 'Failed to read Cursor registry, using empty registry', {
       file: registryFile,
@@ -80,7 +80,9 @@ export function registerCursorProject(
  */
 export function unregisterCursorProject(registryFile: string, projectName: string): void {
   const registry = readCursorRegistry(registryFile);
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
   if (registry[projectName]) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- dynamic key from user input on Record type
     delete registry[projectName];
     writeCursorRegistry(registryFile, registry);
   }
@@ -146,7 +148,8 @@ export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: str
   let config: CursorMcpConfig = { mcpServers: {} };
   if (existsSync(mcpJsonPath)) {
     try {
-      config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+      config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as CursorMcpConfig;
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
       if (!config.mcpServers) {
         config.mcpServers = {};
       }
@@ -176,7 +179,8 @@ export function removeMcpConfig(mcpJsonPath: string): void {
   if (!existsSync(mcpJsonPath)) return;
 
   try {
-    const config: CursorMcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+    const config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as CursorMcpConfig;
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
     if (config.mcpServers && config.mcpServers['claude-mem']) {
       delete config.mcpServers['claude-mem'];
       writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2));
@@ -216,14 +220,14 @@ export function jsonGet(json: Record<string, unknown>, field: string, fallback: 
   if (arrayAccess) {
     const arr = json[arrayAccess.field];
     if (!Array.isArray(arr)) return fallback;
-    const value = arr[arrayAccess.index];
+    const value: unknown = arr[arrayAccess.index];
     if (value === undefined || value === null) return fallback;
-    return String(value);
+    return typeof value === 'string' ? value : typeof value === 'object' ? JSON.stringify(value) : String(value as string | number | boolean);
   }
 
   const value = json[field];
   if (value === undefined || value === null) return fallback;
-  return String(value);
+  return typeof value === 'string' ? value : typeof value === 'object' ? JSON.stringify(value) : String(value as string | number | boolean);
 }
 
 /**
@@ -233,7 +237,7 @@ export function getProjectName(workspacePath: string): string {
   if (!workspacePath) return 'unknown-project';
 
   // Handle Windows drive root (C:\ or C:)
-  const driveMatch = workspacePath.match(/^([A-Za-z]):[\\\/]?$/);
+  const driveMatch = workspacePath.match(/^([A-Za-z]):[/\\]?$/);
   if (driveMatch) {
     return `drive-${driveMatch[1].toUpperCase()}`;
   }

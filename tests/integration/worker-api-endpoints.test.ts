@@ -10,13 +10,13 @@
  * - Search routes from src/services/worker/http/routes/SearchRoutes.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { logger } from '../../src/utils/logger.js';
 
 // Mock middleware to avoid complex dependencies
-mock.module('../../src/services/worker/http/middleware.js', () => ({
+vi.mock('../../src/services/worker/http/middleware.js', () => ({
   createMiddleware: () => [],
-  requireLocalhost: (_req: any, _res: any, next: any) => next(),
+  requireLocalhost: (_req: unknown, _res: unknown, next: () => void) => { next(); },
   summarizeRequestBody: () => 'test body',
 }));
 
@@ -24,8 +24,21 @@ mock.module('../../src/services/worker/http/middleware.js', () => ({
 import { Server } from '../../src/services/server/Server.js';
 import type { ServerOptions } from '../../src/services/server/Server.js';
 
+/** Type for JSON response body from API endpoints */
+interface ApiResponseBody {
+  status?: string;
+  initialized?: boolean;
+  mcpReady?: boolean;
+  platform?: string;
+  pid?: number;
+  version?: string;
+  message?: string;
+  error?: string;
+}
+
 // Suppress logger output during tests
-let loggerSpies: ReturnType<typeof spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 describe('Worker API Endpoints Integration', () => {
   let server: Server;
@@ -34,25 +47,26 @@ describe('Worker API Endpoints Integration', () => {
 
   beforeEach(() => {
     loggerSpies = [
-      spyOn(logger, 'info').mockImplementation(() => {}),
-      spyOn(logger, 'debug').mockImplementation(() => {}),
-      spyOn(logger, 'warn').mockImplementation(() => {}),
-      spyOn(logger, 'error').mockImplementation(() => {}),
+      vi.spyOn(logger, 'info').mockImplementation(() => {}),
+      vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      vi.spyOn(logger, 'warn').mockImplementation(() => {}),
+      vi.spyOn(logger, 'error').mockImplementation(() => {}),
     ];
 
     mockOptions = {
       getInitializationComplete: () => true,
       getMcpReady: () => true,
-      onShutdown: mock(() => Promise.resolve()),
-      onRestart: mock(() => Promise.resolve()),
+      onShutdown: vi.fn(() => Promise.resolve()),
+      onRestart: vi.fn(() => Promise.resolve()),
     };
 
     testPort = 40000 + Math.floor(Math.random() * 10000);
   });
 
   afterEach(async () => {
-    loggerSpies.forEach(spy => spy.mockRestore());
+    for (const spy of loggerSpies) spy.mockRestore();
 
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: server may not be assigned in every test
     if (server && server.getHttpServer()) {
       try {
         await server.close();
@@ -60,7 +74,7 @@ describe('Worker API Endpoints Integration', () => {
         // Ignore cleanup errors
       }
     }
-    mock.restore();
+    vi.restoreAllMocks();
   });
 
   describe('Health/Readiness/Version Endpoints', () => {
@@ -69,10 +83,10 @@ describe('Worker API Endpoints Integration', () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
         expect(response.status).toBe(200);
 
-        const body = await response.json();
+        const body = await response.json() as ApiResponseBody;
         expect(body).toHaveProperty('status', 'ok');
         expect(body).toHaveProperty('initialized', true);
         expect(body).toHaveProperty('mcpReady', true);
@@ -86,15 +100,15 @@ describe('Worker API Endpoints Integration', () => {
         const uninitOptions: ServerOptions = {
           getInitializationComplete: () => false,
           getMcpReady: () => false,
-          onShutdown: mock(() => Promise.resolve()),
-          onRestart: mock(() => Promise.resolve()),
+          onShutdown: vi.fn(() => Promise.resolve()),
+          onRestart: vi.fn(() => Promise.resolve()),
         };
 
         server = new Server(uninitOptions);
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
-        const body = await response.json();
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
+        const body = await response.json() as ApiResponseBody;
 
         expect(body.status).toBe('ok'); // Health always returns ok
         expect(body.initialized).toBe(false);
@@ -107,10 +121,10 @@ describe('Worker API Endpoints Integration', () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
         expect(response.status).toBe(200);
 
-        const body = await response.json();
+        const body = await response.json() as ApiResponseBody;
         expect(body.status).toBe('ready');
         expect(body.mcpReady).toBe(true);
       });
@@ -119,17 +133,17 @@ describe('Worker API Endpoints Integration', () => {
         const uninitOptions: ServerOptions = {
           getInitializationComplete: () => false,
           getMcpReady: () => false,
-          onShutdown: mock(() => Promise.resolve()),
-          onRestart: mock(() => Promise.resolve()),
+          onShutdown: vi.fn(() => Promise.resolve()),
+          onRestart: vi.fn(() => Promise.resolve()),
         };
 
         server = new Server(uninitOptions);
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
         expect(response.status).toBe(503);
 
-        const body = await response.json();
+        const body = await response.json() as ApiResponseBody;
         expect(body.status).toBe('initializing');
         expect(body.message).toContain('initializing');
       });
@@ -140,10 +154,10 @@ describe('Worker API Endpoints Integration', () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/version`);
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/version`);
         expect(response.status).toBe(200);
 
-        const body = await response.json();
+        const body = await response.json() as ApiResponseBody;
         expect(body).toHaveProperty('version');
         expect(typeof body.version).toBe('string');
       });
@@ -157,10 +171,10 @@ describe('Worker API Endpoints Integration', () => {
         server.finalizeRoutes();
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/unknown-endpoint`);
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/unknown-endpoint`);
         expect(response.status).toBe(404);
 
-        const body = await response.json();
+        const body = await response.json() as ApiResponseBody;
         expect(body.error).toBe('NotFound');
       });
 
@@ -169,7 +183,7 @@ describe('Worker API Endpoints Integration', () => {
         server.finalizeRoutes();
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/unknown-endpoint`, {
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/unknown-endpoint`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ test: 'data' })
@@ -182,7 +196,7 @@ describe('Worker API Endpoints Integration', () => {
         server.finalizeRoutes();
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/search/nonexistent/nested`);
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/search/nonexistent/nested`);
         expect(response.status).toBe(404);
       });
     });
@@ -192,7 +206,7 @@ describe('Worker API Endpoints Integration', () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
-        const response = await fetch(`http://127.0.0.1:${testPort}/api/health`, {
+        const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`, {
           method: 'OPTIONS'
         });
         // OPTIONS should either return 200 or 204 (CORS preflight)
@@ -207,7 +221,7 @@ describe('Worker API Endpoints Integration', () => {
       server.finalizeRoutes();
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/nonexistent`, {
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/nonexistent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key: 'value' })
@@ -221,7 +235,7 @@ describe('Worker API Endpoints Integration', () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       const contentType = response.headers.get('content-type');
 
       expect(contentType).toContain('application/json');
@@ -234,22 +248,22 @@ describe('Worker API Endpoints Integration', () => {
       const dynamicOptions: ServerOptions = {
         getInitializationComplete: () => initialized,
         getMcpReady: () => true,
-        onShutdown: mock(() => Promise.resolve()),
-        onRestart: mock(() => Promise.resolve()),
+        onShutdown: vi.fn(() => Promise.resolve()),
+        onRestart: vi.fn(() => Promise.resolve()),
       };
 
       server = new Server(dynamicOptions);
       await server.listen(testPort, '127.0.0.1');
 
       // Check uninitialized
-      let response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+      let response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
       expect(response.status).toBe(503);
 
       // Initialize
       initialized = true;
 
       // Check initialized
-      response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+      response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
       expect(response.status).toBe(200);
     });
 
@@ -258,24 +272,24 @@ describe('Worker API Endpoints Integration', () => {
       const dynamicOptions: ServerOptions = {
         getInitializationComplete: () => true,
         getMcpReady: () => mcpReady,
-        onShutdown: mock(() => Promise.resolve()),
-        onRestart: mock(() => Promise.resolve()),
+        onShutdown: vi.fn(() => Promise.resolve()),
+        onRestart: vi.fn(() => Promise.resolve()),
       };
 
       server = new Server(dynamicOptions);
       await server.listen(testPort, '127.0.0.1');
 
       // Check MCP not ready
-      let response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
-      let body = await response.json();
+      let response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
+      let body = await response.json() as ApiResponseBody;
       expect(body.mcpReady).toBe(false);
 
       // Set MCP ready
       mcpReady = true;
 
       // Check MCP ready
-      response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
-      body = await response.json();
+      response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
+      body = await response.json() as ApiResponseBody;
       expect(body.mcpReady).toBe(true);
     });
   });
@@ -287,7 +301,7 @@ describe('Worker API Endpoints Integration', () => {
 
       const httpServer = server.getHttpServer();
       expect(httpServer).not.toBeNull();
-      expect(httpServer!.listening).toBe(true);
+      expect((httpServer as NonNullable<typeof httpServer>).listening).toBe(true);
     });
 
     it('should close gracefully', async () => {
@@ -295,14 +309,14 @@ describe('Worker API Endpoints Integration', () => {
       await server.listen(testPort, '127.0.0.1');
 
       // Verify it's running
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       expect(response.status).toBe(200);
 
       // Close
       try {
         await server.close();
-      } catch (e: any) {
-        if (e.code !== 'ERR_SERVER_NOT_RUNNING') throw e;
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') throw e;
       }
 
       // Verify closed
@@ -335,8 +349,8 @@ describe('Worker API Endpoints Integration', () => {
       // Close first server
       try {
         await server.close();
-      } catch (e: any) {
-        if (e.code !== 'ERR_SERVER_NOT_RUNNING') throw e;
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') throw e;
       }
 
       // Wait for port to be released
@@ -346,7 +360,9 @@ describe('Worker API Endpoints Integration', () => {
       const server2 = new Server(mockOptions);
       await server2.listen(testPort, '127.0.0.1');
 
-      expect(server2.getHttpServer()!.listening).toBe(true);
+      const httpServer2 = server2.getHttpServer();
+      expect(httpServer2).not.toBeNull();
+      expect((httpServer2 as NonNullable<typeof httpServer2>).listening).toBe(true);
 
       // Clean up
       try {
@@ -361,7 +377,7 @@ describe('Worker API Endpoints Integration', () => {
     it('should register route handlers', () => {
       server = new Server(mockOptions);
 
-      const setupRoutesMock = mock(() => {});
+      const setupRoutesMock = vi.fn(() => {});
       const mockRouteHandler = {
         setupRoutes: setupRoutesMock,
       };
@@ -375,8 +391,8 @@ describe('Worker API Endpoints Integration', () => {
     it('should register multiple route handlers', () => {
       server = new Server(mockOptions);
 
-      const handler1Mock = mock(() => {});
-      const handler2Mock = mock(() => {});
+      const handler1Mock = vi.fn(() => {});
+      const handler2Mock = vi.fn(() => {});
 
       server.registerRoutes({ setupRoutes: handler1Mock });
       server.registerRoutes({ setupRoutes: handler2Mock });

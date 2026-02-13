@@ -21,6 +21,8 @@ export const HOOK_EXIT_CODES = {
   FAILURE: 1,
   /** Blocking error - for SessionStart, shows stderr to user only */
   BLOCKING_ERROR: 2,
+  /** Success exit code used for user-message-only hooks (same as SUCCESS) */
+  USER_MESSAGE_ONLY: 0,
 } as const;
 
 export function getTimeout(baseTimeout: number): number {

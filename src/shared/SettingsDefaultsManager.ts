@@ -19,17 +19,18 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORKER_HOST: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
   // AI Provider Configuration
-  CLAUDE_MEM_PROVIDER: string;  // 'claude' | 'gemini' | 'openrouter'
+  CLAUDE_MEM_PROVIDER: string;  // 'claude' | 'gemini' | 'openai-compat'
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  // 'cli' | 'api' - how Claude provider authenticates
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  // 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-3-flash'
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;  // 'true' | 'false' - enable rate limiting for free tier
-  CLAUDE_MEM_OPENROUTER_API_KEY: string;
-  CLAUDE_MEM_OPENROUTER_MODEL: string;
-  CLAUDE_MEM_OPENROUTER_SITE_URL: string;
-  CLAUDE_MEM_OPENROUTER_APP_NAME: string;
-  CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
-  CLAUDE_MEM_OPENROUTER_MAX_TOKENS: string;
+  CLAUDE_MEM_OPENAI_COMPAT_API_KEY: string;
+  CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: string;
+  CLAUDE_MEM_OPENAI_COMPAT_MODEL: string;
+  CLAUDE_MEM_OPENAI_COMPAT_SITE_URL: string;
+  CLAUDE_MEM_OPENAI_COMPAT_APP_NAME: string;
+  CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES: string;
+  CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS: string;
   // System Configuration
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
@@ -53,6 +54,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-extraneous-class -- static utility class used as namespace across codebase
 export class SettingsDefaultsManager {
   /**
    * Default values for all settings
@@ -69,12 +71,13 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',  // Default Gemini model (highest free tier RPM)
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
-    CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
-    CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default OpenRouter model (free tier)
-    CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
-    CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
-    CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
-    CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
+    CLAUDE_MEM_OPENAI_COMPAT_API_KEY: '',  // Empty by default, can be set via UI or env
+    CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: '',  // Empty = use default OpenRouter API; set for cli-proxy or other OpenAI-compatible endpoints
+    CLAUDE_MEM_OPENAI_COMPAT_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default model (free tier)
+    CLAUDE_MEM_OPENAI_COMPAT_SITE_URL: '',  // Optional: for analytics
+    CLAUDE_MEM_OPENAI_COMPAT_APP_NAME: 'claude-mem',  // App name for analytics
+    CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
+    CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
     // System Configuration
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
@@ -152,13 +155,13 @@ export class SettingsDefaultsManager {
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
-      const settings = JSON.parse(settingsData);
+      const settings = JSON.parse(settingsData) as Record<string, unknown>;
 
       // MIGRATION: Handle old nested schema { env: {...} }
-      let flatSettings = settings;
+      let flatSettings: Record<string, unknown> = settings;
       if (settings.env && typeof settings.env === 'object') {
         // Migrate from nested to flat schema
-        flatSettings = settings.env;
+        flatSettings = settings.env as Record<string, unknown>;
 
         // Auto-migrate the file to flat schema
         try {
@@ -170,11 +173,44 @@ export class SettingsDefaultsManager {
         }
       }
 
+      // MIGRATION: Rename CLAUDE_MEM_OPENROUTER_* → CLAUDE_MEM_OPENAI_COMPAT_*
+      let needsMigrationWrite = false;
+      const openrouterKeyMap: Record<string, string> = {
+        'CLAUDE_MEM_OPENROUTER_API_KEY': 'CLAUDE_MEM_OPENAI_COMPAT_API_KEY',
+        'CLAUDE_MEM_OPENROUTER_BASE_URL': 'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL',
+        'CLAUDE_MEM_OPENROUTER_MODEL': 'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
+        'CLAUDE_MEM_OPENROUTER_SITE_URL': 'CLAUDE_MEM_OPENAI_COMPAT_SITE_URL',
+        'CLAUDE_MEM_OPENROUTER_APP_NAME': 'CLAUDE_MEM_OPENAI_COMPAT_APP_NAME',
+        'CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES': 'CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES',
+        'CLAUDE_MEM_OPENROUTER_MAX_TOKENS': 'CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS',
+      };
+      for (const [oldKey, newKey] of Object.entries(openrouterKeyMap)) {
+        if (flatSettings[oldKey] !== undefined && flatSettings[newKey] === undefined) {
+          flatSettings[newKey] = flatSettings[oldKey];
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- dynamic key from migration map on Record type
+          delete flatSettings[oldKey];
+          needsMigrationWrite = true;
+        }
+      }
+      if (flatSettings.CLAUDE_MEM_PROVIDER === 'openrouter') {
+        flatSettings.CLAUDE_MEM_PROVIDER = 'openai-compat';
+        needsMigrationWrite = true;
+      }
+      if (needsMigrationWrite) {
+        try {
+          writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
+          console.log('[SETTINGS] Migrated OpenRouter settings to OpenAI-compat:', settingsPath);
+        } catch (error) {
+          console.warn('[SETTINGS] Failed to auto-migrate OpenRouter→OpenAI-compat settings:', settingsPath, error);
+        }
+      }
+
       // Merge file settings with defaults (flat schema)
       const result: SettingsDefaults = { ...this.DEFAULTS };
       for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
         if (flatSettings[key] !== undefined) {
-          result[key] = flatSettings[key];
+          const val = flatSettings[key];
+          result[key] = typeof val === 'string' ? val : typeof val === 'object' ? JSON.stringify(val) : String(val as string | number | boolean);
         }
       }
 

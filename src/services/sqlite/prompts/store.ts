@@ -2,8 +2,7 @@
  * User prompt storage operations
  */
 
-import type { Database } from 'bun:sqlite';
-import { logger } from '../../../utils/logger.js';
+import type { Database } from '../sqlite-compat.js';
 
 /**
  * Save a user prompt to the database

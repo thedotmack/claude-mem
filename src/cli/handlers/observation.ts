@@ -8,20 +8,40 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+
+/** Lazily loaded and cached skip tools set */
+let skipToolsCache: Set<string> | null = null;
+
+function getSkipTools(): Set<string> {
+  if (!skipToolsCache) {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const raw = settings.CLAUDE_MEM_SKIP_TOOLS || '';
+    skipToolsCache = new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
+  }
+  return skipToolsCache;
+}
 
 export const observationHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    const { sessionId, cwd, toolName, toolInput, toolResponse } = input;
+
+    if (!toolName) {
+      throw new Error('observationHandler requires toolName');
+    }
+
+    // Check skip list before worker startup or HTTP call
+    if (getSkipTools().has(toolName)) {
+      logger.debug('HOOK', `Skipping tool: ${toolName}`);
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     // Ensure worker is running before any other logic
     const workerReady = await ensureWorkerRunning();
     if (!workerReady) {
       // Worker not available - skip observation gracefully
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-    }
-
-    const { sessionId, cwd, toolName, toolInput, toolResponse } = input;
-
-    if (!toolName) {
-      throw new Error('observationHandler requires toolName');
     }
 
     const port = getWorkerPort();
@@ -38,7 +58,7 @@ export const observationHandler: EventHandler = {
     }
 
     // Send to worker - worker handles privacy check and database operations
-    const response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
+    const response = await fetch(`http://127.0.0.1:${String(port)}/api/sessions/observations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -48,11 +68,11 @@ export const observationHandler: EventHandler = {
         tool_response: toolResponse,
         cwd
       })
-      // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
+      // No AbortSignal — worker service has its own timeouts
     });
 
     if (!response.ok) {
-      throw new Error(`Observation storage failed: ${response.status}`);
+      throw new Error(`Observation storage failed: ${String(response.status)}`);
     }
 
     logger.debug('HOOK', 'Observation sent successfully', { toolName });

@@ -8,7 +8,7 @@
  * - Type definitions from src/services/sqlite/summaries/types.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
 import {
   storeSummary,
@@ -19,7 +19,7 @@ import {
   updateMemorySessionId,
 } from '../../src/services/sqlite/Sessions.js';
 import type { SummaryInput } from '../../src/services/sqlite/summaries/types.js';
-import type { Database } from 'bun:sqlite';
+import type { Database } from '../../src/services/sqlite/sqlite-compat.js';
 
 describe('Summaries Module', () => {
   let db: Database;
@@ -78,7 +78,7 @@ describe('Summaries Module', () => {
         notes: 'May need caching',
       });
 
-      const result = storeSummary(db, memorySessionId, project, summary, 1, 500);
+      storeSummary(db, memorySessionId, project, summary, 1, 500);
 
       const stored = getSummaryForSession(db, memorySessionId);
       expect(stored).not.toBeNull();
@@ -132,7 +132,7 @@ describe('Summaries Module', () => {
       const memorySessionId = createSessionWithMemoryId('content-sum-null', 'session-sum-null');
       const summary = createSummaryInput({ notes: null });
 
-      const result = storeSummary(db, memorySessionId, 'project', summary);
+      storeSummary(db, memorySessionId, 'project', summary);
       const stored = getSummaryForSession(db, memorySessionId);
 
       expect(stored).not.toBeNull();

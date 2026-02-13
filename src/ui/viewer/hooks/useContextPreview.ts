@@ -23,7 +23,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     async function fetchProjects() {
       try {
         const response = await fetch('/api/projects');
-        const data = await response.json();
+        const data = await response.json() as { projects?: string[] };
         if (data.projects && data.projects.length > 0) {
           setProjects(data.projects);
           setSelectedProject(data.projects[0]); // Default to first project
@@ -32,7 +32,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
         console.error('Failed to fetch projects:', err);
       }
     }
-    fetchProjects();
+    void fetchProjects();
   }, []);
 
   const refresh = useCallback(async () => {
@@ -63,9 +63,9 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
   // Debounced refresh when settings or selectedProject change
   useEffect(() => {
     const timeout = setTimeout(() => {
-      refresh();
+      void refresh();
     }, 300);
-    return () => clearTimeout(timeout);
+    return () => { clearTimeout(timeout); };
   }, [settings, refresh]);
 
   return { preview, isLoading, error, refresh, projects, selectedProject, setSelectedProject };

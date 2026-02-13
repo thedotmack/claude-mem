@@ -1,10 +1,10 @@
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { logger } from '../../src/utils/logger.js';
 
 // Mock middleware to avoid complex dependencies
-mock.module('../../src/services/worker/http/middleware.js', () => ({
+vi.mock('../../src/services/worker/http/middleware.js', () => ({
   createMiddleware: () => [],
-  requireLocalhost: (_req: any, _res: any, next: any) => next(),
+  requireLocalhost: (_req: unknown, _res: unknown, next: () => void) => { next(); },
   summarizeRequestBody: () => 'test body',
 }));
 
@@ -12,8 +12,21 @@ mock.module('../../src/services/worker/http/middleware.js', () => ({
 import { Server } from '../../src/services/server/Server.js';
 import type { RouteHandler, ServerOptions } from '../../src/services/server/Server.js';
 
+/** Type for JSON response body from API endpoints */
+interface ApiResponseBody {
+  status?: string;
+  initialized?: boolean;
+  mcpReady?: boolean;
+  platform?: string;
+  pid?: number;
+  version?: string;
+  message?: string;
+  error?: string;
+}
+
 // Spy on logger methods to suppress output during tests
-let loggerSpies: ReturnType<typeof spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 describe('Server', () => {
   let server: Server;
@@ -21,23 +34,24 @@ describe('Server', () => {
 
   beforeEach(() => {
     loggerSpies = [
-      spyOn(logger, 'info').mockImplementation(() => {}),
-      spyOn(logger, 'debug').mockImplementation(() => {}),
-      spyOn(logger, 'warn').mockImplementation(() => {}),
-      spyOn(logger, 'error').mockImplementation(() => {}),
+      vi.spyOn(logger, 'info').mockImplementation(() => {}),
+      vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      vi.spyOn(logger, 'warn').mockImplementation(() => {}),
+      vi.spyOn(logger, 'error').mockImplementation(() => {}),
     ];
 
     mockOptions = {
       getInitializationComplete: () => true,
       getMcpReady: () => true,
-      onShutdown: mock(() => Promise.resolve()),
-      onRestart: mock(() => Promise.resolve()),
+      onShutdown: vi.fn(() => Promise.resolve()),
+      onRestart: vi.fn(() => Promise.resolve()),
     };
   });
 
   afterEach(async () => {
-    loggerSpies.forEach(spy => spy.mockRestore());
+    for (const spy of loggerSpies) spy.mockRestore();
     // Clean up server if created and still has an active http server
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: server may not be assigned in every test
     if (server && server.getHttpServer()) {
       try {
         await server.close();
@@ -45,7 +59,7 @@ describe('Server', () => {
         // Ignore errors on cleanup
       }
     }
-    mock.restore();
+    vi.restoreAllMocks();
   });
 
   describe('constructor', () => {
@@ -81,7 +95,7 @@ describe('Server', () => {
       // Server should now be listening
       const httpServer = server.getHttpServer();
       expect(httpServer).not.toBeNull();
-      expect(httpServer!.listening).toBe(true);
+      expect((httpServer as NonNullable<typeof httpServer>).listening).toBe(true);
     });
 
     it('should reject if port is already in use', async () => {
@@ -114,15 +128,15 @@ describe('Server', () => {
       // Server should exist and be listening
       const httpServerBefore = server.getHttpServer();
       expect(httpServerBefore).not.toBeNull();
-      expect(httpServerBefore!.listening).toBe(true);
+      expect((httpServerBefore as NonNullable<typeof httpServerBefore>).listening).toBe(true);
 
       // Close the server - may throw ERR_SERVER_NOT_RUNNING on some platforms
       // because closeAllConnections() might immediately close the server
       try {
         await server.close();
-      } catch (e: any) {
+      } catch (e: unknown) {
         // ERR_SERVER_NOT_RUNNING is acceptable - closeAllConnections() already closed it
-        if (e.code !== 'ERR_SERVER_NOT_RUNNING') {
+        if ((e as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
           throw e;
         }
       }
@@ -150,9 +164,9 @@ describe('Server', () => {
       // Close the server
       try {
         await server.close();
-      } catch (e: any) {
+      } catch (e: unknown) {
         // ERR_SERVER_NOT_RUNNING is acceptable
-        if (e.code !== 'ERR_SERVER_NOT_RUNNING') {
+        if ((e as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
           throw e;
         }
       }
@@ -164,7 +178,9 @@ describe('Server', () => {
       const server2 = new Server(mockOptions);
       await server2.listen(testPort, '127.0.0.1');
 
-      expect(server2.getHttpServer()!.listening).toBe(true);
+      const httpServer2 = server2.getHttpServer();
+      expect(httpServer2).not.toBeNull();
+      expect((httpServer2 as NonNullable<typeof httpServer2>).listening).toBe(true);
 
       // Clean up server2
       try {
@@ -190,7 +206,7 @@ describe('Server', () => {
 
       const httpServer = server.getHttpServer();
       expect(httpServer).not.toBeNull();
-      expect(httpServer!.listening).toBe(true);
+      expect((httpServer as NonNullable<typeof httpServer>).listening).toBe(true);
     });
   });
 
@@ -198,7 +214,7 @@ describe('Server', () => {
     it('should call setupRoutes on route handler', () => {
       server = new Server(mockOptions);
 
-      const setupRoutesMock = mock(() => {});
+      const setupRoutesMock = vi.fn(() => {});
       const mockRouteHandler: RouteHandler = {
         setupRoutes: setupRoutesMock,
       };
@@ -212,8 +228,8 @@ describe('Server', () => {
     it('should register multiple route handlers', () => {
       server = new Server(mockOptions);
 
-      const handler1Mock = mock(() => {});
-      const handler2Mock = mock(() => {});
+      const handler1Mock = vi.fn(() => {});
+      const handler2Mock = vi.fn(() => {});
 
       const handler1: RouteHandler = { setupRoutes: handler1Mock };
       const handler2: RouteHandler = { setupRoutes: handler2Mock };
@@ -230,7 +246,7 @@ describe('Server', () => {
     it('should not throw when called', () => {
       server = new Server(mockOptions);
 
-      expect(() => server.finalizeRoutes()).not.toThrow();
+      expect(() => { server.finalizeRoutes(); }).not.toThrow();
     });
   });
 
@@ -241,11 +257,11 @@ describe('Server', () => {
 
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
 
       expect(response.status).toBe(200);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.status).toBe('ok');
     });
 
@@ -255,8 +271,8 @@ describe('Server', () => {
 
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
-      const body = await response.json();
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
+      const body = await response.json() as ApiResponseBody;
 
       expect(body.initialized).toBe(true);
       expect(body.mcpReady).toBe(true);
@@ -267,8 +283,8 @@ describe('Server', () => {
       const dynamicOptions: ServerOptions = {
         getInitializationComplete: () => isInitialized,
         getMcpReady: () => true,
-        onShutdown: mock(() => Promise.resolve()),
-        onRestart: mock(() => Promise.resolve()),
+        onShutdown: vi.fn(() => Promise.resolve()),
+        onRestart: vi.fn(() => Promise.resolve()),
       };
 
       server = new Server(dynamicOptions);
@@ -277,16 +293,16 @@ describe('Server', () => {
       await server.listen(testPort, '127.0.0.1');
 
       // Check when not initialized
-      let response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
-      let body = await response.json();
+      let response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
+      let body = await response.json() as ApiResponseBody;
       expect(body.initialized).toBe(false);
 
       // Change state
       isInitialized = true;
 
       // Check when initialized
-      response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
-      body = await response.json();
+      response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
+      body = await response.json() as ApiResponseBody;
       expect(body.initialized).toBe(true);
     });
 
@@ -296,8 +312,8 @@ describe('Server', () => {
 
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
-      const body = await response.json();
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
+      const body = await response.json() as ApiResponseBody;
 
       expect(body.platform).toBeDefined();
       expect(body.pid).toBeDefined();
@@ -312,11 +328,11 @@ describe('Server', () => {
 
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
 
       expect(response.status).toBe(200);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.status).toBe('ready');
     });
 
@@ -324,8 +340,8 @@ describe('Server', () => {
       const uninitializedOptions: ServerOptions = {
         getInitializationComplete: () => false,
         getMcpReady: () => false,
-        onShutdown: mock(() => Promise.resolve()),
-        onRestart: mock(() => Promise.resolve()),
+        onShutdown: vi.fn(() => Promise.resolve()),
+        onRestart: vi.fn(() => Promise.resolve()),
       };
 
       server = new Server(uninitializedOptions);
@@ -333,11 +349,11 @@ describe('Server', () => {
 
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
 
       expect(response.status).toBe(503);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.status).toBe('initializing');
       expect(body.message).toBeDefined();
     });
@@ -350,11 +366,11 @@ describe('Server', () => {
 
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/version`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/version`);
 
       expect(response.status).toBe(200);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.version).toBeDefined();
       expect(typeof body.version).toBe('string');
     });
@@ -368,11 +384,11 @@ describe('Server', () => {
       const testPort = 40000 + Math.floor(Math.random() * 10000);
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/nonexistent`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/nonexistent`);
 
       expect(response.status).toBe(404);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.error).toBe('NotFound');
     });
   });

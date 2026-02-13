@@ -8,13 +8,12 @@
  * - Broadcast to SSE clients
  * - Clean up processed messages
  *
- * This module extracts 150+ lines of duplicate code from SDKAgent, GeminiAgent, and OpenRouterAgent.
+ * This module extracts 150+ lines of duplicate code from SDKAgent, GeminiAgent, and OpenAICompatAgent.
  */
 
 import { logger } from '../../../utils/logger.js';
 import { parseObservations, parseSummary, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
-import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import type { ActiveSession } from '../../worker-types.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
@@ -43,7 +42,7 @@ import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
  * @param originalTimestamp - Original epoch when message was queued (for accurate timestamps)
  * @param agentName - Name of the agent for logging (e.g., 'SDK', 'Gemini', 'OpenRouter')
  */
-export async function processAgentResponse(
+export function processAgentResponse(
   text: string,
   session: ActiveSession,
   dbManager: DatabaseManager,
@@ -52,19 +51,49 @@ export async function processAgentResponse(
   discoveryTokens: number,
   originalTimestamp: number | null,
   agentName: string,
-  projectRoot?: string
-): Promise<void> {
+  projectRoot?: string,
+  skipSummaryStorage?: boolean
+): void {
   // Add assistant response to shared conversation history for provider interop
   if (text) {
     session.conversationHistory.push({ role: 'assistant', content: text });
   }
 
   // Parse observations and summary
-  const observations = parseObservations(text, session.contentSessionId);
+  const rawObservations = parseObservations(text, session.contentSessionId);
   const summary = parseSummary(text, session.sessionDbId);
 
-  // Convert nullable fields to empty strings for storeSummary (if summary exists)
-  const summaryForStore = normalizeSummaryForStorage(summary);
+  // Deduplicate observations within the same batch (smaller models sometimes emit duplicate XML blocks)
+  const seen = new Set<string>();
+  const deduplicated = rawObservations.filter(obs => {
+    const key = `${String(obs.title)}|${String(obs.narrative)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (deduplicated.length < rawObservations.length) {
+    logger.info('PARSER', `Deduplicated ${String(rawObservations.length - deduplicated.length)} observation(s) in batch`, {
+      sessionId: session.sessionDbId,
+      before: rawObservations.length,
+      after: deduplicated.length
+    });
+  }
+
+  // Filter out low-quality observations (context truncation produces XML with empty/partial tags)
+  // Require at minimum a narrative — title-only or facts-only observations have no useful context
+  const observations = deduplicated.filter(obs => !!obs.narrative?.trim());
+  if (observations.length < deduplicated.length) {
+    logger.warn('PARSER', `Dropped ${String(deduplicated.length - observations.length)} observation(s) missing narrative (context truncation)`, {
+      sessionId: session.sessionDbId,
+      before: deduplicated.length,
+      after: observations.length
+    });
+  }
+
+  // Skip summary storage during observation processing to prevent feedback loop
+  // (compactHistory reads the current session's summary from DB; storing it during
+  // observation responses causes the agent to echo its own summary on next compaction)
+  const summaryForStore = skipSummaryStorage ? null : normalizeSummaryForStorage(summary);
 
   // Get session store for atomic transaction
   const sessionStore = dbManager.getSessionStore();
@@ -75,7 +104,7 @@ export async function processAgentResponse(
   }
 
   // Log pre-storage with session ID chain for verification
-  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
+  logger.info('DB', `STORING | sessionDbId=${String(session.sessionDbId)} | memorySessionId=${session.memorySessionId} | obsCount=${String(observations.length)} | hasSummary=${String(!!summaryForStore)}`, {
     sessionId: session.sessionDbId,
     memorySessionId: session.memorySessionId
   });
@@ -93,13 +122,13 @@ export async function processAgentResponse(
   );
 
   // Log storage result with IDs for end-to-end traceability
-  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
+  logger.info('DB', `STORED | sessionDbId=${String(session.sessionDbId)} | memorySessionId=${session.memorySessionId} | obsCount=${String(result.observationIds.length)} | obsIds=[${result.observationIds.join(',')}] | summaryId=${String(result.summaryId || 'none')}`, {
     sessionId: session.sessionDbId,
     memorySessionId: session.memorySessionId
   });
 
   // AFTER transaction commits - async operations (can fail safely without data loss)
-  await syncAndBroadcastObservations(
+  syncAndBroadcastObservations(
     observations,
     result,
     session,
@@ -111,7 +140,7 @@ export async function processAgentResponse(
   );
 
   // Sync and broadcast summary if present
-  await syncAndBroadcastSummary(
+  syncAndBroadcastSummary(
     summary,
     summaryForStore,
     result,
@@ -152,7 +181,7 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
 /**
  * Sync observations to Chroma and broadcast to SSE clients
  */
-async function syncAndBroadcastObservations(
+function syncAndBroadcastObservations(
   observations: ParsedObservation[],
   result: StorageResult,
   session: ActiveSession,
@@ -160,8 +189,8 @@ async function syncAndBroadcastObservations(
   worker: WorkerRef | undefined,
   discoveryTokens: number,
   agentName: string,
-  projectRoot?: string
-): Promise<void> {
+  _projectRoot?: string
+): void {
   for (let i = 0; i < observations.length; i++) {
     const obsId = result.observationIds[i];
     const obs = observations[i];
@@ -180,16 +209,16 @@ async function syncAndBroadcastObservations(
       const chromaDuration = Date.now() - chromaStart;
       logger.debug('CHROMA', 'Observation synced', {
         obsId,
-        duration: `${chromaDuration}ms`,
+        duration: `${String(chromaDuration)}ms`,
         type: obs.type,
         title: obs.title || '(untitled)'
       });
-    }).catch((error) => {
+    }).catch((error: unknown) => {
       logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
         obsId,
         type: obs.type,
         title: obs.title || '(untitled)'
-      }, error);
+      }, error instanceof Error ? error : new Error(String(error)));
     });
 
     // Broadcast to SSE clients (for web UI)
@@ -203,40 +232,22 @@ async function syncAndBroadcastObservations(
       subtitle: obs.subtitle,
       text: null,  // text field is not in ParsedObservation
       narrative: obs.narrative || null,
-      facts: JSON.stringify(obs.facts || []),
-      concepts: JSON.stringify(obs.concepts || []),
-      files_read: JSON.stringify(obs.files_read || []),
-      files_modified: JSON.stringify(obs.files_modified || []),
+      facts: JSON.stringify(obs.facts),
+      concepts: JSON.stringify(obs.concepts),
+      files_read: JSON.stringify(obs.files_read),
+      files_modified: JSON.stringify(obs.files_modified),
       project: session.project,
       prompt_number: session.lastPromptNumber,
       created_at_epoch: result.createdAtEpoch
     });
   }
 
-  // Update folder CLAUDE.md files for touched folders (fire-and-forget)
-  // This runs per-observation batch to ensure folders are updated as work happens
-  const allFilePaths: string[] = [];
-  for (const obs of observations) {
-    allFilePaths.push(...(obs.files_modified || []));
-    allFilePaths.push(...(obs.files_read || []));
-  }
-
-  if (allFilePaths.length > 0) {
-    updateFolderClaudeMdFiles(
-      allFilePaths,
-      session.project,
-      getWorkerPort(),
-      projectRoot
-    ).catch(error => {
-      logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: session.project }, error as Error);
-    });
-  }
 }
 
 /**
  * Sync summary to Chroma and broadcast to SSE clients
  */
-async function syncAndBroadcastSummary(
+function syncAndBroadcastSummary(
   summary: ParsedSummary | null,
   summaryForStore: { request: string; investigated: string; learned: string; completed: string; next_steps: string; notes: string | null } | null,
   result: StorageResult,
@@ -245,8 +256,8 @@ async function syncAndBroadcastSummary(
   worker: WorkerRef | undefined,
   discoveryTokens: number,
   agentName: string
-): Promise<void> {
-  if (!summaryForStore || !result.summaryId) {
+): void {
+  if (!summaryForStore || !result.summaryId || !summary) {
     return;
   }
 
@@ -265,33 +276,33 @@ async function syncAndBroadcastSummary(
     const chromaDuration = Date.now() - chromaStart;
     logger.debug('CHROMA', 'Summary synced', {
       summaryId: result.summaryId,
-      duration: `${chromaDuration}ms`,
+      duration: `${String(chromaDuration)}ms`,
       request: summaryForStore.request || '(no request)'
     });
-  }).catch((error) => {
+  }).catch((error: unknown) => {
     logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
       summaryId: result.summaryId,
       request: summaryForStore.request || '(no request)'
-    }, error);
+    }, error instanceof Error ? error : new Error(String(error)));
   });
 
   // Broadcast to SSE clients (for web UI)
   broadcastSummary(worker, {
     id: result.summaryId,
     session_id: session.contentSessionId,
-    request: summary!.request,
-    investigated: summary!.investigated,
-    learned: summary!.learned,
-    completed: summary!.completed,
-    next_steps: summary!.next_steps,
-    notes: summary!.notes,
+    request: summary.request,
+    investigated: summary.investigated,
+    learned: summary.learned,
+    completed: summary.completed,
+    next_steps: summary.next_steps,
+    notes: summary.notes,
     project: session.project,
     prompt_number: session.lastPromptNumber,
     created_at_epoch: result.createdAtEpoch
   });
 
   // Update Cursor context file for registered projects (fire-and-forget)
-  updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
-    logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
+  updateCursorContextForProject(session.project, getWorkerPort()).catch((error: unknown) => {
+    logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error instanceof Error ? error : new Error(String(error)));
   });
 }

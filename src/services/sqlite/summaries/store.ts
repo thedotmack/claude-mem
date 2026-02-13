@@ -1,9 +1,9 @@
 /**
  * Store session summaries in the database
  */
-import type { Database } from 'bun:sqlite';
+import type { Database } from '../sqlite-compat.js';
 import { logger } from '../../../utils/logger.js';
-import type { SummaryInput, StoreSummaryResult } from './types.js';
+import { isSummaryContentEmpty, type SummaryInput, type StoreSummaryResult } from './types.js';
 
 /**
  * Store a session summary (from SDK parsing)
@@ -30,6 +30,14 @@ export function storeSummary(
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
+  // Guard: Don't store empty summaries (context truncation protection)
+  if (isSummaryContentEmpty(summary)) {
+    logger.warn('DB', 'Skipping empty summary insert', { memorySessionId });
+    // Return a placeholder result — no row was inserted
+    return { id: 0, createdAtEpoch: timestampEpoch };
+  }
+
+  // INSERT: Each prompt gets its own summary row (no overwrite)
   const stmt = db.prepare(`
     INSERT INTO session_summaries
     (memory_session_id, project, request, investigated, learned, completed,

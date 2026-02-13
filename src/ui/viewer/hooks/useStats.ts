@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Stats } from '../types';
+import type { Stats } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 
 export function useStats() {
@@ -8,7 +8,7 @@ export function useStats() {
   const loadStats = useCallback(async () => {
     try {
       const response = await fetch(API_ENDPOINTS.STATS);
-      const data = await response.json();
+      const data = await response.json() as Stats;
       setStats(data);
     } catch (error) {
       console.error('Failed to load stats:', error);
@@ -17,7 +17,7 @@ export function useStats() {
 
   useEffect(() => {
     // Load once on mount
-    loadStats();
+    void loadStats();
   }, [loadStats]);
 
   return { stats, refreshStats: loadStats };

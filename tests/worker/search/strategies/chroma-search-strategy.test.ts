@@ -1,6 +1,8 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ChromaSearchStrategy } from '../../../../src/services/worker/search/strategies/ChromaSearchStrategy.js';
 import type { StrategySearchOptions, ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../../../../src/services/worker/search/types.js';
+import type { ChromaSync } from '../../../../src/services/sync/ChromaSync.js';
+import type { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 
 // Mock observation data
 const mockObservation: ObservationSearchResult = {
@@ -51,14 +53,14 @@ const mockPrompt: UserPromptSearchResult = {
 
 describe('ChromaSearchStrategy', () => {
   let strategy: ChromaSearchStrategy;
-  let mockChromaSync: any;
-  let mockSessionStore: any;
+  let mockChromaSync: ChromaSync;
+  let mockSessionStore: SessionStore;
 
   beforeEach(() => {
     const recentEpoch = Date.now() - 1000 * 60 * 60 * 24; // 1 day ago (within 90-day window)
 
     mockChromaSync = {
-      queryChroma: mock(() => Promise.resolve({
+      queryChroma: vi.fn(() => Promise.resolve({
         ids: [1, 2, 3],
         distances: [0.1, 0.2, 0.3],
         metadatas: [
@@ -67,13 +69,13 @@ describe('ChromaSearchStrategy', () => {
           { sqlite_id: 3, doc_type: 'user_prompt', created_at_epoch: recentEpoch }
         ]
       }))
-    };
+    } as unknown as ChromaSync;
 
     mockSessionStore = {
-      getObservationsByIds: mock(() => [mockObservation]),
-      getSessionSummariesByIds: mock(() => [mockSession]),
-      getUserPromptsByIds: mock(() => [mockPrompt])
-    };
+      getObservationsByIds: vi.fn(() => [mockObservation]),
+      getSessionSummariesByIds: vi.fn(() => [mockSession]),
+      getUserPromptsByIds: vi.fn(() => [mockPrompt])
+    } as unknown as SessionStore;
 
     strategy = new ChromaSearchStrategy(mockChromaSync, mockSessionStore);
   });
@@ -115,6 +117,7 @@ describe('ChromaSearchStrategy', () => {
 
       await strategy.search(options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100, // CHROMA_BATCH_SIZE
@@ -142,6 +145,7 @@ describe('ChromaSearchStrategy', () => {
 
       const result = await strategy.search(options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionStore.getObservationsByIds).toHaveBeenCalled();
       expect(result.results.observations).toHaveLength(1);
     });
@@ -154,6 +158,7 @@ describe('ChromaSearchStrategy', () => {
 
       await strategy.search(options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionStore.getSessionSummariesByIds).toHaveBeenCalled();
     });
 
@@ -165,6 +170,7 @@ describe('ChromaSearchStrategy', () => {
 
       await strategy.search(options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionStore.getUserPromptsByIds).toHaveBeenCalled();
     });
 
@@ -176,6 +182,7 @@ describe('ChromaSearchStrategy', () => {
 
       await strategy.search(options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
@@ -191,6 +198,7 @@ describe('ChromaSearchStrategy', () => {
 
       await strategy.search(options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
@@ -206,6 +214,7 @@ describe('ChromaSearchStrategy', () => {
 
       await strategy.search(options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
@@ -223,11 +232,12 @@ describe('ChromaSearchStrategy', () => {
       expect(result.results.observations).toHaveLength(0);
       expect(result.results.sessions).toHaveLength(0);
       expect(result.results.prompts).toHaveLength(0);
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockChromaSync.queryChroma).not.toHaveBeenCalled();
     });
 
     it('should return empty result when Chroma returns no matches', async () => {
-      mockChromaSync.queryChroma = mock(() => Promise.resolve({
+      mockChromaSync.queryChroma = vi.fn(() => Promise.resolve({
         ids: [],
         distances: [],
         metadatas: []
@@ -246,7 +256,7 @@ describe('ChromaSearchStrategy', () => {
     it('should filter out old results (beyond 90-day window)', async () => {
       const oldEpoch = Date.now() - 1000 * 60 * 60 * 24 * 100; // 100 days ago
 
-      mockChromaSync.queryChroma = mock(() => Promise.resolve({
+      mockChromaSync.queryChroma = vi.fn(() => Promise.resolve({
         ids: [1],
         distances: [0.1],
         metadatas: [
@@ -258,14 +268,15 @@ describe('ChromaSearchStrategy', () => {
         query: 'old data query'
       };
 
-      const result = await strategy.search(options);
+      await strategy.search(options);
 
       // Old results should be filtered out
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionStore.getObservationsByIds).not.toHaveBeenCalled();
     });
 
     it('should handle Chroma errors gracefully (returns usedChroma: false)', async () => {
-      mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma connection failed')));
+      mockChromaSync.queryChroma = vi.fn(() => Promise.reject(new Error('Chroma connection failed')));
 
       const options: StrategySearchOptions = {
         query: 'test query'
@@ -281,7 +292,7 @@ describe('ChromaSearchStrategy', () => {
     });
 
     it('should handle SQLite hydration errors gracefully', async () => {
-      mockSessionStore.getObservationsByIds = mock(() => {
+      mockSessionStore.getObservationsByIds = vi.fn(() => {
         throw new Error('SQLite error');
       });
 

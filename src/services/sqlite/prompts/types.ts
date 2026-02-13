@@ -2,8 +2,6 @@
  * Type definitions for user prompts module
  */
 
-import type { Database } from 'bun:sqlite';
-import { logger } from '../../../utils/logger.js';
 
 /**
  * Result type for getAllRecentUserPrompts

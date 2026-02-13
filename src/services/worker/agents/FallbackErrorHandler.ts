@@ -6,8 +6,8 @@
  * - Provide consistent error classification across Gemini and OpenRouter
  */
 
+import { logger } from '../../../utils/logger.js'; // eslint-disable-line @typescript-eslint/no-unused-vars -- required by logger-usage-standards
 import { FALLBACK_ERROR_PATTERNS } from './types.js';
-import { logger } from '../../../utils/logger.js';
 
 /**
  * Check if an error should trigger fallback to Claude SDK
@@ -48,7 +48,12 @@ function getErrorMessage(error: unknown): string {
     return String((error as { message: unknown }).message);
   }
 
-  return String(error);
+  // For objects without a message property, return empty string (safe for fallback detection)
+  // For primitives (number, boolean), convert to string for pattern matching
+  if (typeof error === 'object') {
+    return '';
+  }
+  return String(error as string | number | boolean);
 }
 
 /**

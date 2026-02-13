@@ -1,17 +1,17 @@
 ---
 title: "Worker Service"
-description: "HTTP API and Bun process management"
+description: "HTTP API and Node.js process management"
 ---
 
 # Worker Service
 
-The worker service is a long-running HTTP API built with Express.js and managed natively by Bun. It processes observations through the Claude Agent SDK separately from hook execution to prevent timeout issues.
+The worker service is a long-running HTTP API built with Express.js and managed by Node.js. It processes observations through the Claude Agent SDK separately from hook execution to prevent timeout issues.
 
 ## Overview
 
 - **Technology**: Express.js HTTP server
-- **Runtime**: Bun (auto-installed if missing)
-- **Process Manager**: Native Bun process management via ProcessManager
+- **Runtime**: Node.js 18+
+- **Process Manager**: Native Node.js process management via ProcessManager
 - **Port**: Fixed port 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`)
 - **Location**: `src/services/worker-service.ts`
 - **Built Output**: `plugin/scripts/worker-service.cjs`
@@ -480,7 +480,7 @@ POST /api/pending-queue/process
 
 **Use Case**: Manually recover stuck observations after worker crashes, or when automatic recovery was disabled
 
-**Recovery Strategy Note**: As of v5.x, automatic recovery on worker startup is disabled by default. Users must manually trigger recovery using this endpoint or the CLI tool (`bun scripts/check-pending-queue.ts`) to maintain explicit control over reprocessing.
+**Recovery Strategy Note**: As of v5.x, automatic recovery on worker startup is disabled by default. Users must manually trigger recovery using this endpoint or the CLI tool (`npx tsx scripts/check-pending-queue.ts`) to maintain explicit control over reprocessing.
 
 ### Session Management Endpoints
 
@@ -577,12 +577,12 @@ DELETE /sessions/:sessionDbId
 
 **Note**: As of v4.1.0, the cleanup hook no longer calls this endpoint. Sessions are marked complete instead of deleted to allow graceful worker shutdown.
 
-## Bun Process Management
+## Node.js Process Management
 
 ### Overview
 
 The worker is managed by the native `ProcessManager` class which handles:
-- Process spawning with Bun runtime
+- Process spawning with Node.js runtime
 - PID file tracking at `~/.claude-mem/worker.pid`
 - Health checks with automatic retry
 - Graceful shutdown with SIGTERM/SIGKILL fallback
@@ -610,16 +610,13 @@ npm run worker:status
 
 The worker service auto-starts when the SessionStart hook fires. Manual start is optional.
 
-### Bun Requirement
+### Node.js Requirement
 
-Bun is required to run the worker service. If Bun is not installed, the smart-install script will automatically install it on first run:
+Node.js 18+ is required to run the worker service. Install via your preferred method:
 
-- **Windows**: `powershell -c "irm bun.sh/install.ps1 | iex"`
-- **macOS/Linux**: `curl -fsSL https://bun.sh/install | bash`
-
-You can also install manually via:
-- `winget install Oven-sh.Bun` (Windows)
-- `brew install oven-sh/bun/bun` (macOS)
+- **nvm**: `nvm install 18`
+- **nvs**: `nvs add 18`
+- **Direct download**: https://nodejs.org/
 
 ## Claude Agent SDK Integration
 
@@ -667,7 +664,7 @@ The worker service stores data in the user data directory:
 
 ```
 ~/.claude-mem/
-├── claude-mem.db           # SQLite database (bun:sqlite)
+├── claude-mem.db           # SQLite database (better-sqlite3)
 ├── worker.pid              # PID file for process tracking
 ├── settings.json           # User settings
 └── logs/

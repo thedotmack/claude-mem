@@ -8,7 +8,7 @@
  *
  * High-value tests: Ensure correct provider fallback behavior for transient errors
  */
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect } from 'vitest';
 
 // Import directly from specific files to avoid worker-service import chain
 import { shouldFallbackToClaude, isAbortError } from '../../../src/services/worker/agents/FallbackErrorHandler.js';

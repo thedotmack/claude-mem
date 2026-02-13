@@ -5,7 +5,7 @@
  * The installed plugin at ~/.claude/plugins/marketplaces/thedotmack/ is a git repo.
  */
 
-import { execSync, spawnSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { existsSync, unlinkSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -31,8 +31,6 @@ function isValidBranchName(branchName: string): boolean {
 // Timeout constants (increased for slow systems)
 const GIT_COMMAND_TIMEOUT_MS = 300_000;
 const NPM_INSTALL_TIMEOUT_MS = 600_000;
-const DEFAULT_SHELL_TIMEOUT_MS = 60_000;
-
 export interface BranchInfo {
   branch: string | null;
   isBeta: boolean;
@@ -159,7 +157,7 @@ export function getBranchInfo(): BranchInfo {
  * 5. Clear install marker and run npm install
  * 6. Restart worker (handled by caller after response)
  */
-export async function switchBranch(targetBranch: string): Promise<SwitchResult> {
+export function switchBranch(targetBranch: string): SwitchResult {
   // SECURITY: Validate branch name to prevent command injection
   if (!isValidBranchName(targetBranch)) {
     return {
@@ -255,7 +253,7 @@ export async function switchBranch(targetBranch: string): Promise<SwitchResult> 
 /**
  * Pull latest updates for current branch
  */
-export async function pullUpdates(): Promise<SwitchResult> {
+export function pullUpdates(): SwitchResult {
   const info = getBranchInfo();
 
   if (!info.isGitRepo || !info.branch) {

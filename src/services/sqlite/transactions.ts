@@ -6,10 +6,10 @@
  * data consistency across domain boundaries.
  */
 
-import { Database } from 'bun:sqlite';
+import type { Database } from './sqlite-compat.js';
 import { logger } from '../../utils/logger.js';
 import type { ObservationInput } from './observations/types.js';
-import type { SummaryInput } from './summaries/types.js';
+import { isSummaryContentEmpty, type SummaryInput } from './summaries/types.js';
 
 /**
  * Result from storeObservations / storeObservationsAndMarkComplete transaction
@@ -91,31 +91,36 @@ export function storeObservationsAndMarkComplete(
       observationIds.push(Number(result.lastInsertRowid));
     }
 
-    // 2. Store summary if provided
+    // 2. Store summary if provided (INSERT: each prompt gets its own summary row)
     let summaryId: number | null = null;
     if (summary) {
-      const summaryStmt = db.prepare(`
-        INSERT INTO session_summaries
-        (memory_session_id, project, request, investigated, learned, completed,
-         next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+      // Guard: Don't store empty summaries (context truncation protection)
+      if (isSummaryContentEmpty(summary)) {
+        logger.warn('DB', 'Skipping empty summary insert', { memorySessionId });
+      } else {
+        const summaryStmt = db.prepare(`
+          INSERT INTO session_summaries
+          (memory_session_id, project, request, investigated, learned, completed,
+           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
 
-      const result = summaryStmt.run(
-        memorySessionId,
-        project,
-        summary.request,
-        summary.investigated,
-        summary.learned,
-        summary.completed,
-        summary.next_steps,
-        summary.notes,
-        promptNumber || null,
-        discoveryTokens,
-        timestampIso,
-        timestampEpoch
-      );
-      summaryId = Number(result.lastInsertRowid);
+        const result = summaryStmt.run(
+          memorySessionId,
+          project,
+          summary.request,
+          summary.investigated,
+          summary.learned,
+          summary.completed,
+          summary.next_steps,
+          summary.notes,
+          promptNumber || null,
+          discoveryTokens,
+          timestampIso,
+          timestampEpoch
+        );
+        summaryId = Number(result.lastInsertRowid);
+      }
     }
 
     // 3. Mark pending message as processed
@@ -202,31 +207,36 @@ export function storeObservations(
       observationIds.push(Number(result.lastInsertRowid));
     }
 
-    // 2. Store summary if provided
+    // 2. Store summary if provided (INSERT: each prompt gets its own summary row)
     let summaryId: number | null = null;
     if (summary) {
-      const summaryStmt = db.prepare(`
-        INSERT INTO session_summaries
-        (memory_session_id, project, request, investigated, learned, completed,
-         next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+      // Guard: Don't store empty summaries (context truncation protection)
+      if (isSummaryContentEmpty(summary)) {
+        logger.warn('DB', 'Skipping empty summary insert', { memorySessionId });
+      } else {
+        const summaryStmt = db.prepare(`
+          INSERT INTO session_summaries
+          (memory_session_id, project, request, investigated, learned, completed,
+           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
 
-      const result = summaryStmt.run(
-        memorySessionId,
-        project,
-        summary.request,
-        summary.investigated,
-        summary.learned,
-        summary.completed,
-        summary.next_steps,
-        summary.notes,
-        promptNumber || null,
-        discoveryTokens,
-        timestampIso,
-        timestampEpoch
-      );
-      summaryId = Number(result.lastInsertRowid);
+        const result = summaryStmt.run(
+          memorySessionId,
+          project,
+          summary.request,
+          summary.investigated,
+          summary.learned,
+          summary.completed,
+          summary.next_steps,
+          summary.notes,
+          promptNumber || null,
+          discoveryTokens,
+          timestampIso,
+          timestampEpoch
+        );
+        summaryId = Number(result.lastInsertRowid);
+      }
     }
 
     return { observationIds, summaryId, createdAtEpoch: timestampEpoch };

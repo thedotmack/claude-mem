@@ -8,7 +8,7 @@ import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
-import { Observation, Summary, UserPrompt } from './types';
+import type { Observation, Summary, UserPrompt } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
 
 export function App() {
@@ -21,8 +21,8 @@ export function App() {
 
   const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
-  const { stats, refreshStats } = useStats();
-  const { preference, resolvedTheme, setThemePreference } = useTheme();
+  const { stats: _stats, refreshStats: _refreshStats } = useStats();
+  const { preference, resolvedTheme: _resolvedTheme, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
 
   // When filtering by project: ONLY use paginated data (API-filtered)
@@ -70,13 +70,13 @@ export function App() {
       ]);
 
       if (newObservations.length > 0) {
-        setPaginatedObservations(prev => [...prev, ...newObservations]);
+        setPaginatedObservations(prev => [...prev, ...newObservations as Observation[]]);
       }
       if (newSummaries.length > 0) {
-        setPaginatedSummaries(prev => [...prev, ...newSummaries]);
+        setPaginatedSummaries(prev => [...prev, ...newSummaries as Summary[]]);
       }
       if (newPrompts.length > 0) {
-        setPaginatedPrompts(prev => [...prev, ...newPrompts]);
+        setPaginatedPrompts(prev => [...prev, ...newPrompts as UserPrompt[]]);
       }
     } catch (error) {
       console.error('Failed to load more data:', error);
@@ -88,8 +88,8 @@ export function App() {
     setPaginatedObservations([]);
     setPaginatedSummaries([]);
     setPaginatedPrompts([]);
-    handleLoadMore();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    void handleLoadMore();
+    // Intentionally only depends on currentFilter - handleLoadMore is stable via useCallback
   }, [currentFilter]);
 
   return (
@@ -110,7 +110,7 @@ export function App() {
         observations={allObservations}
         summaries={allSummaries}
         prompts={allPrompts}
-        onLoadMore={handleLoadMore}
+        onLoadMore={() => { void handleLoadMore(); }}
         isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
         hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
       />
@@ -119,7 +119,7 @@ export function App() {
         isOpen={contextPreviewOpen}
         onClose={toggleContextPreview}
         settings={settings}
-        onSave={saveSettings}
+        onSave={(s) => { void saveSettings(s); }}
         isSaving={isSaving}
         saveStatus={saveStatus}
       />

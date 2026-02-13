@@ -26,7 +26,7 @@ function formatHeaderDateTime(): string {
     hour12: true
   }).toLowerCase().replace(' ', '');
   const tz = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
-  return `${date} ${time} ${tz}`;
+  return `${date} ${time} ${String(tz)}`;
 }
 
 /**
@@ -91,17 +91,17 @@ export function renderColorContextEconomics(
   const output: string[] = [];
 
   output.push(`${colors.bright}${colors.cyan}Context Economics${colors.reset}`);
-  output.push(`${colors.dim}  Loading: ${economics.totalObservations} observations (${economics.totalReadTokens.toLocaleString()} tokens to read)${colors.reset}`);
+  output.push(`${colors.dim}  Loading: ${String(economics.totalObservations)} observations (${economics.totalReadTokens.toLocaleString()} tokens to read)${colors.reset}`);
   output.push(`${colors.dim}  Work investment: ${economics.totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions${colors.reset}`);
 
   if (economics.totalDiscoveryTokens > 0 && (config.showSavingsAmount || config.showSavingsPercent)) {
     let savingsLine = '  Your savings: ';
     if (config.showSavingsAmount && config.showSavingsPercent) {
-      savingsLine += `${economics.savings.toLocaleString()} tokens (${economics.savingsPercent}% reduction from reuse)`;
+      savingsLine += `${economics.savings.toLocaleString()} tokens (${String(economics.savingsPercent)}% reduction from reuse)`;
     } else if (config.showSavingsAmount) {
       savingsLine += `${economics.savings.toLocaleString()} tokens`;
     } else {
-      savingsLine += `${economics.savingsPercent}% reduction from reuse`;
+      savingsLine += `${String(economics.savingsPercent)}% reduction from reuse`;
     }
     output.push(`${colors.green}${savingsLine}${colors.reset}`);
   }
@@ -143,10 +143,10 @@ export function renderColorTableRow(
   const { readTokens, discoveryTokens, workEmoji } = formatObservationTokenDisplay(obs, config);
 
   const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
-  const readPart = (config.showReadTokens && readTokens > 0) ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
+  const readPart = (config.showReadTokens && readTokens > 0) ? `${colors.dim}(~${String(readTokens)}t)${colors.reset}` : '';
   const discoveryPart = (config.showWorkTokens && discoveryTokens > 0) ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
 
-  return `  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`;
+  return `  ${colors.dim}#${String(obs.id)}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`;
 }
 
 /**
@@ -165,10 +165,10 @@ export function renderColorFullObservation(
   const { readTokens, discoveryTokens, workEmoji } = formatObservationTokenDisplay(obs, config);
 
   const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
-  const readPart = (config.showReadTokens && readTokens > 0) ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
+  const readPart = (config.showReadTokens && readTokens > 0) ? `${colors.dim}(~${String(readTokens)}t)${colors.reset}` : '';
   const discoveryPart = (config.showWorkTokens && discoveryTokens > 0) ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
 
-  output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${colors.bright}${title}${colors.reset}`);
+  output.push(`  ${colors.dim}#${String(obs.id)}${colors.reset}  ${timePart}  ${icon}  ${colors.bright}${title}${colors.reset}`);
   if (detailField) {
     output.push(`    ${colors.dim}${detailField}${colors.reset}`);
   }
@@ -189,7 +189,7 @@ export function renderColorSummaryItem(
 ): string[] {
   const summaryTitle = `${summary.request || 'Session started'} (${formattedTime})`;
   return [
-    `${colors.yellow}#S${summary.id}${colors.reset} ${summaryTitle}`,
+    `${colors.yellow}#S${String(summary.id)}${colors.reset} ${summaryTitle}`,
     ''
   ];
 }
@@ -226,7 +226,7 @@ export function renderColorFooter(totalDiscoveryTokens: number, totalReadTokens:
   const workTokensK = Math.round(totalDiscoveryTokens / 1000);
   return [
     '',
-    `${colors.dim}Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use MCP search tools to access memories by ID.${colors.reset}`
+    `${colors.dim}Access ${String(workTokensK)}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use MCP search tools to access memories by ID.${colors.reset}`
   ];
 }
 

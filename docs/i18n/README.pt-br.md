@@ -146,7 +146,7 @@ Reinicie o Claude Code. O contexto de sessões anteriores aparecerá automaticam
 - **[Evolução da Arquitetura](https://docs.claude-mem.ai/architecture-evolution)** - A jornada da v3 à v5
 - **[Arquitetura de Hooks](https://docs.claude-mem.ai/hooks-architecture)** - Como Claude-Mem usa hooks de ciclo de vida
 - **[Referência de Hooks](https://docs.claude-mem.ai/architecture/hooks)** - 7 scripts de hook explicados
-- **[Serviço Worker](https://docs.claude-mem.ai/architecture/worker-service)** - API HTTP e gerenciamento do Bun
+- **[Serviço Worker](https://docs.claude-mem.ai/architecture/worker-service)** - API HTTP e gerenciamento do Node.js
 - **[Banco de Dados](https://docs.claude-mem.ai/architecture/database)** - Schema SQLite e busca FTS5
 - **[Arquitetura de Busca](https://docs.claude-mem.ai/architecture/search-architecture)** - Busca híbrida com banco de dados vetorial Chroma
 
@@ -164,7 +164,7 @@ Reinicie o Claude Code. O contexto de sessões anteriores aparecerá automaticam
 
 1. **5 Hooks de Ciclo de Vida** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 scripts de hook)
 2. **Instalação Inteligente** - Verificador de dependências em cache (script pré-hook, não um hook de ciclo de vida)
-3. **Serviço Worker** - API HTTP na porta 37777 com interface de visualização web e 10 endpoints de busca, gerenciado pelo Bun
+3. **Serviço Worker** - API HTTP na porta 37777 com interface de visualização web e 10 endpoints de busca, gerenciado pelo Node.js
 4. **Banco de Dados SQLite** - Armazena sessões, observações, resumos
 5. **Skill mem-search** - Consultas em linguagem natural com divulgação progressiva
 6. **Banco de Dados Vetorial Chroma** - Busca híbrida semântica + palavra-chave para recuperação inteligente de contexto
@@ -220,7 +220,6 @@ Veja **[Documentação de Recursos Beta](https://docs.claude-mem.ai/beta-feature
 
 - **Node.js**: 18.0.0 ou superior
 - **Claude Code**: Versão mais recente com suporte a plugins
-- **Bun**: Runtime JavaScript e gerenciador de processos (instalado automaticamente se ausente)
 - **uv**: Gerenciador de pacotes Python para busca vetorial (instalado automaticamente se ausente)
 - **SQLite 3**: Para armazenamento persistente (incluído)
 

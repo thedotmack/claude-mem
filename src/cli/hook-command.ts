@@ -1,6 +1,7 @@
 import { readJsonFromStdin } from './stdin-reader.js';
 import { getPlatformAdapter } from './adapters/index.js';
 import { getEventHandler } from './handlers/index.js';
+import type { EventType } from './handlers/index.js';
 import { HOOK_EXIT_CODES } from '../shared/hook-constants.js';
 
 export interface HookCommandOptions {
@@ -11,7 +12,7 @@ export interface HookCommandOptions {
 export async function hookCommand(platform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
   try {
     const adapter = getPlatformAdapter(platform);
-    const handler = getEventHandler(event);
+    const handler = getEventHandler(event as EventType);
 
     const rawInput = await readJsonFromStdin();
     const input = adapter.normalizeInput(rawInput);
@@ -26,7 +27,7 @@ export async function hookCommand(platform: string, event: string, options: Hook
     }
     return exitCode;
   } catch (error) {
-    console.error(`Hook error: ${error}`);
+    console.error(`Hook error: ${error instanceof Error ? error.message : String(error)}`);
     // Use exit code 2 (blocking error) so users see the error message
     // Exit code 1 only shows in verbose mode per Claude Code docs
     if (!options.skipExit) {

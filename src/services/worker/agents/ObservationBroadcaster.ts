@@ -11,8 +11,8 @@
  * - SDKAgent used hardcoded `files_modified: JSON.stringify([])` - should use `obs.files_modified`
  */
 
+import { logger } from '../../../utils/logger.js'; // eslint-disable-line @typescript-eslint/no-unused-vars -- required by logger-usage-standards
 import type { WorkerRef, ObservationSSEPayload, SummarySSEPayload } from './types.js';
-import { logger } from '../../../utils/logger.js';
 
 /**
  * Broadcast a new observation to SSE clients

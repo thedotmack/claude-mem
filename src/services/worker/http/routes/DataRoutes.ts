@@ -5,19 +5,103 @@
  * All endpoints use direct database access via service layer.
  */
 
-import express, { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type express from 'express';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
 import { homedir } from 'os';
 import { getPackageRoot } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
-import { PaginationHelper } from '../../PaginationHelper.js';
-import { DatabaseManager } from '../../DatabaseManager.js';
-import { SessionManager } from '../../SessionManager.js';
-import { SSEBroadcaster } from '../../SSEBroadcaster.js';
+import type { PaginationHelper } from '../../PaginationHelper.js';
+import type { DatabaseManager } from '../../DatabaseManager.js';
+import type { SessionManager } from '../../SessionManager.js';
+import type { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { PendingMessageStore } from '../../../sqlite/PendingMessageStore.js';
+
+/** Request body for POST /api/observations/batch */
+interface ObservationsBatchBody {
+  ids: unknown;
+  orderBy?: 'date_desc' | 'date_asc';
+  limit?: number;
+  project?: string;
+}
+
+/** Request body for POST /api/sdk-sessions/batch */
+interface SdkSessionsBatchBody {
+  memorySessionIds: unknown;
+}
+
+/** Request body for POST /api/import */
+interface ImportBody {
+  sessions: unknown;
+  summaries: unknown;
+  observations: unknown;
+  prompts: unknown;
+}
+
+/** Request body for POST /api/pending-queue/process */
+interface ProcessPendingQueueBody {
+  sessionLimit?: string | number;
+}
+
+/** Type for import method parameters matching SessionStore signatures */
+interface ImportSdkSession {
+  content_session_id: string;
+  memory_session_id: string;
+  project: string;
+  user_prompt: string;
+  started_at: string;
+  started_at_epoch: number;
+  completed_at: string | null;
+  completed_at_epoch: number | null;
+  status: string;
+}
+
+interface ImportSessionSummary {
+  memory_session_id: string;
+  project: string;
+  request: string | null;
+  investigated: string | null;
+  learned: string | null;
+  completed: string | null;
+  next_steps: string | null;
+  files_read: string | null;
+  files_edited: string | null;
+  notes: string | null;
+  prompt_number: number | null;
+  discovery_tokens: number;
+  created_at: string;
+  created_at_epoch: number;
+}
+
+interface ImportObservation {
+  memory_session_id: string;
+  project: string;
+  text: string | null;
+  type: string;
+  title: string | null;
+  subtitle: string | null;
+  facts: string | null;
+  narrative: string | null;
+  concepts: string | null;
+  files_read: string | null;
+  files_modified: string | null;
+  prompt_number: number | null;
+  discovery_tokens: number;
+  created_at: string;
+  created_at_epoch: number;
+}
+
+interface ImportUserPrompt {
+  content_session_id: string;
+  prompt_number: number;
+  prompt_text: string;
+  created_at: string;
+  created_at_epoch: number;
+}
 
 export class DataRoutes extends BaseRouteHandler {
   constructor(
@@ -101,7 +185,7 @@ export class DataRoutes extends BaseRouteHandler {
     const observation = store.getObservationById(id);
 
     if (!observation) {
-      this.notFound(res, `Observation #${id} not found`);
+      this.notFound(res, `Observation #${String(id)} not found`);
       return;
     }
 
@@ -114,7 +198,8 @@ export class DataRoutes extends BaseRouteHandler {
    * Body: { ids: number[], orderBy?: 'date_desc' | 'date_asc', limit?: number, project?: string }
    */
   private handleGetObservationsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    const { ids, orderBy, limit, project } = req.body;
+    const body = req.body as ObservationsBatchBody;
+    const { ids, orderBy, limit, project } = body;
 
     if (!ids || !Array.isArray(ids)) {
       this.badRequest(res, 'ids must be an array of numbers');
@@ -127,13 +212,14 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     // Validate all IDs are numbers
-    if (!ids.every(id => typeof id === 'number' && Number.isInteger(id))) {
+    if (!ids.every((id: unknown) => typeof id === 'number' && Number.isInteger(id))) {
       this.badRequest(res, 'All ids must be integers');
       return;
     }
 
+    const validatedIds = ids as number[];
     const store = this.dbManager.getSessionStore();
-    const observations = store.getObservationsByIds(ids, { orderBy, limit, project });
+    const observations = store.getObservationsByIds(validatedIds, { orderBy, limit, project });
 
     res.json(observations);
   });
@@ -150,7 +236,7 @@ export class DataRoutes extends BaseRouteHandler {
     const sessions = store.getSessionSummariesByIds([id]);
 
     if (sessions.length === 0) {
-      this.notFound(res, `Session #${id} not found`);
+      this.notFound(res, `Session #${String(id)} not found`);
       return;
     }
 
@@ -163,15 +249,17 @@ export class DataRoutes extends BaseRouteHandler {
    * Body: { memorySessionIds: string[] }
    */
   private handleGetSdkSessionsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    const { memorySessionIds } = req.body;
+    const body = req.body as SdkSessionsBatchBody;
+    const { memorySessionIds } = body;
 
     if (!Array.isArray(memorySessionIds)) {
       this.badRequest(res, 'memorySessionIds must be an array');
       return;
     }
 
+    const validatedIds = memorySessionIds as string[];
     const store = this.dbManager.getSessionStore();
-    const sessions = store.getSdkSessionsBySessionIds(memorySessionIds);
+    const sessions = store.getSdkSessionsBySessionIds(validatedIds);
     res.json(sessions);
   });
 
@@ -187,7 +275,7 @@ export class DataRoutes extends BaseRouteHandler {
     const prompts = store.getUserPromptsByIds([id]);
 
     if (prompts.length === 0) {
-      this.notFound(res, `Prompt #${id} not found`);
+      this.notFound(res, `Prompt #${String(id)} not found`);
       return;
     }
 
@@ -203,8 +291,8 @@ export class DataRoutes extends BaseRouteHandler {
     // Read version from package.json
     const packageRoot = getPackageRoot();
     const packageJsonPath = path.join(packageRoot, 'package.json');
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-    const version = packageJson.version;
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version: string };
+    const version: string = packageJson.version;
 
     // Get database stats
     const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
@@ -303,7 +391,8 @@ export class DataRoutes extends BaseRouteHandler {
    * Body: { sessions: [], summaries: [], observations: [], prompts: [] }
    */
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {
-    const { sessions, summaries, observations, prompts } = req.body;
+    const body = req.body as ImportBody;
+    const { sessions, summaries, observations, prompts } = body;
 
     const stats = {
       sessionsImported: 0,
@@ -320,7 +409,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     // Import sessions first (dependency for everything else)
     if (Array.isArray(sessions)) {
-      for (const session of sessions) {
+      for (const session of sessions as ImportSdkSession[]) {
         const result = store.importSdkSession(session);
         if (result.imported) {
           stats.sessionsImported++;
@@ -332,7 +421,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     // Import summaries (depends on sessions)
     if (Array.isArray(summaries)) {
-      for (const summary of summaries) {
+      for (const summary of summaries as ImportSessionSummary[]) {
         const result = store.importSessionSummary(summary);
         if (result.imported) {
           stats.summariesImported++;
@@ -344,7 +433,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     // Import observations (depends on sessions)
     if (Array.isArray(observations)) {
-      for (const obs of observations) {
+      for (const obs of observations as ImportObservation[]) {
         const result = store.importObservation(obs);
         if (result.imported) {
           stats.observationsImported++;
@@ -356,7 +445,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     // Import prompts (depends on sessions)
     if (Array.isArray(prompts)) {
-      for (const prompt of prompts) {
+      for (const prompt of prompts as ImportUserPrompt[]) {
         const result = store.importUserPrompt(prompt);
         if (result.imported) {
           stats.promptsImported++;
@@ -378,7 +467,6 @@ export class DataRoutes extends BaseRouteHandler {
    * Returns all pending, processing, and failed messages with optional recently processed
    */
   private handleGetPendingQueue = this.wrapHandler((req: Request, res: Response): void => {
-    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
     const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
 
     // Get queue contents (pending, processing, failed)
@@ -396,9 +484,9 @@ export class DataRoutes extends BaseRouteHandler {
     res.json({
       queue: {
         messages: queueMessages,
-        totalPending: queueMessages.filter((m: { status: string }) => m.status === 'pending').length,
-        totalProcessing: queueMessages.filter((m: { status: string }) => m.status === 'processing').length,
-        totalFailed: queueMessages.filter((m: { status: string }) => m.status === 'failed').length,
+        totalPending: queueMessages.filter((m) => m.status === 'pending').length,
+        totalProcessing: queueMessages.filter((m) => m.status === 'processing').length,
+        totalFailed: queueMessages.filter((m) => m.status === 'failed').length,
         stuckCount
       },
       recentlyProcessed,
@@ -413,8 +501,9 @@ export class DataRoutes extends BaseRouteHandler {
    * Starts SDK agents for sessions with pending messages
    */
   private handleProcessPendingQueue = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const body = req.body as ProcessPendingQueueBody;
     const sessionLimit = Math.min(
-      Math.max(parseInt(req.body.sessionLimit, 10) || 10, 1),
+      Math.max(parseInt(String(body.sessionLimit), 10) || 10, 1),
       100 // Max 100 sessions at once
     );
 
@@ -432,7 +521,6 @@ export class DataRoutes extends BaseRouteHandler {
    * Returns the number of messages cleared
    */
   private handleClearFailedQueue = this.wrapHandler((req: Request, res: Response): void => {
-    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
     const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
 
     const clearedCount = pendingStore.clearFailed();
@@ -451,7 +539,6 @@ export class DataRoutes extends BaseRouteHandler {
    * Returns the number of messages cleared
    */
   private handleClearAllQueue = this.wrapHandler((req: Request, res: Response): void => {
-    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
     const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
 
     const clearedCount = pendingStore.clearAll();

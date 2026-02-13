@@ -49,8 +49,8 @@ const VERSION_MARKER_PATH = path.join(
 function initializeDatabase(): SessionStore | null {
   try {
     return new SessionStore();
-  } catch (error: any) {
-    if (error.code === 'ERR_DLOPEN_FAILED') {
+  } catch (error: unknown) {
+    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ERR_DLOPEN_FAILED') {
       try {
         unlinkSync(VERSION_MARKER_PATH);
       } catch (unlinkError) {
@@ -123,10 +123,10 @@ function buildContextOutput(
  * Main entry point for context generation. Orchestrates loading config,
  * querying data, and rendering the final context string.
  */
-export async function generateContext(
+export function generateContext(
   input?: ContextInput,
   useColors: boolean = false
-): Promise<string> {
+): string {
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
   const project = getProjectName(cwd);

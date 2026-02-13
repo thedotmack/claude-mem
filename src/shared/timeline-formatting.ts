@@ -14,11 +14,11 @@ import { logger } from '../utils/logger.js';
 export function parseJsonArray(json: string | null): string[] {
   if (!json) return [];
   try {
-    const parsed = JSON.parse(json);
-    return Array.isArray(parsed) ? parsed : [];
+    const parsed: unknown = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed as string[] : [];
   } catch (err) {
     logger.debug('PARSER', 'Failed to parse JSON array, using empty fallback', {
-      preview: json?.substring(0, 50)
+      preview: json.substring(0, 50)
     }, err as Error);
     return [];
   }
@@ -132,7 +132,7 @@ export function groupByDate<T>(
     if (!itemsByDay.has(day)) {
       itemsByDay.set(day, []);
     }
-    itemsByDay.get(day)!.push(item);
+    itemsByDay.get(day)?.push(item);
   }
 
   // Sort days chronologically

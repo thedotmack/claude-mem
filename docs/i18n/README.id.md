@@ -146,7 +146,7 @@ Restart Claude Code. Konteks dari sesi sebelumnya akan secara otomatis muncul di
 - **[Evolusi Arsitektur](https://docs.claude-mem.ai/architecture-evolution)** - Perjalanan dari v3 ke v5
 - **[Arsitektur Hooks](https://docs.claude-mem.ai/hooks-architecture)** - Bagaimana Claude-Mem menggunakan lifecycle hooks
 - **[Referensi Hooks](https://docs.claude-mem.ai/architecture/hooks)** - 7 skrip hook dijelaskan
-- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & manajemen Bun
+- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & manajemen Node.js
 - **[Database](https://docs.claude-mem.ai/architecture/database)** - Skema SQLite & pencarian FTS5
 - **[Arsitektur Pencarian](https://docs.claude-mem.ai/architecture/search-architecture)** - Pencarian hybrid dengan database vektor Chroma
 
@@ -164,7 +164,7 @@ Restart Claude Code. Konteks dari sesi sebelumnya akan secara otomatis muncul di
 
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 skrip hook)
 2. **Smart Install** - Pemeriksa dependensi yang di-cache (skrip pre-hook, bukan lifecycle hook)
-3. **Worker Service** - HTTP API di port 37777 dengan web viewer UI dan 10 endpoint pencarian, dikelola oleh Bun
+3. **Worker Service** - HTTP API di port 37777 dengan web viewer UI dan 10 endpoint pencarian, dikelola oleh Node.js
 4. **SQLite Database** - Menyimpan sesi, observasi, ringkasan
 5. **mem-search Skill** - Query bahasa alami dengan progressive disclosure
 6. **Chroma Vector Database** - Pencarian hybrid semantik + keyword untuk pengambilan konteks yang cerdas
@@ -220,7 +220,6 @@ Lihat **[Dokumentasi Fitur Beta](https://docs.claude-mem.ai/beta-features)** unt
 
 - **Node.js**: 18.0.0 atau lebih tinggi
 - **Claude Code**: Versi terbaru dengan dukungan plugin
-- **Bun**: JavaScript runtime dan process manager (otomatis diinstal jika tidak ada)
 - **uv**: Python package manager untuk pencarian vektor (otomatis diinstal jika tidak ada)
 - **SQLite 3**: Untuk penyimpanan persisten (terbundel)
 

@@ -1,8 +1,13 @@
 import { useState, useEffect } from 'react';
-import { Settings } from '../types';
+import type { Settings } from '../types';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
+
+interface SaveSettingsResponse {
+  success: boolean;
+  error?: string;
+}
 
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -12,7 +17,7 @@ export function useSettings() {
   useEffect(() => {
     // Load initial settings
     fetch(API_ENDPOINTS.SETTINGS)
-      .then(res => res.json())
+      .then(res => res.json() as Promise<Partial<Settings>>)
       .then(data => {
         setSettings({
           CLAUDE_MEM_MODEL: data.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL,
@@ -26,11 +31,11 @@ export function useSettings() {
           CLAUDE_MEM_GEMINI_MODEL: data.CLAUDE_MEM_GEMINI_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_GEMINI_MODEL,
           CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: data.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED || DEFAULT_SETTINGS.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED,
 
-          // OpenRouter Configuration
-          CLAUDE_MEM_OPENROUTER_API_KEY: data.CLAUDE_MEM_OPENROUTER_API_KEY || DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_API_KEY,
-          CLAUDE_MEM_OPENROUTER_MODEL: data.CLAUDE_MEM_OPENROUTER_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_MODEL,
-          CLAUDE_MEM_OPENROUTER_SITE_URL: data.CLAUDE_MEM_OPENROUTER_SITE_URL || DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_SITE_URL,
-          CLAUDE_MEM_OPENROUTER_APP_NAME: data.CLAUDE_MEM_OPENROUTER_APP_NAME || DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_APP_NAME,
+          // OpenAI-Compatible Configuration
+          CLAUDE_MEM_OPENAI_COMPAT_API_KEY: data.CLAUDE_MEM_OPENAI_COMPAT_API_KEY || DEFAULT_SETTINGS.CLAUDE_MEM_OPENAI_COMPAT_API_KEY,
+          CLAUDE_MEM_OPENAI_COMPAT_MODEL: data.CLAUDE_MEM_OPENAI_COMPAT_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_OPENAI_COMPAT_MODEL,
+          CLAUDE_MEM_OPENAI_COMPAT_SITE_URL: data.CLAUDE_MEM_OPENAI_COMPAT_SITE_URL || DEFAULT_SETTINGS.CLAUDE_MEM_OPENAI_COMPAT_SITE_URL,
+          CLAUDE_MEM_OPENAI_COMPAT_APP_NAME: data.CLAUDE_MEM_OPENAI_COMPAT_APP_NAME || DEFAULT_SETTINGS.CLAUDE_MEM_OPENAI_COMPAT_APP_NAME,
 
           // Token Economics Display
           CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: data.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS,
@@ -52,7 +57,7 @@ export function useSettings() {
           CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: data.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE,
         });
       })
-      .catch(error => {
+      .catch((error: unknown) => {
         console.error('Failed to load settings:', error);
       });
   }, []);
@@ -67,14 +72,14 @@ export function useSettings() {
       body: JSON.stringify(newSettings)
     });
 
-    const result = await response.json();
+    const result = await response.json() as SaveSettingsResponse;
 
     if (result.success) {
       setSettings(newSettings);
       setSaveStatus('✓ Saved');
-      setTimeout(() => setSaveStatus(''), TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
+      setTimeout(() => { setSaveStatus(''); }, TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
     } else {
-      setSaveStatus(`✗ Error: ${result.error}`);
+      setSaveStatus(`✗ Error: ${String(result.error)}`);
     }
 
     setIsSaving(false);

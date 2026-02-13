@@ -61,7 +61,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 **Core Components:**
 1. **4 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop
 2. **Smart Install** - Cached dependency checker (pre-hook script)
-3. **Worker Service** - HTTP API on port 37777 managed by Bun
+3. **Worker Service** - HTTP API on port 37777 managed by Node.js
 4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 search
 5. **MCP Search Tools** - Query historical context with natural language
 6. **Web Viewer UI** - Real-time visualization with SSE and infinite scroll
@@ -72,7 +72,6 @@ See [Architecture Overview](architecture/overview) for details.
 
 - **Node.js**: 18.0.0 or higher
 - **Claude Code**: Latest version with plugin support
-- **Bun**: JavaScript runtime and process manager (auto-installed if missing)
 - **SQLite 3**: For persistent storage (bundled)
 
 ## What's New
@@ -85,9 +84,8 @@ See [Architecture Overview](architecture/overview) for details.
 - **Settings Auto-Creation**: `settings.json` now auto-creates on first run
 - **MCP Tools Naming**: Updated from "mem-search skill" to "MCP tools" terminology
 
-**v7.1.0 - Bun Migration:**
-- Replaced PM2 with native Bun process management
-- Switched from better-sqlite3 to bun:sqlite for faster database access
+**v7.1.0 - Process Management Migration:**
+- Replaced PM2 with native process management (originally Bun, later migrated to Node.js + better-sqlite3)
 - Simplified cross-platform support
 
 **v7.0.0 - Context Configuration:**
@@ -102,9 +100,6 @@ See [Architecture Overview](architecture/overview) for details.
   </Card>
   <Card title="Getting Started" icon="rocket" href="/usage/getting-started">
     Learn how Claude-Mem works automatically
-  </Card>
-  <Card title="Folder Context" icon="folder-open" href="/usage/folder-context">
-    Auto-generated folder CLAUDE.md files
   </Card>
   <Card title="Search Tools" icon="magnifying-glass" href="/usage/search-tools">
     Query your project history

@@ -44,7 +44,7 @@ export function readPidFile(): PidInfo | null {
   if (!existsSync(PID_FILE)) return null;
 
   try {
-    return JSON.parse(readFileSync(PID_FILE, 'utf-8'));
+    return JSON.parse(readFileSync(PID_FILE, 'utf-8')) as PidInfo;
   } catch (error) {
     logger.warn('SYSTEM', 'Failed to parse PID file', { path: PID_FILE }, error as Error);
     return null;
@@ -90,7 +90,7 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
 
   try {
     // PowerShell Get-Process instead of WMIC (deprecated in Windows 11)
-    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-Process | Where-Object { \\$_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty Id"`;
+    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-Process | Where-Object { \\$_.ParentProcessId -eq ${String(parentPid)} } | Select-Object -ExpandProperty Id"`;
     const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
     // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
     return stdout
@@ -121,7 +121,7 @@ export async function forceKillProcess(pid: number): Promise<void> {
   try {
     if (process.platform === 'win32') {
       // /T kills entire process tree, /F forces termination
-      await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+      await execAsync(`taskkill /PID ${String(pid)} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
     } else {
       process.kill(pid, 'SIGKILL');
     }
@@ -143,7 +143,7 @@ export async function waitForProcessesExit(pids: number[], timeoutMs: number): P
       try {
         process.kill(pid, 0);
         return true;
-      } catch (error) {
+      } catch {
         // [ANTI-PATTERN IGNORED]: Tight loop checking 100s of PIDs every 100ms during cleanup
         return false;
       }
@@ -239,7 +239,7 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
         continue;
       }
       try {
-        execSync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, stdio: 'ignore' });
+        execSync(`taskkill /PID ${String(pid)} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, stdio: 'ignore' });
       } catch (error) {
         // [ANTI-PATTERN IGNORED]: Cleanup loop - process may have exited, continue to next PID
         logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, error as Error);
@@ -285,21 +285,28 @@ export function spawnDaemon(
   };
 
   if (isWindows) {
-    // Use WMIC to spawn a process that's independent of the parent console
-    // This avoids the console popup that occurs with detached: true
-    // Paths must be individually quoted for WMIC when they contain spaces
+    // Use PowerShell Start-Process with -WindowStyle Hidden to spawn a background process
+    // This replaces the deprecated WMIC approach (removed in Windows 11 24H2+)
+    // and avoids the console popup that occurs with detached: true
     const execPath = process.execPath;
     const script = scriptPath;
-    // WMIC command format: wmic process call create "\"path1\" \"path2\" args"
-    const command = `wmic process call create "\\"${execPath}\\" \\"${script}\\" --daemon"`;
+
+    // Build environment variable assignments for PowerShell
+    // This fixes a bug where WMIC silently dropped env vars
+    const envPairs = Object.entries(env)
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- process.env values can be undefined at runtime
+      .filter(([_k, v]) => v !== undefined)
+      .map(([k, v]) => `$env:${k}='${v.replace(/'/g, "''")}'`)
+      .join('; ');
+
+    const psCommand = `${envPairs}; Start-Process -FilePath '${execPath}' -ArgumentList '${script}','--daemon' -WindowStyle Hidden`;
 
     try {
-      execSync(command, {
+      execSync(`powershell -NoProfile -Command "${psCommand.replace(/"/g, '\\"')}"`, {
         stdio: 'ignore',
         windowsHide: true
       });
-      // WMIC returns immediately, we can't get the spawned PID easily
-      // Worker will write its own PID file after listen()
+      // Start-Process returns immediately, worker writes its own PID file after listen()
       return 0;
     } catch {
       return undefined;

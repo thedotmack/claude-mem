@@ -5,7 +5,8 @@
  * Handles request/response logging, CORS, JSON parsing, and static file serving.
  */
 
-import express, { Request, Response, NextFunction, RequestHandler } from 'express';
+import type { Request, Response, NextFunction, RequestHandler } from 'express';
+import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { getPackageRoot } from '../../../shared/paths.js';
@@ -17,7 +18,7 @@ import { logger } from '../../../utils/logger.js';
  * @returns Array of middleware functions
  */
 export function createMiddleware(
-  summarizeRequestBody: (method: string, path: string, body: any) => string
+  summarizeRequestBody: (method: string, path: string, body: Record<string, unknown>) => string
 ): RequestHandler[] {
   const middlewares: RequestHandler[] = [];
 
@@ -34,21 +35,21 @@ export function createMiddleware(
     const isStaticAsset = staticExtensions.some(ext => req.path.endsWith(ext));
     const isPollingEndpoint = req.path === '/api/logs'; // Skip logs endpoint to avoid noise from auto-refresh
     if (req.path.startsWith('/health') || req.path === '/' || isStaticAsset || isPollingEndpoint) {
-      return next();
+      next(); return;
     }
 
     const start = Date.now();
-    const requestId = `${req.method}-${Date.now()}`;
+    const requestId = `${req.method}-${String(Date.now())}`;
 
     // Log incoming request with body summary
-    const bodySummary = summarizeRequestBody(req.method, req.path, req.body);
+    const bodySummary = summarizeRequestBody(req.method, req.path, req.body as Record<string, unknown>);
     logger.info('HTTP', `→ ${req.method} ${req.path}`, { requestId }, bodySummary);
 
     // Capture response
     const originalSend = res.send.bind(res);
-    res.send = function(body: any) {
+    res.send = function(body: unknown) {
       const duration = Date.now() - start;
-      logger.info('HTTP', `← ${res.statusCode} ${req.path}`, { requestId, duration: `${duration}ms` });
+      logger.info('HTTP', `← ${String(res.statusCode)} ${req.path}`, { requestId, duration: `${String(duration)}ms` });
       return originalSend(body);
     };
 
@@ -68,7 +69,7 @@ export function createMiddleware(
  * Used for admin endpoints that should not be exposed when binding to 0.0.0.0
  */
 export function requireLocalhost(req: Request, res: Response, next: NextFunction): void {
-  const clientIp = req.ip || req.connection.remoteAddress || '';
+  const clientIp = req.ip || req.socket.remoteAddress || '';
   const isLocalhost =
     clientIp === '127.0.0.1' ||
     clientIp === '::1' ||
@@ -95,8 +96,8 @@ export function requireLocalhost(req: Request, res: Response, next: NextFunction
  * Summarize request body for logging
  * Used to avoid logging sensitive data or large payloads
  */
-export function summarizeRequestBody(method: string, path: string, body: any): string {
-  if (!body || Object.keys(body).length === 0) return '';
+export function summarizeRequestBody(method: string, path: string, body: Record<string, unknown>): string {
+  if (Object.keys(body).length === 0) return '';
 
   // Session init
   if (path.includes('/init')) {
@@ -105,7 +106,7 @@ export function summarizeRequestBody(method: string, path: string, body: any): s
 
   // Observations
   if (path.includes('/observations')) {
-    const toolName = body.tool_name || '?';
+    const toolName = typeof body.tool_name === 'string' ? body.tool_name : '?';
     const toolInput = body.tool_input;
     const toolSummary = logger.formatTool(toolName, toolInput);
     return `tool=${toolSummary}`;

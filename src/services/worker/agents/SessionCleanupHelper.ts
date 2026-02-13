@@ -9,8 +9,8 @@
  * so there's no pendingProcessingIds tracking or processed message cleanup.
  */
 
+import { logger } from '../../../utils/logger.js'; // eslint-disable-line @typescript-eslint/no-unused-vars -- required by logger-usage-standards
 import type { ActiveSession } from '../../worker-types.js';
-import { logger } from '../../../utils/logger.js';
 import type { WorkerRef } from './types.js';
 
 /**

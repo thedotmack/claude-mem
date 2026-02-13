@@ -10,12 +10,13 @@
  * - Sync to database and Chroma
  */
 
+import { randomUUID } from 'crypto';
 import path from 'path';
 import { homedir } from 'os';
-import { DatabaseManager } from './DatabaseManager.js';
-import { SessionManager } from './SessionManager.js';
+import type { DatabaseManager } from './DatabaseManager.js';
+import type { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt, buildSummaryContextPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
@@ -50,6 +51,15 @@ const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
   'gemini-3-flash': 5,
 };
 
+// Context window management constants (defaults, overridable via settings)
+const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  // Maximum messages to keep in conversation history
+const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  // ~100k tokens max context (safety limit)
+const CHARS_PER_TOKEN_ESTIMATE = 4;  // Conservative estimate: 1 token = 4 chars
+
+// History compaction constants
+const COMPACT_THRESHOLD = 14;  // Compact when history exceeds 14 messages (7 turns)
+const KEEP_RECENT = 6;         // Keep last 6 messages (3 recent turns) after compaction
+
 // Track last request time for rate limiting
 let lastRequestTime = 0;
 
@@ -72,7 +82,7 @@ async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled:
 
   if (timeSinceLastRequest < minimumDelayMs) {
     const waitTime = minimumDelayMs - timeSinceLastRequest;
-    logger.debug('SDK', `Rate limiting: waiting ${waitTime}ms before Gemini request`, { model, rpm });
+    logger.debug('SDK', `Rate limiting: waiting ${String(waitTime)}ms before Gemini request`, { model, rpm });
     await new Promise(resolve => setTimeout(resolve, waitTime));
   }
 
@@ -122,6 +132,116 @@ export class GeminiAgent {
   }
 
   /**
+   * Compact conversation history to preserve instructions and session context.
+   * Replaces blind truncation by keeping: [initPrompt, summaryContext, ...recentMessages]
+   * Only triggers when history exceeds COMPACT_THRESHOLD.
+   */
+  private compactHistory(session: ActiveSession): void {
+    const history = session.conversationHistory;
+    if (history.length <= COMPACT_THRESHOLD) {
+      return;
+    }
+
+    const originalLength = history.length;
+
+    // Read current summary from DB
+    let summaryContext: string;
+    try {
+      const memorySessionId = session.memorySessionId;
+      const summary = memorySessionId
+        ? this.dbManager.getSessionStore().getSummaryForSession(memorySessionId)
+        : null;
+      summaryContext = buildSummaryContextPrompt(summary);
+    } catch (error) {
+      logger.warn('SDK', 'Failed to read summary for compaction, using empty context', {
+        sessionId: session.sessionDbId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      summaryContext = buildSummaryContextPrompt(null);
+    }
+
+    // Rebuild: [initPrompt, summaryContext, ...recentMessages]
+    const initPrompt = history[0];
+    const recentMessages = history.slice(-KEEP_RECENT);
+
+    session.conversationHistory = [
+      initPrompt,
+      { role: 'user', content: summaryContext },
+      ...recentMessages
+    ];
+
+    logger.info('SDK', 'Compacted history', {
+      sessionId: session.sessionDbId,
+      before: originalLength,
+      after: session.conversationHistory.length,
+      keptRecent: KEEP_RECENT
+    });
+  }
+
+  /**
+   * Estimate token count from text (conservative estimate)
+   */
+  private estimateTokens(text: string): number {
+    return Math.ceil(text.length / CHARS_PER_TOKEN_ESTIMATE);
+  }
+
+  /**
+   * Truncate conversation history to prevent runaway context costs.
+   * Structure-aware: always preserves the compacted head (init prompt +
+   * summary context) and only trims recent messages from the middle.
+   */
+  private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+    const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
+    const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
+
+    const totalTokens = history.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
+    if (history.length <= MAX_CONTEXT_MESSAGES && totalTokens <= MAX_ESTIMATED_TOKENS) {
+      return history;
+    }
+
+    // Preserve the compacted head: init prompt (index 0) and summary context (index 1 if present)
+    const HEAD_SIZE = Math.min(2, history.length);
+    const head = history.slice(0, HEAD_SIZE);
+    const tail = history.slice(HEAD_SIZE);
+
+    const headTokens = head.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
+    const remainingTokenBudget = MAX_ESTIMATED_TOKENS - headTokens;
+    const remainingMessageBudget = MAX_CONTEXT_MESSAGES - HEAD_SIZE;
+
+    const kept: ConversationMessage[] = [];
+    let tokenCount = 0;
+
+    for (let i = tail.length - 1; i >= 0; i--) {
+      const msg = tail[i];
+      const msgTokens = this.estimateTokens(msg.content);
+
+      if (kept.length >= remainingMessageBudget || tokenCount + msgTokens > remainingTokenBudget) {
+        break;
+      }
+
+      kept.unshift(msg);
+      tokenCount += msgTokens;
+    }
+
+    const result = [...head, ...kept];
+
+    if (result.length < history.length) {
+      logger.warn('SDK', 'Context window truncated (head preserved)', {
+        originalMessages: history.length,
+        keptMessages: result.length,
+        headPreserved: HEAD_SIZE,
+        estimatedTokens: headTokens + tokenCount,
+        tokenLimit: MAX_ESTIMATED_TOKENS
+      });
+    }
+
+    return result;
+  }
+
+  /**
    * Start Gemini agent for a session
    * Uses multi-turn conversation to maintain context across messages
    */
@@ -134,6 +254,30 @@ export class GeminiAgent {
         throw new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
       }
 
+      // Ensure memorySessionId is set (Gemini doesn't get session IDs from SDK responses)
+      // This must happen before any processAgentResponse() calls which require it for the FK constraint
+      // IMPORTANT: Reuse existing DB value to avoid FK violations with existing observations/summaries.
+      // Only generate a new UUID for truly new sessions that have no memory_session_id yet.
+      if (!session.memorySessionId) {
+        const dbSession = this.dbManager.getSessionById(session.sessionDbId);
+        const existingId = dbSession.memory_session_id;
+        if (existingId) {
+          session.memorySessionId = existingId;
+          logger.info('SESSION', `Restored memorySessionId from database for Gemini session`, {
+            sessionId: session.sessionDbId,
+            memorySessionId: existingId
+          });
+        } else {
+          const generatedId = randomUUID();
+          session.memorySessionId = generatedId;
+          this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, generatedId);
+          logger.info('SESSION', `Generated memorySessionId for Gemini session`, {
+            sessionId: session.sessionDbId,
+            memorySessionId: generatedId
+          });
+        }
+      }
+
       // Load active mode
       const mode = ModeManager.getInstance().getActiveMode();
 
@@ -142,21 +286,19 @@ export class GeminiAgent {
         ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
         : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
-      // Add to conversation history and query Gemini with full context
+      // Add to conversation history, compact if needed, and query with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
+      this.compactHistory(session);
       const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
       if (initResponse.content) {
-        // Add response to conversation history
-        session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
-
         // Track token usage
         const tokensUsed = initResponse.tokensUsed || 0;
         session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  // Rough estimate
         session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
 
         // Process response using shared ResponseProcessor (no original timestamp for init - not from queue)
-        await processAgentResponse(
+        processAgentResponse(
           initResponse.content,
           session,
           this.dbManager,
@@ -164,7 +306,9 @@ export class GeminiAgent {
           worker,
           tokensUsed,
           null,
-          'Gemini'
+          'Gemini',
+          undefined,  // projectRoot
+          true  // skipSummaryStorage: prevent feedback loop in compactHistory
         );
       } else {
         logger.error('SDK', 'Empty Gemini init response - session may lack context', {
@@ -195,29 +339,27 @@ export class GeminiAgent {
           // Build observation prompt
           const obsPrompt = buildObservationPrompt({
             id: 0,
-            tool_name: message.tool_name!,
+            tool_name: message.tool_name ?? '',
             tool_input: JSON.stringify(message.tool_input),
             tool_output: JSON.stringify(message.tool_response),
             created_at_epoch: originalTimestamp ?? Date.now(),
             cwd: message.cwd
           });
 
-          // Add to conversation history and query Gemini with full context
+          // Add to conversation history, compact if needed, and query with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
+          this.compactHistory(session);
           const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
           let tokensUsed = 0;
           if (obsResponse.content) {
-            // Add response to conversation history
-            session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
-
             tokensUsed = obsResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
           }
 
           // Process response using shared ResponseProcessor
-          await processAgentResponse(
+          processAgentResponse(
             obsResponse.content || '',
             session,
             this.dbManager,
@@ -226,10 +368,11 @@ export class GeminiAgent {
             tokensUsed,
             originalTimestamp,
             'Gemini',
-            lastCwd
+            lastCwd,
+            true  // skipSummaryStorage: prevent feedback loop in compactHistory
           );
 
-        } else if (message.type === 'summarize') {
+        } else {
           // Build summary prompt
           const summaryPrompt = buildSummaryPrompt({
             id: session.sessionDbId,
@@ -239,22 +382,20 @@ export class GeminiAgent {
             last_assistant_message: message.last_assistant_message || ''
           }, mode);
 
-          // Add to conversation history and query Gemini with full context
+          // Add to conversation history, compact if needed, and query with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+          this.compactHistory(session);
           const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
-            // Add response to conversation history
-            session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
-
             tokensUsed = summaryResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
           }
 
           // Process response using shared ResponseProcessor
-          await processAgentResponse(
+          processAgentResponse(
             summaryResponse.content || '',
             session,
             this.dbManager,
@@ -321,8 +462,10 @@ export class GeminiAgent {
     model: GeminiModel,
     rateLimitingEnabled: boolean
   ): Promise<{ content: string; tokensUsed?: number }> {
-    const contents = this.conversationToGeminiContents(history);
-    const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
+    // Truncate history to prevent runaway costs (preserves compacted head)
+    const truncatedHistory = this.truncateHistory(history);
+    const contents = this.conversationToGeminiContents(truncatedHistory);
+    const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
 
     logger.debug('SDK', `Querying Gemini multi-turn (${model})`, {
       turns: history.length,
@@ -350,7 +493,7 @@ export class GeminiAgent {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Gemini API error: ${response.status} - ${error}`);
+      throw new Error(`Gemini API error: ${String(response.status)} - ${error}`);
     }
 
     const data = await response.json() as GeminiResponse;

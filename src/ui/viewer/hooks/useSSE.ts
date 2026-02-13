@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Observation, Summary, UserPrompt, StreamEvent } from '../types';
+import type { Observation, Summary, UserPrompt, StreamEvent } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
 
@@ -46,8 +46,8 @@ export function useSSE() {
         }, TIMING.SSE_RECONNECT_DELAY_MS);
       };
 
-      eventSource.onmessage = (event) => {
-        const data: StreamEvent = JSON.parse(event.data);
+      eventSource.onmessage = (event: MessageEvent<string>) => {
+        const data: StreamEvent = JSON.parse(event.data) as StreamEvent;
 
         switch (data.type) {
           case 'initial_load':
@@ -60,8 +60,9 @@ export function useSSE() {
 
           case 'new_observation':
             if (data.observation) {
-              console.log('[SSE] New observation:', data.observation.id);
-              setObservations(prev => [data.observation, ...prev]);
+              const obs = data.observation;
+              console.log('[SSE] New observation:', obs.id);
+              setObservations(prev => [obs, ...prev]);
             }
             break;
 

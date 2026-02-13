@@ -4,7 +4,7 @@
 
 ## Overview
 
-Use claude-mem's persistent memory in Cursor without a Claude Code subscription. Choose between free-tier providers (Gemini, OpenRouter) or paid options.
+Use claude-mem's persistent memory in Cursor without a Claude Code subscription. Choose between free-tier providers (Gemini, OpenAI-compatible) or paid options.
 
 **What You Get**:
 - **Persistent memory** that survives across sessions - your AI remembers what it worked on
@@ -18,7 +18,7 @@ Use claude-mem's persistent memory in Cursor without a Claude Code subscription.
 
 ### macOS / Linux
 - Cursor IDE
-- [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`)
+- Node.js >= 18.0.0
 - Git
 - `jq` and `curl`:
   - **macOS**: `brew install jq curl`
@@ -26,7 +26,7 @@ Use claude-mem's persistent memory in Cursor without a Claude Code subscription.
 
 ### Windows
 - Cursor IDE
-- [Bun](https://bun.sh) (PowerShell: `powershell -c "irm bun.sh/install.ps1 | iex"`)
+- Node.js >= 18.0.0
 - Git
 - PowerShell 5.1+ (included with Windows 10/11)
 
@@ -38,10 +38,10 @@ git clone https://github.com/thedotmack/claude-mem.git
 cd claude-mem
 
 # Install dependencies
-bun install
+npm install
 
 # Build the project
-bun run build
+npm run build
 ```
 
 ## Step 2: Configure Provider (Choose One)
@@ -69,21 +69,21 @@ EOF
 
 **Get your free API key**: https://aistudio.google.com/apikey
 
-### Option B: OpenRouter (100+ Models)
+### Option B: OpenAI-Compatible (100+ Models)
 
-OpenRouter provides access to many models, including free options.
+Use any OpenAI-compatible endpoint, including OpenRouter which provides access to many models with free options.
 
 ```bash
 mkdir -p ~/.claude-mem
 cat > ~/.claude-mem/settings.json << 'EOF'
 {
-  "CLAUDE_MEM_PROVIDER": "openrouter",
-  "CLAUDE_MEM_OPENROUTER_API_KEY": "YOUR_OPENROUTER_API_KEY"
+  "CLAUDE_MEM_PROVIDER": "openai-compat",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "YOUR_API_KEY"
 }
 EOF
 ```
 
-**Get your API key**: https://openrouter.ai/keys
+**Get an OpenRouter API key**: https://openrouter.ai/keys
 
 **Free models available**:
 - `google/gemini-2.0-flash-exp:free`
@@ -107,10 +107,10 @@ EOF
 
 ```bash
 # From the claude-mem repo directory (recommended - all projects)
-bun run cursor:install -- user
+npm run cursor:install -- user
 
 # Or for project-level only:
-bun run cursor:install
+npm run cursor:install
 ```
 
 This installs:
@@ -121,7 +121,7 @@ This installs:
 ## Step 4: Start the Worker
 
 ```bash
-bun run worker:start
+npm run worker:start
 ```
 
 The worker runs in the background and handles:
@@ -136,7 +136,7 @@ The worker runs in the background and handles:
 
 2. **Check installation status**:
    ```bash
-   bun run cursor:status
+   npm run cursor:status
    ```
 
 3. **Verify the worker is running**:
@@ -184,7 +184,7 @@ tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
 If you hit the 1500 requests/day limit:
 - Wait until the next day
 - Upgrade to a paid plan
-- Switch to OpenRouter with a paid model
+- Switch to an OpenAI-compatible endpoint with a paid model
 
 ## Next Steps
 
@@ -196,12 +196,12 @@ If you hit the 1500 requests/day limit:
 
 | Command | Purpose |
 |---------|---------|
-| `bun run cursor:install -- user` | Install hooks for all projects (recommended) |
-| `bun run cursor:install` | Install hooks for current project only |
-| `bun run cursor:status` | Check installation status |
-| `bun run worker:start` | Start the background worker |
-| `bun run worker:stop` | Stop the background worker |
-| `bun run worker:restart` | Restart the worker |
+| `npm run cursor:install -- user` | Install hooks for all projects (recommended) |
+| `npm run cursor:install` | Install hooks for current project only |
+| `npm run cursor:status` | Check installation status |
+| `npm run worker:start` | Start the background worker |
+| `npm run worker:stop` | Stop the background worker |
+| `npm run worker:restart` | Restart the worker |
 
 ---
 
@@ -223,8 +223,8 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 # Clone and build
 git clone https://github.com/thedotmack/claude-mem.git
 cd claude-mem
-bun install
-bun run build
+npm install
+npm run build
 
 # Configure provider (Gemini example)
 $settingsDir = "$env:USERPROFILE\.claude-mem"
@@ -238,11 +238,11 @@ New-Item -ItemType Directory -Force -Path $settingsDir
 "@ | Out-File -FilePath "$settingsDir\settings.json" -Encoding UTF8
 
 # Interactive setup (recommended - walks you through everything)
-bun run cursor:setup
+npm run cursor:setup
 
 # Or manual installation
-bun run cursor:install
-bun run worker:start
+npm run cursor:install
+npm run worker:start
 ```
 
 ### What Gets Installed on Windows

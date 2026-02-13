@@ -1,4 +1,4 @@
-import { Database } from 'bun:sqlite';
+import { Database } from './sqlite-compat.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { MigrationRunner } from './migrations/runner.js';
@@ -19,7 +19,7 @@ let dbInstance: Database | null = null;
  * ClaudeMemDatabase - New entry point for the sqlite module
  *
  * Replaces SessionStore as the database coordinator.
- * Sets up bun:sqlite with optimized settings and runs all migrations.
+ * Sets up SQLite with optimized settings and runs all migrations.
  *
  * Usage:
  *   const db = new ClaudeMemDatabase();  // uses default DB_PATH
@@ -43,8 +43,8 @@ export class ClaudeMemDatabase {
     this.db.run('PRAGMA synchronous = NORMAL');
     this.db.run('PRAGMA foreign_keys = ON');
     this.db.run('PRAGMA temp_store = memory');
-    this.db.run(`PRAGMA mmap_size = ${SQLITE_MMAP_SIZE_BYTES}`);
-    this.db.run(`PRAGMA cache_size = ${SQLITE_CACHE_SIZE_PAGES}`);
+    this.db.run(`PRAGMA mmap_size = ${String(SQLITE_MMAP_SIZE_BYTES)}`);
+    this.db.run(`PRAGMA cache_size = ${String(SQLITE_CACHE_SIZE_PAGES)}`);
 
     // Run all migrations
     const migrationRunner = new MigrationRunner(this.db);
@@ -63,8 +63,9 @@ export class ClaudeMemDatabase {
  * SQLite Database singleton with migration support and optimized settings
  * @deprecated Use ClaudeMemDatabase instead for new code
  */
+/* eslint-disable @typescript-eslint/no-deprecated -- self-references within deprecated class are expected */
 export class DatabaseManager {
-  private static instance: DatabaseManager;
+  private static instance: DatabaseManager | undefined;
   private db: Database | null = null;
   private migrations: Migration[] = [];
 
@@ -87,7 +88,7 @@ export class DatabaseManager {
   /**
    * Initialize database connection with optimized settings
    */
-  async initialize(): Promise<Database> {
+  initialize(): Database {
     if (this.db) {
       return this.db;
     }
@@ -102,14 +103,14 @@ export class DatabaseManager {
     this.db.run('PRAGMA synchronous = NORMAL');
     this.db.run('PRAGMA foreign_keys = ON');
     this.db.run('PRAGMA temp_store = memory');
-    this.db.run(`PRAGMA mmap_size = ${SQLITE_MMAP_SIZE_BYTES}`);
-    this.db.run(`PRAGMA cache_size = ${SQLITE_CACHE_SIZE_PAGES}`);
+    this.db.run(`PRAGMA mmap_size = ${String(SQLITE_MMAP_SIZE_BYTES)}`);
+    this.db.run(`PRAGMA cache_size = ${String(SQLITE_CACHE_SIZE_PAGES)}`);
 
     // Initialize schema_versions table
     this.initializeSchemaVersions();
 
     // Run migrations
-    await this.runMigrations();
+    this.runMigrations();
 
     dbInstance = this.db;
     return this.db;
@@ -163,27 +164,28 @@ export class DatabaseManager {
   /**
    * Run all pending migrations
    */
-  private async runMigrations(): Promise<void> {
+  private runMigrations(): void {
     if (!this.db) return;
 
     const query = this.db.query('SELECT version FROM schema_versions ORDER BY version');
-    const appliedVersions = query.all().map((row: any) => row.version);
+    const appliedVersions = query.all().map((row: unknown) => (row as { version: number }).version);
 
     const maxApplied = appliedVersions.length > 0 ? Math.max(...appliedVersions) : 0;
 
     for (const migration of this.migrations) {
       if (migration.version > maxApplied) {
-        logger.info('DB', `Applying migration ${migration.version}`);
+        logger.info('DB', `Applying migration ${String(migration.version)}`);
 
-        const transaction = this.db.transaction(() => {
-          migration.up(this.db!);
+        const db = this.db;
+        const transaction = db.transaction(() => {
+          migration.up(db);
 
-          const insertQuery = this.db!.query('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)');
+          const insertQuery = db.query('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)');
           insertQuery.run(migration.version, new Date().toISOString());
         });
 
         transaction();
-        logger.info('DB', `Migration ${migration.version} applied successfully`);
+        logger.info('DB', `Migration ${String(migration.version)} applied successfully`);
       }
     }
   }
@@ -200,6 +202,7 @@ export class DatabaseManager {
     return result?.version || 0;
   }
 }
+/* eslint-enable @typescript-eslint/no-deprecated */
 
 /**
  * Get the global database instance (for compatibility)
@@ -214,12 +217,13 @@ export function getDatabase(): Database {
 /**
  * Initialize and get database manager
  */
-export async function initializeDatabase(): Promise<Database> {
+export function initializeDatabase(): Database {
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- compatibility function wraps deprecated class
   const manager = DatabaseManager.getInstance();
-  return await manager.initialize();
+  return manager.initialize();
 }
 
-// Re-export bun:sqlite Database type
+// Re-export Database type for downstream consumers
 export { Database };
 
 // Re-export MigrationRunner for external use

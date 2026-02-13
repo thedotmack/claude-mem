@@ -4,9 +4,10 @@
   "private": true,
   "description": "Runtime dependencies for claude-mem bundled hooks",
   "type": "module",
-  "dependencies": {},
+  "dependencies": {
+    "better-sqlite3": "^12.6.2"
+  },
   "engines": {
-    "node": ">=18.0.0",
-    "bun": ">=1.0.0"
+    "node": ">=18.0.0"
   }
 }

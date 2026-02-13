@@ -1,4 +1,4 @@
-import { Database } from './sqlite-compat.js';
+import type { Database } from './sqlite-compat.js';
 import type { PendingMessage } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
@@ -87,7 +87,9 @@ export class PendingMessageStore {
       const peekStmt = this.db.prepare(`
         SELECT * FROM pending_messages
         WHERE session_db_id = ? AND status = 'pending'
-        ORDER BY id ASC
+        ORDER BY
+          CASE message_type WHEN 'summarize' THEN 0 ELSE 1 END,
+          id ASC
         LIMIT 1
       `);
       const msg = peekStmt.get(sessionId) as PersistentPendingMessage | null;
@@ -98,14 +100,14 @@ export class PendingMessageStore {
         deleteStmt.run(msg.id);
 
         // Log claim with minimal info (avoid logging full payload)
-        logger.info('QUEUE', `CLAIMED | sessionDbId=${sessionId} | messageId=${msg.id} | type=${msg.message_type}`, {
+        logger.info('QUEUE', `CLAIMED | sessionDbId=${String(sessionId)} | messageId=${String(msg.id)} | type=${msg.message_type}`, {
           sessionId: sessionId
         });
       }
       return msg;
     });
 
-    return claimTx(sessionDbId) as PersistentPendingMessage | null;
+    return claimTx(sessionDbId);
   }
 
   /**

@@ -89,7 +89,7 @@ export class ModeManager {
    * - Override primitives
    */
   private deepMerge<T>(base: T, override: Partial<T>): T {
-    const result = { ...base } as T;
+    const result = { ...base };
 
     for (const key in override) {
       const overrideValue = override[key];
@@ -97,7 +97,7 @@ export class ModeManager {
 
       if (this.isPlainObject(overrideValue) && this.isPlainObject(baseValue)) {
         // Recursively merge nested objects
-        result[key] = this.deepMerge(baseValue, overrideValue as any);
+        result[key] = this.deepMerge(baseValue, overrideValue as Partial<T[Extract<keyof T, string>]>);
       } else {
         // Replace arrays and primitives completely
         result[key] = overrideValue as T[Extract<keyof T, string>];
@@ -143,7 +143,7 @@ export class ModeManager {
           concepts: mode.observation_concepts.map(c => c.id)
         });
         return mode;
-      } catch (error) {
+      } catch {
         logger.warn('SYSTEM', `Mode file not found: ${modeId}, falling back to 'code'`);
         // If we're already trying to load 'code', throw to prevent infinite recursion
         if (modeId === 'code') {
@@ -160,7 +160,7 @@ export class ModeManager {
     let parentMode: ModeConfig;
     try {
       parentMode = this.loadMode(parentId);
-    } catch (error) {
+    } catch {
       logger.warn('SYSTEM', `Parent mode '${parentId}' not found for ${modeId}, falling back to 'code'`);
       parentMode = this.loadMode('code');
     }
@@ -170,15 +170,8 @@ export class ModeManager {
     try {
       overrideConfig = this.loadModeFile(overrideId);
       logger.debug('SYSTEM', `Loaded override file: ${overrideId} for parent ${parentId}`);
-    } catch (error) {
+    } catch {
       logger.warn('SYSTEM', `Override file '${overrideId}' not found, using parent mode '${parentId}' only`);
-      this.activeMode = parentMode;
-      return parentMode;
-    }
-
-    // Validate override file loaded successfully
-    if (!overrideConfig) {
-      logger.warn('SYSTEM', `Invalid override file: ${overrideId}, using parent mode '${parentId}' only`);
       this.activeMode = parentMode;
       return parentMode;
     }

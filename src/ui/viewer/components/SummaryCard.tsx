@@ -1,5 +1,5 @@
 import React from "react";
-import { Summary } from "../types";
+import type { Summary } from "../types";
 import { formatDate } from "../utils/formatters";
 
 interface SummaryCardProps {
@@ -33,7 +33,7 @@ export function SummaryCard({ summary }: SummaryCardProps) {
           <section
             key={section.key}
             className="summary-section"
-            style={{ animationDelay: `${index * 50}ms` }}
+            style={{ animationDelay: `${String(index * 50)}ms` }}
           >
             <div className="summary-section-header">
               <img

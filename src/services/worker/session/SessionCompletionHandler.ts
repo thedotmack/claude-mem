@@ -9,9 +9,9 @@
  * 2. Broadcast session completed event (updates UI spinner)
  */
 
-import { SessionManager } from '../SessionManager.js';
-import { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
-import { logger } from '../../../utils/logger.js';
+import { logger } from '../../../utils/logger.js'; // eslint-disable-line @typescript-eslint/no-unused-vars -- required by logger-usage-standards
+import type { SessionManager } from '../SessionManager.js';
+import type { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
 
 export class SessionCompletionHandler {
   constructor(

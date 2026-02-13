@@ -10,16 +10,20 @@
  * Used when: No query text is provided, or as a fallback when Chroma fails
  */
 
-import { BaseSearchStrategy, SearchStrategy } from './SearchStrategy.js';
-import {
+import type { SearchStrategy } from './SearchStrategy.js';
+import { BaseSearchStrategy } from './SearchStrategy.js';
+import type {
   StrategySearchOptions,
   StrategySearchResult,
-  SEARCH_CONSTANTS,
   ObservationSearchResult,
   SessionSummarySearchResult,
   UserPromptSearchResult
 } from '../types.js';
-import { SessionSearch } from '../../../sqlite/SessionSearch.js';
+import {
+  SEARCH_CONSTANTS
+} from '../types.js';
+import type { SessionSearch } from '../../../sqlite/SessionSearch.js';
+import type { ObservationRow, SearchOptions } from '../../../sqlite/types.js';
 import { logger } from '../../../../utils/logger.js';
 
 export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchStrategy {
@@ -35,6 +39,7 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
     return !options.query || options.strategyHint === 'sqlite';
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async search(options: StrategySearchOptions): Promise<StrategySearchResult> {
     const {
       searchType = 'all',
@@ -68,7 +73,7 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
       if (searchObservations) {
         const obsOptions = {
           ...baseOptions,
-          type: obsType,
+          type: obsType as SearchOptions['type'],
           concepts,
           files
         };
@@ -115,7 +120,7 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
    */
   findByType(type: string | string[], options: StrategySearchOptions): ObservationSearchResult[] {
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy = 'date_desc' } = options;
-    return this.sessionSearch.findByType(type as any, { limit, project, dateRange, orderBy });
+    return this.sessionSearch.findByType(type as ObservationRow['type'] | ObservationRow['type'][], { limit, project, dateRange, orderBy });
   }
 
   /**

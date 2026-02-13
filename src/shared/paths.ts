@@ -1,6 +1,6 @@
-import { join, dirname, basename, sep } from 'path';
+import { join, dirname, basename } from 'path';
 import { homedir } from 'os';
-import { existsSync, mkdirSync } from 'fs';
+import { mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
@@ -58,7 +58,7 @@ export function getProjectArchiveDir(projectName: string): string {
  * Get worker socket path for a session
  */
 export function getWorkerSocketPath(sessionId: number): string {
-  return join(DATA_DIR, `worker-${sessionId}.sock`);
+  return join(DATA_DIR, `worker-${String(sessionId)}.sock`);
 }
 
 /**

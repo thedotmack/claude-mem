@@ -292,7 +292,7 @@ Establishes explicit error handling policy with:
 ### Anti-Pattern Detection
 
 ```bash
-bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts
+npx tsx scripts/anti-pattern-test/detect-error-handling-antipatterns.ts
 ```
 
 Scans for 7 anti-patterns including:

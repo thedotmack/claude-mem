@@ -1,5 +1,5 @@
-import { EventEmitter } from 'events';
-import { PendingMessageStore, PersistentPendingMessage } from '../sqlite/PendingMessageStore.js';
+import type { EventEmitter } from 'events';
+import type { PendingMessageStore, PersistentPendingMessage } from '../sqlite/PendingMessageStore.js';
 import type { PendingMessageWithId } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
@@ -47,6 +47,7 @@ export class SessionQueueProcessor {
           // Queue empty - wait for wake-up event or timeout
           const receivedMessage = await this.waitForMessage(signal, IDLE_TIMEOUT_MS);
 
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- signal.aborted can change during await
           if (!receivedMessage && !signal.aborted) {
             // Timeout occurred - check if we've been idle too long
             const idleDuration = Date.now() - lastActivityTime;
@@ -64,6 +65,7 @@ export class SessionQueueProcessor {
           }
         }
       } catch (error) {
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- signal.aborted can change during await
         if (signal.aborted) return;
         logger.error('SESSION', 'Error in queue processor loop', { sessionDbId }, error as Error);
         // Small backoff to prevent tight loop on DB error
@@ -89,8 +91,6 @@ export class SessionQueueProcessor {
    */
   private waitForMessage(signal: AbortSignal, timeoutMs: number = IDLE_TIMEOUT_MS): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
       const onMessage = () => {
         cleanup();
         resolve(true); // Message received
@@ -107,16 +107,14 @@ export class SessionQueueProcessor {
       };
 
       const cleanup = () => {
-        if (timeoutId !== undefined) {
-          clearTimeout(timeoutId);
-        }
+        clearTimeout(timeoutId);
         this.events.off('message', onMessage);
         signal.removeEventListener('abort', onAbort);
       };
 
       this.events.once('message', onMessage);
       signal.addEventListener('abort', onAbort, { once: true });
-      timeoutId = setTimeout(onTimeout, timeoutMs);
+      const timeoutId = setTimeout(onTimeout, timeoutMs);
     });
   }
 }

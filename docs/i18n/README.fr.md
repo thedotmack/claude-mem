@@ -146,7 +146,7 @@ Redémarrez Claude Code. Le contexte des sessions précédentes apparaîtra auto
 - **[Évolution de l'architecture](https://docs.claude-mem.ai/architecture-evolution)** - Le parcours de la v3 à la v5
 - **[Architecture des hooks](https://docs.claude-mem.ai/hooks-architecture)** - Comment Claude-Mem utilise les hooks de cycle de vie
 - **[Référence des hooks](https://docs.claude-mem.ai/architecture/hooks)** - Explication des 7 scripts de hooks
-- **[Service Worker](https://docs.claude-mem.ai/architecture/worker-service)** - API HTTP et gestion Bun
+- **[Service Worker](https://docs.claude-mem.ai/architecture/worker-service)** - API HTTP et gestion Node.js
 - **[Base de données](https://docs.claude-mem.ai/architecture/database)** - Schéma SQLite et recherche FTS5
 - **[Architecture de recherche](https://docs.claude-mem.ai/architecture/search-architecture)** - Recherche hybride avec la base de données vectorielle Chroma
 
@@ -164,7 +164,7 @@ Redémarrez Claude Code. Le contexte des sessions précédentes apparaîtra auto
 
 1. **5 hooks de cycle de vie** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 scripts de hooks)
 2. **Installation intelligente** - Vérificateur de dépendances en cache (script pré-hook, pas un hook de cycle de vie)
-3. **Service Worker** - API HTTP sur le port 37777 avec interface web de visualisation et 10 points de terminaison de recherche, géré par Bun
+3. **Service Worker** - API HTTP sur le port 37777 avec interface web de visualisation et 10 points de terminaison de recherche, géré par Node.js
 4. **Base de données SQLite** - Stocke les sessions, observations, résumés
 5. **Compétence mem-search** - Requêtes en langage naturel avec divulgation progressive
 6. **Base de données vectorielle Chroma** - Recherche hybride sémantique + mots-clés pour une récupération de contexte intelligente
@@ -220,7 +220,6 @@ Voir la **[Documentation des fonctionnalités bêta](https://docs.claude-mem.ai/
 
 - **Node.js** : 18.0.0 ou supérieur
 - **Claude Code** : Dernière version avec support des plugins
-- **Bun** : Runtime JavaScript et gestionnaire de processus (installé automatiquement si manquant)
 - **uv** : Gestionnaire de packages Python pour la recherche vectorielle (installé automatiquement si manquant)
 - **SQLite 3** : Pour le stockage persistant (inclus)
 

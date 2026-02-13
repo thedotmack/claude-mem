@@ -5,6 +5,7 @@
 
 import { logger } from '../utils/logger.js';
 import type { ModeConfig } from '../services/domain/types.js';
+import type { SessionSummary } from '../services/sqlite/summaries/types.js';
 
 export interface Observation {
   id: number;
@@ -90,8 +91,8 @@ ${mode.prompts.header_memory_start}`;
  */
 export function buildObservationPrompt(obs: Observation): string {
   // Safely parse tool_input and tool_output - they're already JSON strings
-  let toolInput: any;
-  let toolOutput: any;
+  let toolInput: unknown;
+  let toolOutput: unknown;
 
   try {
     toolInput = typeof obs.tool_input === 'string' ? JSON.parse(obs.tool_input) : obs.tool_input;
@@ -231,4 +232,35 @@ ${mode.prompts.format_examples}
 ${mode.prompts.footer}
 
 ${mode.prompts.header_memory_continued}`;
+}
+
+/**
+ * Build a summary context message for history compaction.
+ * Formats the current DB summary as XML the agent already understands,
+ * allowing it to maintain session awareness after conversation compaction.
+ *
+ * @param summary - Current session summary from DB, or null for new sessions
+ * @returns Formatted context string to inject as a user message
+ */
+export function buildSummaryContextPrompt(summary: SessionSummary | null): string {
+  if (!summary || (!summary.request?.trim() && !summary.investigated?.trim() &&
+      !summary.learned?.trim() && !summary.completed?.trim() && !summary.next_steps?.trim())) {
+    return `<session_context>
+This is early in the session. No summary exists yet. Continue observing and recording.
+</session_context>`;
+  }
+
+  return `<session_context>
+Below is a summary of everything observed so far in this session. Use it to maintain continuity.
+Continue observing new tool uses and update the summary if the session's direction has changed.
+
+<summary>
+  <request>${summary.request || ''}</request>
+  <investigated>${summary.investigated || ''}</investigated>
+  <learned>${summary.learned || ''}</learned>
+  <completed>${summary.completed || ''}</completed>
+  <next_steps>${summary.next_steps || ''}</next_steps>
+  <notes>${summary.notes || ''}</notes>
+</summary>
+</session_context>`;
 } 

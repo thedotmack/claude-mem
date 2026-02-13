@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, readFileSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import {
@@ -27,7 +27,6 @@ describe('ProcessManager', () => {
   afterEach(() => {
     // Restore original PID file or remove test one
     if (originalPidContent !== null) {
-      const { writeFileSync } = require('fs');
       writeFileSync(PID_FILE, originalPidContent);
       originalPidContent = null;
     } else {
@@ -46,7 +45,7 @@ describe('ProcessManager', () => {
       writePidFile(testInfo);
 
       expect(existsSync(PID_FILE)).toBe(true);
-      const content = JSON.parse(readFileSync(PID_FILE, 'utf-8'));
+      const content = JSON.parse(readFileSync(PID_FILE, 'utf-8')) as PidInfo;
       expect(content.pid).toBe(12345);
       expect(content.port).toBe(37777);
       expect(content.startedAt).toBe(testInfo.startedAt);
@@ -67,7 +66,7 @@ describe('ProcessManager', () => {
       writePidFile(firstInfo);
       writePidFile(secondInfo);
 
-      const content = JSON.parse(readFileSync(PID_FILE, 'utf-8'));
+      const content = JSON.parse(readFileSync(PID_FILE, 'utf-8')) as PidInfo;
       expect(content.pid).toBe(22222);
       expect(content.port).toBe(37888);
     });
@@ -85,9 +84,10 @@ describe('ProcessManager', () => {
       const result = readPidFile();
 
       expect(result).not.toBeNull();
-      expect(result!.pid).toBe(54321);
-      expect(result!.port).toBe(37999);
-      expect(result!.startedAt).toBe('2024-06-15T12:00:00.000Z');
+      const pidInfo = result as PidInfo;
+      expect(pidInfo.pid).toBe(54321);
+      expect(pidInfo.port).toBe(37999);
+      expect(pidInfo.startedAt).toBe('2024-06-15T12:00:00.000Z');
     });
 
     it('should return null for missing file', () => {
@@ -100,7 +100,6 @@ describe('ProcessManager', () => {
     });
 
     it('should return null for corrupted JSON', () => {
-      const { writeFileSync } = require('fs');
       writeFileSync(PID_FILE, 'not valid json {{{');
 
       const result = readPidFile();
@@ -130,7 +129,7 @@ describe('ProcessManager', () => {
       expect(existsSync(PID_FILE)).toBe(false);
 
       // Should not throw
-      expect(() => removePidFile()).not.toThrow();
+      expect(() => { removePidFile(); }).not.toThrow();
     });
   });
 

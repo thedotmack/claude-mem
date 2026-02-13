@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, afterEach } from 'vitest';
 
 /**
  * Tests for PowerShell output parsing logic used in Windows process enumeration.

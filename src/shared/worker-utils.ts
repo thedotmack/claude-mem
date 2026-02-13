@@ -2,13 +2,9 @@ import path from "path";
 import { homedir } from "os";
 import { readFileSync } from "fs";
 import { logger } from "../utils/logger.js";
-import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 
 const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-
-// Named constants for health checks
-const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
 
 // Cache to avoid repeated settings file reads
 let cachedPort: number | null = null;
@@ -65,8 +61,8 @@ export function clearPortCache(): void {
  */
 async function isWorkerHealthy(): Promise<boolean> {
   const port = getWorkerPort();
-  // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-  const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+  // No AbortSignal.timeout — worker service has its own timeouts
+  const response = await fetch(`http://127.0.0.1:${String(port)}/api/health`);
   return response.ok;
 }
 
@@ -75,7 +71,7 @@ async function isWorkerHealthy(): Promise<boolean> {
  */
 function getPluginVersion(): string {
   const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version: string };
   return packageJson.version;
 }
 
@@ -84,10 +80,10 @@ function getPluginVersion(): string {
  */
 async function getWorkerVersion(): Promise<string> {
   const port = getWorkerPort();
-  // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-  const response = await fetch(`http://127.0.0.1:${port}/api/version`);
+  // No AbortSignal.timeout — worker service has its own timeouts
+  const response = await fetch(`http://127.0.0.1:${String(port)}/api/version`);
   if (!response.ok) {
-    throw new Error(`Failed to get worker version: ${response.status}`);
+    throw new Error(`Failed to get worker version: ${String(response.status)}`);
   }
   const data = await response.json() as { version: string };
   return data.version;

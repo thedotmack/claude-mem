@@ -7,7 +7,7 @@
  * - Type-safe settings management
  */
 
-import { DatabaseManager } from './DatabaseManager.js';
+import type { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import type { ViewerSettings } from '../worker-types.js';
 
@@ -37,7 +37,7 @@ export class SettingsManager {
       for (const row of rows) {
         const key = row.key as keyof ViewerSettings;
         if (key in settings) {
-          settings[key] = JSON.parse(row.value) as ViewerSettings[typeof key];
+          (settings as unknown as Record<string, unknown>)[key] = JSON.parse(row.value);
         }
       }
 

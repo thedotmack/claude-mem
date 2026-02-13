@@ -1,18 +1,18 @@
-import { Database } from 'bun:sqlite';
+import { Database } from './sqlite-compat.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
-import {
+import type {
   TableColumnInfo,
   IndexInfo,
   TableNameRow,
   SchemaVersion,
-  SdkSessionRecord,
   ObservationRecord,
   SessionSummaryRecord,
   UserPromptRecord,
   LatestPromptResult
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
+import { isSummaryContentEmpty } from './summaries/types.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -606,7 +606,7 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(17, new Date().toISOString());
 
     if (renamesPerformed > 0) {
-      logger.debug('DB', `Successfully renamed ${renamesPerformed} session ID columns`);
+      logger.debug('DB', `Successfully renamed ${String(renamesPerformed)} session ID columns`);
     } else {
       logger.debug('DB', 'No session ID column renames needed (already up to date)');
     }
@@ -682,7 +682,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(project, limit);
+    return stmt.all(project, limit) as ReturnType<typeof this.getRecentSummaries>;
   }
 
   /**
@@ -707,7 +707,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(project, limit);
+    return stmt.all(project, limit) as ReturnType<typeof this.getRecentSummariesWithSessionInfo>;
   }
 
   /**
@@ -727,7 +727,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(project, limit);
+    return stmt.all(project, limit) as ReturnType<typeof this.getRecentObservations>;
   }
 
   /**
@@ -751,7 +751,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(limit);
+    return stmt.all(limit) as ReturnType<typeof this.getAllRecentObservations>;
   }
 
   /**
@@ -781,7 +781,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(limit);
+    return stmt.all(limit) as ReturnType<typeof this.getAllRecentSummaries>;
   }
 
   /**
@@ -811,7 +811,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(limit);
+    return stmt.all(limit) as ReturnType<typeof this.getAllRecentUserPrompts>;
   }
 
   /**
@@ -886,7 +886,7 @@ export class SessionStore {
       ORDER BY started_at_epoch ASC
     `);
 
-    return stmt.all(project, limit);
+    return stmt.all(project, limit) as ReturnType<typeof this.getRecentSessionsWithStatus>;
   }
 
   /**
@@ -905,7 +905,7 @@ export class SessionStore {
       ORDER BY created_at_epoch ASC
     `);
 
-    return stmt.all(memorySessionId);
+    return stmt.all(memorySessionId) as ReturnType<typeof this.getObservationsForSession>;
   }
 
   /**
@@ -932,11 +932,11 @@ export class SessionStore {
 
     const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
-    const limitClause = limit ? `LIMIT ${limit}` : '';
+    const limitClause = limit ? `LIMIT ${String(limit)}` : '';
 
     // Build placeholders for IN clause
     const placeholders = ids.map(() => '?').join(',');
-    const params: any[] = [...ids];
+    const params: (string | number)[] = [...ids];
     const additionalConditions: string[] = [];
 
     // Apply project filter
@@ -1021,7 +1021,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(memorySessionId) || null;
+    return (stmt.get(memorySessionId) as ReturnType<typeof this.getSummaryForSession>) || null;
   }
 
   /**
@@ -1048,17 +1048,17 @@ export class SessionStore {
     for (const row of rows) {
       // Parse files_read
       if (row.files_read) {
-        const files = JSON.parse(row.files_read);
+        const files: unknown = JSON.parse(row.files_read);
         if (Array.isArray(files)) {
-          files.forEach(f => filesReadSet.add(f));
+          files.forEach((f: string) => filesReadSet.add(f));
         }
       }
 
       // Parse files_modified
       if (row.files_modified) {
-        const files = JSON.parse(row.files_modified);
+        const files: unknown = JSON.parse(row.files_modified);
         if (Array.isArray(files)) {
-          files.forEach(f => filesModifiedSet.add(f));
+          files.forEach((f: string) => filesModifiedSet.add(f));
         }
       }
     }
@@ -1086,7 +1086,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(id) || null;
+    return (stmt.get(id) as ReturnType<typeof this.getSessionById>) || null;
   }
 
   /**
@@ -1116,7 +1116,7 @@ export class SessionStore {
       ORDER BY started_at_epoch DESC
     `);
 
-    return stmt.all(...memorySessionIds) as any[];
+    return stmt.all(...memorySessionIds) as ReturnType<typeof this.getSdkSessionsBySessionIds>;
   }
 
 
@@ -1165,7 +1165,7 @@ export class SessionStore {
     const now = new Date();
     const nowEpoch = now.getTime();
 
-    // Pure INSERT OR IGNORE - no updates, no complexity
+    // INSERT OR IGNORE - first hook to create the session wins
     // NOTE: memory_session_id starts as NULL. It is captured by SDKAgent from the first SDK
     // response and stored via updateMemorySessionId(). CRITICAL: memory_session_id must NEVER
     // equal contentSessionId - that would inject memory messages into the user's transcript!
@@ -1174,6 +1174,21 @@ export class SessionStore {
       (content_session_id, memory_session_id, project, user_prompt, started_at, started_at_epoch, status)
       VALUES (?, NULL, ?, ?, ?, ?, 'active')
     `).run(contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
+
+    // Backfill project/prompt if session was created by another hook with empty values
+    // (PostToolUse and Stop hooks create sessions with project='', UserPromptSubmit has the real values)
+    if (project) {
+      this.db.prepare(`
+        UPDATE sdk_sessions SET project = ?
+        WHERE content_session_id = ? AND (project IS NULL OR project = '')
+      `).run(project, contentSessionId);
+    }
+    if (userPrompt) {
+      this.db.prepare(`
+        UPDATE sdk_sessions SET user_prompt = ?
+        WHERE content_session_id = ? AND (user_prompt IS NULL OR user_prompt = '')
+      `).run(userPrompt, contentSessionId);
+    }
 
     // Return existing or new ID
     const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
@@ -1295,6 +1310,13 @@ export class SessionStore {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
+    // Guard: Don't store empty summaries (context truncation protection)
+    if (isSummaryContentEmpty(summary)) {
+      logger.warn('DB', 'Skipping empty summary insert', { memorySessionId });
+      return { id: 0, createdAtEpoch: timestampEpoch };
+    }
+
+    // INSERT: Each prompt gets its own summary row (no overwrite)
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries
       (memory_session_id, project, request, investigated, learned, completed,
@@ -1400,31 +1422,35 @@ export class SessionStore {
         observationIds.push(Number(result.lastInsertRowid));
       }
 
-      // 2. Store summary if provided
+      // 2. Store summary if provided (INSERT: each prompt gets its own summary row)
       let summaryId: number | null = null;
       if (summary) {
-        const summaryStmt = this.db.prepare(`
-          INSERT INTO session_summaries
-          (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
+        if (isSummaryContentEmpty(summary)) {
+          logger.warn('DB', 'Skipping empty summary insert', { memorySessionId });
+        } else {
+          const summaryStmt = this.db.prepare(`
+            INSERT INTO session_summaries
+            (memory_session_id, project, request, investigated, learned, completed,
+             next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
 
-        const result = summaryStmt.run(
-          memorySessionId,
-          project,
-          summary.request,
-          summary.investigated,
-          summary.learned,
-          summary.completed,
-          summary.next_steps,
-          summary.notes,
-          promptNumber || null,
-          discoveryTokens,
-          timestampIso,
-          timestampEpoch
-        );
-        summaryId = Number(result.lastInsertRowid);
+          const result = summaryStmt.run(
+            memorySessionId,
+            project,
+            summary.request,
+            summary.investigated,
+            summary.learned,
+            summary.completed,
+            summary.next_steps,
+            summary.notes,
+            promptNumber || null,
+            discoveryTokens,
+            timestampIso,
+            timestampEpoch
+          );
+          summaryId = Number(result.lastInsertRowid);
+        }
       }
 
       return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
@@ -1520,31 +1546,35 @@ export class SessionStore {
         observationIds.push(Number(result.lastInsertRowid));
       }
 
-      // 2. Store summary if provided
+      // 2. Store summary if provided (INSERT: each prompt gets its own summary row)
       let summaryId: number | undefined;
       if (summary) {
-        const summaryStmt = this.db.prepare(`
-          INSERT INTO session_summaries
-          (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
+        if (isSummaryContentEmpty(summary)) {
+          logger.warn('DB', 'Skipping empty summary insert', { memorySessionId });
+        } else {
+          const summaryStmt = this.db.prepare(`
+            INSERT INTO session_summaries
+            (memory_session_id, project, request, investigated, learned, completed,
+             next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
 
-        const result = summaryStmt.run(
-          memorySessionId,
-          project,
-          summary.request,
-          summary.investigated,
-          summary.learned,
-          summary.completed,
-          summary.next_steps,
-          summary.notes,
-          promptNumber || null,
-          discoveryTokens,
-          timestampIso,
-          timestampEpoch
-        );
-        summaryId = Number(result.lastInsertRowid);
+          const result = summaryStmt.run(
+            memorySessionId,
+            project,
+            summary.request,
+            summary.investigated,
+            summary.learned,
+            summary.completed,
+            summary.next_steps,
+            summary.notes,
+            promptNumber || null,
+            discoveryTokens,
+            timestampIso,
+            timestampEpoch
+          );
+          summaryId = Number(result.lastInsertRowid);
+        }
       }
 
       // 3. Mark pending message as processed
@@ -1587,9 +1617,9 @@ export class SessionStore {
 
     const { orderBy = 'date_desc', limit, project } = options;
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
-    const limitClause = limit ? `LIMIT ${limit}` : '';
+    const limitClause = limit ? `LIMIT ${String(limit)}` : '';
     const placeholders = ids.map(() => '?').join(',');
-    const params: any[] = [...ids];
+    const params: (string | number)[] = [...ids];
 
     // Apply project filter
     const whereClause = project
@@ -1619,9 +1649,9 @@ export class SessionStore {
 
     const { orderBy = 'date_desc', limit, project } = options;
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
-    const limitClause = limit ? `LIMIT ${limit}` : '';
+    const limitClause = limit ? `LIMIT ${String(limit)}` : '';
     const placeholders = ids.map(() => '?').join(',');
-    const params: any[] = [...ids];
+    const params: (string | number)[] = [...ids];
 
     // Apply project filter
     const projectFilter = project ? 'AND s.project = ?' : '';
@@ -1656,9 +1686,9 @@ export class SessionStore {
     depthAfter: number = 10,
     project?: string
   ): {
-    observations: any[];
-    sessions: any[];
-    prompts: any[];
+    observations: ObservationRecord[];
+    sessions: Array<{ id: number; memory_session_id: string; project: string; request: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
+    prompts: Array<{ id: number; content_session_id: string; prompt_number: number; prompt_text: string; project: string | undefined; created_at: string; created_at_epoch: number }>;
   } {
     return this.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project);
   }
@@ -1674,9 +1704,9 @@ export class SessionStore {
     depthAfter: number = 10,
     project?: string
   ): {
-    observations: any[];
-    sessions: any[];
-    prompts: any[];
+    observations: ObservationRecord[];
+    sessions: Array<{ id: number; memory_session_id: string; project: string; request: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
+    prompts: Array<{ id: number; content_session_id: string; prompt_number: number; prompt_text: string; project: string | undefined; created_at: string; created_at_epoch: number }>;
   } {
     const projectFilter = project ? 'AND project = ?' : '';
     const projectParams = project ? [project] : [];
@@ -1712,7 +1742,7 @@ export class SessionStore {
 
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
-      } catch (err: any) {
+      } catch (err: unknown) {
         logger.error('DB', 'Error getting boundary observations', undefined, { error: err, project });
         return { observations: [], sessions: [], prompts: [] };
       }
@@ -1744,7 +1774,7 @@ export class SessionStore {
 
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
-      } catch (err: any) {
+      } catch (err: unknown) {
         logger.error('DB', 'Error getting boundary timestamps', undefined, { error: err, project });
         return { observations: [], sessions: [], prompts: [] };
       }
@@ -1828,7 +1858,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(id) || null;
+    return (stmt.get(id) as ReturnType<typeof this.getPromptById>) || null;
   }
 
   /**
@@ -1904,7 +1934,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(id) || null;
+    return (stmt.get(id) as ReturnType<typeof this.getSessionSummaryById>) || null;
   }
 
   /**

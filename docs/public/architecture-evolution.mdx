@@ -53,13 +53,13 @@ const ThemeProvider = ({ children }) => {
 
 ### v5.1.1: Worker Startup Fix (November 2025) - Now Deprecated
 
-**Note**: This section describes a historical PM2-based approach that has been replaced with Bun in later versions.
+**Note**: This section describes a historical PM2-based approach that has been replaced with Node.js in later versions.
 
 **The Problem**: Worker startup failed on Windows with ENOENT error when using PM2
 
 **Historical Solution**: Used full path to PM2 binary instead of relying on PATH
 
-**Current Approach**: The project now uses Bun for process management, which provides better cross-platform compatibility and eliminates these PATH-related issues.
+**Current Approach**: The project now uses Node.js for process management, which provides better cross-platform compatibility and eliminates these PATH-related issues.
 
 **Impact**: Cross-platform compatibility restored, Windows users can now use claude-mem without issues.
 
@@ -156,7 +156,7 @@ if (currentVersion !== installedVersion) {
 **Cached Check Logic**:
 1. Does `node_modules` exist?
 2. Does `.install-version` match `package.json` version?
-3. Is `better-sqlite3` present? (Legacy: now uses bun:sqlite which requires no installation)
+3. Is `better-sqlite3` present? (auto-installed via npm)
 
 **Impact**:
 - SessionStart hook: 2-5 seconds → 10ms (99.5% faster)

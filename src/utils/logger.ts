@@ -15,20 +15,21 @@ export enum LogLevel {
   SILENT = 4
 }
 
-export type Component = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'FOLDER_INDEX';
+export type Component = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'FOLDER_INDEX'
+  | 'SEARCH' | 'CHROMA_SYNC' | 'BRANCH' | 'PROCESS' | 'CURSOR' | 'QUEUE' | 'IMPORT' | 'CONSOLE' | 'SECURITY' | 'SETTINGS' | 'ENV' | 'CONFIG' | 'PROJECT_NAME';
 
 interface LogContext {
   sessionId?: number;
   memorySessionId?: string;
   correlationId?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // NOTE: This default must match DEFAULT_DATA_DIR in src/shared/SettingsDefaultsManager.ts
 // Inlined here to avoid circular dependency with SettingsDefaultsManager
 const DEFAULT_DATA_DIR = join(homedir(), '.claude-mem');
 
-class Logger {
+export class Logger {
   private level: LogLevel | null = null;
   private useColor: boolean;
   private logFilePath: string | null = null;
@@ -36,6 +37,7 @@ class Logger {
 
   constructor() {
     // Disable colors when output is not a TTY (e.g., PM2 logs)
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- isTTY is undefined at runtime when piped
     this.useColor = process.stdout.isTTY ?? false;
     // Don't initialize log file in constructor - do it lazily to avoid circular dependency
   }
@@ -78,13 +80,14 @@ class Logger {
         const settingsPath = join(DEFAULT_DATA_DIR, 'settings.json');
         if (existsSync(settingsPath)) {
           const settingsData = readFileSync(settingsPath, 'utf-8');
-          const settings = JSON.parse(settingsData);
-          const envLevel = (settings.CLAUDE_MEM_LOG_LEVEL || 'INFO').toUpperCase();
+          const settings = JSON.parse(settingsData) as { CLAUDE_MEM_LOG_LEVEL?: string };
+          const envLevel: string = (settings.CLAUDE_MEM_LOG_LEVEL || 'INFO').toUpperCase();
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- envLevel may not be a valid LogLevel key at runtime
           this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
         } else {
           this.level = LogLevel.INFO;
         }
-      } catch (error) {
+      } catch {
         // Fallback to INFO if settings can't be loaded
         this.level = LogLevel.INFO;
       }
@@ -96,20 +99,20 @@ class Logger {
    * Create correlation ID for tracking an observation through the pipeline
    */
   correlationId(sessionId: number, observationNum: number): string {
-    return `obs-${sessionId}-${observationNum}`;
+    return `obs-${String(sessionId)}-${String(observationNum)}`;
   }
 
   /**
    * Create session correlation ID
    */
   sessionId(sessionId: number): string {
-    return `session-${sessionId}`;
+    return `session-${String(sessionId)}`;
   }
 
   /**
    * Format data for logging - create compact summaries instead of full dumps
    */
-  private formatData(data: any): string {
+  private formatData(data: unknown): string {
     if (data === null || data === undefined) return '';
     if (typeof data === 'string') return data;
     if (typeof data === 'number') return data.toString();
@@ -120,35 +123,38 @@ class Logger {
       // If it's an error, show message and stack in debug mode
       if (data instanceof Error) {
         return this.getLevel() === LogLevel.DEBUG
-          ? `${data.message}\n${data.stack}`
+          ? `${data.message}\n${String(data.stack)}`
           : data.message;
       }
 
       // For arrays, show count
       if (Array.isArray(data)) {
-        return `[${data.length} items]`;
+        return `[${String(data.length)} items]`;
       }
 
       // For objects, show key count
-      const keys = Object.keys(data);
+      const keys = Object.keys(data as Record<string, unknown>);
       if (keys.length === 0) return '{}';
       if (keys.length <= 3) {
         // Show small objects inline
         return JSON.stringify(data);
       }
-      return `{${keys.length} keys: ${keys.slice(0, 3).join(', ')}...}`;
+      return `{${String(keys.length)} keys: ${keys.slice(0, 3).join(', ')}...}`;
     }
 
-    return String(data);
+    if (typeof data === 'object') return JSON.stringify(data);
+    if (typeof data === 'function') return `[Function: ${data.name || 'anonymous'}]`;
+    // At this point data is string | number | boolean | bigint | symbol
+    return String(data as string | number | boolean);
   }
 
   /**
    * Format a tool name and input for compact display
    */
-  formatTool(toolName: string, toolInput?: any): string {
+  formatTool(toolName: string, toolInput?: unknown): string {
     if (!toolInput) return toolName;
 
-    let input = toolInput;
+    let input: unknown = toolInput;
     if (typeof toolInput === 'string') {
       try {
         input = JSON.parse(toolInput);
@@ -158,58 +164,66 @@ class Logger {
       }
     }
 
+    // Type guard for object property access
+    const isObj = (v: unknown): v is Record<string, unknown> =>
+      typeof v === 'object' && v !== null;
+
+    // Helper to safely stringify unknown values from parsed input
+    const str = (v: unknown): string =>
+      typeof v === 'string' ? v : typeof v === 'object' ? JSON.stringify(v) : String(v as string | number | boolean);
+
     // Bash: show full command
-    if (toolName === 'Bash' && input.command) {
-      return `${toolName}(${input.command})`;
+    if (toolName === 'Bash' && isObj(input) && input.command) {
+      return `${toolName}(${str(input.command)})`;
     }
 
     // File operations: show full path
-    if (input.file_path) {
-      return `${toolName}(${input.file_path})`;
+    if (isObj(input) && input.file_path) {
+      return `${toolName}(${str(input.file_path)})`;
     }
 
     // NotebookEdit: show full notebook path
-    if (input.notebook_path) {
-      return `${toolName}(${input.notebook_path})`;
+    if (isObj(input) && input.notebook_path) {
+      return `${toolName}(${str(input.notebook_path)})`;
     }
 
     // Glob: show full pattern
-    if (toolName === 'Glob' && input.pattern) {
-      return `${toolName}(${input.pattern})`;
+    if (toolName === 'Glob' && isObj(input) && input.pattern) {
+      return `${toolName}(${str(input.pattern)})`;
     }
 
     // Grep: show full pattern
-    if (toolName === 'Grep' && input.pattern) {
-      return `${toolName}(${input.pattern})`;
+    if (toolName === 'Grep' && isObj(input) && input.pattern) {
+      return `${toolName}(${str(input.pattern)})`;
     }
 
     // WebFetch/WebSearch: show full URL or query
-    if (input.url) {
-      return `${toolName}(${input.url})`;
+    if (isObj(input) && input.url) {
+      return `${toolName}(${str(input.url)})`;
     }
 
-    if (input.query) {
-      return `${toolName}(${input.query})`;
+    if (isObj(input) && input.query) {
+      return `${toolName}(${str(input.query)})`;
     }
 
     // Task: show subagent_type or full description
-    if (toolName === 'Task') {
+    if (toolName === 'Task' && isObj(input)) {
       if (input.subagent_type) {
-        return `${toolName}(${input.subagent_type})`;
+        return `${toolName}(${str(input.subagent_type)})`;
       }
       if (input.description) {
-        return `${toolName}(${input.description})`;
+        return `${toolName}(${str(input.description)})`;
       }
     }
 
     // Skill: show skill name
-    if (toolName === 'Skill' && input.skill) {
-      return `${toolName}(${input.skill})`;
+    if (toolName === 'Skill' && isObj(input) && input.skill) {
+      return `${toolName}(${str(input.skill)})`;
     }
 
     // LSP: show operation type
-    if (toolName === 'LSP' && input.operation) {
-      return `${toolName}(${input.operation})`;
+    if (toolName === 'LSP' && isObj(input) && input.operation) {
+      return `${toolName}(${str(input.operation)})`;
     }
 
     // Default: just show tool name
@@ -227,7 +241,7 @@ class Logger {
     const minutes = String(date.getMinutes()).padStart(2, '0');
     const seconds = String(date.getSeconds()).padStart(2, '0');
     const ms = String(date.getMilliseconds()).padStart(3, '0');
-    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms}`;
+    return `${String(year)}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms}`;
   }
 
   /**
@@ -238,7 +252,7 @@ class Logger {
     component: Component,
     message: string,
     context?: LogContext,
-    data?: any
+    data?: unknown
   ): void {
     if (level < this.getLevel()) return;
 
@@ -254,7 +268,7 @@ class Logger {
     if (context?.correlationId) {
       correlationStr = `[${context.correlationId}] `;
     } else if (context?.sessionId) {
-      correlationStr = `[session-${context.sessionId}] `;
+      correlationStr = `[session-${String(context.sessionId)}] `;
     }
 
     // Build data part
@@ -263,7 +277,7 @@ class Logger {
       // Handle Error objects specially - they don't JSON.stringify properly
       if (data instanceof Error) {
         dataStr = this.getLevel() === LogLevel.DEBUG
-          ? `\n${data.message}\n${data.stack}`
+          ? `\n${data.message}\n${String(data.stack)}`
           : ` ${data.message}`;
       } else if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
         // In debug mode, show full JSON for objects
@@ -276,9 +290,9 @@ class Logger {
     // Build additional context
     let contextStr = '';
     if (context) {
-      const { sessionId, memorySessionId, correlationId, ...rest } = context;
+      const { sessionId: _sessionId, memorySessionId: _memorySessionId, correlationId: _correlationId, ...rest } = context;
       if (Object.keys(rest).length > 0) {
-        const pairs = Object.entries(rest).map(([k, v]) => `${k}=${v}`);
+        const pairs = Object.entries(rest).map(([k, v]) => `${k}=${String(v)}`);
         contextStr = ` {${pairs.join(', ')}}`;
       }
     }
@@ -292,7 +306,7 @@ class Logger {
       } catch (error) {
         // Logger can't log its own failures - use stderr as last resort
         // This is expected during disk full / permission errors
-        process.stderr.write(`[LOGGER] Failed to write to log file: ${error}\n`);
+        process.stderr.write(`[LOGGER] Failed to write to log file: ${String(error)}\n`);
       }
     } else {
       // If no log file available, write to stderr as fallback
@@ -301,47 +315,47 @@ class Logger {
   }
 
   // Public logging methods
-  debug(component: Component, message: string, context?: LogContext, data?: any): void {
+  debug(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.log(LogLevel.DEBUG, component, message, context, data);
   }
 
-  info(component: Component, message: string, context?: LogContext, data?: any): void {
+  info(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.log(LogLevel.INFO, component, message, context, data);
   }
 
-  warn(component: Component, message: string, context?: LogContext, data?: any): void {
+  warn(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.log(LogLevel.WARN, component, message, context, data);
   }
 
-  error(component: Component, message: string, context?: LogContext, data?: any): void {
+  error(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.log(LogLevel.ERROR, component, message, context, data);
   }
 
   /**
    * Log data flow: input → processing
    */
-  dataIn(component: Component, message: string, context?: LogContext, data?: any): void {
+  dataIn(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.info(component, `→ ${message}`, context, data);
   }
 
   /**
    * Log data flow: processing → output
    */
-  dataOut(component: Component, message: string, context?: LogContext, data?: any): void {
+  dataOut(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.info(component, `← ${message}`, context, data);
   }
 
   /**
    * Log successful completion
    */
-  success(component: Component, message: string, context?: LogContext, data?: any): void {
+  success(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.info(component, `✓ ${message}`, context, data);
   }
 
   /**
    * Log failure
    */
-  failure(component: Component, message: string, context?: LogContext, data?: any): void {
+  failure(component: Component, message: string, context?: LogContext, data?: unknown): void {
     this.error(component, `✗ ${message}`, context, data);
   }
 
@@ -349,7 +363,7 @@ class Logger {
    * Log timing information
    */
   timing(component: Component, message: string, durationMs: number, context?: LogContext): void {
-    this.info(component, `⏱ ${message}`, context, { duration: `${durationMs}ms` });
+    this.info(component, `⏱ ${message}`, context, { duration: `${String(durationMs)}ms` });
   }
 
   /**
@@ -378,7 +392,7 @@ class Logger {
     component: Component,
     message: string,
     context?: LogContext,
-    data?: any,
+    data?: unknown,
     fallback: T = '' as T
   ): T {
     // Capture stack trace to get caller location
@@ -390,7 +404,7 @@ class Logger {
     const callerLine = stackLines[2] || '';
     const callerMatch = callerLine.match(/at\s+(?:.*\s+)?\(?([^:]+):(\d+):(\d+)\)?/);
     const location = callerMatch
-      ? `${callerMatch[1].split('/').pop()}:${callerMatch[2]}`
+      ? `${String(callerMatch[1].split('/').pop())}:${callerMatch[2]}`
       : 'unknown';
 
     // Log as a warning with location info

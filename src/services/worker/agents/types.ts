@@ -8,6 +8,8 @@
 
 import type { ActiveSession } from '../../worker-types.js';
 import type { ParsedObservation, ParsedSummary } from '../../../sdk/parser.js';
+import type { DatabaseManager } from '../DatabaseManager.js';
+import type { SessionManager } from '../SessionManager.js';
 
 // ============================================================================
 // Worker Reference Type
@@ -115,8 +117,8 @@ export interface FallbackAgent {
  * Base configuration shared across all agents
  */
 export interface BaseAgentConfig {
-  dbManager: import('../DatabaseManager.js').DatabaseManager;
-  sessionManager: import('../SessionManager.js').SessionManager;
+  dbManager: DatabaseManager;
+  sessionManager: SessionManager;
 }
 
 /**

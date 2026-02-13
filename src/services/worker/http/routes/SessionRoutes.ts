@@ -5,22 +5,67 @@
  * These routes manage the flow of work through the Claude Agent SDK.
  */
 
-import express, { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type express from 'express';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
-import { SessionManager } from '../../SessionManager.js';
-import { DatabaseManager } from '../../DatabaseManager.js';
-import { SDKAgent } from '../../SDKAgent.js';
-import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from '../../GeminiAgent.js';
-import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterAgent.js';
+import type { SessionManager } from '../../SessionManager.js';
+import type { DatabaseManager } from '../../DatabaseManager.js';
+import type { SDKAgent } from '../../SDKAgent.js';
+import type { GeminiAgent} from '../../GeminiAgent.js';
+import { isGeminiSelected, isGeminiAvailable } from '../../GeminiAgent.js';
+import type { OpenAICompatAgent} from '../../OpenAICompatAgent.js';
+import { isOpenAICompatSelected, isOpenAICompatAvailable } from '../../OpenAICompatAgent.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
-import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
+import type { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
-import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
+import { checkUserPromptPrivacy } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+
+/** Request body for legacy session init */
+interface SessionInitBody {
+  userPrompt?: string;
+  promptNumber?: number;
+}
+
+/** Request body for legacy observations */
+interface ObservationsBody {
+  tool_name: string;
+  tool_input: unknown;
+  tool_response: unknown;
+  prompt_number: number;
+  cwd?: string;
+}
+
+/** Request body for legacy summarize */
+interface SummarizeBody {
+  last_assistant_message?: string;
+}
+
+/** Request body for observations by Claude ID */
+interface ObservationsByClaudeIdBody {
+  contentSessionId: string;
+  tool_name: string;
+  tool_input: Record<string, unknown> | undefined;
+  tool_response: unknown;
+  cwd: string | undefined;
+}
+
+/** Request body for summarize by Claude ID */
+interface SummarizeByClaudeIdBody {
+  contentSessionId: string;
+  last_assistant_message?: string;
+}
+
+/** Request body for session init by Claude ID */
+interface SessionInitByClaudeIdBody {
+  contentSessionId: string;
+  project: string;
+  prompt: string;
+}
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -30,7 +75,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private dbManager: DatabaseManager,
     private sdkAgent: SDKAgent,
     private geminiAgent: GeminiAgent,
-    private openRouterAgent: OpenRouterAgent,
+    private openaiCompatAgent: OpenAICompatAgent,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService
   ) {
@@ -48,13 +93,13 @@ export class SessionRoutes extends BaseRouteHandler {
    * Note: Session linking via contentSessionId allows provider switching mid-session.
    * The conversationHistory on ActiveSession maintains context across providers.
    */
-  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
-    if (isOpenRouterSelected()) {
-      if (isOpenRouterAvailable()) {
-        logger.debug('SESSION', 'Using OpenRouter agent');
-        return this.openRouterAgent;
+  private getActiveAgent(): SDKAgent | GeminiAgent | OpenAICompatAgent {
+    if (isOpenAICompatSelected()) {
+      if (isOpenAICompatAvailable()) {
+        logger.debug('SESSION', 'Using OpenAI-compat agent');
+        return this.openaiCompatAgent;
       } else {
-        throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
+        throw new Error('OpenAI-compatible provider selected but no API key configured. Set CLAUDE_MEM_OPENAI_COMPAT_API_KEY in settings or OPENAI_COMPAT_API_KEY environment variable.');
       }
     }
     if (isGeminiSelected()) {
@@ -71,9 +116,9 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Get the currently selected provider name
    */
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
-    if (isOpenRouterSelected() && isOpenRouterAvailable()) {
-      return 'openrouter';
+  private getSelectedProvider(): 'claude' | 'gemini' | 'openai-compat' {
+    if (isOpenAICompatSelected() && isOpenAICompatAvailable()) {
+      return 'openai-compat';
     }
     return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
   }
@@ -117,13 +162,13 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
+    provider: 'claude' | 'gemini' | 'openai-compat',
     source: string
   ): void {
     if (!session) return;
 
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agent = provider === 'openai-compat' ? this.openaiCompatAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
+    const agentName = provider === 'openai-compat' ? 'OpenAI-Compat' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
 
     logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
       sessionId: session.sessionDbId,
@@ -135,15 +180,16 @@ export class SessionRoutes extends BaseRouteHandler {
     session.currentProvider = provider;
 
     session.generatorPromise = agent.startSession(session, this.workerService)
-      .catch(error => {
+      .catch((error: unknown) => {
         // Only log non-abort errors
         if (session.abortController.signal.aborted) return;
-        
+
+        const err = error instanceof Error ? error : new Error(String(error));
         logger.error('SESSION', `Generator failed`, {
           sessionId: session.sessionDbId,
           provider: provider,
-          error: error.message
-        }, error);
+          error: err.message
+        }, err);
 
         // Mark all processing messages as failed so they can be retried or abandoned
         const pendingStore = this.sessionManager.getPendingMessageStore();
@@ -175,40 +221,45 @@ export class SessionRoutes extends BaseRouteHandler {
         session.currentProvider = null;
         this.workerService.broadcastProcessingStatus();
 
-        // Crash recovery: If not aborted and still has work, restart
-        if (!wasAborted) {
-          try {
-            const pendingStore = this.sessionManager.getPendingMessageStore();
-            const pendingCount = pendingStore.getPendingCount(sessionDbId);
+        // Recovery: Always check for pending work regardless of abort status.
+        // When aborted (e.g. by a new session-init replacing the generator),
+        // pending messages still need processing.
+        try {
+          const pendingStore = this.sessionManager.getPendingMessageStore();
+          const pendingCount = pendingStore.getPendingCount(sessionDbId);
 
-            if (pendingCount > 0) {
-              logger.info('SESSION', `Restarting generator after crash/exit with pending work`, {
-                sessionId: sessionDbId,
-                pendingCount
-              });
+          if (pendingCount > 0) {
+            logger.info('SESSION', `Restarting generator after exit with pending work`, {
+              sessionId: sessionDbId,
+              pendingCount,
+              wasAborted
+            });
 
-              // Abort OLD controller before replacing to prevent child process leaks
-              const oldController = session.abortController;
-              session.abortController = new AbortController();
+            // Replace abort controller to get a fresh signal
+            const oldController = session.abortController;
+            session.abortController = new AbortController();
+            if (!oldController.signal.aborted) {
               oldController.abort();
-
-              // Small delay before restart
-              setTimeout(() => {
-                const stillExists = this.sessionManager.getSession(sessionDbId);
-                if (stillExists && !stillExists.generatorPromise) {
-                  this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
-                }
-              }, 1000);
-            } else {
-              // No pending work - abort to kill the child process
-              session.abortController.abort();
-              logger.debug('SESSION', 'Aborted controller after natural completion', {
-                sessionId: sessionDbId
-              });
             }
-          } catch (e) {
-            // Ignore errors during recovery check, but still abort to prevent leaks
-            logger.debug('SESSION', 'Error during recovery check, aborting to prevent leaks', { sessionId: sessionDbId, error: e instanceof Error ? e.message : String(e) });
+
+            // Small delay before restart
+            setTimeout(() => {
+              const stillExists = this.sessionManager.getSession(sessionDbId);
+              if (stillExists && !stillExists.generatorPromise) {
+                this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'recovery');
+              }
+            }, 1000);
+          } else if (!wasAborted) {
+            // No pending work and natural exit - abort to kill the child process
+            session.abortController.abort();
+            logger.debug('SESSION', 'Aborted controller after natural completion', {
+              sessionId: sessionDbId
+            });
+          }
+        } catch (e) {
+          // Ignore errors during recovery check, but still abort to prevent leaks
+          logger.debug('SESSION', 'Error during recovery check, aborting to prevent leaks', { sessionId: sessionDbId, error: e instanceof Error ? e.message : String(e) });
+          if (!session.abortController.signal.aborted) {
             session.abortController.abort();
           }
         }
@@ -240,7 +291,8 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
-    const { userPrompt, promptNumber } = req.body;
+    const body = req.body as SessionInitBody;
+    const { userPrompt, promptNumber } = body;
     logger.info('HTTP', 'SessionRoutes: handleSessionInit called', {
       sessionDbId,
       promptNumber,
@@ -280,19 +332,19 @@ export class SessionRoutes extends BaseRouteHandler {
           : promptText;
         logger.debug('CHROMA', 'User prompt synced', {
           promptId: latestPrompt.id,
-          duration: `${chromaDuration}ms`,
+          duration: `${String(chromaDuration)}ms`,
           prompt: truncatedPrompt
         });
-      }).catch((error) => {
+      }).catch((error: unknown) => {
         logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
           promptId: latestPrompt.id,
           prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
-        }, error);
+        }, error instanceof Error ? error : new Error(String(error)));
       });
     }
 
-    // Start agent in background using the helper method
-    this.startGeneratorWithProvider(session, this.getSelectedProvider(), 'init');
+    // Start agent in background (only if not already running)
+    this.ensureGeneratorRunning(sessionDbId, 'init');
 
     // Broadcast session started event
     this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
@@ -308,7 +360,8 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
-    const { tool_name, tool_input, tool_response, prompt_number, cwd } = req.body;
+    const body = req.body as ObservationsBody;
+    const { tool_name, tool_input, tool_response, prompt_number, cwd } = body;
 
     this.sessionManager.queueObservation(sessionDbId, {
       tool_name,
@@ -335,7 +388,8 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
-    const { last_assistant_message } = req.body;
+    const body = req.body as SummarizeBody;
+    const { last_assistant_message } = body;
 
     this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
 
@@ -402,10 +456,11 @@ export class SessionRoutes extends BaseRouteHandler {
    * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
+    const body = req.body as ObservationsByClaudeIdBody;
+    const { contentSessionId, tool_name, tool_input, tool_response, cwd } = body;
 
     if (!contentSessionId) {
-      return this.badRequest(res, 'Missing contentSessionId');
+      this.badRequest(res, 'Missing contentSessionId'); return;
     }
 
     // Load skip tools from settings
@@ -422,7 +477,7 @@ export class SessionRoutes extends BaseRouteHandler {
     // Skip meta-observations: file operations on session-memory files
     const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);
     if (fileOperationTools.has(tool_name) && tool_input) {
-      const filePath = tool_input.file_path || tool_input.notebook_path;
+      const filePath = (tool_input.file_path ?? tool_input.notebook_path) as string | undefined;
       if (filePath && filePath.includes('session-memory')) {
         logger.debug('SESSION', 'Skipping meta-observation for session-memory file', {
           tool_name,
@@ -440,7 +495,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
     // Privacy check: skip if user prompt was entirely private
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
+    const userPrompt = checkUserPromptPrivacy(
       store,
       contentSessionId,
       promptNumber,
@@ -454,11 +509,11 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Strip memory tags from tool_input and tool_response
-    const cleanedToolInput = tool_input !== undefined
+    const cleanedToolInput: string = tool_input !== undefined
       ? stripMemoryTagsFromJson(JSON.stringify(tool_input))
       : '{}';
 
-    const cleanedToolResponse = tool_response !== undefined
+    const cleanedToolResponse: string = tool_response !== undefined
       ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
       : '{}';
 
@@ -494,10 +549,11 @@ export class SessionRoutes extends BaseRouteHandler {
    * Checks privacy, queues summarize request for SDK agent
    */
   private handleSummarizeByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, last_assistant_message } = req.body;
+    const body = req.body as SummarizeByClaudeIdBody;
+    const { contentSessionId, last_assistant_message } = body;
 
     if (!contentSessionId) {
-      return this.badRequest(res, 'Missing contentSessionId');
+      this.badRequest(res, 'Missing contentSessionId'); return;
     }
 
     const store = this.dbManager.getSessionStore();
@@ -507,7 +563,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
     // Privacy check: skip if user prompt was entirely private
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
+    const userPrompt = checkUserPromptPrivacy(
       store,
       contentSessionId,
       promptNumber,
@@ -544,12 +600,13 @@ export class SessionRoutes extends BaseRouteHandler {
    * Returns: { sessionDbId, promptNumber, skipped: boolean, reason?: string }
    */
   private handleSessionInitByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, project, prompt } = req.body;
+    const body = req.body as SessionInitByClaudeIdBody;
+    const { contentSessionId, project, prompt } = body;
 
     logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {
       contentSessionId,
       project,
-      prompt_length: prompt?.length
+      prompt_length: prompt.length
     });
 
     // Validate required parameters
@@ -565,7 +622,7 @@ export class SessionRoutes extends BaseRouteHandler {
     // Verify session creation with DB lookup
     const dbSession = store.getSessionById(sessionDbId);
     const isNewSession = !dbSession?.memory_session_id;
-    logger.info('SESSION', `CREATED | contentSessionId=${contentSessionId} → sessionDbId=${sessionDbId} | isNew=${isNewSession} | project=${project}`, {
+    logger.info('SESSION', `CREATED | contentSessionId=${contentSessionId} → sessionDbId=${String(sessionDbId)} | isNew=${String(isNewSession)} | project=${project}`, {
       sessionId: sessionDbId
     });
 
@@ -576,9 +633,9 @@ export class SessionRoutes extends BaseRouteHandler {
     // Debug-level alignment logs for detailed tracing
     const memorySessionId = dbSession?.memory_session_id || null;
     if (promptNumber > 1) {
-      logger.debug('HTTP', `[ALIGNMENT] DB Lookup Proof | contentSessionId=${contentSessionId} → memorySessionId=${memorySessionId || '(not yet captured)'} | prompt#=${promptNumber}`);
+      logger.debug('HTTP', `[ALIGNMENT] DB Lookup Proof | contentSessionId=${contentSessionId} → memorySessionId=${memorySessionId || '(not yet captured)'} | prompt#=${String(promptNumber)}`);
     } else {
-      logger.debug('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${promptNumber} | memorySessionId will be captured on first SDK response`);
+      logger.debug('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${String(promptNumber)} | memorySessionId will be captured on first SDK response`);
     }
 
     // Step 3: Strip privacy tags from prompt

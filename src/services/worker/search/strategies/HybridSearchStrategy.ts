@@ -10,24 +10,28 @@
  * Used for: findByConcept, findByFile, findByType with Chroma available
  */
 
-import { BaseSearchStrategy, SearchStrategy } from './SearchStrategy.js';
-import {
+import type { SearchStrategy } from './SearchStrategy.js';
+import { BaseSearchStrategy } from './SearchStrategy.js';
+import type {
   StrategySearchOptions,
   StrategySearchResult,
-  SEARCH_CONSTANTS,
   ObservationSearchResult,
   SessionSummarySearchResult
 } from '../types.js';
-import { ChromaSync } from '../../../sync/ChromaSync.js';
-import { SessionStore } from '../../../sqlite/SessionStore.js';
-import { SessionSearch } from '../../../sqlite/SessionSearch.js';
+import {
+  SEARCH_CONSTANTS
+} from '../types.js';
+import type { ChromaSync } from '../../../sync/ChromaSync.js';
+import type { SessionStore } from '../../../sqlite/SessionStore.js';
+import type { SessionSearch } from '../../../sqlite/SessionSearch.js';
+import type { ObservationRow } from '../../../sqlite/types.js';
 import { logger } from '../../../../utils/logger.js';
 
 export class HybridSearchStrategy extends BaseSearchStrategy implements SearchStrategy {
   readonly name = 'hybrid';
 
   constructor(
-    private chromaSync: ChromaSync,
+    private chromaSync: ChromaSync | null,
     private sessionStore: SessionStore,
     private sessionSearch: SessionSearch
   ) {
@@ -44,9 +48,10 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     );
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async search(options: StrategySearchOptions): Promise<StrategySearchResult> {
     // This is the generic hybrid search - specific operations use dedicated methods
-    const { query, limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project } = options;
+    const { query } = options;
 
     if (!query) {
       return this.emptyResult('hybrid');
@@ -65,6 +70,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     concept: string,
     options: StrategySearchOptions
   ): Promise<StrategySearchResult> {
+    if (!this.chromaSync) return this.emptyResult('hybrid');
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy } = options;
     const filterOptions = { limit, project, dateRange, orderBy };
 
@@ -130,6 +136,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     type: string | string[],
     options: StrategySearchOptions
   ): Promise<StrategySearchResult> {
+    if (!this.chromaSync) return this.emptyResult('hybrid');
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy } = options;
     const filterOptions = { limit, project, dateRange, orderBy };
     const typeStr = Array.isArray(type) ? type.join(', ') : type;
@@ -138,7 +145,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       logger.debug('SEARCH', 'HybridSearchStrategy: findByType', { type: typeStr });
 
       // Step 1: SQLite metadata filter
-      const metadataResults = this.sessionSearch.findByType(type as any, filterOptions);
+      const metadataResults = this.sessionSearch.findByType(type as ObservationRow['type'] | ObservationRow['type'][], filterOptions);
       logger.debug('SEARCH', 'HybridSearchStrategy: Found metadata matches', {
         count: metadataResults.length
       });
@@ -177,7 +184,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     } catch (error) {
       logger.error('SEARCH', 'HybridSearchStrategy: findByType failed', {}, error as Error);
-      const results = this.sessionSearch.findByType(type as any, filterOptions);
+      const results = this.sessionSearch.findByType(type as ObservationRow['type'] | ObservationRow['type'][], filterOptions);
       return {
         results: { observations: results, sessions: [], prompts: [] },
         usedChroma: false,
@@ -198,6 +205,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     sessions: SessionSummarySearchResult[];
     usedChroma: boolean;
   }> {
+    if (!this.chromaSync) return { observations: [], sessions: [], usedChroma: false };
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy } = options;
     const filterOptions = { limit, project, dateRange, orderBy };
 

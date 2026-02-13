@@ -3,8 +3,7 @@
  * Database-first parameter pattern for functional composition
  */
 
-import type { Database } from 'bun:sqlite';
-import { logger } from '../../../utils/logger.js';
+import type { Database } from '../sqlite-compat.js';
 import type {
   SessionBasic,
   SessionFull,

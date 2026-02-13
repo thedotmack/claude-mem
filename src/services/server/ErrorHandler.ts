@@ -4,7 +4,7 @@
  * Provides error handling middleware and utilities for the server.
  */
 
-import { Request, Response, NextFunction, ErrorRequestHandler } from 'express';
+import type { Request, Response, NextFunction, ErrorRequestHandler } from 'express';
 import { logger } from '../../utils/logger.js';
 
 /**
@@ -51,6 +51,7 @@ export function createErrorResponse(
  * Global error handler middleware
  * Should be registered last in the middleware chain
  */
+ 
 export const errorHandler: ErrorRequestHandler = (
   err: Error | AppError,
   req: Request,

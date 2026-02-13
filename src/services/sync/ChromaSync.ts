@@ -10,7 +10,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
+import type { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -129,7 +129,7 @@ export class ChromaSync {
       const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
       const isWindows = process.platform === 'win32';
 
-      const transportOptions: any = {
+      const transportOptions: Record<string, unknown> = {
         command: 'uvx',
         args: [
           '--python', pythonVersion,
@@ -147,7 +147,7 @@ export class ChromaSync {
         logger.debug('CHROMA_SYNC', 'Windows detected, attempting to hide console window', { project: this.project });
       }
 
-      this.transport = new StdioClientTransport(transportOptions);
+      this.transport = new StdioClientTransport(transportOptions as ConstructorParameters<typeof StdioClientTransport>[0]);
 
       // Empty capabilities object: this client only calls Chroma tools, doesn't expose any
       this.client = new Client({
@@ -237,10 +237,10 @@ export class ChromaSync {
     const documents: ChromaDocument[] = [];
 
     // Parse JSON fields
-    const facts = obs.facts ? JSON.parse(obs.facts) : [];
-    const concepts = obs.concepts ? JSON.parse(obs.concepts) : [];
-    const files_read = obs.files_read ? JSON.parse(obs.files_read) : [];
-    const files_modified = obs.files_modified ? JSON.parse(obs.files_modified) : [];
+    const facts: string[] = obs.facts ? JSON.parse(obs.facts) as string[] : [];
+    const concepts: string[] = obs.concepts ? JSON.parse(obs.concepts) as string[] : [];
+    const files_read: string[] = obs.files_read ? JSON.parse(obs.files_read) as string[] : [];
+    const files_modified: string[] = obs.files_modified ? JSON.parse(obs.files_modified) as string[] : [];
 
     const baseMetadata: Record<string, string | number> = {
       sqlite_id: obs.id,
@@ -269,7 +269,7 @@ export class ChromaSync {
     // Narrative as separate document
     if (obs.narrative) {
       documents.push({
-        id: `obs_${obs.id}_narrative`,
+        id: `obs_${String(obs.id)}_narrative`,
         document: obs.narrative,
         metadata: { ...baseMetadata, field_type: 'narrative' }
       });
@@ -278,20 +278,20 @@ export class ChromaSync {
     // Text as separate document (legacy field)
     if (obs.text) {
       documents.push({
-        id: `obs_${obs.id}_text`,
+        id: `obs_${String(obs.id)}_text`,
         document: obs.text,
         metadata: { ...baseMetadata, field_type: 'text' }
       });
     }
 
     // Each fact as separate document
-    facts.forEach((fact: string, index: number) => {
+    for (const [index, fact] of facts.entries()) {
       documents.push({
-        id: `obs_${obs.id}_fact_${index}`,
+        id: `obs_${String(obs.id)}_fact_${String(index)}`,
         document: fact,
         metadata: { ...baseMetadata, field_type: 'fact', fact_index: index }
       });
-    });
+    }
 
     return documents;
   }
@@ -315,7 +315,7 @@ export class ChromaSync {
     // Each field becomes a separate document
     if (summary.request) {
       documents.push({
-        id: `summary_${summary.id}_request`,
+        id: `summary_${String(summary.id)}_request`,
         document: summary.request,
         metadata: { ...baseMetadata, field_type: 'request' }
       });
@@ -323,7 +323,7 @@ export class ChromaSync {
 
     if (summary.investigated) {
       documents.push({
-        id: `summary_${summary.id}_investigated`,
+        id: `summary_${String(summary.id)}_investigated`,
         document: summary.investigated,
         metadata: { ...baseMetadata, field_type: 'investigated' }
       });
@@ -331,7 +331,7 @@ export class ChromaSync {
 
     if (summary.learned) {
       documents.push({
-        id: `summary_${summary.id}_learned`,
+        id: `summary_${String(summary.id)}_learned`,
         document: summary.learned,
         metadata: { ...baseMetadata, field_type: 'learned' }
       });
@@ -339,7 +339,7 @@ export class ChromaSync {
 
     if (summary.completed) {
       documents.push({
-        id: `summary_${summary.id}_completed`,
+        id: `summary_${String(summary.id)}_completed`,
         document: summary.completed,
         metadata: { ...baseMetadata, field_type: 'completed' }
       });
@@ -347,7 +347,7 @@ export class ChromaSync {
 
     if (summary.next_steps) {
       documents.push({
-        id: `summary_${summary.id}_next_steps`,
+        id: `summary_${String(summary.id)}_next_steps`,
         document: summary.next_steps,
         metadata: { ...baseMetadata, field_type: 'next_steps' }
       });
@@ -355,7 +355,7 @@ export class ChromaSync {
 
     if (summary.notes) {
       documents.push({
-        id: `summary_${summary.id}_notes`,
+        id: `summary_${String(summary.id)}_notes`,
         document: summary.notes,
         metadata: { ...baseMetadata, field_type: 'notes' }
       });
@@ -503,7 +503,7 @@ export class ChromaSync {
    */
   private formatUserPromptDoc(prompt: StoredUserPrompt): ChromaDocument {
     return {
-      id: `prompt_${prompt.id}`,
+      id: `prompt_${String(prompt.id)}`,
       document: prompt.prompt_text,
       metadata: {
         sqlite_id: prompt.id,
@@ -580,6 +580,7 @@ export class ChromaSync {
 
     logger.info('CHROMA_SYNC', 'Fetching existing Chroma document IDs...', { project: this.project });
 
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional infinite loop with break
     while (true) {
       try {
         const result = await this.client.callTool({
@@ -593,13 +594,13 @@ export class ChromaSync {
           }
         });
 
-        const data = result.content[0];
+        const data = (result.content as Array<{ type: string; text: string }>)[0];
         if (data.type !== 'text') {
           throw new Error('Unexpected response type from chroma_get_documents');
         }
 
-        const parsed = JSON.parse(data.text);
-        const metadatas = parsed.metadatas || [];
+        const parsed = JSON.parse(data.text) as { metadatas?: Array<{ sqlite_id?: number; doc_type?: string }> };
+        const metadatas = parsed.metadatas ?? [];
 
         if (metadatas.length === 0) {
           break; // No more documents
@@ -697,7 +698,7 @@ export class ChromaSync {
 
         logger.debug('CHROMA_SYNC', 'Backfill progress', {
           project: this.project,
-          progress: `${Math.min(i + this.BATCH_SIZE, allDocs.length)}/${allDocs.length}`
+          progress: `${String(Math.min(i + this.BATCH_SIZE, allDocs.length))}/${String(allDocs.length)}`
         });
       }
 
@@ -738,7 +739,7 @@ export class ChromaSync {
 
         logger.debug('CHROMA_SYNC', 'Backfill progress', {
           project: this.project,
-          progress: `${Math.min(i + this.BATCH_SIZE, summaryDocs.length)}/${summaryDocs.length}`
+          progress: `${String(Math.min(i + this.BATCH_SIZE, summaryDocs.length))}/${String(summaryDocs.length)}`
         });
       }
 
@@ -787,7 +788,7 @@ export class ChromaSync {
 
         logger.debug('CHROMA_SYNC', 'Backfill progress', {
           project: this.project,
-          progress: `${Math.min(i + this.BATCH_SIZE, promptDocs.length)}/${promptDocs.length}`
+          progress: `${String(Math.min(i + this.BATCH_SIZE, promptDocs.length))}/${String(promptDocs.length)}`
         });
       }
 
@@ -821,8 +822,8 @@ export class ChromaSync {
   async queryChroma(
     query: string,
     limit: number,
-    whereFilter?: Record<string, any>
-  ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
+    whereFilter?: Record<string, unknown>
+  ): Promise<{ ids: number[]; distances: number[]; metadatas: Record<string, unknown>[] }> {
     if (this.disabled) {
       return { ids: [], distances: [], metadatas: [] };
     }
@@ -870,7 +871,7 @@ export class ChromaSync {
       throw error;
     }
 
-    const resultText = result.content[0]?.text || (() => {
+    const resultText = (result.content as Array<{ type: string; text: string }>)[0]?.text || (() => {
       logger.error('CHROMA', 'Missing text in MCP chroma_query_documents result', {
         project: this.project,
         query_text: query
@@ -879,9 +880,9 @@ export class ChromaSync {
     })();
 
     // Parse JSON response
-    let parsed: any;
+    let parsed: Record<string, unknown>;
     try {
-      parsed = JSON.parse(resultText);
+      parsed = JSON.parse(resultText) as Record<string, unknown>;
     } catch (error) {
       logger.error('CHROMA_SYNC', 'Failed to parse Chroma response', { project: this.project }, error as Error);
       return { ids: [], distances: [], metadatas: [] };
@@ -889,7 +890,8 @@ export class ChromaSync {
 
     // Extract unique IDs from document IDs
     const ids: number[] = [];
-    const docIds = parsed.ids?.[0] || [];
+    const parsedIds = parsed.ids as string[][] | undefined;
+    const docIds: string[] = (parsedIds?.[0]) ?? [];
     for (const docId of docIds) {
       // Extract sqlite_id from document ID (supports three formats):
       // - obs_{id}_narrative, obs_{id}_fact_0, etc (observations)
@@ -913,8 +915,10 @@ export class ChromaSync {
       }
     }
 
-    const distances = parsed.distances?.[0] || [];
-    const metadatas = parsed.metadatas?.[0] || [];
+    const parsedDistances = parsed.distances as number[][] | undefined;
+    const distances: number[] = parsedDistances?.[0] ?? [];
+    const parsedMetadatas = parsed.metadatas as Record<string, unknown>[][] | undefined;
+    const metadatas: Record<string, unknown>[] = parsedMetadatas?.[0] ?? [];
 
     return { ids, distances, metadatas };
   }

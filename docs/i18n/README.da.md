@@ -146,7 +146,7 @@ Genstart Claude Code. Kontekst fra tidligere sessioner vil automatisk vises i ny
 - **[Arkitekturudvikling](https://docs.claude-mem.ai/architecture-evolution)** - Rejsen fra v3 til v5
 - **[Hooks-arkitektur](https://docs.claude-mem.ai/hooks-architecture)** - Hvordan Claude-Mem bruger livscyklus-hooks
 - **[Hooks-reference](https://docs.claude-mem.ai/architecture/hooks)** - 7 hook-scripts forklaret
-- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & Bun-administration
+- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & Node.js-administration
 - **[Database](https://docs.claude-mem.ai/architecture/database)** - SQLite-skema & FTS5-søgning
 - **[Søgearkitektur](https://docs.claude-mem.ai/architecture/search-architecture)** - Hybrid søgning med Chroma vektordatabase
 
@@ -164,7 +164,7 @@ Genstart Claude Code. Kontekst fra tidligere sessioner vil automatisk vises i ny
 
 1. **5 Livscyklus-hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook-scripts)
 2. **Smart Installation** - Cached dependency checker (pre-hook script, ikke en livscyklus-hook)
-3. **Worker Service** - HTTP API på port 37777 med web viewer UI og 10 søge-endpoints, administreret af Bun
+3. **Worker Service** - HTTP API på port 37777 med web viewer UI og 10 søge-endpoints, administreret af Node.js
 4. **SQLite Database** - Gemmer sessioner, observationer, resuméer
 5. **mem-search-færdighed** - Naturlige sprogforespørgsler med progressiv afsløring
 6. **Chroma Vector Database** - Hybrid semantisk + søgeordssøgning for intelligent konteksthentning
@@ -220,7 +220,6 @@ Se **[Beta-funktionsdokumentation](https://docs.claude-mem.ai/beta-features)** f
 
 - **Node.js**: 18.0.0 eller højere
 - **Claude Code**: Seneste version med plugin-support
-- **Bun**: JavaScript runtime og procesmanager (auto-installeres, hvis manglende)
 - **uv**: Python package manager til vektorsøgning (auto-installeres, hvis manglende)
 - **SQLite 3**: Til vedvarende lagring (bundtet)
 

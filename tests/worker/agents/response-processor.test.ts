@@ -1,18 +1,18 @@
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { logger } from '../../../src/utils/logger.js';
 
 // Mock modules that cause import chain issues - MUST be before imports
 // Use full paths from test file location
-mock.module('../../../src/services/worker-service.js', () => ({
+vi.mock('../../../src/services/worker-service.js', () => ({
   updateCursorContextForProject: () => Promise.resolve(),
 }));
 
-mock.module('../../../src/shared/worker-utils.js', () => ({
+vi.mock('../../../src/shared/worker-utils.js', () => ({
   getWorkerPort: () => 37777,
 }));
 
 // Mock the ModeManager
-mock.module('../../../src/services/domain/ModeManager.js', () => ({
+vi.mock('../../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
     getInstance: () => ({
       getActiveMode: () => ({
@@ -32,20 +32,32 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 // Import after mocks
 import { processAgentResponse } from '../../../src/services/worker/agents/ResponseProcessor.js';
 import type { WorkerRef, StorageResult } from '../../../src/services/worker/agents/types.js';
-import type { ActiveSession } from '../../../src/services/worker-types.js';
+import type { ActiveSession, ParsedObservation, ParsedSummary } from '../../../src/services/worker-types.js';
+
+/** Tuple type for storeObservations mock calls: (memorySessionId, project, observations, summaries, promptNumber, createdAtEpoch) */
+type StoreObservationsCall = [string, string, ParsedObservation[], ParsedSummary[], number, number];
+
+
+/** Broadcast event shape for observation or summary SSE events */
+interface BroadcastEvent {
+  type: string;
+  observation?: { id: number; title: string; type: string };
+  summary?: { request: string };
+}
 import type { DatabaseManager } from '../../../src/services/worker/DatabaseManager.js';
 import type { SessionManager } from '../../../src/services/worker/SessionManager.js';
 
 // Spy on logger methods to suppress output during tests
-let loggerSpies: ReturnType<typeof spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 describe('ResponseProcessor', () => {
   // Mocks
-  let mockStoreObservations: ReturnType<typeof mock>;
-  let mockChromaSyncObservation: ReturnType<typeof mock>;
-  let mockChromaSyncSummary: ReturnType<typeof mock>;
-  let mockBroadcast: ReturnType<typeof mock>;
-  let mockBroadcastProcessingStatus: ReturnType<typeof mock>;
+  let mockStoreObservations: ReturnType<typeof vi.fn>;
+  let mockChromaSyncObservation: ReturnType<typeof vi.fn>;
+  let mockChromaSyncSummary: ReturnType<typeof vi.fn>;
+  let mockBroadcast: ReturnType<typeof vi.fn>;
+  let mockBroadcastProcessingStatus: ReturnType<typeof vi.fn>;
   let mockDbManager: DatabaseManager;
   let mockSessionManager: SessionManager;
   let mockWorker: WorkerRef;
@@ -53,21 +65,21 @@ describe('ResponseProcessor', () => {
   beforeEach(() => {
     // Spy on logger to suppress output
     loggerSpies = [
-      spyOn(logger, 'info').mockImplementation(() => {}),
-      spyOn(logger, 'debug').mockImplementation(() => {}),
-      spyOn(logger, 'warn').mockImplementation(() => {}),
-      spyOn(logger, 'error').mockImplementation(() => {}),
+      vi.spyOn(logger, 'info').mockImplementation(() => {}),
+      vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      vi.spyOn(logger, 'warn').mockImplementation(() => {}),
+      vi.spyOn(logger, 'error').mockImplementation(() => {}),
     ];
 
     // Create fresh mocks for each test
-    mockStoreObservations = mock(() => ({
+    mockStoreObservations = vi.fn(() => ({
       observationIds: [1, 2],
       summaryId: 1,
       createdAtEpoch: 1700000000000,
     } as StorageResult));
 
-    mockChromaSyncObservation = mock(() => Promise.resolve());
-    mockChromaSyncSummary = mock(() => Promise.resolve());
+    mockChromaSyncObservation = vi.fn(() => Promise.resolve());
+    mockChromaSyncSummary = vi.fn(() => Promise.resolve());
 
     mockDbManager = {
       getSessionStore: () => ({
@@ -80,18 +92,19 @@ describe('ResponseProcessor', () => {
     } as unknown as DatabaseManager;
 
     mockSessionManager = {
+      // eslint-disable-next-line @typescript-eslint/require-await
       getMessageIterator: async function* () {
         yield* [];
       },
       getPendingMessageStore: () => ({
-        markProcessed: mock(() => {}),
-        cleanupProcessed: mock(() => 0),
-        resetStuckMessages: mock(() => 0),
+        markProcessed: vi.fn(() => {}),
+        cleanupProcessed: vi.fn(() => 0),
+        resetStuckMessages: vi.fn(() => 0),
       }),
     } as unknown as SessionManager;
 
-    mockBroadcast = mock(() => {});
-    mockBroadcastProcessingStatus = mock(() => {});
+    mockBroadcast = vi.fn(() => {});
+    mockBroadcastProcessingStatus = vi.fn(() => {});
 
     mockWorker = {
       sseBroadcaster: {
@@ -102,8 +115,8 @@ describe('ResponseProcessor', () => {
   });
 
   afterEach(() => {
-    loggerSpies.forEach(spy => spy.mockRestore());
-    mock.restore();
+    for (const spy of loggerSpies) spy.mockRestore();
+    vi.restoreAllMocks();
   });
 
   // Helper to create mock session
@@ -131,7 +144,7 @@ describe('ResponseProcessor', () => {
   }
 
   describe('parsing observations from XML response', () => {
-    it('should parse single observation from response', async () => {
+    it('should parse single observation from response', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -146,7 +159,7 @@ describe('ResponseProcessor', () => {
         </observation>
       `;
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -158,8 +171,8 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).toHaveBeenCalledTimes(1);
-      const [memorySessionId, project, observations, summary] =
-        mockStoreObservations.mock.calls[0];
+      const [memorySessionId, project, observations] =
+        mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(memorySessionId).toBe('memory-session-456');
       expect(project).toBe('test-project');
       expect(observations).toHaveLength(1);
@@ -167,7 +180,7 @@ describe('ResponseProcessor', () => {
       expect(observations[0].title).toBe('Found important pattern');
     });
 
-    it('should parse multiple observations from response', async () => {
+    it('should parse multiple observations from response', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -190,7 +203,7 @@ describe('ResponseProcessor', () => {
         </observation>
       `;
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -201,7 +214,7 @@ describe('ResponseProcessor', () => {
         'TestAgent'
       );
 
-      const [, , observations] = mockStoreObservations.mock.calls[0];
+      const [, , observations] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(observations).toHaveLength(2);
       expect(observations[0].type).toBe('discovery');
       expect(observations[1].type).toBe('bugfix');
@@ -209,12 +222,13 @@ describe('ResponseProcessor', () => {
   });
 
   describe('parsing summary from XML response', () => {
-    it('should parse summary from response', async () => {
+    it('should parse summary from response', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
           <type>discovery</type>
           <title>Test</title>
+          <narrative>Test narrative for summary parsing</narrative>
           <facts></facts>
           <concepts></concepts>
           <files_read></files_read>
@@ -230,7 +244,7 @@ describe('ResponseProcessor', () => {
         </summary>
       `;
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -241,19 +255,20 @@ describe('ResponseProcessor', () => {
         'TestAgent'
       );
 
-      const [, , , summary] = mockStoreObservations.mock.calls[0];
+      const [, , , summary] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(summary).not.toBeNull();
       expect(summary.request).toBe('Build login form');
       expect(summary.investigated).toBe('Reviewed existing forms');
       expect(summary.learned).toBe('React Hook Form works well');
     });
 
-    it('should handle response without summary', async () => {
+    it('should handle response without summary', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
           <type>discovery</type>
           <title>Test</title>
+          <narrative>Test narrative without summary</narrative>
           <facts></facts>
           <concepts></concepts>
           <files_read></files_read>
@@ -262,16 +277,16 @@ describe('ResponseProcessor', () => {
       `;
 
       // Mock to return result without summary
-      mockStoreObservations = mock(() => ({
+      mockStoreObservations = vi.fn(() => ({
         observationIds: [1],
         summaryId: null,
         createdAtEpoch: 1700000000000,
       }));
-      (mockDbManager.getSessionStore as any) = () => ({
+      (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
       });
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -282,18 +297,19 @@ describe('ResponseProcessor', () => {
         'TestAgent'
       );
 
-      const [, , , summary] = mockStoreObservations.mock.calls[0];
+      const [, , , summary] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(summary).toBeNull();
     });
   });
 
   describe('atomic database transactions', () => {
-    it('should call storeObservations atomically', async () => {
+    it('should call storeObservations atomically', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
           <type>discovery</type>
           <title>Test</title>
+          <narrative>Test narrative for atomic transaction</narrative>
           <facts></facts>
           <concepts></concepts>
           <files_read></files_read>
@@ -308,7 +324,7 @@ describe('ResponseProcessor', () => {
         </summary>
       `;
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -331,7 +347,7 @@ describe('ResponseProcessor', () => {
         promptNumber,
         tokens,
         timestamp,
-      ] = mockStoreObservations.mock.calls[0];
+      ] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
 
       expect(memorySessionId).toBe('memory-session-456');
       expect(project).toBe('test-project');
@@ -344,7 +360,7 @@ describe('ResponseProcessor', () => {
   });
 
   describe('SSE broadcasting', () => {
-    it('should broadcast observations via SSE', async () => {
+    it('should broadcast observations via SSE', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -360,16 +376,16 @@ describe('ResponseProcessor', () => {
       `;
 
       // Mock returning single observation ID
-      mockStoreObservations = mock(() => ({
+      mockStoreObservations = vi.fn(() => ({
         observationIds: [42],
         summaryId: null,
         createdAtEpoch: 1700000000000,
       }));
-      (mockDbManager.getSessionStore as any) = () => ({
+      (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
       });
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -384,21 +400,23 @@ describe('ResponseProcessor', () => {
       expect(mockBroadcast).toHaveBeenCalled();
 
       // Find the observation broadcast call
-      const observationCall = mockBroadcast.mock.calls.find(
-        (call: any[]) => call[0].type === 'new_observation'
+      const observationCall = (mockBroadcast.mock.calls as [BroadcastEvent][]).find(
+        (call) => call[0].type === 'new_observation'
       );
       expect(observationCall).toBeDefined();
-      expect(observationCall[0].observation.id).toBe(42);
-      expect(observationCall[0].observation.title).toBe('Broadcast Test');
-      expect(observationCall[0].observation.type).toBe('discovery');
+      const obsEvent = (observationCall as [BroadcastEvent])[0];
+      expect((obsEvent.observation as NonNullable<BroadcastEvent['observation']>).id).toBe(42);
+      expect((obsEvent.observation as NonNullable<BroadcastEvent['observation']>).title).toBe('Broadcast Test');
+      expect((obsEvent.observation as NonNullable<BroadcastEvent['observation']>).type).toBe('discovery');
     });
 
-    it('should broadcast summary via SSE', async () => {
+    it('should broadcast summary via SSE', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
           <type>discovery</type>
           <title>Test</title>
+          <narrative>Test narrative for summary broadcast</narrative>
           <facts></facts>
           <concepts></concepts>
           <files_read></files_read>
@@ -413,7 +431,7 @@ describe('ResponseProcessor', () => {
         </summary>
       `;
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -425,30 +443,31 @@ describe('ResponseProcessor', () => {
       );
 
       // Find the summary broadcast call
-      const summaryCall = mockBroadcast.mock.calls.find(
-        (call: any[]) => call[0].type === 'new_summary'
+      const summaryCall = (mockBroadcast.mock.calls as [BroadcastEvent][]).find(
+        (call) => call[0].type === 'new_summary'
       );
       expect(summaryCall).toBeDefined();
-      expect(summaryCall[0].summary.request).toBe('Build feature');
+      const sumEvent = (summaryCall as [BroadcastEvent])[0];
+      expect((sumEvent.summary as NonNullable<BroadcastEvent['summary']>).request).toBe('Build feature');
     });
   });
 
   describe('handling empty response', () => {
-    it('should handle empty response gracefully', async () => {
+    it('should handle empty response gracefully', () => {
       const session = createMockSession();
       const responseText = '';
 
       // Mock to handle empty observations
-      mockStoreObservations = mock(() => ({
+      mockStoreObservations = vi.fn(() => ({
         observationIds: [],
         summaryId: null,
         createdAtEpoch: 1700000000000,
       }));
-      (mockDbManager.getSessionStore as any) = () => ({
+      (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
       });
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -461,25 +480,25 @@ describe('ResponseProcessor', () => {
 
       // Should still call storeObservations with empty arrays
       expect(mockStoreObservations).toHaveBeenCalledTimes(1);
-      const [, , observations, summary] = mockStoreObservations.mock.calls[0];
+      const [, , observations, summary] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(observations).toHaveLength(0);
       expect(summary).toBeNull();
     });
 
-    it('should handle response with only text (no XML)', async () => {
+    it('should handle response with only text (no XML)', () => {
       const session = createMockSession();
       const responseText = 'This is just plain text without any XML tags.';
 
-      mockStoreObservations = mock(() => ({
+      mockStoreObservations = vi.fn(() => ({
         observationIds: [],
         summaryId: null,
         createdAtEpoch: 1700000000000,
       }));
-      (mockDbManager.getSessionStore as any) = () => ({
+      (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
       });
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -491,13 +510,13 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).toHaveBeenCalledTimes(1);
-      const [, , observations] = mockStoreObservations.mock.calls[0];
+      const [, , observations] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(observations).toHaveLength(0);
     });
   });
 
   describe('session cleanup', () => {
-    it('should reset earliestPendingTimestamp after processing', async () => {
+    it('should reset earliestPendingTimestamp after processing', () => {
       const session = createMockSession({
         earliestPendingTimestamp: 1700000000000,
       });
@@ -512,16 +531,16 @@ describe('ResponseProcessor', () => {
         </observation>
       `;
 
-      mockStoreObservations = mock(() => ({
+      mockStoreObservations = vi.fn(() => ({
         observationIds: [1],
         summaryId: null,
         createdAtEpoch: 1700000000000,
       }));
-      (mockDbManager.getSessionStore as any) = () => ({
+      (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
       });
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -535,7 +554,7 @@ describe('ResponseProcessor', () => {
       expect(session.earliestPendingTimestamp).toBeNull();
     });
 
-    it('should call broadcastProcessingStatus after processing', async () => {
+    it('should call broadcastProcessingStatus after processing', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -548,16 +567,16 @@ describe('ResponseProcessor', () => {
         </observation>
       `;
 
-      mockStoreObservations = mock(() => ({
+      mockStoreObservations = vi.fn(() => ({
         observationIds: [1],
         summaryId: null,
         createdAtEpoch: 1700000000000,
       }));
-      (mockDbManager.getSessionStore as any) = () => ({
+      (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
       });
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -573,7 +592,7 @@ describe('ResponseProcessor', () => {
   });
 
   describe('conversation history', () => {
-    it('should add assistant response to conversation history', async () => {
+    it('should add assistant response to conversation history', () => {
       const session = createMockSession({
         conversationHistory: [],
       });
@@ -588,16 +607,16 @@ describe('ResponseProcessor', () => {
         </observation>
       `;
 
-      mockStoreObservations = mock(() => ({
+      mockStoreObservations = vi.fn(() => ({
         observationIds: [1],
         summaryId: null,
         createdAtEpoch: 1700000000000,
       }));
-      (mockDbManager.getSessionStore as any) = () => ({
+      (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
       });
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -614,15 +633,142 @@ describe('ResponseProcessor', () => {
     });
   });
 
+  describe('skipSummaryStorage parameter', () => {
+    it('should store observations but NOT summary when skipSummaryStorage=true', () => {
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Test observation</title>
+          <narrative>Observation should still be stored</narrative>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+        <summary>
+          <request>Build feature</request>
+          <investigated>Reviewed code</investigated>
+          <learned>Found patterns</learned>
+          <completed>Feature built</completed>
+          <next_steps>Add tests</next_steps>
+        </summary>
+      `;
+
+      processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent',
+        undefined,
+        true  // skipSummaryStorage
+      );
+
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+      const [memorySessionId, , observations, summary] =
+        mockStoreObservations.mock.calls[0] as StoreObservationsCall;
+      expect(memorySessionId).toBe('memory-session-456');
+      expect(observations).toHaveLength(1);
+      expect(observations[0].title).toBe('Test observation');
+      // Summary should be null even though XML contained one
+      expect(summary).toBeNull();
+    });
+
+    it('should store both observations and summary when skipSummaryStorage=false', () => {
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Test observation</title>
+          <narrative>Observation should be stored</narrative>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+        <summary>
+          <request>Build feature</request>
+          <investigated>Reviewed code</investigated>
+          <learned>Found patterns</learned>
+          <completed>Feature built</completed>
+          <next_steps>Add tests</next_steps>
+        </summary>
+      `;
+
+      processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent',
+        undefined,
+        false  // skipSummaryStorage explicitly false
+      );
+
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+      const [, , observations, summary] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
+      expect(observations).toHaveLength(1);
+      expect(summary).not.toBeNull();
+      expect(summary.request).toBe('Build feature');
+    });
+
+    it('should store both observations and summary when skipSummaryStorage is omitted', () => {
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Test observation</title>
+          <narrative>Observation should be stored</narrative>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+        <summary>
+          <request>Build feature</request>
+          <investigated>Reviewed code</investigated>
+          <learned>Found patterns</learned>
+          <completed>Feature built</completed>
+          <next_steps>Add tests</next_steps>
+        </summary>
+      `;
+
+      // Call without the skipSummaryStorage parameter (default behavior)
+      processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+      const [, , observations, summary] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
+      expect(observations).toHaveLength(1);
+      expect(summary).not.toBeNull();
+      expect(summary.request).toBe('Build feature');
+    });
+  });
+
   describe('error handling', () => {
-    it('should throw error if memorySessionId is missing', async () => {
+    it('should throw error if memorySessionId is missing', () => {
       const session = createMockSession({
         memorySessionId: null, // Missing memory session ID
       });
       const responseText = '<observation><type>discovery</type></observation>';
 
-      await expect(
-        processAgentResponse(
+      expect(() =>
+        { processAgentResponse(
           responseText,
           session,
           mockDbManager,
@@ -631,8 +777,8 @@ describe('ResponseProcessor', () => {
           100,
           null,
           'TestAgent'
-        )
-      ).rejects.toThrow('Cannot store observations: memorySessionId not yet captured');
+        ); }
+      ).toThrow('Cannot store observations: memorySessionId not yet captured');
     });
   });
 });

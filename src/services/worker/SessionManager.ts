@@ -9,7 +9,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { DatabaseManager } from './DatabaseManager.js';
+import type { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
 import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
@@ -216,7 +216,7 @@ export class SessionManager {
       const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
       const queueDepth = this.getPendingStore().getPendingCount(sessionDbId);
       const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
-      logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=observation | tool=${toolSummary} | depth=${queueDepth}`, {
+      logger.info('QUEUE', `ENQUEUED | sessionDbId=${String(sessionDbId)} | messageId=${String(messageId)} | type=observation | tool=${toolSummary} | depth=${String(queueDepth)}`, {
         sessionId: sessionDbId
       });
     } catch (error) {
@@ -255,7 +255,7 @@ export class SessionManager {
     try {
       const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
       const queueDepth = this.getPendingStore().getPendingCount(sessionDbId);
-      logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=summarize | depth=${queueDepth}`, {
+      logger.info('QUEUE', `ENQUEUED | sessionDbId=${String(sessionDbId)} | messageId=${String(messageId)} | type=summarize | depth=${String(queueDepth)}`, {
         sessionId: sessionDbId
       });
     } catch (error) {
@@ -294,7 +294,7 @@ export class SessionManager {
     // 3. Verify subprocess exit with 5s timeout (Issue #737 fix)
     const tracked = getProcessBySession(sessionDbId);
     if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
-      logger.debug('SESSION', `Waiting for subprocess PID ${tracked.pid} to exit`, {
+      logger.debug('SESSION', `Waiting for subprocess PID ${String(tracked.pid)} to exit`, {
         sessionId: sessionDbId,
         pid: tracked.pid
       });
@@ -386,7 +386,7 @@ export class SessionManager {
 
     const emitter = this.sessionQueues.get(sessionDbId);
     if (!emitter) {
-      throw new Error(`No emitter for session ${sessionDbId}`);
+      throw new Error(`No emitter for session ${String(sessionDbId)}`);
     }
 
     const processor = new SessionQueueProcessor(this.getPendingStore(), emitter);

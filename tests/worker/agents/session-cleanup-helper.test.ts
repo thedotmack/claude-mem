@@ -9,7 +9,7 @@
  *
  * What's NOT mocked: Session state mutation, null/undefined handling
  */
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, vi } from 'vitest';
 
 // Import directly from specific files to avoid worker-service import chain
 import { cleanupProcessedMessages } from '../../../src/services/worker/agents/SessionCleanupHelper.js';
@@ -43,10 +43,10 @@ describe('SessionCleanupHelper', () => {
 
   // Helper to create mock worker
   function createMockWorker() {
-    const broadcastProcessingStatusMock = mock(() => {});
+    const broadcastProcessingStatusMock = vi.fn(() => {});
     const worker: WorkerRef = {
       sseBroadcaster: {
-        broadcast: mock(() => {}),
+        broadcast: vi.fn(() => {}),
       },
       broadcastProcessingStatus: broadcastProcessingStatusMock,
     };
@@ -107,7 +107,7 @@ describe('SessionCleanupHelper', () => {
       });
       const worker: WorkerRef = {
         sseBroadcaster: {
-          broadcast: mock(() => {}),
+          broadcast: vi.fn(() => {}),
         },
         // No broadcastProcessingStatus
       };

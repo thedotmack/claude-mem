@@ -10,18 +10,21 @@
  * Used when: Query text is provided and Chroma is available
  */
 
-import { BaseSearchStrategy, SearchStrategy } from './SearchStrategy.js';
-import {
+import type { SearchStrategy } from './SearchStrategy.js';
+import { BaseSearchStrategy } from './SearchStrategy.js';
+import type {
   StrategySearchOptions,
   StrategySearchResult,
-  SEARCH_CONSTANTS,
   ChromaMetadata,
   ObservationSearchResult,
   SessionSummarySearchResult,
   UserPromptSearchResult
 } from '../types.js';
-import { ChromaSync } from '../../../sync/ChromaSync.js';
-import { SessionStore } from '../../../sqlite/SessionStore.js';
+import {
+  SEARCH_CONSTANTS
+} from '../types.js';
+import type { ChromaSync } from '../../../sync/ChromaSync.js';
+import type { SessionStore } from '../../../sqlite/SessionStore.js';
 import { logger } from '../../../../utils/logger.js';
 
 export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchStrategy {
@@ -90,7 +93,10 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       }
 
       // Step 2: Filter by recency (90 days)
-      const recentItems = this.filterByRecency(chromaResults);
+      const recentItems = this.filterByRecency({
+        ids: chromaResults.ids,
+        metadatas: chromaResults.metadatas as unknown as ChromaMetadata[]
+      });
       logger.debug('SEARCH', 'ChromaSearchStrategy: Filtered by recency', {
         count: recentItems.length
       });
@@ -103,14 +109,16 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       });
 
       // Step 4: Hydrate from SQLite with additional filters
+      // Chroma handles relevance sorting internally; for SQLite hydration, fall back to date_desc
+      const sqlOrderBy = orderBy === 'relevance' ? 'date_desc' as const : orderBy;
       if (categorized.obsIds.length > 0) {
-        const obsOptions = { type: obsType, concepts, files, orderBy, limit, project };
+        const obsOptions = { type: obsType, concepts, files, orderBy: sqlOrderBy, limit, project };
         observations = this.sessionStore.getObservationsByIds(categorized.obsIds, obsOptions);
       }
 
       if (categorized.sessionIds.length > 0) {
         sessions = this.sessionStore.getSessionSummariesByIds(categorized.sessionIds, {
-          orderBy,
+          orderBy: sqlOrderBy,
           limit,
           project
         });
@@ -118,7 +126,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
 
       if (categorized.promptIds.length > 0) {
         prompts = this.sessionStore.getUserPromptsByIds(categorized.promptIds, {
-          orderBy,
+          orderBy: sqlOrderBy,
           limit,
           project
         });
@@ -152,7 +160,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
   /**
    * Build Chroma where filter for document type
    */
-  private buildWhereFilter(searchType: string): Record<string, any> | undefined {
+  private buildWhereFilter(searchType: string): Record<string, unknown> | undefined {
     switch (searchType) {
       case 'observations':
         return { doc_type: 'observation' };
@@ -179,7 +187,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         id: chromaResults.ids[idx],
         meta
       }))
-      .filter(item => item.meta && item.meta.created_at_epoch > cutoff);
+      .filter(item => item.meta.created_at_epoch > cutoff);
   }
 
   /**
@@ -198,7 +206,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     const promptIds: number[] = [];
 
     for (const item of items) {
-      const docType = item.meta?.doc_type;
+      const docType = item.meta.doc_type;
       if (docType === 'observation' && options.searchObservations) {
         obsIds.push(item.id);
       } else if (docType === 'session_summary' && options.searchSessions) {

@@ -146,7 +146,7 @@ Khởi động lại Claude Code. Ngữ cảnh từ các phiên trước sẽ t�
 - **[Phát Triển Kiến Trúc](https://docs.claude-mem.ai/architecture-evolution)** - Hành trình từ v3 đến v5
 - **[Kiến Trúc Hooks](https://docs.claude-mem.ai/hooks-architecture)** - Cách Claude-Mem sử dụng lifecycle hooks
 - **[Tham Chiếu Hooks](https://docs.claude-mem.ai/architecture/hooks)** - Giải thích 7 hook scripts
-- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & quản lý Bun
+- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & quản lý Node.js
 - **[Cơ Sở Dữ Liệu](https://docs.claude-mem.ai/architecture/database)** - Schema SQLite & tìm kiếm FTS5
 - **[Kiến Trúc Tìm Kiếm](https://docs.claude-mem.ai/architecture/search-architecture)** - Tìm kiếm kết hợp với cơ sở dữ liệu vector Chroma
 
@@ -164,7 +164,7 @@ Khởi động lại Claude Code. Ngữ cảnh từ các phiên trước sẽ t�
 
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook scripts)
 2. **Smart Install** - Công cụ kiểm tra phụ thuộc được cache (pre-hook script, không phải lifecycle hook)
-3. **Worker Service** - HTTP API trên cổng 37777 với giao diện web viewer và 10 điểm cuối tìm kiếm, được quản lý bởi Bun
+3. **Worker Service** - HTTP API trên cổng 37777 với giao diện web viewer và 10 điểm cuối tìm kiếm, được quản lý bởi Node.js
 4. **SQLite Database** - Lưu trữ các phiên, quan sát, tóm tắt
 5. **mem-search Skill** - Truy vấn ngôn ngữ tự nhiên với tiết lộ tuần tự
 6. **Chroma Vector Database** - Tìm kiếm kết hợp ngữ nghĩa + từ khóa để truy xuất ngữ cảnh thông minh
@@ -220,7 +220,6 @@ Xem **[Tài Liệu Tính Năng Beta](https://docs.claude-mem.ai/beta-features)**
 
 - **Node.js**: 18.0.0 hoặc cao hơn
 - **Claude Code**: Phiên bản mới nhất với hỗ trợ plugin
-- **Bun**: JavaScript runtime và trình quản lý tiến trình (tự động cài đặt nếu thiếu)
 - **uv**: Trình quản lý gói Python cho tìm kiếm vector (tự động cài đặt nếu thiếu)
 - **SQLite 3**: Cho lưu trữ liên tục (đi kèm)
 

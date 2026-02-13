@@ -1,5 +1,5 @@
-import { Database } from 'bun:sqlite';
-import { Migration } from './Database.js';
+import type { Database } from './sqlite-compat.js';
+import type { Migration } from './Database.js';
 
 // Re-export MigrationRunner for SessionStore migration extraction
 export { MigrationRunner } from './migrations/runner.js';
@@ -490,7 +490,7 @@ export const migration007: Migration = {
     console.log('✅ Added discovery_tokens columns for ROI tracking');
   },
 
-  down: (db: Database) => {
+  down: (_db: Database) => {
     // Note: SQLite doesn't support DROP COLUMN in all versions
     // In production, would need to recreate tables without these columns
     console.log('⚠️  Warning: SQLite ALTER TABLE DROP COLUMN not fully supported');

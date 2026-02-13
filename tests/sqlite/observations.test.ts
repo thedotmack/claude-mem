@@ -9,7 +9,7 @@
  * - Type definitions from src/services/sqlite/observations/types.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
 import {
   storeObservation,
@@ -21,7 +21,7 @@ import {
   updateMemorySessionId,
 } from '../../src/services/sqlite/Sessions.js';
 import type { ObservationInput } from '../../src/services/sqlite/observations/types.js';
-import type { Database } from 'bun:sqlite';
+import type { Database } from '../../src/services/sqlite/sqlite-compat.js';
 
 describe('Observations Module', () => {
   let db: Database;
@@ -115,7 +115,8 @@ describe('Observations Module', () => {
       const stored = getObservationById(db, result.id);
       expect(stored?.created_at_epoch).toBe(pastTimestamp);
       // Verify ISO string matches epoch
-      expect(new Date(stored!.created_at).getTime()).toBe(pastTimestamp);
+      expect(stored).not.toBeNull();
+      expect(new Date((stored as NonNullable<typeof stored>).created_at).getTime()).toBe(pastTimestamp);
     });
 
     it('should use current time when overrideTimestampEpoch not provided', () => {

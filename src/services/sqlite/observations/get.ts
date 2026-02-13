@@ -3,8 +3,7 @@
  * Extracted from SessionStore.ts for modular organization
  */
 
-import { Database } from 'bun:sqlite';
-import { logger } from '../../../utils/logger.js';
+import type { Database } from '../sqlite-compat.js';
 import type { ObservationRecord } from '../../../types/database.js';
 import type { GetObservationsByIdsOptions, ObservationSessionRow } from './types.js';
 
@@ -33,11 +32,11 @@ export function getObservationsByIds(
 
   const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
   const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
-  const limitClause = limit ? `LIMIT ${limit}` : '';
+  const limitClause = limit ? `LIMIT ${String(limit)}` : '';
 
   // Build placeholders for IN clause
   const placeholders = ids.map(() => '?').join(',');
-  const params: any[] = [...ids];
+  const params: (string | number)[] = [...ids];
   const additionalConditions: string[] = [];
 
   // Apply project filter

@@ -1,5 +1,4 @@
 import { readFileSync, existsSync } from 'fs';
-import { logger } from '../utils/logger.js';
 
 /**
  * Extract last message of specified role from transcript JSONL file
@@ -25,20 +24,23 @@ export function extractLastMessage(
   let foundMatchingRole = false;
 
   for (let i = lines.length - 1; i >= 0; i--) {
-    const line = JSON.parse(lines[i]);
+    const line = JSON.parse(lines[i]) as {
+      type?: string;
+      message?: { content?: string | Array<{ type: string; text?: string }> };
+    };
     if (line.type === role) {
       foundMatchingRole = true;
 
       if (line.message?.content) {
         let text = '';
-        const msgContent = line.message.content;
+        const msgContent: string | Array<{ type: string; text?: string }> = line.message.content;
 
         if (typeof msgContent === 'string') {
           text = msgContent;
         } else if (Array.isArray(msgContent)) {
           text = msgContent
-            .filter((c: any) => c.type === 'text')
-            .map((c: any) => c.text)
+            .filter((c: unknown) => typeof c === 'object' && c !== null && 'type' in c && c.type === 'text')
+            .map((c: unknown) => (c as { text: string }).text)
             .join('\n');
         } else {
           // Unknown content format - throw error

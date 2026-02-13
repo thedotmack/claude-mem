@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Observation } from '../types';
+import type { Observation } from '../types';
 import { formatDate } from '../utils/formatters';
 
 interface ObservationCardProps {
@@ -36,10 +36,10 @@ export function ObservationCard({ observation }: ObservationCardProps) {
   const date = formatDate(observation.created_at_epoch);
 
   // Parse JSON fields
-  const facts = observation.facts ? JSON.parse(observation.facts) : [];
-  const concepts = observation.concepts ? JSON.parse(observation.concepts) : [];
-  const filesRead = observation.files_read ? JSON.parse(observation.files_read).map(stripProjectRoot) : [];
-  const filesModified = observation.files_modified ? JSON.parse(observation.files_modified).map(stripProjectRoot) : [];
+  const facts: string[] = observation.facts ? JSON.parse(observation.facts) as string[] : [];
+  const concepts: string[] = observation.concepts ? JSON.parse(observation.concepts) as string[] : [];
+  const filesRead: string[] = observation.files_read ? (JSON.parse(observation.files_read) as string[]).map(stripProjectRoot) : [];
+  const filesModified: string[] = observation.files_modified ? (JSON.parse(observation.files_modified) as string[]).map(stripProjectRoot) : [];
 
   // Show facts toggle if there are facts, concepts, or files
   const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;
@@ -100,7 +100,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
         )}
         {showFacts && facts.length > 0 && (
           <ul className="facts-list">
-            {facts.map((fact: string, i: number) => (
+            {facts.map((fact, i) => (
               <li key={i}>{fact}</li>
             ))}
           </ul>
@@ -117,7 +117,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
         <span className="meta-date">#{observation.id} • {date}</span>
         {showFacts && (concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
-            {concepts.map((concept: string, i: number) => (
+            {concepts.map((concept, i) => (
               <span key={i} style={{
                 padding: '2px 8px',
                 background: 'var(--color-type-badge-bg)',

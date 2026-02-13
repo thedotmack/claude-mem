@@ -26,7 +26,6 @@ Start a new Claude Code session and you'll see context from previous sessions au
 
 - **Node.js**: 18.0.0 or higher
 - **Claude Code**: Latest version with plugin support
-- **Bun**: JavaScript runtime and process manager (auto-installed if missing)
 - **SQLite 3**: For persistent storage (bundled)
 
 ## Advanced Installation
@@ -97,7 +96,7 @@ npm run test:context
 
 Upgrades are automatic when updating via the plugin marketplace. Key changes in recent versions:
 
-**v7.1.0**: PM2 replaced with native Bun process management. Migration is automatic on first hook trigger.
+**v7.1.0**: PM2 replaced with native Node.js process management. Migration is automatic on first hook trigger.
 
 **v7.0.0+**: 11 configuration settings, dual-tag privacy system.
 

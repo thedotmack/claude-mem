@@ -1,8 +1,6 @@
 /**
  * Type definitions for summary-related database operations
  */
-import { logger } from '../../../utils/logger.js';
-
 /**
  * Summary input for storage (from SDK parsing)
  */
@@ -95,4 +93,18 @@ export interface GetByIdsOptions {
   orderBy?: 'date_desc' | 'date_asc';
   limit?: number;
   project?: string;
+}
+
+/**
+ * Check if all content fields in a summary are empty/blank.
+ * Used as a guard to prevent overwriting populated summaries with empty ones
+ * (e.g. when the SDK agent's context window gets truncated and it emits
+ * summary XML with empty tags).
+ */
+export function isSummaryContentEmpty(summary: SummaryInput): boolean {
+  return !(summary.request.trim()) &&
+         !(summary.investigated.trim()) &&
+         !(summary.learned.trim()) &&
+         !(summary.completed.trim()) &&
+         !(summary.next_steps.trim());
 }

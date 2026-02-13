@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useEffect } from 'react';
-import { Observation, Summary, UserPrompt, FeedItem } from '../types';
+import type { Observation, Summary, UserPrompt, FeedItem } from '../types';
 import { ObservationCard } from './ObservationCard';
 import { SummaryCard } from './SummaryCard';
 import { PromptCard } from './PromptCard';
@@ -34,7 +34,7 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
       (entries) => {
         const first = entries[0];
         if (first.isIntersecting && hasMore && !isLoading) {
-          onLoadMoreRef.current?.();
+          onLoadMoreRef.current();
         }
       },
       { threshold: UI.LOAD_MORE_THRESHOLD }
@@ -43,9 +43,7 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
     observer.observe(element);
 
     return () => {
-      if (element) {
-        observer.unobserve(element);
-      }
+      observer.unobserve(element);
       observer.disconnect();
     };
   }, [hasMore, isLoading]);
@@ -65,7 +63,7 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
       <ScrollToTop targetRef={feedRef} />
       <div className="feed-content">
         {items.map(item => {
-          const key = `${item.itemType}-${item.id}`;
+          const key = `${item.itemType}-${String(item.id)}`;
           if (item.itemType === 'observation') {
             return <ObservationCard key={key} observation={item} />;
           } else if (item.itemType === 'summary') {

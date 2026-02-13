@@ -145,7 +145,7 @@ Käynnistä Claude Code uudelleen. Aiempien istuntojen konteksti ilmestyy automa
 - **[Arkkitehtuurin kehitys](https://docs.claude-mem.ai/architecture-evolution)** - Matka versiosta v3 versioon v5
 - **[Koukku-arkkitehtuuri](https://docs.claude-mem.ai/hooks-architecture)** - Miten Claude-Mem käyttää elinkaarikkoukkuja
 - **[Koukku-viittaus](https://docs.claude-mem.ai/architecture/hooks)** - 7 koukku-skriptiä selitettynä
-- **[Worker-palvelu](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API ja Bun-hallinta
+- **[Worker-palvelu](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API ja Node.js-hallinta
 - **[Tietokanta](https://docs.claude-mem.ai/architecture/database)** - SQLite-skeema ja FTS5-haku
 - **[Hakuarkkitehtuuri](https://docs.claude-mem.ai/architecture/search-architecture)** - Hybridihaku Chroma-vektoritietokannalla
 
@@ -163,7 +163,7 @@ Käynnistä Claude Code uudelleen. Aiempien istuntojen konteksti ilmestyy automa
 
 1. **5 elinkaarikoukua** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 koukku-skriptiä)
 2. **Älykäs asennus** - Välimuistettu riippuvuuksien tarkistaja (esikoukku-skripti, ei elinkaarikkoukku)
-3. **Worker-palvelu** - HTTP API portissa 37777 web-katselukäyttöliittymällä ja 10 hakupäätepisteellä, Bun-hallinnoimana
+3. **Worker-palvelu** - HTTP API portissa 37777 web-katselukäyttöliittymällä ja 10 hakupäätepisteellä, Node.js-hallinnoimana
 4. **SQLite-tietokanta** - Tallentaa istunnot, havainnot, yhteenvedot
 5. **mem-search-taito** - Luonnollisen kielen kyselyt asteittaisella paljastamisella
 6. **Chroma-vektoritietokanta** - Hybridi semanttinen + avainsanahaku älykkääseen kontekstin hakuun
@@ -219,7 +219,6 @@ Katso **[Beta-ominaisuuksien dokumentaatio](https://docs.claude-mem.ai/beta-feat
 
 - **Node.js**: 18.0.0 tai uudempi
 - **Claude Code**: Uusin versio plugin-tuella
-- **Bun**: JavaScript-ajoympäristö ja prosessinhallinta (asennetaan automaattisesti jos puuttuu)
 - **uv**: Python-paketinhallinta vektorihakuun (asennetaan automaattisesti jos puuttuu)
 - **SQLite 3**: Pysyvälle tallennukselle (sisältyy)
 

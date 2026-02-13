@@ -84,7 +84,9 @@ export function registerCursorProject(projectName: string, workspacePath: string
  */
 export function unregisterCursorProject(projectName: string): void {
   const registry = readCursorRegistry();
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
   if (registry[projectName]) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- dynamic key from user input on Record type
     delete registry[projectName];
     writeCursorRegistry(registry);
     logger.info('CURSOR', 'Unregistered project', { projectName });
@@ -99,12 +101,13 @@ export async function updateCursorContextForProject(projectName: string, port: n
   const registry = readCursorRegistry();
   const entry = registry[projectName];
 
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
   if (!entry) return; // Project doesn't have Cursor hooks installed
 
   try {
     // Fetch fresh context from worker
     const response = await fetch(
-      `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
+      `http://127.0.0.1:${String(port)}/api/context/inject?project=${encodeURIComponent(projectName)}`
     );
 
     if (!response.ok) return;
@@ -250,7 +253,8 @@ export function configureCursorMcp(target: CursorInstallTarget): number {
     let config: CursorMcpConfig = { mcpServers: {} };
     if (existsSync(mcpJsonPath)) {
       try {
-        config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+        config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as CursorMcpConfig;
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
         if (!config.mcpServers) {
           config.mcpServers = {};
         }
@@ -393,11 +397,11 @@ async function setupProjectContext(targetDir: string, workspaceRoot: string): Pr
 
   try {
     // Check if worker is running
-    const healthResponse = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+    const healthResponse = await fetch(`http://127.0.0.1:${String(port)}/api/readiness`);
     if (healthResponse.ok) {
       // Fetch context
       const contextResponse = await fetch(
-        `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
+        `http://127.0.0.1:${String(port)}/api/context/inject?project=${encodeURIComponent(projectName)}`
       );
       if (contextResponse.ok) {
         const context = await contextResponse.text();
@@ -528,8 +532,8 @@ export function checkCursorHooksStatus(): number {
 
       // Check if using unified CLI mode or legacy shell scripts
       try {
-        const hooksContent = JSON.parse(readFileSync(hooksJson, 'utf-8'));
-        const firstCommand = hooksContent?.hooks?.beforeSubmitPrompt?.[0]?.command || '';
+        const hooksContent = JSON.parse(readFileSync(hooksJson, 'utf-8')) as CursorHooksJson;
+        const firstCommand: string = hooksContent.hooks.beforeSubmitPrompt?.[0]?.command ?? '';
 
         if (firstCommand.includes('worker-service.cjs') && firstCommand.includes('hook cursor')) {
           console.log(`   Mode: Unified CLI (node worker-service.cjs)`);

@@ -16,8 +16,7 @@ import { logger } from '../utils/logger.js';
 // CRITICAL: Redirect console to stderr BEFORE other imports
 // MCP uses stdio transport where stdout is reserved for JSON-RPC protocol messages.
 // Any logs to stdout break the protocol (Claude Desktop parses "[2025..." as JSON array).
-const _originalLog = console['log'];
-console['log'] = (...args: any[]) => {
+console['log'] = (...args: unknown[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
 };
 
@@ -34,7 +33,7 @@ import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
  */
 const WORKER_PORT = getWorkerPort();
 const WORKER_HOST = getWorkerHost();
-const WORKER_BASE_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
+const WORKER_BASE_URL = `http://${WORKER_HOST}:${String(WORKER_PORT)}`;
 
 /**
  * Map tool names to Worker HTTP endpoints
@@ -49,7 +48,7 @@ const TOOL_ENDPOINT_MAP: Record<string, string> = {
  */
 async function callWorkerAPI(
   endpoint: string,
-  params: Record<string, any>
+  params: Record<string, unknown>
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint, params });
 
@@ -59,7 +58,7 @@ async function callWorkerAPI(
     // Convert params to query string
     for (const [key, value] of Object.entries(params)) {
       if (value !== undefined && value !== null) {
-        searchParams.append(key, String(value));
+        searchParams.append(key, typeof value === 'object' ? JSON.stringify(value) : String(value as string | number | boolean));
       }
     }
 
@@ -68,7 +67,7 @@ async function callWorkerAPI(
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
+      throw new Error(`Worker API error (${String(response.status)}): ${errorText}`);
     }
 
     const data = await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
@@ -94,7 +93,7 @@ async function callWorkerAPI(
  */
 async function callWorkerAPIPost(
   endpoint: string,
-  body: Record<string, any>
+  body: Record<string, unknown>
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('HTTP', 'Worker API request (POST)', undefined, { endpoint });
 
@@ -110,10 +109,10 @@ async function callWorkerAPIPost(
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
+      throw new Error(`Worker API error (${String(response.status)}): ${errorText}`);
     }
 
-    const data = await response.json();
+    const data: unknown = await response.json();
 
     logger.debug('HTTP', 'Worker API success (POST)', undefined, { endpoint });
 
@@ -166,7 +165,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       type: 'object',
       properties: {}
     },
-    handler: async () => ({
+    handler: () => ({
       content: [{
         type: 'text' as const,
         text: `# Memory Search Workflow
@@ -197,7 +196,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       properties: {},
       additionalProperties: true
     },
-    handler: async (args: any) => {
+    handler: async (args: Record<string, unknown>) => {
       const endpoint = TOOL_ENDPOINT_MAP['search'];
       return await callWorkerAPI(endpoint, args);
     }
@@ -210,7 +209,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       properties: {},
       additionalProperties: true
     },
-    handler: async (args: any) => {
+    handler: async (args: Record<string, unknown>) => {
       const endpoint = TOOL_ENDPOINT_MAP['timeline'];
       return await callWorkerAPI(endpoint, args);
     }
@@ -230,13 +229,14 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['ids'],
       additionalProperties: true
     },
-    handler: async (args: any) => {
+    handler: async (args: Record<string, unknown>) => {
       return await callWorkerAPIPost('/api/observations/batch', args);
     }
   }
 ];
 
-// Create the MCP server
+// Create the MCP server (using low-level Server for advanced protocol control)
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- intentional use of low-level Server API for protocol control
 const server = new Server(
   {
     name: 'mcp-search-server',
@@ -250,7 +250,7 @@ const server = new Server(
 );
 
 // Register tools/list handler
-server.setRequestHandler(ListToolsRequestSchema, async () => {
+server.setRequestHandler(ListToolsRequestSchema, () => {
   return {
     tools: tools.map(tool => ({
       name: tool.name,
@@ -283,7 +283,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 // Cleanup function
-async function cleanup() {
+function cleanup() {
   logger.info('SYSTEM', 'MCP server shutting down');
   process.exit(0);
 }
@@ -300,20 +300,22 @@ async function main() {
   logger.info('SYSTEM', 'Claude-mem search server started');
 
   // Check Worker availability in background
-  setTimeout(async () => {
-    const workerAvailable = await verifyWorkerConnection();
-    if (!workerAvailable) {
-      logger.error('SYSTEM', 'Worker not available', undefined, { workerUrl: WORKER_BASE_URL });
-      logger.error('SYSTEM', 'Tools will fail until Worker is started');
-      logger.error('SYSTEM', 'Start Worker with: npm run worker:restart');
-    } else {
-      logger.info('SYSTEM', 'Worker available', undefined, { workerUrl: WORKER_BASE_URL });
-    }
+  setTimeout(() => {
+    void (async () => {
+      const workerAvailable = await verifyWorkerConnection();
+      if (!workerAvailable) {
+        logger.error('SYSTEM', 'Worker not available', undefined, { workerUrl: WORKER_BASE_URL });
+        logger.error('SYSTEM', 'Tools will fail until Worker is started');
+        logger.error('SYSTEM', 'Start Worker with: npm run worker:restart');
+      } else {
+        logger.info('SYSTEM', 'Worker available', undefined, { workerUrl: WORKER_BASE_URL });
+      }
+    })();
   }, 0);
 }
 
-main().catch((error) => {
-  logger.error('SYSTEM', 'Fatal error', undefined, error);
+main().catch((error: unknown) => {
+  logger.error('SYSTEM', 'Fatal error', undefined, error instanceof Error ? error : new Error(String(error)));
   // Exit gracefully: Windows Terminal won't keep tab open on exit 0
   // The wrapper/plugin will handle restart logic if needed
   process.exit(0);

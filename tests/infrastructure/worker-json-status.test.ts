@@ -9,25 +9,58 @@
  *
  * No mocks needed - tests a pure function directly and captures real CLI output.
  */
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, vi, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import path from 'path';
-import { buildStatusOutput, StatusOutput } from '../../src/services/worker-service.js';
 
-const WORKER_SCRIPT = path.join(__dirname, '../../plugin/scripts/worker-service.cjs');
+// worker-service.ts installs signal handlers that call process.exit on SIGTERM/SIGINT.
+// Intercept process.exit BEFORE importing worker-service to prevent vitest crashes.
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const originalExit = process.exit;
+process.exit = vi.fn() as unknown as typeof process.exit;
+
+afterAll(() => {
+  process.exit = originalExit;
+});
+
+import type { StatusOutput } from '../../src/services/worker-service.js';
+import { buildStatusOutput } from '../../src/services/worker-service.js';
+
+/** Shape of parsed status JSON from worker CLI output */
+interface ParsedStatusOutput {
+  status?: string;
+  continue?: boolean;
+  suppressOutput?: boolean;
+  message?: string;
+}
+
+const WORKER_SCRIPT = path.join(import.meta.dirname, '../../plugin/scripts/worker-service.cjs');
+
+/**
+ * Check if worker script is runnable with node
+ */
+function isWorkerRunnable(): boolean {
+  if (!existsSync(WORKER_SCRIPT)) return false;
+  // Verify the script is a valid Node.js bundle (not a stale build artifact)
+  const content = readFileSync(WORKER_SCRIPT, 'utf-8');
+  if (content.includes('bun:sqlite') || content.includes('#!/usr/bin/env bun')) return false;
+  return true;
+}
 
 /**
  * Run worker CLI command and return stdout + exit code
  * Uses spawnSync for synchronous output capture
  */
 function runWorkerStart(): { stdout: string; exitCode: number } {
-  const result = spawnSync('bun', [WORKER_SCRIPT, 'start'], {
+  const result = spawnSync('node', [WORKER_SCRIPT, 'start'], {
     encoding: 'utf-8',
     timeout: 60000
   });
-  return { stdout: result.stdout?.trim() || '', exitCode: result.status || 0 };
+  return { stdout: result.stdout.trim() || '', exitCode: result.status || 0 };
 }
+
+const workerRunnable = isWorkerRunnable();
 
 describe('worker-json-status', () => {
   describe('buildStatusOutput', () => {
@@ -109,11 +142,11 @@ describe('worker-json-status', () => {
         expect(() => JSON.stringify(readyResult)).not.toThrow();
         expect(() => JSON.stringify(errorResult)).not.toThrow();
 
-        const parsedReady = JSON.parse(JSON.stringify(readyResult));
+        const parsedReady = JSON.parse(JSON.stringify(readyResult)) as ParsedStatusOutput;
         expect(parsedReady.status).toBe('ready');
         expect(parsedReady.continue).toBe(true);
 
-        const parsedError = JSON.parse(JSON.stringify(errorResult));
+        const parsedError = JSON.parse(JSON.stringify(errorResult)) as ParsedStatusOutput;
         expect(parsedError.status).toBe('error');
         expect(parsedError.message).toBe('Test error message');
       });
@@ -123,14 +156,14 @@ describe('worker-json-status', () => {
         const errorOutput = JSON.stringify(buildStatusOutput('error', 'error msg'));
 
         // Verify exact structure (order may vary, but content must match)
-        const parsedReady = JSON.parse(readyOutput);
+        const parsedReady = JSON.parse(readyOutput) as ParsedStatusOutput;
         expect(parsedReady).toEqual({
           continue: true,
           suppressOutput: true,
           status: 'ready'
         });
 
-        const parsedError = JSON.parse(errorOutput);
+        const parsedError = JSON.parse(errorOutput) as ParsedStatusOutput;
         expect(parsedError).toEqual({
           continue: true,
           suppressOutput: true,
@@ -173,7 +206,7 @@ describe('worker-json-status', () => {
         expect(result.message).toBe(specialMessage);
 
         // Verify it serializes correctly
-        const parsed = JSON.parse(JSON.stringify(result));
+        const parsed = JSON.parse(JSON.stringify(result)) as ParsedStatusOutput;
         expect(parsed.message).toBe(specialMessage);
       });
 
@@ -189,7 +222,7 @@ describe('worker-json-status', () => {
     describe('when worker already healthy', () => {
       it('should output valid JSON with status: ready', () => {
         // Skip if worker script doesn't exist (not built)
-        if (!existsSync(WORKER_SCRIPT)) {
+        if (!workerRunnable) {
           console.log('Skipping CLI test - worker script not built');
           return;
         }
@@ -200,9 +233,9 @@ describe('worker-json-status', () => {
         expect(exitCode).toBe(0);
 
         // Should output valid JSON
-        expect(() => JSON.parse(stdout)).not.toThrow();
+        expect(() => JSON.parse(stdout) as unknown).not.toThrow();
 
-        const parsed = JSON.parse(stdout);
+        const parsed = JSON.parse(stdout) as ParsedStatusOutput;
 
         // Verify required fields per hook framework contract
         expect(parsed.continue).toBe(true);
@@ -211,13 +244,13 @@ describe('worker-json-status', () => {
       });
 
       it('should match expected JSON structure when worker is healthy', () => {
-        if (!existsSync(WORKER_SCRIPT)) {
+        if (!workerRunnable) {
           console.log('Skipping CLI test - worker script not built');
           return;
         }
 
         const { stdout } = runWorkerStart();
-        const parsed = JSON.parse(stdout);
+        const parsed = JSON.parse(stdout) as ParsedStatusOutput;
 
         // When worker is already healthy, status should be 'ready'
         // (or 'error' if something unexpected happens)
@@ -283,7 +316,7 @@ describe('worker-json-status', () => {
      * communicate the error via JSON { status: 'error', message: '...' }
      */
     it('should always exit with code 0', () => {
-      if (!existsSync(WORKER_SCRIPT)) {
+      if (!workerRunnable) {
         console.log('Skipping CLI test - worker script not built');
         return;
       }
@@ -305,32 +338,32 @@ describe('worker-json-status', () => {
      * Structure: { status, continue, suppressOutput, message? }
      */
     it('should output JSON on stdout (not stderr)', () => {
-      if (!existsSync(WORKER_SCRIPT)) {
+      if (!workerRunnable) {
         console.log('Skipping CLI test - worker script not built');
         return;
       }
 
-      const result = spawnSync('bun', [WORKER_SCRIPT, 'start'], {
+      const result = spawnSync('node', [WORKER_SCRIPT, 'start'], {
         encoding: 'utf-8',
         timeout: 60000
       });
 
-      const stdout = result.stdout?.trim() || '';
-      const stderr = result.stderr?.trim() || '';
+      const stdout = result.stdout.trim() || '';
+      const stderr = result.stderr.trim() || '';
 
       // stdout should contain valid JSON
-      expect(() => JSON.parse(stdout)).not.toThrow();
+      expect(() => JSON.parse(stdout) as unknown).not.toThrow();
 
       // stderr should NOT contain the JSON output (it may have logs)
       // The JSON structure should only appear in stdout
-      const parsed = JSON.parse(stdout);
+      const parsed = JSON.parse(stdout) as ParsedStatusOutput;
       expect(parsed).toHaveProperty('status');
       expect(parsed).toHaveProperty('continue');
 
       // Verify stderr doesn't accidentally contain the JSON output
       if (stderr) {
         try {
-          const stderrParsed = JSON.parse(stderr);
+          const stderrParsed = JSON.parse(stderr) as ParsedStatusOutput;
           // If stderr parses as JSON with our structure, that's wrong
           expect(stderrParsed).not.toHaveProperty('suppressOutput');
         } catch {
@@ -347,7 +380,7 @@ describe('worker-json-status', () => {
      * Code to fail processing the hook output.
      */
     it('should be parseable as valid JSON', () => {
-      if (!existsSync(WORKER_SCRIPT)) {
+      if (!workerRunnable) {
         console.log('Skipping CLI test - worker script not built');
         return;
       }
@@ -381,13 +414,13 @@ describe('worker-json-status', () => {
      * type - it can never be false.
      */
     it('should always include continue: true (required for Claude Code to proceed)', () => {
-      if (!existsSync(WORKER_SCRIPT)) {
+      if (!workerRunnable) {
         console.log('Skipping CLI test - worker script not built');
         return;
       }
 
       const { stdout } = runWorkerStart();
-      const parsed = JSON.parse(stdout);
+      const parsed = JSON.parse(stdout) as ParsedStatusOutput;
 
       // continue: true is CRITICAL - without it, Claude Code stops processing
       // This is not optional; it must always be true for our hooks
@@ -408,13 +441,13 @@ describe('worker-json-status', () => {
      * is infrastructure noise, not conversation content.
      */
     it('should include suppressOutput: true to hide from transcript mode', () => {
-      if (!existsSync(WORKER_SCRIPT)) {
+      if (!workerRunnable) {
         console.log('Skipping CLI test - worker script not built');
         return;
       }
 
       const { stdout } = runWorkerStart();
-      const parsed = JSON.parse(stdout);
+      const parsed = JSON.parse(stdout) as ParsedStatusOutput;
 
       // suppressOutput prevents infrastructure noise from polluting transcript
       expect(parsed.suppressOutput).toBe(true);
@@ -431,13 +464,13 @@ describe('worker-json-status', () => {
      * the issue.
      */
     it('should include a valid status field', () => {
-      if (!existsSync(WORKER_SCRIPT)) {
+      if (!workerRunnable) {
         console.log('Skipping CLI test - worker script not built');
         return;
       }
 
       const { stdout } = runWorkerStart();
-      const parsed = JSON.parse(stdout);
+      const parsed = JSON.parse(stdout) as ParsedStatusOutput;
 
       expect(parsed).toHaveProperty('status');
       expect(['ready', 'error']).toContain(parsed.status);

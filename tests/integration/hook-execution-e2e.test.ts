@@ -10,13 +10,13 @@
  * - Server patterns from tests/server/server.test.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { logger } from '../../src/utils/logger.js';
 
 // Mock middleware to avoid complex dependencies
-mock.module('../../src/services/worker/http/middleware.js', () => ({
+vi.mock('../../src/services/worker/http/middleware.js', () => ({
   createMiddleware: () => [],
-  requireLocalhost: (_req: any, _res: any, next: any) => next(),
+  requireLocalhost: (_req: unknown, _res: unknown, next: () => void) => { next(); },
   summarizeRequestBody: () => 'test body',
 }));
 
@@ -24,8 +24,21 @@ mock.module('../../src/services/worker/http/middleware.js', () => ({
 import { Server } from '../../src/services/server/Server.js';
 import type { ServerOptions } from '../../src/services/server/Server.js';
 
+/** Type for JSON response body from API endpoints */
+interface ApiResponseBody {
+  status?: string;
+  initialized?: boolean;
+  mcpReady?: boolean;
+  platform?: string;
+  pid?: number;
+  version?: string;
+  message?: string;
+  error?: string;
+}
+
 // Suppress logger output during tests
-let loggerSpies: ReturnType<typeof spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 describe('Hook Execution E2E', () => {
   let server: Server;
@@ -34,25 +47,26 @@ describe('Hook Execution E2E', () => {
 
   beforeEach(() => {
     loggerSpies = [
-      spyOn(logger, 'info').mockImplementation(() => {}),
-      spyOn(logger, 'debug').mockImplementation(() => {}),
-      spyOn(logger, 'warn').mockImplementation(() => {}),
-      spyOn(logger, 'error').mockImplementation(() => {}),
+      vi.spyOn(logger, 'info').mockImplementation(() => {}),
+      vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      vi.spyOn(logger, 'warn').mockImplementation(() => {}),
+      vi.spyOn(logger, 'error').mockImplementation(() => {}),
     ];
 
     mockOptions = {
       getInitializationComplete: () => true,
       getMcpReady: () => true,
-      onShutdown: mock(() => Promise.resolve()),
-      onRestart: mock(() => Promise.resolve()),
+      onShutdown: vi.fn(() => Promise.resolve()),
+      onRestart: vi.fn(() => Promise.resolve()),
     };
 
     testPort = 40000 + Math.floor(Math.random() * 10000);
   });
 
   afterEach(async () => {
-    loggerSpies.forEach(spy => spy.mockRestore());
+    for (const spy of loggerSpies) spy.mockRestore();
 
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: server may not be assigned in every test
     if (server && server.getHttpServer()) {
       try {
         await server.close();
@@ -60,7 +74,7 @@ describe('Hook Execution E2E', () => {
         // Ignore errors on cleanup
       }
     }
-    mock.restore();
+    vi.restoreAllMocks();
   });
 
   describe('health and readiness endpoints', () => {
@@ -68,10 +82,10 @@ describe('Hook Execution E2E', () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       expect(response.status).toBe(200);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.status).toBe('ok');
       expect(body.initialized).toBe(true);
       expect(body.mcpReady).toBe(true);
@@ -83,10 +97,10 @@ describe('Hook Execution E2E', () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
       expect(response.status).toBe(200);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.status).toBe('ready');
     });
 
@@ -94,17 +108,17 @@ describe('Hook Execution E2E', () => {
       const uninitializedOptions: ServerOptions = {
         getInitializationComplete: () => false,
         getMcpReady: () => false,
-        onShutdown: mock(() => Promise.resolve()),
-        onRestart: mock(() => Promise.resolve()),
+        onShutdown: vi.fn(() => Promise.resolve()),
+        onRestart: vi.fn(() => Promise.resolve()),
       };
 
       server = new Server(uninitializedOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
       expect(response.status).toBe(503);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.status).toBe('initializing');
       expect(body.message).toBeDefined();
     });
@@ -113,10 +127,10 @@ describe('Hook Execution E2E', () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/version`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/version`);
       expect(response.status).toBe(200);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.version).toBeDefined();
       expect(typeof body.version).toBe('string');
     });
@@ -129,17 +143,17 @@ describe('Hook Execution E2E', () => {
 
       const httpServer = server.getHttpServer();
       expect(httpServer).not.toBeNull();
-      expect(httpServer!.listening).toBe(true);
+      expect((httpServer as NonNullable<typeof httpServer>).listening).toBe(true);
 
       // Verify health endpoint works
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       expect(response.status).toBe(200);
 
       // Close server
       try {
         await server.close();
-      } catch (e: any) {
-        if (e.code !== 'ERR_SERVER_NOT_RUNNING') {
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
           throw e;
         }
       }
@@ -155,24 +169,24 @@ describe('Hook Execution E2E', () => {
       const dynamicOptions: ServerOptions = {
         getInitializationComplete: () => isInitialized,
         getMcpReady: () => true,
-        onShutdown: mock(() => Promise.resolve()),
-        onRestart: mock(() => Promise.resolve()),
+        onShutdown: vi.fn(() => Promise.resolve()),
+        onRestart: vi.fn(() => Promise.resolve()),
       };
 
       server = new Server(dynamicOptions);
       await server.listen(testPort, '127.0.0.1');
 
       // Check when not initialized
-      let response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
-      let body = await response.json();
+      let response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
+      let body = await response.json() as ApiResponseBody;
       expect(body.initialized).toBe(false);
 
       // Change state
       isInitialized = true;
 
       // Check when initialized
-      response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
-      body = await response.json();
+      response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
+      body = await response.json() as ApiResponseBody;
       expect(body.initialized).toBe(true);
     });
   });
@@ -183,10 +197,10 @@ describe('Hook Execution E2E', () => {
       server.finalizeRoutes();
       await server.listen(testPort, '127.0.0.1');
 
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/nonexistent`);
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/nonexistent`);
       expect(response.status).toBe(404);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.error).toBe('NotFound');
     });
 
@@ -196,7 +210,7 @@ describe('Hook Execution E2E', () => {
       await server.listen(testPort, '127.0.0.1');
 
       // Even though this endpoint doesn't exist, verify JSON handling
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/test-json`, {
+      const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/test-json`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ test: 'data' })

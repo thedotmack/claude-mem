@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect } from 'vitest';
 import { buildTimeline } from '../../src/services/context/index.js';
 import type { Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
 
@@ -121,8 +121,8 @@ describe('buildTimeline', () => {
 
       expect(observationItem).toBeDefined();
       expect(summaryItem).toBeDefined();
-      expect(observationItem!.data).toHaveProperty('narrative');
-      expect(summaryItem!.data).toHaveProperty('request');
+      expect((observationItem as NonNullable<typeof observationItem>).data).toHaveProperty('narrative');
+      expect((summaryItem as NonNullable<typeof summaryItem>).data).toHaveProperty('request');
     });
 
     it('should use displayEpoch for summary sorting, not created_at_epoch', () => {

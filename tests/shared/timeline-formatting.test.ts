@@ -1,12 +1,26 @@
-import { describe, it, expect, mock, afterEach } from 'bun:test';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 
 // Mock logger BEFORE imports (required pattern)
-mock.module('../../src/utils/logger.js', () => ({
+// NOTE: vi.mock replaces the module globally, so all methods must be stubbed.
+vi.mock('../../src/utils/logger.js', () => ({
   logger: {
     info: () => {},
     debug: () => {},
     warn: () => {},
     error: () => {},
+    success: () => {},
+    failure: () => {},
+    log: () => {},
+    timing: () => {},
+    dataIn: () => {},
+    dataOut: () => {},
+    happyPathError: () => {},
+    formatTool: (name: string) => name,
+    formatData: (data: unknown) => String(data),
+    formatTimestamp: () => '',
+    getLevel: () => 3,
+    correlationId: () => '',
+    sessionId: () => '',
   },
 }));
 
@@ -14,7 +28,7 @@ mock.module('../../src/utils/logger.js', () => ({
 import { extractFirstFile, groupByDate } from '../../src/shared/timeline-formatting.js';
 
 afterEach(() => {
-  mock.restore();
+  vi.restoreAllMocks();
 });
 
 describe('extractFirstFile', () => {
@@ -156,8 +170,8 @@ describe('groupByDate', () => {
     expect(dates[0]).toContain('Jan 4');
     expect(dates[1]).toContain('Jan 5');
 
-    const jan4Items = result.get(dates[0])!;
-    const jan5Items = result.get(dates[1])!;
+    const jan4Items = result.get(dates[0]) as TestItem[];
+    const jan5Items = result.get(dates[1]) as TestItem[];
 
     expect(jan4Items).toHaveLength(2);
     expect(jan5Items).toHaveLength(2);

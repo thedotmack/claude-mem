@@ -9,7 +9,8 @@
  * - MCP patterns from the Chroma MCP server
  */
 
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest';
+import { execSync } from 'child_process';
 import { logger } from '../../src/utils/logger.js';
 import path from 'path';
 import os from 'os';
@@ -19,34 +20,26 @@ import fs from 'fs';
 let chromaAvailable = false;
 let skipReason = '';
 
-async function checkChromaAvailability(): Promise<{ available: boolean; reason: string }> {
+function checkChromaAvailability(): { available: boolean; reason: string } {
   try {
     // Check if uvx is available
-    const uvxCheck = Bun.spawn(['uvx', '--version'], {
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    await uvxCheck.exited;
-
-    if (uvxCheck.exitCode !== 0) {
-      return { available: false, reason: 'uvx not installed' };
-    }
-
+    execSync('uvx --version', { stdio: 'pipe', encoding: 'utf-8' });
     return { available: true, reason: '' };
   } catch (error) {
-    return { available: false, reason: `uvx check failed: ${error}` };
+    return { available: false, reason: `uvx check failed: ${error instanceof Error ? error.message : String(error)}` };
   }
 }
 
 // Suppress logger output during tests
-let loggerSpies: ReturnType<typeof spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 describe('ChromaSync Vector Sync Integration', () => {
-  const testProject = `test-project-${Date.now()}`;
-  const testVectorDbDir = path.join(os.tmpdir(), `chroma-test-${Date.now()}`);
+  const testProject = `test-project-${String(Date.now())}`;
+  const testVectorDbDir = path.join(os.tmpdir(), `chroma-test-${String(Date.now())}`);
 
-  beforeAll(async () => {
-    const check = await checkChromaAvailability();
+  beforeAll(() => {
+    const check = checkChromaAvailability();
     chromaAvailable = check.available;
     skipReason = check.reason;
 
@@ -56,7 +49,7 @@ describe('ChromaSync Vector Sync Integration', () => {
     }
   });
 
-  afterAll(async () => {
+  afterAll(() => {
     // Cleanup temp directory
     try {
       if (fs.existsSync(testVectorDbDir)) {
@@ -69,20 +62,20 @@ describe('ChromaSync Vector Sync Integration', () => {
 
   beforeEach(() => {
     loggerSpies = [
-      spyOn(logger, 'info').mockImplementation(() => {}),
-      spyOn(logger, 'debug').mockImplementation(() => {}),
-      spyOn(logger, 'warn').mockImplementation(() => {}),
-      spyOn(logger, 'error').mockImplementation(() => {}),
+      vi.spyOn(logger, 'info').mockImplementation(() => {}),
+      vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      vi.spyOn(logger, 'warn').mockImplementation(() => {}),
+      vi.spyOn(logger, 'error').mockImplementation(() => {}),
     ];
   });
 
   afterEach(() => {
-    loggerSpies.forEach(spy => spy.mockRestore());
+    for (const spy of loggerSpies) spy.mockRestore();
   });
 
   describe('ChromaSync availability check', () => {
-    it('should detect uvx availability status', async () => {
-      const check = await checkChromaAvailability();
+    it('should detect uvx availability status', () => {
+      const check = checkChromaAvailability();
       // This test always passes - it just logs the status
       expect(typeof check.available).toBe('boolean');
       if (!check.available) {
@@ -147,24 +140,7 @@ describe('ChromaSync Vector Sync Integration', () => {
       const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
       const sync = new ChromaSync(testProject);
 
-      // The syncObservation method should accept these parameters
-      const observationId = 1;
-      const memorySessionId = 'session-123';
-      const project = 'test-project';
-      const observation = {
-        type: 'discovery',
-        title: 'Test Title',
-        subtitle: 'Test Subtitle',
-        facts: ['fact1', 'fact2'],
-        narrative: 'Test narrative',
-        concepts: ['concept1'],
-        files_read: ['/path/to/file.ts'],
-        files_modified: []
-      };
-      const promptNumber = 1;
-      const createdAtEpoch = Date.now();
-
-      // Verify method signature accepts these parameters
+      // The syncObservation method accepts: observationId, memorySessionId, project, observation, promptNumber, createdAtEpoch
       // We don't actually call it to avoid needing a running Chroma server
       expect(sync.syncObservation.length).toBeGreaterThanOrEqual(0);
     });
@@ -175,21 +151,7 @@ describe('ChromaSync Vector Sync Integration', () => {
       const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
       const sync = new ChromaSync(testProject);
 
-      // The syncSummary method should accept these parameters
-      const summaryId = 1;
-      const memorySessionId = 'session-123';
-      const project = 'test-project';
-      const summary = {
-        request: 'Test request',
-        investigated: 'Test investigated',
-        learned: 'Test learned',
-        completed: 'Test completed',
-        next_steps: 'Test next steps',
-        notes: 'Test notes'
-      };
-      const promptNumber = 1;
-      const createdAtEpoch = Date.now();
-
+      // The syncSummary method accepts: summaryId, memorySessionId, project, summary, promptNumber, createdAtEpoch
       // Verify method exists
       expect(typeof sync.syncSummary).toBe('function');
     });
@@ -200,14 +162,7 @@ describe('ChromaSync Vector Sync Integration', () => {
       const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
       const sync = new ChromaSync(testProject);
 
-      // The syncUserPrompt method should accept these parameters
-      const promptId = 1;
-      const memorySessionId = 'session-123';
-      const project = 'test-project';
-      const promptText = 'Help me write a function';
-      const promptNumber = 1;
-      const createdAtEpoch = Date.now();
-
+      // The syncUserPrompt method accepts: promptId, memorySessionId, project, promptText, promptNumber, createdAtEpoch
       // Verify method exists
       expect(typeof sync.syncUserPrompt).toBe('function');
     });

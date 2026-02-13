@@ -1,10 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   readCursorRegistry,
-  writeCursorRegistry,
   registerCursorProject,
   unregisterCursorProject
 } from '../src/utils/cursor-utils';
@@ -24,7 +23,7 @@ describe('Cursor Project Registry', () => {
 
   beforeEach(() => {
     // Create unique temp directory for each test
-    tempDir = join(tmpdir(), `cursor-registry-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tempDir = join(tmpdir(), `cursor-registry-test-${String(Date.now())}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
     registryFile = join(tempDir, 'cursor-projects.json');
   });
@@ -162,7 +161,7 @@ describe('Cursor Project Registry', () => {
 
       // Read raw and parse with JSON.parse (not our helper)
       const content = readFileSync(registryFile, 'utf-8');
-      const parsed = JSON.parse(content);
+      const parsed = JSON.parse(content) as Record<string, unknown>;
 
       expect(parsed).toHaveProperty('project-1');
       expect(parsed).toHaveProperty('project-2');

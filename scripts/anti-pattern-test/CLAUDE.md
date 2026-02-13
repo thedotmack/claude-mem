@@ -11,7 +11,7 @@ A single overly-broad try-catch block wasted 10 hours of debugging time by silen
 
 **RUN THIS TEST FIRST:**
 ```bash
-bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts
+npx tsx scripts/anti-pattern-test/detect-error-handling-antipatterns.ts
 ```
 
 **You MUST answer these 5 questions to the user BEFORE writing try-catch:**
@@ -130,7 +130,7 @@ Never use try-catch to paper over uncertainty. That wastes hours of debugging ti
 These files are **NEVER** allowed to have catch-and-continue:
 - `SDKAgent.ts` - Errors must propagate, not hide
 - `GeminiAgent.ts` - Must fail loud, not silent
-- `OpenRouterAgent.ts` - Must fail loud, not silent
+- `OpenAICompatAgent.ts` - Must fail loud, not silent
 - `SessionStore.ts` - Database errors must propagate
 - `worker-service.ts` - Core service errors must be visible
 

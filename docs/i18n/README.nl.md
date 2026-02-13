@@ -145,7 +145,7 @@ Herstart Claude Code. Context van eerdere sessies verschijnt automatisch in nieu
 - **[Architectuurevolutie](https://docs.claude-mem.ai/architecture-evolution)** - De reis van v3 naar v5
 - **[Hooks Architectuur](https://docs.claude-mem.ai/hooks-architecture)** - Hoe Claude-Mem lifecycle hooks gebruikt
 - **[Hooks Referentie](https://docs.claude-mem.ai/architecture/hooks)** - 7 hook scripts uitgelegd
-- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & Bun beheer
+- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & Node.js beheer
 - **[Database](https://docs.claude-mem.ai/architecture/database)** - SQLite schema & FTS5 zoeken
 - **[Zoekarchitectuur](https://docs.claude-mem.ai/architecture/search-architecture)** - Hybride zoeken met Chroma vector database
 
@@ -163,7 +163,7 @@ Herstart Claude Code. Context van eerdere sessies verschijnt automatisch in nieu
 
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook scripts)
 2. **Slimme Installatie** - Gecachte afhankelijkheidscontrole (pre-hook script, geen lifecycle hook)
-3. **Worker Service** - HTTP API op poort 37777 met web viewer UI en 10 zoekeindpunten, beheerd door Bun
+3. **Worker Service** - HTTP API op poort 37777 met web viewer UI en 10 zoekeindpunten, beheerd door Node.js
 4. **SQLite Database** - Slaat sessies, waarnemingen, samenvattingen op
 5. **mem-search Vaardigheid** - Natuurlijke taal queries met progressieve onthulling
 6. **Chroma Vector Database** - Hybride semantisch + zoekwoord zoeken voor intelligente context ophaling
@@ -219,7 +219,6 @@ Zie **[Bètafuncties Documentatie](https://docs.claude-mem.ai/beta-features)** v
 
 - **Node.js**: 18.0.0 of hoger
 - **Claude Code**: Nieuwste versie met plugin ondersteuning
-- **Bun**: JavaScript runtime en procesbeheer (automatisch geïnstalleerd indien ontbreekt)
 - **uv**: Python package manager voor vector zoeken (automatisch geïnstalleerd indien ontbreekt)
 - **SQLite 3**: Voor persistente opslag (meegeleverd)
 

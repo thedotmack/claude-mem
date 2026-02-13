@@ -9,25 +9,26 @@
  * - Privacy patterns from src/services/worker/http/routes/SessionRoutes.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
 // Suppress logger output during tests
-let loggerSpies: ReturnType<typeof spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 describe('Tag Stripping Utilities', () => {
   beforeEach(() => {
     loggerSpies = [
-      spyOn(logger, 'info').mockImplementation(() => {}),
-      spyOn(logger, 'debug').mockImplementation(() => {}),
-      spyOn(logger, 'warn').mockImplementation(() => {}),
-      spyOn(logger, 'error').mockImplementation(() => {}),
+      vi.spyOn(logger, 'info').mockImplementation(() => {}),
+      vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      vi.spyOn(logger, 'warn').mockImplementation(() => {}),
+      vi.spyOn(logger, 'error').mockImplementation(() => {}),
     ];
   });
 
   afterEach(() => {
-    loggerSpies.forEach(spy => spy.mockRestore());
+    for (const spy of loggerSpies) spy.mockRestore();
   });
 
   describe('stripMemoryTagsFromPrompt', () => {
@@ -67,7 +68,7 @@ describe('Tag Stripping Utilities', () => {
       it('should handle many interleaved tags', () => {
         let input = 'start';
         for (let i = 0; i < 10; i++) {
-          input += ` <private>p${i}</private> <claude-mem-context>c${i}</claude-mem-context>`;
+          input += ` <private>p${String(i)}</private> <claude-mem-context>c${String(i)}</claude-mem-context>`;
         }
         input += ' end';
         const result = stripMemoryTagsFromPrompt(input);
@@ -157,11 +158,11 @@ finish`;
     });
 
     describe('ReDoS protection', () => {
-      it('should handle content with many tags without hanging (< 1 second)', async () => {
+      it('should handle content with many tags without hanging (< 1 second)', () => {
         // Generate content with many tags
         let content = '';
         for (let i = 0; i < 150; i++) {
-          content += `<private>secret${i}</private> text${i} `;
+          content += `<private>secret${String(i)}</private> text${String(i)} `;
         }
 
         const startTime = Date.now();
@@ -198,7 +199,7 @@ finish`;
           content: '<private>secret</private> public'
         });
         const result = stripMemoryTagsFromJson(jsonContent);
-        const parsed = JSON.parse(result);
+        const parsed = JSON.parse(result) as { content: string };
         expect(parsed.content).toBe(' public');
       });
 
@@ -207,7 +208,7 @@ finish`;
           data: '<claude-mem-context>injected</claude-mem-context> real data'
         });
         const result = stripMemoryTagsFromJson(jsonContent);
-        const parsed = JSON.parse(result);
+        const parsed = JSON.parse(result) as { data: string };
         expect(parsed.data).toBe(' real data');
       });
 
@@ -217,7 +218,7 @@ finish`;
           args: '<private>secret args</private>'
         };
         const result = stripMemoryTagsFromJson(JSON.stringify(toolInput));
-        const parsed = JSON.parse(result);
+        const parsed = JSON.parse(result) as { args: string };
         expect(parsed.args).toBe('');
       });
 
@@ -227,7 +228,7 @@ finish`;
           status: 'success'
         };
         const result = stripMemoryTagsFromJson(JSON.stringify(toolResponse));
-        const parsed = JSON.parse(result);
+        const parsed = JSON.parse(result) as { output: string };
         expect(parsed.output).toBe('result ');
       });
     });
@@ -251,7 +252,7 @@ finish`;
           }
         });
         const result = stripMemoryTagsFromJson(input);
-        const parsed = JSON.parse(result);
+        const parsed = JSON.parse(result) as { outer: { inner: string } };
         expect(parsed.outer.inner).toBe(' visible');
       });
     });

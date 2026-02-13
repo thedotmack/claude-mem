@@ -9,10 +9,11 @@
  */
 
 import { execSync } from 'child_process';
+import { existsSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
-import { DatabaseManager } from './DatabaseManager.js';
-import { SessionManager } from './SessionManager.js';
+import type { DatabaseManager } from './DatabaseManager.js';
+import type { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -21,10 +22,9 @@ import { buildIsolatedEnv, getAuthMethodDescription } from '../../shared/EnvMana
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
-import { createPidCapturingSpawn, getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
+import { createPidCapturingSpawn } from './ProcessRegistry.js';
 
 // Import Agent SDK (assumes it's installed)
-// @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 export class SDKAgent {
@@ -86,7 +86,7 @@ export class SDKAgent {
     logger.info('SDK', 'Starting SDK query', {
       sessionDbId: session.sessionDbId,
       contentSessionId: session.contentSessionId,
-      memorySessionId: session.memorySessionId,
+      memorySessionId: session.memorySessionId ?? undefined,
       hasRealMemorySessionId,
       resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)',
       lastPromptNumber: session.lastPromptNumber,
@@ -96,13 +96,13 @@ export class SDKAgent {
     // Debug-level alignment logs for detailed tracing
     if (session.lastPromptNumber > 1) {
       const willResume = hasRealMemorySessionId;
-      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | willResume=${willResume} | resumeWith=${willResume ? session.memorySessionId : 'NONE'}`);
+      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${String(session.memorySessionId)} | prompt#=${String(session.lastPromptNumber)} | hasRealMemorySessionId=${String(hasRealMemorySessionId)} | willResume=${String(willResume)} | resumeWith=${willResume ? String(session.memorySessionId) : 'NONE'}`);
     } else {
       // INIT prompt - never resume even if memorySessionId exists (stale from previous session)
       const hasStaleMemoryId = hasRealMemorySessionId;
-      logger.debug('SDK', `[ALIGNMENT] First Prompt (INIT) | contentSessionId=${session.contentSessionId} | prompt#=${session.lastPromptNumber} | hasStaleMemoryId=${hasStaleMemoryId} | action=START_FRESH | Will capture new memorySessionId from SDK response`);
+      logger.debug('SDK', `[ALIGNMENT] First Prompt (INIT) | contentSessionId=${session.contentSessionId} | prompt#=${String(session.lastPromptNumber)} | hasStaleMemoryId=${String(hasStaleMemoryId)} | action=START_FRESH | Will capture new memorySessionId from SDK response`);
       if (hasStaleMemoryId) {
-        logger.warn('SDK', `Skipping resume for INIT prompt despite existing memorySessionId=${session.memorySessionId} - SDK context was lost (worker restart or crash recovery)`);
+        logger.warn('SDK', `Skipping resume for INIT prompt despite existing memorySessionId=${String(session.memorySessionId)} - SDK context was lost (worker restart or crash recovery)`);
       }
     }
 
@@ -122,7 +122,7 @@ export class SDKAgent {
         // Only resume if BOTH: (1) we have a memorySessionId AND (2) this isn't the first prompt
         // On worker restart, memorySessionId may exist from a previous SDK session but we
         // need to start fresh since the SDK context was lost
-        ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId }),
+        ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId ?? undefined }),
         disallowedTools,
         abortController: session.abortController,
         pathToClaudeCodeExecutable: claudePath,
@@ -146,12 +146,12 @@ export class SDKAgent {
         // Verify the update by reading back from DB
         const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
         const dbVerified = verification?.memory_session_id === message.session_id;
-        logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}`, {
+        logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${String(session.sessionDbId)} | memorySessionId=${message.session_id} | dbVerified=${String(dbVerified)}`, {
           sessionId: session.sessionDbId,
           memorySessionId: message.session_id
         });
         if (!dbVerified) {
-          logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${session.sessionDbId} | expected=${message.session_id} | got=${verification?.memory_session_id}`, {
+          logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${String(session.sessionDbId)} | expected=${message.session_id} | got=${String(verification?.memory_session_id)}`, {
             sessionId: session.sessionDbId
           });
         }
@@ -161,9 +161,19 @@ export class SDKAgent {
 
       // Handle assistant messages
       if (message.type === 'assistant') {
-        const content = message.message.content;
+        // SDK message types are not fully typed - use interface for the parts we access
+        const sdkMessage = message.message as {
+          content: string | Array<{ type: string; text?: string }>;
+          usage?: {
+            input_tokens?: number;
+            output_tokens?: number;
+            cache_creation_input_tokens?: number;
+            cache_read_input_tokens?: number;
+          };
+        };
+        const content = sdkMessage.content;
         const textContent = Array.isArray(content)
-          ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
+          ? content.filter((c) => c.type === 'text').map((c) => c.text ?? '').join('\n')
           : typeof content === 'string' ? content : '';
 
         const responseSize = textContent.length;
@@ -172,7 +182,7 @@ export class SDKAgent {
         const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
 
         // Extract and track token usage
-        const usage = message.message.usage;
+        const usage = sdkMessage.usage;
         if (usage) {
           session.cumulativeInputTokens += usage.input_tokens || 0;
           session.cumulativeOutputTokens += usage.output_tokens || 0;
@@ -204,14 +214,14 @@ export class SDKAgent {
           const truncatedResponse = responseSize > 100
             ? textContent.substring(0, 100) + '...'
             : textContent;
-          logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
+          logger.dataOut('SDK', `Response received (${String(responseSize)} chars)`, {
             sessionId: session.sessionDbId,
             promptNumber: session.lastPromptNumber
           }, truncatedResponse);
         }
 
         // Parse and process response using shared ResponseProcessor
-        await processAgentResponse(
+        processAgentResponse(
           textContent,
           session,
           this.dbManager,
@@ -325,7 +335,7 @@ export class SDKAgent {
 
         const obsPrompt = buildObservationPrompt({
           id: 0, // Not used in prompt
-          tool_name: message.tool_name!,
+          tool_name: message.tool_name ?? '',
           tool_input: JSON.stringify(message.tool_input),
           tool_output: JSON.stringify(message.tool_response),
           created_at_epoch: Date.now(),
@@ -345,7 +355,7 @@ export class SDKAgent {
           parent_tool_use_id: null,
           isSynthetic: true
         };
-      } else if (message.type === 'summarize') {
+      } else {
         const summaryPrompt = buildSummaryPrompt({
           id: session.sessionDbId,
           memory_session_id: session.memorySessionId,
@@ -383,8 +393,6 @@ export class SDKAgent {
 
     // 1. Check configured path
     if (settings.CLAUDE_CODE_PATH) {
-      // Lazy load fs to keep startup fast
-      const { existsSync } = require('fs');
       if (!existsSync(settings.CLAUDE_CODE_PATH)) {
         throw new Error(`CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but the file does not exist.`);
       }

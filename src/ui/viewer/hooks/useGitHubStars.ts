@@ -25,10 +25,10 @@ export function useGitHubStars(username: string, repo: string): UseGitHubStarsRe
       const response = await fetch(`https://api.github.com/repos/${username}/${repo}`);
 
       if (!response.ok) {
-        throw new Error(`GitHub API error: ${response.status}`);
+        throw new Error(`GitHub API error: ${String(response.status)}`);
       }
 
-      const data: GitHubStarsData = await response.json();
+      const data = await response.json() as GitHubStarsData;
       setStars(data.stargazers_count);
     } catch (error) {
       console.error('Failed to fetch GitHub stars:', error);
@@ -39,7 +39,7 @@ export function useGitHubStars(username: string, repo: string): UseGitHubStarsRe
   }, [username, repo]);
 
   useEffect(() => {
-    fetchStars();
+    void fetchStars();
   }, [fetchStars]);
 
   return { stars, isLoading, error };

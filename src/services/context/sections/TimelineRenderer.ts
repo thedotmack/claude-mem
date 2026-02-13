@@ -8,7 +8,6 @@ import type {
   ContextConfig,
   Observation,
   TimelineItem,
-  SummaryTimelineItem,
 } from '../types.js';
 import { formatTime, formatDate, formatDateTime, extractFirstFile, parseJsonArray } from '../../../shared/timeline-formatting.js';
 import * as Markdown from '../formatters/MarkdownFormatter.js';
@@ -26,7 +25,7 @@ export function groupTimelineByDay(timeline: TimelineItem[]): Map<string, Timeli
     if (!itemsByDay.has(day)) {
       itemsByDay.set(day, []);
     }
-    itemsByDay.get(day)!.push(item);
+    itemsByDay.get(day)?.push(item);
   }
 
   // Sort days chronologically
@@ -83,7 +82,7 @@ export function renderDayTimeline(
         lastTime = '';
       }
 
-      const summary = item.data as SummaryTimelineItem;
+      const summary = item.data;
       const formattedTime = formatDateTime(summary.displayTime);
 
       if (useColors) {
@@ -92,7 +91,7 @@ export function renderDayTimeline(
         output.push(...Markdown.renderMarkdownSummaryItem(summary, formattedTime));
       }
     } else {
-      const obs = item.data as Observation;
+      const obs = item.data;
       const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
       const time = formatTime(obs.created_at);
       const showTime = time !== lastTime;
@@ -124,7 +123,7 @@ export function renderDayTimeline(
           output.push(...Color.renderColorFullObservation(obs, time, showTime, detailField, config));
         } else {
           // Close table for full observation in markdown mode
-          if (tableOpen && !useColors) {
+          if (tableOpen) {
             output.push('');
             tableOpen = false;
           }
