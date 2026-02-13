@@ -274,6 +274,128 @@ ensure_jq_or_fallback() {
 }
 
 ###############################################################################
+# Parse /api/health JSON response — extract worker metadata into globals
+# Uses jq → python3 → node fallback chain (matching installer conventions)
+# Sets: WORKER_VERSION, WORKER_AI_PROVIDER, WORKER_AI_AUTH_METHOD,
+#        WORKER_INITIALIZED, WORKER_REPORTED_PID, WORKER_UPTIME
+###############################################################################
+
+parse_health_json() {
+  local raw_json="$1"
+
+  # Reset all health globals before parsing
+  WORKER_VERSION=""
+  WORKER_AI_PROVIDER=""
+  WORKER_AI_AUTH_METHOD=""
+  WORKER_INITIALIZED=""
+  WORKER_REPORTED_PID=""
+  WORKER_UPTIME=""
+
+  if [[ -z "$raw_json" ]]; then
+    return 0
+  fi
+
+  # Try jq first (fastest, most reliable)
+  if command -v jq &>/dev/null; then
+    WORKER_VERSION="$(echo "$raw_json" | jq -r '.version // empty' 2>/dev/null)" || true
+    WORKER_AI_PROVIDER="$(echo "$raw_json" | jq -r '.ai.provider // empty' 2>/dev/null)" || true
+    WORKER_AI_AUTH_METHOD="$(echo "$raw_json" | jq -r '.ai.authMethod // empty' 2>/dev/null)" || true
+    WORKER_INITIALIZED="$(echo "$raw_json" | jq -r '.initialized // empty' 2>/dev/null)" || true
+    WORKER_REPORTED_PID="$(echo "$raw_json" | jq -r '.pid // empty' 2>/dev/null)" || true
+    WORKER_UPTIME="$(echo "$raw_json" | jq -r '.uptime // empty' 2>/dev/null)" || true
+    return 0
+  fi
+
+  # Try python3 fallback
+  if command -v python3 &>/dev/null; then
+    local parsed
+    parsed="$(INSTALLER_HEALTH_JSON="$raw_json" python3 -c "
+import json, os, sys
+try:
+    data = json.loads(os.environ['INSTALLER_HEALTH_JSON'])
+    ai = data.get('ai') or {}
+    fields = [
+        str(data.get('version', '')),
+        str(ai.get('provider', '')),
+        str(ai.get('authMethod', '')),
+        str(data.get('initialized', '')),
+        str(data.get('pid', '')),
+        str(data.get('uptime', '')),
+    ]
+    sys.stdout.write('\n'.join(fields))
+except Exception:
+    sys.stdout.write('\n\n\n\n\n')
+" 2>/dev/null)" || true
+
+    if [[ -n "$parsed" ]]; then
+      local -a health_fields
+      IFS=$'\n' read -r -d '' -a health_fields <<< "$parsed" || true
+      WORKER_VERSION="${health_fields[0]:-}"
+      WORKER_AI_PROVIDER="${health_fields[1]:-}"
+      WORKER_AI_AUTH_METHOD="${health_fields[2]:-}"
+      WORKER_INITIALIZED="${health_fields[3]:-}"
+      WORKER_REPORTED_PID="${health_fields[4]:-}"
+      WORKER_UPTIME="${health_fields[5]:-}"
+      # Normalize python's None/empty representations
+      [[ "$WORKER_VERSION" == "None" ]] && WORKER_VERSION=""
+      [[ "$WORKER_AI_PROVIDER" == "None" ]] && WORKER_AI_PROVIDER=""
+      [[ "$WORKER_AI_AUTH_METHOD" == "None" ]] && WORKER_AI_AUTH_METHOD=""
+      [[ "$WORKER_INITIALIZED" == "None" ]] && WORKER_INITIALIZED=""
+      [[ "$WORKER_REPORTED_PID" == "None" ]] && WORKER_REPORTED_PID=""
+      [[ "$WORKER_UPTIME" == "None" ]] && WORKER_UPTIME=""
+    fi
+    return 0
+  fi
+
+  # Fallback to node (always available — it's a dependency)
+  local parsed
+  parsed="$(INSTALLER_HEALTH_JSON="$raw_json" node -e "
+    try {
+      const data = JSON.parse(process.env.INSTALLER_HEALTH_JSON);
+      const ai = data.ai || {};
+      const fields = [
+        data.version ?? '',
+        ai.provider ?? '',
+        ai.authMethod ?? '',
+        data.initialized != null ? String(data.initialized) : '',
+        data.pid != null ? String(data.pid) : '',
+        data.uptime != null ? String(data.uptime) : '',
+      ];
+      process.stdout.write(fields.join('\n'));
+    } catch (e) {
+      process.stdout.write('\n\n\n\n\n');
+    }
+  " 2>/dev/null)" || true
+
+  if [[ -n "$parsed" ]]; then
+    local -a health_fields
+    IFS=$'\n' read -r -d '' -a health_fields <<< "$parsed" || true
+    WORKER_VERSION="${health_fields[0]:-}"
+    WORKER_AI_PROVIDER="${health_fields[1]:-}"
+    WORKER_AI_AUTH_METHOD="${health_fields[2]:-}"
+    WORKER_INITIALIZED="${health_fields[3]:-}"
+    WORKER_REPORTED_PID="${health_fields[4]:-}"
+    WORKER_UPTIME="${health_fields[5]:-}"
+  fi
+}
+
+###############################################################################
+# Format uptime from milliseconds to human-readable (e.g., "2m 15s", "1h 23m")
+###############################################################################
+
+format_uptime_ms() {
+  local ms="$1"
+  local secs=$((ms / 1000))
+  if (( secs >= 3600 )); then
+    echo "$((secs / 3600))h $((secs % 3600 / 60))m"
+  elif (( secs >= 60 )); then
+    echo "$((secs / 60))m $((secs % 60))s"
+  else
+    echo "${secs}s"
+  fi
+}
+
+###############################################################################
 # Banner
 ###############################################################################
 
@@ -1030,6 +1152,12 @@ find_claude_mem_install_dir() {
 ###############################################################################
 
 WORKER_PID=""
+WORKER_VERSION=""
+WORKER_AI_PROVIDER=""
+WORKER_AI_AUTH_METHOD=""
+WORKER_INITIALIZED=""
+WORKER_REPORTED_PID=""
+WORKER_UPTIME=""
 
 start_worker() {
   info "Starting claude-mem worker service..."
@@ -1083,43 +1211,74 @@ start_worker() {
 }
 
 ###############################################################################
-# Health verification
-# Polls http://localhost:37777/api/health up to 10 times with 1-second intervals
+# Health verification — two-stage: health (alive) then readiness (initialized)
+# Stage 1: Poll /api/health for HTTP 200 (worker process is running)
+# Stage 2: Poll /api/readiness for HTTP 200 (worker is fully initialized)
+# Total budget: 30 attempts (30 seconds) shared across both stages
 ###############################################################################
 
 verify_health() {
-  local max_attempts=10
+  local max_attempts=30
   local attempt=1
   local health_url="http://127.0.0.1:37777/api/health"
+  local readiness_url="http://127.0.0.1:37777/api/readiness"
+  local health_alive=false
 
   info "Verifying worker health..."
 
+  # ── Stage 1: Wait for /api/health to return HTTP 200 (worker is alive) ──
   while (( attempt <= max_attempts )); do
-    local response
-    response="$(curl -s -o /dev/null -w "%{http_code}" "$health_url" 2>/dev/null)" || true
+    local http_status
+    http_status="$(curl -s -o /dev/null -w "%{http_code}" "$health_url" 2>/dev/null)" || true
 
-    if [[ "$response" == "200" ]]; then
-      # Verify the response body contains status:ok
+    if [[ "$http_status" == "200" ]]; then
+      health_alive=true
+
+      # Fetch the full health response body and parse metadata
       local body
       body="$(curl -s "$health_url" 2>/dev/null)" || true
-      if echo "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then
-        success "Worker is healthy (port 37777)"
-        return 0
-      fi
+      parse_health_json "$body"
+
+      success "Worker is alive, waiting for initialization..."
+
+      break
     fi
 
-    if (( attempt < max_attempts )); then
-      info "Waiting for worker to start... (attempt ${attempt}/${max_attempts})"
-    fi
+    info "Waiting for worker to start... (attempt ${attempt}/${max_attempts})"
     sleep 1
     attempt=$((attempt + 1))
   done
 
-  warn "Worker health check timed out after ${max_attempts} attempts"
-  warn "The worker may still be starting up. Check status with:"
-  warn "  curl http://127.0.0.1:37777/api/health"
-  warn "  Or check logs: ~/.claude-mem/logs/"
-  return 1
+  # If health never responded, the worker is not running at all
+  if [[ "$health_alive" != "true" ]]; then
+    warn "Worker health check timed out after ${max_attempts} attempts"
+    warn "The worker may still be starting up. Check status with:"
+    warn "  curl http://127.0.0.1:37777/api/health"
+    warn "  Or check logs: ~/.claude-mem/logs/"
+    return 1
+  fi
+
+  # ── Stage 2: Wait for /api/readiness to return HTTP 200 (fully initialized) ──
+  attempt=$((attempt + 1))
+  while (( attempt <= max_attempts )); do
+    local readiness_status
+    readiness_status="$(curl -s -o /dev/null -w "%{http_code}" "$readiness_url" 2>/dev/null)" || true
+
+    if [[ "$readiness_status" == "200" ]]; then
+      success "Worker is ready!"
+      return 0
+    fi
+
+    info "Waiting for worker to initialize... (attempt ${attempt}/${max_attempts})"
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+
+  # Readiness timed out but health is OK — worker is running, just not fully initialized yet
+  warn "Worker is running but initialization is still in progress"
+  warn "This is normal on first run — the worker will finish initializing in the background."
+  warn "Check readiness with: curl http://127.0.0.1:37777/api/readiness"
+  return 0
 }
 
 ###############################################################################
@@ -1151,7 +1310,7 @@ setup_observation_feed() {
   read_tty -r answer
   answer="${answer:-n}"
 
-  if [[ "${answer,,}" != "y" && "${answer,,}" != "yes" ]]; then
+  if [[ "$answer" != [yY] && "$answer" != [yY][eE][sS] ]]; then
     echo ""
     info "Skipped observation feed setup."
     info "You can configure it later by re-running this installer or"
@@ -1376,15 +1535,38 @@ print_completion_summary() {
 
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Dependencies installed (Bun, uv)"
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  OpenClaw gateway detected"
-  echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  claude-mem plugin installed and enabled"
+
+  # Show installed version from health data if available
+  if [[ -n "$WORKER_VERSION" ]]; then
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  claude-mem v${COLOR_BOLD}${WORKER_VERSION}${COLOR_RESET} installed and running"
+  else
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  claude-mem plugin installed and enabled"
+  fi
+
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Memory slot configured"
-  echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${provider_display}${COLOR_RESET}"
+
+  # Show AI provider with auth method from health data if available
+  if [[ -n "$WORKER_AI_AUTH_METHOD" ]]; then
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${WORKER_AI_PROVIDER} (${WORKER_AI_AUTH_METHOD})${COLOR_RESET}"
+  else
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${provider_display}${COLOR_RESET}"
+  fi
+
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Settings written to ~/.claude-mem/settings.json"
 
   if [[ -n "$WORKER_PID" ]] && kill -0 "$WORKER_PID" 2>/dev/null; then
     echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Worker running on port ${COLOR_BOLD}37777${COLOR_RESET} (PID: ${WORKER_PID})"
+  elif [[ -n "$WORKER_UPTIME" && "$WORKER_UPTIME" =~ ^[0-9]+$ ]] && (( WORKER_UPTIME > 0 )); then
+    local uptime_formatted
+    uptime_formatted="$(format_uptime_ms "$WORKER_UPTIME")"
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Worker running on port ${COLOR_BOLD}37777${COLOR_RESET} (PID: ${WORKER_REPORTED_PID}, uptime: ${uptime_formatted})"
   else
     echo -e "  ${COLOR_YELLOW}⚠${COLOR_RESET}  Worker may not be running — check logs at ~/.claude-mem/logs/"
+  fi
+
+  # Show initialization warning if worker is alive but not yet initialized
+  if [[ "$WORKER_INITIALIZED" != "true" ]] && { [[ -n "$WORKER_REPORTED_PID" ]] || { [[ -n "$WORKER_PID" ]] && kill -0 "$WORKER_PID" 2>/dev/null; }; }; then
+    echo -e "  ${COLOR_YELLOW}⚠${COLOR_RESET}  Worker is starting but still initializing (this is normal on first run)"
   fi
 
   if [[ "$FEED_CONFIGURED" == "true" ]]; then
@@ -1474,7 +1656,55 @@ main() {
     warn "Port 37777 is already in use (worker may already be running)"
     info "Checking if the existing service is healthy..."
     if verify_health; then
-      success "Existing worker is healthy — skipping startup"
+      # verify_health already called parse_health_json — WORKER_* globals are set.
+      # Determine the expected version from the installed plugin's package.json.
+      local expected_version=""
+      if [[ -n "$CLAUDE_MEM_INSTALL_DIR" ]] || find_claude_mem_install_dir; then
+        expected_version="$(INSTALLER_PKG="${CLAUDE_MEM_INSTALL_DIR}/package.json" node -e "
+          try { process.stdout.write(JSON.parse(require('fs').readFileSync(process.env.INSTALLER_PKG, 'utf8')).version || ''); }
+          catch(e) {}
+        " 2>/dev/null)" || true
+      fi
+
+      local needs_restart=""
+
+      # Check if worker version is outdated compared to installed version
+      if [[ -n "$WORKER_VERSION" && -n "$expected_version" && "$WORKER_VERSION" != "$expected_version" ]]; then
+        warn "Existing worker is v${WORKER_VERSION} but installed v${expected_version} — restart recommended"
+        info "  Run: curl -X POST http://127.0.0.1:37777/api/admin/restart"
+        needs_restart="true"
+      fi
+
+      # Check if AI provider doesn't match current configuration
+      if [[ -n "$WORKER_AI_PROVIDER" && -n "$AI_PROVIDER" && "$WORKER_AI_PROVIDER" != "$AI_PROVIDER" ]]; then
+        warn "Worker is using ${WORKER_AI_PROVIDER} but you configured ${AI_PROVIDER} — restart to apply changes"
+        needs_restart="true"
+      fi
+
+      # If everything is current, show full healthy status
+      if [[ "$needs_restart" != "true" ]]; then
+        local uptime_display=""
+        if [[ -n "$WORKER_UPTIME" && "$WORKER_UPTIME" =~ ^[0-9]+$ && "$WORKER_UPTIME" != "0" ]]; then
+          uptime_display="$(format_uptime_ms "$WORKER_UPTIME")"
+        fi
+
+        local status_parts=""
+        if [[ -n "$WORKER_VERSION" ]]; then
+          status_parts="v${WORKER_VERSION}"
+        fi
+        if [[ -n "$WORKER_AI_PROVIDER" ]]; then
+          status_parts="${status_parts:+${status_parts}, }${WORKER_AI_PROVIDER}"
+        fi
+        if [[ -n "$uptime_display" ]]; then
+          status_parts="${status_parts:+${status_parts}, }uptime: ${uptime_display}"
+        fi
+
+        if [[ -n "$status_parts" ]]; then
+          success "Existing worker is healthy (${status_parts}) — skipping startup"
+        else
+          success "Existing worker is healthy — skipping startup"
+        fi
+      fi
     else
       warn "Port 37777 is occupied but not responding to health checks"
       warn "Another process may be using this port. Stop it and re-run the installer,"
