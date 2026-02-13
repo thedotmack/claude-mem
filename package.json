@@ -103,6 +103,7 @@
     "express": "^4.18.2",
     "glob": "^11.0.3",
     "handlebars": "^4.7.8",
+    "proper-lockfile": "^4.1.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "yaml": "^2.8.2",
