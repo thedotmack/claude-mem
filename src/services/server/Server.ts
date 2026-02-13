@@ -11,7 +11,7 @@
 
 import type { Request, Response, Application } from 'express';
 import express from 'express';
-import type http from 'http';
+import http from 'http';
 import * as fs from 'fs';
 import path from 'path';
 import { logger } from '../../utils/logger.js';
@@ -74,7 +74,8 @@ export class Server {
    */
   async listen(port: number, host: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      this.server = this.app.listen(port, host, () => {
+      // Increase max header size to 64KB to handle browsers with many localhost cookies
+      this.server = http.createServer({ maxHeaderSize: 65536 }, this.app).listen(port, host, () => {
         logger.info('SYSTEM', 'HTTP server started', { host, port, pid: process.pid });
         resolve();
       });
