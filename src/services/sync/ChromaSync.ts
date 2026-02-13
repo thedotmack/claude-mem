@@ -83,6 +83,7 @@ export class ChromaSync {
   private project: string;
   private collectionName: string;
   private readonly VECTOR_DB_DIR: string;
+  private readonly VENV_DIR: string;
   private readonly BATCH_SIZE = 100;
 
   // Windows popup concern resolved: the worker daemon starts with -WindowStyle Hidden,
@@ -94,6 +95,51 @@ export class ChromaSync {
     this.project = project;
     this.collectionName = `cm__${project}`;
     this.VECTOR_DB_DIR = path.join(os.homedir(), '.claude-mem', 'vector-db');
+    this.VENV_DIR = path.join(os.homedir(), '.claude-mem', 'chroma-venv');
+  }
+
+  /**
+   * Ensure a persistent virtual environment exists with chroma-mcp installed.
+   * This avoids using `uvx` which creates a new ~331MB ephemeral cached environment
+   * on every invocation, causing ~/.cache/uv to grow by several GB per day.
+   */
+  private ensureVenv(pythonVersion: string): string {
+    const venvPython = process.platform === 'win32'
+      ? path.join(this.VENV_DIR, 'Scripts', 'python.exe')
+      : path.join(this.VENV_DIR, 'bin', 'python');
+
+    const markerFile = path.join(this.VENV_DIR, '.chroma-mcp-installed');
+
+    // Check if venv already exists with chroma-mcp installed
+    if (fs.existsSync(venvPython) && fs.existsSync(markerFile)) {
+      return venvPython;
+    }
+
+    logger.info('CHROMA_SYNC', 'Creating persistent venv for chroma-mcp...', { venvDir: this.VENV_DIR });
+
+    // Create venv with the specified Python version
+    if (!fs.existsSync(venvPython)) {
+      execSync(`uv venv --python ${pythonVersion} "${this.VENV_DIR}"`, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 60000
+      });
+    }
+
+    // Install chroma-mcp into the persistent venv
+    execSync(`uv pip install --python "${venvPython}" chroma-mcp`, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 120000
+    });
+
+    // Write marker so we know it's installed
+    fs.writeFileSync(markerFile, JSON.stringify({
+      installedAt: new Date().toISOString(),
+      pythonVersion
+    }));
+
+    logger.info('CHROMA_SYNC', 'Persistent venv created with chroma-mcp', { venvDir: this.VENV_DIR });
+
+    return venvPython;
   }
 
   /**
@@ -118,16 +164,24 @@ export class ChromaSync {
     }
 
     try {
-      // Use uvx to resolve the correct certifi path for the exact Python environment it uses
-      // This is more reliable than scanning the uv cache directory structure
+      // Resolve certifi path from the persistent venv (certifi is a dependency of chroma-mcp)
+      // Falls back to installing certifi explicitly if not already available
       let certifiPath: string | undefined;
       try {
+        const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+        const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
+        const venvPython = this.ensureVenv(pythonVersion);
+        // Install certifi into the persistent venv if not already present
+        execSync(`uv pip install --python "${venvPython}" certifi`, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 30000
+        });
         certifiPath = execSync(
-          'uvx --with certifi python -c "import certifi; print(certifi.where())"',
+          `"${venvPython}" -c "import certifi; print(certifi.where())"`,
           { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 }
         ).trim();
       } catch {
-        // uvx or certifi not available
+        // venv or certifi not available
         return undefined;
       }
 
@@ -197,11 +251,15 @@ export class ChromaSync {
       // Get combined SSL certificate bundle for Zscaler/corporate proxy environments
       const combinedCertPath = this.getCombinedCertPath();
 
+      // Use persistent venv instead of uvx to avoid creating ~331MB ephemeral
+      // cached environments on every invocation (causes ~/.cache/uv to grow by GB/day)
+      const venvPython = this.ensureVenv(pythonVersion);
+      const venvBin = path.dirname(venvPython);
+      const chromaMcpBin = path.join(venvBin, 'chroma-mcp');
+
       const transportOptions: any = {
-        command: 'uvx',
+        command: chromaMcpBin,
         args: [
-          '--python', pythonVersion,
-          'chroma-mcp',
           '--client-type', 'persistent',
           '--data-dir', this.VECTOR_DB_DIR
         ],
