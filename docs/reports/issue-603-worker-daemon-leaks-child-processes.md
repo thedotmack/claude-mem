@@ -33,7 +33,7 @@ The reporter documented the following scenario:
 **Parent daemon process (running 7+ hours):**
 ```
 PID     PPID  RSS(KB)  ELAPSED   COMMAND
-4118969 1     161656   07:28:16  bun ~/.claude/plugins/cache/thedotmack/claude-mem/9.0.0/scripts/worker-service.cjs --daemon
+4118969 1     161656   07:28:16  bun ~/.claude/plugins/cache/doublefx/claude-mem/9.0.0/scripts/worker-service.cjs --daemon
 ```
 
 **Sample of leaked children (121 total, all parented to daemon):**
@@ -377,7 +377,7 @@ File an issue with the Claude Agent SDK requesting:
 
 ## 8. References
 
-- **Issue:** https://github.com/thedotmack/claude-mem/issues/603
+- **Issue:** https://github.com/doublefx/claude-mem/issues/603
 - **Source Files:**
   - `/src/services/worker/SDKAgent.ts` - SDK query invocation
   - `/src/services/worker/SessionManager.ts` - Session lifecycle

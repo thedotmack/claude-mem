@@ -21,7 +21,7 @@ if (projectRoot && !path.isAbsolute(filePath)) {
 
 ```
 ./~/                              ← literal tilde directory
-./PR #610 on thedotmack/          ← GitHub PR reference
+./PR #610 on doublefx/          ← GitHub PR reference
 ./git diff for src/               ← git command text
 ./https:/code.claude.com/docs/en/ ← URL
 ```
@@ -138,7 +138,7 @@ describe('path validation in updateFolderClaudeMdFiles', () => {
     global.fetch = fetchMock;
 
     await updateFolderClaudeMdFiles(
-      ['PR #610 on thedotmack/CLAUDE.md'],
+      ['PR #610 on doublefx/CLAUDE.md'],
       'test-project',
       37777,
       tempDir
@@ -217,7 +217,7 @@ https*/
 **Command sequence:**
 ```bash
 rm -rf "~/."
-rm -rf "PR #610 on thedotmack"
+rm -rf "PR #610 on doublefx"
 rm -rf "git diff for src"
 rm -rf "https:"
 ```
@@ -244,7 +244,7 @@ rm -rf "https:"
 | Path | Reason |
 |------|--------|
 | `~/` (directory tree) | Invalid literal tilde directory |
-| `PR #610 on thedotmack/` | Invalid PR reference directory |
+| `PR #610 on doublefx/` | Invalid PR reference directory |
 | `git diff for src/` | Invalid git command directory |
 | `https:/` | Invalid URL directory |
 

@@ -55,7 +55,7 @@ The in-process architecture means hooks no longer need to spawn separate worker 
 - Better resource utilization
 - Elimination of process spawn failures on Windows
 
-Full PR: https://github.com/thedotmack/claude-mem/pull/722
+Full PR: https://github.com/doublefx/claude-mem/pull/722
 
 ## [v9.0.13] - 2026-02-05
 
@@ -121,7 +121,7 @@ After a worker restart, stale `memory_session_id` values in the database could c
 Thanks to @bigph00t for this fix! Fixes #817.
 
 ---
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.10...v9.0.11
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v9.0.10...v9.0.11
 
 ## [v9.0.10] - 2026-01-26
 
@@ -183,7 +183,7 @@ This release fixes a critical issue where Claude haiku subprocesses spawned by t
 - `src/services/worker/SessionManager.ts`: Verify subprocess exit on delete
 - `src/services/worker-service.ts`: Start/stop orphan reaper
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.7...v9.0.8
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v9.0.7...v9.0.8
 
 Fixes #737
 
@@ -251,7 +251,7 @@ This release adds the `/do` and `/make-plan` development commands to the plugin 
 
 ### Full Changelog
 
-https://github.com/thedotmack/claude-mem/compare/v9.0.3...v9.0.4
+https://github.com/doublefx/claude-mem/compare/v9.0.3...v9.0.4
 
 ## [v9.0.3] - 2026-01-10
 
@@ -289,7 +289,7 @@ Fixed an issue where the worker service startup wasn't producing proper JSON sta
 
 ---
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.1...v9.0.2
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v9.0.1...v9.0.2
 
 ## [v9.0.1] - 2026-01-08
 
@@ -324,7 +324,7 @@ Fixed an issue where the worker service startup wasn't producing proper JSON sta
 - Removed hardcoded fake token counts from context injection
 - Standardized Claude Code 2.1.0 note wording across documentation
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.0...v9.0.1
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v9.0.0...v9.0.1
 
 ## [v9.0.0] - 2026-01-06
 
@@ -389,7 +389,7 @@ Version 9.0.0 introduces the **Live Context System** - a major new capability th
 
 ---
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.10...v9.0.0
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v8.5.10...v9.0.0
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
@@ -426,7 +426,7 @@ This appears in both terminal (colored) output and markdown format, including em
 
 ---
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.8...v8.5.9
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v8.5.8...v8.5.9
 
 ## [v8.5.8] - 2026-01-04
 
@@ -477,7 +477,7 @@ This release refactors the monolithic service architecture into focused, single-
 - Updated esbuild and MCP SDK to latest versions
 - Removed `bun.lock` from version control
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.6...v8.5.7
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v8.5.6...v8.5.7
 
 ## [v8.5.6] - 2026-01-04
 
@@ -526,7 +526,7 @@ This patch release enhances error handling and logging across all worker service
 ### Investigation Reports
 - Added detailed analysis documents for generator failures and observation duplication regressions
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.4...v8.5.5
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v8.5.4...v8.5.5
 
 ## [v8.5.4] - 2026-01-02
 
@@ -707,7 +707,7 @@ These files now have strict error propagation (no catch-and-continue):
 
 ---
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.2...v8.5.3
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v8.5.2...v8.5.3
 
 ## [v8.5.2] - 2025-12-31
 
@@ -840,7 +840,7 @@ Full documentation available at [docs.claude-mem.ai/cursor](https://docs.claude-
 ### For Cursor-Only Users (No Claude Code)
 
 ```bash
-git clone https://github.com/thedotmack/claude-mem.git
+git clone https://github.com/doublefx/claude-mem.git
 cd claude-mem && bun install && bun run build
 bun run cursor:setup
 ```
@@ -848,12 +848,12 @@ bun run cursor:setup
 ### For Claude Code Users
 
 ```bash
-/plugin marketplace add thedotmack/claude-mem
+/plugin marketplace add doublefx/claude-mem
 /plugin install claude-mem
 claude-mem cursor install
 ```
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.10...v8.5.0
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v8.2.10...v8.5.0
 
 ## [v8.2.10] - 2025-12-30
 
@@ -897,7 +897,7 @@ Thanks @yungweng for the detailed bug report!
 
 This patch release addresses a race condition where SIGTERM/SIGINT signals arriving during ChromaSync initialization could leave orphaned chroma-mcp processes. The fix moves signal handler registration from the start() method to the constructor, ensuring cleanup handlers exist throughout the entire initialization lifecycle.
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.7...v8.2.8
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v8.2.7...v8.2.8
 
 ## [v8.2.7] - 2025-12-29
 
@@ -911,7 +911,7 @@ This patch release addresses a race condition where SIGTERM/SIGINT signals arriv
 
 This release significantly reduces the token footprint of the plugin's MCP tools and documentation.
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.6...v8.2.7
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v8.2.6...v8.2.7
 
 ## [v8.2.6] - 2025-12-29
 
@@ -923,7 +923,7 @@ This release significantly reduces the token footprint of the plugin's MCP tools
 - Memory session ID capture for agent resume functionality
 - Comprehensive test suite for session ID refactoring
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.5...v8.2.6
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v8.2.5...v8.2.6
 
 ## [v8.2.5] - 2025-12-28
 
@@ -941,7 +941,7 @@ This patch release addresses several issues discovered after the session continu
 2. ChromaSync initialization is now lazy to prevent silent failures during startup
 3. Session linger timeout removed to eliminate artificial 5-second delays on session completion
 
-Full changelog: https://github.com/thedotmack/claude-mem/compare/v8.2.4...v8.2.5
+Full changelog: https://github.com/doublefx/claude-mem/compare/v8.2.4...v8.2.5
 
 ## [v8.2.4] - 2025-12-28
 
@@ -1041,7 +1041,7 @@ Added comprehensive test suites:
 
 ---
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.0...v8.2.1
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v8.2.0...v8.2.1
 
 ## [v8.2.0] - 2025-12-26
 
@@ -1099,7 +1099,7 @@ Huge thanks to **Alexander Knigge** ([@AlexanderKnigge](https://x.com/AlexanderK
 
 ---
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.1.0...v8.2.0
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v8.1.0...v8.2.0
 
 ## [v8.1.0] - 2025-12-25
 
@@ -1193,7 +1193,7 @@ Since we're now explicit about recovery instead of silently papering over proble
 
 ---
 
-**PR #437:** https://github.com/thedotmack/claude-mem/pull/437
+**PR #437:** https://github.com/doublefx/claude-mem/pull/437
 
 *The evidence: Observations #3646, #6738, #7598, #12860, #12866, #13046, #15259, #20995, #21055, #30524, #31080, #32114, #32116, #32125, #32126, #32127, #32146, #32324—the complete record of a 3-month battle.*
 
@@ -1306,8 +1306,8 @@ Set in ~/.claude-mem/settings.json:
 
 ---
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.4.5...v8.0.0
-**View PR**: https://github.com/thedotmack/claude-mem/pull/412
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v7.4.5...v8.0.0
+**View PR**: https://github.com/doublefx/claude-mem/pull/412
 
 ## [v7.4.5] - 2025-12-21
 
@@ -1321,9 +1321,9 @@ Set in ~/.claude-mem/settings.json:
 
 ## What's Changed
 
-* Code quality: comprehensive nonsense audit cleanup (20 issues) by @thedotmack in #400
+* Code quality: comprehensive nonsense audit cleanup (20 issues) by @doublefx in #400
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.4.3...v7.4.4
+**Full Changelog**: https://github.com/doublefx/claude-mem/compare/v7.4.3...v7.4.4
 
 ## [v7.4.3] - 2025-12-20
 

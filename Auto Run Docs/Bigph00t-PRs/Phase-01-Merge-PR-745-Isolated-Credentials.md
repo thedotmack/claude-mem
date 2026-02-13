@@ -1,6 +1,6 @@
 # Phase 01: Merge PR #745 - Isolated Credentials
 
-**PR:** https://github.com/thedotmack/claude-mem/pull/745
+**PR:** https://github.com/doublefx/claude-mem/pull/745
 **Branch:** `fix/isolated-credentials-733`
 **Status:** Has conflicts, needs rebase
 **Review:** Approved by bayanoj330-dev

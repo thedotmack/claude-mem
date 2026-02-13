@@ -11,7 +11,7 @@ This triggered the auto-restart mechanism on every hook call, which killed the S
 The `plugin/package.json` file had version `8.5.10` instead of `9.0.0`. When the project was last built, the build script correctly injected the version from root `package.json` into the bundled worker service. However, the `plugin/package.json` was manually created/edited and fell out of sync.
 
 At runtime:
-1. Worker service reads version from `~/.claude/plugins/marketplaces/thedotmack/package.json` → gets `8.5.10`
+1. Worker service reads version from `~/.claude/plugins/marketplaces/doublefx/package.json` → gets `8.5.10`
 2. Running worker returns built-in version via `/api/version` → returns `8.5.9` (from old build)
 3. Version check in `worker-service.ts` start command detects mismatch
 4. Auto-restart triggered on every hook call

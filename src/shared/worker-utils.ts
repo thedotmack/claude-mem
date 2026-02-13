@@ -4,7 +4,7 @@ import { readFileSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 
-const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'doublefx');
 
 // Cache to avoid repeated settings file reads
 let cachedPort: number | null = null;
@@ -57,7 +57,7 @@ export function clearPortCache(): void {
  * - Hooks have 15-second timeout, but full initialization can take 5+ minutes (MCP connection)
  * - /api/health returns 200 as soon as HTTP server is up (sufficient for hook communication)
  * - /api/readiness returns 503 until full initialization completes (too slow for hooks)
- * See: https://github.com/thedotmack/claude-mem/issues/811
+ * See: https://github.com/doublefx/claude-mem/issues/811
  */
 async function isWorkerHealthy(): Promise<boolean> {
   const port = getWorkerPort();

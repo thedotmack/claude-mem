@@ -236,7 +236,7 @@ async function main() {
   // Build GitHub URL with pre-filled title and body
   const encodedTitle = encodeURIComponent(result.title);
   const encodedBody = encodeURIComponent(result.body);
-  const githubUrl = `https://github.com/thedotmack/claude-mem/issues/new?title=${encodedTitle}&body=${encodedBody}`;
+  const githubUrl = `https://github.com/doublefx/claude-mem/issues/new?title=${encodedTitle}&body=${encodedBody}`;
 
   // Display the report
   console.log("─".repeat(60));

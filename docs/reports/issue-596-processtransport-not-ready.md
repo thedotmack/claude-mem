@@ -1,7 +1,7 @@
 # Issue #596: ProcessTransport is not ready for writing - Generator aborted on every observation
 
 **Date:** 2026-01-07
-**Issue:** [#596](https://github.com/thedotmack/claude-mem/issues/596)
+**Issue:** [#596](https://github.com/doublefx/claude-mem/issues/596)
 **Reported by:** soho-dev-account
 **Severity:** Critical
 **Status:** Under Investigation

@@ -3,11 +3,11 @@
 ---
 <h1 align="center">
   <br>
-  <a href="https://github.com/thedotmack/claude-mem">
+  <a href="https://github.com/doublefx/claude-mem">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
+      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
     </picture>
   </a>
   <br>
@@ -56,7 +56,7 @@
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
   </a>
-  <a href="https://github.com/thedotmack/awesome-claude-code">
+  <a href="https://github.com/doublefx/awesome-claude-code">
     <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
   </a>
 </p>
@@ -64,9 +64,9 @@
 <p align="center">
   <a href="https://trendshift.io/repositories/15496" target="_blank">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge.svg">
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge.svg" alt="thedotmack/claude-mem | Trendshift" width="250" height="55"/>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg">
+      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/claude-mem | Trendshift" width="250" height="55"/>
     </picture>
   </a>
 </p>
@@ -74,9 +74,9 @@
 <br>
 
 <p align="center">
-  <a href="https://github.com/thedotmack/claude-mem">
+  <a href="https://github.com/doublefx/claude-mem">
     <picture>
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
+      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
     </picture>
   </a>
 </p>
@@ -102,7 +102,7 @@
 टर्मिनल में एक नया Claude Code सत्र शुरू करें और निम्नलिखित कमांड दर्ज करें:
 
 ```
-> /plugin marketplace add thedotmack/claude-mem
+> /plugin marketplace add doublefx/claude-mem
 
 > /plugin install claude-mem
 ```
@@ -252,7 +252,7 @@ Endless Mode के विवरण और इसे आज़माने क�
 स्वचालित जेनरेटर के साथ व्यापक बग रिपोर्ट बनाएं:
 
 ```bash
-cd ~/.claude/plugins/marketplaces/thedotmack
+cd ~/.claude/plugins/marketplaces/doublefx
 npm run bug-report
 ```
 
@@ -274,7 +274,7 @@ npm run bug-report
 
 यह प्रोजेक्ट **GNU Affero General Public License v3.0** (AGPL-3.0) के तहत लाइसेंस प्राप्त है।
 
-Copyright (C) 2025 Alex Newman (@thedotmack)। सर्वाधिकार सुरक्षित।
+Copyright (C) 2025 Alex Newman (@doublefx)। सर्वाधिकार सुरक्षित।
 
 पूर्ण विवरण के लिए [LICENSE](LICENSE) फ़ाइल देखें।
 
@@ -292,9 +292,9 @@ Copyright (C) 2025 Alex Newman (@thedotmack)। सर्वाधिकार �
 ## समर्थन
 
 - **दस्तावेज़ीकरण**: [docs/](docs/)
-- **समस्याएं**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
-- **रिपॉजिटरी**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
-- **लेखक**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
+- **समस्याएं**: [GitHub Issues](https://github.com/doublefx/claude-mem/issues)
+- **रिपॉजिटरी**: [github.com/doublefx/claude-mem](https://github.com/doublefx/claude-mem)
+- **लेखक**: Alex Newman ([@doublefx](https://github.com/doublefx))
 
 ---
 
