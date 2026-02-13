@@ -16,6 +16,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
 
 // Windows: avoid repeated spawn popups when startup fails (issue #921)
@@ -171,6 +172,14 @@ export class WorkerService {
   // Orphan reaper cleanup function (Issue #737)
   private stopOrphanReaper: (() => void) | null = null;
 
+  // AI interaction tracking for health endpoint
+  private lastAiInteraction: {
+    timestamp: number;
+    success: boolean;
+    provider: string;
+    error?: string;
+  } | null = null;
+
   constructor() {
     // Initialize the promise that will resolve when background initialization completes
     this.initializationComplete = new Promise((resolve) => {
@@ -207,7 +216,24 @@ export class WorkerService {
       getInitializationComplete: () => this.initializationCompleteFlag,
       getMcpReady: () => this.mcpReady,
       onShutdown: () => this.shutdown(),
-      onRestart: () => this.shutdown()
+      onRestart: () => this.shutdown(),
+      workerPath: __filename,
+      getAiStatus: () => {
+        let provider = 'claude';
+        if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
+        else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
+        return {
+          provider,
+          authMethod: getAuthMethodDescription(),
+          lastInteraction: this.lastAiInteraction
+            ? {
+                timestamp: this.lastAiInteraction.timestamp,
+                success: this.lastAiInteraction.success,
+                ...(this.lastAiInteraction.error && { error: this.lastAiInteraction.error }),
+              }
+            : null,
+        };
+      },
     });
 
     // Register route handlers
@@ -461,6 +487,7 @@ export class WorkerService {
 
     // Track whether generator failed with an unrecoverable error to prevent infinite restart loops
     let hadUnrecoverableError = false;
+    let sessionFailed = false;
 
     logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
 
@@ -478,6 +505,12 @@ export class WorkerService {
         ];
         if (unrecoverablePatterns.some(pattern => errorMessage.includes(pattern))) {
           hadUnrecoverableError = true;
+          this.lastAiInteraction = {
+            timestamp: Date.now(),
+            success: false,
+            provider: providerName,
+            error: errorMessage,
+          };
           logger.error('SDK', 'Unrecoverable generator error - will NOT restart', {
             sessionId: session.sessionDbId,
             project: session.project,
@@ -514,10 +547,26 @@ export class WorkerService {
           project: session.project,
           provider: providerName
         }, error as Error);
+        sessionFailed = true;
+        this.lastAiInteraction = {
+          timestamp: Date.now(),
+          success: false,
+          provider: providerName,
+          error: errorMessage,
+        };
         throw error;
       })
       .finally(() => {
         session.generatorPromise = null;
+
+        // Record successful AI interaction if no error occurred
+        if (!sessionFailed && !hadUnrecoverableError) {
+          this.lastAiInteraction = {
+            timestamp: Date.now(),
+            success: true,
+            provider: providerName,
+          };
+        }
 
         // Do NOT restart after unrecoverable errors - prevents infinite loops
         if (hadUnrecoverableError) {
