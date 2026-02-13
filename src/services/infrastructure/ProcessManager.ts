@@ -304,11 +304,15 @@ export function spawnDaemon(
     try {
       execSync(`powershell -NoProfile -Command "${psCommand.replace(/"/g, '\\"')}"`, {
         stdio: 'ignore',
-        windowsHide: true
+        windowsHide: true,
+        timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND
       });
       // Start-Process returns immediately, worker writes its own PID file after listen()
       return 0;
-    } catch {
+    } catch (error) {
+      logger.error('SYSTEM', 'PowerShell Start-Process failed', {
+        error: error instanceof Error ? error.message : String(error)
+      });
       return undefined;
     }
   }

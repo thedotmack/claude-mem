@@ -10,6 +10,8 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import type { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
@@ -17,6 +19,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import path from 'path';
 import os from 'os';
+import { spawn, type ChildProcess } from 'child_process';
 
 // Version injected at build time by esbuild define
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -74,41 +77,116 @@ interface StoredUserPrompt {
   project: string;
 }
 
+/**
+ * Custom stdio transport for Windows that spawns the child process with windowsHide: true.
+ *
+ * The MCP SDK's StdioClientTransport hardcodes windowsHide to only apply in Electron
+ * environments (via isElectron() check), causing visible console popups on Windows
+ * when spawning chroma-mcp. This transport spawns the process ourselves with the
+ * correct windowsHide flag and implements the MCP content-length framing protocol.
+ */
+class WindowsStdioTransport implements Transport {
+  private process: ChildProcess;
+  private readBuffer: Buffer = Buffer.alloc(0);
+
+  onclose?: () => void;
+  onerror?: (error: Error) => void;
+  onmessage?: (message: JSONRPCMessage) => void;
+
+  constructor(childProcess: ChildProcess) {
+    this.process = childProcess;
+  }
+
+  start(): Promise<void> {
+    if (!this.process.stdout || !this.process.stdin) {
+      return Promise.reject(new Error('Process stdio not available'));
+    }
+
+    this.process.stdout.on('data', (chunk: Buffer) => {
+      this.readBuffer = Buffer.concat([this.readBuffer, chunk]);
+      this.processBuffer();
+    });
+
+    this.process.on('close', () => {
+      this.onclose?.();
+    });
+
+    this.process.on('error', (error: Error) => {
+      this.onerror?.(error);
+    });
+
+    return Promise.resolve();
+  }
+
+  /**
+   * Process buffered data using content-length framing (MCP/LSP wire protocol).
+   * Format: Content-Length: <n>\r\n\r\n<json>
+   */
+  private processBuffer(): void {
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional loop with break
+    while (true) {
+      const headerEnd = this.readBuffer.indexOf('\r\n\r\n');
+      if (headerEnd === -1) break;
+
+      const header = this.readBuffer.subarray(0, headerEnd).toString();
+      const match = header.match(/Content-Length: (\d+)/);
+      if (!match) {
+        this.onerror?.(new Error(`Invalid header: ${header}`));
+        break;
+      }
+
+      const contentLength = parseInt(match[1], 10);
+      const messageStart = headerEnd + 4; // Skip \r\n\r\n
+
+      if (this.readBuffer.length < messageStart + contentLength) break;
+
+      const content = this.readBuffer.subarray(messageStart, messageStart + contentLength).toString();
+      this.readBuffer = this.readBuffer.subarray(messageStart + contentLength);
+
+      try {
+        const message = JSON.parse(content) as JSONRPCMessage;
+        this.onmessage?.(message);
+      } catch (error) {
+        this.onerror?.(new Error(`Failed to parse message: ${error instanceof Error ? error.message : String(error)}`));
+      }
+    }
+  }
+
+  send(message: JSONRPCMessage): Promise<void> {
+    const stdin = this.process.stdin;
+    if (!stdin) return Promise.reject(new Error('stdin not available'));
+
+    const json = JSON.stringify(message);
+    const data = `Content-Length: ${String(Buffer.byteLength(json))}\r\n\r\n${json}`;
+
+    return new Promise<void>((resolve, reject) => {
+      stdin.write(data, (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+  }
+
+  close(): Promise<void> {
+    this.process.stdin?.end();
+    this.process.kill();
+    return Promise.resolve();
+  }
+}
+
 export class ChromaSync {
   private client: Client | null = null;
-  private transport: StdioClientTransport | null = null;
+  private transport: StdioClientTransport | WindowsStdioTransport | null = null;
   private connected: boolean = false;
   private project: string;
   private collectionName: string;
   private readonly VECTOR_DB_DIR: string;
   private readonly BATCH_SIZE = 100;
 
-  // Windows: Chroma disabled due to MCP SDK spawning console popups
-  // See: https://github.com/anthropics/claude-mem/issues/675
-  // Will be re-enabled when we migrate to persistent HTTP server
-  private readonly disabled: boolean;
-
   constructor(project: string) {
     this.project = project;
     this.collectionName = `cm__${project}`;
     this.VECTOR_DB_DIR = path.join(os.homedir(), '.claude-mem', 'vector-db');
-
-    // Disable on Windows to prevent console popups from MCP subprocess spawning
-    // The MCP SDK's StdioClientTransport spawns Python processes that create visible windows
-    this.disabled = process.platform === 'win32';
-    if (this.disabled) {
-      logger.warn('CHROMA_SYNC', 'Vector search disabled on Windows (prevents console popups)', {
-        project: this.project,
-        reason: 'MCP SDK subprocess spawning causes visible console windows'
-      });
-    }
-  }
-
-  /**
-   * Check if Chroma is disabled (Windows)
-   */
-  isDisabled(): boolean {
-    return this.disabled;
   }
 
   /**
@@ -129,25 +207,30 @@ export class ChromaSync {
       const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
       const isWindows = process.platform === 'win32';
 
-      const transportOptions: Record<string, unknown> = {
-        command: 'uvx',
-        args: [
-          '--python', pythonVersion,
-          'chroma-mcp',
-          '--client-type', 'persistent',
-          '--data-dir', this.VECTOR_DB_DIR
-        ],
-        stderr: 'ignore'
-      };
+      const chromaArgs = [
+        '--python', pythonVersion,
+        'chroma-mcp',
+        '--client-type', 'persistent',
+        '--data-dir', this.VECTOR_DB_DIR
+      ];
 
-      // CRITICAL: On Windows, try to hide console window to prevent PowerShell popups
-      // Note: windowsHide may not be supported by MCP SDK's StdioClientTransport
       if (isWindows) {
-        transportOptions.windowsHide = true;
-        logger.debug('CHROMA_SYNC', 'Windows detected, attempting to hide console window', { project: this.project });
+        // Spawn directly with windowsHide: true to prevent console popups.
+        // The MCP SDK's StdioClientTransport hardcodes windowsHide to only apply
+        // in Electron environments, so we spawn the process ourselves.
+        const child = spawn('uvx', chromaArgs, {
+          stdio: ['pipe', 'pipe', 'ignore'],
+          windowsHide: true
+        });
+        this.transport = new WindowsStdioTransport(child);
+        logger.info('CHROMA_SYNC', 'Using WindowsStdioTransport with windowsHide', { project: this.project });
+      } else {
+        this.transport = new StdioClientTransport({
+          command: 'uvx',
+          args: chromaArgs,
+          stderr: 'ignore'
+        });
       }
-
-      this.transport = new StdioClientTransport(transportOptions as ConstructorParameters<typeof StdioClientTransport>[0]);
 
       // Empty capabilities object: this client only calls Chroma tools, doesn't expose any
       this.client = new Client({
@@ -409,7 +492,6 @@ export class ChromaSync {
   /**
    * Sync a single observation to Chroma
    * Blocks until sync completes, throws on error
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async syncObservation(
     observationId: number,
@@ -420,7 +502,6 @@ export class ChromaSync {
     createdAtEpoch: number,
     discoveryTokens: number = 0
   ): Promise<void> {
-    if (this.disabled) return;
 
     // Convert ParsedObservation to StoredObservation format
     const stored: StoredObservation = {
@@ -456,7 +537,6 @@ export class ChromaSync {
   /**
    * Sync a single summary to Chroma
    * Blocks until sync completes, throws on error
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async syncSummary(
     summaryId: number,
@@ -467,7 +547,6 @@ export class ChromaSync {
     createdAtEpoch: number,
     discoveryTokens: number = 0
   ): Promise<void> {
-    if (this.disabled) return;
 
     // Convert ParsedSummary to StoredSummary format
     const stored: StoredSummary = {
@@ -519,7 +598,6 @@ export class ChromaSync {
   /**
    * Sync a single user prompt to Chroma
    * Blocks until sync completes, throws on error
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async syncUserPrompt(
     promptId: number,
@@ -529,7 +607,6 @@ export class ChromaSync {
     promptNumber: number,
     createdAtEpoch: number
   ): Promise<void> {
-    if (this.disabled) return;
 
     // Create StoredUserPrompt format
     const stored: StoredUserPrompt = {
@@ -646,10 +723,8 @@ export class ChromaSync {
    * Backfill: Sync all observations missing from Chroma
    * Reads from SQLite and syncs in batches
    * Throws error if backfill fails
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async ensureBackfilled(): Promise<void> {
-    if (this.disabled) return;
 
     logger.info('CHROMA_SYNC', 'Starting smart backfill', { project: this.project });
 
@@ -817,16 +892,12 @@ export class ChromaSync {
   /**
    * Query Chroma collection for semantic search
    * Used by SearchManager for vector-based search
-   * Returns empty results on Windows (Chroma disabled to prevent console popups)
    */
   async queryChroma(
     query: string,
     limit: number,
     whereFilter?: Record<string, unknown>
   ): Promise<{ ids: number[]; distances: number[]; metadatas: Record<string, unknown>[] }> {
-    if (this.disabled) {
-      return { ids: [], distances: [], metadatas: [] };
-    }
 
     await this.ensureConnection();
 

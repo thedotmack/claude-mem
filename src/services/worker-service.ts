@@ -193,6 +193,26 @@ export class WorkerService {
    * Register all route handlers with the server
    */
   private registerRoutes(): void {
+    // Gate session routes on initialization (DB must be ready before accepting requests)
+    // This prevents "Database not initialized" 500 errors during startup
+    const gatedPrefixes = ['/api/sessions/', '/sessions/'];
+    this.server.app.use((req, res, next) => {
+      if (!gatedPrefixes.some(p => req.path.startsWith(p))) { next(); return; }
+      if (this.initializationCompleteFlag) { next(); return; }
+
+      const timeout = setTimeout(() => {
+        res.status(503).json({ error: 'Worker still initializing' });
+      }, 30000);
+
+      this.initializationComplete.then(() => {
+        clearTimeout(timeout);
+        next();
+      }).catch(() => {
+        clearTimeout(timeout);
+        res.status(503).json({ error: 'Initialization failed' });
+      });
+    });
+
     // Standard routes
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
     this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openaiCompatAgent, this.sessionEventBroadcaster, this));
