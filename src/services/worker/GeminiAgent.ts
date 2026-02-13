@@ -339,7 +339,7 @@ export class GeminiAgent {
           // Build observation prompt
           const obsPrompt = buildObservationPrompt({
             id: 0,
-            tool_name: message.tool_name!,
+            tool_name: message.tool_name ?? '',
             tool_input: JSON.stringify(message.tool_input),
             tool_output: JSON.stringify(message.tool_response),
             created_at_epoch: originalTimestamp ?? Date.now(),

@@ -65,7 +65,7 @@ describe('Version Consistency', () => {
 
     const claudeMemPlugin = marketplaceJson.plugins.find((p) => p.name === 'claude-mem');
     expect(claudeMemPlugin).toBeDefined();
-    expect(claudeMemPlugin!.version).toBe(rootVersion);
+    expect((claudeMemPlugin as NonNullable<typeof claudeMemPlugin>).version).toBe(rootVersion);
   });
 
   it('should have version injected into built worker-service.cjs', () => {
@@ -88,7 +88,7 @@ describe('Version Consistency', () => {
     const matches = workerServiceContent.match(versionPattern);
     
     expect(matches).toBeTruthy();
-    expect(matches!.length).toBeGreaterThan(0);
+    expect((matches as RegExpMatchArray).length).toBeGreaterThan(0);
   });
 
   it('should have built mcp-server.cjs', () => {

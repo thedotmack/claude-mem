@@ -37,11 +37,6 @@ import type { ActiveSession, ParsedObservation, ParsedSummary } from '../../../s
 /** Tuple type for storeObservations mock calls: (memorySessionId, project, observations, summaries, promptNumber, createdAtEpoch) */
 type StoreObservationsCall = [string, string, ParsedObservation[], ParsedSummary[], number, number];
 
-/** Tuple type for chromaSyncObservation mock calls */
-type ChromaSyncObservationCall = [number, string, string, { observation: ParsedObservation }, number, number];
-
-/** Tuple type for chromaSyncSummary mock calls */
-type ChromaSyncSummaryCall = [number, string, string, { summary: ParsedSummary }, number, number];
 
 /** Broadcast event shape for observation or summary SSE events */
 interface BroadcastEvent {
@@ -149,7 +144,7 @@ describe('ResponseProcessor', () => {
   }
 
   describe('parsing observations from XML response', () => {
-    it('should parse single observation from response', async () => {
+    it('should parse single observation from response', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -164,7 +159,7 @@ describe('ResponseProcessor', () => {
         </observation>
       `;
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -185,7 +180,7 @@ describe('ResponseProcessor', () => {
       expect(observations[0].title).toBe('Found important pattern');
     });
 
-    it('should parse multiple observations from response', async () => {
+    it('should parse multiple observations from response', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -208,7 +203,7 @@ describe('ResponseProcessor', () => {
         </observation>
       `;
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -227,7 +222,7 @@ describe('ResponseProcessor', () => {
   });
 
   describe('parsing summary from XML response', () => {
-    it('should parse summary from response', async () => {
+    it('should parse summary from response', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -249,7 +244,7 @@ describe('ResponseProcessor', () => {
         </summary>
       `;
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -267,7 +262,7 @@ describe('ResponseProcessor', () => {
       expect(summary.learned).toBe('React Hook Form works well');
     });
 
-    it('should handle response without summary', async () => {
+    it('should handle response without summary', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -291,7 +286,7 @@ describe('ResponseProcessor', () => {
         storeObservations: mockStoreObservations,
       });
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -308,7 +303,7 @@ describe('ResponseProcessor', () => {
   });
 
   describe('atomic database transactions', () => {
-    it('should call storeObservations atomically', async () => {
+    it('should call storeObservations atomically', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -329,7 +324,7 @@ describe('ResponseProcessor', () => {
         </summary>
       `;
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -365,7 +360,7 @@ describe('ResponseProcessor', () => {
   });
 
   describe('SSE broadcasting', () => {
-    it('should broadcast observations via SSE', async () => {
+    it('should broadcast observations via SSE', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -390,7 +385,7 @@ describe('ResponseProcessor', () => {
         storeObservations: mockStoreObservations,
       });
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -409,12 +404,13 @@ describe('ResponseProcessor', () => {
         (call) => call[0].type === 'new_observation'
       );
       expect(observationCall).toBeDefined();
-      expect(observationCall![0].observation!.id).toBe(42);
-      expect(observationCall![0].observation!.title).toBe('Broadcast Test');
-      expect(observationCall![0].observation!.type).toBe('discovery');
+      const obsEvent = (observationCall as [BroadcastEvent])[0];
+      expect((obsEvent.observation as NonNullable<BroadcastEvent['observation']>).id).toBe(42);
+      expect((obsEvent.observation as NonNullable<BroadcastEvent['observation']>).title).toBe('Broadcast Test');
+      expect((obsEvent.observation as NonNullable<BroadcastEvent['observation']>).type).toBe('discovery');
     });
 
-    it('should broadcast summary via SSE', async () => {
+    it('should broadcast summary via SSE', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -435,7 +431,7 @@ describe('ResponseProcessor', () => {
         </summary>
       `;
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -451,12 +447,13 @@ describe('ResponseProcessor', () => {
         (call) => call[0].type === 'new_summary'
       );
       expect(summaryCall).toBeDefined();
-      expect(summaryCall![0].summary!.request).toBe('Build feature');
+      const sumEvent = (summaryCall as [BroadcastEvent])[0];
+      expect((sumEvent.summary as NonNullable<BroadcastEvent['summary']>).request).toBe('Build feature');
     });
   });
 
   describe('handling empty response', () => {
-    it('should handle empty response gracefully', async () => {
+    it('should handle empty response gracefully', () => {
       const session = createMockSession();
       const responseText = '';
 
@@ -470,7 +467,7 @@ describe('ResponseProcessor', () => {
         storeObservations: mockStoreObservations,
       });
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -488,7 +485,7 @@ describe('ResponseProcessor', () => {
       expect(summary).toBeNull();
     });
 
-    it('should handle response with only text (no XML)', async () => {
+    it('should handle response with only text (no XML)', () => {
       const session = createMockSession();
       const responseText = 'This is just plain text without any XML tags.';
 
@@ -501,7 +498,7 @@ describe('ResponseProcessor', () => {
         storeObservations: mockStoreObservations,
       });
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -519,7 +516,7 @@ describe('ResponseProcessor', () => {
   });
 
   describe('session cleanup', () => {
-    it('should reset earliestPendingTimestamp after processing', async () => {
+    it('should reset earliestPendingTimestamp after processing', () => {
       const session = createMockSession({
         earliestPendingTimestamp: 1700000000000,
       });
@@ -543,7 +540,7 @@ describe('ResponseProcessor', () => {
         storeObservations: mockStoreObservations,
       });
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -557,7 +554,7 @@ describe('ResponseProcessor', () => {
       expect(session.earliestPendingTimestamp).toBeNull();
     });
 
-    it('should call broadcastProcessingStatus after processing', async () => {
+    it('should call broadcastProcessingStatus after processing', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -579,7 +576,7 @@ describe('ResponseProcessor', () => {
         storeObservations: mockStoreObservations,
       });
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -595,7 +592,7 @@ describe('ResponseProcessor', () => {
   });
 
   describe('conversation history', () => {
-    it('should add assistant response to conversation history', async () => {
+    it('should add assistant response to conversation history', () => {
       const session = createMockSession({
         conversationHistory: [],
       });
@@ -619,7 +616,7 @@ describe('ResponseProcessor', () => {
         storeObservations: mockStoreObservations,
       });
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -637,7 +634,7 @@ describe('ResponseProcessor', () => {
   });
 
   describe('skipSummaryStorage parameter', () => {
-    it('should store observations but NOT summary when skipSummaryStorage=true', async () => {
+    it('should store observations but NOT summary when skipSummaryStorage=true', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -658,7 +655,7 @@ describe('ResponseProcessor', () => {
         </summary>
       `;
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -681,7 +678,7 @@ describe('ResponseProcessor', () => {
       expect(summary).toBeNull();
     });
 
-    it('should store both observations and summary when skipSummaryStorage=false', async () => {
+    it('should store both observations and summary when skipSummaryStorage=false', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -702,7 +699,7 @@ describe('ResponseProcessor', () => {
         </summary>
       `;
 
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -722,7 +719,7 @@ describe('ResponseProcessor', () => {
       expect(summary.request).toBe('Build feature');
     });
 
-    it('should store both observations and summary when skipSummaryStorage is omitted', async () => {
+    it('should store both observations and summary when skipSummaryStorage is omitted', () => {
       const session = createMockSession();
       const responseText = `
         <observation>
@@ -744,7 +741,7 @@ describe('ResponseProcessor', () => {
       `;
 
       // Call without the skipSummaryStorage parameter (default behavior)
-      await processAgentResponse(
+      processAgentResponse(
         responseText,
         session,
         mockDbManager,
@@ -771,7 +768,7 @@ describe('ResponseProcessor', () => {
       const responseText = '<observation><type>discovery</type></observation>';
 
       expect(() =>
-        processAgentResponse(
+        { processAgentResponse(
           responseText,
           session,
           mockDbManager,
@@ -780,7 +777,7 @@ describe('ResponseProcessor', () => {
           100,
           null,
           'TestAgent'
-        )
+        ); }
       ).toThrow('Cannot store observations: memorySessionId not yet captured');
     });
   });

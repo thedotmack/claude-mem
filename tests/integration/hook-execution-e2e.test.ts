@@ -16,7 +16,7 @@ import { logger } from '../../src/utils/logger.js';
 // Mock middleware to avoid complex dependencies
 vi.mock('../../src/services/worker/http/middleware.js', () => ({
   createMiddleware: () => [],
-  requireLocalhost: (_req: unknown, _res: unknown, next: () => void) => next(),
+  requireLocalhost: (_req: unknown, _res: unknown, next: () => void) => { next(); },
   summarizeRequestBody: () => 'test body',
 }));
 
@@ -143,7 +143,7 @@ describe('Hook Execution E2E', () => {
 
       const httpServer = server.getHttpServer();
       expect(httpServer).not.toBeNull();
-      expect(httpServer!.listening).toBe(true);
+      expect((httpServer as NonNullable<typeof httpServer>).listening).toBe(true);
 
       // Verify health endpoint works
       const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);

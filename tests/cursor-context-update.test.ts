@@ -132,8 +132,9 @@ Paragraph 2`;
     it('has valid YAML frontmatter delimiters', () => {
       writeContextFile(workspacePath, 'test');
 
-      const content = readContextFile(workspacePath)!;
-      const lines = content.split('\n');
+      const content = readContextFile(workspacePath);
+      expect(content).toBeDefined();
+      const lines = (content as string).split('\n');
 
       // First line should be ---
       expect(lines[0]).toBe('---');
@@ -146,8 +147,9 @@ Paragraph 2`;
     it('frontmatter is parseable as YAML', () => {
       writeContextFile(workspacePath, 'test');
 
-      const content = readContextFile(workspacePath)!;
-      const lines = content.split('\n');
+      const content = readContextFile(workspacePath);
+      expect(content).toBeDefined();
+      const lines = (content as string).split('\n');
       const frontmatterEnd = lines.indexOf('---', 1);
 
       const frontmatter = lines.slice(1, frontmatterEnd).join('\n');
@@ -160,7 +162,8 @@ Paragraph 2`;
     it('content after frontmatter is proper markdown', () => {
       writeContextFile(workspacePath, 'test');
 
-      const content = readContextFile(workspacePath)!;
+      const content = readContextFile(workspacePath);
+      expect(content).toBeDefined();
 
       // Should have markdown header
       expect(content).toMatch(/^# Memory Context/m);

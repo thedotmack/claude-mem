@@ -214,7 +214,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
       return;
     }
 
-    const interval = setInterval(fetchLogs, 2000);
+    const interval = setInterval(() => { void fetchLogs(); }, 2000);
     return () => { clearInterval(interval); };
   }, [isOpen, autoRefresh, fetchLogs]);
 
@@ -355,7 +355,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
           </label>
           <button
             className="console-control-btn"
-            onClick={fetchLogs}
+            onClick={() => { void fetchLogs(); }}
             disabled={isLoading}
             title="Refresh logs"
           >
@@ -373,7 +373,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
           </button>
           <button
             className="console-control-btn console-clear-btn"
-            onClick={handleClearLogs}
+            onClick={() => { void handleClearLogs(); }}
             disabled={isLoading}
             title="Clear logs"
           >

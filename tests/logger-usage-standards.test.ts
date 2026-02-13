@@ -167,6 +167,7 @@ describe("Logger Usage Standards", () => {
     expect(relevantFiles.length).toBeGreaterThan(0);
   });
 
+  // eslint-disable-next-line vitest/expect-expect -- uses throw Error as assertion
   it("should NOT use console.log/console.error (these logs are invisible in background services)", () => {
     // Only hook files can use console.log for their final output response
     // Everything else (services, workers, sqlite, etc.) runs in background - console.log is USELESS there
@@ -189,6 +190,7 @@ describe("Logger Usage Standards", () => {
     }
   });
 
+  // eslint-disable-next-line vitest/expect-expect -- uses throw Error as assertion
   it("should have logger coverage in high-priority files", () => {
     const highPriorityFiles = relevantFiles.filter(f => f.isHighPriority);
     const withoutLogger = highPriorityFiles.filter(f => !f.hasLoggerImport);

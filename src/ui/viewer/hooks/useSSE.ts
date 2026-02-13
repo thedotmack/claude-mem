@@ -60,8 +60,9 @@ export function useSSE() {
 
           case 'new_observation':
             if (data.observation) {
-              console.log('[SSE] New observation:', data.observation.id);
-              setObservations(prev => [data.observation!, ...prev]);
+              const obs = data.observation;
+              console.log('[SSE] New observation:', obs.id);
+              setObservations(prev => [obs, ...prev]);
             }
             break;
 

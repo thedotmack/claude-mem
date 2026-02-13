@@ -81,7 +81,8 @@ describe('SessionStore', () => {
     expect(stored?.created_at_epoch).toBe(pastTimestamp);
 
     // Verify ISO string matches
-    expect(new Date(stored!.created_at).getTime()).toBe(pastTimestamp);
+    expect(stored).not.toBeNull();
+    expect(new Date((stored as NonNullable<typeof stored>).created_at).getTime()).toBe(pastTimestamp);
   });
 
   it('should store summary with timestamp override', () => {

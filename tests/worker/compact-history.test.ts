@@ -282,7 +282,7 @@ describe('OpenAICompatAgent.compactHistory', () => {
     const calls = infoCall.mock.calls as unknown[][];
     const compactCall = calls.find((c) => c[1] === 'Compacted history');
     expect(compactCall).toBeTruthy();
-    expect(compactCall![2]).toEqual({
+    expect((compactCall as unknown[])[2]).toEqual({
       sessionId: 1,
       before: 20,
       after: 8,

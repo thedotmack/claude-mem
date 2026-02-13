@@ -66,7 +66,7 @@ export class ResultFormatter {
         if (!resultsByFile.has(file)) {
           resultsByFile.set(file, []);
         }
-        resultsByFile.get(file)!.push(result);
+        resultsByFile.get(file)?.push(result);
       }
 
       // Render each file section

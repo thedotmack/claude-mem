@@ -296,7 +296,7 @@ export function spawnDaemon(
     const envPairs = Object.entries(env)
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- process.env values can be undefined at runtime
       .filter(([_k, v]) => v !== undefined)
-      .map(([k, v]) => `$env:${k}='${String(v).replace(/'/g, "''")}'`)
+      .map(([k, v]) => `$env:${k}='${v.replace(/'/g, "''")}'`)
       .join('; ');
 
     const psCommand = `${envPairs}; Start-Process -FilePath '${execPath}' -ArgumentList '${script}','--daemon' -WindowStyle Hidden`;

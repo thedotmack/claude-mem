@@ -142,7 +142,10 @@ export class Logger {
       return `{${String(keys.length)} keys: ${keys.slice(0, 3).join(', ')}...}`;
     }
 
-    return String(data);
+    if (typeof data === 'object') return JSON.stringify(data);
+    if (typeof data === 'function') return `[Function: ${data.name || 'anonymous'}]`;
+    // At this point data is string | number | boolean | bigint | symbol
+    return String(data as string | number | boolean);
   }
 
   /**
@@ -165,58 +168,62 @@ export class Logger {
     const isObj = (v: unknown): v is Record<string, unknown> =>
       typeof v === 'object' && v !== null;
 
+    // Helper to safely stringify unknown values from parsed input
+    const str = (v: unknown): string =>
+      typeof v === 'string' ? v : typeof v === 'object' ? JSON.stringify(v) : String(v as string | number | boolean);
+
     // Bash: show full command
     if (toolName === 'Bash' && isObj(input) && input.command) {
-      return `${toolName}(${String(input.command)})`;
+      return `${toolName}(${str(input.command)})`;
     }
 
     // File operations: show full path
     if (isObj(input) && input.file_path) {
-      return `${toolName}(${String(input.file_path)})`;
+      return `${toolName}(${str(input.file_path)})`;
     }
 
     // NotebookEdit: show full notebook path
     if (isObj(input) && input.notebook_path) {
-      return `${toolName}(${String(input.notebook_path)})`;
+      return `${toolName}(${str(input.notebook_path)})`;
     }
 
     // Glob: show full pattern
     if (toolName === 'Glob' && isObj(input) && input.pattern) {
-      return `${toolName}(${String(input.pattern)})`;
+      return `${toolName}(${str(input.pattern)})`;
     }
 
     // Grep: show full pattern
     if (toolName === 'Grep' && isObj(input) && input.pattern) {
-      return `${toolName}(${String(input.pattern)})`;
+      return `${toolName}(${str(input.pattern)})`;
     }
 
     // WebFetch/WebSearch: show full URL or query
     if (isObj(input) && input.url) {
-      return `${toolName}(${String(input.url)})`;
+      return `${toolName}(${str(input.url)})`;
     }
 
     if (isObj(input) && input.query) {
-      return `${toolName}(${String(input.query)})`;
+      return `${toolName}(${str(input.query)})`;
     }
 
     // Task: show subagent_type or full description
     if (toolName === 'Task' && isObj(input)) {
       if (input.subagent_type) {
-        return `${toolName}(${String(input.subagent_type)})`;
+        return `${toolName}(${str(input.subagent_type)})`;
       }
       if (input.description) {
-        return `${toolName}(${String(input.description)})`;
+        return `${toolName}(${str(input.description)})`;
       }
     }
 
     // Skill: show skill name
     if (toolName === 'Skill' && isObj(input) && input.skill) {
-      return `${toolName}(${String(input.skill)})`;
+      return `${toolName}(${str(input.skill)})`;
     }
 
     // LSP: show operation type
     if (toolName === 'LSP' && isObj(input) && input.operation) {
-      return `${toolName}(${String(input.operation)})`;
+      return `${toolName}(${str(input.operation)})`;
     }
 
     // Default: just show tool name

@@ -21,7 +21,7 @@ import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import type { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
-import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
+import { checkUserPromptPrivacy } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 
@@ -335,11 +335,11 @@ export class SessionRoutes extends BaseRouteHandler {
           duration: `${String(chromaDuration)}ms`,
           prompt: truncatedPrompt
         });
-      }).catch((error) => {
+      }).catch((error: unknown) => {
         logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
           promptId: latestPrompt.id,
           prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
-        }, error);
+        }, error instanceof Error ? error : new Error(String(error)));
       });
     }
 
@@ -495,7 +495,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
     // Privacy check: skip if user prompt was entirely private
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
+    const userPrompt = checkUserPromptPrivacy(
       store,
       contentSessionId,
       promptNumber,
@@ -563,7 +563,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
     // Privacy check: skip if user prompt was entirely private
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
+    const userPrompt = checkUserPromptPrivacy(
       store,
       contentSessionId,
       promptNumber,

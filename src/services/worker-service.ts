@@ -201,20 +201,22 @@ export class WorkerService {
     this.server.registerRoutes(new LogsRoutes());
 
     // Early handler for /api/context/inject to avoid 404 during startup
-    this.server.app.get('/api/context/inject', async (req, res, next) => {
+    this.server.app.get('/api/context/inject', (req, res, next) => {
       const timeoutMs = 300000; // 5 minute timeout for slow systems
       const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => { reject(new Error('Initialization timeout')); }, timeoutMs)
       );
 
-      await Promise.race([this.initializationComplete, timeoutPromise]);
+      Promise.race([this.initializationComplete, timeoutPromise]).then(() => {
+        if (!this.searchRoutes) {
+          res.status(503).json({ error: 'Search routes not initialized' });
+          return;
+        }
 
-      if (!this.searchRoutes) {
-        res.status(503).json({ error: 'Search routes not initialized' });
-        return;
-      }
-
-      next(); // Delegate to SearchRoutes handler
+        next(); // Delegate to SearchRoutes handler
+      }).catch((error: unknown) => {
+        res.status(503).json({ error: error instanceof Error ? error.message : 'Initialization failed' });
+      });
     });
   }
 
@@ -240,8 +242,8 @@ export class WorkerService {
     logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
 
     // Do slow initialization in background (non-blocking)
-    this.initializeBackground().catch((error) => {
-      logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
+    this.initializeBackground().catch((error: unknown) => {
+      logger.error('SYSTEM', 'Background initialization failed', {}, error instanceof Error ? error : new Error(String(error)));
     });
   }
 
@@ -328,8 +330,8 @@ export class WorkerService {
             sessionIds: result.startedSessionIds
           });
         }
-      }).catch(error => {
-        logger.error('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
+      }).catch((error: unknown) => {
+        logger.error('SYSTEM', 'Auto-recovery of pending queues failed', {}, error instanceof Error ? error : new Error(String(error)));
       });
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
@@ -367,12 +369,12 @@ export class WorkerService {
     logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
 
     session.generatorPromise = agent.startSession(session, this)
-      .catch(error => {
+      .catch((error: unknown) => {
         logger.error('SDK', 'Session generator failed', {
           sessionId: session.sessionDbId,
           project: session.project,
           provider: providerName
-        }, error as Error);
+        }, error instanceof Error ? error : new Error(String(error)));
       })
       .finally(() => {
         session.generatorPromise = null;
@@ -567,6 +569,7 @@ async function main() {
       } else {
         exitWithStatus('error', 'Failed to start worker');
       }
+      break;
     }
 
     case 'stop': {
@@ -578,6 +581,7 @@ async function main() {
       removePidFile();
       logger.info('SYSTEM', 'Worker stopped successfully');
       process.exit(0);
+      break;
     }
 
     case 'restart': {
@@ -614,6 +618,7 @@ async function main() {
 
       logger.info('SYSTEM', 'Worker restarted successfully');
       process.exit(0);
+      break;
     }
 
     case 'status': {
@@ -628,12 +633,14 @@ async function main() {
         console.log('Worker is not running');
       }
       process.exit(0);
+      break;
     }
 
     case 'cursor': {
       const subcommand = process.argv[3];
       const cursorResult = await handleCursorCommand(subcommand, process.argv.slice(4));
       process.exit(cursorResult);
+      break;
     }
 
     case 'hook': {
@@ -685,8 +692,8 @@ async function main() {
     case '--daemon':
     default: {
       const worker = new WorkerService();
-      worker.start().catch((error) => {
-        logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
+      worker.start().catch((error: unknown) => {
+        logger.failure('SYSTEM', 'Worker failed to start', {}, error instanceof Error ? error : new Error(String(error)));
         removePidFile();
         // Exit gracefully: Windows Terminal won't keep tab open on exit 0
         // The wrapper/plugin will handle restart logic if needed
@@ -698,6 +705,7 @@ async function main() {
 
 // Check if running as main module in both ESM and CommonJS
 const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefined'
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- module.parent needed for CommonJS compatibility check
   ? require.main === module || !module.parent
   : import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('worker-service');
 

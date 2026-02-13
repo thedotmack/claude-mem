@@ -142,7 +142,9 @@ describe('SearchOrchestrator', () => {
 
         expect(result.strategy).toBe('sqlite');
         expect(result.usedChroma).toBe(false);
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         expect(mockSessionSearch.searchObservations).toHaveBeenCalled();
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         expect(mockChromaSync.queryChroma).not.toHaveBeenCalled();
       });
 
@@ -153,6 +155,7 @@ describe('SearchOrchestrator', () => {
 
         expect(result.strategy).toBe('chroma');
         expect(result.usedChroma).toBe(true);
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         expect(mockChromaSync.queryChroma).toHaveBeenCalled();
       });
 
@@ -175,6 +178,7 @@ describe('SearchOrchestrator', () => {
         });
 
         // Should be parsed into array internally
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
         expect(callArgs[1].concepts).toEqual(['concept1', 'concept2', 'concept3']);
       });
@@ -185,6 +189,7 @@ describe('SearchOrchestrator', () => {
           limit: 10
         });
 
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
         expect(callArgs[1].files).toEqual(['file1.ts', 'file2.ts']);
       });
@@ -195,6 +200,7 @@ describe('SearchOrchestrator', () => {
           dateEnd: '2025-01-31'
         });
 
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
         expect(callArgs[1].dateRange).toEqual({
           start: '2025-01-01',
@@ -208,8 +214,11 @@ describe('SearchOrchestrator', () => {
         });
 
         // Should search only observations
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         expect(mockSessionSearch.searchObservations).toHaveBeenCalled();
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         expect(mockSessionSearch.searchSessions).not.toHaveBeenCalled();
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         expect(mockSessionSearch.searchUserPrompts).not.toHaveBeenCalled();
       });
     });
@@ -221,7 +230,9 @@ describe('SearchOrchestrator', () => {
         });
 
         // Hybrid strategy should be used
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         expect(mockSessionSearch.findByConcept).toHaveBeenCalled();
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         expect(mockChromaSync.queryChroma).toHaveBeenCalled();
       });
 
@@ -236,12 +247,14 @@ describe('SearchOrchestrator', () => {
       it('should use hybrid strategy', async () => {
         await orchestrator.findByType('decision', {});
 
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         expect(mockSessionSearch.findByType).toHaveBeenCalled();
       });
 
       it('should handle array of types', async () => {
         await orchestrator.findByType(['decision', 'bugfix'], {});
 
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         expect(mockSessionSearch.findByType).toHaveBeenCalledWith(['decision', 'bugfix'], expect.any(Object));
       });
     });
@@ -251,6 +264,7 @@ describe('SearchOrchestrator', () => {
         const result = await orchestrator.findByFile('/path/to/file.ts', {});
 
         expect(result.observations.length).toBeGreaterThanOrEqual(0);
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         expect(mockSessionSearch.findByFile).toHaveBeenCalled();
       });
 
@@ -345,6 +359,7 @@ describe('SearchOrchestrator', () => {
 
         expect(result.usedChroma).toBe(false);
         expect(result.strategy).toBe('sqlite');
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         expect(mockSessionSearch.findByConcept).toHaveBeenCalled();
       });
     });
@@ -363,6 +378,7 @@ describe('SearchOrchestrator', () => {
         const result = await orchestrator.findByFile('/path/to/file.ts', {});
 
         expect(result.usedChroma).toBe(false);
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         expect(mockSessionSearch.findByFile).toHaveBeenCalled();
       });
     });
@@ -378,6 +394,7 @@ describe('SearchOrchestrator', () => {
         obs_type: 'decision, bugfix'
       });
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
       expect(callArgs[1].type).toEqual(['decision', 'bugfix']);
     });
@@ -387,6 +404,7 @@ describe('SearchOrchestrator', () => {
         concepts: ['concept1', 'concept2']
       });
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
       expect(callArgs[1].concepts).toEqual(['concept1', 'concept2']);
     });
@@ -397,6 +415,7 @@ describe('SearchOrchestrator', () => {
         files: ''
       });
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
       // Empty strings are falsy, so the normalization doesn't process them
       // They stay as empty strings (the underlying search functions handle this)

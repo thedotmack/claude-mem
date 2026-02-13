@@ -58,7 +58,7 @@ async function callWorkerAPI(
     // Convert params to query string
     for (const [key, value] of Object.entries(params)) {
       if (value !== undefined && value !== null) {
-        searchParams.append(key, String(value));
+        searchParams.append(key, typeof value === 'object' ? JSON.stringify(value) : String(value as string | number | boolean));
       }
     }
 
@@ -235,7 +235,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   }
 ];
 
-// Create the MCP server
+// Create the MCP server (using low-level Server for advanced protocol control)
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- intentional use of low-level Server API for protocol control
 const server = new Server(
   {
     name: 'mcp-search-server',
@@ -299,20 +300,22 @@ async function main() {
   logger.info('SYSTEM', 'Claude-mem search server started');
 
   // Check Worker availability in background
-  setTimeout(async () => {
-    const workerAvailable = await verifyWorkerConnection();
-    if (!workerAvailable) {
-      logger.error('SYSTEM', 'Worker not available', undefined, { workerUrl: WORKER_BASE_URL });
-      logger.error('SYSTEM', 'Tools will fail until Worker is started');
-      logger.error('SYSTEM', 'Start Worker with: npm run worker:restart');
-    } else {
-      logger.info('SYSTEM', 'Worker available', undefined, { workerUrl: WORKER_BASE_URL });
-    }
+  setTimeout(() => {
+    void (async () => {
+      const workerAvailable = await verifyWorkerConnection();
+      if (!workerAvailable) {
+        logger.error('SYSTEM', 'Worker not available', undefined, { workerUrl: WORKER_BASE_URL });
+        logger.error('SYSTEM', 'Tools will fail until Worker is started');
+        logger.error('SYSTEM', 'Start Worker with: npm run worker:restart');
+      } else {
+        logger.info('SYSTEM', 'Worker available', undefined, { workerUrl: WORKER_BASE_URL });
+      }
+    })();
   }, 0);
 }
 
-main().catch((error) => {
-  logger.error('SYSTEM', 'Fatal error', undefined, error);
+main().catch((error: unknown) => {
+  logger.error('SYSTEM', 'Fatal error', undefined, error instanceof Error ? error : new Error(String(error)));
   // Exit gracefully: Windows Terminal won't keep tab open on exit 0
   // The wrapper/plugin will handle restart logic if needed
   process.exit(0);

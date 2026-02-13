@@ -86,10 +86,11 @@ export class Server {
    * Close the HTTP server
    */
   async close(): Promise<void> {
-    if (!this.server) return;
+    const server = this.server;
+    if (!server) return;
 
     // Close all active connections
-    this.server.closeAllConnections();
+    server.closeAllConnections();
 
     // Give Windows time to close connections before closing server
     if (process.platform === 'win32') {
@@ -98,7 +99,7 @@ export class Server {
 
     // Close the server
     await new Promise<void>((resolve, reject) => {
-      this.server!.close(err => { err ? reject(err) : resolve(); });
+      server.close(err => { if (err) { reject(err); } else { resolve(); } });
     });
 
     // Extra delay on Windows to ensure port is fully released
@@ -179,28 +180,30 @@ export class Server {
     });
 
     // Instructions endpoint - loads SKILL.md sections on-demand
-    this.app.get('/api/instructions', async (req: Request, res: Response) => {
+    this.app.get('/api/instructions', (req: Request, res: Response) => {
       const topic = (req.query.topic as string) || 'all';
       const operation = req.query.operation as string | undefined;
 
-      try {
-        let content: string;
+      void (async () => {
+        try {
+          let content: string;
 
-        if (operation) {
-          const operationPath = path.join(__dirname, '../skills/mem-search/operations', `${operation}.md`);
-          content = await fs.promises.readFile(operationPath, 'utf-8');
-        } else {
-          const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
-          const fullContent = await fs.promises.readFile(skillPath, 'utf-8');
-          content = this.extractInstructionSection(fullContent, topic);
+          if (operation) {
+            const operationPath = path.join(__dirname, '../skills/mem-search/operations', `${operation}.md`);
+            content = await fs.promises.readFile(operationPath, 'utf-8');
+          } else {
+            const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
+            const fullContent = await fs.promises.readFile(skillPath, 'utf-8');
+            content = this.extractInstructionSection(fullContent, topic);
+          }
+
+          res.json({
+            content: [{ type: 'text', text: content }]
+          });
+        } catch {
+          res.status(404).json({ error: 'Instruction not found' });
         }
-
-        res.json({
-          content: [{ type: 'text', text: content }]
-        });
-      } catch {
-        res.status(404).json({ error: 'Instruction not found' });
-      }
+      })();
     });
 
     // Admin endpoints for process management (localhost-only)
@@ -210,15 +213,15 @@ export class Server {
       // Handle Windows managed mode via IPC
       const isWindowsManaged = process.platform === 'win32' &&
         process.env.CLAUDE_MEM_MANAGED === 'true' &&
-        process.send;
+        typeof process.send === 'function';
 
-      if (isWindowsManaged) {
+      if (isWindowsManaged && process.send) {
         logger.info('SYSTEM', 'Sending restart request to wrapper');
-        process.send!({ type: 'restart' });
+        process.send({ type: 'restart' });
       } else {
         // Unix or standalone Windows - handle restart ourselves
-        setTimeout(async () => {
-          await this.options.onRestart();
+        setTimeout(() => {
+          void this.options.onRestart();
         }, 100);
       }
     });
@@ -229,15 +232,15 @@ export class Server {
       // Handle Windows managed mode via IPC
       const isWindowsManaged = process.platform === 'win32' &&
         process.env.CLAUDE_MEM_MANAGED === 'true' &&
-        process.send;
+        typeof process.send === 'function';
 
-      if (isWindowsManaged) {
+      if (isWindowsManaged && process.send) {
         logger.info('SYSTEM', 'Sending shutdown request to wrapper');
-        process.send!({ type: 'shutdown' });
+        process.send({ type: 'shutdown' });
       } else {
         // Unix or standalone Windows - handle shutdown ourselves
-        setTimeout(async () => {
-          await this.options.onShutdown();
+        setTimeout(() => {
+          void this.options.onShutdown();
         }, 100);
       }
     });

@@ -4,7 +4,7 @@ import { logger } from '../../src/utils/logger.js';
 // Mock middleware to avoid complex dependencies
 vi.mock('../../src/services/worker/http/middleware.js', () => ({
   createMiddleware: () => [],
-  requireLocalhost: (_req: unknown, _res: unknown, next: () => void) => next(),
+  requireLocalhost: (_req: unknown, _res: unknown, next: () => void) => { next(); },
   summarizeRequestBody: () => 'test body',
 }));
 
@@ -95,7 +95,7 @@ describe('Server', () => {
       // Server should now be listening
       const httpServer = server.getHttpServer();
       expect(httpServer).not.toBeNull();
-      expect(httpServer!.listening).toBe(true);
+      expect((httpServer as NonNullable<typeof httpServer>).listening).toBe(true);
     });
 
     it('should reject if port is already in use', async () => {
@@ -128,7 +128,7 @@ describe('Server', () => {
       // Server should exist and be listening
       const httpServerBefore = server.getHttpServer();
       expect(httpServerBefore).not.toBeNull();
-      expect(httpServerBefore!.listening).toBe(true);
+      expect((httpServerBefore as NonNullable<typeof httpServerBefore>).listening).toBe(true);
 
       // Close the server - may throw ERR_SERVER_NOT_RUNNING on some platforms
       // because closeAllConnections() might immediately close the server
@@ -178,7 +178,9 @@ describe('Server', () => {
       const server2 = new Server(mockOptions);
       await server2.listen(testPort, '127.0.0.1');
 
-      expect(server2.getHttpServer()!.listening).toBe(true);
+      const httpServer2 = server2.getHttpServer();
+      expect(httpServer2).not.toBeNull();
+      expect((httpServer2 as NonNullable<typeof httpServer2>).listening).toBe(true);
 
       // Clean up server2
       try {
@@ -204,7 +206,7 @@ describe('Server', () => {
 
       const httpServer = server.getHttpServer();
       expect(httpServer).not.toBeNull();
-      expect(httpServer!.listening).toBe(true);
+      expect((httpServer as NonNullable<typeof httpServer>).listening).toBe(true);
     });
   });
 

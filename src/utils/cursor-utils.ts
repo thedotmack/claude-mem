@@ -82,6 +82,7 @@ export function unregisterCursorProject(registryFile: string, projectName: strin
   const registry = readCursorRegistry(registryFile);
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
   if (registry[projectName]) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- dynamic key from user input on Record type
     delete registry[projectName];
     writeCursorRegistry(registryFile, registry);
   }
@@ -221,12 +222,12 @@ export function jsonGet(json: Record<string, unknown>, field: string, fallback: 
     if (!Array.isArray(arr)) return fallback;
     const value: unknown = arr[arrayAccess.index];
     if (value === undefined || value === null) return fallback;
-    return String(value);
+    return typeof value === 'string' ? value : typeof value === 'object' ? JSON.stringify(value) : String(value as string | number | boolean);
   }
 
   const value = json[field];
   if (value === undefined || value === null) return fallback;
-  return String(value);
+  return typeof value === 'string' ? value : typeof value === 'object' ? JSON.stringify(value) : String(value as string | number | boolean);
 }
 
 /**
@@ -236,7 +237,7 @@ export function getProjectName(workspacePath: string): string {
   if (!workspacePath) return 'unknown-project';
 
   // Handle Windows drive root (C:\ or C:)
-  const driveMatch = workspacePath.match(/^([A-Za-z]):[\\\/]?$/);
+  const driveMatch = workspacePath.match(/^([A-Za-z]):[/\\]?$/);
   if (driveMatch) {
     return `drive-${driveMatch[1].toUpperCase()}`;
   }

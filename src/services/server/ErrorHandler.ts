@@ -51,7 +51,7 @@ export function createErrorResponse(
  * Global error handler middleware
  * Should be registered last in the middleware chain
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- Express error handlers require 4 params for detection
+ 
 export const errorHandler: ErrorRequestHandler = (
   err: Error | AppError,
   req: Request,

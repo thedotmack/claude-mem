@@ -9,6 +9,7 @@
  */
 
 import { execSync } from 'child_process';
+import { existsSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import type { DatabaseManager } from './DatabaseManager.js';
@@ -24,7 +25,6 @@ import { processAgentResponse, type WorkerRef } from './agents/index.js';
 import { createPidCapturingSpawn } from './ProcessRegistry.js';
 
 // Import Agent SDK (assumes it's installed)
-// @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 export class SDKAgent {
@@ -335,7 +335,7 @@ export class SDKAgent {
 
         const obsPrompt = buildObservationPrompt({
           id: 0, // Not used in prompt
-          tool_name: message.tool_name!,
+          tool_name: message.tool_name ?? '',
           tool_input: JSON.stringify(message.tool_input),
           tool_output: JSON.stringify(message.tool_response),
           created_at_epoch: Date.now(),
@@ -393,9 +393,6 @@ export class SDKAgent {
 
     // 1. Check configured path
     if (settings.CLAUDE_CODE_PATH) {
-      // Lazy load fs to keep startup fast
-      // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy require for fast startup
-      const { existsSync } = require('fs') as typeof import('fs');
       if (!existsSync(settings.CLAUDE_CODE_PATH)) {
         throw new Error(`CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but the file does not exist.`);
       }

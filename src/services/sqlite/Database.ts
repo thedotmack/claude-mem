@@ -63,6 +63,7 @@ export class ClaudeMemDatabase {
  * SQLite Database singleton with migration support and optimized settings
  * @deprecated Use ClaudeMemDatabase instead for new code
  */
+/* eslint-disable @typescript-eslint/no-deprecated -- self-references within deprecated class are expected */
 export class DatabaseManager {
   private static instance: DatabaseManager | undefined;
   private db: Database | null = null;
@@ -175,10 +176,11 @@ export class DatabaseManager {
       if (migration.version > maxApplied) {
         logger.info('DB', `Applying migration ${String(migration.version)}`);
 
-        const transaction = this.db.transaction(() => {
-          migration.up(this.db!);
+        const db = this.db;
+        const transaction = db.transaction(() => {
+          migration.up(db);
 
-          const insertQuery = this.db!.query('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)');
+          const insertQuery = db.query('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)');
           insertQuery.run(migration.version, new Date().toISOString());
         });
 
@@ -200,12 +202,14 @@ export class DatabaseManager {
     return result?.version || 0;
   }
 }
+/* eslint-enable @typescript-eslint/no-deprecated */
 
 /**
  * Get the global database instance (for compatibility)
  */
 export function getDatabase(): Database {
   if (!dbInstance) {
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- compatibility function wraps deprecated class
     throw new Error('Database not initialized. Call DatabaseManager.getInstance().initialize() first.');
   }
   return dbInstance;
@@ -215,6 +219,7 @@ export function getDatabase(): Database {
  * Initialize and get database manager
  */
 export function initializeDatabase(): Database {
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- compatibility function wraps deprecated class
   const manager = DatabaseManager.getInstance();
   return manager.initialize();
 }

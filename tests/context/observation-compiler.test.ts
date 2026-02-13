@@ -121,8 +121,8 @@ describe('buildTimeline', () => {
 
       expect(observationItem).toBeDefined();
       expect(summaryItem).toBeDefined();
-      expect(observationItem!.data).toHaveProperty('narrative');
-      expect(summaryItem!.data).toHaveProperty('request');
+      expect((observationItem as NonNullable<typeof observationItem>).data).toHaveProperty('narrative');
+      expect((summaryItem as NonNullable<typeof summaryItem>).data).toHaveProperty('request');
     });
 
     it('should use displayEpoch for summary sorting, not created_at_epoch', () => {

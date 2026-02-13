@@ -24,6 +24,7 @@ import {
 import type { ChromaSync } from '../../../sync/ChromaSync.js';
 import type { SessionStore } from '../../../sqlite/SessionStore.js';
 import type { SessionSearch } from '../../../sqlite/SessionSearch.js';
+import type { ObservationRow } from '../../../sqlite/types.js';
 import { logger } from '../../../../utils/logger.js';
 
 export class HybridSearchStrategy extends BaseSearchStrategy implements SearchStrategy {
@@ -144,7 +145,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       logger.debug('SEARCH', 'HybridSearchStrategy: findByType', { type: typeStr });
 
       // Step 1: SQLite metadata filter
-      const metadataResults = this.sessionSearch.findByType(type as import('../../../sqlite/types.js').ObservationRow['type'] | import('../../../sqlite/types.js').ObservationRow['type'][], filterOptions);
+      const metadataResults = this.sessionSearch.findByType(type as ObservationRow['type'] | ObservationRow['type'][], filterOptions);
       logger.debug('SEARCH', 'HybridSearchStrategy: Found metadata matches', {
         count: metadataResults.length
       });
@@ -183,7 +184,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     } catch (error) {
       logger.error('SEARCH', 'HybridSearchStrategy: findByType failed', {}, error as Error);
-      const results = this.sessionSearch.findByType(type as import('../../../sqlite/types.js').ObservationRow['type'] | import('../../../sqlite/types.js').ObservationRow['type'][], filterOptions);
+      const results = this.sessionSearch.findByType(type as ObservationRow['type'] | ObservationRow['type'][], filterOptions);
       return {
         results: { observations: results, sessions: [], prompts: [] },
         usedChroma: false,

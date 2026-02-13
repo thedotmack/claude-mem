@@ -167,7 +167,7 @@ function ToggleSwitch({
         role="switch"
         aria-checked={checked}
         className={`toggle-switch ${checked ? 'on' : ''} ${disabled ? 'disabled' : ''}`}
-        onClick={() => !disabled && onChange(!checked)}
+        onClick={() => { if (!disabled) onChange(!checked); }}
         disabled={disabled}
       >
         <span className="toggle-knob" />

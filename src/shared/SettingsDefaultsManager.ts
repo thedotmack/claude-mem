@@ -54,6 +54,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-extraneous-class -- static utility class used as namespace across codebase
 export class SettingsDefaultsManager {
   /**
    * Default values for all settings
@@ -186,6 +187,7 @@ export class SettingsDefaultsManager {
       for (const [oldKey, newKey] of Object.entries(openrouterKeyMap)) {
         if (flatSettings[oldKey] !== undefined && flatSettings[newKey] === undefined) {
           flatSettings[newKey] = flatSettings[oldKey];
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- dynamic key from migration map on Record type
           delete flatSettings[oldKey];
           needsMigrationWrite = true;
         }
@@ -207,7 +209,8 @@ export class SettingsDefaultsManager {
       const result: SettingsDefaults = { ...this.DEFAULTS };
       for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
         if (flatSettings[key] !== undefined) {
-          result[key] = String(flatSettings[key]);
+          const val = flatSettings[key];
+          result[key] = typeof val === 'string' ? val : typeof val === 'object' ? JSON.stringify(val) : String(val as string | number | boolean);
         }
       }
 

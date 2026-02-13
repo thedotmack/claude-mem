@@ -69,7 +69,7 @@ export function createMiddleware(
  * Used for admin endpoints that should not be exposed when binding to 0.0.0.0
  */
 export function requireLocalhost(req: Request, res: Response, next: NextFunction): void {
-  const clientIp = req.ip || req.connection.remoteAddress || '';
+  const clientIp = req.ip || req.socket.remoteAddress || '';
   const isLocalhost =
     clientIp === '127.0.0.1' ||
     clientIp === '::1' ||

@@ -16,6 +16,7 @@ import path from 'path';
 
 // worker-service.ts installs signal handlers that call process.exit on SIGTERM/SIGINT.
 // Intercept process.exit BEFORE importing worker-service to prevent vitest crashes.
+// eslint-disable-next-line @typescript-eslint/unbound-method
 const originalExit = process.exit;
 process.exit = vi.fn() as unknown as typeof process.exit;
 
@@ -23,7 +24,8 @@ afterAll(() => {
   process.exit = originalExit;
 });
 
-import { buildStatusOutput, StatusOutput } from '../../src/services/worker-service.js';
+import type { StatusOutput } from '../../src/services/worker-service.js';
+import { buildStatusOutput } from '../../src/services/worker-service.js';
 
 /** Shape of parsed status JSON from worker CLI output */
 interface ParsedStatusOutput {

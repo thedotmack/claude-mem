@@ -16,7 +16,7 @@ import { logger } from '../../src/utils/logger.js';
 // Mock middleware to avoid complex dependencies
 vi.mock('../../src/services/worker/http/middleware.js', () => ({
   createMiddleware: () => [],
-  requireLocalhost: (_req: unknown, _res: unknown, next: () => void) => next(),
+  requireLocalhost: (_req: unknown, _res: unknown, next: () => void) => { next(); },
   summarizeRequestBody: () => 'test body',
 }));
 
@@ -301,7 +301,7 @@ describe('Worker API Endpoints Integration', () => {
 
       const httpServer = server.getHttpServer();
       expect(httpServer).not.toBeNull();
-      expect(httpServer!.listening).toBe(true);
+      expect((httpServer as NonNullable<typeof httpServer>).listening).toBe(true);
     });
 
     it('should close gracefully', async () => {
@@ -360,7 +360,9 @@ describe('Worker API Endpoints Integration', () => {
       const server2 = new Server(mockOptions);
       await server2.listen(testPort, '127.0.0.1');
 
-      expect(server2.getHttpServer()!.listening).toBe(true);
+      const httpServer2 = server2.getHttpServer();
+      expect(httpServer2).not.toBeNull();
+      expect((httpServer2 as NonNullable<typeof httpServer2>).listening).toBe(true);
 
       // Clean up
       try {

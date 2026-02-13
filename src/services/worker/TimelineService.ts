@@ -114,7 +114,7 @@ export class TimelineService {
       if (!dayMap.has(day)) {
         dayMap.set(day, []);
       }
-      dayMap.get(day)!.push(item);
+      dayMap.get(day)?.push(item);
     }
 
     // Sort days chronologically

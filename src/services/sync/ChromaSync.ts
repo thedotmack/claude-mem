@@ -891,7 +891,7 @@ export class ChromaSync {
     // Extract unique IDs from document IDs
     const ids: number[] = [];
     const parsedIds = parsed.ids as string[][] | undefined;
-    const docIds: string[] = (parsedIds?.[0] as string[] | undefined) ?? [];
+    const docIds: string[] = (parsedIds?.[0]) ?? [];
     for (const docId of docIds) {
       // Extract sqlite_id from document ID (supports three formats):
       // - obs_{id}_narrative, obs_{id}_fact_0, etc (observations)

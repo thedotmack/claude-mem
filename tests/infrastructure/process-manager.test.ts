@@ -84,9 +84,10 @@ describe('ProcessManager', () => {
       const result = readPidFile();
 
       expect(result).not.toBeNull();
-      expect(result!.pid).toBe(54321);
-      expect(result!.port).toBe(37999);
-      expect(result!.startedAt).toBe('2024-06-15T12:00:00.000Z');
+      const pidInfo = result as PidInfo;
+      expect(pidInfo.pid).toBe(54321);
+      expect(pidInfo.port).toBe(37999);
+      expect(pidInfo.startedAt).toBe('2024-06-15T12:00:00.000Z');
     });
 
     it('should return null for missing file', () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { GeminiAgent } from '../src/services/worker/GeminiAgent';
-import { DatabaseManager } from '../src/services/worker/DatabaseManager';
-import { SessionManager } from '../src/services/worker/SessionManager';
+import type { DatabaseManager } from '../src/services/worker/DatabaseManager';
+import type { SessionManager } from '../src/services/worker/SessionManager';
 import { ModeManager } from '../src/services/domain/ModeManager';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager';
 import type { ActiveSession } from '../src/services/worker-types';
@@ -126,10 +126,10 @@ describe('GeminiAgent', () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
-    // Restore spied methods
-    if (modeManagerSpy) modeManagerSpy.mockRestore();
-    if (loadFromFileSpy) loadFromFileSpy.mockRestore();
-    if (getSpy) getSpy.mockRestore();
+    // Restore spied methods (always assigned in beforeEach, vi.restoreAllMocks handles all)
+    modeManagerSpy.mockRestore();
+    loadFromFileSpy.mockRestore();
+    getSpy.mockRestore();
     vi.restoreAllMocks();
   });
 
@@ -275,6 +275,7 @@ describe('GeminiAgent', () => {
     await agent.startSession(session);
 
     // Verify fallback to Claude was triggered
+    // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(fallbackAgent.startSession).toHaveBeenCalledWith(session, undefined);
     // Note: resetStuckMessages is called by worker-service.ts, not by GeminiAgent
   });
@@ -306,6 +307,7 @@ describe('GeminiAgent', () => {
     agent.setFallbackAgent(fallbackAgent);
 
     await expect(agent.startSession(session)).rejects.toThrow('Gemini API error: 400 - Invalid argument');
+    // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(fallbackAgent.startSession).not.toHaveBeenCalled();
   });
 
@@ -315,7 +317,7 @@ describe('GeminiAgent', () => {
     rateLimitingEnabled = 'true';
 
     const originalSetTimeout = global.setTimeout;
-    const mockSetTimeout = vi.fn((cb: () => void) => cb());
+    const mockSetTimeout = vi.fn((cb: () => void) => { cb(); });
     global.setTimeout = mockSetTimeout as unknown as typeof global.setTimeout;
 
     try {

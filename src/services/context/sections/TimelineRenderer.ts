@@ -25,7 +25,7 @@ export function groupTimelineByDay(timeline: TimelineItem[]): Map<string, Timeli
     if (!itemsByDay.has(day)) {
       itemsByDay.set(day, []);
     }
-    itemsByDay.get(day)!.push(item);
+    itemsByDay.get(day)?.push(item);
   }
 
   // Sort days chronologically

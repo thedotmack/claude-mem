@@ -181,9 +181,9 @@ export class SearchRoutes extends BaseRouteHandler {
     const cwd = `/preview/${projectName}`;
 
     // Generate context with colors for terminal display
-    const contextText = await generateContext(
+    const contextText = generateContext(
       {
-        session_id: 'preview-' + Date.now(),
+        session_id: 'preview-' + String(Date.now()),
         cwd: cwd
       },
       true  // useColors=true for ANSI terminal output
@@ -231,9 +231,9 @@ export class SearchRoutes extends BaseRouteHandler {
     const cwd = `/context/${primaryProject}`;
 
     // Generate context with all projects
-    const contextText = await generateContext(
+    const contextText = generateContext(
       {
-        session_id: 'context-inject-' + Date.now(),
+        session_id: 'context-inject-' + String(Date.now()),
         cwd: cwd,
         projects: projects
       },

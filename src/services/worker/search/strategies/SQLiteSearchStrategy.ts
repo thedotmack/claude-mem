@@ -23,6 +23,7 @@ import {
   SEARCH_CONSTANTS
 } from '../types.js';
 import type { SessionSearch } from '../../../sqlite/SessionSearch.js';
+import type { ObservationRow, SearchOptions } from '../../../sqlite/types.js';
 import { logger } from '../../../../utils/logger.js';
 
 export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchStrategy {
@@ -72,7 +73,7 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
       if (searchObservations) {
         const obsOptions = {
           ...baseOptions,
-          type: obsType as import('../../../sqlite/types.js').SearchOptions['type'],
+          type: obsType as SearchOptions['type'],
           concepts,
           files
         };
@@ -119,7 +120,7 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
    */
   findByType(type: string | string[], options: StrategySearchOptions): ObservationSearchResult[] {
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy = 'date_desc' } = options;
-    return this.sessionSearch.findByType(type as import('../../../sqlite/types.js').ObservationRow['type'] | import('../../../sqlite/types.js').ObservationRow['type'][], { limit, project, dateRange, orderBy });
+    return this.sessionSearch.findByType(type as ObservationRow['type'] | ObservationRow['type'][], { limit, project, dateRange, orderBy });
   }
 
   /**

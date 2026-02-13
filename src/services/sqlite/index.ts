@@ -1,6 +1,7 @@
 // Export main components
 export {
   ClaudeMemDatabase,
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- re-export for backward compatibility
   DatabaseManager,
   getDatabase,
   initializeDatabase,

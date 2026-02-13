@@ -91,8 +91,6 @@ export class SessionQueueProcessor {
    */
   private waitForMessage(signal: AbortSignal, timeoutMs: number = IDLE_TIMEOUT_MS): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
       const onMessage = () => {
         cleanup();
         resolve(true); // Message received
@@ -109,16 +107,14 @@ export class SessionQueueProcessor {
       };
 
       const cleanup = () => {
-        if (timeoutId !== undefined) {
-          clearTimeout(timeoutId);
-        }
+        clearTimeout(timeoutId);
         this.events.off('message', onMessage);
         signal.removeEventListener('abort', onAbort);
       };
 
       this.events.once('message', onMessage);
       signal.addEventListener('abort', onAbort, { once: true });
-      timeoutId = setTimeout(onTimeout, timeoutMs);
+      const timeoutId = setTimeout(onTimeout, timeoutMs);
     });
   }
 }

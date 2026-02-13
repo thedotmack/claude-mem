@@ -132,7 +132,7 @@ export function groupByDate<T>(
     if (!itemsByDay.has(day)) {
       itemsByDay.set(day, []);
     }
-    itemsByDay.get(day)!.push(item);
+    itemsByDay.get(day)?.push(item);
   }
 
   // Sort days chronologically

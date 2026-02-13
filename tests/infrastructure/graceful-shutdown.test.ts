@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
-import http from 'http';
+import type http from 'http';
 import {
   performGracefulShutdown,
   writePidFile,
@@ -149,6 +149,7 @@ describe('GracefulShutdown', () => {
       await expect(performGracefulShutdown(config)).resolves.toBeUndefined();
 
       // Session manager should still be called
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionManager.shutdownAll).toHaveBeenCalled();
     });
 
@@ -178,6 +179,7 @@ describe('GracefulShutdown', () => {
 
       await performGracefulShutdown(config);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionManager.shutdownAll).toHaveBeenCalledTimes(1);
     });
 

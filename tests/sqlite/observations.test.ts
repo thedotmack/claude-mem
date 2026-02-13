@@ -115,7 +115,8 @@ describe('Observations Module', () => {
       const stored = getObservationById(db, result.id);
       expect(stored?.created_at_epoch).toBe(pastTimestamp);
       // Verify ISO string matches epoch
-      expect(new Date(stored!.created_at).getTime()).toBe(pastTimestamp);
+      expect(stored).not.toBeNull();
+      expect(new Date((stored as NonNullable<typeof stored>).created_at).getTime()).toBe(pastTimestamp);
     });
 
     it('should use current time when overrideTimestampEpoch not provided', () => {

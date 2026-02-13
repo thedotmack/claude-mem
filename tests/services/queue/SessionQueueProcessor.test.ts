@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
-import { SessionQueueProcessor, CreateIteratorOptions } from '../../../src/services/queue/SessionQueueProcessor.js';
+import type { CreateIteratorOptions } from '../../../src/services/queue/SessionQueueProcessor.js';
+import { SessionQueueProcessor } from '../../../src/services/queue/SessionQueueProcessor.js';
 import type { PendingMessageStore, PersistentPendingMessage } from '../../../src/services/sqlite/PendingMessageStore.js';
 import type { PendingMessageWithId } from '../../../src/services/worker-types.js';
 
@@ -137,6 +138,7 @@ describe('SessionQueueProcessor', () => {
         let callCount = 0;
 
         // Return a message on first call, then null
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         vi.mocked(store.claimAndDelete).mockImplementation(() => {
           callCount++;
           if (callCount === 1) {
@@ -203,6 +205,7 @@ describe('SessionQueueProcessor', () => {
         const onIdleTimeout = vi.fn(() => {});
 
         // Return null to trigger wait
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         vi.mocked(store.claimAndDelete).mockImplementation(() => null);
 
         const options: CreateIteratorOptions = {
@@ -239,6 +242,7 @@ describe('SessionQueueProcessor', () => {
         // First call: return null (queue empty)
         // After message event: return message
         // Then return null again
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         vi.mocked(store.claimAndDelete).mockImplementation(() => {
           callCount++;
           if (callCount === 1) {
@@ -309,6 +313,7 @@ describe('SessionQueueProcessor', () => {
 
       it('should clean up event listeners when message received', async () => {
         // Return a message immediately
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         vi.mocked(store.claimAndDelete).mockImplementation(() => createMockMessage({ id: 1 }));
 
         const options: CreateIteratorOptions = {
@@ -327,7 +332,7 @@ describe('SessionQueueProcessor', () => {
         abortController.abort();
 
         // Drain remaining - loop variable required by for-await syntax
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+         
         for await (const _item of iterator) {
           // Should not get here since we aborted
         }
@@ -342,6 +347,7 @@ describe('SessionQueueProcessor', () => {
       it('should continue after store error with backoff', async () => {
         let callCount = 0;
 
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         vi.mocked(store.claimAndDelete).mockImplementation(() => {
           callCount++;
           if (callCount === 1) {
@@ -375,6 +381,7 @@ describe('SessionQueueProcessor', () => {
       });
 
       it('should exit cleanly if aborted during error backoff', async () => {
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         vi.mocked(store.claimAndDelete).mockImplementation(() => {
           throw new Error('Database error');
         });
@@ -411,6 +418,7 @@ describe('SessionQueueProcessor', () => {
           created_at_epoch: 1704067200000
         });
 
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         vi.mocked(store.claimAndDelete).mockImplementation(() => mockPersistentMessage);
 
         const options: CreateIteratorOptions = {

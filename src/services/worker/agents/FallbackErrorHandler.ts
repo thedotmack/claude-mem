@@ -48,7 +48,12 @@ function getErrorMessage(error: unknown): string {
     return String((error as { message: unknown }).message);
   }
 
-  return String(error);
+  // For objects without a message property, return empty string (safe for fallback detection)
+  // For primitives (number, boolean), convert to string for pattern matching
+  if (typeof error === 'object') {
+    return '';
+  }
+  return String(error as string | number | boolean);
 }
 
 /**

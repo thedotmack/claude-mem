@@ -104,7 +104,7 @@ async function closeHttpServer(server: http.Server): Promise<void> {
 
   // Close the server
   await new Promise<void>((resolve, reject) => {
-    server.close(err => { err ? reject(err) : resolve(); });
+    server.close(err => { if (err) { reject(err); } else { resolve(); } });
   });
 
   // Extra delay on Windows to ensure port is fully released

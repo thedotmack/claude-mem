@@ -139,7 +139,8 @@ export class SearchManager {
 
   /**
    * Query Chroma vector database via ChromaSync
-   * @deprecated Use orchestrator.search() instead
+   *
+   * Note: Future refactoring may migrate callers to orchestrator.search()
    */
   private async queryChroma(
     query: string,
@@ -305,7 +306,7 @@ export class SearchManager {
             orderBy: searchOptions.orderBy as 'date_desc' | 'date_asc' | undefined,
             limit: searchOptions.limit,
             project: searchOptions.project,
-            type: obs_type as string | string[] | undefined,
+            type: obs_type,
             concepts,
             files
           };
@@ -410,7 +411,7 @@ export class SearchManager {
         if (!resultsByFile.has(file)) {
           resultsByFile.set(file, []);
         }
-        resultsByFile.get(file)!.push(result);
+        resultsByFile.get(file)?.push(result);
       }
 
       // Render each file section
@@ -628,7 +629,7 @@ export class SearchManager {
       if (!dayMap.has(day)) {
         dayMap.set(day, []);
       }
-      dayMap.get(day)!.push(item);
+      dayMap.get(day)?.push(item);
     }
 
     // Sort days chronologically
@@ -1303,11 +1304,21 @@ export class SearchManager {
     const obsType = type as SearchOptions['type'];
     let results: ObservationSearchResult[] = [];
 
+    if (!obsType) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: 'Error: "type" parameter is required for find_by_type'
+        }],
+        isError: true
+      };
+    }
+
     // Metadata-first, semantic-enhanced search
     logger.debug('SEARCH', 'Using metadata-first + semantic ranking for type search', {});
 
     // Step 1: SQLite metadata filter (get all IDs with this type)
-    const metadataResults = this.sessionSearch.findByType(obsType!, filters);
+    const metadataResults = this.sessionSearch.findByType(obsType, filters);
     logger.debug('SEARCH', 'Found observations with type', { type: typeStr, count: metadataResults.length });
 
     if (metadataResults.length > 0) {
@@ -1336,7 +1347,7 @@ export class SearchManager {
     // Fall back to SQLite-only if Chroma unavailable or failed
     if (results.length === 0) {
       logger.debug('SEARCH', 'Using SQLite-only type search', {});
-      results = this.sessionSearch.findByType(obsType!, filters);
+      results = this.sessionSearch.findByType(obsType, filters);
     }
 
     if (results.length === 0) {
@@ -1593,7 +1604,7 @@ export class SearchManager {
       if (!dayMap.has(day)) {
         dayMap.set(day, []);
       }
-      dayMap.get(day)!.push(item);
+      dayMap.get(day)?.push(item);
     }
 
     // Sort days chronologically
@@ -1830,7 +1841,7 @@ export class SearchManager {
         if (!dayMap.has(day)) {
           dayMap.set(day, []);
         }
-        dayMap.get(day)!.push(item);
+        dayMap.get(day)?.push(item);
       }
 
       // Sort days chronologically

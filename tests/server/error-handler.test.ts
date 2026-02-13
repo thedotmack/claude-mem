@@ -43,7 +43,7 @@ describe('ErrorHandler', () => {
   });
 
   afterEach(() => {
-    loggerSpies.forEach(spy => spy.mockRestore());
+    loggerSpies.forEach(spy => { spy.mockRestore(); });
     vi.restoreAllMocks();
   });
 

@@ -240,16 +240,18 @@ export function createPidCapturingSpawn(sessionDbId: number) {
  * Returns cleanup function to stop the interval
  */
 export function startOrphanReaper(getActiveSessionIds: () => Set<number>, intervalMs: number = 5 * 60 * 1000): () => void {
-  const interval = setInterval(async () => {
-    try {
-      const activeIds = getActiveSessionIds();
-      const killed = await reapOrphanedProcesses(activeIds);
-      if (killed > 0) {
-        logger.info('PROCESS', `Reaper cleaned up ${String(killed)} orphaned processes`, { killed });
+  const interval = setInterval(() => {
+    void (async () => {
+      try {
+        const activeIds = getActiveSessionIds();
+        const killed = await reapOrphanedProcesses(activeIds);
+        if (killed > 0) {
+          logger.info('PROCESS', `Reaper cleaned up ${String(killed)} orphaned processes`, { killed });
+        }
+      } catch (error) {
+        logger.error('PROCESS', 'Reaper error', {}, error as Error);
       }
-    } catch (error) {
-      logger.error('PROCESS', 'Reaper error', {}, error as Error);
-    }
+    })();
   }, intervalMs);
 
   // Return cleanup function

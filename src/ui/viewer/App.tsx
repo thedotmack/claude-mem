@@ -89,7 +89,7 @@ export function App() {
     setPaginatedSummaries([]);
     setPaginatedPrompts([]);
     void handleLoadMore();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Intentionally only depends on currentFilter - handleLoadMore is stable via useCallback
   }, [currentFilter]);
 
   return (
@@ -110,7 +110,7 @@ export function App() {
         observations={allObservations}
         summaries={allSummaries}
         prompts={allPrompts}
-        onLoadMore={handleLoadMore}
+        onLoadMore={() => { void handleLoadMore(); }}
         isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
         hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
       />
@@ -119,7 +119,7 @@ export function App() {
         isOpen={contextPreviewOpen}
         onClose={toggleContextPreview}
         settings={settings}
-        onSave={saveSettings}
+        onSave={(s) => { void saveSettings(s); }}
         isSaving={isSaving}
         saveStatus={saveStatus}
       />

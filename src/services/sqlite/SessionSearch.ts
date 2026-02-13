@@ -347,7 +347,7 @@ export class SessionSearch {
         if (Array.isArray(files)) {
           return files.some((f: string) => isDirectChild(f, folderPath));
         }
-      } catch {}
+      } catch { /* intentionally empty - invalid JSON treated as no files */ }
       return false;
     };
 
@@ -365,7 +365,7 @@ export class SessionSearch {
         if (Array.isArray(files)) {
           return files.some((f: string) => isDirectChild(f, folderPath));
         }
-      } catch {}
+      } catch { /* intentionally empty - invalid JSON treated as no files */ }
       return false;
     };
 

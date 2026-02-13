@@ -170,8 +170,8 @@ describe('groupByDate', () => {
     expect(dates[0]).toContain('Jan 4');
     expect(dates[1]).toContain('Jan 5');
 
-    const jan4Items = result.get(dates[0])!;
-    const jan5Items = result.get(dates[1])!;
+    const jan4Items = result.get(dates[0]) as TestItem[];
+    const jan5Items = result.get(dates[1]) as TestItem[];
 
     expect(jan4Items).toHaveLength(2);
     expect(jan5Items).toHaveLength(2);

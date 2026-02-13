@@ -38,7 +38,7 @@ describe('sqlite-compat', () => {
       db.run('CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)');
       const result = db.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'test') as Record<string, unknown> | undefined;
       expect(result).toBeDefined();
-      expect(result!.name).toBe('test');
+      expect((result as Record<string, unknown>).name).toBe('test');
     });
 
     it('executes multi-statement SQL', () => {
@@ -185,8 +185,12 @@ describe('sqlite-compat', () => {
       db.run('CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT NOT NULL, value REAL)');
       const cols = db.query('PRAGMA table_info(test)').all() as Record<string, unknown>[];
       expect(cols).toHaveLength(3);
-      expect(cols.find((c) => c.name === 'name')!.notnull).toBe(1);
-      expect(cols.find((c) => c.name === 'value')!.notnull).toBe(0);
+      const nameCol = cols.find((c) => c.name === 'name');
+      const valueCol = cols.find((c) => c.name === 'value');
+      expect(nameCol).toBeDefined();
+      expect(valueCol).toBeDefined();
+      expect((nameCol as Record<string, unknown>).notnull).toBe(1);
+      expect((valueCol as Record<string, unknown>).notnull).toBe(0);
     });
 
     it('index_list returns index metadata', () => {

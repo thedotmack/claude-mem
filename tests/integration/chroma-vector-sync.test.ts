@@ -74,8 +74,8 @@ describe('ChromaSync Vector Sync Integration', () => {
   });
 
   describe('ChromaSync availability check', () => {
-    it('should detect uvx availability status', async () => {
-      const check = await checkChromaAvailability();
+    it('should detect uvx availability status', () => {
+      const check = checkChromaAvailability();
       // This test always passes - it just logs the status
       expect(typeof check.available).toBe('boolean');
       if (!check.available) {

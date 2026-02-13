@@ -104,7 +104,7 @@ export function processAgentResponse(
   }
 
   // Log pre-storage with session ID chain for verification
-  logger.info('DB', `STORING | sessionDbId=${String(session.sessionDbId)} | memorySessionId=${String(session.memorySessionId)} | obsCount=${String(observations.length)} | hasSummary=${String(!!summaryForStore)}`, {
+  logger.info('DB', `STORING | sessionDbId=${String(session.sessionDbId)} | memorySessionId=${session.memorySessionId} | obsCount=${String(observations.length)} | hasSummary=${String(!!summaryForStore)}`, {
     sessionId: session.sessionDbId,
     memorySessionId: session.memorySessionId
   });
@@ -122,7 +122,7 @@ export function processAgentResponse(
   );
 
   // Log storage result with IDs for end-to-end traceability
-  logger.info('DB', `STORED | sessionDbId=${String(session.sessionDbId)} | memorySessionId=${String(session.memorySessionId)} | obsCount=${String(result.observationIds.length)} | obsIds=[${result.observationIds.join(',')}] | summaryId=${String(result.summaryId || 'none')}`, {
+  logger.info('DB', `STORED | sessionDbId=${String(session.sessionDbId)} | memorySessionId=${session.memorySessionId} | obsCount=${String(result.observationIds.length)} | obsIds=[${result.observationIds.join(',')}] | summaryId=${String(result.summaryId || 'none')}`, {
     sessionId: session.sessionDbId,
     memorySessionId: session.memorySessionId
   });
@@ -213,12 +213,12 @@ function syncAndBroadcastObservations(
         type: obs.type,
         title: obs.title || '(untitled)'
       });
-    }).catch((error) => {
+    }).catch((error: unknown) => {
       logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
         obsId,
         type: obs.type,
         title: obs.title || '(untitled)'
-      }, error);
+      }, error instanceof Error ? error : new Error(String(error)));
     });
 
     // Broadcast to SSE clients (for web UI)
@@ -257,7 +257,7 @@ function syncAndBroadcastSummary(
   discoveryTokens: number,
   agentName: string
 ): void {
-  if (!summaryForStore || !result.summaryId) {
+  if (!summaryForStore || !result.summaryId || !summary) {
     return;
   }
 
@@ -279,30 +279,30 @@ function syncAndBroadcastSummary(
       duration: `${String(chromaDuration)}ms`,
       request: summaryForStore.request || '(no request)'
     });
-  }).catch((error) => {
+  }).catch((error: unknown) => {
     logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
       summaryId: result.summaryId,
       request: summaryForStore.request || '(no request)'
-    }, error);
+    }, error instanceof Error ? error : new Error(String(error)));
   });
 
   // Broadcast to SSE clients (for web UI)
   broadcastSummary(worker, {
     id: result.summaryId,
     session_id: session.contentSessionId,
-    request: summary!.request,
-    investigated: summary!.investigated,
-    learned: summary!.learned,
-    completed: summary!.completed,
-    next_steps: summary!.next_steps,
-    notes: summary!.notes,
+    request: summary.request,
+    investigated: summary.investigated,
+    learned: summary.learned,
+    completed: summary.completed,
+    next_steps: summary.next_steps,
+    notes: summary.notes,
     project: session.project,
     prompt_number: session.lastPromptNumber,
     created_at_epoch: result.createdAtEpoch
   });
 
   // Update Cursor context file for registered projects (fire-and-forget)
-  updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
-    logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
+  updateCursorContextForProject(session.project, getWorkerPort()).catch((error: unknown) => {
+    logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error instanceof Error ? error : new Error(String(error)));
   });
 }

@@ -51,7 +51,7 @@ export class ErrorBoundary extends Component<Props, State> {
                 overflow: 'auto'
               }}>
                 {this.state.error.toString()}
-                {this.state.errorInfo && '\n\n' + this.state.errorInfo.componentStack}
+                {this.state.errorInfo && '\n\n' + String(this.state.errorInfo.componentStack)}
               </pre>
             </details>
           )}

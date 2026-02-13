@@ -86,6 +86,7 @@ export function unregisterCursorProject(projectName: string): void {
   const registry = readCursorRegistry();
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
   if (registry[projectName]) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- dynamic key from user input on Record type
     delete registry[projectName];
     writeCursorRegistry(registry);
     logger.info('CURSOR', 'Unregistered project', { projectName });
@@ -532,7 +533,7 @@ export function checkCursorHooksStatus(): number {
       // Check if using unified CLI mode or legacy shell scripts
       try {
         const hooksContent = JSON.parse(readFileSync(hooksJson, 'utf-8')) as CursorHooksJson;
-        const firstCommand: string = hooksContent?.hooks?.beforeSubmitPrompt?.[0]?.command || '';
+        const firstCommand: string = hooksContent.hooks.beforeSubmitPrompt?.[0]?.command ?? '';
 
         if (firstCommand.includes('worker-service.cjs') && firstCommand.includes('hook cursor')) {
           console.log(`   Mode: Unified CLI (node worker-service.cjs)`);

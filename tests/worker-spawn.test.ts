@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { execSync, ChildProcess } from 'child_process';
+import type { ChildProcess } from 'child_process';
+import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';

@@ -125,8 +125,11 @@ describe('SQLiteSearchStrategy', () => {
       expect(result.results.observations).toHaveLength(1);
       expect(result.results.sessions).toHaveLength(1);
       expect(result.results.prompts).toHaveLength(1);
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.searchObservations).toHaveBeenCalled();
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.searchSessions).toHaveBeenCalled();
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.searchUserPrompts).toHaveBeenCalled();
     });
 
@@ -141,8 +144,11 @@ describe('SQLiteSearchStrategy', () => {
       expect(result.results.observations).toHaveLength(1);
       expect(result.results.sessions).toHaveLength(0);
       expect(result.results.prompts).toHaveLength(0);
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.searchObservations).toHaveBeenCalled();
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.searchSessions).not.toHaveBeenCalled();
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.searchUserPrompts).not.toHaveBeenCalled();
     });
 
@@ -183,6 +189,7 @@ describe('SQLiteSearchStrategy', () => {
 
       await strategy.search(options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
       expect(callArgs[1].dateRange).toEqual({
         start: '2025-01-01',
@@ -198,6 +205,7 @@ describe('SQLiteSearchStrategy', () => {
 
       await strategy.search(options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
       expect(callArgs[1].project).toBe('my-project');
     });
@@ -210,6 +218,7 @@ describe('SQLiteSearchStrategy', () => {
 
       await strategy.search(options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
       expect(callArgs[1].orderBy).toBe('date_asc');
     });
@@ -242,6 +251,7 @@ describe('SQLiteSearchStrategy', () => {
 
       expect(results).toHaveLength(1);
       expect(results[0].id).toBe(1);
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.findByConcept).toHaveBeenCalledWith('test-concept', expect.any(Object));
     });
 
@@ -255,6 +265,7 @@ describe('SQLiteSearchStrategy', () => {
 
       strategy.findByConcept('test-concept', options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.findByConcept).toHaveBeenCalledWith('test-concept', {
         limit: 20,
         project: 'my-project',
@@ -268,6 +279,7 @@ describe('SQLiteSearchStrategy', () => {
 
       strategy.findByConcept('test-concept', options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       const callArgs = vi.mocked(mockSessionSearch.findByConcept).mock.calls[0] as SearchCallArgs;
       expect(callArgs[1].limit).toBe(20); // SEARCH_CONSTANTS.DEFAULT_LIMIT
     });
@@ -283,6 +295,7 @@ describe('SQLiteSearchStrategy', () => {
 
       expect(results).toHaveLength(1);
       expect(results[0].type).toBe('decision');
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.findByType).toHaveBeenCalledWith('decision', expect.any(Object));
     });
 
@@ -293,6 +306,7 @@ describe('SQLiteSearchStrategy', () => {
 
       strategy.findByType(['decision', 'bugfix'], options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.findByType).toHaveBeenCalledWith(['decision', 'bugfix'], expect.any(Object));
     });
 
@@ -305,6 +319,7 @@ describe('SQLiteSearchStrategy', () => {
 
       strategy.findByType('feature', options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.findByType).toHaveBeenCalledWith('feature', {
         limit: 15,
         project: 'test-project',
@@ -323,6 +338,7 @@ describe('SQLiteSearchStrategy', () => {
 
       expect(result.observations).toHaveLength(1);
       expect(result.sessions).toHaveLength(1);
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/path/to/file.ts', expect.any(Object));
     });
 
@@ -336,6 +352,7 @@ describe('SQLiteSearchStrategy', () => {
 
       strategy.findByFile('/src/index.ts', options);
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/src/index.ts', {
         limit: 25,
         project: 'file-project',

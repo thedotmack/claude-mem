@@ -241,7 +241,7 @@ describe('Cursor MCP Configuration', () => {
 
       // Verify it survives JSON round-trip
       const reread = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as CursorMcpConfig;
-      expect(reread.mcpServers['claude-mem'].args![0]).toBe(specialPath);
+      expect((reread.mcpServers['claude-mem'].args as string[])[0]).toBe(specialPath);
     });
   });
 });

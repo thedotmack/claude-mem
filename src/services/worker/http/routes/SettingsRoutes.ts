@@ -177,7 +177,7 @@ export class SettingsRoutes extends BaseRouteHandler {
    * POST /api/branch/switch - Switch to a different branch
    * Body: { branch: "main" | "beta/7.0" }
    */
-  private handleSwitchBranch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+  private handleSwitchBranch = this.wrapHandler((req: Request, res: Response): void => {
     const body = req.body as { branch?: string };
     const { branch } = body;
 
@@ -198,7 +198,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     logger.info('WORKER', 'Branch switch requested', { branch });
 
-    const result = await switchBranch(branch);
+    const result = switchBranch(branch);
 
     if (result.success) {
       // Schedule worker restart after response is sent
@@ -214,10 +214,10 @@ export class SettingsRoutes extends BaseRouteHandler {
   /**
    * POST /api/branch/update - Pull latest updates for current branch
    */
-  private handleUpdateBranch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+  private handleUpdateBranch = this.wrapHandler((req: Request, res: Response): void => {
     logger.info('WORKER', 'Branch update requested');
 
-    const result = await pullUpdates();
+    const result = pullUpdates();
 
     if (result.success) {
       // Schedule worker restart after response is sent
@@ -235,7 +235,11 @@ export class SettingsRoutes extends BaseRouteHandler {
    */
   private validateSettings(settings: Record<string, unknown>): { valid: boolean; error?: string } {
     // Helper to safely get string values from settings
-    const str = (key: string): string => String(settings[key] ?? '');
+    const str = (key: string): string => {
+      const val = settings[key];
+      if (val === undefined || val === null) return '';
+      return typeof val === 'string' ? val : typeof val === 'object' ? JSON.stringify(val) : String(val as string | number | boolean);
+    };
 
     // Validate CLAUDE_MEM_PROVIDER
     if (settings.CLAUDE_MEM_PROVIDER) {
