@@ -2,6 +2,35 @@
 
 All notable changes to claude-mem.
 
+## [v10.0.5] - 2026-02-13
+
+## OpenClaw Installer & Distribution
+
+This release introduces the OpenClaw one-liner installer and fixes several OpenClaw plugin issues.
+
+### New Features
+
+- **OpenClaw Installer** (`openclaw/install.sh`): Full cross-platform installer script with `curl | bash` support
+  - Platform detection (macOS, Linux, WSL)
+  - Automatic dependency management (Bun, uv, Node.js)
+  - Interactive AI provider setup with settings writer
+  - OpenClaw gateway detection, plugin install, and memory slot configuration
+  - Worker startup and health verification with rich diagnostics
+  - TTY detection, `--provider`/`--api-key` CLI flags
+  - Error recovery and upgrade handling for existing installations
+  - jq/python3/node fallback chain for JSON config writing
+- **Distribution readiness tests** (`openclaw/test-install.sh`): Comprehensive test suite for the installer
+- **Enhanced `/api/health` endpoint**: Now returns version, uptime, workerPath, and AI status
+
+### Bug Fixes
+
+- Fix: use `event.prompt` instead of `ctx.sessionKey` for prompt storage in OpenClaw plugin
+- Fix: detect both `openclaw` and `openclaw.mjs` binary names in gateway discovery
+- Fix: pass file paths via env vars instead of bash interpolation in `node -e` calls
+- Fix: handle stale plugin config that blocks OpenClaw CLI during reinstall
+- Fix: remove stale memory slot reference during reinstall cleanup
+- Fix: remove opinionated filters from OpenClaw plugin
+
 ## [v10.0.4] - 2026-02-12
 
 ## Revert: v10.0.3 chroma-mcp spawn storm fix
@@ -1535,12 +1564,4 @@ This patch release improves stability by adding proper error handling to Chroma 
 ## Technical Details
 
 Refactored context loading logic to differentiate between code and non-code modes, resolving issues where mode-specific observations were filtered by stale settings.
-
-## [v8.0.4] - 2025-12-23
-
-## Changes
-
-- Changed worker start script
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
