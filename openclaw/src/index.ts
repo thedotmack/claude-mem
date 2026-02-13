@@ -1,5 +1,5 @@
 import { writeFile } from "fs/promises";
-import { join } from "path";
+import { basename, join } from "path";
 
 // Minimal type declarations for the OpenClaw Plugin SDK.
 // These match the real OpenClawPluginApi provided by the gateway at runtime.
@@ -173,7 +173,6 @@ interface ClaudeMemPluginConfig {
 
 const MAX_SSE_BUFFER_SIZE = 1024 * 1024; // 1MB
 const DEFAULT_WORKER_PORT = 37777;
-const TOOL_RESULT_MAX_LENGTH = 1000;
 
 // Agent emoji map for observation feed messages.
 // When creating a new OpenClaw agent, add its agentId and emoji here.
@@ -466,9 +465,11 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   }
 
   async function syncMemoryToWorkspace(workspaceDir: string): Promise<void> {
+    // Derive project name from workspace directory (matches Claude Code's getProjectName logic)
+    const workspaceProject = basename(workspaceDir) || baseProjectName;
     const contextText = await workerGetText(
       workerPort,
-      `/api/context/inject?projects=${encodeURIComponent(baseProjectName)}`,
+      `/api/context/inject?projects=${encodeURIComponent(workspaceProject)}`,
       api.logger
     );
     if (contextText && contextText.trim().length > 0) {
@@ -556,20 +557,18 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   api.on("tool_result_persist", (event, ctx) => {
     api.logger.info(`[claude-mem] tool_result_persist fired: tool=${event.toolName ?? "unknown"} agent=${ctx.agentId ?? "none"} session=${ctx.sessionKey ?? "none"}`);
     const toolName = event.toolName;
-    if (!toolName || toolName.startsWith("memory_")) return;
+    if (!toolName) return;
 
     const contentSessionId = getContentSessionId(ctx.sessionKey);
 
-    // Extract result text from message content
+    // Extract result text from all content blocks
     let toolResponseText = "";
     const content = event.message?.content;
     if (Array.isArray(content)) {
-      const textBlock = content.find(
-        (block) => block.type === "tool_result" || block.type === "text"
-      );
-      if (textBlock && "text" in textBlock) {
-        toolResponseText = String(textBlock.text).slice(0, TOOL_RESULT_MAX_LENGTH);
-      }
+      toolResponseText = content
+        .filter((block) => (block.type === "tool_result" || block.type === "text") && "text" in block)
+        .map((block) => String(block.text))
+        .join("\n");
     }
 
     // Fire-and-forget: send observation + sync MEMORY.md in parallel
