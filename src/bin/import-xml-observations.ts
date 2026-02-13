@@ -60,10 +60,10 @@ function buildTimestampMap(): TimestampMapping {
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index];
       try {
-        const data = JSON.parse(line);
-        const timestamp = data.timestamp;
-        const sessionId = data.sessionId;
-        const project = data.cwd;
+        const data = JSON.parse(line) as { timestamp?: string; sessionId?: string; cwd?: string };
+        const timestamp: string | undefined = data.timestamp;
+        const sessionId: string | undefined = data.sessionId;
+        const project: string | undefined = data.cwd;
 
         if (timestamp && sessionId) {
           // Round timestamp to second for matching with XML timestamps
@@ -74,7 +74,7 @@ function buildTimestampMap(): TimestampMapping {
           // Only store first occurrence for each second (they're all the same session anyway)
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime Record indexing
           if (!map[key]) {
-            map[key] = { sessionId, project };
+            map[key] = { sessionId, project: project ?? '' };
           }
         }
       } catch (e) {

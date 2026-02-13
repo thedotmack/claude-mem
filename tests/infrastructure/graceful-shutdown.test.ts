@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import http from 'http';
@@ -38,7 +38,6 @@ describe('GracefulShutdown', () => {
   afterEach(() => {
     // Restore original PID file or remove test one
     if (originalPidContent !== null) {
-      const { writeFileSync } = require('fs');
       writeFileSync(PID_FILE, originalPidContent);
       originalPidContent = null;
     } else {

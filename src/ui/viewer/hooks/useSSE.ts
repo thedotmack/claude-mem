@@ -46,8 +46,8 @@ export function useSSE() {
         }, TIMING.SSE_RECONNECT_DELAY_MS);
       };
 
-      eventSource.onmessage = (event) => {
-        const data: StreamEvent = JSON.parse(event.data);
+      eventSource.onmessage = (event: MessageEvent<string>) => {
+        const data: StreamEvent = JSON.parse(event.data) as StreamEvent;
 
         switch (data.type) {
           case 'initial_load':

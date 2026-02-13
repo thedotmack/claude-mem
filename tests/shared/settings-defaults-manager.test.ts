@@ -13,6 +13,18 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+
+/** Shape of parsed settings JSON */
+interface ParsedSettings {
+  env?: Record<string, string>;
+  CLAUDE_MEM_MODEL?: string;
+  CLAUDE_MEM_PROVIDER?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_API_KEY?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_MODEL?: string;
+  CLAUDE_MEM_OPENROUTER_API_KEY?: string;
+  CLAUDE_MEM_OPENROUTER_MODEL?: string;
+  [key: string]: unknown;
+}
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -52,7 +64,7 @@ describe('SettingsDefaultsManager', () => {
         SettingsDefaultsManager.loadFromFile(settingsPath);
 
         const content = readFileSync(settingsPath, 'utf-8');
-        expect(() => JSON.parse(content)).not.toThrow();
+        expect(() => JSON.parse(content) as unknown).not.toThrow();
       });
 
       it('should write pretty-printed JSON (2-space indent)', () => {
@@ -67,7 +79,7 @@ describe('SettingsDefaultsManager', () => {
         SettingsDefaultsManager.loadFromFile(settingsPath);
 
         const content = readFileSync(settingsPath, 'utf-8');
-        const parsed = JSON.parse(content);
+        const parsed = JSON.parse(content) as ParsedSettings;
         const defaults = SettingsDefaultsManager.getAllDefaults();
 
         for (const key of Object.keys(defaults)) {
@@ -234,7 +246,7 @@ describe('SettingsDefaultsManager', () => {
 
         // File should now be flat schema
         const content = readFileSync(settingsPath, 'utf-8');
-        const parsed = JSON.parse(content);
+        const parsed = JSON.parse(content) as ParsedSettings;
         expect(parsed.env).toBeUndefined();
         expect(parsed.CLAUDE_MEM_MODEL).toBe('migrated-model');
       });
@@ -277,7 +289,7 @@ describe('SettingsDefaultsManager', () => {
 
         // Verify file was rewritten with new keys
         const content = readFileSync(settingsPath, 'utf-8');
-        const parsed = JSON.parse(content);
+        const parsed = JSON.parse(content) as ParsedSettings;
         expect(parsed.CLAUDE_MEM_PROVIDER).toBe('openai-compat');
         expect(parsed.CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe('sk-or-migrate-key');
         expect(parsed.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe('test-model');

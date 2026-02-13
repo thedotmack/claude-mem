@@ -24,8 +24,21 @@ vi.mock('../../src/services/worker/http/middleware.js', () => ({
 import { Server } from '../../src/services/server/Server.js';
 import type { ServerOptions } from '../../src/services/server/Server.js';
 
+/** Type for JSON response body from API endpoints */
+interface ApiResponseBody {
+  status?: string;
+  initialized?: boolean;
+  mcpReady?: boolean;
+  platform?: string;
+  pid?: number;
+  version?: string;
+  message?: string;
+  error?: string;
+}
+
 // Suppress logger output during tests
-let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 describe('Worker API Endpoints Integration', () => {
   let server: Server;
@@ -51,7 +64,7 @@ describe('Worker API Endpoints Integration', () => {
   });
 
   afterEach(async () => {
-    loggerSpies.forEach(spy => spy.mockRestore());
+    for (const spy of loggerSpies) spy.mockRestore();
 
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: server may not be assigned in every test
     if (server && server.getHttpServer()) {
@@ -73,7 +86,7 @@ describe('Worker API Endpoints Integration', () => {
         const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
         expect(response.status).toBe(200);
 
-        const body = await response.json();
+        const body = await response.json() as ApiResponseBody;
         expect(body).toHaveProperty('status', 'ok');
         expect(body).toHaveProperty('initialized', true);
         expect(body).toHaveProperty('mcpReady', true);
@@ -95,7 +108,7 @@ describe('Worker API Endpoints Integration', () => {
         await server.listen(testPort, '127.0.0.1');
 
         const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
-        const body = await response.json();
+        const body = await response.json() as ApiResponseBody;
 
         expect(body.status).toBe('ok'); // Health always returns ok
         expect(body.initialized).toBe(false);
@@ -111,7 +124,7 @@ describe('Worker API Endpoints Integration', () => {
         const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
         expect(response.status).toBe(200);
 
-        const body = await response.json();
+        const body = await response.json() as ApiResponseBody;
         expect(body.status).toBe('ready');
         expect(body.mcpReady).toBe(true);
       });
@@ -130,7 +143,7 @@ describe('Worker API Endpoints Integration', () => {
         const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
         expect(response.status).toBe(503);
 
-        const body = await response.json();
+        const body = await response.json() as ApiResponseBody;
         expect(body.status).toBe('initializing');
         expect(body.message).toContain('initializing');
       });
@@ -144,7 +157,7 @@ describe('Worker API Endpoints Integration', () => {
         const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/version`);
         expect(response.status).toBe(200);
 
-        const body = await response.json();
+        const body = await response.json() as ApiResponseBody;
         expect(body).toHaveProperty('version');
         expect(typeof body.version).toBe('string');
       });
@@ -161,7 +174,7 @@ describe('Worker API Endpoints Integration', () => {
         const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/unknown-endpoint`);
         expect(response.status).toBe(404);
 
-        const body = await response.json();
+        const body = await response.json() as ApiResponseBody;
         expect(body.error).toBe('NotFound');
       });
 
@@ -268,7 +281,7 @@ describe('Worker API Endpoints Integration', () => {
 
       // Check MCP not ready
       let response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
-      let body = await response.json();
+      let body = await response.json() as ApiResponseBody;
       expect(body.mcpReady).toBe(false);
 
       // Set MCP ready
@@ -276,7 +289,7 @@ describe('Worker API Endpoints Integration', () => {
 
       // Check MCP ready
       response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
-      body = await response.json();
+      body = await response.json() as ApiResponseBody;
       expect(body.mcpReady).toBe(true);
     });
   });

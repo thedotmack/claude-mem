@@ -3,6 +3,9 @@ import { SQLiteSearchStrategy } from '../../../../src/services/worker/search/str
 import type { StrategySearchOptions, ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../../../../src/services/worker/search/types.js';
 import type { SessionSearch } from '../../../../src/services/sqlite/SessionSearch.js';
 
+/** Type for search mock call args: [query, options] */
+type SearchCallArgs = [string, Record<string, unknown>];
+
 // Mock observation data
 const mockObservation: ObservationSearchResult = {
   id: 1,
@@ -180,7 +183,7 @@ describe('SQLiteSearchStrategy', () => {
 
       await strategy.search(options);
 
-      const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
+      const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
       expect(callArgs[1].dateRange).toEqual({
         start: '2025-01-01',
         end: '2025-01-31'
@@ -195,7 +198,7 @@ describe('SQLiteSearchStrategy', () => {
 
       await strategy.search(options);
 
-      const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
+      const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
       expect(callArgs[1].project).toBe('my-project');
     });
 
@@ -207,7 +210,7 @@ describe('SQLiteSearchStrategy', () => {
 
       await strategy.search(options);
 
-      const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
+      const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
       expect(callArgs[1].orderBy).toBe('date_asc');
     });
 
@@ -265,7 +268,7 @@ describe('SQLiteSearchStrategy', () => {
 
       strategy.findByConcept('test-concept', options);
 
-      const callArgs = mockSessionSearch.findByConcept.mock.calls[0];
+      const callArgs = vi.mocked(mockSessionSearch.findByConcept).mock.calls[0] as SearchCallArgs;
       expect(callArgs[1].limit).toBe(20); // SEARCH_CONSTANTS.DEFAULT_LIMIT
     });
   });

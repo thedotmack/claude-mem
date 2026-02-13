@@ -32,12 +32,29 @@ vi.mock('../../../src/services/domain/ModeManager.js', () => ({
 // Import after mocks
 import { processAgentResponse } from '../../../src/services/worker/agents/ResponseProcessor.js';
 import type { WorkerRef, StorageResult } from '../../../src/services/worker/agents/types.js';
-import type { ActiveSession } from '../../../src/services/worker-types.js';
+import type { ActiveSession, ParsedObservation, ParsedSummary } from '../../../src/services/worker-types.js';
+
+/** Tuple type for storeObservations mock calls: (memorySessionId, project, observations, summaries, promptNumber, createdAtEpoch) */
+type StoreObservationsCall = [string, string, ParsedObservation[], ParsedSummary[], number, number];
+
+/** Tuple type for chromaSyncObservation mock calls */
+type ChromaSyncObservationCall = [number, string, string, { observation: ParsedObservation }, number, number];
+
+/** Tuple type for chromaSyncSummary mock calls */
+type ChromaSyncSummaryCall = [number, string, string, { summary: ParsedSummary }, number, number];
+
+/** Broadcast event shape for observation or summary SSE events */
+interface BroadcastEvent {
+  type: string;
+  observation?: { id: number; title: string; type: string };
+  summary?: { request: string };
+}
 import type { DatabaseManager } from '../../../src/services/worker/DatabaseManager.js';
 import type { SessionManager } from '../../../src/services/worker/SessionManager.js';
 
 // Spy on logger methods to suppress output during tests
-let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 describe('ResponseProcessor', () => {
   // Mocks
@@ -103,7 +120,7 @@ describe('ResponseProcessor', () => {
   });
 
   afterEach(() => {
-    loggerSpies.forEach(spy => spy.mockRestore());
+    for (const spy of loggerSpies) spy.mockRestore();
     vi.restoreAllMocks();
   });
 
@@ -160,7 +177,7 @@ describe('ResponseProcessor', () => {
 
       expect(mockStoreObservations).toHaveBeenCalledTimes(1);
       const [memorySessionId, project, observations] =
-        mockStoreObservations.mock.calls[0];
+        mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(memorySessionId).toBe('memory-session-456');
       expect(project).toBe('test-project');
       expect(observations).toHaveLength(1);
@@ -202,7 +219,7 @@ describe('ResponseProcessor', () => {
         'TestAgent'
       );
 
-      const [, , observations] = mockStoreObservations.mock.calls[0];
+      const [, , observations] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(observations).toHaveLength(2);
       expect(observations[0].type).toBe('discovery');
       expect(observations[1].type).toBe('bugfix');
@@ -243,7 +260,7 @@ describe('ResponseProcessor', () => {
         'TestAgent'
       );
 
-      const [, , , summary] = mockStoreObservations.mock.calls[0];
+      const [, , , summary] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(summary).not.toBeNull();
       expect(summary.request).toBe('Build login form');
       expect(summary.investigated).toBe('Reviewed existing forms');
@@ -285,7 +302,7 @@ describe('ResponseProcessor', () => {
         'TestAgent'
       );
 
-      const [, , , summary] = mockStoreObservations.mock.calls[0];
+      const [, , , summary] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(summary).toBeNull();
     });
   });
@@ -335,7 +352,7 @@ describe('ResponseProcessor', () => {
         promptNumber,
         tokens,
         timestamp,
-      ] = mockStoreObservations.mock.calls[0];
+      ] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
 
       expect(memorySessionId).toBe('memory-session-456');
       expect(project).toBe('test-project');
@@ -388,13 +405,13 @@ describe('ResponseProcessor', () => {
       expect(mockBroadcast).toHaveBeenCalled();
 
       // Find the observation broadcast call
-      const observationCall = mockBroadcast.mock.calls.find(
-        (call: unknown[]) => (call[0] as Record<string, unknown>).type === 'new_observation'
+      const observationCall = (mockBroadcast.mock.calls as [BroadcastEvent][]).find(
+        (call) => call[0].type === 'new_observation'
       );
       expect(observationCall).toBeDefined();
-      expect(observationCall[0].observation.id).toBe(42);
-      expect(observationCall[0].observation.title).toBe('Broadcast Test');
-      expect(observationCall[0].observation.type).toBe('discovery');
+      expect(observationCall![0].observation!.id).toBe(42);
+      expect(observationCall![0].observation!.title).toBe('Broadcast Test');
+      expect(observationCall![0].observation!.type).toBe('discovery');
     });
 
     it('should broadcast summary via SSE', async () => {
@@ -430,11 +447,11 @@ describe('ResponseProcessor', () => {
       );
 
       // Find the summary broadcast call
-      const summaryCall = mockBroadcast.mock.calls.find(
-        (call: unknown[]) => (call[0] as Record<string, unknown>).type === 'new_summary'
+      const summaryCall = (mockBroadcast.mock.calls as [BroadcastEvent][]).find(
+        (call) => call[0].type === 'new_summary'
       );
       expect(summaryCall).toBeDefined();
-      expect(summaryCall[0].summary.request).toBe('Build feature');
+      expect(summaryCall![0].summary!.request).toBe('Build feature');
     });
   });
 
@@ -466,7 +483,7 @@ describe('ResponseProcessor', () => {
 
       // Should still call storeObservations with empty arrays
       expect(mockStoreObservations).toHaveBeenCalledTimes(1);
-      const [, , observations, summary] = mockStoreObservations.mock.calls[0];
+      const [, , observations, summary] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(observations).toHaveLength(0);
       expect(summary).toBeNull();
     });
@@ -496,7 +513,7 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).toHaveBeenCalledTimes(1);
-      const [, , observations] = mockStoreObservations.mock.calls[0];
+      const [, , observations] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(observations).toHaveLength(0);
     });
   });
@@ -656,7 +673,7 @@ describe('ResponseProcessor', () => {
 
       expect(mockStoreObservations).toHaveBeenCalledTimes(1);
       const [memorySessionId, , observations, summary] =
-        mockStoreObservations.mock.calls[0];
+        mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(memorySessionId).toBe('memory-session-456');
       expect(observations).toHaveLength(1);
       expect(observations[0].title).toBe('Test observation');
@@ -699,7 +716,7 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).toHaveBeenCalledTimes(1);
-      const [, , observations, summary] = mockStoreObservations.mock.calls[0];
+      const [, , observations, summary] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(observations).toHaveLength(1);
       expect(summary).not.toBeNull();
       expect(summary.request).toBe('Build feature');
@@ -739,7 +756,7 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).toHaveBeenCalledTimes(1);
-      const [, , observations, summary] = mockStoreObservations.mock.calls[0];
+      const [, , observations, summary] = mockStoreObservations.mock.calls[0] as StoreObservationsCall;
       expect(observations).toHaveLength(1);
       expect(summary).not.toBeNull();
       expect(summary.request).toBe('Build feature');

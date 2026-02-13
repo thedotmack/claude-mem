@@ -112,7 +112,7 @@ async function callWorkerAPIPost(
       throw new Error(`Worker API error (${String(response.status)}): ${errorText}`);
     }
 
-    const data = await response.json();
+    const data: unknown = await response.json();
 
     logger.debug('HTTP', 'Worker API success (POST)', undefined, { endpoint });
 

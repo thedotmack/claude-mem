@@ -156,12 +156,15 @@ export function extractPriorMessages(transcriptPath: string): PriorMessages {
           continue;
         }
 
-        const entry = JSON.parse(line);
+        const entry = JSON.parse(line) as {
+          type?: string;
+          message?: { content?: Array<{ type: string; text?: string }> };
+        };
         if (entry.type === 'assistant' && entry.message?.content && Array.isArray(entry.message.content)) {
           let text = '';
           for (const block of entry.message.content) {
             if (block.type === 'text') {
-              text += block.text;
+              text += (block.text ?? '');
             }
           }
           text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();

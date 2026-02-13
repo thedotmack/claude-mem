@@ -4,6 +4,11 @@ import { DEFAULT_SETTINGS } from '../constants/settings';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
 
+interface SaveSettingsResponse {
+  success: boolean;
+  error?: string;
+}
+
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [isSaving, setIsSaving] = useState(false);
@@ -12,7 +17,7 @@ export function useSettings() {
   useEffect(() => {
     // Load initial settings
     fetch(API_ENDPOINTS.SETTINGS)
-      .then(res => res.json())
+      .then(res => res.json() as Promise<Partial<Settings>>)
       .then(data => {
         setSettings({
           CLAUDE_MEM_MODEL: data.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL,
@@ -52,7 +57,7 @@ export function useSettings() {
           CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: data.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE,
         });
       })
-      .catch(error => {
+      .catch((error: unknown) => {
         console.error('Failed to load settings:', error);
       });
   }, []);
@@ -67,7 +72,7 @@ export function useSettings() {
       body: JSON.stringify(newSettings)
     });
 
-    const result = await response.json();
+    const result = await response.json() as SaveSettingsResponse;
 
     if (result.success) {
       setSettings(newSettings);

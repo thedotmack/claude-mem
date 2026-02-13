@@ -80,8 +80,8 @@ export class Logger {
         const settingsPath = join(DEFAULT_DATA_DIR, 'settings.json');
         if (existsSync(settingsPath)) {
           const settingsData = readFileSync(settingsPath, 'utf-8');
-          const settings = JSON.parse(settingsData);
-          const envLevel = (settings.CLAUDE_MEM_LOG_LEVEL || 'INFO').toUpperCase();
+          const settings = JSON.parse(settingsData) as { CLAUDE_MEM_LOG_LEVEL?: string };
+          const envLevel: string = (settings.CLAUDE_MEM_LOG_LEVEL || 'INFO').toUpperCase();
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- envLevel may not be a valid LogLevel key at runtime
           this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
         } else {

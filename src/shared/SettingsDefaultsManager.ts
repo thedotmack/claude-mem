@@ -154,13 +154,13 @@ export class SettingsDefaultsManager {
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
-      const settings = JSON.parse(settingsData);
+      const settings = JSON.parse(settingsData) as Record<string, unknown>;
 
       // MIGRATION: Handle old nested schema { env: {...} }
-      let flatSettings = settings;
+      let flatSettings: Record<string, unknown> = settings;
       if (settings.env && typeof settings.env === 'object') {
         // Migrate from nested to flat schema
-        flatSettings = settings.env;
+        flatSettings = settings.env as Record<string, unknown>;
 
         // Auto-migrate the file to flat schema
         try {
@@ -207,7 +207,7 @@ export class SettingsDefaultsManager {
       const result: SettingsDefaults = { ...this.DEFAULTS };
       for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
         if (flatSettings[key] !== undefined) {
-          result[key] = flatSettings[key];
+          result[key] = String(flatSettings[key]);
         }
       }
 

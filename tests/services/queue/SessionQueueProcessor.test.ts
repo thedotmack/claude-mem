@@ -14,8 +14,8 @@ function createMockStore(): PendingMessageStore {
     toPendingMessage: vi.fn((msg: PersistentPendingMessage) => ({
       type: msg.message_type,
       tool_name: msg.tool_name || undefined,
-      tool_input: msg.tool_input ? JSON.parse(msg.tool_input) : undefined,
-      tool_response: msg.tool_response ? JSON.parse(msg.tool_response) : undefined,
+      tool_input: msg.tool_input ? JSON.parse(msg.tool_input) as Record<string, unknown> : undefined,
+      tool_response: msg.tool_response ? JSON.parse(msg.tool_response) as Record<string, unknown> : undefined,
       prompt_number: msg.prompt_number || undefined,
       cwd: msg.cwd || undefined,
       last_assistant_message: msg.last_assistant_message || undefined
@@ -321,7 +321,7 @@ describe('SessionQueueProcessor', () => {
         // Get first message
         const firstResult = await iterator.next();
         expect(firstResult.done).toBe(false);
-        expect(firstResult.value._persistentId).toBe(1);
+        expect((firstResult.value as PendingMessageWithId)._persistentId).toBe(1);
 
         // Now abort and complete iteration
         abortController.abort();

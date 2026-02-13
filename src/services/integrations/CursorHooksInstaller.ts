@@ -252,7 +252,7 @@ export function configureCursorMcp(target: CursorInstallTarget): number {
     let config: CursorMcpConfig = { mcpServers: {} };
     if (existsSync(mcpJsonPath)) {
       try {
-        config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+        config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as CursorMcpConfig;
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
         if (!config.mcpServers) {
           config.mcpServers = {};
@@ -531,8 +531,8 @@ export function checkCursorHooksStatus(): number {
 
       // Check if using unified CLI mode or legacy shell scripts
       try {
-        const hooksContent = JSON.parse(readFileSync(hooksJson, 'utf-8'));
-        const firstCommand = hooksContent?.hooks?.beforeSubmitPrompt?.[0]?.command || '';
+        const hooksContent = JSON.parse(readFileSync(hooksJson, 'utf-8')) as CursorHooksJson;
+        const firstCommand: string = hooksContent?.hooks?.beforeSubmitPrompt?.[0]?.command || '';
 
         if (firstCommand.includes('worker-service.cjs') && firstCommand.includes('hook cursor')) {
           console.log(`   Mode: Unified CLI (node worker-service.cjs)`);

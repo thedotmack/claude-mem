@@ -44,7 +44,7 @@ export function readPidFile(): PidInfo | null {
   if (!existsSync(PID_FILE)) return null;
 
   try {
-    return JSON.parse(readFileSync(PID_FILE, 'utf-8'));
+    return JSON.parse(readFileSync(PID_FILE, 'utf-8')) as PidInfo;
   } catch (error) {
     logger.warn('SYSTEM', 'Failed to parse PID file', { path: PID_FILE }, error as Error);
     return null;

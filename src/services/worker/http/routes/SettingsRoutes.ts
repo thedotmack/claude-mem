@@ -153,7 +153,8 @@ export class SettingsRoutes extends BaseRouteHandler {
    * Body: { enabled: boolean }
    */
   private handleToggleMcp = this.wrapHandler((req: Request, res: Response): void => {
-    const { enabled } = req.body;
+    const body = req.body as { enabled: unknown };
+    const { enabled } = body;
 
     if (typeof enabled !== 'boolean') {
       this.badRequest(res, 'enabled must be a boolean');
@@ -177,7 +178,8 @@ export class SettingsRoutes extends BaseRouteHandler {
    * Body: { branch: "main" | "beta/7.0" }
    */
   private handleSwitchBranch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { branch } = req.body;
+    const body = req.body as { branch?: string };
+    const { branch } = body;
 
     if (!branch) {
       res.status(400).json({ success: false, error: 'Missing branch parameter' });

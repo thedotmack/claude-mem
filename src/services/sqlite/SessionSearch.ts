@@ -343,9 +343,9 @@ export class SessionSearch {
     const checkFiles = (filesJson: string | null): boolean => {
       if (!filesJson) return false;
       try {
-        const files = JSON.parse(filesJson);
+        const files: unknown = JSON.parse(filesJson);
         if (Array.isArray(files)) {
-          return files.some(f => isDirectChild(f, folderPath));
+          return files.some((f: string) => isDirectChild(f, folderPath));
         }
       } catch {}
       return false;
@@ -361,9 +361,9 @@ export class SessionSearch {
     const checkFiles = (filesJson: string | null): boolean => {
       if (!filesJson) return false;
       try {
-        const files = JSON.parse(filesJson);
+        const files: unknown = JSON.parse(filesJson);
         if (Array.isArray(files)) {
-          return files.some(f => isDirectChild(f, folderPath));
+          return files.some((f: string) => isDirectChild(f, folderPath));
         }
       } catch {}
       return false;

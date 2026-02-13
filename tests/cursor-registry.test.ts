@@ -161,7 +161,7 @@ describe('Cursor Project Registry', () => {
 
       // Read raw and parse with JSON.parse (not our helper)
       const content = readFileSync(registryFile, 'utf-8');
-      const parsed = JSON.parse(content);
+      const parsed = JSON.parse(content) as Record<string, unknown>;
 
       expect(parsed).toHaveProperty('project-1');
       expect(parsed).toHaveProperty('project-2');

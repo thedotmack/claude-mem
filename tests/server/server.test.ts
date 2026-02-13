@@ -12,8 +12,21 @@ vi.mock('../../src/services/worker/http/middleware.js', () => ({
 import { Server } from '../../src/services/server/Server.js';
 import type { RouteHandler, ServerOptions } from '../../src/services/server/Server.js';
 
+/** Type for JSON response body from API endpoints */
+interface ApiResponseBody {
+  status?: string;
+  initialized?: boolean;
+  mcpReady?: boolean;
+  platform?: string;
+  pid?: number;
+  version?: string;
+  message?: string;
+  error?: string;
+}
+
 // Spy on logger methods to suppress output during tests
-let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 describe('Server', () => {
   let server: Server;
@@ -36,7 +49,7 @@ describe('Server', () => {
   });
 
   afterEach(async () => {
-    loggerSpies.forEach(spy => spy.mockRestore());
+    for (const spy of loggerSpies) spy.mockRestore();
     // Clean up server if created and still has an active http server
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: server may not be assigned in every test
     if (server && server.getHttpServer()) {
@@ -246,7 +259,7 @@ describe('Server', () => {
 
       expect(response.status).toBe(200);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.status).toBe('ok');
     });
 
@@ -257,7 +270,7 @@ describe('Server', () => {
       await server.listen(testPort, '127.0.0.1');
 
       const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
 
       expect(body.initialized).toBe(true);
       expect(body.mcpReady).toBe(true);
@@ -279,7 +292,7 @@ describe('Server', () => {
 
       // Check when not initialized
       let response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
-      let body = await response.json();
+      let body = await response.json() as ApiResponseBody;
       expect(body.initialized).toBe(false);
 
       // Change state
@@ -287,7 +300,7 @@ describe('Server', () => {
 
       // Check when initialized
       response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
-      body = await response.json();
+      body = await response.json() as ApiResponseBody;
       expect(body.initialized).toBe(true);
     });
 
@@ -298,7 +311,7 @@ describe('Server', () => {
       await server.listen(testPort, '127.0.0.1');
 
       const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
 
       expect(body.platform).toBeDefined();
       expect(body.pid).toBeDefined();
@@ -317,7 +330,7 @@ describe('Server', () => {
 
       expect(response.status).toBe(200);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.status).toBe('ready');
     });
 
@@ -338,7 +351,7 @@ describe('Server', () => {
 
       expect(response.status).toBe(503);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.status).toBe('initializing');
       expect(body.message).toBeDefined();
     });
@@ -355,7 +368,7 @@ describe('Server', () => {
 
       expect(response.status).toBe(200);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.version).toBeDefined();
       expect(typeof body.version).toBe('string');
     });
@@ -373,7 +386,7 @@ describe('Server', () => {
 
       expect(response.status).toBe(404);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.error).toBe('NotFound');
     });
   });

@@ -34,7 +34,8 @@ interface AgentWithCompactHistory {
 }
 
 // Suppress logger output during tests
-let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 function makeHistory(count: number): ConversationMessage[] {
   const history: ConversationMessage[] = [];
@@ -278,8 +279,8 @@ describe('OpenAICompatAgent.compactHistory', () => {
     const infoCall = loggerSpies[0]; // logger.info
     expect(infoCall).toHaveBeenCalled();
     // Find the compaction log call
-    const calls = infoCall.mock.calls;
-    const compactCall = calls.find((c: unknown[]) => c[1] === 'Compacted history');
+    const calls = infoCall.mock.calls as unknown[][];
+    const compactCall = calls.find((c) => c[1] === 'Compacted history');
     expect(compactCall).toBeTruthy();
     expect(compactCall![2]).toEqual({
       sessionId: 1,

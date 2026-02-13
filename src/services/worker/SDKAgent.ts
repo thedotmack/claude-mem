@@ -161,9 +161,19 @@ export class SDKAgent {
 
       // Handle assistant messages
       if (message.type === 'assistant') {
-        const content = message.message.content;
+        // SDK message types are not fully typed - use interface for the parts we access
+        const sdkMessage = message.message as {
+          content: string | Array<{ type: string; text?: string }>;
+          usage?: {
+            input_tokens?: number;
+            output_tokens?: number;
+            cache_creation_input_tokens?: number;
+            cache_read_input_tokens?: number;
+          };
+        };
+        const content = sdkMessage.content;
         const textContent = Array.isArray(content)
-          ? content.filter((c: { type: string }) => c.type === 'text').map((c: { type: string; text?: string }) => c.text ?? '').join('\n')
+          ? content.filter((c) => c.type === 'text').map((c) => c.text ?? '').join('\n')
           : typeof content === 'string' ? content : '';
 
         const responseSize = textContent.length;
@@ -172,7 +182,7 @@ export class SDKAgent {
         const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
 
         // Extract and track token usage
-        const usage = message.message.usage;
+        const usage = sdkMessage.usage;
         if (usage) {
           session.cumulativeInputTokens += usage.input_tokens || 0;
           session.cumulativeOutputTokens += usage.output_tokens || 0;
@@ -384,7 +394,8 @@ export class SDKAgent {
     // 1. Check configured path
     if (settings.CLAUDE_CODE_PATH) {
       // Lazy load fs to keep startup fast
-      const { existsSync } = require('fs');
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy require for fast startup
+      const { existsSync } = require('fs') as typeof import('fs');
       if (!existsSync(settings.CLAUDE_CODE_PATH)) {
         throw new Error(`CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but the file does not exist.`);
       }

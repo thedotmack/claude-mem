@@ -1406,9 +1406,9 @@ export class SearchManager {
           // Handle files_read
           if (summary.files_read) {
             try {
-              const filesRead = JSON.parse(summary.files_read);
+              const filesRead: unknown = JSON.parse(summary.files_read);
               if (Array.isArray(filesRead) && filesRead.length > 0) {
-                lines.push(`**Files Read:** ${filesRead.join(', ')}`);
+                lines.push(`**Files Read:** ${(filesRead as string[]).join(', ')}`);
               }
             } catch (error) {
               logger.debug('WORKER', 'files_read is plain string, using as-is', {}, error as Error);
@@ -1421,9 +1421,9 @@ export class SearchManager {
           // Handle files_edited
           if (summary.files_edited) {
             try {
-              const filesEdited = JSON.parse(summary.files_edited);
+              const filesEdited: unknown = JSON.parse(summary.files_edited);
               if (Array.isArray(filesEdited) && filesEdited.length > 0) {
-                lines.push(`**Files Edited:** ${filesEdited.join(', ')}`);
+                lines.push(`**Files Edited:** ${(filesEdited as string[]).join(', ')}`);
               }
             } catch (error) {
               logger.debug('WORKER', 'files_edited is plain string, using as-is', {}, error as Error);

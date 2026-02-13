@@ -24,8 +24,21 @@ vi.mock('../../src/services/worker/http/middleware.js', () => ({
 import { Server } from '../../src/services/server/Server.js';
 import type { ServerOptions } from '../../src/services/server/Server.js';
 
+/** Type for JSON response body from API endpoints */
+interface ApiResponseBody {
+  status?: string;
+  initialized?: boolean;
+  mcpReady?: boolean;
+  platform?: string;
+  pid?: number;
+  version?: string;
+  message?: string;
+  error?: string;
+}
+
 // Suppress logger output during tests
-let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 describe('Hook Execution E2E', () => {
   let server: Server;
@@ -51,7 +64,7 @@ describe('Hook Execution E2E', () => {
   });
 
   afterEach(async () => {
-    loggerSpies.forEach(spy => spy.mockRestore());
+    for (const spy of loggerSpies) spy.mockRestore();
 
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: server may not be assigned in every test
     if (server && server.getHttpServer()) {
@@ -72,7 +85,7 @@ describe('Hook Execution E2E', () => {
       const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
       expect(response.status).toBe(200);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.status).toBe('ok');
       expect(body.initialized).toBe(true);
       expect(body.mcpReady).toBe(true);
@@ -87,7 +100,7 @@ describe('Hook Execution E2E', () => {
       const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
       expect(response.status).toBe(200);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.status).toBe('ready');
     });
 
@@ -105,7 +118,7 @@ describe('Hook Execution E2E', () => {
       const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/readiness`);
       expect(response.status).toBe(503);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.status).toBe('initializing');
       expect(body.message).toBeDefined();
     });
@@ -117,7 +130,7 @@ describe('Hook Execution E2E', () => {
       const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/version`);
       expect(response.status).toBe(200);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.version).toBeDefined();
       expect(typeof body.version).toBe('string');
     });
@@ -165,7 +178,7 @@ describe('Hook Execution E2E', () => {
 
       // Check when not initialized
       let response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
-      let body = await response.json();
+      let body = await response.json() as ApiResponseBody;
       expect(body.initialized).toBe(false);
 
       // Change state
@@ -173,7 +186,7 @@ describe('Hook Execution E2E', () => {
 
       // Check when initialized
       response = await fetch(`http://127.0.0.1:${String(testPort)}/api/health`);
-      body = await response.json();
+      body = await response.json() as ApiResponseBody;
       expect(body.initialized).toBe(true);
     });
   });
@@ -187,7 +200,7 @@ describe('Hook Execution E2E', () => {
       const response = await fetch(`http://127.0.0.1:${String(testPort)}/api/nonexistent`);
       expect(response.status).toBe(404);
 
-      const body = await response.json();
+      const body = await response.json() as ApiResponseBody;
       expect(body.error).toBe('NotFound');
     });
 

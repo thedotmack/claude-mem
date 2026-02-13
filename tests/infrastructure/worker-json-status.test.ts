@@ -25,6 +25,14 @@ afterAll(() => {
 
 import { buildStatusOutput, StatusOutput } from '../../src/services/worker-service.js';
 
+/** Shape of parsed status JSON from worker CLI output */
+interface ParsedStatusOutput {
+  status?: string;
+  continue?: boolean;
+  suppressOutput?: boolean;
+  message?: string;
+}
+
 const WORKER_SCRIPT = path.join(import.meta.dirname, '../../plugin/scripts/worker-service.cjs');
 
 /**
@@ -132,11 +140,11 @@ describe('worker-json-status', () => {
         expect(() => JSON.stringify(readyResult)).not.toThrow();
         expect(() => JSON.stringify(errorResult)).not.toThrow();
 
-        const parsedReady = JSON.parse(JSON.stringify(readyResult));
+        const parsedReady = JSON.parse(JSON.stringify(readyResult)) as ParsedStatusOutput;
         expect(parsedReady.status).toBe('ready');
         expect(parsedReady.continue).toBe(true);
 
-        const parsedError = JSON.parse(JSON.stringify(errorResult));
+        const parsedError = JSON.parse(JSON.stringify(errorResult)) as ParsedStatusOutput;
         expect(parsedError.status).toBe('error');
         expect(parsedError.message).toBe('Test error message');
       });
@@ -146,14 +154,14 @@ describe('worker-json-status', () => {
         const errorOutput = JSON.stringify(buildStatusOutput('error', 'error msg'));
 
         // Verify exact structure (order may vary, but content must match)
-        const parsedReady = JSON.parse(readyOutput);
+        const parsedReady = JSON.parse(readyOutput) as ParsedStatusOutput;
         expect(parsedReady).toEqual({
           continue: true,
           suppressOutput: true,
           status: 'ready'
         });
 
-        const parsedError = JSON.parse(errorOutput);
+        const parsedError = JSON.parse(errorOutput) as ParsedStatusOutput;
         expect(parsedError).toEqual({
           continue: true,
           suppressOutput: true,
@@ -196,7 +204,7 @@ describe('worker-json-status', () => {
         expect(result.message).toBe(specialMessage);
 
         // Verify it serializes correctly
-        const parsed = JSON.parse(JSON.stringify(result));
+        const parsed = JSON.parse(JSON.stringify(result)) as ParsedStatusOutput;
         expect(parsed.message).toBe(specialMessage);
       });
 
@@ -223,9 +231,9 @@ describe('worker-json-status', () => {
         expect(exitCode).toBe(0);
 
         // Should output valid JSON
-        expect(() => JSON.parse(stdout)).not.toThrow();
+        expect(() => JSON.parse(stdout) as unknown).not.toThrow();
 
-        const parsed = JSON.parse(stdout);
+        const parsed = JSON.parse(stdout) as ParsedStatusOutput;
 
         // Verify required fields per hook framework contract
         expect(parsed.continue).toBe(true);
@@ -240,7 +248,7 @@ describe('worker-json-status', () => {
         }
 
         const { stdout } = runWorkerStart();
-        const parsed = JSON.parse(stdout);
+        const parsed = JSON.parse(stdout) as ParsedStatusOutput;
 
         // When worker is already healthy, status should be 'ready'
         // (or 'error' if something unexpected happens)
@@ -342,18 +350,18 @@ describe('worker-json-status', () => {
       const stderr = result.stderr.trim() || '';
 
       // stdout should contain valid JSON
-      expect(() => JSON.parse(stdout)).not.toThrow();
+      expect(() => JSON.parse(stdout) as unknown).not.toThrow();
 
       // stderr should NOT contain the JSON output (it may have logs)
       // The JSON structure should only appear in stdout
-      const parsed = JSON.parse(stdout);
+      const parsed = JSON.parse(stdout) as ParsedStatusOutput;
       expect(parsed).toHaveProperty('status');
       expect(parsed).toHaveProperty('continue');
 
       // Verify stderr doesn't accidentally contain the JSON output
       if (stderr) {
         try {
-          const stderrParsed = JSON.parse(stderr);
+          const stderrParsed = JSON.parse(stderr) as ParsedStatusOutput;
           // If stderr parses as JSON with our structure, that's wrong
           expect(stderrParsed).not.toHaveProperty('suppressOutput');
         } catch {
@@ -410,7 +418,7 @@ describe('worker-json-status', () => {
       }
 
       const { stdout } = runWorkerStart();
-      const parsed = JSON.parse(stdout);
+      const parsed = JSON.parse(stdout) as ParsedStatusOutput;
 
       // continue: true is CRITICAL - without it, Claude Code stops processing
       // This is not optional; it must always be true for our hooks
@@ -437,7 +445,7 @@ describe('worker-json-status', () => {
       }
 
       const { stdout } = runWorkerStart();
-      const parsed = JSON.parse(stdout);
+      const parsed = JSON.parse(stdout) as ParsedStatusOutput;
 
       // suppressOutput prevents infrastructure noise from polluting transcript
       expect(parsed.suppressOutput).toBe(true);
@@ -460,7 +468,7 @@ describe('worker-json-status', () => {
       }
 
       const { stdout } = runWorkerStart();
-      const parsed = JSON.parse(stdout);
+      const parsed = JSON.parse(stdout) as ParsedStatusOutput;
 
       expect(parsed).toHaveProperty('status');
       expect(['ready', 'error']).toContain(parsed.status);

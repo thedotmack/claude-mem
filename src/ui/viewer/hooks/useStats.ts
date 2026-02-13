@@ -8,7 +8,7 @@ export function useStats() {
   const loadStats = useCallback(async () => {
     try {
       const response = await fetch(API_ENDPOINTS.STATS);
-      const data = await response.json();
+      const data = await response.json() as Stats;
       setStats(data);
     } catch (error) {
       console.error('Failed to load stats:', error);

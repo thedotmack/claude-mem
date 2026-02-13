@@ -14,7 +14,8 @@ import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson } from '../../src/ut
 import { logger } from '../../src/utils/logger.js';
 
 // Suppress logger output during tests
-let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 describe('Tag Stripping Utilities', () => {
   beforeEach(() => {
@@ -27,7 +28,7 @@ describe('Tag Stripping Utilities', () => {
   });
 
   afterEach(() => {
-    loggerSpies.forEach(spy => spy.mockRestore());
+    for (const spy of loggerSpies) spy.mockRestore();
   });
 
   describe('stripMemoryTagsFromPrompt', () => {
@@ -198,7 +199,7 @@ finish`;
           content: '<private>secret</private> public'
         });
         const result = stripMemoryTagsFromJson(jsonContent);
-        const parsed = JSON.parse(result);
+        const parsed = JSON.parse(result) as { content: string };
         expect(parsed.content).toBe(' public');
       });
 
@@ -207,7 +208,7 @@ finish`;
           data: '<claude-mem-context>injected</claude-mem-context> real data'
         });
         const result = stripMemoryTagsFromJson(jsonContent);
-        const parsed = JSON.parse(result);
+        const parsed = JSON.parse(result) as { data: string };
         expect(parsed.data).toBe(' real data');
       });
 
@@ -217,7 +218,7 @@ finish`;
           args: '<private>secret args</private>'
         };
         const result = stripMemoryTagsFromJson(JSON.stringify(toolInput));
-        const parsed = JSON.parse(result);
+        const parsed = JSON.parse(result) as { args: string };
         expect(parsed.args).toBe('');
       });
 
@@ -227,7 +228,7 @@ finish`;
           status: 'success'
         };
         const result = stripMemoryTagsFromJson(JSON.stringify(toolResponse));
-        const parsed = JSON.parse(result);
+        const parsed = JSON.parse(result) as { output: string };
         expect(parsed.output).toBe('result ');
       });
     });
@@ -251,7 +252,7 @@ finish`;
           }
         });
         const result = stripMemoryTagsFromJson(input);
-        const parsed = JSON.parse(result);
+        const parsed = JSON.parse(result) as { outer: { inner: string } };
         expect(parsed.outer.inner).toBe(' visible');
       });
     });

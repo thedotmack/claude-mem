@@ -47,6 +47,9 @@ import type { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
 import type { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import type { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
 
+/** Type for search mock call args: [project, options] */
+type SearchCallArgs = [string, Record<string, unknown>];
+
 // Mock data
 const mockObservation: ObservationSearchResult = {
   id: 1,
@@ -172,7 +175,7 @@ describe('SearchOrchestrator', () => {
         });
 
         // Should be parsed into array internally
-        const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
+        const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
         expect(callArgs[1].concepts).toEqual(['concept1', 'concept2', 'concept3']);
       });
 
@@ -182,7 +185,7 @@ describe('SearchOrchestrator', () => {
           limit: 10
         });
 
-        const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
+        const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
         expect(callArgs[1].files).toEqual(['file1.ts', 'file2.ts']);
       });
 
@@ -192,7 +195,7 @@ describe('SearchOrchestrator', () => {
           dateEnd: '2025-01-31'
         });
 
-        const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
+        const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
         expect(callArgs[1].dateRange).toEqual({
           start: '2025-01-01',
           end: '2025-01-31'
@@ -375,7 +378,7 @@ describe('SearchOrchestrator', () => {
         obs_type: 'decision, bugfix'
       });
 
-      const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
+      const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
       expect(callArgs[1].type).toEqual(['decision', 'bugfix']);
     });
 
@@ -384,7 +387,7 @@ describe('SearchOrchestrator', () => {
         concepts: ['concept1', 'concept2']
       });
 
-      const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
+      const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
       expect(callArgs[1].concepts).toEqual(['concept1', 'concept2']);
     });
 
@@ -394,7 +397,7 @@ describe('SearchOrchestrator', () => {
         files: ''
       });
 
-      const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
+      const callArgs = vi.mocked(mockSessionSearch.searchObservations).mock.calls[0] as SearchCallArgs;
       // Empty strings are falsy, so the normalization doesn't process them
       // They stay as empty strings (the underlying search functions handle this)
       expect(callArgs[1].concepts).toEqual('');

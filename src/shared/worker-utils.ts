@@ -71,7 +71,7 @@ async function isWorkerHealthy(): Promise<boolean> {
  */
 function getPluginVersion(): string {
   const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version: string };
   return packageJson.version;
 }
 

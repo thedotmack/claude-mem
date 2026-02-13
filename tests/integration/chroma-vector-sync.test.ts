@@ -31,7 +31,8 @@ function checkChromaAvailability(): { available: boolean; reason: string } {
 }
 
 // Suppress logger output during tests
-let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 describe('ChromaSync Vector Sync Integration', () => {
   const testProject = `test-project-${String(Date.now())}`;
@@ -69,7 +70,7 @@ describe('ChromaSync Vector Sync Integration', () => {
   });
 
   afterEach(() => {
-    loggerSpies.forEach(spy => spy.mockRestore());
+    for (const spy of loggerSpies) spy.mockRestore();
   });
 
   describe('ChromaSync availability check', () => {

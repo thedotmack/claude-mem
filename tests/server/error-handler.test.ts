@@ -19,9 +19,18 @@ import {
   notFoundHandler,
 } from '../../src/services/server/ErrorHandler.js';
 
+/** ErrorResponse shape returned by jsonSpy */
+interface ErrorResponseBody {
+  error?: string;
+  message?: string;
+  code?: string;
+  details?: unknown;
+}
+
 // Spy on logger methods to suppress output during tests
 // Using spyOn instead of mock.module to avoid polluting global module cache
-let loggerSpies: ReturnType<typeof vi.spyOn>[] = [];
+import type { MockInstance } from 'vitest';
+let loggerSpies: MockInstance[] = [];
 
 describe('ErrorHandler', () => {
   beforeEach(() => {
@@ -135,8 +144,8 @@ describe('ErrorHandler', () => {
     let mockRequest: Partial<Request>;
     let mockResponse: Partial<Response>;
     let mockNext: NextFunction;
-    let statusSpy: ReturnType<typeof mock>;
-    let jsonSpy: ReturnType<typeof mock>;
+    let statusSpy: MockInstance;
+    let jsonSpy: MockInstance;
 
     beforeEach(() => {
       statusSpy = vi.fn(() => mockResponse);
@@ -168,7 +177,7 @@ describe('ErrorHandler', () => {
       expect(statusSpy).toHaveBeenCalledWith(404);
       expect(jsonSpy).toHaveBeenCalled();
 
-      const responseBody = jsonSpy.mock.calls[0][0];
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.error).toBe('AppError');
       expect(responseBody.message).toBe('Not found');
       expect(responseBody.code).toBe('NOT_FOUND');
@@ -185,7 +194,7 @@ describe('ErrorHandler', () => {
         mockNext
       );
 
-      const responseBody = jsonSpy.mock.calls[0][0];
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.details).toEqual(details);
     });
 
@@ -201,7 +210,7 @@ describe('ErrorHandler', () => {
 
       expect(statusSpy).toHaveBeenCalledWith(500);
 
-      const responseBody = jsonSpy.mock.calls[0][0];
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.error).toBe('Error');
       expect(responseBody.message).toBe('Something went wrong');
       expect(responseBody.code).toBeUndefined();
@@ -231,7 +240,7 @@ describe('ErrorHandler', () => {
         mockNext
       );
 
-      const responseBody = jsonSpy.mock.calls[0][0];
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.error).toBe('TypeError');
     });
 
@@ -252,8 +261,8 @@ describe('ErrorHandler', () => {
   describe('notFoundHandler', () => {
     let mockRequest: Partial<Request>;
     let mockResponse: Partial<Response>;
-    let statusSpy: ReturnType<typeof mock>;
-    let jsonSpy: ReturnType<typeof mock>;
+    let statusSpy: MockInstance;
+    let jsonSpy: MockInstance;
 
     beforeEach(() => {
       statusSpy = vi.fn(() => mockResponse);
@@ -284,7 +293,7 @@ describe('ErrorHandler', () => {
 
       notFoundHandler(mockRequest as Request, mockResponse as Response);
 
-      const responseBody = jsonSpy.mock.calls[0][0];
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.error).toBe('NotFound');
       expect(responseBody.message).toBe('Cannot POST /api/users');
     });
@@ -297,7 +306,7 @@ describe('ErrorHandler', () => {
 
       notFoundHandler(mockRequest as Request, mockResponse as Response);
 
-      const responseBody = jsonSpy.mock.calls[0][0];
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.message).toBe('Cannot DELETE /api/items/123');
     });
 
@@ -309,7 +318,7 @@ describe('ErrorHandler', () => {
 
       notFoundHandler(mockRequest as Request, mockResponse as Response);
 
-      const responseBody = jsonSpy.mock.calls[0][0];
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.message).toBe('Cannot PUT /api/config');
     });
 
@@ -321,8 +330,8 @@ describe('ErrorHandler', () => {
 
       notFoundHandler(mockRequest as Request, mockResponse as Response);
 
-      const responseBody = jsonSpy.mock.calls[0][0];
-      expect(Object.keys(responseBody)).toEqual(['error', 'message']);
+      const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
+      expect(Object.keys(responseBody as Record<string, unknown>)).toEqual(['error', 'message']);
     });
   });
 });

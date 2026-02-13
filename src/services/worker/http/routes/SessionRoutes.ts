@@ -25,6 +25,48 @@ import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 
+/** Request body for legacy session init */
+interface SessionInitBody {
+  userPrompt?: string;
+  promptNumber?: number;
+}
+
+/** Request body for legacy observations */
+interface ObservationsBody {
+  tool_name: string;
+  tool_input: unknown;
+  tool_response: unknown;
+  prompt_number: number;
+  cwd?: string;
+}
+
+/** Request body for legacy summarize */
+interface SummarizeBody {
+  last_assistant_message?: string;
+}
+
+/** Request body for observations by Claude ID */
+interface ObservationsByClaudeIdBody {
+  contentSessionId: string;
+  tool_name: string;
+  tool_input: Record<string, unknown> | undefined;
+  tool_response: unknown;
+  cwd: string | undefined;
+}
+
+/** Request body for summarize by Claude ID */
+interface SummarizeByClaudeIdBody {
+  contentSessionId: string;
+  last_assistant_message?: string;
+}
+
+/** Request body for session init by Claude ID */
+interface SessionInitByClaudeIdBody {
+  contentSessionId: string;
+  project: string;
+  prompt: string;
+}
+
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
 
@@ -138,15 +180,16 @@ export class SessionRoutes extends BaseRouteHandler {
     session.currentProvider = provider;
 
     session.generatorPromise = agent.startSession(session, this.workerService)
-      .catch(error => {
+      .catch((error: unknown) => {
         // Only log non-abort errors
         if (session.abortController.signal.aborted) return;
-        
+
+        const err = error instanceof Error ? error : new Error(String(error));
         logger.error('SESSION', `Generator failed`, {
           sessionId: session.sessionDbId,
           provider: provider,
-          error: error.message
-        }, error);
+          error: err.message
+        }, err);
 
         // Mark all processing messages as failed so they can be retried or abandoned
         const pendingStore = this.sessionManager.getPendingMessageStore();
@@ -248,7 +291,8 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
-    const { userPrompt, promptNumber } = req.body;
+    const body = req.body as SessionInitBody;
+    const { userPrompt, promptNumber } = body;
     logger.info('HTTP', 'SessionRoutes: handleSessionInit called', {
       sessionDbId,
       promptNumber,
@@ -316,7 +360,8 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
-    const { tool_name, tool_input, tool_response, prompt_number, cwd } = req.body;
+    const body = req.body as ObservationsBody;
+    const { tool_name, tool_input, tool_response, prompt_number, cwd } = body;
 
     this.sessionManager.queueObservation(sessionDbId, {
       tool_name,
@@ -343,7 +388,8 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
-    const { last_assistant_message } = req.body;
+    const body = req.body as SummarizeBody;
+    const { last_assistant_message } = body;
 
     this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
 
@@ -410,7 +456,8 @@ export class SessionRoutes extends BaseRouteHandler {
    * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
+    const body = req.body as ObservationsByClaudeIdBody;
+    const { contentSessionId, tool_name, tool_input, tool_response, cwd } = body;
 
     if (!contentSessionId) {
       this.badRequest(res, 'Missing contentSessionId'); return;
@@ -430,7 +477,7 @@ export class SessionRoutes extends BaseRouteHandler {
     // Skip meta-observations: file operations on session-memory files
     const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);
     if (fileOperationTools.has(tool_name) && tool_input) {
-      const filePath = tool_input.file_path || tool_input.notebook_path;
+      const filePath = (tool_input.file_path ?? tool_input.notebook_path) as string | undefined;
       if (filePath && filePath.includes('session-memory')) {
         logger.debug('SESSION', 'Skipping meta-observation for session-memory file', {
           tool_name,
@@ -462,11 +509,11 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Strip memory tags from tool_input and tool_response
-    const cleanedToolInput = tool_input !== undefined
+    const cleanedToolInput: string = tool_input !== undefined
       ? stripMemoryTagsFromJson(JSON.stringify(tool_input))
       : '{}';
 
-    const cleanedToolResponse = tool_response !== undefined
+    const cleanedToolResponse: string = tool_response !== undefined
       ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
       : '{}';
 
@@ -502,7 +549,8 @@ export class SessionRoutes extends BaseRouteHandler {
    * Checks privacy, queues summarize request for SDK agent
    */
   private handleSummarizeByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, last_assistant_message } = req.body;
+    const body = req.body as SummarizeByClaudeIdBody;
+    const { contentSessionId, last_assistant_message } = body;
 
     if (!contentSessionId) {
       this.badRequest(res, 'Missing contentSessionId'); return;
@@ -552,12 +600,13 @@ export class SessionRoutes extends BaseRouteHandler {
    * Returns: { sessionDbId, promptNumber, skipped: boolean, reason?: string }
    */
   private handleSessionInitByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, project, prompt } = req.body;
+    const body = req.body as SessionInitByClaudeIdBody;
+    const { contentSessionId, project, prompt } = body;
 
     logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {
       contentSessionId,
       project,
-      prompt_length: prompt?.length
+      prompt_length: prompt.length
     });
 
     // Validate required parameters
@@ -573,7 +622,7 @@ export class SessionRoutes extends BaseRouteHandler {
     // Verify session creation with DB lookup
     const dbSession = store.getSessionById(sessionDbId);
     const isNewSession = !dbSession?.memory_session_id;
-    logger.info('SESSION', `CREATED | contentSessionId=${String(contentSessionId)} → sessionDbId=${String(sessionDbId)} | isNew=${String(isNewSession)} | project=${String(project)}`, {
+    logger.info('SESSION', `CREATED | contentSessionId=${contentSessionId} → sessionDbId=${String(sessionDbId)} | isNew=${String(isNewSession)} | project=${project}`, {
       sessionId: sessionDbId
     });
 
@@ -584,9 +633,9 @@ export class SessionRoutes extends BaseRouteHandler {
     // Debug-level alignment logs for detailed tracing
     const memorySessionId = dbSession?.memory_session_id || null;
     if (promptNumber > 1) {
-      logger.debug('HTTP', `[ALIGNMENT] DB Lookup Proof | contentSessionId=${String(contentSessionId)} → memorySessionId=${memorySessionId || '(not yet captured)'} | prompt#=${String(promptNumber)}`);
+      logger.debug('HTTP', `[ALIGNMENT] DB Lookup Proof | contentSessionId=${contentSessionId} → memorySessionId=${memorySessionId || '(not yet captured)'} | prompt#=${String(promptNumber)}`);
     } else {
-      logger.debug('HTTP', `[ALIGNMENT] New Session | contentSessionId=${String(contentSessionId)} | prompt#=${String(promptNumber)} | memorySessionId will be captured on first SDK response`);
+      logger.debug('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${String(promptNumber)} | memorySessionId will be captured on first SDK response`);
     }
 
     // Step 3: Strip privacy tags from prompt

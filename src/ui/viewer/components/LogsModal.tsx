@@ -137,7 +137,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
       if (!response.ok) {
         throw new Error(`Failed to fetch logs: ${response.statusText}`);
       }
-      const data = await response.json();
+      const data = await response.json() as { logs?: string };
       setLogs(data.logs || '');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');

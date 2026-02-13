@@ -25,9 +25,10 @@ const mockMode = {
 
 // Use spyOn for all dependencies to avoid affecting other test files
 // spyOn restores automatically, unlike mock.module which persists
-let loadFromFileSpy: ReturnType<typeof vi.spyOn>;
-let getSpy: ReturnType<typeof vi.spyOn>;
-let modeManagerSpy: ReturnType<typeof vi.spyOn>;
+import type { MockInstance } from 'vitest';
+let loadFromFileSpy: MockInstance;
+let getSpy: MockInstance;
+let modeManagerSpy: MockInstance;
 
 describe('GeminiAgent', () => {
   let agent: GeminiAgent;
@@ -193,7 +194,7 @@ describe('GeminiAgent', () => {
 
     await agent.startSession(session);
 
-    const body = JSON.parse((vi.mocked(global.fetch).mock.calls[0][1] as RequestInit).body as string);
+    const body = JSON.parse((vi.mocked(global.fetch).mock.calls[0][1] as RequestInit).body as string) as { contents: Array<{ role: string }> };
     expect(body.contents).toHaveLength(3);
     expect(body.contents[0].role).toBe('user');
     expect(body.contents[1].role).toBe('model');

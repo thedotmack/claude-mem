@@ -40,7 +40,7 @@ export interface CursorMcpConfig {
 export function readCursorRegistry(registryFile: string): CursorProjectRegistry {
   try {
     if (!existsSync(registryFile)) return {};
-    return JSON.parse(readFileSync(registryFile, 'utf-8'));
+    return JSON.parse(readFileSync(registryFile, 'utf-8')) as CursorProjectRegistry;
   } catch (error) {
     logger.error('CONFIG', 'Failed to read Cursor registry, using empty registry', {
       file: registryFile,
@@ -147,7 +147,7 @@ export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: str
   let config: CursorMcpConfig = { mcpServers: {} };
   if (existsSync(mcpJsonPath)) {
     try {
-      config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+      config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as CursorMcpConfig;
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
       if (!config.mcpServers) {
         config.mcpServers = {};
@@ -178,7 +178,7 @@ export function removeMcpConfig(mcpJsonPath: string): void {
   if (!existsSync(mcpJsonPath)) return;
 
   try {
-    const config: CursorMcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+    const config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as CursorMcpConfig;
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
     if (config.mcpServers && config.mcpServers['claude-mem']) {
       delete config.mcpServers['claude-mem'];
@@ -219,7 +219,7 @@ export function jsonGet(json: Record<string, unknown>, field: string, fallback: 
   if (arrayAccess) {
     const arr = json[arrayAccess.field];
     if (!Array.isArray(arr)) return fallback;
-    const value = arr[arrayAccess.index];
+    const value: unknown = arr[arrayAccess.index];
     if (value === undefined || value === null) return fallback;
     return String(value);
   }

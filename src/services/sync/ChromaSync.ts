@@ -237,10 +237,10 @@ export class ChromaSync {
     const documents: ChromaDocument[] = [];
 
     // Parse JSON fields
-    const facts = obs.facts ? JSON.parse(obs.facts) : [];
-    const concepts = obs.concepts ? JSON.parse(obs.concepts) : [];
-    const files_read = obs.files_read ? JSON.parse(obs.files_read) : [];
-    const files_modified = obs.files_modified ? JSON.parse(obs.files_modified) : [];
+    const facts: string[] = obs.facts ? JSON.parse(obs.facts) as string[] : [];
+    const concepts: string[] = obs.concepts ? JSON.parse(obs.concepts) as string[] : [];
+    const files_read: string[] = obs.files_read ? JSON.parse(obs.files_read) as string[] : [];
+    const files_modified: string[] = obs.files_modified ? JSON.parse(obs.files_modified) as string[] : [];
 
     const baseMetadata: Record<string, string | number> = {
       sqlite_id: obs.id,
@@ -285,13 +285,13 @@ export class ChromaSync {
     }
 
     // Each fact as separate document
-    facts.forEach((fact: string, index: number) => {
+    for (const [index, fact] of facts.entries()) {
       documents.push({
         id: `obs_${String(obs.id)}_fact_${String(index)}`,
         document: fact,
         metadata: { ...baseMetadata, field_type: 'fact', fact_index: index }
       });
-    });
+    }
 
     return documents;
   }

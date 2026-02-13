@@ -102,7 +102,7 @@ export async function httpShutdown(port: number): Promise<boolean> {
 export function getInstalledPluginVersion(): string {
   const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
   const packageJsonPath = path.join(marketplaceRoot, 'package.json');
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version: string };
   return packageJson.version;
 }
 
