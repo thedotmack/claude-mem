@@ -1,5 +1,5 @@
 import { writeFile } from "fs/promises";
-import { basename, join } from "path";
+import { join } from "path";
 
 // Minimal type declarations for the OpenClaw Plugin SDK.
 // These match the real OpenClawPluginApi provided by the gateway at runtime.
@@ -164,6 +164,7 @@ interface ClaudeMemPluginConfig {
     enabled?: boolean;
     channel?: string;
     to?: string;
+    botToken?: string;
   };
 }
 
@@ -305,12 +306,44 @@ const CHANNEL_SEND_MAP: Record<string, { namespace: string; functionName: string
   line: { namespace: "line", functionName: "sendMessageLine" },
 };
 
+async function sendDirectTelegram(
+  botToken: string,
+  chatId: string,
+  text: string,
+  logger: PluginLogger
+): Promise<void> {
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: "Markdown",
+      }),
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      logger.warn(`[claude-mem] Direct Telegram send failed (${response.status}): ${body}`);
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`[claude-mem] Direct Telegram send error: ${message}`);
+  }
+}
+
 function sendToChannel(
   api: OpenClawPluginApi,
   channel: string,
   to: string,
-  text: string
+  text: string,
+  botToken?: string
 ): Promise<void> {
+  // If a dedicated bot token is provided for Telegram, send directly
+  if (botToken && channel === "telegram") {
+    return sendDirectTelegram(botToken, to, text, api.logger);
+  }
+
   const mapping = CHANNEL_SEND_MAP[channel];
   if (!mapping) {
     api.logger.warn(`[claude-mem] Unsupported channel type: ${channel}`);
@@ -346,7 +379,8 @@ async function connectToSSEStream(
   channel: string,
   to: string,
   abortController: AbortController,
-  setConnectionState: (state: ConnectionState) => void
+  setConnectionState: (state: ConnectionState) => void,
+  botToken?: string
 ): Promise<void> {
   let backoffMs = 1000;
   const maxBackoffMs = 30000;
@@ -407,7 +441,7 @@ async function connectToSSEStream(
             if (parsed.type === "new_observation" && parsed.observation) {
               const event = parsed as SSENewObservationEvent;
               const message = formatObservationMessage(event.observation);
-              await sendToChannel(api, channel, to, message);
+              await sendToChannel(api, channel, to, message, botToken);
             }
           } catch (parseError: unknown) {
             const errorMessage = parseError instanceof Error ? parseError.message : String(parseError);
@@ -464,12 +498,16 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     return sessionIds.get(key)!;
   }
 
-  async function syncMemoryToWorkspace(workspaceDir: string): Promise<void> {
-    // Derive project name from workspace directory (matches Claude Code's getProjectName logic)
-    const workspaceProject = basename(workspaceDir) || baseProjectName;
+  async function syncMemoryToWorkspace(workspaceDir: string, ctx?: EventContext): Promise<void> {
+    // Include both the base project and agent-scoped project (e.g. "openclaw" + "openclaw-main")
+    const projects = [baseProjectName];
+    const agentProject = ctx ? getProjectName(ctx) : null;
+    if (agentProject && agentProject !== baseProjectName) {
+      projects.push(agentProject);
+    }
     const contextText = await workerGetText(
       workerPort,
-      `/api/context/inject?projects=${encodeURIComponent(workspaceProject)}`,
+      `/api/context/inject?projects=${encodeURIComponent(projects.join(","))}`,
       api.logger
     );
     if (contextText && contextText.trim().length > 0) {
@@ -547,7 +585,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
     // Sync MEMORY.md before agent runs (provides context to agent)
     if (syncMemoryFile && ctx.workspaceDir) {
-      await syncMemoryToWorkspace(ctx.workspaceDir);
+      await syncMemoryToWorkspace(ctx.workspaceDir, ctx);
     }
   });
 
@@ -582,7 +620,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
     const workspaceDir = ctx.workspaceDir || workspaceDirsBySessionKey.get(ctx.sessionKey || "default");
     if (syncMemoryFile && workspaceDir) {
-      syncMemoryToWorkspace(workspaceDir);
+      syncMemoryToWorkspace(workspaceDir, ctx);
     }
   });
 
@@ -681,7 +719,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         feedConfig.channel,
         feedConfig.to,
         sseAbortController,
-        (state) => { connectionState = state; }
+        (state) => { connectionState = state; },
+        feedConfig.botToken
       );
     },
     stop: async (_ctx) => {
