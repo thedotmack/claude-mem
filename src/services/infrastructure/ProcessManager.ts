@@ -291,11 +291,15 @@ export function spawnDaemon(
     const execPath = process.execPath;
     const script = scriptPath;
 
-    // Build environment variable assignments for PowerShell
-    // This fixes a bug where WMIC silently dropped env vars
-    const envPairs = Object.entries(env)
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- process.env values can be undefined at runtime
-      .filter(([_k, v]) => v !== undefined)
+    // Only set env vars that are NEW or DIFFERENT from the parent environment.
+    // Start-Process inherits the parent's environment automatically.
+    // Previously we serialized ALL of process.env (~100+ vars), exceeding
+    // Windows' ~8191 char command line limit and causing silent spawn failures.
+    const newEnvVars: Record<string, string> = {
+      CLAUDE_MEM_WORKER_PORT: String(port),
+      ...extraEnv
+    };
+    const envPairs = Object.entries(newEnvVars)
       .map(([k, v]) => `$env:${k}='${v.replace(/'/g, "''")}'`)
       .join('; ');
 
