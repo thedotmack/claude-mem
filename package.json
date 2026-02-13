@@ -114,6 +114,7 @@
     "@types/dompurify": "^3.0.5",
     "@types/express": "^4.17.21",
     "@types/node": "^20.0.0",
+    "@types/proper-lockfile": "^4.1.4",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "esbuild": "^0.27.2",
