@@ -336,7 +336,16 @@ export class WorkerService {
     const host = getWorkerHost();
 
     // Start HTTP server FIRST - make port available immediately
-    await this.server.listen(port, host);
+    // If port is already bound, exit immediately (another worker won the race)
+    try {
+      await this.server.listen(port, host);
+    } catch (error: any) {
+      if (error.code === 'EADDRINUSE') {
+        logger.info('SYSTEM', 'Port already bound by another worker — exiting', { port });
+        process.exit(0);
+      }
+      throw error;
+    }
 
     // Worker writes its own PID - reliable on all platforms
     // This happens after listen() succeeds, ensuring the worker is actually ready
