@@ -87,6 +87,35 @@ try {
     { stdio: 'inherit' }
   );
 
+  // WSL: also sync to Windows cache so Windows Claude Code picks up changes
+  if (process.env.WSL_DISTRO_NAME || existsSync('/proc/sys/fs/binfmt_misc/WSLInterop')) {
+    // Resolve Windows home via cmd.exe to handle username mismatches between WSL and Windows
+    let winHome;
+    try {
+      winHome = execSync('cmd.exe /C "echo %USERPROFILE%" 2>/dev/null', { encoding: 'utf-8' }).trim();
+      // Convert Windows path (C:\Users\X) to WSL mount (/mnt/c/Users/X)
+      winHome = winHome.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, drive) => `/mnt/${drive.toLowerCase()}`);
+    } catch {
+      winHome = null;
+    }
+    const winCachePath = winHome
+      ? path.join(winHome, '.claude', 'plugins', 'cache', 'doublefx', 'claude-mem', version)
+      : null;
+    if (winCachePath && existsSync(path.dirname(winCachePath))) {
+      console.log('Syncing to Windows cache (WSL detected)...');
+      execSync(
+        `rsync -av --delete --exclude=node_modules plugin/ "${winCachePath}/"`,
+        { stdio: 'inherit' }
+      );
+      // Install deps in Windows cache too
+      console.log('Installing dependencies in Windows cache...');
+      execSync(
+        `cd "${winCachePath}" && npm install --production`,
+        { stdio: 'inherit' }
+      );
+    }
+  }
+
   console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 
   // Trigger worker restart after file sync
