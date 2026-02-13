@@ -86,25 +86,15 @@ export class ChromaSync {
   private readonly VECTOR_DB_DIR: string;
   private readonly BATCH_SIZE = 100;
 
-  // Windows: Chroma disabled due to MCP SDK spawning console popups
-  // See: https://github.com/anthropics/claude-mem/issues/675
-  // Will be re-enabled when we migrate to persistent HTTP server
-  private readonly disabled: boolean;
+  // Windows popup concern resolved: the worker daemon starts with -WindowStyle Hidden,
+  // so child processes (uvx/chroma-mcp) inherit the hidden console and don't create new windows.
+  // MCP SDK's StdioClientTransport uses shell:false and no detached flag, so console is inherited.
+  private readonly disabled: boolean = false;
 
   constructor(project: string) {
     this.project = project;
     this.collectionName = `cm__${project}`;
     this.VECTOR_DB_DIR = path.join(os.homedir(), '.claude-mem', 'vector-db');
-
-    // Disable on Windows to prevent console popups from MCP subprocess spawning
-    // The MCP SDK's StdioClientTransport spawns Python processes that create visible windows
-    this.disabled = process.platform === 'win32';
-    if (this.disabled) {
-      logger.warn('CHROMA_SYNC', 'Vector search disabled on Windows (prevents console popups)', {
-        project: this.project,
-        reason: 'MCP SDK subprocess spawning causes visible console windows'
-      });
-    }
   }
 
   /**
@@ -204,7 +194,6 @@ export class ChromaSync {
       // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
       const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
-      const isWindows = process.platform === 'win32';
 
       // Get combined SSL certificate bundle for Zscaler/corporate proxy environments
       const combinedCertPath = this.getCombinedCertPath();
@@ -233,12 +222,9 @@ export class ChromaSync {
         });
       }
 
-      // CRITICAL: On Windows, try to hide console window to prevent PowerShell popups
-      // Note: windowsHide may not be supported by MCP SDK's StdioClientTransport
-      if (isWindows) {
-        transportOptions.windowsHide = true;
-        logger.debug('CHROMA_SYNC', 'Windows detected, attempting to hide console window', { project: this.project });
-      }
+      // Note: windowsHide is not needed here because the worker daemon starts with
+      // -WindowStyle Hidden, so child processes inherit the hidden console.
+      // The MCP SDK ignores custom windowsHide anyway (overridden internally).
 
       this.transport = new StdioClientTransport(transportOptions);
 
