@@ -1,5 +1,5 @@
 import { writeFile } from "fs/promises";
-import { join } from "path";
+import { basename, join } from "path";
 
 // Minimal type declarations for the OpenClaw Plugin SDK.
 // These match the real OpenClawPluginApi provided by the gateway at runtime.
@@ -67,13 +67,27 @@ interface SessionEndEvent {
   durationMs?: number;
 }
 
+interface MessageReceivedEvent {
+  from: string;
+  content: string;
+  timestamp?: number;
+  metadata?: Record<string, unknown>;
+}
+
 interface EventContext {
   sessionKey?: string;
   workspaceDir?: string;
   agentId?: string;
 }
 
+interface MessageContext {
+  channelId: string;
+  accountId?: string;
+  conversationId?: string;
+}
+
 type EventCallback<T> = (event: T, ctx: EventContext) => void | Promise<void>;
+type MessageEventCallback<T> = (event: T, ctx: MessageContext) => void | Promise<void>;
 
 interface OpenClawPluginApi {
   id: string;
@@ -100,6 +114,7 @@ interface OpenClawPluginApi {
       ((event: "agent_end", callback: EventCallback<AgentEndEvent>) => void) &
       ((event: "session_start", callback: EventCallback<SessionStartEvent>) => void) &
       ((event: "session_end", callback: EventCallback<SessionEndEvent>) => void) &
+      ((event: "message_received", callback: MessageEventCallback<MessageReceivedEvent>) => void) &
       ((event: "after_compaction", callback: EventCallback<AfterCompactionEvent>) => void) &
       ((event: "gateway_start", callback: EventCallback<Record<string, never>>) => void);
   runtime: {
@@ -158,7 +173,6 @@ interface ClaudeMemPluginConfig {
 
 const MAX_SSE_BUFFER_SIZE = 1024 * 1024; // 1MB
 const DEFAULT_WORKER_PORT = 37777;
-const TOOL_RESULT_MAX_LENGTH = 1000;
 
 // Agent emoji map for observation feed messages.
 // When creating a new OpenClaw agent, add its agentId and emoji here.
@@ -451,9 +465,11 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   }
 
   async function syncMemoryToWorkspace(workspaceDir: string): Promise<void> {
+    // Derive project name from workspace directory (matches Claude Code's getProjectName logic)
+    const workspaceProject = basename(workspaceDir) || baseProjectName;
     const contextText = await workerGetText(
       workerPort,
-      `/api/context/inject?projects=${encodeURIComponent(baseProjectName)}`,
+      `/api/context/inject?projects=${encodeURIComponent(workspaceProject)}`,
       api.logger
     );
     if (contextText && contextText.trim().length > 0) {
@@ -483,6 +499,20 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   });
 
   // ------------------------------------------------------------------
+  // Event: message_received — capture inbound user prompts from channels
+  // ------------------------------------------------------------------
+  api.on("message_received", async (event, ctx) => {
+    const sessionKey = ctx.conversationId || ctx.channelId || "default";
+    const contentSessionId = getContentSessionId(sessionKey);
+
+    await workerPost(workerPort, "/api/sessions/init", {
+      contentSessionId,
+      project: baseProjectName,
+      prompt: event.content || "[media prompt]",
+    }, api.logger);
+  });
+
+  // ------------------------------------------------------------------
   // Event: after_compaction — re-init session after context compaction
   // ------------------------------------------------------------------
   api.on("after_compaction", async (_event, ctx) => {
@@ -500,7 +530,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // ------------------------------------------------------------------
   // Event: before_agent_start — init session + sync MEMORY.md + track workspace
   // ------------------------------------------------------------------
-  api.on("before_agent_start", async (_event, ctx) => {
+  api.on("before_agent_start", async (event, ctx) => {
     // Track workspace dir so tool_result_persist can sync MEMORY.md later
     if (ctx.workspaceDir) {
       workspaceDirsBySessionKey.set(ctx.sessionKey || "default", ctx.workspaceDir);
@@ -512,7 +542,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     await workerPost(workerPort, "/api/sessions/init", {
       contentSessionId,
       project: getProjectName(ctx),
-      prompt: ctx.sessionKey || "agent run",
+      prompt: event.prompt || "agent run",
     }, api.logger);
 
     // Sync MEMORY.md before agent runs (provides context to agent)
@@ -527,20 +557,18 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   api.on("tool_result_persist", (event, ctx) => {
     api.logger.info(`[claude-mem] tool_result_persist fired: tool=${event.toolName ?? "unknown"} agent=${ctx.agentId ?? "none"} session=${ctx.sessionKey ?? "none"}`);
     const toolName = event.toolName;
-    if (!toolName || toolName.startsWith("memory_")) return;
+    if (!toolName) return;
 
     const contentSessionId = getContentSessionId(ctx.sessionKey);
 
-    // Extract result text from message content
+    // Extract result text from all content blocks
     let toolResponseText = "";
     const content = event.message?.content;
     if (Array.isArray(content)) {
-      const textBlock = content.find(
-        (block) => block.type === "tool_result" || block.type === "text"
-      );
-      if (textBlock && "text" in textBlock) {
-        toolResponseText = String(textBlock.text).slice(0, TOOL_RESULT_MAX_LENGTH);
-      }
+      toolResponseText = content
+        .filter((block) => (block.type === "tool_result" || block.type === "text") && "text" in block)
+        .map((block) => String(block.text))
+        .join("\n");
     }
 
     // Fire-and-forget: send observation + sync MEMORY.md in parallel
