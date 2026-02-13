@@ -39,7 +39,7 @@ export async function acquireSpawnLock<T>(
     release = await lockfile.lock(lockPath, {
       realpath: false,
       retries: 0,       // Don't wait — if locked, fall back immediately
-      stale: 30_000     // Auto-release after 30s (handles crashed processes)
+      stale: 10_000     // Auto-release after 10s (handles crashed processes)
     });
   } catch (err: any) {
     if (err.code === 'ELOCKED') {

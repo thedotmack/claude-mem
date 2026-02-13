@@ -1055,19 +1055,8 @@ export class ChromaSync {
   }
 
   async close(): Promise<void> {
-    // Always attempt cleanup — don't skip based on state flags alone.
-    // Error handlers may have set connected=false while subprocess still runs.
-    const t = this.transport;
-    const c = this.client;
-
-    this.connected = false;
-    this.client = null;
-    this.transport = null;
+    await this.safeResetConnection();
     this.connectionPromise = null;
-
-    if (c) { try { await c.close(); } catch {} }
-    if (t) { try { await t.close(); } catch {} }
-
     logger.info('CHROMA_SYNC', 'Chroma client and subprocess closed', { project: this.project });
   }
 }

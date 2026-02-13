@@ -350,7 +350,11 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
 const MAX_CHROMA_PROCESSES = 2;
 
 export async function cleanupExcessChromaProcesses(): Promise<void> {
-  if (process.platform === 'win32') return;
+  if (process.platform === 'win32') {
+    // Windows cleanup relies on age-based cleanupOrphanedProcesses() above
+    // which uses PowerShell Get-CimInstance. Count-based cleanup not yet implemented.
+    return;
+  }
 
   try {
     const { stdout } = await execAsync(
