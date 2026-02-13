@@ -1,9 +1,9 @@
 /**
  * SQLite Compatibility Layer Tests
  *
- * TDD tests for sqlite-compat.ts wrapper that maps bun:sqlite API to better-sqlite3.
- * Tests verify that the wrapper provides identical behavior to bun:sqlite for all
- * API patterns used in the codebase.
+ * TDD tests for the sqlite-compat.ts wrapper around better-sqlite3.
+ * Tests verify that the wrapper provides the expected Database API
+ * for all patterns used in the codebase.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -26,7 +26,7 @@ describe('sqlite-compat', () => {
       expect(db).toBeDefined();
     });
 
-    it('accepts bun:sqlite-style options without error', () => {
+    it('accepts create/readwrite options without error', () => {
       const db2 = new Database(':memory:', { create: true, readwrite: true });
       expect(db2).toBeDefined();
       db2.close();

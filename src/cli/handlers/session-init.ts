@@ -39,7 +39,7 @@ export const sessionInitHandler: EventHandler = {
         project,
         prompt
       })
-      // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
+      // No AbortSignal — worker service has its own timeouts
     });
 
     if (!initResponse.ok) {
@@ -82,7 +82,7 @@ export const sessionInitHandler: EventHandler = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber })
-        // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
+        // No AbortSignal — worker service has its own timeouts
       });
 
       if (!response.ok) {

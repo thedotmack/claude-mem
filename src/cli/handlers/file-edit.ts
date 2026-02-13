@@ -49,7 +49,7 @@ export const fileEditHandler: EventHandler = {
         tool_response: { success: true },
         cwd
       })
-      // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
+      // No AbortSignal — worker service has its own timeouts
     });
 
     if (!response.ok) {

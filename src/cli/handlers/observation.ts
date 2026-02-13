@@ -68,7 +68,7 @@ export const observationHandler: EventHandler = {
         tool_response: toolResponse,
         cwd
       })
-      // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
+      // No AbortSignal — worker service has its own timeouts
     });
 
     if (!response.ok) {

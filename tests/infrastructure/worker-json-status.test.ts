@@ -38,11 +38,11 @@ interface ParsedStatusOutput {
 const WORKER_SCRIPT = path.join(import.meta.dirname, '../../plugin/scripts/worker-service.cjs');
 
 /**
- * Check if worker script is runnable with node (not still bundled for bun)
+ * Check if worker script is runnable with node
  */
 function isWorkerRunnable(): boolean {
   if (!existsSync(WORKER_SCRIPT)) return false;
-  // Check if the script still requires bun:sqlite (pre-migration build artifact)
+  // Verify the script is a valid Node.js bundle (not a stale build artifact)
   const content = readFileSync(WORKER_SCRIPT, 'utf-8');
   if (content.includes('bun:sqlite') || content.includes('#!/usr/bin/env bun')) return false;
   return true;

@@ -33,8 +33,7 @@ export const contextHandler: EventHandler = {
     const projectsParam = context.allProjects.join(',');
     const url = `http://127.0.0.1:${String(port)}/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
 
-    // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
-    // Worker service has its own timeouts, so client-side timeout is redundant
+    // Worker service has its own timeouts, so client-side timeout is not needed
     const response = await fetch(url);
 
     if (!response.ok) {

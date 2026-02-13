@@ -48,7 +48,7 @@ export const summarizeHandler: EventHandler = {
         contentSessionId: sessionId,
         last_assistant_message: lastAssistantMessage
       })
-      // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
+      // No AbortSignal — worker service has its own timeouts
     });
 
     if (!response.ok) {

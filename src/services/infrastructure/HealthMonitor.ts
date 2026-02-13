@@ -19,7 +19,7 @@ import { logger } from '../../utils/logger.js';
  */
 export async function isPortInUse(port: number): Promise<boolean> {
   try {
-    // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
+    // No AbortSignal.timeout — worker service has its own timeouts
     const response = await fetch(`http://127.0.0.1:${String(port)}/api/health`);
     return response.ok;
   } catch {
@@ -42,7 +42,7 @@ export async function waitForHealth(port: number, timeoutMs: number = 30000): Pr
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
+      // No AbortSignal.timeout — worker service has its own timeouts
       const response = await fetch(`http://127.0.0.1:${String(port)}/api/health`);
       if (response.ok) return true;
     } catch (error) {
@@ -74,7 +74,7 @@ export async function waitForPortFree(port: number, timeoutMs: number = 10000): 
  */
 export async function httpShutdown(port: number): Promise<boolean> {
   try {
-    // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
+    // No AbortSignal.timeout — worker service has its own timeouts
     const response = await fetch(`http://127.0.0.1:${String(port)}/api/admin/shutdown`, {
       method: 'POST'
     });

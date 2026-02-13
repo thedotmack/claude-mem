@@ -19,7 +19,7 @@ export const userMessageHandler: EventHandler = {
     const project = basename(input.cwd);
 
     // Fetch formatted context directly from worker API
-    // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
+    // No AbortSignal.timeout — worker service has its own timeouts
     const response = await fetch(
       `http://127.0.0.1:${String(port)}/api/context/inject?project=${encodeURIComponent(project)}&colors=true`,
       { method: 'GET' }

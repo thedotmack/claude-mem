@@ -1,17 +1,14 @@
 /**
  * SQLite Compatibility Layer
  *
- * Wraps better-sqlite3 to provide a bun:sqlite-compatible API.
- * This allows the codebase to work with Node.js instead of requiring Bun runtime.
+ * Wraps better-sqlite3 to provide a simplified Database API used throughout the codebase.
  *
- * API mapping:
- *   bun:sqlite db.run(sql)       → better-sqlite3 db.exec(sql)       [multi-statement DDL]
- *   bun:sqlite db.query(sql)     → better-sqlite3 db.prepare(sql)    [returns Statement]
- *   bun:sqlite new Database(path, {create, readwrite}) → better-sqlite3 new Database(path)
- *
- * APIs that are identical (no wrapping needed):
- *   db.prepare(sql).run/get/all(), db.transaction(), db.close(),
- *   stmt.run() returns { changes, lastInsertRowid }
+ * API:
+ *   db.run(sql)    — Execute multi-statement SQL (DDL, PRAGMA) via better-sqlite3 db.exec()
+ *   db.query(sql)  — Prepare a statement via better-sqlite3 db.prepare() [returns Statement]
+ *   db.prepare(sql) — Same as query(), direct pass-through to better-sqlite3
+ *   db.transaction(fn) — Create a transaction function
+ *   db.close()     — Close the database connection
  */
 
 import BetterSqlite3 from 'better-sqlite3';
@@ -21,14 +18,12 @@ export class Database {
 
   constructor(path: string, _options?: { create?: boolean; readwrite?: boolean }) {
     // better-sqlite3 creates read-write databases by default.
-    // The `create` and `readwrite` options from bun:sqlite map to defaults.
     this._db = new BetterSqlite3(path);
   }
 
   /**
    * Execute one or more SQL statements (DDL, PRAGMA, etc.)
-   * Maps bun:sqlite db.run(sql) which accepts multi-statement strings.
-   * better-sqlite3's db.exec() handles multi-statement SQL.
+   * Delegates to better-sqlite3's db.exec() which handles multi-statement SQL.
    */
   run(sql: string): void {
     this._db.exec(sql);
@@ -36,9 +31,7 @@ export class Database {
 
   /**
    * Prepare a single SQL statement for repeated execution.
-   * Maps bun:sqlite db.query(sql) which returns a Statement object.
-   * In bun:sqlite, query() and prepare() both return Statement objects
-   * with identical APIs (.run(), .get(), .all()).
+   * Returns a Statement object with .run(), .get(), .all() methods.
    */
   query(sql: string): BetterSqlite3.Statement {
     return this._db.prepare(sql);
@@ -46,7 +39,6 @@ export class Database {
 
   /**
    * Prepare a single SQL statement.
-   * Identical API between bun:sqlite and better-sqlite3.
    */
   prepare(sql: string): BetterSqlite3.Statement {
     return this._db.prepare(sql);
@@ -54,7 +46,6 @@ export class Database {
 
   /**
    * Create a transaction function.
-   * Identical API between bun:sqlite and better-sqlite3.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Generic constraint must be `any` to match better-sqlite3's Transaction type signature
   transaction<T extends (...args: any[]) => any>(fn: T): T {

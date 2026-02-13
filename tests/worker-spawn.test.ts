@@ -46,7 +46,7 @@ async function isPortInUse(port: number): Promise<boolean> {
  * Run worker CLI command and return stdout
  */
 function runWorkerCommand(command: string, env: Record<string, string> = {}): string {
-  const result = execSync(`bun "${WORKER_SCRIPT}" ${command}`, {
+  const result = execSync(`node "${WORKER_SCRIPT}" ${command}`, {
     env: { ...process.env, ...env },
     encoding: 'utf-8',
     timeout: 60000
