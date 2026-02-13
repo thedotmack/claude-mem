@@ -209,7 +209,6 @@ export class DatabaseManager {
  */
 export function getDatabase(): Database {
   if (!dbInstance) {
-    // eslint-disable-next-line @typescript-eslint/no-deprecated -- compatibility function wraps deprecated class
     throw new Error('Database not initialized. Call DatabaseManager.getInstance().initialize() first.');
   }
   return dbInstance;

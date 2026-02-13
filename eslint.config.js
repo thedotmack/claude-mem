@@ -78,6 +78,37 @@ export default tseslint.config(
     },
   },
 
+  // Layer 1b: Browser UI files — console is the only logging option
+  {
+    files: ['src/ui/**/*.ts', 'src/ui/**/*.tsx'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
+
+  // Layer 1c: CLI scripts and entry points — console is correct for user-facing output
+  {
+    files: ['src/bin/**/*.ts', 'src/cli/**/*.ts'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
+
+  // Layer 1d: Files where console usage is intentional (not convertible to logger)
+  {
+    files: [
+      'src/utils/logger.ts',                              // Logger itself uses console
+      'src/servers/mcp-server.ts',                         // MCP protocol stdout interception
+      'src/services/worker-service.ts',                    // CLI entry point with user-facing output
+      'src/services/sqlite/migrations.ts',                 // Migration progress runs before logger init
+      'src/services/integrations/CursorHooksInstaller.ts', // Standalone installer, user-facing output
+      'src/shared/SettingsDefaultsManager.ts',             // Avoids circular dependency with logger
+    ],
+    rules: {
+      'no-console': 'off',
+    },
+  },
+
   // Layer 2: Test files — relaxed for mocks/flexibility
   {
     files: ['tests/**/*.ts'],
