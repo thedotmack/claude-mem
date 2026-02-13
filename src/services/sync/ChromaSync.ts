@@ -107,11 +107,25 @@ class WindowsStdioTransport implements Transport {
       this.processBuffer();
     });
 
-    this.process.on('close', () => {
+    // Capture stderr for diagnostics (uvx install errors, Python tracebacks, etc.)
+    if (this.process.stderr) {
+      this.process.stderr.on('data', (chunk: Buffer) => {
+        const text = chunk.toString().trim();
+        if (text) {
+          logger.debug('CHROMA_SYNC', 'Chroma process stderr', { text: text.slice(0, 500) });
+        }
+      });
+    }
+
+    this.process.on('close', (code) => {
+      if (code !== null && code !== 0) {
+        logger.error('CHROMA_SYNC', 'Chroma process exited with error', { exitCode: code });
+      }
       this.onclose?.();
     });
 
     this.process.on('error', (error: Error) => {
+      logger.error('CHROMA_SYNC', 'Chroma process spawn error', { error: error.message });
       this.onerror?.(error);
     });
 
@@ -219,7 +233,7 @@ export class ChromaSync {
         // The MCP SDK's StdioClientTransport hardcodes windowsHide to only apply
         // in Electron environments, so we spawn the process ourselves.
         const child = spawn('uvx', chromaArgs, {
-          stdio: ['pipe', 'pipe', 'ignore'],
+          stdio: ['pipe', 'pipe', 'pipe'],
           windowsHide: true
         });
         this.transport = new WindowsStdioTransport(child);
