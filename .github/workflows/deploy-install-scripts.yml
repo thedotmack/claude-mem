@@ -16,6 +16,7 @@ jobs:
 
       - name: Copy install scripts to deploy directory
         run: |
+          mkdir -p install/public
           cp openclaw/install.sh install/public/openclaw.sh
 
       - name: Deploy to Vercel
