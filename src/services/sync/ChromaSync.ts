@@ -83,7 +83,7 @@ interface StoredUserPrompt {
  * The MCP SDK's StdioClientTransport hardcodes windowsHide to only apply in Electron
  * environments (via isElectron() check), causing visible console popups on Windows
  * when spawning chroma-mcp. This transport spawns the process ourselves with the
- * correct windowsHide flag and implements the MCP content-length framing protocol.
+ * correct windowsHide flag and implements newline-delimited JSON framing.
  */
 class WindowsStdioTransport implements Transport {
   private process: ChildProcess;
@@ -133,32 +133,22 @@ class WindowsStdioTransport implements Transport {
   }
 
   /**
-   * Process buffered data using content-length framing (MCP/LSP wire protocol).
-   * Format: Content-Length: <n>\r\n\r\n<json>
+   * Process buffered data using newline-delimited JSON framing.
+   * Each message is a complete JSON object followed by \n.
    */
   private processBuffer(): void {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional loop with break
     while (true) {
-      const headerEnd = this.readBuffer.indexOf('\r\n\r\n');
-      if (headerEnd === -1) break;
+      const newlineIdx = this.readBuffer.indexOf('\n');
+      if (newlineIdx === -1) break;
 
-      const header = this.readBuffer.subarray(0, headerEnd).toString();
-      const match = header.match(/Content-Length: (\d+)/);
-      if (!match) {
-        this.onerror?.(new Error(`Invalid header: ${header}`));
-        break;
-      }
+      const line = this.readBuffer.subarray(0, newlineIdx).toString().trim();
+      this.readBuffer = this.readBuffer.subarray(newlineIdx + 1);
 
-      const contentLength = parseInt(match[1], 10);
-      const messageStart = headerEnd + 4; // Skip \r\n\r\n
-
-      if (this.readBuffer.length < messageStart + contentLength) break;
-
-      const content = this.readBuffer.subarray(messageStart, messageStart + contentLength).toString();
-      this.readBuffer = this.readBuffer.subarray(messageStart + contentLength);
+      if (!line) continue; // Skip empty lines
 
       try {
-        const message = JSON.parse(content) as JSONRPCMessage;
+        const message = JSON.parse(line) as JSONRPCMessage;
         this.onmessage?.(message);
       } catch (error) {
         this.onerror?.(new Error(`Failed to parse message: ${error instanceof Error ? error.message : String(error)}`));
@@ -170,8 +160,7 @@ class WindowsStdioTransport implements Transport {
     const stdin = this.process.stdin;
     if (!stdin) return Promise.reject(new Error('stdin not available'));
 
-    const json = JSON.stringify(message);
-    const data = `Content-Length: ${String(Buffer.byteLength(json))}\r\n\r\n${json}`;
+    const data = JSON.stringify(message) + '\n';
 
     return new Promise<void>((resolve, reject) => {
       stdin.write(data, (error) => {
