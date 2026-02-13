@@ -112,7 +112,7 @@ class WindowsStdioTransport implements Transport {
       this.process.stderr.on('data', (chunk: Buffer) => {
         const text = chunk.toString().trim();
         if (text) {
-          logger.debug('CHROMA_SYNC', 'Chroma process stderr', { text: text.slice(0, 500) });
+          logger.warn('CHROMA_SYNC', 'Chroma process stderr', { text: text.slice(0, 500) });
         }
       });
     }
