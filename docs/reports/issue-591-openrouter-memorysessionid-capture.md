@@ -1,7 +1,7 @@
 # Issue #591: OpenRouter Agent Fails to Capture memorySessionId for Empty Prompt History Sessions
 
 **Report Date:** 2026-01-07
-**Issue:** [#591](https://github.com/thedotmack/claude-mem/issues/591)
+**Issue:** [#591](https://github.com/doublefx/claude-mem/issues/591)
 **Reporter:** cjdrilke
 **Environment:** claude-mem 9.0.0, Provider: openrouter, Model: xiaomi/mimo-v2-flash:free, Platform: linux
 

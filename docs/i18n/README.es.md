@@ -4,11 +4,11 @@
 
 <h1 align="center">
   <br>
-  <a href="https://github.com/thedotmack/claude-mem">
+  <a href="https://github.com/doublefx/claude-mem">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
+      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
     </picture>
   </a>
   <br>
@@ -57,7 +57,7 @@
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
   </a>
-  <a href="https://github.com/thedotmack/awesome-claude-code">
+  <a href="https://github.com/doublefx/awesome-claude-code">
     <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
   </a>
 </p>
@@ -65,9 +65,9 @@
 <p align="center">
   <a href="https://trendshift.io/repositories/15496" target="_blank">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge.svg">
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge.svg" alt="thedotmack/claude-mem | Trendshift" width="250" height="55"/>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg">
+      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/claude-mem | Trendshift" width="250" height="55"/>
     </picture>
   </a>
 </p>
@@ -75,9 +75,9 @@
 <br>
 
 <p align="center">
-  <a href="https://github.com/thedotmack/claude-mem">
+  <a href="https://github.com/doublefx/claude-mem">
     <picture>
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
+      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
     </picture>
   </a>
 </p>
@@ -103,7 +103,7 @@
 Inicia una nueva sesión de Claude Code en la terminal e ingresa los siguientes comandos:
 
 ```
-> /plugin marketplace add thedotmack/claude-mem
+> /plugin marketplace add doublefx/claude-mem
 
 > /plugin install claude-mem
 ```
@@ -253,7 +253,7 @@ Ver la **[Guía de Solución de Problemas](https://docs.claude-mem.ai/troublesho
 Crea reportes de errores completos con el generador automático:
 
 ```bash
-cd ~/.claude/plugins/marketplaces/thedotmack
+cd ~/.claude/plugins/marketplaces/doublefx
 npm run bug-report
 ```
 
@@ -275,7 +275,7 @@ Ver [Guía de Desarrollo](https://docs.claude-mem.ai/development) para el flujo 
 
 Este proyecto está licenciado bajo la **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-Copyright (C) 2025 Alex Newman (@thedotmack). Todos los derechos reservados.
+Copyright (C) 2025 Alex Newman (@doublefx). Todos los derechos reservados.
 
 Ver el archivo [LICENSE](LICENSE) para detalles completos.
 
@@ -293,9 +293,9 @@ Ver el archivo [LICENSE](LICENSE) para detalles completos.
 ## Soporte
 
 - **Documentación**: [docs/](docs/)
-- **Problemas**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
-- **Repositorio**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
-- **Autor**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
+- **Problemas**: [GitHub Issues](https://github.com/doublefx/claude-mem/issues)
+- **Repositorio**: [github.com/doublefx/claude-mem](https://github.com/doublefx/claude-mem)
+- **Autor**: Alex Newman ([@doublefx](https://github.com/doublefx))
 
 ---
 

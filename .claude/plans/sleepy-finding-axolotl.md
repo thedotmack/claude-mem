@@ -3,9 +3,9 @@
 ## Context
 
 The claude-mem plugin hooks run from Claude Code's **cache** directory
-(`~/.claude/plugins/cache/thedotmack/claude-mem/9.0.16/`) but `better-sqlite3`
+(`~/.claude/plugins/cache/doublefx/claude-mem/9.0.16/`) but `better-sqlite3`
 (the only external native dependency) is only installed in the **marketplace**
-directory (`~/.claude/plugins/marketplaces/thedotmack/`). Node.js module
+directory (`~/.claude/plugins/marketplaces/doublefx/`). Node.js module
 resolution from the cache path never reaches the marketplace's `node_modules`,
 causing `MODULE_NOT_FOUND` errors for every hook execution.
 

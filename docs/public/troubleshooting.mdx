@@ -128,7 +128,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 2. Install chromadb manually:
    ```bash
-   cd ~/.claude/plugins/marketplaces/thedotmack
+   cd ~/.claude/plugins/marketplaces/doublefx
    npm install chromadb
    ```
 
@@ -153,19 +153,19 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 1. Clear install cache:
    ```bash
-   rm ~/.claude/plugins/marketplaces/thedotmack/.install-version
+   rm ~/.claude/plugins/marketplaces/doublefx/.install-version
    ```
 
 2. Force reinstall:
    ```bash
-   cd ~/.claude/plugins/marketplaces/thedotmack
+   cd ~/.claude/plugins/marketplaces/doublefx
    npm install --force
    ```
 
 3. Check version marker:
    ```bash
-   cat ~/.claude/plugins/marketplaces/thedotmack/.install-version
-   cat ~/.claude/plugins/marketplaces/thedotmack/package.json | grep version
+   cat ~/.claude/plugins/marketplaces/doublefx/.install-version
+   cat ~/.claude/plugins/marketplaces/doublefx/package.json | grep version
    ```
 
 4. Restart Claude Code after manual install
@@ -571,7 +571,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 1. Manually install dependencies:
    ```bash
-   cd ~/.claude/plugins/marketplaces/thedotmack
+   cd ~/.claude/plugins/marketplaces/doublefx
    npm install
    ```
 
@@ -583,7 +583,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 3. Check package.json exists:
    ```bash
-   ls -la ~/.claude/plugins/marketplaces/thedotmack/package.json
+   ls -la ~/.claude/plugins/marketplaces/doublefx/package.json
    ```
 
 ## Database Issues
@@ -866,7 +866,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 1. Add marketplace first:
    ```bash
-   /plugin marketplace add thedotmack/claude-mem
+   /plugin marketplace add doublefx/claude-mem
    ```
 
 2. Then install:
@@ -876,7 +876,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 3. Verify installation:
    ```bash
-   ls -la ~/.claude/plugins/marketplaces/thedotmack/
+   ls -la ~/.claude/plugins/marketplaces/doublefx/
    ```
 
 ### Build Failures
@@ -1023,7 +1023,7 @@ If none of these solutions work:
    npm run worker:logs
    ```
 
-2. **Create issue**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
+2. **Create issue**: [GitHub Issues](https://github.com/doublefx/claude-mem/issues)
    - Include error messages
    - Include relevant logs
    - Include steps to reproduce

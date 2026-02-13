@@ -1,6 +1,6 @@
 # Technical Report: Issue #599 - Windows Drive Root 400 Error
 
-**Issue:** [#599](https://github.com/thedotmack/claude-mem/issues/599)
+**Issue:** [#599](https://github.com/doublefx/claude-mem/issues/599)
 **Title:** user-message-hook.js fails with 400 error when running from Windows drive root (C:\)
 **Author:** PakAbhishek
 **Created:** 2026-01-07
@@ -35,7 +35,7 @@ When running Claude Code from a Windows drive root directory (e.g., `C:\`), the 
 1. Error message on Claude Code startup when cwd is `C:\`:
    ```
    error: Failed to fetch context: 400
-         at C:\Users\achau\.claude\plugins\cache\thedotmack\claude-mem\9.0.0\scripts\user-message-hook.js:19:1339
+         at C:\Users\achau\.claude\plugins\cache\doublefx\claude-mem\9.0.0\scripts\user-message-hook.js:19:1339
    ```
 
 2. The error appears during the SessionStart hook phase

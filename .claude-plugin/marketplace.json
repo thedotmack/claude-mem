@@ -1,11 +1,11 @@
 {
-  "name": "thedotmack",
+  "name": "doublefx",
   "owner": {
-    "name": "Alex Newman"
+    "name": "doublefx"
   },
   "metadata": {
-    "description": "Plugins by Alex Newman (thedotmack)",
-    "homepage": "https://github.com/thedotmack/claude-mem"
+    "description": "Plugins by doublefx",
+    "homepage": "https://github.com/doublefx/claude-mem"
   },
   "plugins": [
     {

@@ -11,8 +11,8 @@ const { existsSync, readFileSync } = require('fs');
 const path = require('path');
 const os = require('os');
 
-const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
+const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'doublefx');
+const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'doublefx', 'claude-mem');
 
 function getCurrentBranch() {
   try {
@@ -61,13 +61,13 @@ function getPluginVersion() {
 console.log('Syncing to marketplace...');
 try {
   execSync(
-    'rsync -av --delete --exclude=.git --exclude=/.mcp.json ./ ~/.claude/plugins/marketplaces/thedotmack/',
+    'rsync -av --delete --exclude=.git --exclude=/.mcp.json ./ ~/.claude/plugins/marketplaces/doublefx/',
     { stdio: 'inherit' }
   );
 
   console.log('Running npm install in marketplace...');
   execSync(
-    'cd ~/.claude/plugins/marketplaces/thedotmack/ && npm install',
+    'cd ~/.claude/plugins/marketplaces/doublefx/ && npm install',
     { stdio: 'inherit' }
   );
 

@@ -2,7 +2,7 @@
  * BranchManager: Git branch detection and switching for beta feature toggle
  *
  * Enables users to switch between stable (main) and beta branches via the UI.
- * The installed plugin at ~/.claude/plugins/marketplaces/thedotmack/ is a git repo.
+ * The installed plugin at ~/.claude/plugins/marketplaces/doublefx/ is a git repo.
  */
 
 import { spawnSync } from 'child_process';
@@ -11,7 +11,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { logger } from '../../utils/logger.js';
 
-const INSTALLED_PLUGIN_PATH = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+const INSTALLED_PLUGIN_PATH = join(homedir(), '.claude', 'plugins', 'marketplaces', 'doublefx');
 
 /**
  * Validate branch name to prevent command injection

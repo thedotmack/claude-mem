@@ -1,6 +1,6 @@
 # Phase 03: Merge PR #827 - Bun Runner for Fresh Install
 
-**PR:** https://github.com/thedotmack/claude-mem/pull/827
+**PR:** https://github.com/doublefx/claude-mem/pull/827
 **Branch:** `fix/fresh-install-bun-path-818`
 **Status:** Merged to main (commit 99138203)
 **Review:** Approved by bayanoj330-dev

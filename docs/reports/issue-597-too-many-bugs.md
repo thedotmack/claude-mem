@@ -1,7 +1,7 @@
 # Issue #597: Too Many Bugs - Technical Analysis Report
 
 **Date:** 2026-01-07
-**Issue:** [#597](https://github.com/thedotmack/claude-mem/issues/597)
+**Issue:** [#597](https://github.com/doublefx/claude-mem/issues/597)
 **Author:** TullyMonster
 **Labels:** bug
 **Status:** Open

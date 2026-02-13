@@ -191,7 +191,7 @@ Generate hooks.json at install time with resolved absolute paths:
 
 ```json
 {
-  "command": "node \"C:\\Users\\username\\.claude\\plugins\\marketplaces\\thedotmack\\plugin\\scripts\\smart-install.js\""
+  "command": "node \"C:\\Users\\username\\.claude\\plugins\\marketplaces\\doublefx\\plugin\\scripts\\smart-install.js\""
 }
 ```
 
@@ -218,12 +218,12 @@ if (IS_WINDOWS) {
 
 2. **Check plugin installation:**
    ```powershell
-   dir $env:USERPROFILE\.claude\plugins\marketplaces\thedotmack\plugin\hooks
+   dir $env:USERPROFILE\.claude\plugins\marketplaces\doublefx\plugin\hooks
    ```
 
 3. **Test environment variable:**
    ```powershell
-   $env:CLAUDE_PLUGIN_ROOT = "$env:USERPROFILE\.claude\plugins\marketplaces\thedotmack\plugin"
+   $env:CLAUDE_PLUGIN_ROOT = "$env:USERPROFILE\.claude\plugins\marketplaces\doublefx\plugin"
    node "$env:CLAUDE_PLUGIN_ROOT\scripts\smart-install.js"
    ```
 

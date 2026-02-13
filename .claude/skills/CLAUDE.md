@@ -8,7 +8,7 @@ This directory contains skills **for developing and maintaining the claude-mem p
 - Used by developers working on claude-mem
 - Not included in the plugin distribution
 - Project-specific workflows (version bumps, release management, etc.)
-- Not synced to `~/.claude/plugins/marketplaces/thedotmack/`
+- Not synced to `~/.claude/plugins/marketplaces/doublefx/`
 
 **Plugin Skills** (`plugin/skills/`):
 - Released as part of the claude-mem plugin

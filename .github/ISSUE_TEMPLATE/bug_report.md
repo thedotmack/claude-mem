@@ -13,15 +13,15 @@ assignees: ''
 
 ```bash
 # Navigate to the plugin directory
-cd ~/.claude/plugins/marketplaces/thedotmack
+cd ~/.claude/plugins/marketplaces/doublefx
 
 # Run the bug report tool
 npm run bug-report
 ```
 
 **Plugin Paths:**
-- **macOS/Linux**: `~/.claude/plugins/marketplaces/thedotmack`
-- **Windows**: `%USERPROFILE%\.claude\plugins\marketplaces\thedotmack`
+- **macOS/Linux**: `~/.claude/plugins/marketplaces/doublefx`
+- **Windows**: `%USERPROFILE%\.claude\plugins\marketplaces\doublefx`
 
 **Features:**
 - 🌎 Auto-translates any language to English

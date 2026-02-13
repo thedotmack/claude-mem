@@ -1,6 +1,6 @@
 # Phase 02: Merge PR #820 - Health Check Endpoint Fix
 
-**PR:** https://github.com/thedotmack/claude-mem/pull/820
+**PR:** https://github.com/doublefx/claude-mem/pull/820
 **Branch:** `fix/health-check-endpoint-811`
 **Status:** Has conflicts, needs rebase
 **Review:** Approved by bayanoj330-dev

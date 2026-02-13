@@ -183,7 +183,7 @@ export async function collectDiagnostics(
     ".claude",
     "plugins",
     "marketplaces",
-    "thedotmack"
+    "doublefx"
   );
   const cwd = process.cwd();
   const isDevMode = cwd.includes("claude-mem") && !cwd.includes(".claude");

@@ -106,7 +106,7 @@ describe('HealthMonitor', () => {
 
       // waitForHealth uses /api/health (liveness), not /api/readiness
       // This is because hooks have 15-second timeout but full initialization can take 5+ minutes
-      // See: https://github.com/thedotmack/claude-mem/issues/811
+      // See: https://github.com/doublefx/claude-mem/issues/811
       const calls = fetchMock.mock.calls;
       expect(calls.length).toBeGreaterThan(0);
       expect(calls[0][0]).toBe('http://127.0.0.1:37777/api/health');

@@ -436,7 +436,7 @@ export class OpenAICompatAgent {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
+        'HTTP-Referer': siteUrl || 'https://github.com/doublefx/claude-mem',
         'X-Title': appName || 'claude-mem',
         'Content-Type': 'application/json',
       },

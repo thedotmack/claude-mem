@@ -1,7 +1,7 @@
 # Investigation Report: Issue #544 - mem-search Skill Hint Shown to Claude Code Users
 
 **Date:** 2026-01-05
-**Issue:** https://github.com/thedotmack/claude-mem/issues/544
+**Issue:** https://github.com/doublefx/claude-mem/issues/544
 **Author:** m.woelk (@neifgmbh)
 **Status:** Open
 
