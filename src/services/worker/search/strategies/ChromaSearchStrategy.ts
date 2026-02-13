@@ -18,7 +18,8 @@ import {
   ChromaMetadata,
   ObservationSearchResult,
   SessionSummarySearchResult,
-  UserPromptSearchResult
+  UserPromptSearchResult,
+  ThoughtSearchResult
 } from '../types.js';
 import { ChromaSync } from '../../../sync/ChromaSync.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
@@ -58,10 +59,12 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     const searchObservations = searchType === 'all' || searchType === 'observations';
     const searchSessions = searchType === 'all' || searchType === 'sessions';
     const searchPrompts = searchType === 'all' || searchType === 'prompts';
+    const searchThoughts = searchType === 'all' || searchType === 'thoughts';
 
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
+    let thoughts: ThoughtSearchResult[] = [];
 
     try {
       // Build Chroma where filter for doc_type
@@ -82,7 +85,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       if (chromaResults.ids.length === 0) {
         // No matches - this is the correct answer
         return {
-          results: { observations: [], sessions: [], prompts: [] },
+          results: { observations: [], sessions: [], prompts: [], thoughts: [] },
           usedChroma: true,
           fellBack: false,
           strategy: 'chroma'
@@ -99,7 +102,8 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       const categorized = this.categorizeByDocType(recentItems, {
         searchObservations,
         searchSessions,
-        searchPrompts
+        searchPrompts,
+        searchThoughts
       });
 
       // Step 4: Hydrate from SQLite with additional filters
@@ -124,14 +128,19 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         });
       }
 
+      if (categorized.thoughtIds.length > 0) {
+        thoughts = this.sessionStore.getThoughtsByIds(categorized.thoughtIds);
+      }
+
       logger.debug('SEARCH', 'ChromaSearchStrategy: Hydrated results', {
         observations: observations.length,
         sessions: sessions.length,
-        prompts: prompts.length
+        prompts: prompts.length,
+        thoughts: thoughts.length
       });
 
       return {
-        results: { observations, sessions, prompts },
+        results: { observations, sessions, prompts, thoughts },
         usedChroma: true,
         fellBack: false,
         strategy: 'chroma'
@@ -141,7 +150,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       logger.error('SEARCH', 'ChromaSearchStrategy: Search failed', {}, error as Error);
       // Return empty result - caller may try fallback strategy
       return {
-        results: { observations: [], sessions: [], prompts: [] },
+        results: { observations: [], sessions: [], prompts: [], thoughts: [] },
         usedChroma: false,
         fellBack: false,
         strategy: 'chroma'
@@ -160,6 +169,8 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         return { doc_type: 'session_summary' };
       case 'prompts':
         return { doc_type: 'user_prompt' };
+      case 'thoughts':
+        return { doc_type: 'thought' };
       default:
         return undefined;
     }
@@ -207,11 +218,13 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       searchObservations: boolean;
       searchSessions: boolean;
       searchPrompts: boolean;
+      searchThoughts: boolean;
     }
-  ): { obsIds: number[]; sessionIds: number[]; promptIds: number[] } {
+  ): { obsIds: number[]; sessionIds: number[]; promptIds: number[]; thoughtIds: number[] } {
     const obsIds: number[] = [];
     const sessionIds: number[] = [];
     const promptIds: number[] = [];
+    const thoughtIds: number[] = [];
 
     for (const item of items) {
       const docType = item.meta?.doc_type;
@@ -221,9 +234,11 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         sessionIds.push(item.id);
       } else if (docType === 'user_prompt' && options.searchPrompts) {
         promptIds.push(item.id);
+      } else if (docType === 'thought' && options.searchThoughts) {
+        thoughtIds.push(item.id);
       }
     }
 
-    return { obsIds, sessionIds, promptIds };
+    return { obsIds, sessionIds, promptIds, thoughtIds };
   }
 }

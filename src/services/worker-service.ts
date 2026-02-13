@@ -112,6 +112,7 @@ import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { ThoughtsRoutes } from './worker/http/routes/ThoughtsRoutes.js';
 
 // Process management for zombie cleanup (Issue #737)
 import { startOrphanReaper, reapOrphanedProcesses } from './worker/ProcessRegistry.js';
@@ -380,6 +381,14 @@ export class WorkerService {
       if (resetCount > 0) {
         logger.info('SYSTEM', `Reset ${resetCount} stale processing messages to pending`);
       }
+
+      // Register thoughts routes (needs SessionStore, ChromaSync, and SSE broadcaster)
+      this.server.registerRoutes(new ThoughtsRoutes(
+        this.dbManager.getSessionStore(),
+        this.dbManager.getChromaSync(),
+        this.sessionEventBroadcaster
+      ));
+      logger.info('WORKER', 'ThoughtsRoutes registered');
 
       // Initialize search services
       const formattingService = new FormattingService();
@@ -987,7 +996,7 @@ async function main() {
       if (!platform || !event) {
         console.error('Usage: claude-mem hook <platform> <event>');
         console.error('Platforms: claude-code, cursor, raw');
-        console.error('Events: context, session-init, observation, summarize, session-complete');
+        console.error('Events: context, session-init, observation, summarize, thoughts-extract, session-complete');
         process.exit(1);
       }
 

@@ -4,9 +4,11 @@
  */
 
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult, SearchOptions, DateRange } from '../../sqlite/types.js';
+import type { Thought } from '../../sqlite/thoughts/types.js';
 
 // Re-export base types for convenience
 export type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult, SearchOptions, DateRange };
+export type { Thought };
 
 /**
  * Constants used across search strategies
@@ -21,7 +23,7 @@ export const SEARCH_CONSTANTS = {
 /**
  * Document types stored in Chroma
  */
-export type ChromaDocType = 'observation' | 'session_summary' | 'user_prompt';
+export type ChromaDocType = 'observation' | 'session_summary' | 'user_prompt' | 'thought';
 
 /**
  * Chroma query result with typed metadata
@@ -52,9 +54,17 @@ export interface ChromaMetadata {
 }
 
 /**
+ * Search result type for thought (thinking block) documents
+ */
+export interface ThoughtSearchResult extends Thought {
+  rank?: number;
+  score?: number;
+}
+
+/**
  * Unified search result type for all document types
  */
-export type SearchResult = ObservationSearchResult | SessionSummarySearchResult | UserPromptSearchResult;
+export type SearchResult = ObservationSearchResult | SessionSummarySearchResult | UserPromptSearchResult | ThoughtSearchResult;
 
 /**
  * Search results container with categorized results
@@ -63,14 +73,15 @@ export interface SearchResults {
   observations: ObservationSearchResult[];
   sessions: SessionSummarySearchResult[];
   prompts: UserPromptSearchResult[];
+  thoughts: ThoughtSearchResult[];
 }
 
 /**
  * Extended search options for the search module
  */
 export interface ExtendedSearchOptions extends SearchOptions {
-  /** Type filter for search API (observations, sessions, prompts) */
-  searchType?: 'observations' | 'sessions' | 'prompts' | 'all';
+  /** Type filter for search API (observations, sessions, prompts, thoughts) */
+  searchType?: 'observations' | 'sessions' | 'prompts' | 'thoughts' | 'all';
   /** Observation type filter (decision, bugfix, feature, etc.) */
   obsType?: string | string[];
   /** Concept tags to filter by */
@@ -113,7 +124,7 @@ export interface StrategySearchResult {
  * Combined result type for timeline items
  */
 export interface CombinedResult {
-  type: 'observation' | 'session' | 'prompt';
+  type: 'observation' | 'session' | 'prompt' | 'thought';
   data: SearchResult;
   epoch: number;
   created_at: string;

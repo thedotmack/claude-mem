@@ -10,6 +10,7 @@ import {
   ObservationSearchResult,
   SessionSummarySearchResult,
   UserPromptSearchResult,
+  ThoughtSearchResult,
   CombinedResult,
   SearchResults
 } from './types.js';
@@ -29,7 +30,8 @@ export class ResultFormatter {
   ): string {
     const totalResults = results.observations.length +
       results.sessions.length +
-      results.prompts.length;
+      results.prompts.length +
+      (results.thoughts?.length || 0);
 
     if (totalResults === 0) {
       if (chromaFailed) {
@@ -50,7 +52,10 @@ export class ResultFormatter {
 
     // Build output with date/file grouping
     const lines: string[] = [];
-    lines.push(`Found ${totalResults} result(s) matching "${query}" (${results.observations.length} obs, ${results.sessions.length} sessions, ${results.prompts.length} prompts)`);
+    const thoughtCount = results.thoughts?.length || 0;
+    const countParts = [`${results.observations.length} obs`, `${results.sessions.length} sessions`, `${results.prompts.length} prompts`];
+    if (thoughtCount > 0) countParts.push(`${thoughtCount} thoughts`);
+    lines.push(`Found ${totalResults} result(s) matching "${query}" (${countParts.join(', ')})`);
     lines.push('');
 
     for (const [day, dayResults] of resultsByDate) {
@@ -92,9 +97,16 @@ export class ResultFormatter {
             );
             lines.push(formatted.row);
             lastTime = formatted.time;
-          } else {
+          } else if (result.type === 'prompt') {
             const formatted = this.formatPromptSearchRow(
               result.data as UserPromptSearchResult,
+              lastTime
+            );
+            lines.push(formatted.row);
+            lastTime = formatted.time;
+          } else if (result.type === 'thought') {
+            const formatted = this.formatThoughtSearchRow(
+              result.data as ThoughtSearchResult,
               lastTime
             );
             lines.push(formatted.row);
@@ -131,6 +143,12 @@ export class ResultFormatter {
         data: prompt,
         epoch: prompt.created_at_epoch,
         created_at: prompt.created_at
+      })),
+      ...(results.thoughts || []).map(thought => ({
+        type: 'thought' as const,
+        data: thought,
+        epoch: thought.created_at_epoch,
+        created_at: thought.created_at
       }))
     ];
   }
@@ -213,6 +231,52 @@ export class ResultFormatter {
       row: `| ${id} | ${timeDisplay} | ${icon} | ${title} | - |`,
       time
     };
+  }
+
+  /**
+   * Format thought as table row for search results
+   */
+  formatThoughtSearchRow(
+    thought: ThoughtSearchResult,
+    lastTime: string
+  ): { row: string; time: string } {
+    const id = `#T${thought.id}`;
+    const time = formatTime(thought.created_at_epoch);
+    const icon = '\uD83D\uDCA1'; // Light bulb emoji
+    const title = thought.thinking_summary
+      ? (thought.thinking_summary.length > 60
+        ? thought.thinking_summary.substring(0, 57) + '...'
+        : thought.thinking_summary)
+      : (thought.thinking_text.length > 60
+        ? thought.thinking_text.substring(0, 57) + '...'
+        : thought.thinking_text);
+
+    const timeDisplay = time === lastTime ? '"' : time;
+    const readTokens = Math.ceil(thought.thinking_text.length / CHARS_PER_TOKEN_ESTIMATE);
+
+    return {
+      row: `| ${id} | ${timeDisplay} | ${icon} | ${title} | ~${readTokens} |`,
+      time
+    };
+  }
+
+  /**
+   * Format thought as index row (with Work column)
+   */
+  formatThoughtIndex(thought: ThoughtSearchResult, _index: number): string {
+    const id = `#T${thought.id}`;
+    const time = formatTime(thought.created_at_epoch);
+    const icon = '\uD83D\uDCA1'; // Light bulb emoji
+    const title = thought.thinking_summary
+      ? (thought.thinking_summary.length > 60
+        ? thought.thinking_summary.substring(0, 57) + '...'
+        : thought.thinking_summary)
+      : (thought.thinking_text.length > 60
+        ? thought.thinking_text.substring(0, 57) + '...'
+        : thought.thinking_text);
+    const readTokens = Math.ceil(thought.thinking_text.length / CHARS_PER_TOKEN_ESTIMATE);
+
+    return `| ${id} | ${time} | ${icon} | ${title} | ~${readTokens} | - |`;
   }
 
   /**

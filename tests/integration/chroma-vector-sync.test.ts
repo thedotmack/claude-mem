@@ -121,6 +121,7 @@ describe('ChromaSync Vector Sync Integration', () => {
       expect(typeof sync.syncObservation).toBe('function');
       expect(typeof sync.syncSummary).toBe('function');
       expect(typeof sync.syncUserPrompt).toBe('function');
+      expect(typeof sync.syncThought).toBe('function');
     });
 
     it('should have query method', async () => {
@@ -210,6 +211,126 @@ describe('ChromaSync Vector Sync Integration', () => {
 
       // Verify method exists
       expect(typeof sync.syncUserPrompt).toBe('function');
+    });
+  });
+
+  describe('Thought sync interface', () => {
+    it('should accept Thought format', async () => {
+      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+      const sync = new ChromaSync(testProject);
+
+      // Verify method exists and accepts a Thought object
+      expect(typeof sync.syncThought).toBe('function');
+    });
+
+    it('should be a no-op when disabled (Windows)', async () => {
+      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+      const sync = new ChromaSync(testProject);
+
+      // If disabled, syncThought should return immediately without error
+      if (sync.isDisabled()) {
+        const thought = {
+          id: 1,
+          memory_session_id: 'session-123',
+          content_session_id: 'content-456',
+          project: 'test-project',
+          thinking_text: 'Let me analyze this problem...',
+          thinking_summary: 'Analysis of a problem',
+          message_index: 0,
+          prompt_number: 1,
+          created_at: new Date().toISOString(),
+          created_at_epoch: Math.floor(Date.now() / 1000)
+        };
+        // Should not throw when disabled
+        await expect(sync.syncThought(thought)).resolves.toBeUndefined();
+      }
+    });
+  });
+
+  describe('Batch thought sync interface', () => {
+    it('should have syncThoughts method', async () => {
+      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+      const sync = new ChromaSync(testProject);
+      expect(typeof sync.syncThoughts).toBe('function');
+    });
+
+    it('should return early for empty thoughts array', async () => {
+      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+      const sync = new ChromaSync(testProject);
+
+      // Empty array should not throw or attempt connection
+      await expect(sync.syncThoughts([])).resolves.toBeUndefined();
+    });
+
+    it('should be a no-op when disabled (Windows)', async () => {
+      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+      const sync = new ChromaSync(testProject);
+
+      if (sync.isDisabled()) {
+        const thoughts = [
+          {
+            id: 1,
+            memory_session_id: 'session-123',
+            content_session_id: 'content-456',
+            project: 'test-project',
+            thinking_text: 'First thought...',
+            thinking_summary: 'Summary 1',
+            message_index: 0,
+            prompt_number: 1,
+            created_at: new Date().toISOString(),
+            created_at_epoch: Math.floor(Date.now() / 1000)
+          },
+          {
+            id: 2,
+            memory_session_id: 'session-123',
+            content_session_id: 'content-456',
+            project: 'test-project',
+            thinking_text: 'Second thought...',
+            thinking_summary: 'Summary 2',
+            message_index: 1,
+            prompt_number: 1,
+            created_at: new Date().toISOString(),
+            created_at_epoch: Math.floor(Date.now() / 1000)
+          }
+        ];
+        await expect(sync.syncThoughts(thoughts)).resolves.toBeUndefined();
+      }
+    });
+  });
+
+  describe('Backfill includes thoughts', () => {
+    it('should include thoughts in getExistingChromaIds return type', async () => {
+      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+      const sync = new ChromaSync(testProject);
+
+      // Verify ensureBackfilled exists (it uses getExistingChromaIds internally)
+      expect(typeof sync.ensureBackfilled).toBe('function');
+    });
+
+    it('should include thought backfill in source code', async () => {
+      // Static analysis test: verify ensureBackfilled includes thought backfill logic
+      const sourceFile = await Bun.file(
+        new URL('../../src/services/sync/ChromaSync.ts', import.meta.url)
+      ).text();
+
+      // Verify thought backfill section exists
+      expect(sourceFile).toContain('Backfilling thoughts');
+      expect(sourceFile).toContain('thoughtDocs');
+      expect(sourceFile).toContain('existing.thoughts');
+      expect(sourceFile).toContain('getThoughts');
+    });
+
+    it('should track thought IDs in existing Chroma IDs', async () => {
+      // Static analysis test: verify getExistingChromaIds tracks thoughts
+      const sourceFile = await Bun.file(
+        new URL('../../src/services/sync/ChromaSync.ts', import.meta.url)
+      ).text();
+
+      // Verify thought ID tracking in getExistingChromaIds
+      expect(sourceFile).toContain("thoughts: Set<number>");
+      expect(sourceFile).toContain("thoughtIds");
+      expect(sourceFile).toContain("doc_type === 'thought'");
+      expect(sourceFile).toContain("meta.thought_id");
     });
   });
 

@@ -500,6 +500,78 @@ export const migration007: Migration = {
 
 
 /**
+ * Migration 008 - Add thoughts table and FTS5 search for thinking blocks
+ * Stores extracted thinking blocks from Claude Code session transcripts
+ */
+export const migration008: Migration = {
+  version: 8,
+  up: (db: Database) => {
+    // Thoughts table - stores extracted thinking blocks from transcripts
+    db.run(`
+      CREATE TABLE IF NOT EXISTS thoughts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_session_id TEXT NOT NULL,
+        content_session_id TEXT,
+        project TEXT NOT NULL,
+        thinking_text TEXT NOT NULL,
+        thinking_summary TEXT,
+        message_index INTEGER,
+        prompt_number INTEGER,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_thoughts_session ON thoughts(memory_session_id);
+      CREATE INDEX IF NOT EXISTS idx_thoughts_project ON thoughts(project);
+      CREATE INDEX IF NOT EXISTS idx_thoughts_epoch ON thoughts(created_at_epoch);
+    `);
+
+    // FTS5 virtual table for full-text search on thoughts
+    db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS thoughts_fts USING fts5(
+        thinking_text,
+        thinking_summary,
+        content='thoughts',
+        content_rowid='id'
+      );
+    `);
+
+    // Triggers to keep thoughts_fts in sync (following observations_fts pattern from migration006)
+    db.run(`
+      CREATE TRIGGER IF NOT EXISTS thoughts_ai AFTER INSERT ON thoughts BEGIN
+        INSERT INTO thoughts_fts(rowid, thinking_text, thinking_summary)
+        VALUES (new.id, new.thinking_text, new.thinking_summary);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS thoughts_ad AFTER DELETE ON thoughts BEGIN
+        INSERT INTO thoughts_fts(thoughts_fts, rowid, thinking_text, thinking_summary)
+        VALUES('delete', old.id, old.thinking_text, old.thinking_summary);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS thoughts_au AFTER UPDATE ON thoughts BEGIN
+        INSERT INTO thoughts_fts(thoughts_fts, rowid, thinking_text, thinking_summary)
+        VALUES('delete', old.id, old.thinking_text, old.thinking_summary);
+        INSERT INTO thoughts_fts(rowid, thinking_text, thinking_summary)
+        VALUES (new.id, new.thinking_text, new.thinking_summary);
+      END;
+    `);
+
+    console.log('✅ Created thoughts table with FTS5 full-text search');
+  },
+
+  down: (db: Database) => {
+    db.run(`
+      DROP TRIGGER IF EXISTS thoughts_ai;
+      DROP TRIGGER IF EXISTS thoughts_ad;
+      DROP TRIGGER IF EXISTS thoughts_au;
+      DROP TABLE IF EXISTS thoughts_fts;
+      DROP TABLE IF EXISTS thoughts;
+    `);
+  }
+};
+
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
@@ -509,5 +581,6 @@ export const migrations: Migration[] = [
   migration004,
   migration005,
   migration006,
-  migration007
+  migration007,
+  migration008
 ];

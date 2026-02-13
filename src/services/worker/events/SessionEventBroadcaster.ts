@@ -94,4 +94,25 @@ export class SessionEventBroadcaster {
     // Update processing status (queue depth changed)
     this.workerService.broadcastProcessingStatus();
   }
+
+  /**
+   * Broadcast that a thought (thinking block) was stored
+   * Sends a preview of the thought content to connected SSE clients
+   */
+  broadcastThoughtStored(thought: {
+    id: number;
+    project: string;
+    thinking_text: string;
+    created_at_epoch: number;
+  }): void {
+    this.sseBroadcaster.broadcast({
+      type: 'thought_stored',
+      thought: {
+        id: thought.id,
+        project: thought.project,
+        thinking_text_preview: thought.thinking_text.slice(0, 200),
+        created_at_epoch: thought.created_at_epoch
+      }
+    });
+  }
 }

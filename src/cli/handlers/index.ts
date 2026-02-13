@@ -13,12 +13,14 @@ import { summarizeHandler } from './summarize.js';
 import { userMessageHandler } from './user-message.js';
 import { fileEditHandler } from './file-edit.js';
 import { sessionCompleteHandler } from './session-complete.js';
+import { thoughtsExtractHandler } from './thoughts-extract.js';
 
 export type EventType =
   | 'context'           // SessionStart - inject context
   | 'session-init'      // UserPromptSubmit - initialize session
   | 'observation'       // PostToolUse - save observation
   | 'summarize'         // Stop - generate summary (phase 1)
+  | 'thoughts-extract'  // Stop - extract thinking blocks (phase 1.5)
   | 'session-complete'  // Stop - complete session (phase 2) - fixes #842
   | 'user-message'      // SessionStart (parallel) - display to user
   | 'file-edit';        // Cursor afterFileEdit
@@ -28,6 +30,7 @@ const handlers: Record<EventType, EventHandler> = {
   'session-init': sessionInitHandler,
   'observation': observationHandler,
   'summarize': summarizeHandler,
+  'thoughts-extract': thoughtsExtractHandler,
   'session-complete': sessionCompleteHandler,
   'user-message': userMessageHandler,
   'file-edit': fileEditHandler
@@ -64,3 +67,4 @@ export { summarizeHandler } from './summarize.js';
 export { userMessageHandler } from './user-message.js';
 export { fileEditHandler } from './file-edit.js';
 export { sessionCompleteHandler } from './session-complete.js';
+export { thoughtsExtractHandler } from './thoughts-extract.js';

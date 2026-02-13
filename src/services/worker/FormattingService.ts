@@ -4,6 +4,7 @@
  */
 
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
+import type { ThoughtSearchResult } from './search/types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { logger } from '../../utils/logger.js';
 
@@ -165,6 +166,30 @@ Tips:
 
     return {
       row: `| ${id} | ${timeDisplay} | ${icon} | ${title} | - |`,
+      time
+    };
+  }
+
+  /**
+   * Format thought as table row for search results (no Work column)
+   */
+  formatThoughtSearchRow(thought: ThoughtSearchResult, lastTime: string): { row: string; time: string } {
+    const id = `#T${thought.id}`;
+    const time = this.formatTime(thought.created_at_epoch);
+    const icon = '💡';
+    const title = thought.thinking_summary
+      ? (thought.thinking_summary.length > 60
+        ? thought.thinking_summary.substring(0, 57) + '...'
+        : thought.thinking_summary)
+      : (thought.thinking_text.length > 60
+        ? thought.thinking_text.substring(0, 57) + '...'
+        : thought.thinking_text);
+
+    const timeDisplay = time === lastTime ? '″' : time;
+    const readTokens = Math.ceil(thought.thinking_text.length / CHARS_PER_TOKEN_ESTIMATE);
+
+    return {
+      row: `| ${id} | ${timeDisplay} | ${icon} | ${title} | ~${readTokens} |`,
       time
     };
   }

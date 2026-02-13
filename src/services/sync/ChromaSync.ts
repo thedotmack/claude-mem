@@ -12,6 +12,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
+import { Thought } from '../sqlite/thoughts/types.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -642,13 +643,72 @@ export class ChromaSync {
   }
 
   /**
+   * Sync a single thought to Chroma
+   * Creates one document per thought with the thinking text as content
+   * No-op on Windows (Chroma disabled to prevent console popups)
+   */
+  async syncThought(thought: Thought): Promise<void> {
+    if (this.disabled) return;
+
+    const document: ChromaDocument = {
+      id: `thought_${thought.id}`,
+      document: thought.thinking_text,
+      metadata: {
+        doc_type: 'thought',
+        thought_id: thought.id,
+        memory_session_id: thought.memory_session_id,
+        project: thought.project,
+        message_index: thought.message_index ?? 0,
+        created_at_epoch: thought.created_at_epoch
+      }
+    };
+
+    logger.info('CHROMA_SYNC', 'Syncing thought', {
+      thoughtId: thought.id,
+      project: thought.project
+    });
+
+    await this.addDocuments([document]);
+  }
+
+  /**
+   * Sync multiple thoughts to Chroma in a single batch
+   * No-op on Windows (Chroma disabled to prevent console popups)
+   */
+  async syncThoughts(thoughts: Thought[]): Promise<void> {
+    if (this.disabled) return;
+    if (thoughts.length === 0) return;
+
+    const documents: ChromaDocument[] = thoughts.map(thought => ({
+      id: `thought_${thought.id}`,
+      document: thought.thinking_text,
+      metadata: {
+        doc_type: 'thought',
+        thought_id: thought.id,
+        memory_session_id: thought.memory_session_id,
+        project: thought.project,
+        message_index: thought.message_index ?? 0,
+        created_at_epoch: thought.created_at_epoch
+      }
+    }));
+
+    logger.info('CHROMA_SYNC', 'Syncing thoughts batch', {
+      count: thoughts.length,
+      project: thoughts[0].project
+    });
+
+    await this.addDocuments(documents);
+  }
+
+  /**
    * Fetch all existing document IDs from Chroma collection
-   * Returns Sets of SQLite IDs for observations, summaries, and prompts
+   * Returns Sets of SQLite IDs for observations, summaries, prompts, and thoughts
    */
   private async getExistingChromaIds(): Promise<{
     observations: Set<number>;
     summaries: Set<number>;
     prompts: Set<number>;
+    thoughts: Set<number>;
   }> {
     await this.ensureConnection();
 
@@ -662,6 +722,7 @@ export class ChromaSync {
     const observationIds = new Set<number>();
     const summaryIds = new Set<number>();
     const promptIds = new Set<number>();
+    const thoughtIds = new Set<number>();
 
     let offset = 0;
     const limit = 1000; // Large batches, metadata only = fast
@@ -704,6 +765,9 @@ export class ChromaSync {
               promptIds.add(meta.sqlite_id);
             }
           }
+          if (meta.doc_type === 'thought' && meta.thought_id) {
+            thoughtIds.add(meta.thought_id);
+          }
         }
 
         offset += limit;
@@ -723,10 +787,11 @@ export class ChromaSync {
       project: this.project,
       observations: observationIds.size,
       summaries: summaryIds.size,
-      prompts: promptIds.size
+      prompts: promptIds.size,
+      thoughts: thoughtIds.size
     });
 
-    return { observations: observationIds, summaries: summaryIds, prompts: promptIds };
+    return { observations: observationIds, summaries: summaryIds, prompts: promptIds, thoughts: thoughtIds };
   }
 
   /**
@@ -879,17 +944,57 @@ export class ChromaSync {
         });
       }
 
+      // Get all thoughts for this project
+      const allThoughts = db.getThoughts(this.project);
+
+      // Filter out thoughts already in Chroma
+      const missingThoughts = allThoughts.filter(t => !existing.thoughts.has(t.id));
+
+      logger.info('CHROMA_SYNC', 'Backfilling thoughts', {
+        project: this.project,
+        missing: missingThoughts.length,
+        existing: existing.thoughts.size,
+        total: allThoughts.length
+      });
+
+      // Format thought documents
+      const thoughtDocs: ChromaDocument[] = missingThoughts.map(thought => ({
+        id: `thought_${thought.id}`,
+        document: thought.thinking_text,
+        metadata: {
+          doc_type: 'thought',
+          thought_id: thought.id,
+          memory_session_id: thought.memory_session_id,
+          project: thought.project,
+          message_index: thought.message_index ?? 0,
+          created_at_epoch: thought.created_at_epoch
+        }
+      }));
+
+      // Sync in batches
+      for (let i = 0; i < thoughtDocs.length; i += this.BATCH_SIZE) {
+        const batch = thoughtDocs.slice(i, i + this.BATCH_SIZE);
+        await this.addDocuments(batch);
+
+        logger.debug('CHROMA_SYNC', 'Backfill progress', {
+          project: this.project,
+          progress: `${Math.min(i + this.BATCH_SIZE, thoughtDocs.length)}/${thoughtDocs.length}`
+        });
+      }
+
       logger.info('CHROMA_SYNC', 'Smart backfill complete', {
         project: this.project,
         synced: {
           observationDocs: allDocs.length,
           summaryDocs: summaryDocs.length,
-          promptDocs: promptDocs.length
+          promptDocs: promptDocs.length,
+          thoughtDocs: thoughtDocs.length
         },
         skipped: {
           observations: existing.observations.size,
           summaries: existing.summaries.size,
-          prompts: existing.prompts.size
+          prompts: existing.prompts.size,
+          thoughts: existing.thoughts.size
         }
       });
 

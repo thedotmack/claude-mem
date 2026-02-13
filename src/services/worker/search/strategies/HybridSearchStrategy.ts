@@ -101,7 +101,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
         observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
 
         return {
-          results: { observations, sessions: [], prompts: [] },
+          results: { observations, sessions: [], prompts: [], thoughts: [] },
           usedChroma: true,
           fellBack: false,
           strategy: 'hybrid'
@@ -115,7 +115,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       // Fall back to metadata-only results
       const results = this.sessionSearch.findByConcept(concept, filterOptions);
       return {
-        results: { observations: results, sessions: [], prompts: [] },
+        results: { observations: results, sessions: [], prompts: [], thoughts: [] },
         usedChroma: false,
         fellBack: true,
         strategy: 'hybrid'
@@ -166,7 +166,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
         observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
 
         return {
-          results: { observations, sessions: [], prompts: [] },
+          results: { observations, sessions: [], prompts: [], thoughts: [] },
           usedChroma: true,
           fellBack: false,
           strategy: 'hybrid'
@@ -179,7 +179,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       logger.error('SEARCH', 'HybridSearchStrategy: findByType failed', {}, error as Error);
       const results = this.sessionSearch.findByType(type as any, filterOptions);
       return {
-        results: { observations: results, sessions: [], prompts: [] },
+        results: { observations: results, sessions: [], prompts: [], thoughts: [] },
         usedChroma: false,
         fellBack: true,
         strategy: 'hybrid'
