@@ -2,6 +2,31 @@
 
 All notable changes to claude-mem.
 
+## [v10.0.4] - 2026-02-12
+
+## Revert: v10.0.3 chroma-mcp spawn storm fix
+
+v10.0.3 introduced regressions. This release reverts the codebase to the stable v10.0.2 state.
+
+### What was reverted
+
+- Connection mutex via promise memoization
+- Pre-spawn process count guard
+- Hardened `close()` with try-finally + Unix `pkill -P` fallback
+- Count-based orphan reaper in `ProcessManager`
+- Circuit breaker (3 failures → 60s cooldown)
+- `etime`-based sorting for process guards
+
+### Files restored to v10.0.2
+
+- `src/services/sync/ChromaSync.ts`
+- `src/services/infrastructure/GracefulShutdown.ts`
+- `src/services/infrastructure/ProcessManager.ts`
+- `src/services/worker-service.ts`
+- `src/services/worker/ProcessRegistry.ts`
+- `tests/infrastructure/process-manager.test.ts`
+- `tests/integration/chroma-vector-sync.test.ts`
+
 ## [v10.0.3] - 2026-02-11
 
 ## Fix: Prevent chroma-mcp spawn storm (PR #1065)
@@ -1518,8 +1543,4 @@ Refactored context loading logic to differentiate between code and non-code mode
 - Changed worker start script
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v8.0.3] - 2025-12-23
-
-Fix critical worker crashes on startup (v8.0.2 regression)
 
