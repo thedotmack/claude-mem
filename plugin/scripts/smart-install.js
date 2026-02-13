@@ -9,11 +9,17 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { homedir } from 'os';
 
-const ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-const MARKER = join(ROOT, '.install-version');
+// PLUGIN_ROOT = where this script actually runs (cache dir at runtime)
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PLUGIN_ROOT = join(__dirname, '..');
+
+// MARKETPLACE_ROOT = stable location for CLI alias and version marker
+const MARKETPLACE_ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+const MARKER = join(MARKETPLACE_ROOT, '.install-version');
 const IS_WINDOWS = process.platform === 'win32';
 
 /**
@@ -115,9 +121,9 @@ function installUv() {
  * Add shell alias for claude-mem command
  */
 function installCLI() {
-  const WORKER_CLI = join(ROOT, 'plugin', 'scripts', 'worker-service.cjs');
+  const WORKER_CLI = join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs');
   const aliasLine = `alias claude-mem='node "${WORKER_CLI}"'`;
-  const markerPath = join(ROOT, '.cli-installed');
+  const markerPath = join(MARKETPLACE_ROOT, '.cli-installed');
 
   // Skip if already installed
   if (existsSync(markerPath)) return;
@@ -176,15 +182,10 @@ function getNodeVersion() {
  * Check if dependencies need to be installed
  */
 function needsInstall() {
-  if (!existsSync(join(ROOT, 'node_modules'))) return true;
-  // Check if better-sqlite3 native addon is installed
+  // Check if better-sqlite3 native addon exists in the plugin root (cache dir)
+  if (!existsSync(join(PLUGIN_ROOT, 'node_modules', 'better-sqlite3'))) return true;
   try {
-    require.resolve('better-sqlite3', { paths: [ROOT] });
-  } catch {
-    return true;
-  }
-  try {
-    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+    const pkg = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'package.json'), 'utf-8'));
     const marker = JSON.parse(readFileSync(MARKER, 'utf-8'));
     return pkg.version !== marker.version || getNodeVersion() !== marker.node;
   } catch {
@@ -199,13 +200,13 @@ function installDeps() {
   console.error('Installing dependencies with npm...');
 
   try {
-    execSync('npm install --production', { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+    execSync('npm install --production', { cwd: PLUGIN_ROOT, stdio: 'inherit', shell: IS_WINDOWS });
   } catch (npmError) {
     throw new Error('npm install failed: ' + npmError.message);
   }
 
-  // Write version marker
-  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+  // Write version marker to marketplace (stable location across cache versions)
+  const pkg = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'package.json'), 'utf-8'));
   writeFileSync(MARKER, JSON.stringify({
     version: pkg.version,
     node: getNodeVersion(),
@@ -230,7 +231,7 @@ try {
 
   // Step 2: Install dependencies if needed (npm + better-sqlite3 native addon)
   if (needsInstall()) {
-    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+    const pkg = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'package.json'), 'utf-8'));
     const newVersion = pkg.version;
 
     installDeps();

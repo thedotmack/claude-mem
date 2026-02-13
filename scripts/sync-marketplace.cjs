@@ -77,7 +77,13 @@ try {
 
   console.log(`Syncing to cache folder (version ${version})...`);
   execSync(
-    `rsync -av --delete --exclude=.git plugin/ "${CACHE_VERSION_PATH}/"`,
+    `rsync -av --delete --exclude=.git --exclude=node_modules plugin/ "${CACHE_VERSION_PATH}/"`,
+    { stdio: 'inherit' }
+  );
+
+  console.log('Installing dependencies in cache...');
+  execSync(
+    `cd "${CACHE_VERSION_PATH}" && npm install --production`,
     { stdio: 'inherit' }
   );
 
