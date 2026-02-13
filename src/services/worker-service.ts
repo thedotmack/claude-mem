@@ -500,6 +500,7 @@ export class WorkerService {
           'CLAUDE_CODE_PATH',
           'ENOENT',
           'spawn',
+          'Invalid API key',
         ];
         if (unrecoverablePatterns.some(pattern => errorMessage.includes(pattern))) {
           hadUnrecoverableError = true;

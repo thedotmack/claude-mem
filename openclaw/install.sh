@@ -682,6 +682,7 @@ run_openclaw() {
 
 CLAUDE_MEM_REPO="https://github.com/thedotmack/claude-mem.git"
 CLAUDE_MEM_BRANCH="${CLI_BRANCH:-main}"
+PLUGIN_FRESHLY_INSTALLED=""
 
 install_plugin() {
   # Check for git before attempting clone
@@ -796,6 +797,30 @@ install_plugin() {
   fi
 
   success "claude-mem plugin installed and enabled"
+
+  # ── Copy core plugin files (worker, hooks, scripts) to extension directory ──
+  # The OpenClaw extension only contains the gateway hook (dist/index.js).
+  # The actual worker service and Claude Code hooks live in the plugin/ directory
+  # of the main repo. We copy them so find_claude_mem_install_dir() can locate
+  # the worker-service.cjs and the worker runs the updated version.
+  local extension_dir="${HOME}/.openclaw/extensions/claude-mem"
+  local repo_root="${build_dir}/claude-mem"
+
+  if [[ -d "$extension_dir" && -d "${repo_root}/plugin" ]]; then
+    info "Copying core plugin files to ${extension_dir}..."
+
+    # Copy plugin/ directory (worker service, hooks, scripts, skills, UI)
+    cp -R "${repo_root}/plugin" "${extension_dir}/"
+
+    # Copy root package.json (contains the canonical version number)
+    cp "${repo_root}/package.json" "${extension_dir}/package.json"
+
+    success "Core plugin files updated at ${extension_dir}"
+  else
+    warn "Could not copy core plugin files — worker may need manual update"
+  fi
+
+  PLUGIN_FRESHLY_INSTALLED="true"
 }
 
 ###############################################################################
@@ -1668,21 +1693,65 @@ main() {
 
       local needs_restart=""
 
+      # If we just installed fresh plugin files, always restart the worker
+      # to pick up the new version — even if the old worker was healthy.
+      if [[ "$PLUGIN_FRESHLY_INSTALLED" == "true" ]]; then
+        if [[ -n "$WORKER_VERSION" && -n "$expected_version" && "$WORKER_VERSION" != "$expected_version" ]]; then
+          info "Upgrading worker from v${WORKER_VERSION} to v${expected_version}..."
+        else
+          info "Plugin files updated — restarting worker to load new code..."
+        fi
+        needs_restart="true"
+      fi
+
       # Check if worker version is outdated compared to installed version
-      if [[ -n "$WORKER_VERSION" && -n "$expected_version" && "$WORKER_VERSION" != "$expected_version" ]]; then
-        warn "Existing worker is v${WORKER_VERSION} but installed v${expected_version} — restart recommended"
-        info "  Run: curl -X POST http://127.0.0.1:37777/api/admin/restart"
+      if [[ "$needs_restart" != "true" && -n "$WORKER_VERSION" && -n "$expected_version" && "$WORKER_VERSION" != "$expected_version" ]]; then
+        info "Upgrading worker from v${WORKER_VERSION} to v${expected_version}..."
         needs_restart="true"
       fi
 
       # Check if AI provider doesn't match current configuration
-      if [[ -n "$WORKER_AI_PROVIDER" && -n "$AI_PROVIDER" && "$WORKER_AI_PROVIDER" != "$AI_PROVIDER" ]]; then
-        warn "Worker is using ${WORKER_AI_PROVIDER} but you configured ${AI_PROVIDER} — restart to apply changes"
+      if [[ "$needs_restart" != "true" && -n "$WORKER_AI_PROVIDER" && -n "$AI_PROVIDER" && "$WORKER_AI_PROVIDER" != "$AI_PROVIDER" ]]; then
+        warn "Worker is using ${WORKER_AI_PROVIDER} but you configured ${AI_PROVIDER} — restarting to apply"
         needs_restart="true"
       fi
 
-      # If everything is current, show full healthy status
-      if [[ "$needs_restart" != "true" ]]; then
+      # Restart worker if needed: kill old process, start fresh
+      if [[ "$needs_restart" == "true" ]]; then
+        info "Stopping existing worker..."
+        # Try graceful shutdown via API first, fall back to SIGTERM
+        curl -s -X POST "http://127.0.0.1:37777/api/admin/shutdown" >/dev/null 2>&1 || true
+        sleep 2
+
+        # If still running, send SIGTERM to known PID
+        if check_port_37777; then
+          if [[ -n "$WORKER_REPORTED_PID" ]]; then
+            kill "$WORKER_REPORTED_PID" 2>/dev/null || true
+            sleep 1
+          fi
+          # Check PID file as fallback
+          local pid_file="${HOME}/.claude-mem/worker.pid"
+          if [[ -f "$pid_file" ]]; then
+            local file_pid
+            file_pid="$(INSTALLER_PID_FILE="$pid_file" node -e "
+              try { process.stdout.write(String(JSON.parse(require('fs').readFileSync(process.env.INSTALLER_PID_FILE, 'utf8')).pid || '')); }
+              catch(e) {}
+            " 2>/dev/null)" || true
+            if [[ -n "$file_pid" ]]; then
+              kill "$file_pid" 2>/dev/null || true
+              sleep 1
+            fi
+          fi
+        fi
+
+        # Start fresh worker
+        if start_worker; then
+          verify_health || true
+        else
+          warn "Worker restart failed — you can start it manually later"
+        fi
+      else
+        # No restart needed — show healthy status
         local uptime_display=""
         if [[ -n "$WORKER_UPTIME" && "$WORKER_UPTIME" =~ ^[0-9]+$ && "$WORKER_UPTIME" != "0" ]]; then
           uptime_display="$(format_uptime_ms "$WORKER_UPTIME")"
@@ -1715,7 +1784,7 @@ main() {
       verify_health || true
     else
       warn "Worker startup failed — you can start it manually later"
-      warn "  cd ~/.claude/plugins/marketplaces/thedotmack && bun plugin/scripts/worker-service.cjs"
+      warn "  cd ~/.openclaw/extensions/claude-mem && bun plugin/scripts/worker-service.cjs"
     fi
   fi
 
