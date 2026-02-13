@@ -2,6 +2,18 @@
 
 All notable changes to claude-mem.
 
+## [v10.0.6] - 2026-02-13
+
+## Bug Fixes
+
+- **OpenClaw: Fix MEMORY.md project query mismatch** — `syncMemoryToWorkspace` now includes both the base project name and the agent-scoped project name (e.g., both "openclaw" and "openclaw-main") when querying for context injection, ensuring the correct observations are pulled into MEMORY.md.
+
+- **OpenClaw: Add feed botToken support for Telegram** — Feeds can now configure a dedicated `botToken` for direct Telegram message delivery, bypassing the OpenClaw gateway channel. This fixes scenarios where the gateway bot token couldn't be used for feed messages.
+
+## Other
+
+- Changed OpenClaw plugin kind from "integration" to "memory" for accuracy.
+
 ## [v10.0.5] - 2026-02-13
 
 ## OpenClaw Installer & Distribution
@@ -1554,14 +1566,4 @@ Since we're now explicit about recovery instead of silently papering over proble
 - Add error handlers to Chroma sync operations to prevent worker crashes on timeout (#428)
 
 This patch release improves stability by adding proper error handling to Chroma vector database sync operations, preventing worker crashes when sync operations timeout.
-
-## [v8.0.5] - 2025-12-24
-
-## Bug Fixes
-
-- **Context Loading**: Fixed observation filtering for non-code modes, ensuring observations are properly retrieved across all mode types
-
-## Technical Details
-
-Refactored context loading logic to differentiate between code and non-code modes, resolving issues where mode-specific observations were filtered by stale settings.
 
