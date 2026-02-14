@@ -31,7 +31,7 @@ const ORPHAN_PROCESS_PATTERNS = [
 ];
 
 // Only kill processes older than this to avoid killing the current session
-const ORPHAN_MAX_AGE_MINUTES = 30;
+const ORPHAN_MAX_AGE_MINUTES = 5;
 
 export interface PidInfo {
   pid: number;
@@ -337,6 +337,58 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
   }
 
   logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pidsToKill.length });
+
+  // Also check for excess chroma-mcp by count (catches recent spawn storms)
+  await cleanupExcessChromaProcesses();
+}
+
+/**
+ * Kill excess chroma-mcp processes by count, regardless of age.
+ * Keeps the newest MAX_CHROMA_PROCESSES alive, kills the rest.
+ * This catches spawn storms where all processes are < ORPHAN_MAX_AGE_MINUTES old.
+ */
+const MAX_CHROMA_PROCESSES = 2;
+
+export async function cleanupExcessChromaProcesses(): Promise<void> {
+  if (process.platform === 'win32') {
+    // Windows cleanup relies on age-based cleanupOrphanedProcesses() above
+    // which uses PowerShell Get-CimInstance. Count-based cleanup not yet implemented.
+    return;
+  }
+
+  try {
+    const { stdout } = await execAsync(
+      'ps -eo pid,etimes,command | grep chroma-mcp | grep -v grep | sort -k2 -n || true'
+    );
+
+    if (!stdout.trim()) return;
+
+    const lines = stdout.trim().split('\n');
+    if (lines.length <= MAX_CHROMA_PROCESSES) return;
+
+    // etimes = elapsed seconds, sort -k2 -n ascending = newest first (smallest etimes)
+    // Keep the newest (start of list), kill the oldest (end of list)
+    const toKill = lines.slice(MAX_CHROMA_PROCESSES);
+
+    for (const line of toKill) {
+      const match = line.trim().match(/^(\d+)/);
+      if (!match) continue;
+      const pid = parseInt(match[1], 10);
+      if (pid <= 0 || pid === process.pid) continue;
+      try {
+        process.kill(pid, 'SIGKILL');
+        logger.info('SYSTEM', 'Killed excess chroma-mcp process', { pid });
+      } catch {}
+    }
+
+    logger.info('SYSTEM', 'Excess chroma cleanup complete', {
+      found: lines.length,
+      killed: toKill.length,
+      kept: MAX_CHROMA_PROCESSES
+    });
+  } catch (error) {
+    logger.debug('SYSTEM', 'Excess chroma cleanup failed (non-critical)', {}, error as Error);
+  }
 }
 
 /**

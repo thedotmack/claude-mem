@@ -90,6 +90,15 @@ export class ChromaSync {
   // MCP SDK's StdioClientTransport uses shell:false and no detached flag, so console is inherited.
   private readonly disabled: boolean = false;
 
+  // Connection mutex — coalesces concurrent ensureConnection() calls onto single spawn
+  private connectionPromise: Promise<void> | null = null;
+
+  // Circuit breaker — stops retry storms after repeated failures
+  private consecutiveFailures: number = 0;
+  private circuitOpenUntil: number = 0;
+  private static readonly MAX_FAILURES = 3;
+  private static readonly CIRCUIT_OPEN_MS = 60_000;
+
   constructor(project: string) {
     this.project = project;
     this.collectionName = `cm__${project}`;
@@ -186,15 +195,49 @@ export class ChromaSync {
       return;
     }
 
+    // Circuit breaker: stop retrying after repeated failures
+    if (Date.now() < this.circuitOpenUntil) {
+      throw new Error('Chroma circuit breaker open — connection disabled for 60s after repeated failures');
+    }
+
+    // Connection mutex: coalesce concurrent callers onto single spawn
+    if (this.connectionPromise) {
+      return this.connectionPromise;
+    }
+
+    // Capture reference to detect if a newer call replaced us.
+    // Without this, a concurrent caller's promise could be cleared by
+    // an older caller's finally{} block — a subtle race condition.
+    const p = this.connectionPromise = this._doConnect();
+    try {
+      await p;
+      this.consecutiveFailures = 0; // Reset on success
+    } catch (error) {
+      this.consecutiveFailures++;
+      if (this.consecutiveFailures >= ChromaSync.MAX_FAILURES) {
+        this.circuitOpenUntil = Date.now() + ChromaSync.CIRCUIT_OPEN_MS;
+        logger.warn('CHROMA_SYNC', 'Circuit breaker tripped — disabling Chroma for 60s', {
+          failures: this.consecutiveFailures
+        });
+      }
+      throw error;
+    } finally {
+      // Only clear if still the same promise (newer call may have replaced it)
+      if (this.connectionPromise === p) {
+        this.connectionPromise = null;
+      }
+    }
+  }
+
+  /**
+   * Internal connection logic — called only by ensureConnection() mutex
+   */
+  private async _doConnect(): Promise<void> {
     logger.info('CHROMA_SYNC', 'Connecting to Chroma MCP server...', { project: this.project });
 
     try {
-      // Use Python 3.13 by default to avoid onnxruntime compatibility issues with Python 3.14+
-      // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
       const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
-
-      // Get combined SSL certificate bundle for Zscaler/corporate proxy environments
       const combinedCertPath = this.getCombinedCertPath();
 
       const transportOptions: any = {
@@ -208,7 +251,6 @@ export class ChromaSync {
         stderr: 'ignore'
       };
 
-      // Add SSL certificate environment variables for corporate proxy/Zscaler environments
       if (combinedCertPath) {
         transportOptions.env = {
           ...process.env,
@@ -221,13 +263,8 @@ export class ChromaSync {
         });
       }
 
-      // Note: windowsHide is not needed here because the worker daemon starts with
-      // -WindowStyle Hidden, so child processes inherit the hidden console.
-      // The MCP SDK ignores custom windowsHide anyway (overridden internally).
-
       this.transport = new StdioClientTransport(transportOptions);
 
-      // Empty capabilities object: this client only calls Chroma tools, doesn't expose any
       this.client = new Client({
         name: 'claude-mem-chroma-sync',
         version: packageVersion
@@ -240,6 +277,13 @@ export class ChromaSync {
 
       logger.info('CHROMA_SYNC', 'Connected to Chroma MCP server', { project: this.project });
     } catch (error) {
+      // Safe cleanup: close transport before nulling reference
+      if (this.transport) {
+        try { await this.transport.close(); } catch {}
+      }
+      this.transport = null;
+      this.client = null;
+      this.connected = false;
       logger.error('CHROMA_SYNC', 'Failed to connect to Chroma MCP server', { project: this.project }, error as Error);
       throw new Error(`Chroma connection failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -278,19 +322,7 @@ export class ChromaSync {
         errorMessage.includes('MCP error -32000');
 
       if (isConnectionError) {
-        // FIX: Close transport to kill subprocess before resetting state
-        // Without this, old chroma-mcp processes leak as zombies
-        if (this.transport) {
-          try {
-            await this.transport.close();
-          } catch (closeErr) {
-            logger.debug('CHROMA_SYNC', 'Transport close error (expected if already dead)', {}, closeErr as Error);
-          }
-        }
-        // Reset connection state so next call attempts reconnect
-        this.connected = false;
-        this.client = null;
-        this.transport = null;
+        await this.safeResetConnection();
         logger.error('CHROMA_SYNC', 'Connection lost during collection check',
           { collection: this.collectionName }, error as Error);
         throw new Error(`Chroma connection lost: ${errorMessage}`);
@@ -948,18 +980,7 @@ export class ChromaSync {
         errorMessage.includes('MCP error -32000');
 
       if (isConnectionError) {
-        // FIX: Close transport to kill subprocess before resetting state
-        if (this.transport) {
-          try {
-            await this.transport.close();
-          } catch (closeErr) {
-            logger.debug('CHROMA_SYNC', 'Transport close error (expected if already dead)', {}, closeErr as Error);
-          }
-        }
-        // Reset connection state so next call attempts reconnect
-        this.connected = false;
-        this.client = null;
-        this.transport = null;
+        await this.safeResetConnection();
         logger.error('CHROMA_SYNC', 'Connection lost during query',
           { project: this.project, query }, error as Error);
         throw new Error(`Chroma query failed - connection lost: ${errorMessage}`);
@@ -1019,26 +1040,23 @@ export class ChromaSync {
   /**
    * Close the Chroma client connection and cleanup subprocess
    */
-  async close(): Promise<void> {
-    if (!this.connected && !this.client && !this.transport) {
-      return;
-    }
-
-    // Close client first
-    if (this.client) {
-      await this.client.close();
-    }
-
-    // Explicitly close transport to kill subprocess
-    if (this.transport) {
-      await this.transport.close();
-    }
-
-    logger.info('CHROMA_SYNC', 'Chroma client and subprocess closed', { project: this.project });
-
-    // Always reset state
+  /**
+   * Safely reset connection state — closes transport BEFORE nulling reference.
+   * Prevents orphaned chroma-mcp subprocesses.
+   */
+  private async safeResetConnection(): Promise<void> {
+    const t = this.transport;
+    const c = this.client;
     this.connected = false;
     this.client = null;
     this.transport = null;
+    if (c) { try { await c.close(); } catch {} }
+    if (t) { try { await t.close(); } catch {} }
+  }
+
+  async close(): Promise<void> {
+    await this.safeResetConnection();
+    this.connectionPromise = null;
+    logger.info('CHROMA_SYNC', 'Chroma client and subprocess closed', { project: this.project });
   }
 }
