@@ -7,6 +7,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { execSync } from 'child_process';
 import path from 'path';
 import os from 'os';
 import { logger } from './logger.js';
@@ -279,12 +280,34 @@ function isExcludedUnsafeDirectory(folderPath: string): boolean {
 }
 
 /**
- * Check if a folder is a project root (contains .git directory).
- * Project root CLAUDE.md files should remain user-managed, not auto-updated.
+ * Check if a folder is within a git repository.
+ * Uses `git rev-parse --show-toplevel` to detect the actual repo root,
+ * which correctly handles subdirectories within git repos.
+ *
+ * Fix for Issue #793: Previously only checked if .git exists directly in the folder,
+ * missing all subdirectories within git repos and causing CLAUDE.md files in every subfolder.
+ *
+ * Project root and all subdirectories within a git repo should have their
+ * CLAUDE.md files remain user-managed, not auto-updated.
  */
 function isProjectRoot(folderPath: string): boolean {
-  const gitPath = path.join(folderPath, '.git');
-  return existsSync(gitPath);
+  // Fast path: direct .git directory check
+  if (existsSync(path.join(folderPath, '.git'))) return true;
+
+  // Full check: is this folder inside any git repo?
+  try {
+    const result = execSync('git rev-parse --show-toplevel', {
+      cwd: folderPath,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 3000
+    });
+    // If git succeeds, this folder is inside a git repo
+    return result.trim().length > 0;
+  } catch {
+    // Not inside a git repo (or git not available)
+    return false;
+  }
 }
 
 /**

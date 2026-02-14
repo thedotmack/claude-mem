@@ -6,7 +6,7 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, fetchWithTimeout } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
@@ -34,10 +34,10 @@ export const contextHandler: EventHandler = {
     const projectsParam = context.allProjects.join(',');
     const url = `http://127.0.0.1:${port}/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
 
-    // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
-    // Worker service has its own timeouts, so client-side timeout is redundant
+    // Use fetchWithTimeout to prevent indefinite hangs (Issue #1079)
+    // 15s timeout: generous enough for context generation but prevents hook from blocking forever
     try {
-      const response = await fetch(url);
+      const response = await fetchWithTimeout(url, {}, 15000);
 
       if (!response.ok) {
         // Log but don't throw — context fetch failure should not block session start

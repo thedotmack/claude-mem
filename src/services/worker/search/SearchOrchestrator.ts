@@ -82,8 +82,14 @@ export class SearchOrchestrator {
     options: NormalizedParams
   ): Promise<StrategySearchResult> {
     // PATH 1: FILTER-ONLY (no query text) - Use SQLite
-    if (!options.query) {
-      logger.debug('SEARCH', 'Orchestrator: Filter-only query, using SQLite', {});
+    // Also treat wildcard "*" as filter-only (Issue #714: Chroma doesn't understand SQL wildcards)
+    if (!options.query || options.query === '*') {
+      if (options.query === '*') {
+        logger.debug('SEARCH', 'Orchestrator: Wildcard query, treating as filter-only', {});
+        options.query = undefined;
+      } else {
+        logger.debug('SEARCH', 'Orchestrator: Filter-only query, using SQLite', {});
+      }
       return await this.sqliteStrategy.search(options);
     }
 

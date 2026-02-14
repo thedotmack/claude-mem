@@ -10,7 +10,7 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, fetchWithTimeout } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 
 export const sessionCompleteHandler: EventHandler = {
@@ -37,13 +37,13 @@ export const sessionCompleteHandler: EventHandler = {
 
     try {
       // Call the session complete endpoint by contentSessionId
-      const response = await fetch(`http://127.0.0.1:${port}/api/sessions/complete`, {
+      const response = await fetchWithTimeout(`http://127.0.0.1:${port}/api/sessions/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contentSessionId: sessionId
         })
-      });
+      }, 10000);
 
       if (!response.ok) {
         const text = await response.text();
