@@ -72,22 +72,24 @@ export class ViewerRoutes extends BaseRouteHandler {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
 
     // Add client to broadcaster
     this.sseBroadcaster.addClient(res);
 
-    // Send initial_load event with projects list
+    // Send initial_load event only to the newly connected client
     const allProjects = this.dbManager.getSessionStore().getAllProjects();
-    this.sseBroadcaster.broadcast({
+    this.sseBroadcaster.sendToClient(res, {
       type: 'initial_load',
       projects: allProjects,
       timestamp: Date.now()
     });
 
-    // Send initial processing status (based on queue depth + active generators)
+    // Send initial processing status only to the newly connected client
     const isProcessing = this.sessionManager.isAnySessionProcessing();
     const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
-    this.sseBroadcaster.broadcast({
+    this.sseBroadcaster.sendToClient(res, {
       type: 'processing_status',
       isProcessing,
       queueDepth
