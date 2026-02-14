@@ -434,7 +434,13 @@ export class WorkerService {
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
-      // Connect to MCP server
+      // Mark core initialization complete BEFORE MCP connection
+      // MCP is optional (vector search) and should not block core functionality
+      this.initializationCompleteFlag = true;
+      this.resolveInitialization();
+      logger.info('SYSTEM', 'Core initialization complete (MCP connecting in background)');
+
+      // Connect to MCP server (non-blocking — failure only disables vector search)
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       const transport = new StdioClientTransport({
         command: 'node',
@@ -442,19 +448,22 @@ export class WorkerService {
         env: process.env
       });
 
-      const MCP_INIT_TIMEOUT_MS = 300000;
+      const MCP_INIT_TIMEOUT_MS = 60000; // 60s timeout (was 5 min — too long)
       const mcpConnectionPromise = this.mcpClient.connect(transport);
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('MCP connection timeout after 5 minutes')), MCP_INIT_TIMEOUT_MS)
+        setTimeout(() => reject(new Error('MCP connection timeout after 60s')), MCP_INIT_TIMEOUT_MS)
       );
 
-      await Promise.race([mcpConnectionPromise, timeoutPromise]);
-      this.mcpReady = true;
-      logger.success('WORKER', 'Connected to MCP server');
-
-      this.initializationCompleteFlag = true;
-      this.resolveInitialization();
-      logger.info('SYSTEM', 'Background initialization complete');
+      Promise.race([mcpConnectionPromise, timeoutPromise])
+        .then(() => {
+          this.mcpReady = true;
+          logger.success('WORKER', 'Connected to MCP server');
+        })
+        .catch((error) => {
+          logger.warn('WORKER', 'MCP connection failed (vector search unavailable)', {
+            error: error instanceof Error ? error.message : String(error)
+          });
+        });
 
       // Start orphan reaper to clean up zombie processes (Issue #737)
       this.stopOrphanReaper = startOrphanReaper(() => {
