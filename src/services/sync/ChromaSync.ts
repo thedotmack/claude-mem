@@ -13,7 +13,6 @@
  */
 
 import { ChromaClient, Collection } from 'chromadb';
-import { DefaultEmbeddingFunction } from '@chroma-core/default-embed';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
@@ -191,7 +190,9 @@ export class ChromaSync {
 
     try {
       // getOrCreateCollection handles both cases
-      // Use DefaultEmbeddingFunction for local embeddings (all-MiniLM-L6-v2)
+      // Lazy-load DefaultEmbeddingFunction to avoid eagerly pulling in
+      // @huggingface/transformers → sharp native binaries at bundle startup
+      const { DefaultEmbeddingFunction } = await import('@chroma-core/default-embed');
       const embeddingFunction = new DefaultEmbeddingFunction();
       this.collection = await this.chromaClient.getOrCreateCollection({
         name: this.collectionName,
