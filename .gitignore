@@ -17,6 +17,7 @@ package-lock.json
 bun.lock
 private/
 datasets/
+Auto Run Docs/
 
 # Generated UI files (built from viewer-template.html)
 src/ui/viewer.html
@@ -31,3 +32,6 @@ src/ui/viewer.html
 # Prevent other malformed path directories
 http*/
 https*/
+
+# Ignore WebStorm project files (for dinosaur IDE users)
+.idea/

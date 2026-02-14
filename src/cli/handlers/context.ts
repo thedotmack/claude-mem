@@ -8,11 +8,23 @@
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
+import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { logger } from '../../utils/logger.js';
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     // Ensure worker is running before any other logic
-    await ensureWorkerRunning();
+    const workerReady = await ensureWorkerRunning();
+    if (!workerReady) {
+      // Worker not available - return empty context gracefully
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'SessionStart',
+          additionalContext: ''
+        },
+        exitCode: HOOK_EXIT_CODES.SUCCESS
+      };
+    }
 
     const cwd = input.cwd ?? process.cwd();
     const context = getProjectContext(cwd);
@@ -24,20 +36,34 @@ export const contextHandler: EventHandler = {
 
     // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
     // Worker service has its own timeouts, so client-side timeout is redundant
-    const response = await fetch(url);
+    try {
+      const response = await fetch(url);
 
-    if (!response.ok) {
-      throw new Error(`Context generation failed: ${response.status}`);
-    }
-
-    const result = await response.text();
-    const additionalContext = result.trim();
-
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'SessionStart',
-        additionalContext
+      if (!response.ok) {
+        // Log but don't throw — context fetch failure should not block session start
+        logger.warn('HOOK', 'Context generation failed, returning empty', { status: response.status });
+        return {
+          hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+          exitCode: HOOK_EXIT_CODES.SUCCESS
+        };
       }
-    };
+
+      const result = await response.text();
+      const additionalContext = result.trim();
+
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'SessionStart',
+          additionalContext
+        }
+      };
+    } catch (error) {
+      // Worker unreachable — return empty context gracefully
+      logger.warn('HOOK', 'Context fetch error, returning empty', { error: error instanceof Error ? error.message : String(error) });
+      return {
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+        exitCode: HOOK_EXIT_CODES.SUCCESS
+      };
+    }
   }
 };

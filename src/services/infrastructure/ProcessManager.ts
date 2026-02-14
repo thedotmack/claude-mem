@@ -22,6 +22,17 @@ const execAsync = promisify(exec);
 const DATA_DIR = path.join(homedir(), '.claude-mem');
 const PID_FILE = path.join(DATA_DIR, 'worker.pid');
 
+// Orphaned process cleanup patterns and thresholds
+// These are claude-mem processes that can accumulate if not properly terminated
+const ORPHAN_PROCESS_PATTERNS = [
+  'mcp-server.cjs',    // Main MCP server process
+  'worker-service.cjs', // Background worker daemon
+  'chroma-mcp'          // ChromaDB MCP subprocess
+];
+
+// Only kill processes older than this to avoid killing the current session
+const ORPHAN_MAX_AGE_MINUTES = 30;
+
 export interface PidInfo {
   pid: number;
   port: number;
@@ -66,7 +77,11 @@ export function removePidFile(): void {
 }
 
 /**
- * Get platform-adjusted timeout (Windows socket cleanup is slower)
+ * Get platform-adjusted timeout for worker-side socket operations (2.0x on Windows).
+ *
+ * Note: Two platform multiplier functions exist intentionally:
+ * - getTimeout() in hook-constants.ts uses 1.5x for hook-side operations (fast path)
+ * - getPlatformTimeout() here uses 2.0x for worker-side socket operations (slower path)
  */
 export function getPlatformTimeout(baseMs: number): number {
   const WINDOWS_MULTIPLIER = 2.0;
@@ -90,7 +105,7 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
 
   try {
     // PowerShell Get-Process instead of WMIC (deprecated in Windows 11)
-    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-Process | Where-Object { \\$_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty Id"`;
+    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty Id"`;
     const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
     // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
     return stdout
@@ -162,55 +177,119 @@ export async function waitForProcessesExit(pids: number[], timeoutMs: number): P
 }
 
 /**
- * Clean up orphaned chroma-mcp processes from previous worker sessions
- * Prevents process accumulation and memory leaks
+ * Parse process elapsed time from ps etime format: [[DD-]HH:]MM:SS
+ * Returns age in minutes, or -1 if parsing fails
+ */
+export function parseElapsedTime(etime: string): number {
+  if (!etime || etime.trim() === '') return -1;
+
+  const cleaned = etime.trim();
+  let totalMinutes = 0;
+
+  // DD-HH:MM:SS format
+  const dayMatch = cleaned.match(/^(\d+)-(\d+):(\d+):(\d+)$/);
+  if (dayMatch) {
+    totalMinutes = parseInt(dayMatch[1], 10) * 24 * 60 +
+                   parseInt(dayMatch[2], 10) * 60 +
+                   parseInt(dayMatch[3], 10);
+    return totalMinutes;
+  }
+
+  // HH:MM:SS format
+  const hourMatch = cleaned.match(/^(\d+):(\d+):(\d+)$/);
+  if (hourMatch) {
+    totalMinutes = parseInt(hourMatch[1], 10) * 60 + parseInt(hourMatch[2], 10);
+    return totalMinutes;
+  }
+
+  // MM:SS format
+  const minMatch = cleaned.match(/^(\d+):(\d+)$/);
+  if (minMatch) {
+    return parseInt(minMatch[1], 10);
+  }
+
+  return -1;
+}
+
+/**
+ * Clean up orphaned claude-mem processes from previous worker sessions
+ *
+ * Targets mcp-server.cjs, worker-service.cjs, and chroma-mcp processes
+ * that survived a previous daemon crash. Only kills processes older than
+ * ORPHAN_MAX_AGE_MINUTES to avoid killing the current session.
+ *
+ * The periodic ProcessRegistry reaper handles in-session orphans;
+ * this function handles cross-session orphans at startup.
  */
 export async function cleanupOrphanedProcesses(): Promise<void> {
   const isWindows = process.platform === 'win32';
-  const pids: number[] = [];
+  const currentPid = process.pid;
+  const pidsToKill: number[] = [];
 
   try {
     if (isWindows) {
-      // Windows: Use PowerShell Get-CimInstance instead of WMIC (deprecated in Windows 11)
-      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { \\$_.Name -like '*python*' -and \\$_.CommandLine -like '*chroma-mcp*' } | Select-Object -ExpandProperty ProcessId"`;
+      // Windows: Use PowerShell Get-CimInstance with JSON output for age filtering
+      const patternConditions = ORPHAN_PROCESS_PATTERNS
+        .map(p => `$_.CommandLine -like '*${p}*'`)
+        .join(' -or ');
+
+      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { (${patternConditions}) -and $_.ProcessId -ne ${currentPid} } | Select-Object ProcessId, CreationDate | ConvertTo-Json"`;
       const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
 
-      if (!stdout.trim()) {
-        logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Windows)');
+      if (!stdout.trim() || stdout.trim() === 'null') {
+        logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Windows)');
         return;
       }
 
-      // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
-      const lines = stdout
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line.length > 0 && /^\d+$/.test(line));
+      const processes = JSON.parse(stdout);
+      const processList = Array.isArray(processes) ? processes : [processes];
+      const now = Date.now();
 
-      for (const line of lines) {
-        const pid = parseInt(line, 10);
-        // SECURITY: Validate PID is positive integer before adding to list
-        if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
-          pids.push(pid);
+      for (const proc of processList) {
+        const pid = proc.ProcessId;
+        // SECURITY: Validate PID is positive integer and not current process
+        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+
+        // Parse Windows WMI date format: /Date(1234567890123)/
+        const creationMatch = proc.CreationDate?.match(/\/Date\((\d+)\)\//);
+        if (creationMatch) {
+          const creationTime = parseInt(creationMatch[1], 10);
+          const ageMinutes = (now - creationTime) / (1000 * 60);
+
+          if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+            pidsToKill.push(pid);
+            logger.debug('SYSTEM', 'Found orphaned process', { pid, ageMinutes: Math.round(ageMinutes) });
+          }
         }
       }
     } else {
-      // Unix: Use ps aux | grep
-      const { stdout } = await execAsync('ps aux | grep "chroma-mcp" | grep -v grep || true');
+      // Unix: Use ps with elapsed time for age-based filtering
+      const patternRegex = ORPHAN_PROCESS_PATTERNS.join('|');
+      const { stdout } = await execAsync(
+        `ps -eo pid,etime,command | grep -E "${patternRegex}" | grep -v grep || true`
+      );
 
       if (!stdout.trim()) {
-        logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Unix)');
+        logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Unix)');
         return;
       }
 
       const lines = stdout.trim().split('\n');
       for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length > 1) {
-          const pid = parseInt(parts[1], 10);
-          // SECURITY: Validate PID is positive integer before adding to list
-          if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
-            pids.push(pid);
-          }
+        // Parse: "  1234  01:23:45 /path/to/process"
+        const match = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
+        if (!match) continue;
+
+        const pid = parseInt(match[1], 10);
+        const etime = match[2];
+
+        // SECURITY: Validate PID is positive integer and not current process
+        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+
+        const ageMinutes = parseElapsedTime(etime);
+        if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+          pidsToKill.push(pid);
+          logger.debug('SYSTEM', 'Found orphaned process', { pid, ageMinutes, command: match[3].substring(0, 80) });
         }
       }
     }
@@ -220,19 +299,20 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
     return;
   }
 
-  if (pids.length === 0) {
+  if (pidsToKill.length === 0) {
     return;
   }
 
-  logger.info('SYSTEM', 'Cleaning up orphaned chroma-mcp processes', {
+  logger.info('SYSTEM', 'Cleaning up orphaned claude-mem processes', {
     platform: isWindows ? 'Windows' : 'Unix',
-    count: pids.length,
-    pids
+    count: pidsToKill.length,
+    pids: pidsToKill,
+    maxAgeMinutes: ORPHAN_MAX_AGE_MINUTES
   });
 
   // Kill all found processes
   if (isWindows) {
-    for (const pid of pids) {
+    for (const pid of pidsToKill) {
       // SECURITY: Double-check PID validation before using in taskkill command
       if (!Number.isInteger(pid) || pid <= 0) {
         logger.warn('SYSTEM', 'Skipping invalid PID', { pid });
@@ -246,7 +326,7 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
       }
     }
   } else {
-    for (const pid of pids) {
+    for (const pid of pidsToKill) {
       try {
         process.kill(pid, 'SIGKILL');
       } catch (error) {
@@ -256,16 +336,16 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
     }
   }
 
-  logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pids.length });
+  logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pidsToKill.length });
 }
 
 /**
  * Spawn a detached daemon process
  * Returns the child PID or undefined if spawn failed
  *
- * On Windows, uses WMIC to spawn a truly independent process that
- * survives parent exit without console popups. WMIC creates processes
- * that are not associated with the parent's console.
+ * On Windows, uses PowerShell Start-Process with -WindowStyle Hidden to spawn
+ * a truly independent process without console popups. Unlike WMIC, PowerShell
+ * inherits environment variables from the parent process.
  *
  * On Unix, uses standard detached spawn.
  *
@@ -285,28 +365,46 @@ export function spawnDaemon(
   };
 
   if (isWindows) {
-    // Use WMIC to spawn a process that's independent of the parent console
-    // This avoids the console popup that occurs with detached: true
-    // Paths must be individually quoted for WMIC when they contain spaces
+    // Use PowerShell Start-Process to spawn a hidden, independent process
+    // Unlike WMIC, PowerShell inherits environment variables from parent
+    // -WindowStyle Hidden prevents console popup
     const execPath = process.execPath;
     const script = scriptPath;
-    // WMIC command format: wmic process call create "\"path1\" \"path2\" args"
-    const command = `wmic process call create "\\"${execPath}\\" \\"${script}\\" --daemon"`;
+    const psCommand = `Start-Process -FilePath '${execPath}' -ArgumentList '${script}','--daemon' -WindowStyle Hidden`;
 
     try {
-      execSync(command, {
+      execSync(`powershell -NoProfile -Command "${psCommand}"`, {
         stdio: 'ignore',
-        windowsHide: true
+        windowsHide: true,
+        env
       });
-      // WMIC returns immediately, we can't get the spawned PID easily
-      // Worker will write its own PID file after listen()
       return 0;
     } catch {
       return undefined;
     }
   }
 
-  // Unix: standard detached spawn
+  // Unix: Use setsid to create a new session, fully detaching from the
+  // controlling terminal. This prevents SIGHUP from reaching the daemon
+  // even if the in-process SIGHUP handler somehow fails (belt-and-suspenders).
+  // Fall back to standard detached spawn if setsid is not available.
+  const setsidPath = '/usr/bin/setsid';
+  if (existsSync(setsidPath)) {
+    const child = spawn(setsidPath, [process.execPath, scriptPath, '--daemon'], {
+      detached: true,
+      stdio: 'ignore',
+      env
+    });
+
+    if (child.pid === undefined) {
+      return undefined;
+    }
+
+    child.unref();
+    return child.pid;
+  }
+
+  // Fallback: standard detached spawn (macOS, systems without setsid)
   const child = spawn(process.execPath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
@@ -320,6 +418,56 @@ export function spawnDaemon(
   child.unref();
 
   return child.pid;
+}
+
+/**
+ * Check if a process with the given PID is alive.
+ *
+ * Uses the process.kill(pid, 0) idiom: signal 0 doesn't send a signal,
+ * it just checks if the process exists and is reachable.
+ *
+ * EPERM is treated as "alive" because it means the process exists but
+ * belongs to a different user/session (common in multi-user setups).
+ * PID 0 (Windows WMIC sentinel for unknown PID) is treated as alive.
+ */
+export function isProcessAlive(pid: number): boolean {
+  // PID 0 is the Windows WMIC sentinel value — process was spawned but PID unknown
+  if (pid === 0) return true;
+
+  // Invalid PIDs are not alive
+  if (!Number.isInteger(pid) || pid < 0) return false;
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // EPERM = process exists but different user/session — treat as alive
+    if (code === 'EPERM') return true;
+    // ESRCH = no such process — it's dead
+    return false;
+  }
+}
+
+/**
+ * Read the PID file and remove it if the recorded process is dead (stale).
+ *
+ * This is a cheap operation: one filesystem read + one signal-0 check.
+ * Called at the top of ensureWorkerStarted() to clean up after WSL2
+ * hibernate, OOM kills, or other ungraceful worker deaths.
+ */
+export function cleanStalePidFile(): void {
+  const pidInfo = readPidFile();
+  if (!pidInfo) return;
+
+  if (!isProcessAlive(pidInfo.pid)) {
+    logger.info('SYSTEM', 'Removing stale PID file (worker process is dead)', {
+      pid: pidInfo.pid,
+      port: pidInfo.port,
+      startedAt: pidInfo.startedAt
+    });
+    removePidFile();
+  }
 }
 
 /**

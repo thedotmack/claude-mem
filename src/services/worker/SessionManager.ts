@@ -106,6 +106,15 @@ export class SessionManager {
       memory_session_id: dbSession.memory_session_id
     });
 
+    // Log warning if we're discarding a stale memory_session_id (Issue #817)
+    if (dbSession.memory_session_id) {
+      logger.warn('SESSION', `Discarding stale memory_session_id from previous worker instance (Issue #817)`, {
+        sessionDbId,
+        staleMemorySessionId: dbSession.memory_session_id,
+        reason: 'SDK context lost on worker restart - will capture new ID'
+      });
+    }
+
     // Use currentUserPrompt if provided, otherwise fall back to database (first prompt)
     const userPrompt = currentUserPrompt || dbSession.user_prompt;
 
@@ -124,11 +133,15 @@ export class SessionManager {
     }
 
     // Create active session
-    // Load memorySessionId from database if previously captured (enables resume across restarts)
+    // CRITICAL: Do NOT load memorySessionId from database here (Issue #817)
+    // When creating a new in-memory session, any database memory_session_id is STALE
+    // because the SDK context was lost when the worker restarted. The SDK agent will
+    // capture a new memorySessionId on the first response and persist it.
+    // Loading stale memory_session_id causes "No conversation found" crashes on resume.
     session = {
       sessionDbId,
       contentSessionId: dbSession.content_session_id,
-      memorySessionId: dbSession.memory_session_id || null,
+      memorySessionId: null,  // Always start fresh - SDK will capture new ID
       project: dbSession.project,
       userPrompt,
       pendingMessages: [],
@@ -140,13 +153,16 @@ export class SessionManager {
       cumulativeOutputTokens: 0,
       earliestPendingTimestamp: null,
       conversationHistory: [],  // Initialize empty - will be populated by agents
-      currentProvider: null  // Will be set when generator starts
+      currentProvider: null,  // Will be set when generator starts
+      consecutiveRestarts: 0,  // Track consecutive restart attempts to prevent infinite loops
+      processingMessageIds: []  // CLAIM-CONFIRM: Track message IDs for confirmProcessed()
     };
 
-    logger.debug('SESSION', 'Creating new session object', {
+    logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
       sessionDbId,
       contentSessionId: dbSession.content_session_id,
-      memorySessionId: dbSession.memory_session_id || '(none - fresh session)',
+      dbMemorySessionId: dbSession.memory_session_id || '(none in DB)',
+      memorySessionId: '(cleared - will capture fresh from SDK)',
       lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id)
     });
 
@@ -304,6 +320,28 @@ export class SessionManager {
   }
 
   /**
+   * Remove session from in-memory maps and notify without awaiting generator.
+   * Used when SDK resume fails and we give up (no fallback): avoids deadlock
+   * from deleteSession() awaiting the same generator promise we're inside.
+   */
+  removeSessionImmediate(sessionDbId: number): void {
+    const session = this.sessions.get(sessionDbId);
+    if (!session) return;
+
+    this.sessions.delete(sessionDbId);
+    this.sessionQueues.delete(sessionDbId);
+
+    logger.info('SESSION', 'Session removed (orphaned after SDK termination)', {
+      sessionId: sessionDbId,
+      project: session.project
+    });
+
+    if (this.onSessionDeletedCallback) {
+      this.onSessionDeletedCallback();
+    }
+  }
+
+  /**
    * Shutdown all active sessions
    */
   async shutdownAll(): Promise<void> {
@@ -378,7 +416,16 @@ export class SessionManager {
     const processor = new SessionQueueProcessor(this.getPendingStore(), emitter);
 
     // Use the robust iterator - messages are deleted on claim (no tracking needed)
-    for await (const message of processor.createIterator(sessionDbId, session.abortController.signal)) {
+    // CRITICAL: Pass onIdleTimeout callback that triggers abort to kill the subprocess
+    // Without this, the iterator returns but the Claude subprocess stays alive as a zombie
+    for await (const message of processor.createIterator({
+      sessionDbId,
+      signal: session.abortController.signal,
+      onIdleTimeout: () => {
+        logger.info('SESSION', 'Triggering abort due to idle timeout to kill subprocess', { sessionDbId });
+        session.abortController.abort();
+      }
+    })) {
       // Track earliest timestamp for accurate observation timestamps
       // This ensures backlog messages get their original timestamps, not current time
       if (session.earliestPendingTimestamp === null) {

@@ -73,7 +73,8 @@
           "modes",
           "development",
           "troubleshooting",
-          "platform-integration"
+          "platform-integration",
+          "openclaw-integration"
         ]
       },
       {

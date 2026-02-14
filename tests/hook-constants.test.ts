@@ -28,16 +28,20 @@ describe('hook-constants', () => {
       expect(HOOK_TIMEOUTS.DEFAULT).toBe(300000);
     });
 
-    it('should define HEALTH_CHECK timeout', () => {
-      expect(HOOK_TIMEOUTS.HEALTH_CHECK).toBe(30000);
+    it('should define HEALTH_CHECK timeout as 3s (reduced from 30s)', () => {
+      expect(HOOK_TIMEOUTS.HEALTH_CHECK).toBe(3000);
+    });
+
+    it('should define POST_SPAWN_WAIT as 5s', () => {
+      expect(HOOK_TIMEOUTS.POST_SPAWN_WAIT).toBe(5000);
+    });
+
+    it('should define PORT_IN_USE_WAIT as 3s', () => {
+      expect(HOOK_TIMEOUTS.PORT_IN_USE_WAIT).toBe(3000);
     });
 
     it('should define WORKER_STARTUP_WAIT', () => {
       expect(HOOK_TIMEOUTS.WORKER_STARTUP_WAIT).toBe(1000);
-    });
-
-    it('should define WORKER_STARTUP_RETRIES', () => {
-      expect(HOOK_TIMEOUTS.WORKER_STARTUP_RETRIES).toBe(300);
     });
 
     it('should define PRE_RESTART_SETTLE_DELAY', () => {
