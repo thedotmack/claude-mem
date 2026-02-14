@@ -97,7 +97,6 @@ Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. SessionStart r
 {
   "hooks": {
     "SessionStart": [{
-      "matcher": "startup|clear|compact",
       "hooks": [{
         "type": "command",
         "command": "node \"${CLAUDE_PLUGIN_ROOT}/../scripts/smart-install.js\" && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
