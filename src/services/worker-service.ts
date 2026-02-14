@@ -16,7 +16,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
-import { getAuthMethodDescription } from '../shared/EnvManager.js';
+import { getAuthMethodDescription, resolveNodePath, resolveRuntimeBinDir } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaServerManager } from './sync/ChromaServerManager.js';
 
@@ -441,11 +441,17 @@ export class WorkerService {
       logger.info('SYSTEM', 'Core initialization complete (MCP connecting in background)');
 
       // Connect to MCP server (non-blocking — failure only disables vector search)
+      // Use resolved node path to work around Bun snap PATH restriction
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
+      const nodeCommand = resolveNodePath();
+      const binDir = resolveRuntimeBinDir();
+      const mcpEnv = binDir && !process.env.PATH?.includes(binDir)
+        ? { ...process.env, PATH: `${binDir}:${process.env.PATH || ''}` }
+        : { ...process.env };
       const transport = new StdioClientTransport({
-        command: 'node',
+        command: nodeCommand,
         args: [mcpServerPath],
-        env: process.env
+        env: mcpEnv
       });
 
       const MCP_INIT_TIMEOUT_MS = 60000; // 60s timeout (was 5 min — too long)

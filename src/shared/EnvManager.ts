@@ -10,8 +10,9 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { homedir } from 'os';
+import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
 
 // Path to claude-mem's centralized .env file
@@ -189,6 +190,42 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
  *
  * @param includeCredentials - Whether to include API keys from ~/.claude-mem/.env (default: true)
  */
+/**
+ * Resolve the bin directory containing node/claude from CLAUDE_CODE_PATH setting.
+ * When running under Bun snap, the PATH is restricted to snap-only paths.
+ * This derives the nvm bin directory from the configured claude executable path.
+ */
+export function resolveRuntimeBinDir(): string | null {
+  try {
+    const settingsPath = join(homedir(), '.claude-mem', 'settings.json');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    if (settings.CLAUDE_CODE_PATH) {
+      const binDir = dirname(resolve(settings.CLAUDE_CODE_PATH));
+      if (existsSync(join(binDir, process.platform === 'win32' ? 'node.exe' : 'node'))) {
+        return binDir;
+      }
+    }
+  } catch {
+    // Settings not available — fall through
+  }
+  return null;
+}
+
+/**
+ * Resolve absolute path to the node executable.
+ * Uses CLAUDE_CODE_PATH's directory first, then falls back to 'node'.
+ */
+export function resolveNodePath(): string {
+  const binDir = resolveRuntimeBinDir();
+  if (binDir) {
+    const nodePath = join(binDir, process.platform === 'win32' ? 'node.exe' : 'node');
+    if (existsSync(nodePath)) {
+      return nodePath;
+    }
+  }
+  return 'node';
+}
+
 export function buildIsolatedEnv(includeCredentials: boolean = true): Record<string, string> {
   // 1. Start with full process environment
   const isolatedEnv: Record<string, string> = {};
@@ -198,10 +235,21 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     }
   }
 
-  // 2. Override SDK entrypoint marker
+  // 2. Augment PATH with runtime bin directory (fixes Bun snap PATH restriction)
+  // When running under Bun snap, PATH is restricted to snap-only paths.
+  // The nvm bin directory (containing node, claude) must be prepended.
+  const runtimeBinDir = resolveRuntimeBinDir();
+  if (runtimeBinDir) {
+    const currentPath = isolatedEnv.PATH || '';
+    if (!currentPath.includes(runtimeBinDir)) {
+      isolatedEnv.PATH = currentPath ? `${runtimeBinDir}:${currentPath}` : runtimeBinDir;
+    }
+  }
+
+  // 3. Override SDK entrypoint marker
   isolatedEnv.CLAUDE_CODE_ENTRYPOINT = 'sdk-ts';
 
-  // 3. Re-inject managed credentials from claude-mem's .env file
+  // 4. Re-inject managed credentials from claude-mem's .env file
   if (includeCredentials) {
     const credentials = loadClaudeMemEnv();
 
@@ -219,7 +267,7 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
       isolatedEnv.OPENROUTER_API_KEY = credentials.OPENROUTER_API_KEY;
     }
 
-    // 4. Pass through Claude CLI's OAuth token if available (fallback for CLI subscription billing)
+    // 5. Pass through Claude CLI's OAuth token if available (fallback for CLI subscription billing)
     // When no ANTHROPIC_API_KEY is configured, the spawned CLI uses subscription billing
     // which requires either ~/.claude/.credentials.json or CLAUDE_CODE_OAUTH_TOKEN.
     // The worker inherits this token from the Claude Code session that started it.
