@@ -61,6 +61,15 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SURPRISE_LOOKBACK_DAYS: string;
   CLAUDE_MEM_MOMENTUM_ENABLED: string;
   CLAUDE_MEM_MOMENTUM_DURATION_MINUTES: string;
+  // Chroma Vector Database Configuration
+  CLAUDE_MEM_CHROMA_MODE: string;      // 'local' | 'remote'
+  CLAUDE_MEM_CHROMA_HOST: string;
+  CLAUDE_MEM_CHROMA_PORT: string;
+  CLAUDE_MEM_CHROMA_SSL: string;
+  // Future cloud support
+  CLAUDE_MEM_CHROMA_API_KEY: string;
+  CLAUDE_MEM_CHROMA_TENANT: string;
+  CLAUDE_MEM_CHROMA_DATABASE: string;
 }
 
 export class SettingsDefaultsManager {
@@ -116,6 +125,15 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SURPRISE_LOOKBACK_DAYS: '30',
     CLAUDE_MEM_MOMENTUM_ENABLED: 'true',
     CLAUDE_MEM_MOMENTUM_DURATION_MINUTES: '5',
+    // Chroma Vector Database Configuration
+    CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' starts npx chroma run, 'remote' connects to existing server
+    CLAUDE_MEM_CHROMA_HOST: '127.0.0.1',
+    CLAUDE_MEM_CHROMA_PORT: '8000',
+    CLAUDE_MEM_CHROMA_SSL: 'false',
+    // Future cloud support (claude-mem pro)
+    CLAUDE_MEM_CHROMA_API_KEY: '',
+    CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
+    CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
   };
 
   /**

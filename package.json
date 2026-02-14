@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "10.0.6",
+  "version": "10.0.7",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -101,8 +101,10 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.76",
+    "@chroma-core/default-embed": "^0.1.9",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "ansi-to-html": "^0.7.2",
+    "chromadb": "^3.2.2",
     "dompurify": "^3.3.1",
     "express": "^4.18.2",
     "glob": "^11.0.3",

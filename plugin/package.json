@@ -1,10 +1,12 @@
 {
   "name": "claude-mem-plugin",
-  "version": "10.0.6",
+  "version": "10.0.7",
   "private": true,
   "description": "Runtime dependencies for claude-mem bundled hooks",
   "type": "module",
-  "dependencies": {},
+  "dependencies": {
+    "@chroma-core/default-embed": "^0.1.9"
+  },
   "engines": {
     "node": ">=18.0.0",
     "bun": ">=1.0.0"

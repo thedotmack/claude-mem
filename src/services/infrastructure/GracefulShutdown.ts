@@ -30,6 +30,13 @@ export interface CloseableDatabase {
 }
 
 /**
+ * Stoppable service interface for Chroma server
+ */
+export interface StoppableServer {
+  stop(): Promise<void>;
+}
+
+/**
  * Configuration for graceful shutdown
  */
 export interface GracefulShutdownConfig {
@@ -37,6 +44,7 @@ export interface GracefulShutdownConfig {
   sessionManager: ShutdownableService;
   mcpClient?: CloseableClient;
   dbManager?: CloseableDatabase;
+  chromaServer?: StoppableServer;
 }
 
 /**
@@ -71,12 +79,19 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
     logger.info('SYSTEM', 'MCP client closed');
   }
 
-  // STEP 5: Close database connection (includes ChromaSync cleanup)
+  // STEP 5: Stop Chroma server (local mode only)
+  if (config.chromaServer) {
+    logger.info('SHUTDOWN', 'Stopping Chroma server...');
+    await config.chromaServer.stop();
+    logger.info('SHUTDOWN', 'Chroma server stopped');
+  }
+
+  // STEP 6: Close database connection (includes ChromaSync cleanup)
   if (config.dbManager) {
     await config.dbManager.close();
   }
 
-  // STEP 6: Force kill any remaining child processes (Windows zombie port fix)
+  // STEP 7: Force kill any remaining child processes (Windows zombie port fix)
   if (childPids.length > 0) {
     logger.info('SYSTEM', 'Force killing remaining children');
     for (const pid of childPids) {

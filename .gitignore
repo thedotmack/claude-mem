@@ -11,6 +11,8 @@ dist/
 .claude/settings.local.json
 .claude/agents/
 .claude/skills/
+.claude/plans/
+.claude/worktrees/
 plugin/data/
 plugin/data.backup/
 package-lock.json

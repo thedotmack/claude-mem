@@ -90,6 +90,16 @@ try {
     { stdio: 'inherit' }
   );
 
+  // Remove stale lockfiles before install — they pin old native dep versions
+  const { unlinkSync } = require('fs');
+  for (const lockfile of ['package-lock.json', 'bun.lock']) {
+    const lockpath = path.join(INSTALLED_PATH, lockfile);
+    if (existsSync(lockpath)) {
+      unlinkSync(lockpath);
+      console.log(`Removed stale ${lockfile}`);
+    }
+  }
+
   console.log('Running npm install in marketplace...');
   execSync(
     'cd ~/.claude/plugins/marketplaces/thedotmack/ && npm install',

@@ -290,12 +290,22 @@ export function createPidCapturingSpawn(sessionDbId: number) {
       windowsHide: true
     });
 
+    // Capture stderr for debugging spawn failures
+    if (child.stderr) {
+      child.stderr.on('data', (data: Buffer) => {
+        logger.debug('SDK_SPAWN', `[session-${sessionDbId}] stderr: ${data.toString().trim()}`);
+      });
+    }
+
     // Register PID
     if (child.pid) {
       registerProcess(child.pid, sessionDbId, child);
 
       // Auto-unregister on exit
-      child.on('exit', () => {
+      child.on('exit', (code: number | null, signal: string | null) => {
+        if (code !== 0) {
+          logger.warn('SDK_SPAWN', `[session-${sessionDbId}] Claude process exited`, { code, signal, pid: child.pid });
+        }
         if (child.pid) {
           unregisterProcess(child.pid);
         }
@@ -306,6 +316,7 @@ export function createPidCapturingSpawn(sessionDbId: number) {
     return {
       stdin: child.stdin,
       stdout: child.stdout,
+      stderr: child.stderr,
       get killed() { return child.killed; },
       get exitCode() { return child.exitCode; },
       kill: child.kill.bind(child),

@@ -2,6 +2,28 @@
 
 All notable changes to claude-mem.
 
+## [v10.0.7] - 2026-02-14
+
+## Chroma HTTP Server Architecture
+
+- **Persistent HTTP server**: Switched from in-process Chroma to a persistent HTTP server managed by the new `ChromaServerManager` for better reliability and performance
+- **Local embeddings**: Added `DefaultEmbeddingFunction` for local vector embeddings — no external API required
+- **Pinned chromadb v3.2.2**: Fixed compatibility with v2 API heartbeat endpoint
+- **Server lifecycle improvements**: Addressed PR review feedback for proper start/stop/health check handling
+
+## Bug Fixes
+
+- Fixed SDK spawn failures and sharp native binary crashes
+- Added `plugin.json` to root `.claude-plugin` directory for proper plugin structure
+- Removed duplicate else block from merge artifact
+
+## Infrastructure
+
+- Added multi-tenancy support for claude-mem Pro
+- Updated OpenClaw install URLs to `install.cmem.ai`
+- Added Vercel deploy workflow for install scripts
+- Added `.claude/plans` and `.claude/worktrees` to `.gitignore`
+
 ## [v10.0.6] - 2026-02-13
 
 ## Bug Fixes
@@ -1558,12 +1580,4 @@ Since we're now explicit about recovery instead of silently papering over proble
 **PR #437:** https://github.com/thedotmack/claude-mem/pull/437
 
 *The evidence: Observations #3646, #6738, #7598, #12860, #12866, #13046, #15259, #20995, #21055, #30524, #31080, #32114, #32116, #32125, #32126, #32127, #32146, #32324—the complete record of a 3-month battle.*
-
-## [v8.0.6] - 2025-12-24
-
-## Bug Fixes
-
-- Add error handlers to Chroma sync operations to prevent worker crashes on timeout (#428)
-
-This patch release improves stability by adding proper error handling to Chroma vector database sync operations, preventing worker crashes when sync operations timeout.
 
