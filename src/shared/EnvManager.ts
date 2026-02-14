@@ -229,6 +229,9 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     // If not configured, CLI billing will be used (via ANTHROPIC_AUTH_TOKEN passthrough)
     if (credentials.ANTHROPIC_API_KEY) {
       isolatedEnv.ANTHROPIC_API_KEY = credentials.ANTHROPIC_API_KEY;
+      // Enforce deterministic auth chain: API key mode must not carry OAuth token.
+      // This avoids ambiguous precedence when the parent process exports a token.
+      delete isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN;
     }
     // Note: GEMINI_API_KEY and OPENROUTER_API_KEY pass through from process.env,
     // but claude-mem's .env takes precedence if configured
