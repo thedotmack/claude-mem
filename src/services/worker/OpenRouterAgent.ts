@@ -11,21 +11,21 @@
  * - Support dynamic model selection across providers
  */
 
-import { DatabaseManager } from './DatabaseManager.js';
-import { SessionManager } from './SessionManager.js';
-import { logger } from '../../utils/logger.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { buildContinuationPrompt, buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from '../../sdk/prompts.js';
+import { getCredential } from '../../shared/EnvManager.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { getCredential } from '../../shared/EnvManager.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import { logger } from '../../utils/logger.js';
 import { ModeManager } from '../domain/ModeManager.js';
+import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import { DatabaseManager } from './DatabaseManager.js';
+import { SessionManager } from './SessionManager.js';
 import {
+  isAbortError,
   processAgentResponse,
   shouldFallbackToClaude,
-  isAbortError,
-  type WorkerRef,
-  type FallbackAgent
+  type FallbackAgent,
+  type WorkerRef
 } from './agents/index.js';
 
 // OpenRouter API endpoint
@@ -114,7 +114,7 @@ export class OpenRouterAgent {
 
       if (initResponse.content) {
         // Add response to conversation history
-        session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
+        // session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
 
         // Track token usage
         const tokensUsed = initResponse.tokensUsed || 0;
@@ -185,7 +185,7 @@ export class OpenRouterAgent {
           let tokensUsed = 0;
           if (obsResponse.content) {
             // Add response to conversation history
-            session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
+            // session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
 
             tokensUsed = obsResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
@@ -227,7 +227,7 @@ export class OpenRouterAgent {
           let tokensUsed = 0;
           if (summaryResponse.content) {
             // Add response to conversation history
-            session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
+            // session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
 
             tokensUsed = summaryResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
