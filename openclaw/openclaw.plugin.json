@@ -63,7 +63,7 @@
               "claudeCodeLabel": {
                 "type": "string",
                 "default": "Claude Code Session",
-                "description": "Display label for Claude Code sessions in the feed"
+                "description": "Display label prefix for Claude Code sessions in the feed (project identifier is appended automatically)"
               },
               "default": {
                 "type": "string",

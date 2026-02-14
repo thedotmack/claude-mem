@@ -227,8 +227,13 @@ function buildGetSourceLabel(
     if (project === "openclaw") {
       return `${primary} openclaw`;
     }
-    // Everything else is a Claude Code session
-    return `${claudeCode} ${claudeCodeLabel}`;
+    // Everything else is a Claude Code session. Keep the project identifier
+    // visible so concurrent sessions can be distinguished in the feed.
+    const trimmedLabel = claudeCodeLabel.trim();
+    if (!trimmedLabel) {
+      return `${claudeCode} ${project}`;
+    }
+    return `${claudeCode} ${trimmedLabel} (${project})`;
   };
 }
 
