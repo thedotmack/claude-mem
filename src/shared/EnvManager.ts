@@ -28,7 +28,7 @@ export const ENV_FILE_PATH = join(DATA_DIR, '.env');
 // are passed through to avoid breaking CLI authentication, proxies, and platform features.
 const BLOCKED_ENV_VARS = [
   'ANTHROPIC_API_KEY',  // Issue #733: Prevent auto-discovery from project .env files
-  'CLAUDECODE',         // Prevent "cannot be launched inside another Claude Code session" error
+  'CLAUDECODE',         // Prevent "nested session" detection when SDK agent spawns claude
 ];
 
 // Credential keys that claude-mem manages
