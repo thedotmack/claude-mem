@@ -8,9 +8,10 @@
  * Cross-platform: Linux, macOS, Windows
  */
 
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, execSync } from 'child_process';
 import path from 'path';
 import os from 'os';
+import fs from 'fs';
 import { logger } from '../../utils/logger.js';
 
 export interface ChromaServerConfig {
@@ -25,6 +26,7 @@ export class ChromaServerManager {
   private config: ChromaServerConfig;
   private starting: boolean = false;
   private ready: boolean = false;
+  private startPromise: Promise<boolean> | null = null;
 
   private constructor(config: ChromaServerConfig) {
     this.config = config;
@@ -47,22 +49,49 @@ export class ChromaServerManager {
 
   /**
    * Start the Chroma HTTP server
+   * Reuses in-flight startup if already starting
    * Spawns `npx chroma run` as a background process
    * If a server is already running (from previous worker), reuses it
    */
-  async start(): Promise<void> {
-    if (this.ready || this.starting) {
+  async start(timeoutMs: number = 60000): Promise<boolean> {
+    if (this.ready) {
       logger.debug('CHROMA_SERVER', 'Server already started or starting', {
         ready: this.ready,
         starting: this.starting
       });
-      return;
+      return true;
     }
 
+    if (this.startPromise) {
+      logger.debug('CHROMA_SERVER', 'Awaiting existing startup', {
+        host: this.config.host,
+        port: this.config.port
+      });
+      return this.startPromise;
+    }
+
+    this.starting = true;
+    this.startPromise = this.startInternal(timeoutMs);
+
+    try {
+      return await this.startPromise;
+    } finally {
+      this.startPromise = null;
+      if (!this.ready) {
+        this.starting = false;
+      }
+    }
+  }
+
+  /**
+   * Internal startup path used behind a single shared startPromise lock
+   */
+  private async startInternal(timeoutMs: number): Promise<boolean> {
     // Check if a server is already running (from previous worker or manual start)
     try {
       const response = await fetch(
-        `http://${this.config.host}:${this.config.port}/api/v2/heartbeat`
+        `http://${this.config.host}:${this.config.port}/api/v2/heartbeat`,
+        { signal: AbortSignal.timeout(3000) }
       );
       if (response.ok) {
         logger.info('CHROMA_SERVER', 'Existing server detected, reusing', {
@@ -70,13 +99,12 @@ export class ChromaServerManager {
           port: this.config.port
         });
         this.ready = true;
-        return;
+        this.starting = false;
+        return true;
       }
     } catch {
       // No server running, proceed to start one
     }
-
-    this.starting = true;
 
     // Cross-platform: use npx.cmd on Windows
     const isWindows = process.platform === 'win32';
@@ -95,10 +123,13 @@ export class ChromaServerManager {
       dataDir: this.config.dataDir
     });
 
+    const spawnEnv = this.getSpawnEnv();
+
     this.serverProcess = spawn(command, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: !isWindows,  // Don't detach on Windows (no process groups)
-      windowsHide: true      // Hide console window on Windows
+      windowsHide: true,     // Hide console window on Windows
+      env: spawnEnv
     });
 
     // Log server output for debugging
@@ -131,6 +162,8 @@ export class ChromaServerManager {
       this.starting = false;
       this.serverProcess = null;
     });
+
+    return this.waitForReady(timeoutMs);
   }
 
   /**
@@ -138,6 +171,10 @@ export class ChromaServerManager {
    * Polls the heartbeat endpoint until success or timeout
    */
   async waitForReady(timeoutMs: number = 60000): Promise<boolean> {
+    if (this.ready) {
+      return true;
+    }
+
     const startTime = Date.now();
     const checkInterval = 500;
 
@@ -237,6 +274,7 @@ export class ChromaServerManager {
         this.serverProcess = null;
         this.ready = false;
         this.starting = false;
+        this.startPromise = null;
         logger.info('CHROMA_SERVER', 'Server stopped', { pid });
         resolve();
       };
@@ -275,6 +313,94 @@ export class ChromaServerManager {
         }
       }, 5000);
     });
+  }
+
+  /**
+   * Get or create combined SSL certificate bundle for Zscaler/corporate proxy environments.
+   * This ports previous MCP SSL handling so local `npx chroma run` works behind enterprise proxies.
+   */
+  private getCombinedCertPath(): string | undefined {
+    const combinedCertPath = path.join(os.homedir(), '.claude-mem', 'combined_certs.pem');
+
+    if (fs.existsSync(combinedCertPath)) {
+      const stats = fs.statSync(combinedCertPath);
+      const ageMs = Date.now() - stats.mtimeMs;
+      if (ageMs < 24 * 60 * 60 * 1000) {
+        return combinedCertPath;
+      }
+    }
+
+    if (process.platform !== 'darwin') {
+      return undefined;
+    }
+
+    try {
+      let certifiPath: string | undefined;
+      try {
+        certifiPath = execSync(
+          'uvx --with certifi python -c "import certifi; print(certifi.where())"',
+          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 }
+        ).trim();
+      } catch {
+        return undefined;
+      }
+
+      if (!certifiPath || !fs.existsSync(certifiPath)) {
+        return undefined;
+      }
+
+      let zscalerCert = '';
+      try {
+        zscalerCert = execSync(
+          'security find-certificate -a -c "Zscaler" -p /Library/Keychains/System.keychain',
+          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000 }
+        );
+      } catch {
+        return undefined;
+      }
+
+      if (!zscalerCert ||
+          !zscalerCert.includes('-----BEGIN CERTIFICATE-----') ||
+          !zscalerCert.includes('-----END CERTIFICATE-----')) {
+        return undefined;
+      }
+
+      const certifiContent = fs.readFileSync(certifiPath, 'utf8');
+      const tempPath = combinedCertPath + '.tmp';
+      fs.writeFileSync(tempPath, certifiContent + '\n' + zscalerCert);
+      fs.renameSync(tempPath, combinedCertPath);
+
+      logger.info('CHROMA_SERVER', 'Created combined SSL certificate bundle for Zscaler', {
+        path: combinedCertPath
+      });
+
+      return combinedCertPath;
+    } catch (error) {
+      logger.debug('CHROMA_SERVER', 'Could not create combined cert bundle', {}, error as Error);
+      return undefined;
+    }
+  }
+
+  /**
+   * Build subprocess env and preserve Zscaler compatibility from previous architecture.
+   */
+  private getSpawnEnv(): NodeJS.ProcessEnv {
+    const combinedCertPath = this.getCombinedCertPath();
+    if (!combinedCertPath) {
+      return process.env;
+    }
+
+    logger.info('CHROMA_SERVER', 'Using combined SSL certificates for enterprise compatibility', {
+      certPath: combinedCertPath
+    });
+
+    return {
+      ...process.env,
+      SSL_CERT_FILE: combinedCertPath,
+      REQUESTS_CA_BUNDLE: combinedCertPath,
+      CURL_CA_BUNDLE: combinedCertPath,
+      NODE_EXTRA_CA_CERTS: combinedCertPath
+    };
   }
 
   /**

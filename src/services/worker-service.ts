@@ -383,8 +383,7 @@ export class WorkerService {
           port: parseInt(settings.CLAUDE_MEM_CHROMA_PORT || '8000', 10)
         });
 
-        await this.chromaServer.start();
-        const ready = await this.chromaServer.waitForReady(60000);
+        const ready = await this.chromaServer.start(60000);
 
         if (ready) {
           logger.success('SYSTEM', 'Chroma server ready');
