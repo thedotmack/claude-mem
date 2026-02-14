@@ -263,6 +263,29 @@ The feed only sends `new_observation` events — not raw tool usage. Observation
 
 ## Installation
 
+Run this one-liner to install everything automatically:
+
+```bash
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash
+```
+
+The installer handles dependency checks (Bun, uv), plugin installation, memory slot configuration, AI provider setup, worker startup, and optional observation feed configuration.
+
+You can also pre-select options:
+
+```bash
+# With a specific AI provider
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash -s -- --provider=gemini --api-key=YOUR_KEY
+
+# Fully unattended (defaults to Claude Max Plan)
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash -s -- --non-interactive
+
+# Upgrade existing installation
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash -s -- --upgrade
+```
+
+### Manual Configuration
+
 Add `claude-mem` to your OpenClaw gateway's plugin configuration:
 
 ```json

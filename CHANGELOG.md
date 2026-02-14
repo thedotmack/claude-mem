@@ -2,6 +2,72 @@
 
 All notable changes to claude-mem.
 
+## [v10.0.6] - 2026-02-13
+
+## Bug Fixes
+
+- **OpenClaw: Fix MEMORY.md project query mismatch** — `syncMemoryToWorkspace` now includes both the base project name and the agent-scoped project name (e.g., both "openclaw" and "openclaw-main") when querying for context injection, ensuring the correct observations are pulled into MEMORY.md.
+
+- **OpenClaw: Add feed botToken support for Telegram** — Feeds can now configure a dedicated `botToken` for direct Telegram message delivery, bypassing the OpenClaw gateway channel. This fixes scenarios where the gateway bot token couldn't be used for feed messages.
+
+## Other
+
+- Changed OpenClaw plugin kind from "integration" to "memory" for accuracy.
+
+## [v10.0.5] - 2026-02-13
+
+## OpenClaw Installer & Distribution
+
+This release introduces the OpenClaw one-liner installer and fixes several OpenClaw plugin issues.
+
+### New Features
+
+- **OpenClaw Installer** (`openclaw/install.sh`): Full cross-platform installer script with `curl | bash` support
+  - Platform detection (macOS, Linux, WSL)
+  - Automatic dependency management (Bun, uv, Node.js)
+  - Interactive AI provider setup with settings writer
+  - OpenClaw gateway detection, plugin install, and memory slot configuration
+  - Worker startup and health verification with rich diagnostics
+  - TTY detection, `--provider`/`--api-key` CLI flags
+  - Error recovery and upgrade handling for existing installations
+  - jq/python3/node fallback chain for JSON config writing
+- **Distribution readiness tests** (`openclaw/test-install.sh`): Comprehensive test suite for the installer
+- **Enhanced `/api/health` endpoint**: Now returns version, uptime, workerPath, and AI status
+
+### Bug Fixes
+
+- Fix: use `event.prompt` instead of `ctx.sessionKey` for prompt storage in OpenClaw plugin
+- Fix: detect both `openclaw` and `openclaw.mjs` binary names in gateway discovery
+- Fix: pass file paths via env vars instead of bash interpolation in `node -e` calls
+- Fix: handle stale plugin config that blocks OpenClaw CLI during reinstall
+- Fix: remove stale memory slot reference during reinstall cleanup
+- Fix: remove opinionated filters from OpenClaw plugin
+
+## [v10.0.4] - 2026-02-12
+
+## Revert: v10.0.3 chroma-mcp spawn storm fix
+
+v10.0.3 introduced regressions. This release reverts the codebase to the stable v10.0.2 state.
+
+### What was reverted
+
+- Connection mutex via promise memoization
+- Pre-spawn process count guard
+- Hardened `close()` with try-finally + Unix `pkill -P` fallback
+- Count-based orphan reaper in `ProcessManager`
+- Circuit breaker (3 failures → 60s cooldown)
+- `etime`-based sorting for process guards
+
+### Files restored to v10.0.2
+
+- `src/services/sync/ChromaSync.ts`
+- `src/services/infrastructure/GracefulShutdown.ts`
+- `src/services/infrastructure/ProcessManager.ts`
+- `src/services/worker-service.ts`
+- `src/services/worker/ProcessRegistry.ts`
+- `tests/infrastructure/process-manager.test.ts`
+- `tests/integration/chroma-vector-sync.test.ts`
+
 ## [v10.0.3] - 2026-02-11
 
 ## Fix: Prevent chroma-mcp spawn storm (PR #1065)
@@ -1500,26 +1566,4 @@ Since we're now explicit about recovery instead of silently papering over proble
 - Add error handlers to Chroma sync operations to prevent worker crashes on timeout (#428)
 
 This patch release improves stability by adding proper error handling to Chroma vector database sync operations, preventing worker crashes when sync operations timeout.
-
-## [v8.0.5] - 2025-12-24
-
-## Bug Fixes
-
-- **Context Loading**: Fixed observation filtering for non-code modes, ensuring observations are properly retrieved across all mode types
-
-## Technical Details
-
-Refactored context loading logic to differentiate between code and non-code modes, resolving issues where mode-specific observations were filtered by stale settings.
-
-## [v8.0.4] - 2025-12-23
-
-## Changes
-
-- Changed worker start script
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v8.0.3] - 2025-12-23
-
-Fix critical worker crashes on startup (v8.0.2 regression)
 

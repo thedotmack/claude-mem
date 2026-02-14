@@ -2,7 +2,7 @@
   "id": "claude-mem",
   "name": "Claude-Mem (Persistent Memory)",
   "description": "Official OpenClaw plugin for Claude-Mem. Records observations from embedded runner sessions and streams them to messaging channels.",
-  "kind": "integration",
+  "kind": "memory",
   "version": "1.0.0",
   "author": "thedotmack",
   "homepage": "https://claude-mem.com",
@@ -41,6 +41,10 @@
           "to": {
             "type": "string",
             "description": "Target chat/user ID to send observations to"
+          },
+          "botToken": {
+            "type": "string",
+            "description": "Optional dedicated Telegram bot token for the feed (bypasses gateway channel)"
           }
         }
       }

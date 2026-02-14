@@ -67,13 +67,27 @@ interface SessionEndEvent {
   durationMs?: number;
 }
 
+interface MessageReceivedEvent {
+  from: string;
+  content: string;
+  timestamp?: number;
+  metadata?: Record<string, unknown>;
+}
+
 interface EventContext {
   sessionKey?: string;
   workspaceDir?: string;
   agentId?: string;
 }
 
+interface MessageContext {
+  channelId: string;
+  accountId?: string;
+  conversationId?: string;
+}
+
 type EventCallback<T> = (event: T, ctx: EventContext) => void | Promise<void>;
+type MessageEventCallback<T> = (event: T, ctx: MessageContext) => void | Promise<void>;
 
 interface OpenClawPluginApi {
   id: string;
@@ -100,6 +114,7 @@ interface OpenClawPluginApi {
       ((event: "agent_end", callback: EventCallback<AgentEndEvent>) => void) &
       ((event: "session_start", callback: EventCallback<SessionStartEvent>) => void) &
       ((event: "session_end", callback: EventCallback<SessionEndEvent>) => void) &
+      ((event: "message_received", callback: MessageEventCallback<MessageReceivedEvent>) => void) &
       ((event: "after_compaction", callback: EventCallback<AfterCompactionEvent>) => void) &
       ((event: "gateway_start", callback: EventCallback<Record<string, never>>) => void);
   runtime: {
@@ -149,6 +164,7 @@ interface ClaudeMemPluginConfig {
     enabled?: boolean;
     channel?: string;
     to?: string;
+    botToken?: string;
   };
 }
 
@@ -158,7 +174,6 @@ interface ClaudeMemPluginConfig {
 
 const MAX_SSE_BUFFER_SIZE = 1024 * 1024; // 1MB
 const DEFAULT_WORKER_PORT = 37777;
-const TOOL_RESULT_MAX_LENGTH = 1000;
 
 // Agent emoji map for observation feed messages.
 // When creating a new OpenClaw agent, add its agentId and emoji here.
@@ -291,12 +306,44 @@ const CHANNEL_SEND_MAP: Record<string, { namespace: string; functionName: string
   line: { namespace: "line", functionName: "sendMessageLine" },
 };
 
+async function sendDirectTelegram(
+  botToken: string,
+  chatId: string,
+  text: string,
+  logger: PluginLogger
+): Promise<void> {
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: "Markdown",
+      }),
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      logger.warn(`[claude-mem] Direct Telegram send failed (${response.status}): ${body}`);
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`[claude-mem] Direct Telegram send error: ${message}`);
+  }
+}
+
 function sendToChannel(
   api: OpenClawPluginApi,
   channel: string,
   to: string,
-  text: string
+  text: string,
+  botToken?: string
 ): Promise<void> {
+  // If a dedicated bot token is provided for Telegram, send directly
+  if (botToken && channel === "telegram") {
+    return sendDirectTelegram(botToken, to, text, api.logger);
+  }
+
   const mapping = CHANNEL_SEND_MAP[channel];
   if (!mapping) {
     api.logger.warn(`[claude-mem] Unsupported channel type: ${channel}`);
@@ -332,7 +379,8 @@ async function connectToSSEStream(
   channel: string,
   to: string,
   abortController: AbortController,
-  setConnectionState: (state: ConnectionState) => void
+  setConnectionState: (state: ConnectionState) => void,
+  botToken?: string
 ): Promise<void> {
   let backoffMs = 1000;
   const maxBackoffMs = 30000;
@@ -393,7 +441,7 @@ async function connectToSSEStream(
             if (parsed.type === "new_observation" && parsed.observation) {
               const event = parsed as SSENewObservationEvent;
               const message = formatObservationMessage(event.observation);
-              await sendToChannel(api, channel, to, message);
+              await sendToChannel(api, channel, to, message, botToken);
             }
           } catch (parseError: unknown) {
             const errorMessage = parseError instanceof Error ? parseError.message : String(parseError);
@@ -450,10 +498,16 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     return sessionIds.get(key)!;
   }
 
-  async function syncMemoryToWorkspace(workspaceDir: string): Promise<void> {
+  async function syncMemoryToWorkspace(workspaceDir: string, ctx?: EventContext): Promise<void> {
+    // Include both the base project and agent-scoped project (e.g. "openclaw" + "openclaw-main")
+    const projects = [baseProjectName];
+    const agentProject = ctx ? getProjectName(ctx) : null;
+    if (agentProject && agentProject !== baseProjectName) {
+      projects.push(agentProject);
+    }
     const contextText = await workerGetText(
       workerPort,
-      `/api/context/inject?projects=${encodeURIComponent(baseProjectName)}`,
+      `/api/context/inject?projects=${encodeURIComponent(projects.join(","))}`,
       api.logger
     );
     if (contextText && contextText.trim().length > 0) {
@@ -483,6 +537,20 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   });
 
   // ------------------------------------------------------------------
+  // Event: message_received — capture inbound user prompts from channels
+  // ------------------------------------------------------------------
+  api.on("message_received", async (event, ctx) => {
+    const sessionKey = ctx.conversationId || ctx.channelId || "default";
+    const contentSessionId = getContentSessionId(sessionKey);
+
+    await workerPost(workerPort, "/api/sessions/init", {
+      contentSessionId,
+      project: baseProjectName,
+      prompt: event.content || "[media prompt]",
+    }, api.logger);
+  });
+
+  // ------------------------------------------------------------------
   // Event: after_compaction — re-init session after context compaction
   // ------------------------------------------------------------------
   api.on("after_compaction", async (_event, ctx) => {
@@ -500,7 +568,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // ------------------------------------------------------------------
   // Event: before_agent_start — init session + sync MEMORY.md + track workspace
   // ------------------------------------------------------------------
-  api.on("before_agent_start", async (_event, ctx) => {
+  api.on("before_agent_start", async (event, ctx) => {
     // Track workspace dir so tool_result_persist can sync MEMORY.md later
     if (ctx.workspaceDir) {
       workspaceDirsBySessionKey.set(ctx.sessionKey || "default", ctx.workspaceDir);
@@ -512,12 +580,12 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     await workerPost(workerPort, "/api/sessions/init", {
       contentSessionId,
       project: getProjectName(ctx),
-      prompt: ctx.sessionKey || "agent run",
+      prompt: event.prompt || "agent run",
     }, api.logger);
 
     // Sync MEMORY.md before agent runs (provides context to agent)
     if (syncMemoryFile && ctx.workspaceDir) {
-      await syncMemoryToWorkspace(ctx.workspaceDir);
+      await syncMemoryToWorkspace(ctx.workspaceDir, ctx);
     }
   });
 
@@ -527,20 +595,18 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   api.on("tool_result_persist", (event, ctx) => {
     api.logger.info(`[claude-mem] tool_result_persist fired: tool=${event.toolName ?? "unknown"} agent=${ctx.agentId ?? "none"} session=${ctx.sessionKey ?? "none"}`);
     const toolName = event.toolName;
-    if (!toolName || toolName.startsWith("memory_")) return;
+    if (!toolName) return;
 
     const contentSessionId = getContentSessionId(ctx.sessionKey);
 
-    // Extract result text from message content
+    // Extract result text from all content blocks
     let toolResponseText = "";
     const content = event.message?.content;
     if (Array.isArray(content)) {
-      const textBlock = content.find(
-        (block) => block.type === "tool_result" || block.type === "text"
-      );
-      if (textBlock && "text" in textBlock) {
-        toolResponseText = String(textBlock.text).slice(0, TOOL_RESULT_MAX_LENGTH);
-      }
+      toolResponseText = content
+        .filter((block) => (block.type === "tool_result" || block.type === "text") && "text" in block)
+        .map((block) => String(block.text))
+        .join("\n");
     }
 
     // Fire-and-forget: send observation + sync MEMORY.md in parallel
@@ -554,7 +620,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
     const workspaceDir = ctx.workspaceDir || workspaceDirsBySessionKey.get(ctx.sessionKey || "default");
     if (syncMemoryFile && workspaceDir) {
-      syncMemoryToWorkspace(workspaceDir);
+      syncMemoryToWorkspace(workspaceDir, ctx);
     }
   });
 
@@ -653,7 +719,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         feedConfig.channel,
         feedConfig.to,
         sseAbortController,
-        (state) => { connectionState = state; }
+        (state) => { connectionState = state; },
+        feedConfig.botToken
       );
     },
     stop: async (_ctx) => {

@@ -1,8 +1,46 @@
 # Claude-Mem OpenClaw Plugin — Setup Guide
 
-This guide walks through setting up the claude-mem plugin on an OpenClaw gateway from scratch. Follow every step in order. By the end, your agents will have persistent memory across sessions, a live-updating MEMORY.md in their workspace, and optionally a real-time observation feed streaming to a messaging channel.
+This guide walks through setting up the claude-mem plugin on an OpenClaw gateway. By the end, your agents will have persistent memory across sessions, a live-updating MEMORY.md in their workspace, and optionally a real-time observation feed streaming to a messaging channel.
 
-## Step 1: Clone the Claude-Mem Repo
+## Quick Install (Recommended)
+
+Run this one-liner to install everything automatically:
+
+```bash
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash
+```
+
+The installer handles dependency checks (Bun, uv), plugin installation, memory slot configuration, AI provider setup, worker startup, and optional observation feed configuration — all interactively.
+
+### Install with options
+
+Pre-select your AI provider and API key to skip interactive prompts:
+
+```bash
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash -s -- --provider=gemini --api-key=YOUR_KEY
+```
+
+For fully unattended installation (defaults to Claude Max Plan, skips observation feed):
+
+```bash
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash -s -- --non-interactive
+```
+
+To upgrade an existing installation (preserves settings, updates plugin):
+
+```bash
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash -s -- --upgrade
+```
+
+After installation, skip to [Step 4: Restart the Gateway and Verify](#step-4-restart-the-gateway-and-verify) to confirm everything is working.
+
+---
+
+## Manual Setup
+
+The steps below are for manual installation if you prefer not to use the automated installer, or need to troubleshoot individual steps.
+
+### Step 1: Clone the Claude-Mem Repo
 
 First, clone the claude-mem repository to a location accessible by your OpenClaw gateway. This gives you the worker service source and the plugin code.
 
@@ -20,11 +58,11 @@ You'll need **bun** installed for the worker service. If you don't have it:
 curl -fsSL https://bun.sh/install | bash
 ```
 
-## Step 2: Get the Worker Running
+### Step 2: Get the Worker Running
 
 The claude-mem worker is an HTTP service on port 37777. It stores observations, generates summaries, and serves the context timeline. The plugin talks to it over HTTP — it doesn't matter where the worker is running, just that it's reachable on localhost:37777.
 
-### Check if it's already running
+#### Check if it's already running
 
 If this machine also runs Claude Code with claude-mem installed, the worker may already be running:
 
@@ -36,7 +74,7 @@ curl http://localhost:37777/api/health
 
 **Got connection refused or no response?** The worker isn't running. Continue below.
 
-### If Claude Code has claude-mem installed
+#### If Claude Code has claude-mem installed
 
 If claude-mem is installed as a Claude Code plugin (at `~/.claude/plugins/marketplaces/thedotmack/`), start the worker from that installation:
 
@@ -54,7 +92,7 @@ curl http://localhost:37777/api/health
 
 **Still not working?** Check `npm run worker:status` for error details, or check that bun is installed and on your PATH.
 
-### If there's no Claude Code installation
+#### If there's no Claude Code installation
 
 Run the worker from the cloned repo:
 
@@ -77,7 +115,7 @@ curl http://localhost:37777/api/health
 - Check logs: `npm run worker:logs` (if available)
 - Try running it directly to see errors: `bun plugin/scripts/worker-service.cjs start`
 
-## Step 3: Add the Plugin to Your Gateway
+### Step 3: Add the Plugin to Your Gateway
 
 Add the `claude-mem` plugin to your OpenClaw gateway configuration:
 
@@ -96,13 +134,15 @@ Add the `claude-mem` plugin to your OpenClaw gateway configuration:
 }
 ```
 
-### Config fields explained
+#### Config fields explained
 
 - **`project`** (string, default: `"openclaw"`) — The project name that scopes all observations in the memory database. Use a unique name per gateway/use-case so observations don't mix. For example, if this gateway runs a coding bot, use `"coding-bot"`.
 
 - **`syncMemoryFile`** (boolean, default: `true`) — When enabled, the plugin writes a `MEMORY.md` file to each agent's workspace directory. This file contains the full timeline of observations and summaries from previous sessions, and it updates on every tool use so agents always have fresh context. Set to `false` only if you don't want the plugin writing files to agent workspaces.
 
 - **`workerPort`** (number, default: `37777`) — The port where the claude-mem worker service is listening. Only change this if you configured the worker to use a different port.
+
+---
 
 ## Step 4: Restart the Gateway and Verify
 

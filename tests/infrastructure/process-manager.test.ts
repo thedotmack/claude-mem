@@ -8,7 +8,6 @@ import {
   removePidFile,
   getPlatformTimeout,
   parseElapsedTime,
-  cleanupExcessChromaProcesses,
   isProcessAlive,
   cleanStalePidFile,
   spawnDaemon,
@@ -223,65 +222,6 @@ describe('ProcessManager', () => {
       const result = getPlatformTimeout(333);
 
       expect(result).toBe(666);
-    });
-  });
-
-  describe('cleanupExcessChromaProcesses (Issue #1063)', () => {
-    /**
-     * Tests for count-based chroma-mcp process cleanup.
-     * Unlike the age-based cleanupOrphanedProcesses() which has a 30-minute
-     * threshold, this function kills by count — essential for catching spawn
-     * storms where all processes are young.
-     */
-
-    it('should be exported and callable', () => {
-      expect(typeof cleanupExcessChromaProcesses).toBe('function');
-    });
-
-    it('should return 0 on Windows (Chroma disabled)', async () => {
-      const originalPlatform = process.platform;
-      Object.defineProperty(process, 'platform', {
-        value: 'win32',
-        writable: true,
-        configurable: true
-      });
-
-      try {
-        const killed = await cleanupExcessChromaProcesses();
-        expect(killed).toBe(0);
-      } finally {
-        Object.defineProperty(process, 'platform', {
-          value: originalPlatform,
-          writable: true,
-          configurable: true
-        });
-      }
-    });
-
-    it('should accept custom maxAllowed parameter', async () => {
-      // Should not throw with any valid maxAllowed value
-      const killed = await cleanupExcessChromaProcesses(5);
-      expect(killed).toBeGreaterThanOrEqual(0);
-    });
-
-    it('should return a number (killed count)', async () => {
-      const killed = await cleanupExcessChromaProcesses();
-      expect(typeof killed).toBe('number');
-      expect(killed).toBeGreaterThanOrEqual(0);
-    });
-
-    it('should exist in ProcessManager source with count-based logic', async () => {
-      const sourceFile = await Bun.file(
-        new URL('../../src/services/infrastructure/ProcessManager.ts', import.meta.url)
-      ).text();
-
-      // Verify count-based logic exists (not age-based)
-      expect(sourceFile).toContain('cleanupExcessChromaProcesses');
-      expect(sourceFile).toContain('chroma-mcp');
-
-      // Should sort by age and keep newest
-      expect(sourceFile).toContain('.sort(');
-      expect(sourceFile).toContain('.slice(maxAllowed)');
     });
   });
 
