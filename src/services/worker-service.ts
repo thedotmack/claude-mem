@@ -445,8 +445,13 @@ export class WorkerService {
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       const nodeCommand = resolveNodePath();
       const binDir = resolveRuntimeBinDir();
-      const mcpEnv = binDir && !process.env.PATH?.includes(binDir)
-        ? { ...process.env, PATH: `${binDir}:${process.env.PATH || ''}` }
+      const realHome = process.env.REAL_HOME || process.env.HOME?.replace(/\/snap\/bun-js\/\d+$/, '') || require('os').homedir();
+      const localBin = path.join(realHome, '.local', 'bin');
+      const extraDirs = [binDir, existsSync(localBin) ? localBin : null].filter(Boolean) as string[];
+      const currentPath = process.env.PATH || '';
+      const missingDirs = extraDirs.filter(d => !currentPath.includes(d));
+      const mcpEnv = missingDirs.length > 0
+        ? { ...process.env, PATH: [...missingDirs, currentPath].filter(Boolean).join(':') }
         : { ...process.env };
       const transport = new StdioClientTransport({
         command: nodeCommand,

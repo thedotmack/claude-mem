@@ -235,14 +235,19 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     }
   }
 
-  // 2. Augment PATH with runtime bin directory (fixes Bun snap PATH restriction)
+  // 2. Augment PATH with runtime bin directories (fixes Bun snap PATH restriction)
   // When running under Bun snap, PATH is restricted to snap-only paths.
-  // The nvm bin directory (containing node, claude) must be prepended.
+  // The nvm bin directory (node, claude) and ~/.local/bin (uvx, uv) must be prepended.
+  // Note: homedir() may return snap home, so derive real home from CLAUDE_CODE_PATH or HOME
   const runtimeBinDir = resolveRuntimeBinDir();
-  if (runtimeBinDir) {
+  const realHome = process.env.REAL_HOME || process.env.HOME?.replace(/\/snap\/bun-js\/\d+$/, '') || homedir();
+  const localBinDir = join(realHome, '.local', 'bin');
+  const extraDirs = [runtimeBinDir, existsSync(localBinDir) ? localBinDir : null].filter(Boolean) as string[];
+  if (extraDirs.length > 0) {
     const currentPath = isolatedEnv.PATH || '';
-    if (!currentPath.includes(runtimeBinDir)) {
-      isolatedEnv.PATH = currentPath ? `${runtimeBinDir}:${currentPath}` : runtimeBinDir;
+    const missing = extraDirs.filter(d => !currentPath.includes(d));
+    if (missing.length > 0) {
+      isolatedEnv.PATH = [...missing, currentPath].filter(Boolean).join(':');
     }
   }
 

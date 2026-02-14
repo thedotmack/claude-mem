@@ -20,7 +20,6 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH, VECTOR_DB_DIR, DATA_DIR } from '../../shared/paths.js';
 import { ChromaServerManager } from './ChromaServerManager.js';
 import path from 'path';
-import os from 'os';
 import fs from 'fs';
 import { execSync } from 'child_process';
 
