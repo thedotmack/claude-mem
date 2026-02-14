@@ -55,6 +55,11 @@ export interface SettingsDefaults {
   // Exclusion Settings
   CLAUDE_MEM_EXCLUDED_PROJECTS: string;  // Comma-separated glob patterns for excluded project paths
   CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;  // JSON array of folder paths to exclude from CLAUDE.md generation
+  // Feed Settings
+  CLAUDE_MEM_FEED_ENABLED: string;     // 'true' | 'false'
+  CLAUDE_MEM_FEED_CHANNEL: string;     // 'telegram'
+  CLAUDE_MEM_FEED_BOT_TOKEN: string;   // Telegram bot token
+  CLAUDE_MEM_FEED_CHAT_ID: string;     // Telegram chat/group ID
 }
 
 export class SettingsDefaultsManager {
@@ -104,6 +109,11 @@ export class SettingsDefaultsManager {
     // Exclusion Settings
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
+    // Feed Settings
+    CLAUDE_MEM_FEED_ENABLED: 'false',
+    CLAUDE_MEM_FEED_CHANNEL: 'telegram',
+    CLAUDE_MEM_FEED_BOT_TOKEN: '',
+    CLAUDE_MEM_FEED_CHAT_ID: '',
   };
 
   /**
