@@ -7,7 +7,7 @@ This guide walks through setting up the claude-mem plugin on an OpenClaw gateway
 Run this one-liner to install everything automatically:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thedotmack/claude-mem/main/openclaw/install.sh | bash
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 ```
 
 The installer handles dependency checks (Bun, uv), plugin installation, memory slot configuration, AI provider setup, worker startup, and optional observation feed configuration — all interactively.
@@ -17,19 +17,19 @@ The installer handles dependency checks (Bun, uv), plugin installation, memory s
 Pre-select your AI provider and API key to skip interactive prompts:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thedotmack/claude-mem/main/openclaw/install.sh | bash -s -- --provider=gemini --api-key=YOUR_KEY
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash -s -- --provider=gemini --api-key=YOUR_KEY
 ```
 
 For fully unattended installation (defaults to Claude Max Plan, skips observation feed):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thedotmack/claude-mem/main/openclaw/install.sh | bash -s -- --non-interactive
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash -s -- --non-interactive
 ```
 
 To upgrade an existing installation (preserves settings, updates plugin):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thedotmack/claude-mem/main/openclaw/install.sh | bash -s -- --upgrade
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash -s -- --upgrade
 ```
 
 After installation, skip to [Step 4: Restart the Gateway and Verify](#step-4-restart-the-gateway-and-verify) to confirm everything is working.

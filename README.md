@@ -118,6 +118,16 @@ Start a new Claude Code session in the terminal and enter the following commands
 
 Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
 
+### 🦞 OpenClaw Gateway
+
+Install claude-mem as a persistent memory plugin on [OpenClaw](https://openclaw.ai) gateways with a single command:
+
+```bash
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash
+```
+
+The installer handles dependencies, plugin setup, AI provider configuration, worker startup, and optional real-time observation feeds to Telegram, Discord, Slack, and more. See the [OpenClaw Integration Guide](https://docs.claude-mem.ai/openclaw-integration) for details.
+
 **Key Features:**
 
 - 🧠 **Persistent Memory** - Context survives across sessions

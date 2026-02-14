@@ -5,9 +5,9 @@ set -euo pipefail
 # Installs the claude-mem persistent memory plugin for OpenClaw gateways.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/thedotmack/claude-mem/main/openclaw/install.sh | bash
+#   curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 #   # Or with options:
-#   curl -fsSL https://raw.githubusercontent.com/thedotmack/claude-mem/main/openclaw/install.sh | bash -s -- --provider=gemini --api-key=YOUR_KEY
+#   curl -fsSL https://install.cmem.ai/openclaw.sh | bash -s -- --provider=gemini --api-key=YOUR_KEY
 #   # Direct execution:
 #   bash install.sh [--non-interactive] [--upgrade] [--provider=claude|gemini|openrouter] [--api-key=KEY]
 
@@ -26,6 +26,7 @@ NON_INTERACTIVE=""
 CLI_PROVIDER=""
 CLI_API_KEY=""
 UPGRADE_MODE=""
+CLI_BRANCH=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -36,6 +37,14 @@ while [[ $# -gt 0 ]]; do
     --upgrade)
       UPGRADE_MODE="true"
       shift
+      ;;
+    --branch=*)
+      CLI_BRANCH="${1#--branch=}"
+      shift
+      ;;
+    --branch)
+      CLI_BRANCH="${2:-}"
+      shift 2
       ;;
     --provider=*)
       CLI_PROVIDER="${1#--provider=}"
@@ -265,6 +274,128 @@ ensure_jq_or_fallback() {
 }
 
 ###############################################################################
+# Parse /api/health JSON response — extract worker metadata into globals
+# Uses jq → python3 → node fallback chain (matching installer conventions)
+# Sets: WORKER_VERSION, WORKER_AI_PROVIDER, WORKER_AI_AUTH_METHOD,
+#        WORKER_INITIALIZED, WORKER_REPORTED_PID, WORKER_UPTIME
+###############################################################################
+
+parse_health_json() {
+  local raw_json="$1"
+
+  # Reset all health globals before parsing
+  WORKER_VERSION=""
+  WORKER_AI_PROVIDER=""
+  WORKER_AI_AUTH_METHOD=""
+  WORKER_INITIALIZED=""
+  WORKER_REPORTED_PID=""
+  WORKER_UPTIME=""
+
+  if [[ -z "$raw_json" ]]; then
+    return 0
+  fi
+
+  # Try jq first (fastest, most reliable)
+  if command -v jq &>/dev/null; then
+    WORKER_VERSION="$(echo "$raw_json" | jq -r '.version // empty' 2>/dev/null)" || true
+    WORKER_AI_PROVIDER="$(echo "$raw_json" | jq -r '.ai.provider // empty' 2>/dev/null)" || true
+    WORKER_AI_AUTH_METHOD="$(echo "$raw_json" | jq -r '.ai.authMethod // empty' 2>/dev/null)" || true
+    WORKER_INITIALIZED="$(echo "$raw_json" | jq -r '.initialized // empty' 2>/dev/null)" || true
+    WORKER_REPORTED_PID="$(echo "$raw_json" | jq -r '.pid // empty' 2>/dev/null)" || true
+    WORKER_UPTIME="$(echo "$raw_json" | jq -r '.uptime // empty' 2>/dev/null)" || true
+    return 0
+  fi
+
+  # Try python3 fallback
+  if command -v python3 &>/dev/null; then
+    local parsed
+    parsed="$(INSTALLER_HEALTH_JSON="$raw_json" python3 -c "
+import json, os, sys
+try:
+    data = json.loads(os.environ['INSTALLER_HEALTH_JSON'])
+    ai = data.get('ai') or {}
+    fields = [
+        str(data.get('version', '')),
+        str(ai.get('provider', '')),
+        str(ai.get('authMethod', '')),
+        str(data.get('initialized', '')),
+        str(data.get('pid', '')),
+        str(data.get('uptime', '')),
+    ]
+    sys.stdout.write('\n'.join(fields))
+except Exception:
+    sys.stdout.write('\n\n\n\n\n')
+" 2>/dev/null)" || true
+
+    if [[ -n "$parsed" ]]; then
+      local -a health_fields
+      IFS=$'\n' read -r -d '' -a health_fields <<< "$parsed" || true
+      WORKER_VERSION="${health_fields[0]:-}"
+      WORKER_AI_PROVIDER="${health_fields[1]:-}"
+      WORKER_AI_AUTH_METHOD="${health_fields[2]:-}"
+      WORKER_INITIALIZED="${health_fields[3]:-}"
+      WORKER_REPORTED_PID="${health_fields[4]:-}"
+      WORKER_UPTIME="${health_fields[5]:-}"
+      # Normalize python's None/empty representations
+      [[ "$WORKER_VERSION" == "None" ]] && WORKER_VERSION=""
+      [[ "$WORKER_AI_PROVIDER" == "None" ]] && WORKER_AI_PROVIDER=""
+      [[ "$WORKER_AI_AUTH_METHOD" == "None" ]] && WORKER_AI_AUTH_METHOD=""
+      [[ "$WORKER_INITIALIZED" == "None" ]] && WORKER_INITIALIZED=""
+      [[ "$WORKER_REPORTED_PID" == "None" ]] && WORKER_REPORTED_PID=""
+      [[ "$WORKER_UPTIME" == "None" ]] && WORKER_UPTIME=""
+    fi
+    return 0
+  fi
+
+  # Fallback to node (always available — it's a dependency)
+  local parsed
+  parsed="$(INSTALLER_HEALTH_JSON="$raw_json" node -e "
+    try {
+      const data = JSON.parse(process.env.INSTALLER_HEALTH_JSON);
+      const ai = data.ai || {};
+      const fields = [
+        data.version ?? '',
+        ai.provider ?? '',
+        ai.authMethod ?? '',
+        data.initialized != null ? String(data.initialized) : '',
+        data.pid != null ? String(data.pid) : '',
+        data.uptime != null ? String(data.uptime) : '',
+      ];
+      process.stdout.write(fields.join('\n'));
+    } catch (e) {
+      process.stdout.write('\n\n\n\n\n');
+    }
+  " 2>/dev/null)" || true
+
+  if [[ -n "$parsed" ]]; then
+    local -a health_fields
+    IFS=$'\n' read -r -d '' -a health_fields <<< "$parsed" || true
+    WORKER_VERSION="${health_fields[0]:-}"
+    WORKER_AI_PROVIDER="${health_fields[1]:-}"
+    WORKER_AI_AUTH_METHOD="${health_fields[2]:-}"
+    WORKER_INITIALIZED="${health_fields[3]:-}"
+    WORKER_REPORTED_PID="${health_fields[4]:-}"
+    WORKER_UPTIME="${health_fields[5]:-}"
+  fi
+}
+
+###############################################################################
+# Format uptime from milliseconds to human-readable (e.g., "2m 15s", "1h 23m")
+###############################################################################
+
+format_uptime_ms() {
+  local ms="$1"
+  local secs=$((ms / 1000))
+  if (( secs >= 3600 )); then
+    echo "$((secs / 3600))h $((secs % 3600 / 60))m"
+  elif (( secs >= 60 )); then
+    echo "$((secs / 60))m $((secs % 60))s"
+  else
+    echo "${secs}s"
+  fi
+}
+
+###############################################################################
 # Banner
 ###############################################################################
 
@@ -484,18 +615,22 @@ install_uv() {
 OPENCLAW_PATH=""
 
 find_openclaw() {
-  # Try PATH first
-  if command -v openclaw.mjs &>/dev/null; then
-    OPENCLAW_PATH="$(command -v openclaw.mjs)"
-    return 0
-  fi
+  # Try PATH first — check both "openclaw" and "openclaw.mjs" binary names
+  for bin_name in openclaw openclaw.mjs; do
+    if command -v "$bin_name" &>/dev/null; then
+      OPENCLAW_PATH="$(command -v "$bin_name")"
+      return 0
+    fi
+  done
 
   # Check common installation paths
   local -a openclaw_paths=(
     "${HOME}/.openclaw/openclaw.mjs"
     "/usr/local/bin/openclaw.mjs"
+    "/usr/local/bin/openclaw"
     "/usr/local/lib/node_modules/openclaw/openclaw.mjs"
     "${HOME}/.npm-global/lib/node_modules/openclaw/openclaw.mjs"
+    "${HOME}/.npm-global/bin/openclaw"
   )
 
   # Also check for node_modules in common project locations
@@ -531,23 +666,41 @@ check_openclaw() {
   success "OpenClaw gateway found at ${OPENCLAW_PATH}"
 }
 
+# Run openclaw command — uses node for .mjs files, direct execution otherwise
+run_openclaw() {
+  if [[ "$OPENCLAW_PATH" == *.mjs ]]; then
+    node "$OPENCLAW_PATH" "$@"
+  else
+    "$OPENCLAW_PATH" "$@"
+  fi
+}
+
 ###############################################################################
 # Plugin installation — clone, build, install, enable
 # Flow based on openclaw/Dockerfile.e2e
 ###############################################################################
 
 CLAUDE_MEM_REPO="https://github.com/thedotmack/claude-mem.git"
+CLAUDE_MEM_BRANCH="${CLI_BRANCH:-main}"
+PLUGIN_FRESHLY_INSTALLED=""
 
 install_plugin() {
   # Check for git before attempting clone
   check_git
 
+  # Remove existing plugin installation to allow clean re-install
+  local existing_plugin_dir="${HOME}/.openclaw/extensions/claude-mem"
+  if [[ -d "$existing_plugin_dir" ]]; then
+    info "Removing existing claude-mem plugin at ${existing_plugin_dir}..."
+    rm -rf "$existing_plugin_dir"
+  fi
+
   local build_dir
   build_dir="$(mktemp -d)"
   register_cleanup_dir "$build_dir"
 
-  info "Cloning claude-mem repository..."
-  if ! git clone --depth 1 "$CLAUDE_MEM_REPO" "$build_dir/claude-mem" 2>&1; then
+  info "Cloning claude-mem repository (branch: ${CLAUDE_MEM_BRANCH})..."
+  if ! git clone --depth 1 --branch "$CLAUDE_MEM_BRANCH" "$CLAUDE_MEM_REPO" "$build_dir/claude-mem" 2>&1; then
     error "Failed to clone claude-mem repository"
     error "Check your internet connection and try again."
     exit 1
@@ -572,7 +725,6 @@ install_plugin() {
   cp "${plugin_src}/openclaw.plugin.json" "${installable_dir}/"
 
   # Generate the installable package.json with openclaw.extensions field
-  # Generate the installable package.json with openclaw.extensions field
   INSTALLER_PACKAGE_DIR="$installable_dir" node -e "
     const pkg = {
       name: 'claude-mem',
@@ -584,23 +736,91 @@ install_plugin() {
     require('fs').writeFileSync(process.env.INSTALLER_PACKAGE_DIR + '/package.json', JSON.stringify(pkg, null, 2));
   "
 
+  # Clean up stale claude-mem plugin entry before installing.
+  # If the config references claude-mem but the plugin isn't installed,
+  # OpenClaw's config validator blocks ALL CLI commands (including plugins install).
+  # We temporarily remove the entry and save the config so `plugins install` can run,
+  # then `plugins install` + `plugins enable` will re-create it properly.
+  local oc_config="${HOME}/.openclaw/openclaw.json"
+  local saved_plugin_config=""
+  if [[ -f "$oc_config" ]]; then
+    saved_plugin_config=$(INSTALLER_CONFIG_FILE="$oc_config" node -e "
+      const fs = require('fs');
+      const configPath = process.env.INSTALLER_CONFIG_FILE;
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      const entry = config?.plugins?.entries?.['claude-mem'];
+      if (entry || config?.plugins?.slots?.memory === 'claude-mem') {
+        // Save the config block so we can restore it after install
+        process.stdout.write(JSON.stringify(entry?.config || {}));
+        // Remove the stale entry so OpenClaw CLI can run
+        if (entry) delete config.plugins.entries['claude-mem'];
+        // Also remove the slot reference — if the slot points to a plugin
+        // that isn't in entries, OpenClaw's config validator rejects ALL commands
+        if (config?.plugins?.slots?.memory === 'claude-mem') {
+          delete config.plugins.slots.memory;
+        }
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      }
+    " 2>/dev/null) || true
+  fi
+
   # Install the plugin using OpenClaw's CLI
   info "Installing claude-mem plugin into OpenClaw..."
-  if ! node "$OPENCLAW_PATH" plugins install "$installable_dir" 2>&1; then
+  if ! run_openclaw plugins install "$installable_dir" 2>&1; then
     error "Failed to install claude-mem plugin"
-    error "Try manually: node ${OPENCLAW_PATH} plugins install <path>"
+    error "Try manually: ${OPENCLAW_PATH} plugins install <path>"
     exit 1
   fi
 
   # Enable the plugin
   info "Enabling claude-mem plugin..."
-  if ! node "$OPENCLAW_PATH" plugins enable claude-mem 2>&1; then
+  if ! run_openclaw plugins enable claude-mem 2>&1; then
     error "Failed to enable claude-mem plugin"
-    error "Try manually: node ${OPENCLAW_PATH} plugins enable claude-mem"
+    error "Try manually: ${OPENCLAW_PATH} plugins enable claude-mem"
     exit 1
   fi
 
+  # Restore saved plugin config (workerPort, syncMemoryFile, observationFeed, etc.)
+  # from any pre-existing installation that was temporarily removed above.
+  if [[ -n "$saved_plugin_config" && "$saved_plugin_config" != "{}" ]]; then
+    info "Restoring previous plugin configuration..."
+    INSTALLER_CONFIG_FILE="$oc_config" INSTALLER_SAVED_CONFIG="$saved_plugin_config" node -e "
+      const fs = require('fs');
+      const configPath = process.env.INSTALLER_CONFIG_FILE;
+      const savedConfig = JSON.parse(process.env.INSTALLER_SAVED_CONFIG);
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (config?.plugins?.entries?.['claude-mem']) {
+        config.plugins.entries['claude-mem'].config = savedConfig;
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      }
+    " 2>/dev/null || warn "Could not restore previous plugin config — configure manually"
+  fi
+
   success "claude-mem plugin installed and enabled"
+
+  # ── Copy core plugin files (worker, hooks, scripts) to extension directory ──
+  # The OpenClaw extension only contains the gateway hook (dist/index.js).
+  # The actual worker service and Claude Code hooks live in the plugin/ directory
+  # of the main repo. We copy them so find_claude_mem_install_dir() can locate
+  # the worker-service.cjs and the worker runs the updated version.
+  local extension_dir="${HOME}/.openclaw/extensions/claude-mem"
+  local repo_root="${build_dir}/claude-mem"
+
+  if [[ -d "$extension_dir" && -d "${repo_root}/plugin" ]]; then
+    info "Copying core plugin files to ${extension_dir}..."
+
+    # Copy plugin/ directory (worker service, hooks, scripts, skills, UI)
+    cp -R "${repo_root}/plugin" "${extension_dir}/"
+
+    # Copy root package.json (contains the canonical version number)
+    cp "${repo_root}/package.json" "${extension_dir}/package.json"
+
+    success "Core plugin files updated at ${extension_dir}"
+  else
+    warn "Could not copy core plugin files — worker may need manual update"
+  fi
+
+  PLUGIN_FRESHLY_INSTALLED="true"
 }
 
 ###############################################################################
@@ -616,7 +836,6 @@ configure_memory_slot() {
 
   if [[ ! -f "$config_file" ]]; then
     # No config file exists — create one with the memory slot
-    info "Creating OpenClaw configuration with claude-mem memory slot..."
     info "Creating OpenClaw configuration with claude-mem memory slot..."
     INSTALLER_CONFIG_FILE="$config_file" node -e "
       const config = {
@@ -640,9 +859,6 @@ configure_memory_slot() {
   fi
 
   # Config file exists — update it to set the memory slot
-  info "Updating OpenClaw configuration to use claude-mem memory slot..."
-
-  # Use node for reliable JSON manipulation
   info "Updating OpenClaw configuration to use claude-mem memory slot..."
 
   # Use node for reliable JSON manipulation
@@ -670,6 +886,13 @@ configure_memory_slot() {
       };
     } else {
       config.plugins.entries['claude-mem'].enabled = true;
+      // Remove unrecognized keys that cause OpenClaw config validation errors
+      const allowedKeys = new Set(['enabled', 'config']);
+      for (const key of Object.keys(config.plugins.entries['claude-mem'])) {
+        if (!allowedKeys.has(key)) {
+          delete config.plugins.entries['claude-mem'][key];
+        }
+      }
     }
 
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
@@ -954,6 +1177,12 @@ find_claude_mem_install_dir() {
 ###############################################################################
 
 WORKER_PID=""
+WORKER_VERSION=""
+WORKER_AI_PROVIDER=""
+WORKER_AI_AUTH_METHOD=""
+WORKER_INITIALIZED=""
+WORKER_REPORTED_PID=""
+WORKER_UPTIME=""
 
 start_worker() {
   info "Starting claude-mem worker service..."
@@ -992,9 +1221,6 @@ start_worker() {
   # Write PID file for future management
   local pid_file="${HOME}/.claude-mem/worker.pid"
   mkdir -p "${HOME}/.claude-mem"
-  # Write PID file for future management
-  local pid_file="${HOME}/.claude-mem/worker.pid"
-  mkdir -p "${HOME}/.claude-mem"
   INSTALLER_PID_FILE="$pid_file" INSTALLER_WORKER_PID="$WORKER_PID" node -e "
     const info = {
       pid: parseInt(process.env.INSTALLER_WORKER_PID, 10),
@@ -1010,43 +1236,74 @@ start_worker() {
 }
 
 ###############################################################################
-# Health verification
-# Polls http://localhost:37777/api/health up to 10 times with 1-second intervals
+# Health verification — two-stage: health (alive) then readiness (initialized)
+# Stage 1: Poll /api/health for HTTP 200 (worker process is running)
+# Stage 2: Poll /api/readiness for HTTP 200 (worker is fully initialized)
+# Total budget: 30 attempts (30 seconds) shared across both stages
 ###############################################################################
 
 verify_health() {
-  local max_attempts=10
+  local max_attempts=30
   local attempt=1
   local health_url="http://127.0.0.1:37777/api/health"
+  local readiness_url="http://127.0.0.1:37777/api/readiness"
+  local health_alive=false
 
   info "Verifying worker health..."
 
+  # ── Stage 1: Wait for /api/health to return HTTP 200 (worker is alive) ──
   while (( attempt <= max_attempts )); do
-    local response
-    response="$(curl -s -o /dev/null -w "%{http_code}" "$health_url" 2>/dev/null)" || true
+    local http_status
+    http_status="$(curl -s -o /dev/null -w "%{http_code}" "$health_url" 2>/dev/null)" || true
 
-    if [[ "$response" == "200" ]]; then
-      # Verify the response body contains status:ok
+    if [[ "$http_status" == "200" ]]; then
+      health_alive=true
+
+      # Fetch the full health response body and parse metadata
       local body
       body="$(curl -s "$health_url" 2>/dev/null)" || true
-      if echo "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then
-        success "Worker is healthy (port 37777)"
-        return 0
-      fi
+      parse_health_json "$body"
+
+      success "Worker is alive, waiting for initialization..."
+
+      break
     fi
 
-    if (( attempt < max_attempts )); then
-      info "Waiting for worker to start... (attempt ${attempt}/${max_attempts})"
-    fi
+    info "Waiting for worker to start... (attempt ${attempt}/${max_attempts})"
     sleep 1
     attempt=$((attempt + 1))
   done
 
-  warn "Worker health check timed out after ${max_attempts} attempts"
-  warn "The worker may still be starting up. Check status with:"
-  warn "  curl http://127.0.0.1:37777/api/health"
-  warn "  Or check logs: ~/.claude-mem/logs/"
-  return 1
+  # If health never responded, the worker is not running at all
+  if [[ "$health_alive" != "true" ]]; then
+    warn "Worker health check timed out after ${max_attempts} attempts"
+    warn "The worker may still be starting up. Check status with:"
+    warn "  curl http://127.0.0.1:37777/api/health"
+    warn "  Or check logs: ~/.claude-mem/logs/"
+    return 1
+  fi
+
+  # ── Stage 2: Wait for /api/readiness to return HTTP 200 (fully initialized) ──
+  attempt=$((attempt + 1))
+  while (( attempt <= max_attempts )); do
+    local readiness_status
+    readiness_status="$(curl -s -o /dev/null -w "%{http_code}" "$readiness_url" 2>/dev/null)" || true
+
+    if [[ "$readiness_status" == "200" ]]; then
+      success "Worker is ready!"
+      return 0
+    fi
+
+    info "Waiting for worker to initialize... (attempt ${attempt}/${max_attempts})"
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+
+  # Readiness timed out but health is OK — worker is running, just not fully initialized yet
+  warn "Worker is running but initialization is still in progress"
+  warn "This is normal on first run — the worker will finish initializing in the background."
+  warn "Check readiness with: curl http://127.0.0.1:37777/api/readiness"
+  return 0
 }
 
 ###############################################################################
@@ -1078,7 +1335,7 @@ setup_observation_feed() {
   read_tty -r answer
   answer="${answer:-n}"
 
-  if [[ "${answer,,}" != "y" && "${answer,,}" != "yes" ]]; then
+  if [[ "$answer" != [yY] && "$answer" != [yY][eE][sS] ]]; then
     echo ""
     info "Skipped observation feed setup."
     info "You can configure it later by re-running this installer or"
@@ -1303,15 +1560,38 @@ print_completion_summary() {
 
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Dependencies installed (Bun, uv)"
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  OpenClaw gateway detected"
-  echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  claude-mem plugin installed and enabled"
+
+  # Show installed version from health data if available
+  if [[ -n "$WORKER_VERSION" ]]; then
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  claude-mem v${COLOR_BOLD}${WORKER_VERSION}${COLOR_RESET} installed and running"
+  else
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  claude-mem plugin installed and enabled"
+  fi
+
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Memory slot configured"
-  echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${provider_display}${COLOR_RESET}"
+
+  # Show AI provider with auth method from health data if available
+  if [[ -n "$WORKER_AI_AUTH_METHOD" ]]; then
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${WORKER_AI_PROVIDER} (${WORKER_AI_AUTH_METHOD})${COLOR_RESET}"
+  else
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${provider_display}${COLOR_RESET}"
+  fi
+
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Settings written to ~/.claude-mem/settings.json"
 
   if [[ -n "$WORKER_PID" ]] && kill -0 "$WORKER_PID" 2>/dev/null; then
     echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Worker running on port ${COLOR_BOLD}37777${COLOR_RESET} (PID: ${WORKER_PID})"
+  elif [[ -n "$WORKER_UPTIME" && "$WORKER_UPTIME" =~ ^[0-9]+$ ]] && (( WORKER_UPTIME > 0 )); then
+    local uptime_formatted
+    uptime_formatted="$(format_uptime_ms "$WORKER_UPTIME")"
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Worker running on port ${COLOR_BOLD}37777${COLOR_RESET} (PID: ${WORKER_REPORTED_PID}, uptime: ${uptime_formatted})"
   else
     echo -e "  ${COLOR_YELLOW}⚠${COLOR_RESET}  Worker may not be running — check logs at ~/.claude-mem/logs/"
+  fi
+
+  # Show initialization warning if worker is alive but not yet initialized
+  if [[ "$WORKER_INITIALIZED" != "true" ]] && { [[ -n "$WORKER_REPORTED_PID" ]] || { [[ -n "$WORKER_PID" ]] && kill -0 "$WORKER_PID" 2>/dev/null; }; }; then
+    echo -e "  ${COLOR_YELLOW}⚠${COLOR_RESET}  Worker is starting but still initializing (this is normal on first run)"
   fi
 
   if [[ "$FEED_CONFIGURED" == "true" ]]; then
@@ -1333,7 +1613,7 @@ print_completion_summary() {
   fi
   echo ""
   echo -e "  ${COLOR_BOLD}To re-run this installer:${COLOR_RESET}"
-  echo "  bash <(curl -fsSL https://raw.githubusercontent.com/thedotmack/claude-mem/main/openclaw/install.sh)"
+  echo "  bash <(curl -fsSL https://install.cmem.ai/openclaw.sh)"
   echo ""
 }
 
@@ -1401,7 +1681,99 @@ main() {
     warn "Port 37777 is already in use (worker may already be running)"
     info "Checking if the existing service is healthy..."
     if verify_health; then
-      success "Existing worker is healthy — skipping startup"
+      # verify_health already called parse_health_json — WORKER_* globals are set.
+      # Determine the expected version from the installed plugin's package.json.
+      local expected_version=""
+      if [[ -n "$CLAUDE_MEM_INSTALL_DIR" ]] || find_claude_mem_install_dir; then
+        expected_version="$(INSTALLER_PKG="${CLAUDE_MEM_INSTALL_DIR}/package.json" node -e "
+          try { process.stdout.write(JSON.parse(require('fs').readFileSync(process.env.INSTALLER_PKG, 'utf8')).version || ''); }
+          catch(e) {}
+        " 2>/dev/null)" || true
+      fi
+
+      local needs_restart=""
+
+      # If we just installed fresh plugin files, always restart the worker
+      # to pick up the new version — even if the old worker was healthy.
+      if [[ "$PLUGIN_FRESHLY_INSTALLED" == "true" ]]; then
+        if [[ -n "$WORKER_VERSION" && -n "$expected_version" && "$WORKER_VERSION" != "$expected_version" ]]; then
+          info "Upgrading worker from v${WORKER_VERSION} to v${expected_version}..."
+        else
+          info "Plugin files updated — restarting worker to load new code..."
+        fi
+        needs_restart="true"
+      fi
+
+      # Check if worker version is outdated compared to installed version
+      if [[ "$needs_restart" != "true" && -n "$WORKER_VERSION" && -n "$expected_version" && "$WORKER_VERSION" != "$expected_version" ]]; then
+        info "Upgrading worker from v${WORKER_VERSION} to v${expected_version}..."
+        needs_restart="true"
+      fi
+
+      # Check if AI provider doesn't match current configuration
+      if [[ "$needs_restart" != "true" && -n "$WORKER_AI_PROVIDER" && -n "$AI_PROVIDER" && "$WORKER_AI_PROVIDER" != "$AI_PROVIDER" ]]; then
+        warn "Worker is using ${WORKER_AI_PROVIDER} but you configured ${AI_PROVIDER} — restarting to apply"
+        needs_restart="true"
+      fi
+
+      # Restart worker if needed: kill old process, start fresh
+      if [[ "$needs_restart" == "true" ]]; then
+        info "Stopping existing worker..."
+        # Try graceful shutdown via API first, fall back to SIGTERM
+        curl -s -X POST "http://127.0.0.1:37777/api/admin/shutdown" >/dev/null 2>&1 || true
+        sleep 2
+
+        # If still running, send SIGTERM to known PID
+        if check_port_37777; then
+          if [[ -n "$WORKER_REPORTED_PID" ]]; then
+            kill "$WORKER_REPORTED_PID" 2>/dev/null || true
+            sleep 1
+          fi
+          # Check PID file as fallback
+          local pid_file="${HOME}/.claude-mem/worker.pid"
+          if [[ -f "$pid_file" ]]; then
+            local file_pid
+            file_pid="$(INSTALLER_PID_FILE="$pid_file" node -e "
+              try { process.stdout.write(String(JSON.parse(require('fs').readFileSync(process.env.INSTALLER_PID_FILE, 'utf8')).pid || '')); }
+              catch(e) {}
+            " 2>/dev/null)" || true
+            if [[ -n "$file_pid" ]]; then
+              kill "$file_pid" 2>/dev/null || true
+              sleep 1
+            fi
+          fi
+        fi
+
+        # Start fresh worker
+        if start_worker; then
+          verify_health || true
+        else
+          warn "Worker restart failed — you can start it manually later"
+        fi
+      else
+        # No restart needed — show healthy status
+        local uptime_display=""
+        if [[ -n "$WORKER_UPTIME" && "$WORKER_UPTIME" =~ ^[0-9]+$ && "$WORKER_UPTIME" != "0" ]]; then
+          uptime_display="$(format_uptime_ms "$WORKER_UPTIME")"
+        fi
+
+        local status_parts=""
+        if [[ -n "$WORKER_VERSION" ]]; then
+          status_parts="v${WORKER_VERSION}"
+        fi
+        if [[ -n "$WORKER_AI_PROVIDER" ]]; then
+          status_parts="${status_parts:+${status_parts}, }${WORKER_AI_PROVIDER}"
+        fi
+        if [[ -n "$uptime_display" ]]; then
+          status_parts="${status_parts:+${status_parts}, }uptime: ${uptime_display}"
+        fi
+
+        if [[ -n "$status_parts" ]]; then
+          success "Existing worker is healthy (${status_parts}) — skipping startup"
+        else
+          success "Existing worker is healthy — skipping startup"
+        fi
+      fi
     else
       warn "Port 37777 is occupied but not responding to health checks"
       warn "Another process may be using this port. Stop it and re-run the installer,"
@@ -1412,7 +1784,7 @@ main() {
       verify_health || true
     else
       warn "Worker startup failed — you can start it manually later"
-      warn "  cd ~/.claude/plugins/marketplaces/thedotmack && bun plugin/scripts/worker-service.cjs"
+      warn "  cd ~/.openclaw/extensions/claude-mem && bun plugin/scripts/worker-service.cjs"
     fi
   fi
 
