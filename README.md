@@ -118,6 +118,8 @@ Start a new Claude Code session in the terminal and enter the following commands
 
 Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
 
+> **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. To use Claude-Mem as a plugin, always install via the `/plugin` commands above.
+
 ### 🦞 OpenClaw Gateway
 
 Install claude-mem as a persistent memory plugin on [OpenClaw](https://openclaw.ai) gateways with a single command:
