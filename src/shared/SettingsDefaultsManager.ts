@@ -68,6 +68,11 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_API_KEY: string;
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
+  // Feed Settings
+  CLAUDE_MEM_FEED_ENABLED: string;     // 'true' | 'false'
+  CLAUDE_MEM_FEED_CHANNEL: string;     // 'telegram'
+  CLAUDE_MEM_FEED_BOT_TOKEN: string;   // Telegram bot token
+  CLAUDE_MEM_FEED_CHAT_ID: string;     // Telegram chat/group ID
 }
 
 export class SettingsDefaultsManager {
@@ -130,6 +135,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_API_KEY: '',
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
+    // Feed Settings
+    CLAUDE_MEM_FEED_ENABLED: 'false',
+    CLAUDE_MEM_FEED_CHANNEL: 'telegram',
+    CLAUDE_MEM_FEED_BOT_TOKEN: '',
+    CLAUDE_MEM_FEED_CHAT_ID: '',
   };
 
   /**
