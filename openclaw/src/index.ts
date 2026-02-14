@@ -156,6 +156,14 @@ type ConnectionState = "disconnected" | "connected" | "reconnecting";
 // Plugin Configuration
 // ============================================================================
 
+interface FeedEmojiConfig {
+  primary?: string;
+  claudeCode?: string;
+  claudeCodeLabel?: string;
+  default?: string;
+  agents?: Record<string, string>;
+}
+
 interface ClaudeMemPluginConfig {
   syncMemoryFile?: boolean;
   project?: string;
@@ -165,6 +173,7 @@ interface ClaudeMemPluginConfig {
     channel?: string;
     to?: string;
     botToken?: string;
+    emojis?: FeedEmojiConfig;
   };
 }
 
@@ -175,42 +184,52 @@ interface ClaudeMemPluginConfig {
 const MAX_SSE_BUFFER_SIZE = 1024 * 1024; // 1MB
 const DEFAULT_WORKER_PORT = 37777;
 
-// Agent emoji map for observation feed messages.
-// When creating a new OpenClaw agent, add its agentId and emoji here.
-const AGENT_EMOJI_MAP: Record<string, string> = {
-  "main":          "🦞",
-  "openclaw":      "🦞",
-  "devops":        "🔧",
-  "architect":     "📐",
-  "researcher":    "🔍",
-  "code-reviewer": "🔎",
-  "coder":         "💻",
-  "tester":        "🧪",
-  "debugger":      "🐛",
-  "opsec":         "🛡️",
-  "cloudfarm":     "☁️",
-  "extractor":     "📦",
-};
+// Emoji pool for deterministic auto-assignment to unknown agents.
+// Uses a hash of the agentId to pick a consistent emoji — no persistent state needed.
+const EMOJI_POOL = [
+  "🔧","📐","🔍","💻","🧪","🐛","🛡️","☁️","📦","🎯",
+  "🔮","⚡","🌊","🎨","📊","🚀","🔬","🏗️","📝","🎭",
+];
 
-// Project prefixes that indicate Claude Code sessions (not OpenClaw agents)
-const CLAUDE_CODE_EMOJI = "⌨️";
-const OPENCLAW_DEFAULT_EMOJI = "🦀";
+function poolEmojiForAgent(agentId: string): string {
+  let hash = 0;
+  for (let i = 0; i < agentId.length; i++) {
+    hash = ((hash << 5) - hash + agentId.charCodeAt(i)) | 0;
+  }
+  return EMOJI_POOL[Math.abs(hash) % EMOJI_POOL.length];
+}
 
-function getSourceLabel(project: string | null | undefined): string {
-  if (!project) return OPENCLAW_DEFAULT_EMOJI;
-  // OpenClaw agent projects are formatted as "openclaw-<agentId>"
-  if (project.startsWith("openclaw-")) {
-    const agentId = project.slice("openclaw-".length);
-    const emoji = AGENT_EMOJI_MAP[agentId] || OPENCLAW_DEFAULT_EMOJI;
-    return `${emoji} ${agentId}`;
-  }
-  // OpenClaw project without agent suffix
-  if (project === "openclaw") {
-    return `🦞 openclaw`;
-  }
-  // Everything else is from Claude Code (project = working directory name)
-  const emoji = CLAUDE_CODE_EMOJI;
-  return `${emoji} ${project}`;
+// Default emoji values — overridden by user config via observationFeed.emojis
+const DEFAULT_PRIMARY_EMOJI = "🦞";
+const DEFAULT_CLAUDE_CODE_EMOJI = "⌨️";
+const DEFAULT_CLAUDE_CODE_LABEL = "Claude Code Session";
+const DEFAULT_FALLBACK_EMOJI = "🦀";
+
+function buildGetSourceLabel(
+  emojiConfig: FeedEmojiConfig | undefined
+): (project: string | null | undefined) => string {
+  const primary = emojiConfig?.primary ?? DEFAULT_PRIMARY_EMOJI;
+  const claudeCode = emojiConfig?.claudeCode ?? DEFAULT_CLAUDE_CODE_EMOJI;
+  const claudeCodeLabel = emojiConfig?.claudeCodeLabel ?? DEFAULT_CLAUDE_CODE_LABEL;
+  const fallback = emojiConfig?.default ?? DEFAULT_FALLBACK_EMOJI;
+  const pinnedAgents = emojiConfig?.agents ?? {};
+
+  return function getSourceLabel(project: string | null | undefined): string {
+    if (!project) return fallback;
+    // OpenClaw agent projects are formatted as "openclaw-<agentId>"
+    if (project.startsWith("openclaw-")) {
+      const agentId = project.slice("openclaw-".length);
+      if (!agentId) return `${primary} openclaw`;
+      const emoji = pinnedAgents[agentId] || poolEmojiForAgent(agentId);
+      return `${emoji} ${agentId}`;
+    }
+    // OpenClaw project without agent suffix
+    if (project === "openclaw") {
+      return `${primary} openclaw`;
+    }
+    // Everything else is a Claude Code session
+    return `${claudeCode} ${claudeCodeLabel}`;
+  };
 }
 
 // ============================================================================
@@ -284,7 +303,10 @@ async function workerGetText(
 // SSE Observation Feed
 // ============================================================================
 
-function formatObservationMessage(observation: ObservationSSEPayload): string {
+function formatObservationMessage(
+  observation: ObservationSSEPayload,
+  getSourceLabel: (project: string | null | undefined) => string,
+): string {
   const title = observation.title || "Untitled";
   const source = getSourceLabel(observation.project);
   let message = `${source}\n**${title}**`;
@@ -380,6 +402,7 @@ async function connectToSSEStream(
   to: string,
   abortController: AbortController,
   setConnectionState: (state: ConnectionState) => void,
+  getSourceLabel: (project: string | null | undefined) => string,
   botToken?: string
 ): Promise<void> {
   let backoffMs = 1000;
@@ -440,7 +463,7 @@ async function connectToSSEStream(
             const parsed = JSON.parse(jsonStr);
             if (parsed.type === "new_observation" && parsed.observation) {
               const event = parsed as SSENewObservationEvent;
-              const message = formatObservationMessage(event.observation);
+              const message = formatObservationMessage(event.observation, getSourceLabel);
               await sendToChannel(api, channel, to, message, botToken);
             }
           } catch (parseError: unknown) {
@@ -475,6 +498,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   const userConfig = (api.pluginConfig || {}) as ClaudeMemPluginConfig;
   const workerPort = userConfig.workerPort || DEFAULT_WORKER_PORT;
   const baseProjectName = userConfig.project || "openclaw";
+  const getSourceLabel = buildGetSourceLabel(userConfig.observationFeed?.emojis);
 
   function getProjectName(ctx: EventContext): string {
     if (ctx.agentId) {
@@ -720,6 +744,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         feedConfig.to,
         sseAbortController,
         (state) => { connectionState = state; },
+        getSourceLabel,
         feedConfig.botToken
       );
     },
