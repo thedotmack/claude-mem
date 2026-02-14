@@ -115,7 +115,12 @@ import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 
 // Process management for zombie cleanup (Issue #737)
-import { startOrphanReaper, reapOrphanedProcesses } from './worker/ProcessRegistry.js';
+import { startOrphanReaper, reapOrphanedProcesses, getActiveProcesses } from './worker/ProcessRegistry.js';
+
+// Resource monitoring for token/memory leak detection
+import { startResourceMonitor } from './infrastructure/ResourceMonitor.js';
+import type { SessionTokenSnapshot } from './infrastructure/ResourceMonitor.js';
+import type { ActiveSession } from './worker-types.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -177,6 +182,9 @@ export class WorkerService {
 
   // Periodic stuck message recovery (Issues #1036, #1052)
   private stuckMessageRecoveryInterval: ReturnType<typeof setInterval> | null = null;
+
+  // Resource monitor for token/memory leak detection
+  private stopResourceMonitor: (() => void) | null = null;
 
   // AI interaction tracking for health endpoint
   private lastAiInteraction: {
@@ -473,6 +481,13 @@ export class WorkerService {
         }
       }, 60 * 1000);
       logger.info('SYSTEM', 'Started periodic stuck message recovery (every 60s, threshold 5min)');
+
+      // Start resource monitor for token/memory leak detection
+      this.stopResourceMonitor = startResourceMonitor(
+        () => this.getSessionTokenSnapshots(),
+        () => getActiveProcesses().length
+      );
+      logger.info('SYSTEM', 'Started resource monitor (samples every 30s)');
 
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
@@ -819,6 +834,12 @@ export class WorkerService {
       this.stuckMessageRecoveryInterval = null;
     }
 
+    // Stop resource monitor
+    if (this.stopResourceMonitor) {
+      this.stopResourceMonitor();
+      this.stopResourceMonitor = null;
+    }
+
     // Stop orphan reaper before shutdown (Issue #737)
     if (this.stopOrphanReaper) {
       this.stopOrphanReaper();
@@ -837,6 +858,27 @@ export class WorkerService {
   /**
    * Broadcast processing status change to SSE clients
    */
+  /**
+   * Get token snapshots for all active sessions (used by ResourceMonitor callback)
+   */
+  private getSessionTokenSnapshots(): SessionTokenSnapshot[] {
+    const result: SessionTokenSnapshot[] = [];
+    for (const [id, session] of this.sessionManager['sessions'] as Map<number, ActiveSession>) {
+      const ageMs = Date.now() - session.startTime;
+      const totalTokens = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+      result.push({
+        sessionDbId: id,
+        project: session.project,
+        inputTokens: session.cumulativeInputTokens,
+        outputTokens: session.cumulativeOutputTokens,
+        totalTokens,
+        ageMs,
+        tokensPerMinute: ageMs > 0 ? totalTokens / (ageMs / 60000) : 0
+      });
+    }
+    return result;
+  }
+
   broadcastProcessingStatus(): void {
     const isProcessing = this.sessionManager.isAnySessionProcessing();
     const queueDepth = this.sessionManager.getTotalActiveWork();
