@@ -282,13 +282,24 @@ export function createPidCapturingSpawn(sessionDbId: number) {
     env?: NodeJS.ProcessEnv;
     signal?: AbortSignal;
   }) => {
-    const child = spawn(spawnOptions.command, spawnOptions.args, {
-      cwd: spawnOptions.cwd,
-      env: spawnOptions.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      signal: spawnOptions.signal, // CRITICAL: Pass signal for AbortController integration
-      windowsHide: true
-    });
+    // On Windows, use cmd.exe wrapper for .cmd files to properly handle paths with spaces
+    const useCmdWrapper = process.platform === 'win32' && spawnOptions.command.endsWith('.cmd');
+
+    const child = useCmdWrapper
+      ? spawn('cmd.exe', ['/d', '/c', spawnOptions.command, ...spawnOptions.args], {
+          cwd: spawnOptions.cwd,
+          env: spawnOptions.env,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          signal: spawnOptions.signal,
+          windowsHide: true
+        })
+      : spawn(spawnOptions.command, spawnOptions.args, {
+          cwd: spawnOptions.cwd,
+          env: spawnOptions.env,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          signal: spawnOptions.signal, // CRITICAL: Pass signal for AbortController integration
+          windowsHide: true
+        });
 
     // Capture stderr for debugging spawn failures
     if (child.stderr) {
