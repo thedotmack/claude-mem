@@ -18,6 +18,7 @@ import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
+import { ChromaServerManager } from './sync/ChromaServerManager.js';
 
 // Windows: avoid repeated spawn popups when startup fails (issue #921)
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
@@ -163,6 +164,9 @@ export class WorkerService {
 
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
+
+  // Chroma server (local mode)
+  private chromaServer: ChromaServerManager | null = null;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -365,8 +369,32 @@ export class WorkerService {
       const { ModeManager } = await import('./domain/ModeManager.js');
       const { SettingsDefaultsManager } = await import('../shared/SettingsDefaultsManager.js');
       const { USER_SETTINGS_PATH } = await import('../shared/paths.js');
+      const os = await import('os');
 
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+
+      // Start Chroma server if in local mode
+      const chromaMode = settings.CLAUDE_MEM_CHROMA_MODE || 'local';
+      if (chromaMode === 'local') {
+        logger.info('SYSTEM', 'Starting local Chroma server...');
+        this.chromaServer = ChromaServerManager.getInstance({
+          dataDir: path.join(os.homedir(), '.claude-mem', 'vector-db'),
+          host: settings.CLAUDE_MEM_CHROMA_HOST || '127.0.0.1',
+          port: parseInt(settings.CLAUDE_MEM_CHROMA_PORT || '8000', 10)
+        });
+
+        const ready = await this.chromaServer.start(60000);
+
+        if (ready) {
+          logger.success('SYSTEM', 'Chroma server ready');
+        } else {
+          logger.warn('SYSTEM', 'Chroma server failed to start - vector search disabled');
+          this.chromaServer = null;
+        }
+      } else {
+        logger.info('SYSTEM', 'Chroma remote mode - skipping local server');
+      }
+
       const modeId = settings.CLAUDE_MEM_MODE;
       ModeManager.getInstance().loadMode(modeId);
       logger.info('SYSTEM', `Mode loaded: ${modeId}`);
@@ -776,7 +804,8 @@ export class WorkerService {
       server: this.server.getHttpServer(),
       sessionManager: this.sessionManager,
       mcpClient: this.mcpClient,
-      dbManager: this.dbManager
+      dbManager: this.dbManager,
+      chromaServer: this.chromaServer || undefined
     });
   }
 
