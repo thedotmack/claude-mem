@@ -28,8 +28,9 @@ import {
   type FallbackAgent
 } from './agents/index.js';
 
-// Gemini API endpoint
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+// Gemini API endpoint — use v1 (stable), not v1beta.
+// v1beta does not support newer models like gemini-3-flash.
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
 
 // Gemini model types (available via API)
 export type GeminiModel =
@@ -38,6 +39,7 @@ export type GeminiModel =
   | 'gemini-2.5-pro'
   | 'gemini-2.0-flash'
   | 'gemini-2.0-flash-lite'
+  | 'gemini-3-flash'
   | 'gemini-3-flash-preview';
 
 // Free tier RPM limits by model (requests per minute)
@@ -47,6 +49,7 @@ const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
   'gemini-2.5-pro': 5,
   'gemini-2.0-flash': 15,
   'gemini-2.0-flash-lite': 30,
+  'gemini-3-flash': 10,
   'gemini-3-flash-preview': 5,
 };
 
