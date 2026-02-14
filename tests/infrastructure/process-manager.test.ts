@@ -11,6 +11,7 @@ import {
   isProcessAlive,
   cleanStalePidFile,
   spawnDaemon,
+  resolveWorkerRuntimePath,
   type PidInfo
 } from '../../src/services/infrastructure/index.js';
 
@@ -222,6 +223,62 @@ describe('ProcessManager', () => {
       const result = getPlatformTimeout(333);
 
       expect(result).toBe(666);
+    });
+  });
+
+  describe('resolveWorkerRuntimePath', () => {
+    it('should return current runtime on non-Windows platforms', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node'
+      });
+
+      expect(resolved).toBe('/usr/bin/node');
+    });
+
+    it('should reuse execPath when already running under Bun on Windows', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'win32',
+        execPath: 'C:\\Users\\alice\\.bun\\bin\\bun.exe'
+      });
+
+      expect(resolved).toBe('C:\\Users\\alice\\.bun\\bin\\bun.exe');
+    });
+
+    it('should prefer configured Bun path from environment when available', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'win32',
+        execPath: 'C:\\Program Files\\nodejs\\node.exe',
+        env: { BUN: 'C:\\tools\\bun.exe' } as NodeJS.ProcessEnv,
+        pathExists: candidatePath => candidatePath === 'C:\\tools\\bun.exe',
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBe('C:\\tools\\bun.exe');
+    });
+
+    it('should fall back to PATH lookup when no Bun candidate exists', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'win32',
+        execPath: 'C:\\Program Files\\nodejs\\node.exe',
+        env: {} as NodeJS.ProcessEnv,
+        pathExists: () => false,
+        lookupInPath: () => 'C:\\Program Files\\Bun\\bun.exe'
+      });
+
+      expect(resolved).toBe('C:\\Program Files\\Bun\\bun.exe');
+    });
+
+    it('should return null when Bun cannot be resolved on Windows', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'win32',
+        execPath: 'C:\\Program Files\\nodejs\\node.exe',
+        env: {} as NodeJS.ProcessEnv,
+        pathExists: () => false,
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBeNull();
     });
   });
 
