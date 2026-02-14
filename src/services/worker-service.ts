@@ -123,6 +123,10 @@ import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { FeedRoutes } from './worker/http/routes/FeedRoutes.js';
+
+// Feed daemon
+import { FeedDaemon } from './feed/FeedDaemon.js';
 
 // Process management for zombie cleanup (Issue #737)
 import { startOrphanReaper, reapOrphanedProcesses, getProcessBySession, ensureProcessExit } from './worker/ProcessRegistry.js';
@@ -172,6 +176,9 @@ export class WorkerService {
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
 
+  // Feed daemon
+  private feedDaemon: FeedDaemon;
+
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
 
@@ -213,6 +220,7 @@ export class WorkerService {
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
+    this.feedDaemon = new FeedDaemon();
 
     // Set callback for when sessions are deleted
     this.sessionManager.setOnSessionDeleted(() => {
@@ -342,6 +350,7 @@ export class WorkerService {
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
+    this.server.registerRoutes(new FeedRoutes(this.feedDaemon, this.sseBroadcaster));
   }
 
   /**
@@ -483,6 +492,11 @@ export class WorkerService {
           logger.error('SYSTEM', 'Stale session reaper error', { error: e instanceof Error ? e.message : String(e) });
         }
       }, 2 * 60 * 1000);
+
+      // Auto-start feed daemon if configured
+      if (this.feedDaemon.start(this.sseBroadcaster)) {
+        logger.info('SYSTEM', 'Feed daemon auto-started');
+      }
 
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
@@ -845,6 +859,9 @@ export class WorkerService {
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
+    // Stop feed daemon before shutdown
+    this.feedDaemon.stop();
+
     // Stop orphan reaper before shutdown (Issue #737)
     if (this.stopOrphanReaper) {
       this.stopOrphanReaper();
@@ -1160,6 +1177,68 @@ async function main() {
       const { cleanClaudeMd } = await import('../cli/claude-md-commands.js');
       const result = await cleanClaudeMd(dryRun);
       process.exit(result);
+      break;
+    }
+
+    case 'feed': {
+      const feedSubcommand = process.argv[3];
+      switch (feedSubcommand) {
+        case 'setup': {
+          const nonInteractive = process.argv.includes('--non-interactive');
+          const { runFeedSetupWizard } = await import('../cli/feed-setup/feed-setup-wizard.js');
+          const botToken = process.argv.find(a => a.startsWith('--bot-token='))?.split('=')[1];
+          const chatId = process.argv.find(a => a.startsWith('--chat-id='))?.split('=')[1];
+          await runFeedSetupWizard({ nonInteractive, botToken, chatId });
+          process.exit(0);
+        }
+        case 'start': {
+          // Enable + start via HTTP API
+          const workerReady = await ensureWorkerStarted(port);
+          if (!workerReady) {
+            console.error('Worker not running. Start it first: bun worker-service.cjs start');
+            process.exit(1);
+          }
+          const startRes = await fetch(`http://127.0.0.1:${port}/api/feed/start`, { method: 'POST' });
+          const startData = await startRes.json() as Record<string, unknown>;
+          console.log(startData.message);
+          process.exit(0);
+        }
+        case 'stop': {
+          try {
+            const stopRes = await fetch(`http://127.0.0.1:${port}/api/feed/stop`, { method: 'POST' });
+            const stopData = await stopRes.json() as Record<string, unknown>;
+            console.log(stopData.message);
+          } catch {
+            console.error('Worker not running.');
+          }
+          process.exit(0);
+        }
+        case 'status': {
+          try {
+            const statusRes = await fetch(`http://127.0.0.1:${port}/api/feed/status`);
+            const statusData = await statusRes.json() as Record<string, unknown>;
+            console.log('Feed status:');
+            console.log(`  Running: ${statusData.running}`);
+            console.log(`  Enabled: ${statusData.enabled}`);
+            console.log(`  Configured: ${statusData.configured}`);
+            if (statusData.chatId) console.log(`  Chat ID: ${statusData.chatId}`);
+            if (statusData.lastMessageTime) {
+              console.log(`  Last message: ${new Date(statusData.lastMessageTime as number).toLocaleString()}`);
+            }
+          } catch {
+            console.error('Worker not running. Cannot fetch feed status.');
+          }
+          process.exit(0);
+        }
+        default: {
+          console.log('Usage: feed <setup|start|stop|status>');
+          console.log('  setup   - Interactive setup wizard');
+          console.log('  start   - Enable and start feed daemon');
+          console.log('  stop    - Disable and stop feed daemon');
+          console.log('  status  - Show feed status');
+          process.exit(0);
+        }
+      }
       break;
     }
 
