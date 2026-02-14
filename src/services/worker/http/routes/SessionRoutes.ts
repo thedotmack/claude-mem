@@ -499,8 +499,8 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
 
-    // Get or create session
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    // Get or create session (Issue #1046: use cwd as project fallback to prevent empty project race)
+    const sessionDbId = store.createSDKSession(contentSessionId, cwd || '', '');
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
     // Privacy check: skip if user prompt was entirely private

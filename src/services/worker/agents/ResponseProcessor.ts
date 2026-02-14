@@ -90,17 +90,33 @@ export async function processAgentResponse(
     memorySessionId: session.memorySessionId
   });
 
-  // ATOMIC TRANSACTION: Store observations + summary ONCE
-  // Messages are already deleted from queue on claim, so no completion tracking needed
-  const result = sessionStore.storeObservations(
-    session.memorySessionId,
-    session.project,
-    observations,
-    summaryForStore,
-    session.lastPromptNumber,
-    discoveryTokens,
-    originalTimestamp ?? undefined
-  );
+  // ATOMIC TRANSACTION: Store observations + summary + confirm messages in one transaction
+  // This prevents duplicate observations if worker crashes between storage and confirmation
+  // (Issues #1036, #1091)
+  const pendingStore = sessionManager.getPendingMessageStore();
+  const messageIdsToConfirm = [...session.processingMessageIds];
+
+  const atomicStoreAndConfirm = sessionStore.db.transaction(() => {
+    // Store observations and summary
+    const txResult = sessionStore.storeObservations(
+      session.memorySessionId,
+      session.project,
+      observations,
+      summaryForStore,
+      session.lastPromptNumber,
+      discoveryTokens,
+      originalTimestamp ?? undefined
+    );
+
+    // Confirm all processing messages (delete from queue) within same transaction
+    for (const messageId of messageIdsToConfirm) {
+      pendingStore.confirmProcessed(messageId);
+    }
+
+    return txResult;
+  });
+
+  const result = atomicStoreAndConfirm();
 
   // Log storage result with IDs for end-to-end traceability
   logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
@@ -108,14 +124,8 @@ export async function processAgentResponse(
     memorySessionId: session.memorySessionId
   });
 
-  // CLAIM-CONFIRM: Now that storage succeeded, confirm all processing messages (delete from queue)
-  // This is the critical step that prevents message loss on generator crash
-  const pendingStore = sessionManager.getPendingMessageStore();
-  for (const messageId of session.processingMessageIds) {
-    pendingStore.confirmProcessed(messageId);
-  }
-  if (session.processingMessageIds.length > 0) {
-    logger.debug('QUEUE', `CONFIRMED_BATCH | sessionDbId=${session.sessionDbId} | count=${session.processingMessageIds.length} | ids=[${session.processingMessageIds.join(',')}]`);
+  if (messageIdsToConfirm.length > 0) {
+    logger.debug('QUEUE', `CONFIRMED_BATCH | sessionDbId=${session.sessionDbId} | count=${messageIdsToConfirm.length} | ids=[${messageIdsToConfirm.join(',')}]`);
   }
   // Clear the tracking array after confirmation
   session.processingMessageIds = [];

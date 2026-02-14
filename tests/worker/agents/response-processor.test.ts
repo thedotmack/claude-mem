@@ -71,6 +71,10 @@ describe('ResponseProcessor', () => {
 
     mockDbManager = {
       getSessionStore: () => ({
+        db: {
+          // Mock transaction: wraps fn and returns a callable that executes it
+          transaction: (fn: (...args: any[]) => any) => (...args: any[]) => fn(...args),
+        },
         storeObservations: mockStoreObservations,
         ensureMemorySessionIdRegistered: mock(() => {}),  // FK fix (Issue #846)
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),  // FK fix (Issue #846)
@@ -272,6 +276,9 @@ describe('ResponseProcessor', () => {
         createdAtEpoch: 1700000000000,
       }));
       (mockDbManager.getSessionStore as any) = () => ({
+        db: {
+          transaction: (fn: (...args: any[]) => any) => (...args: any[]) => fn(...args),
+        },
         storeObservations: mockStoreObservations,
         ensureMemorySessionIdRegistered: mock(() => {}),
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),
@@ -372,6 +379,9 @@ describe('ResponseProcessor', () => {
         createdAtEpoch: 1700000000000,
       }));
       (mockDbManager.getSessionStore as any) = () => ({
+        db: {
+          transaction: (fn: (...args: any[]) => any) => (...args: any[]) => fn(...args),
+        },
         storeObservations: mockStoreObservations,
         ensureMemorySessionIdRegistered: mock(() => {}),
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),
@@ -453,6 +463,9 @@ describe('ResponseProcessor', () => {
         createdAtEpoch: 1700000000000,
       }));
       (mockDbManager.getSessionStore as any) = () => ({
+        db: {
+          transaction: (fn: (...args: any[]) => any) => (...args: any[]) => fn(...args),
+        },
         storeObservations: mockStoreObservations,
         ensureMemorySessionIdRegistered: mock(() => {}),
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),
@@ -486,6 +499,9 @@ describe('ResponseProcessor', () => {
         createdAtEpoch: 1700000000000,
       }));
       (mockDbManager.getSessionStore as any) = () => ({
+        db: {
+          transaction: (fn: (...args: any[]) => any) => (...args: any[]) => fn(...args),
+        },
         storeObservations: mockStoreObservations,
         ensureMemorySessionIdRegistered: mock(() => {}),
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),
@@ -530,6 +546,9 @@ describe('ResponseProcessor', () => {
         createdAtEpoch: 1700000000000,
       }));
       (mockDbManager.getSessionStore as any) = () => ({
+        db: {
+          transaction: (fn: (...args: any[]) => any) => (...args: any[]) => fn(...args),
+        },
         storeObservations: mockStoreObservations,
         ensureMemorySessionIdRegistered: mock(() => {}),
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),
@@ -568,6 +587,9 @@ describe('ResponseProcessor', () => {
         createdAtEpoch: 1700000000000,
       }));
       (mockDbManager.getSessionStore as any) = () => ({
+        db: {
+          transaction: (fn: (...args: any[]) => any) => (...args: any[]) => fn(...args),
+        },
         storeObservations: mockStoreObservations,
         ensureMemorySessionIdRegistered: mock(() => {}),
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),
@@ -610,6 +632,9 @@ describe('ResponseProcessor', () => {
         createdAtEpoch: 1700000000000,
       }));
       (mockDbManager.getSessionStore as any) = () => ({
+        db: {
+          transaction: (fn: (...args: any[]) => any) => (...args: any[]) => fn(...args),
+        },
         storeObservations: mockStoreObservations,
         ensureMemorySessionIdRegistered: mock(() => {}),
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),

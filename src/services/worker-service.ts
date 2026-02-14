@@ -175,6 +175,9 @@ export class WorkerService {
   // Orphan reaper cleanup function (Issue #737)
   private stopOrphanReaper: (() => void) | null = null;
 
+  // Periodic stuck message recovery (Issues #1036, #1052)
+  private stuckMessageRecoveryInterval: ReturnType<typeof setInterval> | null = null;
+
   // AI interaction tracking for health endpoint
   private lastAiInteraction: {
     timestamp: number;
@@ -454,6 +457,22 @@ export class WorkerService {
         return activeIds;
       });
       logger.info('SYSTEM', 'Started orphan reaper (runs every 5 minutes)');
+
+      // Start periodic stuck message recovery (Issues #1036, #1052)
+      // Resets messages stuck in 'processing' for >5 minutes back to 'pending'
+      this.stuckMessageRecoveryInterval = setInterval(() => {
+        try {
+          const resetCount = pendingStore.resetStaleProcessingMessages(5 * 60 * 1000);
+          if (resetCount > 0) {
+            logger.warn('QUEUE', `Runtime recovery: Reset ${resetCount} stuck processing messages`, {
+              thresholdMinutes: 5
+            });
+          }
+        } catch (error) {
+          logger.error('QUEUE', 'Failed to reset stuck messages during periodic recovery', {}, error as Error);
+        }
+      }, 60 * 1000);
+      logger.info('SYSTEM', 'Started periodic stuck message recovery (every 60s, threshold 5min)');
 
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
@@ -794,6 +813,12 @@ export class WorkerService {
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
+    // Stop periodic stuck message recovery (Issues #1036, #1052)
+    if (this.stuckMessageRecoveryInterval) {
+      clearInterval(this.stuckMessageRecoveryInterval);
+      this.stuckMessageRecoveryInterval = null;
+    }
+
     // Stop orphan reaper before shutdown (Issue #737)
     if (this.stopOrphanReaper) {
       this.stopOrphanReaper();
