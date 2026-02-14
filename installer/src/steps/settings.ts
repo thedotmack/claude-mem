@@ -42,7 +42,7 @@ export async function runSettingsConfiguration(): Promise<SettingsConfig> {
     message: 'Worker service port:',
     defaultValue: '37777',
     placeholder: '37777',
-    validate: (value) => {
+    validate: (value = '') => {
       const port = parseInt(value, 10);
       if (isNaN(port) || port < 1024 || port > 65535) {
         return 'Port must be between 1024 and 65535';
@@ -62,7 +62,7 @@ export async function runSettingsConfiguration(): Promise<SettingsConfig> {
     message: 'Number of context observations per session:',
     defaultValue: '50',
     placeholder: '50',
-    validate: (value) => {
+    validate: (value = '') => {
       const num = parseInt(value, 10);
       if (isNaN(num) || num < 1 || num > 200) {
         return 'Must be between 1 and 200';
@@ -125,7 +125,7 @@ export async function runSettingsConfiguration(): Promise<SettingsConfig> {
         message: 'Chroma port:',
         defaultValue: '8000',
         placeholder: '8000',
-        validate: (value) => {
+        validate: (value = '') => {
           const portNum = parseInt(value, 10);
           if (isNaN(portNum) || portNum < 1 || portNum > 65535) return 'Port must be between 1 and 65535';
         },
