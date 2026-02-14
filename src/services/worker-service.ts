@@ -302,7 +302,8 @@ export class WorkerService {
     this.server.app.get('/api/context/inject', async (req, res, next) => {
       if (!this.initializationCompleteFlag || !this.searchRoutes) {
         logger.warn('SYSTEM', 'Context requested before initialization complete, returning empty');
-        res.status(200).json({ content: [{ type: 'text', text: '' }] });
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.status(200).send('');
         return;
       }
 

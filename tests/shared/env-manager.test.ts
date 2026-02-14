@@ -80,7 +80,7 @@ describe('EnvManager OAuth token resolution', () => {
     expect(isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN).toBe('fallback-token');
   });
 
-  it('should keep API key auth priority when ANTHROPIC_API_KEY is configured', () => {
+  it('should strip OAuth token when ANTHROPIC_API_KEY is configured', () => {
     envFileExists = true;
     envFileContent = 'ANTHROPIC_API_KEY=sk-ant-api-key\n';
     process.env.CLAUDE_CODE_OAUTH_TOKEN = 'oauth-token';
@@ -91,7 +91,7 @@ describe('EnvManager OAuth token resolution', () => {
     const isolatedEnv = buildIsolatedEnv();
 
     expect(isolatedEnv.ANTHROPIC_API_KEY).toBe('sk-ant-api-key');
-    expect(isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN).toBe('oauth-token');
+    expect(isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
   });
 
   it('should describe auth method as credentials.json token when available', () => {

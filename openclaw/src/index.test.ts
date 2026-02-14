@@ -223,6 +223,12 @@ describe("Observation I/O event handlers", () => {
   let workerPort: number;
   let receivedRequests: Array<{ method: string; url: string; body: any }> = [];
 
+  function getLastInitContentSessionId(): string {
+    const initRequests = receivedRequests.filter((r) => r.url === "/api/sessions/init");
+    assert.ok(initRequests.length > 0, "should have at least one init request");
+    return String(initRequests[initRequests.length - 1]!.body.contentSessionId);
+  }
+
   function startWorkerMock(): Promise<number> {
     return new Promise((resolve) => {
       workerServer = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -320,7 +326,7 @@ describe("Observation I/O event handlers", () => {
     const initRequest = receivedRequests.find((r) => r.url === "/api/sessions/init");
     assert.ok(initRequest, "should send init request to worker");
     assert.equal(initRequest!.body.project, "openclaw");
-    assert.ok(initRequest!.body.contentSessionId.startsWith("openclaw-agent-1-"));
+    assert.ok(initRequest!.body.contentSessionId.startsWith("openclaw-session_agent-1-"));
     assert.ok(logs.some((l) => l.includes("Session initialized")));
   });
 
@@ -333,6 +339,33 @@ describe("Observation I/O event handlers", () => {
 
     const initRequests = receivedRequests.filter((r) => r.url === "/api/sessions/init");
     assert.equal(initRequests.length, 1, "should init on session_start");
+    assert.ok(
+      initRequests[0]!.body.contentSessionId.startsWith("openclaw-session-id_test-session-1-"),
+      "should derive scope from sessionId when sessionKey is missing"
+    );
+    assert.ok(
+      !String(initRequests[0]!.body.contentSessionId).includes("default"),
+      "should not use legacy default scope key"
+    );
+  });
+
+  it("session_start prioritizes sessionId over agentId when sessionKey is missing", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+
+    await fireEvent("session_start", { sessionId: "runtime-s-9" }, { agentId: "main" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const initRequest = receivedRequests.find((r) => r.url === "/api/sessions/init");
+    assert.ok(initRequest, "should send init request");
+    assert.ok(
+      String(initRequest!.body.contentSessionId).startsWith("openclaw-session-id_runtime-s-9-"),
+      "sessionId should be the scope key when sessionKey is missing"
+    );
+    assert.ok(
+      !String(initRequest!.body.contentSessionId).startsWith("openclaw-agent_main-"),
+      "agentId must not collapse different runtime sessions into a shared scope"
+    );
   });
 
   it("after_compaction re-inits session on worker", async () => {
@@ -381,7 +414,7 @@ describe("Observation I/O event handlers", () => {
     assert.equal(obsRequest!.body.tool_name, "Read");
     assert.deepEqual(obsRequest!.body.tool_input, { file_path: "/src/index.ts" });
     assert.equal(obsRequest!.body.tool_response, "file contents here...");
-    assert.ok(obsRequest!.body.contentSessionId.startsWith("openclaw-test-agent-"));
+    assert.ok(obsRequest!.body.contentSessionId.startsWith("openclaw-session_test-agent-"));
   });
 
   it("tool_result_persist skips memory_ tools", async () => {
@@ -440,11 +473,11 @@ describe("Observation I/O event handlers", () => {
     const summarizeRequest = receivedRequests.find((r) => r.url === "/api/sessions/summarize");
     assert.ok(summarizeRequest, "should send summarize to worker");
     assert.equal(summarizeRequest!.body.last_assistant_message, "Here is the solution...");
-    assert.ok(summarizeRequest!.body.contentSessionId.startsWith("openclaw-summarize-test-"));
+    assert.ok(summarizeRequest!.body.contentSessionId.startsWith("openclaw-session_summarize-test-"));
 
     const completeRequest = receivedRequests.find((r) => r.url === "/api/sessions/complete");
     assert.ok(completeRequest, "should send complete to worker");
-    assert.ok(completeRequest!.body.contentSessionId.startsWith("openclaw-summarize-test-"));
+    assert.ok(completeRequest!.body.contentSessionId.startsWith("openclaw-session_summarize-test-"));
   });
 
   it("agent_end extracts text from array content", async () => {
@@ -532,6 +565,187 @@ describe("Observation I/O event handlers", () => {
       obsRequest!.body.contentSessionId,
       "should reuse contentSessionId for same sessionKey"
     );
+  });
+
+  it("message_received derives scope from conversationId and reuses session", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+
+    await fireEvent("message_received", {
+      from: "u-1",
+      content: "first",
+    }, { conversationId: "conv-123", channelId: "telegram:group:1" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    await fireEvent("message_received", {
+      from: "u-1",
+      content: "second",
+    }, { conversationId: "conv-123", channelId: "telegram:group:1" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const initRequests = receivedRequests.filter((r) => r.url === "/api/sessions/init");
+    assert.equal(initRequests.length, 2, "should init for each inbound message");
+    assert.equal(
+      initRequests[0]!.body.contentSessionId,
+      initRequests[1]!.body.contentSessionId,
+      "same conversation should reuse the same contentSessionId"
+    );
+    assert.ok(
+      initRequests[0]!.body.contentSessionId.startsWith("openclaw-conversation_conv-123-"),
+      "should derive session scope from conversationId"
+    );
+    assert.ok(
+      !String(initRequests[0]!.body.contentSessionId).includes("default"),
+      "should not use legacy default scope key"
+    );
+  });
+
+  it("warns once when session tracking falls back to global scope", async () => {
+    const { api, logs, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+
+    await fireEvent("after_compaction", { messageCount: 5, compactedCount: 3 }, {});
+    await fireEvent("after_compaction", { messageCount: 8, compactedCount: 2 }, {});
+
+    const globalScopeWarnings = logs.filter((l) => l.includes('Session scope fallback to "scope:global"'));
+    assert.equal(globalScopeWarnings.length, 1, "should log global fallback warning only once");
+  });
+
+  it("session_end cleans up derived session-id scope when sessionKey is missing", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+
+    await fireEvent("session_start", { sessionId: "ephemeral-session-1" }, {});
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    await fireEvent("session_end", { sessionId: "ephemeral-session-1", messageCount: 1 }, {});
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    await fireEvent("session_start", { sessionId: "ephemeral-session-1" }, {});
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const initRequests = receivedRequests.filter((r) => r.url === "/api/sessions/init");
+    assert.equal(initRequests.length, 2, "should init twice");
+    assert.notEqual(
+      initRequests[0]!.body.contentSessionId,
+      initRequests[1]!.body.contentSessionId,
+      "session_end should clear cached contentSessionId for derived scope"
+    );
+  });
+
+  it("session_end clears sessionKey scope via runtime sessionId mapping when context is partial", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+
+    await fireEvent("session_start", { sessionId: "mapped-session-1" }, { sessionKey: "mapped-agent" });
+    const firstSessionId = getLastInitContentSessionId();
+
+    // Simulate partial session_end context where sessionKey is missing.
+    await fireEvent("session_end", { sessionId: "mapped-session-1", messageCount: 1 }, {});
+
+    await fireEvent("session_start", { sessionId: "mapped-session-1" }, { sessionKey: "mapped-agent" });
+    const secondSessionId = getLastInitContentSessionId();
+
+    assert.notEqual(
+      firstSessionId,
+      secondSessionId,
+      "session_end should clear sessionKey-scoped entry by looking up runtime sessionId mapping"
+    );
+  });
+
+  it("expires inactive scopes by ttl and rotates contentSessionId", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+
+    const DateCtor = Date as unknown as { now: () => number };
+    const originalDateNow = Date.now;
+    let now = 1_700_000_000_000;
+    DateCtor.now = () => now;
+
+    try {
+      await fireEvent("session_start", { sessionId: "ttl-session-1" }, { sessionKey: "ttl-scope" });
+      const firstSessionId = getLastInitContentSessionId();
+
+      now += 7 * 60 * 60 * 1000; // > 6h ttl
+      await fireEvent("session_start", { sessionId: "ttl-session-1" }, { sessionKey: "ttl-scope" });
+      const secondSessionId = getLastInitContentSessionId();
+
+      assert.notEqual(firstSessionId, secondSessionId, "expired scope should be pruned and recreated");
+    } finally {
+      DateCtor.now = originalDateNow;
+    }
+  });
+
+  it("evicts the oldest scope when tracked scope cap is exceeded", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+
+    const DateCtor = Date as unknown as { now: () => number };
+    const originalDateNow = Date.now;
+    let now = 1_700_100_000_000;
+    DateCtor.now = () => now;
+
+    try {
+      await fireEvent("session_start", { sessionId: "oldest-session" }, { sessionKey: "oldest-scope" });
+      const oldestFirstSessionId = getLastInitContentSessionId();
+
+      // 500 is the configured cap; push beyond that to force LRU eviction.
+      for (let i = 0; i <= 500; i++) {
+        now += 1;
+        await fireEvent("session_start", { sessionId: `bulk-session-${i}` }, { sessionKey: `bulk-scope-${i}` });
+      }
+
+      now += 1;
+      await fireEvent("session_start", { sessionId: "oldest-session" }, { sessionKey: "oldest-scope" });
+      const oldestSecondSessionId = getLastInitContentSessionId();
+
+      assert.notEqual(
+        oldestFirstSessionId,
+        oldestSecondSessionId,
+        "oldest scope should be evicted after cap overflow and recreated on next access"
+      );
+    } finally {
+      DateCtor.now = originalDateNow;
+    }
+  });
+
+  it("keeps a recently touched scope when many scopes share the same timestamp", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+
+    const DateCtor = Date as unknown as { now: () => number };
+    const originalDateNow = Date.now;
+    const fixedNow = 1_700_200_000_000;
+    DateCtor.now = () => fixedNow;
+
+    try {
+      await fireEvent("session_start", { sessionId: "sticky-session" }, { sessionKey: "sticky-scope" });
+      const stickyFirstSessionId = getLastInitContentSessionId();
+
+      // Fill up to cap (500 scopes total) using the same timestamp.
+      for (let i = 0; i < 499; i++) {
+        await fireEvent("session_start", { sessionId: `equal-ts-session-${i}` }, { sessionKey: `equal-ts-scope-${i}` });
+      }
+
+      // Refresh sticky scope recency; contentSessionId should stay the same.
+      await fireEvent("session_start", { sessionId: "sticky-session" }, { sessionKey: "sticky-scope" });
+      const stickyRefreshedSessionId = getLastInitContentSessionId();
+      assert.equal(stickyRefreshedSessionId, stickyFirstSessionId, "touch should not rotate active scope id");
+
+      // Add one more scope to trigger cap eviction logic.
+      await fireEvent("session_start", { sessionId: "overflow-session" }, { sessionKey: "overflow-scope" });
+
+      // Sticky scope should survive eviction because it was touched most recently.
+      await fireEvent("session_start", { sessionId: "sticky-session" }, { sessionKey: "sticky-scope" });
+      const stickyAfterOverflowSessionId = getLastInitContentSessionId();
+      assert.equal(
+        stickyAfterOverflowSessionId,
+        stickyFirstSessionId,
+        "recently touched scope should survive cap eviction even with equal timestamps"
+      );
+    } finally {
+      DateCtor.now = originalDateNow;
+    }
   });
 });
 
