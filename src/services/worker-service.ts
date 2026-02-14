@@ -115,7 +115,7 @@ import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 
 // Process management for zombie cleanup (Issue #737)
-import { startOrphanReaper, reapOrphanedProcesses } from './worker/ProcessRegistry.js';
+import { startOrphanReaper, reapSystemOrphansOnly } from './worker/ProcessRegistry.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -444,6 +444,16 @@ export class WorkerService {
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
+
+      // Defensive cleanup: reap only OS-level orphans (ppid=1) from previous daemon run (Issue #1007)
+      try {
+        const startupReaped = await reapSystemOrphansOnly();
+        if (startupReaped > 0) {
+          logger.info('SYSTEM', `Reaped ${startupReaped} system orphan(s) from previous run`, { reaped: startupReaped });
+        }
+      } catch (err) {
+        logger.warn('SYSTEM', 'Startup reap of system orphans failed (non-fatal)', {}, err as Error);
+      }
 
       // Start orphan reaper to clean up zombie processes (Issue #737)
       this.stopOrphanReaper = startOrphanReaper(() => {

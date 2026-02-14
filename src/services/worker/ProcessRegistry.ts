@@ -4,16 +4,16 @@
  * Fixes Issue #737: Claude haiku subprocesses don't terminate properly,
  * causing zombie process accumulation (user reported 155 processes / 51GB RAM).
  *
- * Root causes:
- * 1. SDK's SpawnedProcess interface hides subprocess PIDs
- * 2. deleteSession() doesn't verify subprocess exit before cleanup
- * 3. abort() is fire-and-forget with no confirmation
+ * Issue #1007: Unbounded spawning can exhaust memory/swap over multi-day daemon
+ * runs. We enforce a max concurrent subprocess limit and reap orphans at startup.
  *
  * Solution:
  * - Use SDK's spawnClaudeCodeProcess option to capture PIDs
  * - Track all spawned processes with session association
+ * - Enforce MAX_CONCURRENT_CLAUDE_SUBPROCESSES; fail fast when at cap
  * - Verify exit on session deletion with timeout + SIGKILL escalation
  * - Safety net orphan reaper runs every 5 minutes
+ * - Defensive reap of system orphans only at startup (ppid=1), never registry
  */
 
 import { spawn, exec, ChildProcess } from 'child_process';
@@ -31,6 +31,16 @@ interface TrackedProcess {
 
 // PID Registry - tracks spawned Claude subprocesses
 const processRegistry = new Map<number, TrackedProcess>();
+
+/** Maximum concurrent Claude subprocesses (safety limit to prevent resource exhaustion, Issue #1007) */
+export const MAX_CONCURRENT_CLAUDE_SUBPROCESSES = 50;
+
+/**
+ * Get current count of tracked subprocesses (for cap enforcement)
+ */
+export function getActiveProcessCount(): number {
+  return processRegistry.size;
+}
 
 /**
  * Register a spawned process in the registry
@@ -237,6 +247,30 @@ async function killSystemOrphans(): Promise<number> {
 }
 
 /**
+ * Reap only OS-level orphans (ppid=1). Safe to call at daemon startup:
+ * does not touch the registry, so in-flight subprocesses are never killed.
+ */
+export async function reapSystemOrphansOnly(): Promise<number> {
+  return killSystemOrphans();
+}
+
+/**
+ * Remove from registry any tracked process that has already exited.
+ * Prevents cap enforcement from being stuck when exit events were missed.
+ */
+export function pruneExitedProcesses(): void {
+  const toRemove: number[] = [];
+  for (const [pid, info] of processRegistry) {
+    if (info.process.killed || info.process.exitCode !== null) {
+      toRemove.push(pid);
+    }
+  }
+  for (const pid of toRemove) {
+    unregisterProcess(pid);
+  }
+}
+
+/**
  * Reap orphaned processes - both registry-tracked and system-level
  */
 export async function reapOrphanedProcesses(activeSessionIds: Set<number>): Promise<number> {
@@ -282,6 +316,16 @@ export function createPidCapturingSpawn(sessionDbId: number) {
     env?: NodeJS.ProcessEnv;
     signal?: AbortSignal;
   }) => {
+    pruneExitedProcesses();
+    if (processRegistry.size >= MAX_CONCURRENT_CLAUDE_SUBPROCESSES) {
+      logger.warn('PROCESS', `Refusing to spawn: at safety limit (${MAX_CONCURRENT_CLAUDE_SUBPROCESSES} concurrent Claude subprocesses)`, {
+        sessionDbId,
+        current: processRegistry.size
+      });
+      throw new Error(
+        `Maximum concurrent Claude subprocesses reached (${MAX_CONCURRENT_CLAUDE_SUBPROCESSES}). Please try again later or restart the worker.`
+      );
+    }
     const child = spawn(spawnOptions.command, spawnOptions.args, {
       cwd: spawnOptions.cwd,
       env: spawnOptions.env,
