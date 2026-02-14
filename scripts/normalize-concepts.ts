@@ -8,15 +8,20 @@
  * 3. Observations with zero valid concepts (assigns inferred default from type)
  *
  * Usage:
- *   npx tsx scripts/normalize-concepts.ts           # Dry run (default)
- *   npx tsx scripts/normalize-concepts.ts --execute  # Actually update database
+ *   npx tsx scripts/normalize-concepts.ts                          # Dry run (default)
+ *   npx tsx scripts/normalize-concepts.ts --execute                # Actually update database
+ *   npx tsx scripts/normalize-concepts.ts --db /path/to/db         # Target a specific database
+ *   npx tsx scripts/normalize-concepts.ts --db /path/to/db --execute
  */
 
 import Database from 'better-sqlite3';
 import { homedir } from 'os';
 import { join } from 'path';
 
-const DB_PATH = join(homedir(), '.claude-mem', 'claude-mem.db');
+const dbFlagIndex = process.argv.indexOf('--db');
+const DB_PATH = dbFlagIndex !== -1 && process.argv[dbFlagIndex + 1]
+  ? process.argv[dbFlagIndex + 1]
+  : join(homedir(), '.claude-mem', 'claude-mem.db');
 
 // Valid concept IDs from code.json observation_concepts
 const VALID_CONCEPTS = new Set([
