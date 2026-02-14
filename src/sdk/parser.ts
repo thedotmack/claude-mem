@@ -5,6 +5,7 @@
 
 import { logger } from '../utils/logger.js';
 import { ModeManager } from '../services/domain/ModeManager.js';
+import type { ModeConfig } from '../services/domain/types.js';
 
 export interface ParsedObservation {
   type: string;
@@ -71,17 +72,8 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
 
     // All other fields are optional - save whatever we have
 
-    // Filter out type from concepts array (types and concepts are separate dimensions)
-    const cleanedConcepts = concepts.filter(c => c !== finalType);
-
-    if (cleanedConcepts.length !== concepts.length) {
-      logger.error('PARSER', 'Removed observation type from concepts array', {
-        correlationId,
-        type: finalType,
-        originalConcepts: concepts,
-        cleanedConcepts
-      });
-    }
+    // Validate and normalize concepts against mode's allowed concept IDs
+    const validatedConcepts = validateConcepts(concepts, finalType, mode, correlationId);
 
     observations.push({
       type: finalType,
@@ -89,7 +81,7 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
       subtitle,
       facts,
       narrative,
-      concepts: cleanedConcepts,
+      concepts: validatedConcepts,
       files_read,
       files_modified
     });
@@ -144,6 +136,103 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
     next_steps,
     notes
   };
+}
+
+/**
+ * Validate and normalize concept values against the active mode's allowed concepts.
+ * - Removes observation type from concepts (separate dimensions)
+ * - Direct match against valid concept IDs
+ * - Colon-prefix normalization: "how-it-works: long description" -> "how-it-works"
+ * - Drops invalid concepts that don't match any valid value
+ * - Deduplicates after normalization
+ * - Infers a default concept from observation type if all were invalid
+ */
+export function validateConcepts(
+  rawConcepts: string[],
+  observationType: string,
+  mode: ModeConfig,
+  correlationId?: string
+): string[] {
+  const validConceptIds = new Set(mode.observation_concepts.map(c => c.id));
+
+  // Step 1: Remove observation type from concepts (types and concepts are separate dimensions)
+  const withoutType = rawConcepts.filter(c => c !== observationType);
+  if (withoutType.length !== rawConcepts.length) {
+    logger.debug('PARSER', 'Removed observation type from concepts array', {
+      correlationId,
+      type: observationType
+    });
+  }
+
+  // Step 2: Validate each concept
+  const validated: string[] = [];
+  const dropped: string[] = [];
+
+  for (const concept of withoutType) {
+    const trimmed = concept.trim().toLowerCase();
+
+    // Direct match
+    if (validConceptIds.has(trimmed)) {
+      validated.push(trimmed);
+      continue;
+    }
+
+    // Colon-prefix normalization: "how-it-works: understanding the auth flow" -> "how-it-works"
+    const colonIndex = trimmed.indexOf(':');
+    if (colonIndex > 0) {
+      const prefix = trimmed.substring(0, colonIndex).trim();
+      if (validConceptIds.has(prefix)) {
+        validated.push(prefix);
+        continue;
+      }
+    }
+
+    // No match — drop this concept
+    dropped.push(concept);
+  }
+
+  // Step 3: Deduplicate (normalization may create dupes)
+  const unique = [...new Set(validated)];
+
+  // Step 4: Ensure at least 1 valid concept
+  if (unique.length === 0) {
+    const inferred = inferConceptFromType(observationType, mode);
+    unique.push(inferred);
+  }
+
+  // Step 5: Log dropped concepts at debug level
+  if (dropped.length > 0) {
+    logger.debug('PARSER', `Dropped ${String(dropped.length)} invalid concept(s)`, {
+      correlationId,
+      dropped,
+      kept: unique
+    });
+  }
+
+  return unique;
+}
+
+/**
+ * Infer a default concept from observation type when all concepts were invalid.
+ * Maps each code-mode type to its most natural concept category.
+ */
+function inferConceptFromType(type: string, mode: ModeConfig): string {
+  const typeToConceptMap: Record<string, string> = {
+    'bugfix': 'problem-solution',
+    'feature': 'what-changed',
+    'refactor': 'what-changed',
+    'change': 'what-changed',
+    'discovery': 'how-it-works',
+    'decision': 'trade-off',
+  };
+
+  const mapped = typeToConceptMap[type];
+  if (mapped && mode.observation_concepts.some(c => c.id === mapped)) {
+    return mapped;
+  }
+
+  // Fallback: first concept in the mode's list
+  return mode.observation_concepts[0]?.id ?? 'what-changed';
 }
 
 /**
