@@ -577,6 +577,23 @@ DELETE /sessions/:sessionDbId
 
 **Note**: As of v4.1.0, the cleanup hook no longer calls this endpoint. Sessions are marked complete instead of deleted to allow graceful worker shutdown.
 
+## Session Completion Lifecycle
+
+Sessions track their processing status through a lifecycle:
+
+```
+active → completed → active (on new prompt)
+```
+
+- **`active`**: Session is receiving observations/summaries
+- **`completed`**: Summary has been stored (`completeSession` called from `ResponseProcessor` after atomic transaction)
+- **Back to `active`**: When a new prompt arrives for a completed session, `createSDKSession` resets status to `active`
+
+This lifecycle enables:
+- Distinguishing between sessions still being processed and those that are done
+- Proper session reuse when the same Claude session sends multiple prompts
+- Recovery tools can differentiate stuck sessions from completed ones
+
 ## Node.js Process Management
 
 ### Overview
@@ -624,10 +641,19 @@ The worker service routes observations to the Claude Agent SDK for AI-powered pr
 
 ### Processing Flow
 
-1. **Observation Queue**: Observations accumulate in memory
-2. **SDK Processing**: Observations sent to Claude via Agent SDK
-3. **XML Parsing**: Responses parsed for structured data
-4. **Database Storage**: Processed observations stored in SQLite
+1. **Message Queue**: Hooks send messages (observations/summaries) to the worker via HTTP. Messages are claimed and deleted from the queue atomically (claim-and-delete pattern)
+2. **SDK Processing**: Messages sent to Claude via Agent SDK with iterative processing
+3. **XML Parsing**: Responses parsed for structured data (observations with type, title, narrative, facts, concepts, files)
+4. **Atomic Storage**: Parsed observations + summary stored in a single SQLite transaction
+5. **Async Sync**: Chroma vector embeddings synced fire-and-forget (failures are non-critical)
+6. **SSE Broadcast**: New items broadcast to connected viewer UI clients
+
+### History Compaction
+
+The SDK agent uses history compaction instead of simple truncation to manage conversation context:
+- When conversation history exceeds the context limit, older messages are summarized rather than dropped
+- This preserves the narrative arc while staying within token budgets
+- Summary messages and observation results have priority ordering in the queue
 
 ### SDK Components
 

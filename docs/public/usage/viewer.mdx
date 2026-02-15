@@ -1,0 +1,126 @@
+---
+title: "Viewer UI"
+description: "Web-based memory visualization and search interface"
+---
+
+# Viewer UI
+
+The claude-mem Viewer is a self-contained web interface that provides real-time visualization of your memory stream -- observations, summaries, and prompts flowing through the system as you work.
+
+<Frame>
+  <img src="/viewer-screenshot.png" alt="Claude-Mem Viewer UI" />
+</Frame>
+
+## Opening the Viewer
+
+Navigate to [http://localhost:37777](http://localhost:37777) in any browser. The worker service must be running, which happens automatically on your first Claude Code session after installing claude-mem.
+
+The viewer is a single self-contained HTML page served directly by the worker service. No additional setup, build step, or dependencies are required.
+
+## Feed Modes
+
+The viewer operates in three distinct modes depending on how you interact with it.
+
+### Live Feed (Default)
+
+When you first open the viewer, it connects via **Server-Sent Events (SSE)** and streams observations, summaries, and prompts in real-time. New items appear at the top of the feed automatically as they are created during your Claude Code sessions.
+
+### Project Filter
+
+Click any project name in the sidebar to filter the feed to that project only. The viewer stays in SSE mode, so new items for the selected project still appear live as they arrive.
+
+### Search/Filter Mode
+
+When you enter a search query or activate any filter, the viewer switches from SSE to **paginated API results**. A result count badge appears showing how many items matched. This mode uses the same HTTP API that powers the MCP search tools.
+
+## Search Bar
+
+The search bar sits at the top of the page and provides full-text search across all stored observations.
+
+- **Debounced input** -- Queries fire after a 300ms delay, so the viewer does not send a request on every keystroke.
+- **Result count badge** -- Displays "N+" when additional results exist beyond the current page.
+- **Clear button** -- The X button resets the search and returns to the live feed.
+- **Loading spinner** -- Appears while a search request is in flight.
+
+## Filter Bar
+
+A collapsible filter panel sits below the search bar. Toggle it open to refine results with structured filters.
+
+### Observation Type Chips
+
+Multi-select filter chips for observation types:
+
+| Chip | Description |
+|------|-------------|
+| `bugfix` | Bug fixes and error resolutions |
+| `feature` | New feature implementations |
+| `refactor` | Code restructuring and cleanup |
+| `discovery` | Findings and insights |
+| `decision` | Architectural and design decisions |
+| `change` | General code changes |
+
+### Concept Chips
+
+Multi-select filter chips from the concept vocabulary:
+
+| Chip | Description |
+|------|-------------|
+| `how-it-works` | Implementation details and mechanics |
+| `why-it-exists` | Rationale and motivation |
+| `what-changed` | Diffs and modifications |
+| `problem-solution` | Issue and resolution pairs |
+| `gotcha` | Pitfalls and non-obvious behaviors |
+| `pattern` | Reusable approaches and templates |
+| `trade-off` | Competing concerns and compromises |
+
+### Show (Item Kind)
+
+A single-select filter for the kind of record to display:
+
+- **Observations** -- Compressed memory records
+- **Sessions** -- Session summaries
+- **Prompts** -- User prompts captured during sessions
+
+### Date Range
+
+Start date and end date pickers to constrain results to a specific time window.
+
+### Controls
+
+- **Clear all** button resets every active filter at once.
+- **Active filter count** badge on the filter toggle button shows how many filters are currently applied.
+
+## Activity Bar (Timeline)
+
+The activity bar renders a **90-day density chart** showing observation volume over time.
+
+- Each day is represented by a vertical bar whose height is proportional to the number of observations recorded that day.
+- **Click** a single day to filter the feed to that date.
+- **Drag** across multiple days to select a date range.
+- Hover over any bar to see a **tooltip** with the exact date and observation count.
+- Uses a **colorblind-friendly palette** for accessibility.
+
+## Theme Toggle
+
+The viewer supports three appearance modes:
+
+1. **Light** -- Light background, dark text
+2. **Dark** -- Dark background, light text
+3. **System** -- Follows your operating system preference
+
+Click the theme toggle button to cycle through modes. The toggle uses **smart skip logic**: when your system preference matches the current explicit theme (for example, you are on Dark and your OS is also set to dark), clicking the toggle skips the redundant "System" option and goes straight to the next distinct appearance.
+
+## Infinite Scroll Pagination
+
+The viewer loads items incrementally as you scroll:
+
+- In **live feed mode**, older items load as you scroll down past the initial batch.
+- In **search/filter mode**, additional result pages load automatically on scroll.
+- **Skeleton cards** appear as placeholders while the next batch is fetching.
+- A **"No more items"** indicator appears when you reach the end of available results.
+
+## Next Steps
+
+- [Memory Search](/usage/search-tools) -- MCP-based search tools for programmatic access
+- [Configuration](/configuration) -- Customize context settings and behavior
+- [Architecture Overview](/architecture/overview) -- Understand system components and data flow

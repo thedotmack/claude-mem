@@ -13,8 +13,8 @@ Claude-Mem operates as a Claude Code plugin with five core components:
 2. **Smart Install** - Cached dependency checker (pre-hook script, runs before context-hook)
 3. **Worker Service** - Process observations via Claude Agent SDK + HTTP API (10 search endpoints)
 4. **Database Layer** - Store sessions and observations (SQLite + FTS5 + ChromaDB)
-5. **mem-search Skill** - Skill-based search with progressive disclosure (v5.4.0+)
-6. **Viewer UI** - Web-based real-time memory stream visualization
+5. **MCP Search Tools** - 4 MCP tools with 3-layer progressive disclosure workflow
+6. **Viewer UI** - Web-based memory visualization with search, filtering, activity timeline, and theme support
 
 ## Technology Stack
 
@@ -95,9 +95,9 @@ Uses 3-layer progressive disclosure: search → timeline → get_observations
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 6. Session Ends → Cleanup Hook Fires                            │
-│    Marks session complete (graceful, not DELETE), ready for     │
-│    next session context. Skips on /clear to preserve ongoing    │
+│ 6. Summary Stored → Session Marked Complete                       │
+│    Status changes from 'active' to 'completed'. If new prompt    │
+│    arrives in same session, status resets to 'active'            │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -232,9 +232,12 @@ See [Search Architecture](/architecture/search-architecture) for technical detai
 ### 5. Viewer UI
 React + TypeScript web interface at http://localhost:37777 featuring:
 - Real-time memory stream via Server-Sent Events
+- Search bar with debounced text search and result count
+- Filter bar with observation type, concept, item kind, and date range chips
+- Activity bar: 90-day density timeline with click-to-select and drag-to-range
 - Infinite scroll pagination with automatic deduplication
 - Project filtering and settings persistence
-- GPU-accelerated animations
+- Theme toggle (light/dark/system with smart skip)
 - Self-contained HTML bundle (viewer.html)
 
-Built with esbuild into a single file deployment.
+Built with esbuild into a single file deployment. See [Viewer UI Guide](/usage/viewer) for usage details.

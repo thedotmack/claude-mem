@@ -133,6 +133,11 @@ src/ui/viewer/
 │   ├── Header.tsx         # Header with logo and actions
 │   ├── Sidebar.tsx        # Project filter sidebar
 │   ├── Feed.tsx           # Main feed with infinite scroll
+│   ├── SearchBar.tsx      # Debounced text search with result count
+│   ├── FilterBar.tsx      # Collapsible filter panel with chips
+│   ├── FilterChip.tsx     # Reusable multi-select filter chip
+│   ├── ActivityBar.tsx    # 90-day density timeline
+│   ├── ThemeToggle.tsx    # Light/dark/system theme switcher
 │   ├── cards/             # Card components
 │   │   ├── ObservationCard.tsx
 │   │   ├── PromptCard.tsx
@@ -142,7 +147,10 @@ src/ui/viewer/
 │   ├── useSSE.ts          # Server-Sent Events connection
 │   ├── usePagination.ts   # Infinite scroll pagination
 │   ├── useSettings.ts     # Settings persistence
-│   └── useStats.ts        # Database statistics
+│   ├── useStats.ts        # Database statistics
+│   ├── useFilters.ts      # Filter state management
+│   ├── useSearch.ts       # Search API integration
+│   └── useActivityDensity.ts # 90-day activity data
 ├── utils/                 # Utilities
 │   ├── constants.ts       # Constants (API URLs, etc.)
 │   ├── formatters.ts      # Date/time formatting
@@ -164,6 +172,12 @@ npm run build
 
 1. Make changes to React components in `src/ui/viewer/`
 2. Build: `npm run build`
+
+   Or use the all-in-one command:
+   ```bash
+   npm run build-and-sync   # Build + sync to plugin + restart worker
+   ```
+
 3. Sync to installed plugin: `npm run sync-marketplace`
 4. Restart worker: `npm run worker:restart`
 5. Refresh browser at http://localhost:37777

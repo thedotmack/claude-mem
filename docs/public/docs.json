@@ -39,6 +39,7 @@
           "usage/openai-compat-provider",
           "usage/gemini-provider",
           "usage/search-tools",
+          "usage/viewer",
           "usage/claude-desktop",
           "usage/private-tags",
           "usage/export-import",
@@ -85,8 +86,7 @@
           "architecture/hooks",
           "architecture/worker-service",
           "architecture/database",
-          "architecture/search-architecture",
-          "architecture/pm2-to-bun-migration"
+          "architecture/search-architecture"
         ]
       }
     ]

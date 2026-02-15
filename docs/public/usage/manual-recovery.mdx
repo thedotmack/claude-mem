@@ -67,6 +67,15 @@ Messages in `processing` state for **>5 minutes** are considered stuck:
 - They're NOT automatically reprocessed (requires manual trigger)
 - They appear in the `stuckCount` field when checking queue status
 
+### Session vs Message States
+
+Note that sessions and messages have separate lifecycle states:
+
+- **Session status** (`active` → `completed` → `active`): Tracks whether the session has received its summary. Sessions transition to `completed` when the summary is stored, and back to `active` if a new prompt arrives in the same Claude session.
+- **Message status** (`pending` → `processing` → `processed`/`failed`): Tracks individual observation/summary processing in the queue.
+
+Manual recovery deals with **message** states, not session states. A session can be `completed` while still having `pending` messages from a late-arriving observation.
+
 ## Recovery Methods
 
 ### Method 1: Interactive CLI Tool

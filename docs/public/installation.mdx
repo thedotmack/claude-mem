@@ -27,6 +27,7 @@ Start a new Claude Code session and you'll see context from previous sessions au
 - **Node.js**: 18.0.0 or higher
 - **Claude Code**: Latest version with plugin support
 - **SQLite 3**: For persistent storage (bundled)
+- **uv**: Python package manager (auto-installed if missing, required for Chroma vector search)
 
 ## Advanced Installation
 
@@ -95,6 +96,8 @@ npm run test:context
 ## Upgrading
 
 Upgrades are automatic when updating via the plugin marketplace. Key changes in recent versions:
+
+**v9.1.0**: Viewer UI gains search, filtering, and activity timeline. Session completion lifecycle tracking added.
 
 **v7.1.0**: PM2 replaced with native Node.js process management. Migration is automatic on first hook trigger.
 

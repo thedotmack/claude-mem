@@ -5,7 +5,7 @@ icon: plug
 ---
 
 <Note>
-**Version:** 7.0.0 (December 2025)
+**Version:** 9.1.1 (February 2026)
 **Target Audience:** Developers building claude-mem integrations (VSCode extensions, IDE plugins, CLI tools)
 </Note>
 
@@ -307,7 +307,7 @@ GET /api/stats
 ```json Response
 {
   "worker": {
-    "version": "7.0.0",
+    "version": "9.1.1",
     "uptime": 12345,
     "activeSessions": 2,
     "sseClients": 1,
@@ -631,7 +631,7 @@ Event Types:
 - `summarize_queued`: { type }
 - `observation_created`: { type, observation }
 - `summary_created`: { type, summary }
-- `new_prompt`: { type, id, claude_session_id, project, prompt_number, prompt_text, created_at_epoch }
+- `new_prompt`: { type, id, content_session_id, project, prompt_number, prompt_text, created_at_epoch }
 </Info>
 
 ## Data Models
@@ -641,7 +641,8 @@ Event Types:
 ```typescript
 interface ActiveSession {
   sessionDbId: number;                  // Database ID (numeric)
-  claudeSessionId: string;              // Claude session identifier (string)
+  contentSessionId: string;              // Content session identifier (string)
+  memorySessionId: string | null;       // Memory session ID for FK constraint
   sdkSessionId: string | null;          // SDK session ID
   project: string;                      // Project name
   userPrompt: string;                   // Current user prompt text
@@ -673,9 +674,10 @@ interface PendingMessage {
     ```typescript
     interface SDKSessionRow {
       id: number;
-      claude_session_id: string;
+      content_session_id: string;
       sdk_session_id: string;
       project: string;
+      status: 'active' | 'completed';
       user_prompt: string;
       created_at_epoch: number;
       completed_at_epoch?: number;
@@ -689,10 +691,11 @@ interface PendingMessage {
       sdk_session_id: string;
       title: string;
       subtitle?: string;
-      summary: string;
+      narrative: string;
       facts: string;           // JSON array of fact strings
       concepts: string;        // JSON array of concept strings
-      files_touched: string;   // JSON array of file paths
+      files_read: string;      // JSON array of files read
+      files_modified: string;  // JSON array of files modified
       obs_type: string;        // discovery, decision, bugfix, feature, refactor
       project: string;
       created_at_epoch: number;
@@ -705,10 +708,12 @@ interface PendingMessage {
     interface SessionSummaryRow {
       id: number;
       sdk_session_id: string;
-      summary_text: string;
-      facts: string;           // JSON array
-      concepts: string;        // JSON array
-      files_touched: string;   // JSON array
+      request: string;
+      investigated: string;
+      learned: string;
+      completed: string;
+      next_steps: string;
+      notes: string | null;
       project: string;
       created_at_epoch: number;
     }
@@ -736,10 +741,11 @@ interface ObservationSearchResult {
   id: number;
   title: string;
   subtitle?: string;
-  summary: string;
+  narrative: string;
   facts: string[];         // Parsed from JSON
   concepts: string[];      // Parsed from JSON
-  files_touched: string[]; // Parsed from JSON
+  files_read: string[];    // Parsed from JSON
+  files_modified: string[]; // Parsed from JSON
   obs_type: string;
   project: string;
   created_at_epoch: number;
@@ -749,10 +755,12 @@ interface ObservationSearchResult {
 
 interface SessionSummarySearchResult {
   id: number;
-  summary_text: string;
-  facts: string[];
-  concepts: string[];
-  files_touched: string[];
+  request: string;
+  investigated: string;
+  learned: string;
+  completed: string;
+  next_steps: string;
+  notes: string | null;
   project: string;
   created_at_epoch: number;
   rank?: number;

@@ -27,7 +27,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - 🌐 **Multilingual Modes** - Supports 28 languages (Spanish, Chinese, French, Japanese, etc.)
 - 🎭 **Mode System** - Switch between workflows (Code, Email Investigation, Chill)
 - 🔍 **MCP Search Tools** - Query your project history with natural language
-- 🌐 **Web Viewer UI** - Real-time memory stream visualization at http://localhost:37777
+- 🌐 **Web Viewer UI** - Real-time memory stream with search, filtering, and activity timeline at http://localhost:37777
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
@@ -64,7 +64,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 3. **Worker Service** - HTTP API on port 37777 managed by Node.js
 4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 search
 5. **MCP Search Tools** - Query historical context with natural language
-6. **Web Viewer UI** - Real-time visualization with SSE and infinite scroll
+6. **Web Viewer UI** - Real-time visualization with search, filters, activity timeline, and SSE
 
 See [Architecture Overview](architecture/overview) for details.
 
@@ -75,6 +75,13 @@ See [Architecture Overview](architecture/overview) for details.
 - **SQLite 3**: For persistent storage (bundled)
 
 ## What's New
+
+**v9.1.0 - Viewer UI Search & Filtering:**
+- **Search Bar**: Debounced full-text search with result count indicators
+- **Filter Bar**: Multi-select chips for observation type, concept, item kind, and date range
+- **Activity Bar**: 90-day density timeline with click-to-select and drag-to-range
+- **Session Completion Tracking**: Sessions now properly transition between active and completed states
+- **Chroma Date Range Fix**: Semantic search respects user-specified date ranges
 
 **v9.0.0 - Live Context:**
 - **Folder Context Files**: Auto-generated `CLAUDE.md` in project folders with activity timelines
@@ -103,5 +110,8 @@ See [Architecture Overview](architecture/overview) for details.
   </Card>
   <Card title="Search Tools" icon="magnifying-glass" href="/usage/search-tools">
     Query your project history
+  </Card>
+  <Card title="Viewer UI" icon="display" href="/usage/viewer">
+    Visual search and filtering interface
   </Card>
 </CardGroup>

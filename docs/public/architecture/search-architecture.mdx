@@ -247,6 +247,18 @@ GET  /api/health           # Health check
 - Uses `SessionStore` for structured queries
 - Hybrid search with ChromaDB for semantic similarity
 
+## Viewer UI Search Integration
+
+The web viewer at http://localhost:37777 is a consumer of the same search API used by MCP tools:
+
+- **Text search**: Debounced queries sent to `GET /api/search` with `format=json`
+- **Filters**: Observation type (`obs_type`), concepts, item kind (`type`), date range (`dateStart`/`dateEnd`)
+- **Chroma semantic search**: When a text query is provided, the search API triggers Chroma vector similarity search alongside FTS5, respecting the user's date range filters (not a hardcoded 90-day window)
+- **Pagination**: `offset`/`limit` parameters for infinite scroll
+- **Activity density**: Client-side bucketing of observation timestamps for the 90-day activity bar
+
+This means the viewer and MCP tools share the same search logic — improvements to one benefit both.
+
 **FTS5 Full-Text Search:**
 ```typescript
 // search tool → HTTP GET → FTS5 query
@@ -257,6 +269,13 @@ AND date >= ? AND date <= ?
 ORDER BY rank
 LIMIT ? OFFSET ?
 ```
+
+### Concept Vocabulary
+
+Observations use a closed concept vocabulary with canonical terms:
+- `how-it-works`, `why-it-exists`, `what-changed`, `problem-solution`, `gotcha`, `pattern`, `trade-off`
+
+Concepts are normalized during observation processing to ensure consistent filtering across MCP tools and the viewer UI.
 
 ## The 3-Layer Workflow Pattern
 

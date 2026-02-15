@@ -17,6 +17,10 @@ Instead of fetching all historical data upfront (expensive), claude-mem uses a p
 
 This achieves **~10x token savings** compared to traditional RAG approaches.
 
+<Tip>
+Search is also available through the **Viewer UI** at http://localhost:37777 with a visual search bar, filter chips, and activity timeline. See [Viewer UI](/usage/viewer) for details.
+</Tip>
+
 ## The 3-Layer Workflow
 
 ### Layer 1: Search (Index)
@@ -351,7 +355,7 @@ All observations include rich metadata:
 - **Type** - bugfix, feature, decision, discovery, refactor, change
 - **Date** - When the work occurred
 - **Title** - Concise description
-- **Concepts** - Tagged themes (e.g., security, performance, architecture)
+- **Concepts** - Tagged themes from a closed vocabulary: how-it-works, why-it-exists, what-changed, problem-solution, gotcha, pattern, trade-off
 - **Files Read** - Files examined during work
 - **Files Modified** - Files changed during work
 - **Narrative** - Story of what happened and why
