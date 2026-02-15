@@ -388,7 +388,10 @@ Please see the 3.x to 4.x migration guide for details on how to update your app.
       `).run(r,e),n&&this.db.prepare(`
         UPDATE sdk_sessions SET user_prompt = ?
         WHERE content_session_id = ? AND (user_prompt IS NULL OR user_prompt = '')
-      `).run(n,e),this.db.prepare("SELECT id FROM sdk_sessions WHERE content_session_id = ?").get(e).id}saveUserPrompt(e,r,n){let i=new Date,o=i.getTime();return this.db.prepare(`
+      `).run(n,e),this.db.prepare(`
+      UPDATE sdk_sessions SET status = 'active'
+      WHERE content_session_id = ? AND status = 'completed'
+    `).run(e),this.db.prepare("SELECT id FROM sdk_sessions WHERE content_session_id = ?").get(e).id}saveUserPrompt(e,r,n){let i=new Date,o=i.getTime();return this.db.prepare(`
       INSERT INTO user_prompts
       (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?)

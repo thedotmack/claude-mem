@@ -1203,6 +1203,12 @@ export class SessionStore {
       `).run(userPrompt, contentSessionId);
     }
 
+    // Reset status to 'active' for returning sessions (new prompt in existing session)
+    this.db.prepare(`
+      UPDATE sdk_sessions SET status = 'active'
+      WHERE content_session_id = ? AND status = 'completed'
+    `).run(contentSessionId);
+
     // Return existing or new ID
     const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
       .get(contentSessionId) as { id: number };
