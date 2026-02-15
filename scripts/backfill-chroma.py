@@ -5,7 +5,7 @@ Backfill ChromaDB vector index from existing SQLite observations.
 After resetting claude-mem's vector-db directory (e.g. to fix HNSW corruption),
 this script repopulates ChromaDB from the SQLite database which retains all data.
 
-It replicates the exact document format used by claude-mem's worker-service.cjs,
+It replicates the exact document format used by claude-mem's ChromaSync.ts,
 so semantic search works identically to real-time indexed documents.
 
 Requirements:
@@ -52,28 +52,50 @@ def get_db(db_path):
 
 
 def format_observation_docs(row):
-    """Format an observation into multiple Chroma documents, matching claude-mem's format.
+    """Format an observation into multiple Chroma documents.
 
-    Each observation is decomposed into separate documents for narrative, text,
-    and individual facts. This granular storage enables more precise semantic search.
+    Matches ChromaSync.ts formatObservationDocs() exactly:
+    - base metadata uses sqlite_id, doc_type, and minimal fields
+    - optional fields (subtitle, concepts, files) added only when present
+    - arrays stored as comma-separated strings, not raw JSON
     """
     obs_id = row["id"]
+
+    # Base metadata — matches ChromaSync.ts lines 222-230
     base_meta = {
-        "id": obs_id,
+        "sqlite_id": obs_id,
+        "doc_type": "observation",
         "memory_session_id": row["memory_session_id"] or "",
         "project": row["project"] or "",
-        "type": row["type"] or "",
-        "title": row["title"] or "",
-        "subtitle": row["subtitle"] or "",
-        "facts": row["facts"] or "[]",
-        "narrative": row["narrative"] or "",
-        "concepts": row["concepts"] or "[]",
-        "files_read": row["files_read"] or "[]",
-        "files_modified": row["files_modified"] or "[]",
-        "prompt_number": row["prompt_number"] or 0,
-        "created_at": row["created_at"] or "",
         "created_at_epoch": row["created_at_epoch"] or 0,
+        "type": row["type"] or "discovery",
+        "title": row["title"] or "Untitled",
     }
+
+    # Optional metadata — matches ChromaSync.ts lines 232-244
+    if row["subtitle"]:
+        base_meta["subtitle"] = row["subtitle"]
+
+    try:
+        concepts = json.loads(row["concepts"] or "[]")
+        if concepts:
+            base_meta["concepts"] = ",".join(str(c) for c in concepts)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    try:
+        files_read = json.loads(row["files_read"] or "[]")
+        if files_read:
+            base_meta["files_read"] = ",".join(str(f) for f in files_read)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    try:
+        files_modified = json.loads(row["files_modified"] or "[]")
+        if files_modified:
+            base_meta["files_modified"] = ",".join(str(f) for f in files_modified)
+    except (json.JSONDecodeError, TypeError):
+        pass
 
     docs = []
 
@@ -109,17 +131,20 @@ def format_observation_docs(row):
 def format_summary_docs(row):
     """Format a session summary into multiple Chroma documents.
 
-    Summaries are split into six field-specific documents (request, investigated,
-    learned, completed, next_steps, notes) for targeted semantic matching.
+    Matches ChromaSync.ts formatSummaryDocs() exactly:
+    - base metadata uses sqlite_id and doc_type
+    - each summary field becomes a separate vector document
     """
     summary_id = row["id"]
+
+    # Base metadata — matches ChromaSync.ts lines 283-290
     base_meta = {
-        "id": summary_id,
+        "sqlite_id": summary_id,
+        "doc_type": "session_summary",
         "memory_session_id": row["memory_session_id"] or "",
         "project": row["project"] or "",
-        "prompt_number": row["prompt_number"] or 0,
-        "created_at": row["created_at"] or "",
         "created_at_epoch": row["created_at_epoch"] or 0,
+        "prompt_number": row["prompt_number"] or 0,
     }
 
     docs = []
@@ -135,14 +160,19 @@ def format_summary_docs(row):
 
 
 def format_prompt_doc(row):
-    """Format a user prompt as a single Chroma document."""
+    """Format a user prompt as a single Chroma document.
+
+    Matches ChromaSync.ts formatUserPromptDoc() exactly:
+    - uses sqlite_id, doc_type, memory_session_id, project from JOIN
+    """
     return {
         "id": f"prompt_{row['id']}",
         "document": row["prompt_text"],
         "metadata": {
             "sqlite_id": row["id"],
             "doc_type": "user_prompt",
-            "memory_session_id": row["content_session_id"] or "",
+            "memory_session_id": row["memory_session_id"] or "",
+            "project": row["project"] or "",
             "created_at_epoch": row["created_at_epoch"] or 0,
             "prompt_number": row["prompt_number"] or 0,
         },
@@ -271,8 +301,15 @@ def main():
     total_added += process_table("summaries", sum_docs, collection, existing_ids, args.dry_run)
 
     # --- User Prompts ---
+    # JOIN with sdk_sessions to get project and memory_session_id
+    # (matches ChromaSync.ts ensureBackfilled() lines 704-713)
     print("\n--- User Prompts ---")
-    rows = db.execute("SELECT * FROM user_prompts ORDER BY id").fetchall()
+    rows = db.execute("""
+        SELECT up.*, s.project, s.memory_session_id
+        FROM user_prompts up
+        JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+        ORDER BY up.id
+    """).fetchall()
     print(f"Found {len(rows)} prompts in SQLite")
     prompt_docs = []
     for row in rows:
