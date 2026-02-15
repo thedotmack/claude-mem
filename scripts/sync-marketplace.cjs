@@ -11,8 +11,8 @@ const { existsSync, readFileSync } = require('fs');
 const path = require('path');
 const os = require('os');
 
-const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'doublefx');
-const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'doublefx', 'magic-claude-mem');
+const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem');
+const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'magic-claude-mem', 'magic-claude-mem');
 
 function getCurrentBranch() {
   try {
@@ -61,13 +61,13 @@ function getPluginVersion() {
 console.log('Syncing to marketplace...');
 try {
   execSync(
-    'rsync -av --delete --exclude=.git --exclude=/.mcp.json ./ ~/.claude/plugins/marketplaces/doublefx/',
+    'rsync -av --delete --exclude=.git --exclude=/.mcp.json ./ ~/.claude/plugins/marketplaces/magic-claude-mem/',
     { stdio: 'inherit' }
   );
 
   console.log('Running npm install in marketplace...');
   execSync(
-    'cd ~/.claude/plugins/marketplaces/doublefx/ && npm install',
+    'cd ~/.claude/plugins/marketplaces/magic-claude-mem/ && npm install',
     { stdio: 'inherit' }
   );
 
@@ -99,7 +99,7 @@ try {
       winHome = null;
     }
     const winCachePath = winHome
-      ? path.join(winHome, '.claude', 'plugins', 'cache', 'doublefx', 'magic-claude-mem', version)
+      ? path.join(winHome, '.claude', 'plugins', 'cache', 'magic-claude-mem', 'magic-claude-mem', version)
       : null;
     if (winCachePath && existsSync(path.dirname(winCachePath))) {
       console.log('Syncing to Windows cache (WSL detected)...');

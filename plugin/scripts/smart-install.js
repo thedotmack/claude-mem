@@ -18,7 +18,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = join(__dirname, '..');
 
 // MARKETPLACE_ROOT = stable location for CLI alias and version marker
-const MARKETPLACE_ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'doublefx');
+const MARKETPLACE_ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem');
 const MARKER = join(MARKETPLACE_ROOT, '.install-version');
 const IS_WINDOWS = process.platform === 'win32';
 

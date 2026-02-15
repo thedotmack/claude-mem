@@ -4,7 +4,7 @@ import { readFileSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 
-const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'doublefx');
+const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem');
 
 // Cache to avoid repeated settings file reads
 let cachedPort: number | null = null;

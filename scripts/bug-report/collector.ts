@@ -183,7 +183,7 @@ export async function collectDiagnostics(
     ".claude",
     "plugins",
     "marketplaces",
-    "doublefx"
+    "magic-claude-mem"
   );
   const cwd = process.cwd();
   const isDevMode = cwd.includes("magic-claude-mem") && !cwd.includes(".claude");

@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 SOURCE_DIR="plugin/"
-DEST_DIR="$HOME/.claude/plugins/marketplaces/doublefx/plugin/"
+DEST_DIR="$HOME/.claude/plugins/marketplaces/magic-claude-mem/plugin/"
 
 # Function to print colored output
 print_status() {
