@@ -738,10 +738,10 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   });
 
   // ------------------------------------------------------------------
-  // Command: /claude-mem-feed — status & toggle
+  // Command: /claude_mem_feed — status & toggle
   // ------------------------------------------------------------------
   api.registerCommand({
-    name: "claude-mem-feed",
+    name: "claude_mem_feed",
     description: "Show or toggle Claude-Mem observation feed status",
     acceptsArgs: true,
     handler: async (ctx) => {
@@ -774,10 +774,10 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   });
 
   // ------------------------------------------------------------------
-  // Command: /claude-mem-status — worker health check
+  // Command: /claude_mem_status — worker health check
   // ------------------------------------------------------------------
   api.registerCommand({
-    name: "claude-mem-status",
+    name: "claude_mem_status",
     description: "Check Claude-Mem worker health and session status",
     handler: async () => {
       const healthText = await workerGetText(workerPort, "/api/health", api.logger);
