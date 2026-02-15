@@ -263,7 +263,7 @@ npm run bug-report
 
 פרויקט זה מורשה תחת **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-זכויות יוצרים (C) 2026 Frederic Thomas (@doublefx). כל הזכויות שמורות.
+זכויות יוצרים (C) 2026 Frederic Thomas (fthomas@apache.org). כל הזכויות שמורות.
 
 ראה את קובץ [LICENSE](LICENSE) לפרטים מלאים.
 
@@ -281,7 +281,7 @@ npm run bug-report
 - **תיעוד**: [docs/](docs/)
 - **בעיות**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **מאגר**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **מחבר**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **מחבר**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

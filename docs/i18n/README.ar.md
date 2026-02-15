@@ -268,7 +268,7 @@ npm run bug-report
 
 هذا المشروع مرخص بموجب **ترخيص GNU Affero العام الإصدار 3.0** (AGPL-3.0).
 
-حقوق النشر (C) 2026 Frederic Thomas (@doublefx). جميع الحقوق محفوظة.
+حقوق النشر (C) 2026 Frederic Thomas (fthomas@apache.org). جميع الحقوق محفوظة.
 
 انظر ملف [LICENSE](LICENSE) للتفاصيل الكاملة.
 
@@ -286,7 +286,7 @@ npm run bug-report
 - **التوثيق**: [docs/](docs/)
 - **المشكلات**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **المستودع**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **المؤلف**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **المؤلف**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

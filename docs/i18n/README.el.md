@@ -264,7 +264,7 @@ npm run bug-report
 
 Αυτό το έργο διατίθεται με άδεια **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-Copyright (C) 2026 Frederic Thomas (@doublefx). Με επιφύλαξη παντός δικαιώματος.
+Copyright (C) 2026 Frederic Thomas (fthomas@apache.org). Με επιφύλαξη παντός δικαιώματος.
 
 Δείτε το αρχείο [LICENSE](LICENSE) για πλήρεις λεπτομέρειες.
 
@@ -282,7 +282,7 @@ Copyright (C) 2026 Frederic Thomas (@doublefx). Με επιφύλαξη παντ
 - **Τεκμηρίωση**: [docs/](docs/)
 - **Ζητήματα**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **Repository**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **Συγγραφέας**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **Συγγραφέας**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

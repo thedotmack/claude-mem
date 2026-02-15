@@ -263,7 +263,7 @@ Katso [Kehitysopas](https://docs.magic-claude-mem.ai/development) osallistumisen
 
 Tämä projekti on lisensoitu **GNU Affero General Public License v3.0** (AGPL-3.0) -lisenssillä.
 
-Copyright (C) 2026 Frederic Thomas (@doublefx). Kaikki oikeudet pidätetään.
+Copyright (C) 2026 Frederic Thomas (fthomas@apache.org). Kaikki oikeudet pidätetään.
 
 Katso [LICENSE](LICENSE)-tiedosto täydellisistä yksityiskohdista.
 
@@ -281,7 +281,7 @@ Katso [LICENSE](LICENSE)-tiedosto täydellisistä yksityiskohdista.
 - **Dokumentaatio**: [docs/](docs/)
 - **Ongelmat**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **Repositorio**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **Tekijä**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **Tekijä**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

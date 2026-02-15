@@ -264,7 +264,7 @@ Pracovní postup pro přispívání najdete v [Průvodci vývojem](https://docs.
 
 Tento projekt je licencován pod **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-Copyright (C) 2026 Frederic Thomas (@doublefx). Všechna práva vyhrazena.
+Copyright (C) 2026 Frederic Thomas (fthomas@apache.org). Všechna práva vyhrazena.
 
 Úplné podrobnosti najdete v souboru [LICENSE](LICENSE).
 
@@ -282,7 +282,7 @@ Copyright (C) 2026 Frederic Thomas (@doublefx). Všechna práva vyhrazena.
 - **Dokumentace**: [docs/](docs/)
 - **Problémy**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **Repositář**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **Autor**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **Autor**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

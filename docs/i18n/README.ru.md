@@ -264,7 +264,7 @@ npm run bug-report
 
 Этот проект лицензирован под **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-Copyright (C) 2026 Frederic Thomas (@doublefx). Все права защищены.
+Copyright (C) 2026 Frederic Thomas (fthomas@apache.org). Все права защищены.
 
 Полные сведения см. в файле [LICENSE](LICENSE).
 
@@ -282,7 +282,7 @@ Copyright (C) 2026 Frederic Thomas (@doublefx). Все права защищен
 - **Документация**: [docs/](docs/)
 - **Проблемы**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **Репозиторий**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **Автор**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **Автор**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

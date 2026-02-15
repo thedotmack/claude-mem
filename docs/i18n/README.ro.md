@@ -264,7 +264,7 @@ Consultați [Ghidul de Dezvoltare](https://docs.magic-claude-mem.ai/development)
 
 Acest proiect este licențiat sub **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-Copyright (C) 2026 Frederic Thomas (@doublefx). Toate drepturile rezervate.
+Copyright (C) 2026 Frederic Thomas (fthomas@apache.org). Toate drepturile rezervate.
 
 Consultați fișierul [LICENSE](LICENSE) pentru detalii complete.
 
@@ -282,7 +282,7 @@ Consultați fișierul [LICENSE](LICENSE) pentru detalii complete.
 - **Documentație**: [docs/](docs/)
 - **Probleme**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **Repository**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **Autor**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **Autor**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

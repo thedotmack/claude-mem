@@ -276,7 +276,7 @@ See [Development Guide](https://docs.magic-claude-mem.ai/development) for contri
 
 This project is licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-Copyright (C) 2026 Frederic Thomas (@doublefx). All rights reserved.
+Copyright (C) 2026 Frederic Thomas (fthomas@apache.org). All rights reserved.
 
 See the [LICENSE](LICENSE) file for full details.
 
@@ -296,7 +296,7 @@ See the [LICENSE](LICENSE) file for full details.
 - **Repository**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
 - **Official X Account**: [@Claude_Memory](https://x.com/Claude_Memory)
 - **Official Discord**: [Join Discord](https://discord.com/invite/J4wttp9vDu)
-- **Author**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **Author**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

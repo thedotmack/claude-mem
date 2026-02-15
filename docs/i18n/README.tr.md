@@ -263,7 +263,7 @@ Katkı iş akışı için [Geliştirme Kılavuzu](https://docs.magic-claude-mem.
 
 Bu proje **GNU Affero General Public License v3.0** (AGPL-3.0) altında lisanslanmıştır.
 
-Telif Hakkı (C) 2026 Frederic Thomas (@doublefx). Tüm hakları saklıdır.
+Telif Hakkı (C) 2026 Frederic Thomas (fthomas@apache.org). Tüm hakları saklıdır.
 
 Tam detaylar için [LICENSE](LICENSE) dosyasına bakın.
 
@@ -281,7 +281,7 @@ Tam detaylar için [LICENSE](LICENSE) dosyasına bakın.
 - **Dokümantasyon**: [docs/](docs/)
 - **Sorunlar**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **Depo**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **Yazar**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **Yazar**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

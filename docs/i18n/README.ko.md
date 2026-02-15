@@ -264,7 +264,7 @@ npm run bug-report
 
 이 프로젝트는 **GNU Affero General Public License v3.0** (AGPL-3.0)에 따라 라이선스가 부여됩니다.
 
-Copyright (C) 2026 Frederic Thomas (@doublefx). All rights reserved.
+Copyright (C) 2026 Frederic Thomas (fthomas@apache.org). All rights reserved.
 
 전체 세부 정보는 [LICENSE](LICENSE) 파일을 참조하세요.
 
@@ -282,7 +282,7 @@ Copyright (C) 2026 Frederic Thomas (@doublefx). All rights reserved.
 - **문서**: [docs/](docs/)
 - **이슈**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **저장소**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **작성자**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **작성자**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

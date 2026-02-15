@@ -264,7 +264,7 @@ npm run bug-report
 
 এই প্রকল্পটি **GNU Affero General Public License v3.0** (AGPL-3.0) এর অধীনে লাইসেন্সপ্রাপ্ত।
 
-Copyright (C) 2026 Frederic Thomas (@doublefx). সর্বস্বত্ব সংরক্ষিত।
+Copyright (C) 2026 Frederic Thomas (fthomas@apache.org). সর্বস্বত্ব সংরক্ষিত।
 
 সম্পূর্ণ বিবরণের জন্য [LICENSE](LICENSE) ফাইল দেখুন।
 
@@ -282,7 +282,7 @@ Copyright (C) 2026 Frederic Thomas (@doublefx). সর্বস্বত্ব �
 - **ডকুমেন্টেশন**: [docs/](docs/)
 - **ইস্যু**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **রিপোজিটরি**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **লেখক**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **লেখক**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

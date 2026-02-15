@@ -263,7 +263,7 @@ npm run bug-report
 
 โปรเจกต์นี้ได้รับอนุญาตภายใต้ **GNU Affero General Public License v3.0** (AGPL-3.0)
 
-Copyright (C) 2026 Frederic Thomas (@doublefx) สงวนลิขสิทธิ์ทั้งหมด
+Copyright (C) 2026 Frederic Thomas (fthomas@apache.org) สงวนลิขสิทธิ์ทั้งหมด
 
 ดูไฟล์ [LICENSE](LICENSE) สำหรับรายละเอียดทั้งหมด
 
@@ -281,7 +281,7 @@ Copyright (C) 2026 Frederic Thomas (@doublefx) สงวนลิขสิทธ
 - **เอกสาร**: [docs/](docs/)
 - **ปัญหา**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **Repository**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **ผู้เขียน**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **ผู้เขียน**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

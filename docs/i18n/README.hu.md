@@ -264,7 +264,7 @@ A hozzájárulási munkafolyamatért lásd a [Fejlesztési útmutatót](https://
 
 Ez a projekt a **GNU Affero General Public License v3.0** (AGPL-3.0) alatt licencelt.
 
-Copyright (C) 2026 Frederic Thomas (@doublefx). Minden jog fenntartva.
+Copyright (C) 2026 Frederic Thomas (fthomas@apache.org). Minden jog fenntartva.
 
 A teljes részletekért lásd a [LICENSE](LICENSE) fájlt.
 
@@ -282,7 +282,7 @@ A teljes részletekért lásd a [LICENSE](LICENSE) fájlt.
 - **Dokumentáció**: [docs/](docs/)
 - **Hibák**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **Tároló**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **Szerző**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **Szerző**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

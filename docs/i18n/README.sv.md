@@ -264,7 +264,7 @@ Se [Utvecklingsguide](https://docs.magic-claude-mem.ai/development) för bidrags
 
 Detta projekt är licensierat under **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-Copyright (C) 2026 Frederic Thomas (@doublefx). Alla rättigheter förbehållna.
+Copyright (C) 2026 Frederic Thomas (fthomas@apache.org). Alla rättigheter förbehållna.
 
 Se [LICENSE](LICENSE)-filen för fullständiga detaljer.
 
@@ -282,7 +282,7 @@ Se [LICENSE](LICENSE)-filen för fullständiga detaljer.
 - **Dokumentation**: [docs/](docs/)
 - **Problem**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **Repository**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **Författare**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **Författare**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

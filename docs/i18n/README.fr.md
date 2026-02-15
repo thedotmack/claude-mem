@@ -264,7 +264,7 @@ Voir le [Guide de développement](https://docs.magic-claude-mem.ai/development) 
 
 Ce projet est sous licence **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-Copyright (C) 2026 Frederic Thomas (@doublefx). Tous droits réservés.
+Copyright (C) 2026 Frederic Thomas (fthomas@apache.org). Tous droits réservés.
 
 Voir le fichier [LICENSE](LICENSE) pour tous les détails.
 
@@ -282,7 +282,7 @@ Voir le fichier [LICENSE](LICENSE) pour tous les détails.
 - **Documentation** : [docs/](docs/)
 - **Issues** : [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **Dépôt** : [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **Auteur** : Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **Auteur** : Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 

@@ -123,7 +123,7 @@ Key files: `tests/shared/settings-defaults-manager.test.ts`, `tests/gemini_agent
 
 | File | Changes |
 |------|---------|
-| `LICENSE` | `Copyright (C) 2025 Frederic Thomas (@doublefx)` → `Copyright (C) 2026 Frederic Thomas (@doublefx)` |
+| `LICENSE` | `Copyright (C) 2025 Frederic Thomas (fthomas@apache.org)` → `Copyright (C) 2026 Frederic Thomas (fthomas@apache.org)` |
 
 ## Phase 9: Asset Renames
 

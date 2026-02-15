@@ -264,7 +264,7 @@ Lihat [Panduan Pengembangan](https://docs.magic-claude-mem.ai/development) untuk
 
 Proyek ini dilisensikan di bawah **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-Copyright (C) 2026 Frederic Thomas (@doublefx). All rights reserved.
+Copyright (C) 2026 Frederic Thomas (fthomas@apache.org). All rights reserved.
 
 Lihat file [LICENSE](LICENSE) untuk detail lengkap.
 
@@ -282,7 +282,7 @@ Lihat file [LICENSE](LICENSE) untuk detail lengkap.
 - **Dokumentasi**: [docs/](docs/)
 - **Issues**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
 - **Repositori**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
-- **Penulis**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
+- **Penulis**: Frederic Thomas ([fthomas@apache.org](https://github.com/doublefx))
 
 ---
 
