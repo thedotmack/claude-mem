@@ -658,6 +658,19 @@ export class SessionStore {
   }
 
   /**
+   * Mark a session as completed (called after summary is stored)
+   * Sets status to 'completed' and records the completion timestamp.
+   */
+  completeSession(sessionDbId: number): void {
+    const now = Date.now();
+    this.db.prepare(`
+      UPDATE sdk_sessions
+      SET status = 'completed', completed_at = ?, completed_at_epoch = ?
+      WHERE id = ? AND status = 'active'
+    `).run(new Date(now).toISOString(), now, sessionDbId);
+  }
+
+  /**
    * Get recent session summaries for a project
    */
   getRecentSummaries(project: string, limit: number = 10): Array<{

@@ -151,6 +151,11 @@ export function processAgentResponse(
     agentName
   );
 
+  // Mark session as completed after summary is stored
+  if (summaryForStore && result.summaryId) {
+    dbManager.getSessionStore().completeSession(session.sessionDbId);
+  }
+
   // Clean up session state
   cleanupProcessedMessages(session, worker);
 }
