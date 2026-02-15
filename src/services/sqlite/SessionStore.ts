@@ -844,6 +844,11 @@ export class SessionStore {
    * SDK generates a new memory_session_id but it's not registered in the parent table
    * before child records try to reference it.
    *
+   * COMPACTION FIX: When Claude Code compacts/resumes a session, the resume_parameter
+   * changes to a new UUID. This function now explicitly updates child table FKs to prevent
+   * "FOREIGN KEY constraint failed" errors. While ON UPDATE CASCADE should handle this,
+   * we update explicitly to ensure consistency across all tables.
+   *
    * @param sessionDbId - The database ID of the session
    * @param memorySessionId - The memory session ID to ensure is registered
    */
@@ -857,13 +862,31 @@ export class SessionStore {
     }
 
     if (session.memory_session_id !== memorySessionId) {
-      this.db.prepare(`
-        UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
-      `).run(memorySessionId, sessionDbId);
+      const oldId = session.memory_session_id;
 
-      logger.info('DB', 'Registered memory_session_id before storage (FK fix)', {
+      // Use a transaction to ensure all updates are atomic
+      this.db.transaction(() => {
+        // Update child tables first (observations and session_summaries)
+        // This prevents FK constraint violations if ON UPDATE CASCADE isn't working as expected
+        if (oldId) {
+          this.db.prepare(`
+            UPDATE observations SET memory_session_id = ? WHERE memory_session_id = ?
+          `).run(memorySessionId, oldId);
+
+          this.db.prepare(`
+            UPDATE session_summaries SET memory_session_id = ? WHERE memory_session_id = ?
+          `).run(memorySessionId, oldId);
+        }
+
+        // Then update the parent table
+        this.db.prepare(`
+          UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
+        `).run(memorySessionId, sessionDbId);
+      })();
+
+      logger.info('DB', 'Registered memory_session_id before storage (FK fix + compaction support)', {
         sessionDbId,
-        oldId: session.memory_session_id,
+        oldId,
         newId: memorySessionId
       });
     }
