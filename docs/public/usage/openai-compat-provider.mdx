@@ -23,22 +23,22 @@ Claude-mem supports any OpenAI-compatible chat completions API as an alternative
 
 ## Default Endpoint
 
-The default API endpoint is `https://openrouter.ai/api/v1/chat/completions` (OpenRouter). Override this with `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` to use a different endpoint.
+The default API endpoint is `https://openrouter.ai/api/v1/chat/completions` (OpenRouter). Override this with `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` to use a different endpoint.
 
 ### Example: Using CLIProxyAPI
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "openai-compat",
-  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "your-key",
-  "CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": "http://localhost:8317/v1/chat/completions",
-  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "claude-sonnet-4-5-20250514"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "openai-compat",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "your-key",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": "http://localhost:8317/v1/chat/completions",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MODEL": "claude-sonnet-4-5-20250514"
 }
 ```
 
 ## Local Models
 
-Any server that exposes an OpenAI-compatible `/v1/chat/completions` endpoint works. Set `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` to point at your local server.
+Any server that exposes an OpenAI-compatible `/v1/chat/completions` endpoint works. Set `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` to point at your local server.
 
 ### Ollama
 
@@ -53,10 +53,10 @@ ollama pull llama3.1:8b
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "openai-compat",
-  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "ollama",
-  "CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": "http://localhost:11434/v1/chat/completions",
-  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "llama3.1:8b"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "openai-compat",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "ollama",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": "http://localhost:11434/v1/chat/completions",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MODEL": "llama3.1:8b"
 }
 ```
 
@@ -70,23 +70,23 @@ Ollama doesn't require a real API key, but the field can't be empty. Use any non
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "openai-compat",
-  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "lm-studio",
-  "CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": "http://localhost:1234/v1/chat/completions",
-  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "your-loaded-model-name"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "openai-compat",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "lm-studio",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": "http://localhost:1234/v1/chat/completions",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MODEL": "your-loaded-model-name"
 }
 ```
 
 ### CLIProxyAPI (Claude via subscription)
 
-If you have a Claude Code Max subscription, you can use [CLIProxyAPI](https://gist.github.com/chandika/c4b64c5b8f5e29f6112021d46c159fdd) to route claude-mem through your subscription. CLIProxyAPI is an open-source proxy that converts API key requests into OAuth-authenticated calls to Anthropic's API, handling token refresh automatically.
+If you have a Claude Code Max subscription, you can use [CLIProxyAPI](https://gist.github.com/chandika/c4b64c5b8f5e29f6112021d46c159fdd) to route magic-claude-mem through your subscription. CLIProxyAPI is an open-source proxy that converts API key requests into OAuth-authenticated calls to Anthropic's API, handling token refresh automatically.
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "openai-compat",
-  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "your-proxy-key",
-  "CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": "http://localhost:8317/v1/chat/completions",
-  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "claude-sonnet-4-5-20250514"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "openai-compat",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "your-proxy-key",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": "http://localhost:8317/v1/chat/completions",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MODEL": "claude-sonnet-4-5-20250514"
 }
 ```
 
@@ -155,18 +155,18 @@ Check your endpoint provider's documentation for API key generation.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_PROVIDER` | `claude` | Set to `openai-compat` to use this provider |
-| `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | -- | API key for authentication |
-| `CLAUDE_MEM_OPENAI_COMPAT_MODEL` | `xiaomi/mimo-v2-flash:free` | Model identifier to use |
-| `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | OpenRouter URL | API endpoint URL |
-| `CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES` | `20` | Conversation history limit |
-| `CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS` | `100000` | Token budget safety limit |
-| `CLAUDE_MEM_OPENAI_COMPAT_SITE_URL` | -- | Analytics attribution URL |
-| `CLAUDE_MEM_OPENAI_COMPAT_APP_NAME` | `claude-mem` | Analytics app name |
+| `MAGIC_CLAUDE_MEM_PROVIDER` | `claude` | Set to `openai-compat` to use this provider |
+| `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | -- | API key for authentication |
+| `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MODEL` | `xiaomi/mimo-v2-flash:free` | Model identifier to use |
+| `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | OpenRouter URL | API endpoint URL |
+| `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES` | `20` | Conversation history limit |
+| `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS` | `100000` | Token budget safety limit |
+| `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_SITE_URL` | -- | Analytics attribution URL |
+| `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_APP_NAME` | `magic-claude-mem` | Analytics app name |
 
 ### Settings Reference
 
-#### `CLAUDE_MEM_OPENAI_COMPAT_API_KEY`
+#### `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY`
 
 The API key sent in the `Authorization: Bearer` header. Where you get this depends on your endpoint:
 
@@ -174,9 +174,9 @@ The API key sent in the `Authorization: Bearer` header. Where you get this depen
 - **CLIProxyAPI**: The proxy key configured during setup
 - **Ollama / LM Studio**: These don't validate keys, but the field must be non-empty -- use any string like `"ollama"`
 
-Can also be set via the `OPENAI_COMPAT_API_KEY` environment variable in `~/.claude-mem/.env`. The settings file value takes precedence.
+Can also be set via the `OPENAI_COMPAT_API_KEY` environment variable in `~/.magic-claude-mem/.env`. The settings file value takes precedence.
 
-#### `CLAUDE_MEM_OPENAI_COMPAT_MODEL`
+#### `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MODEL`
 
 The model identifier passed in the API request body. Format depends on your endpoint:
 
@@ -185,7 +185,7 @@ The model identifier passed in the API request body. Format depends on your endp
 - **LM Studio**: The model name shown in the UI
 - **CLIProxyAPI**: The full Anthropic model ID, e.g. `claude-sonnet-4-5-20250514`
 
-#### `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL`
+#### `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_BASE_URL`
 
 The full URL of the chat completions endpoint. When empty, defaults to `https://openrouter.ai/api/v1/chat/completions`.
 
@@ -203,7 +203,7 @@ Common values:
 This must be the full URL including the path (e.g. `/v1/chat/completions`), not just the host.
 </Warning>
 
-#### `CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES`
+#### `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES`
 
 Maximum number of messages retained in the conversation history sent to the API. Older messages are dropped when this limit is exceeded. Range: 1--100.
 
@@ -211,7 +211,7 @@ Maximum number of messages retained in the conversation history sent to the API.
 - **Higher values** (30--50): More context, better coherence across a long session. Good for models with large context windows.
 - **Default (20)**: Balanced for most use cases.
 
-#### `CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS`
+#### `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS`
 
 Estimated token budget for the conversation history. The agent estimates tokens at 4 characters per token and drops old messages when the estimate exceeds this limit. Range: 1,000--1,000,000.
 
@@ -221,13 +221,13 @@ This is a safety net to prevent sending oversized requests to endpoints with lim
 - **Models with 32K context**: Set to `30000`
 - **Models with 128K+ context**: The default `100000` is fine
 
-#### `CLAUDE_MEM_OPENAI_COMPAT_SITE_URL`
+#### `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_SITE_URL`
 
 Sent as the `HTTP-Referer` header. Used by OpenRouter for analytics attribution -- tells them which site is generating traffic. Ignored by most other endpoints. Leave empty if not using OpenRouter.
 
-#### `CLAUDE_MEM_OPENAI_COMPAT_APP_NAME`
+#### `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_APP_NAME`
 
-Sent as the `X-Title` header. Used by OpenRouter to display your app name in their dashboard. Defaults to `claude-mem`. Ignored by most other endpoints.
+Sent as the `X-Title` header. Used by OpenRouter to display your app name in their dashboard. Defaults to `magic-claude-mem`. Ignored by most other endpoints.
 
 ### Using the Settings UI
 
@@ -241,13 +241,13 @@ Settings are applied immediately -- no restart required.
 
 ### Manual Configuration
 
-Edit `~/.claude-mem/settings.json`:
+Edit `~/.magic-claude-mem/settings.json`:
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "openai-compat",
-  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "sk-or-v1-your-key-here",
-  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "xiaomi/mimo-v2-flash:free"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "openai-compat",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "sk-or-v1-your-key-here",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MODEL": "xiaomi/mimo-v2-flash:free"
 }
 ```
 
@@ -261,7 +261,7 @@ The settings file takes precedence over the environment variable.
 
 ## Migration from OpenRouter Settings
 
-If you previously used `CLAUDE_MEM_OPENROUTER_*` settings, they are automatically migrated to `CLAUDE_MEM_OPENAI_COMPAT_*` on the next worker startup. No manual action required.
+If you previously used `MAGIC_CLAUDE_MEM_OPENROUTER_*` settings, they are automatically migrated to `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_*` on the next worker startup. No manual action required.
 
 ## Model Selection Guide
 
@@ -337,13 +337,13 @@ You can switch between providers at any time:
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "openai-compat"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "openai-compat"
 }
 ```
 
 ## Fallback Behavior
 
-If the OpenAI-compatible API encounters errors, claude-mem automatically falls back to the Claude Agent SDK:
+If the OpenAI-compatible API encounters errors, magic-claude-mem automatically falls back to the Claude Agent SDK:
 
 **Triggers fallback:**
 - Rate limiting (HTTP 429)
@@ -393,7 +393,7 @@ This enables:
 ### "OpenAI-compatible API key not configured"
 
 Either:
-- Set `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` in `~/.claude-mem/settings.json`, or
+- Set `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY` in `~/.magic-claude-mem/settings.json`, or
 - Set the `OPENAI_COMPAT_API_KEY` environment variable
 
 ### Rate Limiting
@@ -413,8 +413,8 @@ Verify the model ID is correct:
 ### High Token Usage Warning
 
 If you see warnings about high token usage (>50,000 per request):
-- Reduce `CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES`
-- Reduce `CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS`
+- Reduce `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES`
+- Reduce `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS`
 - Consider a model with larger context window
 
 ### Connection Errors
@@ -433,8 +433,8 @@ The provider uses a standard OpenAI-compatible REST API:
 **Headers**:
 ```
 Authorization: Bearer {apiKey}
-HTTP-Referer: https://github.com/doublefx/claude-mem
-X-Title: claude-mem
+HTTP-Referer: https://github.com/doublefx/magic-claude-mem
+X-Title: magic-claude-mem
 Content-Type: application/json
 ```
 

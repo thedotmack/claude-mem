@@ -1,13 +1,13 @@
 {
-  "name": "claude-mem",
+  "name": "magic-claude-mem",
   "version": "9.1.4",
   "description": "Persistent memory system for Claude Code - seamlessly preserve context across sessions",
   "author": {
     "name": "Frederic Thomas",
     "url": "https://github.com/doublefx"
   },
-  "homepage": "https://github.com/doublefx/claude-mem",
-  "repository": "https://github.com/doublefx/claude-mem",
+  "homepage": "https://github.com/doublefx/magic-claude-mem",
+  "repository": "https://github.com/doublefx/magic-claude-mem",
   "license": "AGPL-3.0",
   "keywords": [
     "claude-code",

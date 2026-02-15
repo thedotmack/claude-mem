@@ -10,7 +10,7 @@ This report provides plain English explanations of all 12 open GitHub issues, th
 
 ### #603 - Memory Leak from Child Processes
 
-When you use claude-mem on Linux/Mac, it spawns helper processes to analyze your work. These processes never get cleaned up when they're done - they just sit there eating RAM. One user had 121 zombie processes using 44GB of memory after 6 hours.
+When you use magic-claude-mem on Linux/Mac, it spawns helper processes to analyze your work. These processes never get cleaned up when they're done - they just sit there eating RAM. One user had 121 zombie processes using 44GB of memory after 6 hours.
 
 **Root cause:** The `getChildProcesses()` function in ProcessManager.ts only works on Windows (using WMIC). On Linux/Mac, it returns an empty array, so child processes are never tracked or killed during cleanup.
 

@@ -16,7 +16,7 @@ Issue #514 reported that the plugin created 13,000+ orphaned session .jsonl file
 
 ## Evidence: Current File Analysis
 
-Filesystem analysis of `~/.claude/projects/-Users-alexnewman-Scripts-claude-mem/`:
+Filesystem analysis of `~/.claude/projects/-Users-alexnewman-Scripts-magic-claude-mem/`:
 
 | Line Count | Number of Files |
 |------------|-----------------|
@@ -84,7 +84,7 @@ The problem: Starting 50 sessions rapidly (100ms delay) with pending messages me
 
 ## Code Flow: Where .jsonl Files Are Created
 
-The .jsonl files are created by the **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`), not by claude-mem directly.
+The .jsonl files are created by the **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`), not by magic-claude-mem directly.
 
 When `query()` is called in SDKAgent.ts:
 

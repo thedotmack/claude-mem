@@ -63,7 +63,7 @@ describe('Version Consistency', () => {
     expect(marketplaceJson.plugins).toBeDefined();
     expect(marketplaceJson.plugins.length).toBeGreaterThan(0);
 
-    const claudeMemPlugin = marketplaceJson.plugins.find((p) => p.name === 'claude-mem');
+    const claudeMemPlugin = marketplaceJson.plugins.find((p) => p.name === 'magic-claude-mem');
     expect(claudeMemPlugin).toBeDefined();
     expect((claudeMemPlugin as NonNullable<typeof claudeMemPlugin>).version).toBe(rootVersion);
   });

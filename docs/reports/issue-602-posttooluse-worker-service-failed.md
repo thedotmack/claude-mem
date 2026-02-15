@@ -11,7 +11,7 @@
 
 ## 1. Executive Summary
 
-A Windows 11 user running Claude Code 0.2.76 with claude-mem v9.0.0 is experiencing complete plugin failure. The worker service cannot start during PostToolUse hook execution, resulting in long delays and multiple cascading errors. This is a systemic Windows platform compatibility issue that prevents the entire memory system from functioning.
+A Windows 11 user running Claude Code 0.2.76 with magic-claude-mem v9.0.0 is experiencing complete plugin failure. The worker service cannot start during PostToolUse hook execution, resulting in long delays and multiple cascading errors. This is a systemic Windows platform compatibility issue that prevents the entire memory system from functioning.
 
 ### Key Symptoms
 - "Plugin hook bun worker-service.cjs start failed to start: The operation was aborted"
@@ -139,7 +139,7 @@ const cmd = `wmic process where "name like '%python%' and commandline like '%chr
 
 - **Affected Platform:** Windows 11 (Build 26100+)
 - **Affected Shell:** PowerShell 7
-- **Affected Version:** claude-mem 9.0.0
+- **Affected Version:** magic-claude-mem 9.0.0
 - **Claude Code Version:** 0.2.76
 - **Estimated User Base:** All Windows 11 users with modern builds
 

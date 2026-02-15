@@ -1,11 +1,11 @@
 ---
 title: "Cursor + OpenAI-Compatible Setup"
-description: "Use Claude-Mem in Cursor with any OpenAI-compatible API (OpenRouter, CLIProxyAPI, local models)"
+description: "Use Magic-Claude-Mem in Cursor with any OpenAI-compatible API (OpenRouter, CLIProxyAPI, local models)"
 ---
 
 # Cursor + OpenAI-Compatible Setup
 
-This guide walks you through setting up Claude-Mem in Cursor using an OpenAI-compatible provider. This includes OpenRouter (100+ AI models), [CLIProxyAPI](https://gist.github.com/chandika/c4b64c5b8f5e29f6112021d46c159fdd), local model servers, and any other OpenAI-compatible endpoint.
+This guide walks you through setting up Magic-Claude-Mem in Cursor using an OpenAI-compatible provider. This includes OpenRouter (100+ AI models), [CLIProxyAPI](https://gist.github.com/chandika/c4b64c5b8f5e29f6112021d46c159fdd), local model servers, and any other OpenAI-compatible endpoint.
 
 <Info>
 **Model variety:** Via OpenRouter, access Claude, GPT-4, Gemini, Llama, Mistral, and many more through a single API key. Or point to your own endpoint.
@@ -29,12 +29,12 @@ This guide walks you through setting up Claude-Mem in Cursor using an OpenAI-com
 
 Get an API key from your endpoint provider (CLIProxyAPI, local model server, etc.).
 
-## Step 2: Clone and Build Claude-Mem
+## Step 2: Clone and Build Magic-Claude-Mem
 
 ```bash
 # Clone the repository
-git clone https://github.com/doublefx/claude-mem.git
-cd claude-mem
+git clone https://github.com/doublefx/magic-claude-mem.git
+cd magic-claude-mem
 
 # Install dependencies
 npm install
@@ -61,13 +61,13 @@ Create the settings file manually:
 
 ```bash
 # Create settings directory
-mkdir -p ~/.claude-mem
+mkdir -p ~/.magic-claude-mem
 
 # Create settings file with OpenAI-compatible configuration
-cat > ~/.claude-mem/settings.json << 'EOF'
+cat > ~/.magic-claude-mem/settings.json << 'EOF'
 {
-  "CLAUDE_MEM_PROVIDER": "openai-compat",
-  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "YOUR_API_KEY"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "openai-compat",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "YOUR_API_KEY"
 }
 EOF
 ```
@@ -77,12 +77,12 @@ Replace `YOUR_API_KEY` with your actual API key.
 For a custom endpoint (e.g., CLIProxyAPI):
 
 ```bash
-cat > ~/.claude-mem/settings.json << 'EOF'
+cat > ~/.magic-claude-mem/settings.json << 'EOF'
 {
-  "CLAUDE_MEM_PROVIDER": "openai-compat",
-  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "YOUR_API_KEY",
-  "CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": "http://localhost:8317/v1/chat/completions",
-  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "claude-sonnet-4-5-20250514"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "openai-compat",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "YOUR_API_KEY",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": "http://localhost:8317/v1/chat/completions",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MODEL": "claude-sonnet-4-5-20250514"
 }
 EOF
 ```
@@ -131,9 +131,9 @@ To specify a model, add to your settings:
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "openai-compat",
-  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "your-key",
-  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "google/gemini-2.0-flash-exp:free"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "openai-compat",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "your-key",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MODEL": "google/gemini-2.0-flash-exp:free"
 }
 ```
 
@@ -156,14 +156,14 @@ Cost depends on your endpoint. For OpenRouter:
 Ensure your settings file exists with the correct format:
 
 ```bash
-cat ~/.claude-mem/settings.json
+cat ~/.magic-claude-mem/settings.json
 ```
 
 Should output something like:
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "openai-compat",
-  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "sk-or-..."
+  "MAGIC_CLAUDE_MEM_PROVIDER": "openai-compat",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "sk-or-..."
 }
 ```
 
@@ -199,7 +199,7 @@ You can switch between OpenAI-compatible, Gemini, and Claude SDK at any time by 
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "gemini"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "gemini"
 }
 ```
 

@@ -2,11 +2,11 @@
 
 <h1 align="center">
   <br>
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-dark-mode.webp">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp" alt="Magic-Claude-Mem" width="400">
     </picture>
   </a>
   <br>
@@ -63,9 +63,9 @@
 <p align="center">
   <a href="https://trendshift.io/repositories/15496" target="_blank">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/claude-mem | Trendshift" width="250" height="55"/>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/magic-claude-mem | Trendshift" width="250" height="55"/>
     </picture>
   </a>
 </p>
@@ -73,9 +73,9 @@
 <br>
 
 <p align="center">
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/cm-preview.gif" alt="Magic-Claude-Mem Preview" width="800">
     </picture>
   </a>
 </p>
@@ -91,7 +91,7 @@
 </p>
 
 <p align="center">
-  Claude-Mem säilyttää kontekstin saumattomasti istuntojen välillä tallentamalla automaattisesti työkalujen käyttöhavaintoja, luomalla semanttisia yhteenvetoja ja asettamalla ne tulevien istuntojen saataville. Tämä mahdollistaa Clauden säilyttää tiedon jatkuvuuden projekteista senkin jälkeen, kun istunnot päättyvät tai yhteys palautuu.
+  Magic-Claude-Mem säilyttää kontekstin saumattomasti istuntojen välillä tallentamalla automaattisesti työkalujen käyttöhavaintoja, luomalla semanttisia yhteenvetoja ja asettamalla ne tulevien istuntojen saataville. Tämä mahdollistaa Clauden säilyttää tiedon jatkuvuuden projekteista senkin jälkeen, kun istunnot päättyvät tai yhteys palautuu.
 </p>
 
 ---
@@ -101,9 +101,9 @@
 Aloita uusi Claude Code -istunto terminaalissa ja syötä seuraavat komennot:
 
 ```
-> /plugin marketplace add doublefx/claude-mem
+> /plugin marketplace add doublefx/magic-claude-mem
 
-> /plugin install claude-mem
+> /plugin install magic-claude-mem
 ```
 
 Käynnistä Claude Code uudelleen. Aiempien istuntojen konteksti ilmestyy automaattisesti uusiin istuntoihin.
@@ -128,30 +128,30 @@ Käynnistä Claude Code uudelleen. Aiempien istuntojen konteksti ilmestyy automa
 
 ### Aloitus
 
-- **[Asennusopas](https://docs.claude-mem.ai/installation)** - Pikaopas ja edistynyt asennus
-- **[Käyttöopas](https://docs.claude-mem.ai/usage/getting-started)** - Miten Claude-Mem toimii automaattisesti
-- **[Hakutyökalut](https://docs.claude-mem.ai/usage/search-tools)** - Kysy projektihistoriaasi luonnollisella kielellä
+- **[Asennusopas](https://docs.magic-claude-mem.ai/installation)** - Pikaopas ja edistynyt asennus
+- **[Käyttöopas](https://docs.magic-claude-mem.ai/usage/getting-started)** - Miten Magic-Claude-Mem toimii automaattisesti
+- **[Hakutyökalut](https://docs.magic-claude-mem.ai/usage/search-tools)** - Kysy projektihistoriaasi luonnollisella kielellä
 
 ### Parhaat käytännöt
 
-- **[Kontekstisuunnittelu](https://docs.claude-mem.ai/context-engineering)** - AI-agentin kontekstin optimointiperiaatteet
-- **[Asteittainen paljastaminen](https://docs.claude-mem.ai/progressive-disclosure)** - Filosofia Claude-Mem-kontekstin valmistelustrategian takana
+- **[Kontekstisuunnittelu](https://docs.magic-claude-mem.ai/context-engineering)** - AI-agentin kontekstin optimointiperiaatteet
+- **[Asteittainen paljastaminen](https://docs.magic-claude-mem.ai/progressive-disclosure)** - Filosofia Magic-Claude-Mem-kontekstin valmistelustrategian takana
 
 ### Arkkitehtuuri
 
-- **[Yleiskatsaus](https://docs.claude-mem.ai/architecture/overview)** - Järjestelmän komponentit ja datavirta
-- **[Arkkitehtuurin kehitys](https://docs.claude-mem.ai/architecture-evolution)** - Matka versiosta v3 versioon v5
-- **[Koukku-arkkitehtuuri](https://docs.claude-mem.ai/hooks-architecture)** - Miten Claude-Mem käyttää elinkaarikkoukkuja
-- **[Koukku-viittaus](https://docs.claude-mem.ai/architecture/hooks)** - 7 koukku-skriptiä selitettynä
-- **[Worker-palvelu](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API ja Node.js-hallinta
-- **[Tietokanta](https://docs.claude-mem.ai/architecture/database)** - SQLite-skeema ja FTS5-haku
-- **[Hakuarkkitehtuuri](https://docs.claude-mem.ai/architecture/search-architecture)** - Hybridihaku Chroma-vektoritietokannalla
+- **[Yleiskatsaus](https://docs.magic-claude-mem.ai/architecture/overview)** - Järjestelmän komponentit ja datavirta
+- **[Arkkitehtuurin kehitys](https://docs.magic-claude-mem.ai/architecture-evolution)** - Matka versiosta v3 versioon v5
+- **[Koukku-arkkitehtuuri](https://docs.magic-claude-mem.ai/hooks-architecture)** - Miten Magic-Claude-Mem käyttää elinkaarikkoukkuja
+- **[Koukku-viittaus](https://docs.magic-claude-mem.ai/architecture/hooks)** - 7 koukku-skriptiä selitettynä
+- **[Worker-palvelu](https://docs.magic-claude-mem.ai/architecture/worker-service)** - HTTP API ja Node.js-hallinta
+- **[Tietokanta](https://docs.magic-claude-mem.ai/architecture/database)** - SQLite-skeema ja FTS5-haku
+- **[Hakuarkkitehtuuri](https://docs.magic-claude-mem.ai/architecture/search-architecture)** - Hybridihaku Chroma-vektoritietokannalla
 
 ### Asetukset ja kehitys
 
-- **[Asetukset](https://docs.claude-mem.ai/configuration)** - Ympäristömuuttujat ja asetukset
-- **[Kehitys](https://docs.claude-mem.ai/development)** - Rakentaminen, testaus, osallistuminen
-- **[Vianmääritys](https://docs.claude-mem.ai/troubleshooting)** - Yleiset ongelmat ja ratkaisut
+- **[Asetukset](https://docs.magic-claude-mem.ai/configuration)** - Ympäristömuuttujat ja asetukset
+- **[Kehitys](https://docs.magic-claude-mem.ai/development)** - Rakentaminen, testaus, osallistuminen
+- **[Vianmääritys](https://docs.magic-claude-mem.ai/troubleshooting)** - Yleiset ongelmat ja ratkaisut
 
 ---
 
@@ -166,13 +166,13 @@ Käynnistä Claude Code uudelleen. Aiempien istuntojen konteksti ilmestyy automa
 5. **mem-search-taito** - Luonnollisen kielen kyselyt asteittaisella paljastamisella
 6. **Chroma-vektoritietokanta** - Hybridi semanttinen + avainsanahaku älykkääseen kontekstin hakuun
 
-Katso [Arkkitehtuurin yleiskatsaus](https://docs.claude-mem.ai/architecture/overview) yksityiskohdista.
+Katso [Arkkitehtuurin yleiskatsaus](https://docs.magic-claude-mem.ai/architecture/overview) yksityiskohdista.
 
 ---
 
 ## mem-search-taito
 
-Claude-Mem tarjoaa älykkään haun mem-search-taidon kautta, joka käynnistyy automaattisesti kun kysyt aiemmasta työstä:
+Magic-Claude-Mem tarjoaa älykkään haun mem-search-taidon kautta, joka käynnistyy automaattisesti kun kysyt aiemmasta työstä:
 
 **Miten se toimii:**
 - Kysy vain luonnollisesti: *"Mitä teimme viime istunnossa?"* tai *"Korjasimmeko tämän bugin aiemmin?"*
@@ -201,7 +201,7 @@ Claude-Mem tarjoaa älykkään haun mem-search-taidon kautta, joka käynnistyy a
 "Mitä tapahtui kun lisäsimme katselukäyttöliittymän?"
 ```
 
-Katso [Hakutyökalujen opas](https://docs.claude-mem.ai/usage/search-tools) yksityiskohtaisia esimerkkejä varten.
+Katso [Hakutyökalujen opas](https://docs.magic-claude-mem.ai/usage/search-tools) yksityiskohtaisia esimerkkejä varten.
 
 ---
 
@@ -216,15 +216,15 @@ Katso [Hakutyökalujen opas](https://docs.claude-mem.ai/usage/search-tools) yksi
 
 ## Asetukset
 
-Asetuksia hallitaan tiedostossa `~/.claude-mem/settings.json` (luodaan automaattisesti oletusarvoilla ensimmäisellä suorituskerralla). Määritä AI-malli, worker-portti, datahakemisto, lokitaso ja kontekstin injektointiasetukset.
+Asetuksia hallitaan tiedostossa `~/.magic-claude-mem/settings.json` (luodaan automaattisesti oletusarvoilla ensimmäisellä suorituskerralla). Määritä AI-malli, worker-portti, datahakemisto, lokitaso ja kontekstin injektointiasetukset.
 
-Katso **[Asetusopas](https://docs.claude-mem.ai/configuration)** kaikista saatavilla olevista asetuksista ja esimerkeistä.
+Katso **[Asetusopas](https://docs.magic-claude-mem.ai/configuration)** kaikista saatavilla olevista asetuksista ja esimerkeistä.
 
 ---
 
 ## Kehitys
 
-Katso **[Kehitysopas](https://docs.claude-mem.ai/development)** rakennusohjeista, testauksesta ja osallistumisen työnkulusta.
+Katso **[Kehitysopas](https://docs.magic-claude-mem.ai/development)** rakennusohjeista, testauksesta ja osallistumisen työnkulusta.
 
 ---
 
@@ -232,7 +232,7 @@ Katso **[Kehitysopas](https://docs.claude-mem.ai/development)** rakennusohjeista
 
 Jos kohtaat ongelmia, kuvaile ongelma Claudelle ja troubleshoot-taito diagnosoi automaattisesti ja tarjoaa korjauksia.
 
-Katso **[Vianmääritysopas](https://docs.claude-mem.ai/troubleshooting)** yleisistä ongelmista ja ratkaisuista.
+Katso **[Vianmääritysopas](https://docs.magic-claude-mem.ai/troubleshooting)** yleisistä ongelmista ja ratkaisuista.
 
 ---
 
@@ -255,7 +255,7 @@ Osallistuminen on tervetullutta! Ole hyvä:
 4. Päivitä dokumentaatio
 5. Lähetä Pull Request
 
-Katso [Kehitysopas](https://docs.claude-mem.ai/development) osallistumisen työnkulusta.
+Katso [Kehitysopas](https://docs.magic-claude-mem.ai/development) osallistumisen työnkulusta.
 
 ---
 
@@ -263,7 +263,7 @@ Katso [Kehitysopas](https://docs.claude-mem.ai/development) osallistumisen työn
 
 Tämä projekti on lisensoitu **GNU Affero General Public License v3.0** (AGPL-3.0) -lisenssillä.
 
-Copyright (C) 2025 Alex Newman (@doublefx). Kaikki oikeudet pidätetään.
+Copyright (C) 2026 Frederic Thomas (@doublefx). Kaikki oikeudet pidätetään.
 
 Katso [LICENSE](LICENSE)-tiedosto täydellisistä yksityiskohdista.
 
@@ -279,9 +279,9 @@ Katso [LICENSE](LICENSE)-tiedosto täydellisistä yksityiskohdista.
 ## Tuki
 
 - **Dokumentaatio**: [docs/](docs/)
-- **Ongelmat**: [GitHub Issues](https://github.com/doublefx/claude-mem/issues)
-- **Repositorio**: [github.com/doublefx/claude-mem](https://github.com/doublefx/claude-mem)
-- **Tekijä**: Alex Newman ([@doublefx](https://github.com/doublefx))
+- **Ongelmat**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
+- **Repositorio**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
+- **Tekijä**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
 
 ---
 

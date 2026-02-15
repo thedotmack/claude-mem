@@ -17,7 +17,7 @@ let skipToolsCache: Set<string> | null = null;
 function getSkipTools(): Set<string> {
   if (!skipToolsCache) {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const raw = settings.CLAUDE_MEM_SKIP_TOOLS || '';
+    const raw = settings.MAGIC_CLAUDE_MEM_SKIP_TOOLS || '';
     skipToolsCache = new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
   }
   return skipToolsCache;

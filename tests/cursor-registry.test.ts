@@ -14,7 +14,7 @@ import {
  * These tests validate the file-based registry that tracks which projects
  * have Cursor hooks installed for automatic context updates.
  *
- * The registry is stored at ~/.claude-mem/cursor-projects.json
+ * The registry is stored at ~/.magic-claude-mem/cursor-projects.json
  */
 
 describe('Cursor Project Registry', () => {

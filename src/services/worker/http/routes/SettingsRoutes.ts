@@ -2,7 +2,7 @@
  * Settings Routes
  *
  * Handles settings management and MCP toggle.
- * Settings are stored in ~/.claude-mem/settings.json
+ * Settings are stored in ~/.magic-claude-mem/settings.json
  */
 
 import type { Request, Response } from 'express';
@@ -36,17 +36,17 @@ export class SettingsRoutes extends BaseRouteHandler {
   }
 
   /**
-   * Get environment settings (from ~/.claude-mem/settings.json)
+   * Get environment settings (from ~/.magic-claude-mem/settings.json)
    */
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settingsPath = path.join(homedir(), '.magic-claude-mem', 'settings.json');
     this.ensureSettingsFile(settingsPath);
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     res.json(settings);
   });
 
   /**
-   * Update environment settings (in ~/.claude-mem/settings.json) with validation
+   * Update environment settings (in ~/.magic-claude-mem/settings.json) with validation
    */
   private handleUpdateSettings = this.wrapHandler((req: Request, res: Response): void => {
     // Validate all settings
@@ -60,7 +60,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     // Read existing settings
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settingsPath = path.join(homedir(), '.magic-claude-mem', 'settings.json');
     this.ensureSettingsFile(settingsPath);
     let settings: Record<string, unknown> = {};
 
@@ -72,7 +72,7 @@ export class SettingsRoutes extends BaseRouteHandler {
         logger.error('SETTINGS', 'Failed to parse settings file', { settingsPath }, parseError as Error);
         res.status(500).json({
           success: false,
-          error: 'Settings file is corrupted. Delete ~/.claude-mem/settings.json to reset.'
+          error: 'Settings file is corrupted. Delete ~/.magic-claude-mem/settings.json to reset.'
         });
         return;
       }
@@ -80,42 +80,42 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Update all settings from request body
     const settingKeys = [
-      'CLAUDE_MEM_MODEL',
-      'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
-      'CLAUDE_MEM_WORKER_PORT',
-      'CLAUDE_MEM_WORKER_HOST',
+      'MAGIC_CLAUDE_MEM_MODEL',
+      'MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS',
+      'MAGIC_CLAUDE_MEM_WORKER_PORT',
+      'MAGIC_CLAUDE_MEM_WORKER_HOST',
       // AI Provider Configuration
-      'CLAUDE_MEM_PROVIDER',
-      'CLAUDE_MEM_GEMINI_API_KEY',
-      'CLAUDE_MEM_GEMINI_MODEL',
-      'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
+      'MAGIC_CLAUDE_MEM_PROVIDER',
+      'MAGIC_CLAUDE_MEM_GEMINI_API_KEY',
+      'MAGIC_CLAUDE_MEM_GEMINI_MODEL',
+      'MAGIC_CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
       // OpenAI-Compatible Configuration
-      'CLAUDE_MEM_OPENAI_COMPAT_API_KEY',
-      'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
-      'CLAUDE_MEM_OPENAI_COMPAT_SITE_URL',
-      'CLAUDE_MEM_OPENAI_COMPAT_APP_NAME',
-      'CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES',
-      'CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS',
+      'MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY',
+      'MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MODEL',
+      'MAGIC_CLAUDE_MEM_OPENAI_COMPAT_SITE_URL',
+      'MAGIC_CLAUDE_MEM_OPENAI_COMPAT_APP_NAME',
+      'MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES',
+      'MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS',
       // System Configuration
-      'CLAUDE_MEM_DATA_DIR',
-      'CLAUDE_MEM_LOG_LEVEL',
-      'CLAUDE_MEM_PYTHON_VERSION',
+      'MAGIC_CLAUDE_MEM_DATA_DIR',
+      'MAGIC_CLAUDE_MEM_LOG_LEVEL',
+      'MAGIC_CLAUDE_MEM_PYTHON_VERSION',
       'CLAUDE_CODE_PATH',
       // Token Economics
-      'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
-      'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'MAGIC_CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
+      'MAGIC_CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
+      'MAGIC_CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
+      'MAGIC_CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
       // Observation Filtering
-      'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
-      'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
+      'MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
+      'MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
       // Display Configuration
-      'CLAUDE_MEM_CONTEXT_FULL_COUNT',
-      'CLAUDE_MEM_CONTEXT_FULL_FIELD',
-      'CLAUDE_MEM_CONTEXT_SESSION_COUNT',
+      'MAGIC_CLAUDE_MEM_CONTEXT_FULL_COUNT',
+      'MAGIC_CLAUDE_MEM_CONTEXT_FULL_FIELD',
+      'MAGIC_CLAUDE_MEM_CONTEXT_SESSION_COUNT',
       // Feature Toggles
-      'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
-      'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
+      'MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
     ];
 
     const body = req.body as Record<string, unknown>;
@@ -171,72 +171,72 @@ export class SettingsRoutes extends BaseRouteHandler {
       return typeof val === 'string' ? val : typeof val === 'object' ? JSON.stringify(val) : String(val as string | number | boolean);
     };
 
-    // Validate CLAUDE_MEM_PROVIDER
-    if (settings.CLAUDE_MEM_PROVIDER) {
+    // Validate MAGIC_CLAUDE_MEM_PROVIDER
+    if (settings.MAGIC_CLAUDE_MEM_PROVIDER) {
     const validProviders = ['claude', 'gemini', 'openai-compat'];
-    if (!validProviders.includes(str('CLAUDE_MEM_PROVIDER'))) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openai-compat"' };
+    if (!validProviders.includes(str('MAGIC_CLAUDE_MEM_PROVIDER'))) {
+      return { valid: false, error: 'MAGIC_CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openai-compat"' };
       }
     }
 
-    // Validate CLAUDE_MEM_GEMINI_MODEL
-    if (settings.CLAUDE_MEM_GEMINI_MODEL) {
+    // Validate MAGIC_CLAUDE_MEM_GEMINI_MODEL
+    if (settings.MAGIC_CLAUDE_MEM_GEMINI_MODEL) {
       const validGeminiModels = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3-flash'];
-      if (!validGeminiModels.includes(str('CLAUDE_MEM_GEMINI_MODEL'))) {
-        return { valid: false, error: 'CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-3-flash' };
+      if (!validGeminiModels.includes(str('MAGIC_CLAUDE_MEM_GEMINI_MODEL'))) {
+        return { valid: false, error: 'MAGIC_CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-3-flash' };
       }
     }
 
-    // Validate CLAUDE_MEM_CONTEXT_OBSERVATIONS
-    if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
-      const obsCount = parseInt(str('CLAUDE_MEM_CONTEXT_OBSERVATIONS'), 10);
+    // Validate MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS
+    if (settings.MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
+      const obsCount = parseInt(str('MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS'), 10);
       if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
-        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
+        return { valid: false, error: 'MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
       }
     }
 
-    // Validate CLAUDE_MEM_WORKER_PORT
-    if (settings.CLAUDE_MEM_WORKER_PORT) {
-      const port = parseInt(str('CLAUDE_MEM_WORKER_PORT'), 10);
+    // Validate MAGIC_CLAUDE_MEM_WORKER_PORT
+    if (settings.MAGIC_CLAUDE_MEM_WORKER_PORT) {
+      const port = parseInt(str('MAGIC_CLAUDE_MEM_WORKER_PORT'), 10);
       if (isNaN(port) || port < 1024 || port > 65535) {
-        return { valid: false, error: 'CLAUDE_MEM_WORKER_PORT must be between 1024 and 65535' };
+        return { valid: false, error: 'MAGIC_CLAUDE_MEM_WORKER_PORT must be between 1024 and 65535' };
       }
     }
 
-    // Validate CLAUDE_MEM_WORKER_HOST (IP address or 0.0.0.0)
-    if (settings.CLAUDE_MEM_WORKER_HOST) {
-      const host = str('CLAUDE_MEM_WORKER_HOST');
+    // Validate MAGIC_CLAUDE_MEM_WORKER_HOST (IP address or 0.0.0.0)
+    if (settings.MAGIC_CLAUDE_MEM_WORKER_HOST) {
+      const host = str('MAGIC_CLAUDE_MEM_WORKER_HOST');
       // Allow localhost variants and valid IP patterns
       const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
       if (!validHostPattern.test(host)) {
-        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a valid IP address (e.g., 127.0.0.1, 0.0.0.0)' };
+        return { valid: false, error: 'MAGIC_CLAUDE_MEM_WORKER_HOST must be a valid IP address (e.g., 127.0.0.1, 0.0.0.0)' };
       }
     }
 
-    // Validate CLAUDE_MEM_LOG_LEVEL
-    if (settings.CLAUDE_MEM_LOG_LEVEL) {
+    // Validate MAGIC_CLAUDE_MEM_LOG_LEVEL
+    if (settings.MAGIC_CLAUDE_MEM_LOG_LEVEL) {
       const validLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'SILENT'];
-      if (!validLevels.includes(str('CLAUDE_MEM_LOG_LEVEL').toUpperCase())) {
-        return { valid: false, error: 'CLAUDE_MEM_LOG_LEVEL must be one of: DEBUG, INFO, WARN, ERROR, SILENT' };
+      if (!validLevels.includes(str('MAGIC_CLAUDE_MEM_LOG_LEVEL').toUpperCase())) {
+        return { valid: false, error: 'MAGIC_CLAUDE_MEM_LOG_LEVEL must be one of: DEBUG, INFO, WARN, ERROR, SILENT' };
       }
     }
 
-    // Validate CLAUDE_MEM_PYTHON_VERSION (must be valid Python version format)
-    if (settings.CLAUDE_MEM_PYTHON_VERSION) {
+    // Validate MAGIC_CLAUDE_MEM_PYTHON_VERSION (must be valid Python version format)
+    if (settings.MAGIC_CLAUDE_MEM_PYTHON_VERSION) {
       const pythonVersionRegex = /^3\.\d{1,2}$/;
-      if (!pythonVersionRegex.test(str('CLAUDE_MEM_PYTHON_VERSION'))) {
-        return { valid: false, error: 'CLAUDE_MEM_PYTHON_VERSION must be in format "3.X" or "3.XX" (e.g., "3.13")' };
+      if (!pythonVersionRegex.test(str('MAGIC_CLAUDE_MEM_PYTHON_VERSION'))) {
+        return { valid: false, error: 'MAGIC_CLAUDE_MEM_PYTHON_VERSION must be in format "3.X" or "3.XX" (e.g., "3.13")' };
       }
     }
 
     // Validate boolean string values
     const booleanSettings = [
-      'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
-      'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
-      'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
-      'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'MAGIC_CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
+      'MAGIC_CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
+      'MAGIC_CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
+      'MAGIC_CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
+      'MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
     ];
 
     for (const key of booleanSettings) {
@@ -246,52 +246,52 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     // Validate FULL_COUNT (0-20)
-    if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT) {
-      const count = parseInt(str('CLAUDE_MEM_CONTEXT_FULL_COUNT'), 10);
+    if (settings.MAGIC_CLAUDE_MEM_CONTEXT_FULL_COUNT) {
+      const count = parseInt(str('MAGIC_CLAUDE_MEM_CONTEXT_FULL_COUNT'), 10);
       if (isNaN(count) || count < 0 || count > 20) {
-        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_COUNT must be between 0 and 20' };
+        return { valid: false, error: 'MAGIC_CLAUDE_MEM_CONTEXT_FULL_COUNT must be between 0 and 20' };
       }
     }
 
     // Validate SESSION_COUNT (1-50)
-    if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT) {
-      const count = parseInt(str('CLAUDE_MEM_CONTEXT_SESSION_COUNT'), 10);
+    if (settings.MAGIC_CLAUDE_MEM_CONTEXT_SESSION_COUNT) {
+      const count = parseInt(str('MAGIC_CLAUDE_MEM_CONTEXT_SESSION_COUNT'), 10);
       if (isNaN(count) || count < 1 || count > 50) {
-        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 1 and 50' };
+        return { valid: false, error: 'MAGIC_CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 1 and 50' };
       }
     }
 
     // Validate FULL_FIELD
-    if (settings.CLAUDE_MEM_CONTEXT_FULL_FIELD) {
-      if (!['narrative', 'facts'].includes(str('CLAUDE_MEM_CONTEXT_FULL_FIELD'))) {
-        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_FIELD must be "narrative" or "facts"' };
+    if (settings.MAGIC_CLAUDE_MEM_CONTEXT_FULL_FIELD) {
+      if (!['narrative', 'facts'].includes(str('MAGIC_CLAUDE_MEM_CONTEXT_FULL_FIELD'))) {
+        return { valid: false, error: 'MAGIC_CLAUDE_MEM_CONTEXT_FULL_FIELD must be "narrative" or "facts"' };
       }
     }
 
-    // Validate CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES
-    if (settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES) {
-      const count = parseInt(str('CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES'), 10);
+    // Validate MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES
+    if (settings.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES) {
+      const count = parseInt(str('MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES'), 10);
       if (isNaN(count) || count < 1 || count > 100) {
-        return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES must be between 1 and 100' };
+        return { valid: false, error: 'MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES must be between 1 and 100' };
       }
     }
 
-    // Validate CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS
-    if (settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS) {
-      const tokens = parseInt(str('CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS'), 10);
+    // Validate MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS
+    if (settings.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS) {
+      const tokens = parseInt(str('MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS'), 10);
       if (isNaN(tokens) || tokens < 1000 || tokens > 1000000) {
-        return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS must be between 1000 and 1000000' };
+        return { valid: false, error: 'MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS must be between 1000 and 1000000' };
       }
     }
 
-    // Validate CLAUDE_MEM_OPENAI_COMPAT_SITE_URL if provided
-    if (settings.CLAUDE_MEM_OPENAI_COMPAT_SITE_URL) {
+    // Validate MAGIC_CLAUDE_MEM_OPENAI_COMPAT_SITE_URL if provided
+    if (settings.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_SITE_URL) {
       try {
-        new URL(str('CLAUDE_MEM_OPENAI_COMPAT_SITE_URL'));
+        new URL(str('MAGIC_CLAUDE_MEM_OPENAI_COMPAT_SITE_URL'));
       } catch (error) {
         // Invalid URL format
-        logger.debug('SETTINGS', 'Invalid URL format', { url: str('CLAUDE_MEM_OPENAI_COMPAT_SITE_URL'), error: error instanceof Error ? error.message : String(error) });
-        return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_SITE_URL must be a valid URL' };
+        logger.debug('SETTINGS', 'Invalid URL format', { url: str('MAGIC_CLAUDE_MEM_OPENAI_COMPAT_SITE_URL'), error: error instanceof Error ? error.message : String(error) });
+        return { valid: false, error: 'MAGIC_CLAUDE_MEM_OPENAI_COMPAT_SITE_URL must be a valid URL' };
       }
     }
 

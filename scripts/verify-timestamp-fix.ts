@@ -10,7 +10,7 @@
 import Database from 'bun:sqlite';
 import { resolve } from 'path';
 
-const DB_PATH = resolve(process.env.HOME!, '.claude-mem/claude-mem.db');
+const DB_PATH = resolve(process.env.HOME!, '.magic-claude-mem/magic-claude-mem.db');
 
 // Bad window: Dec 24 19:45-20:31 (using actual epoch format from database)
 const BAD_WINDOW_START = 1766623500000; // Dec 24 19:45 PST

@@ -1,17 +1,17 @@
 ---
 title: "Installation"
-description: "Install Claude-Mem plugin for persistent memory across sessions"
+description: "Install Magic-Claude-Mem plugin for persistent memory across sessions"
 ---
 
 # Installation Guide
 
 ## Quick Start
 
-Install Claude-Mem directly from the plugin marketplace:
+Install Magic-Claude-Mem directly from the plugin marketplace:
 
 ```bash
-/plugin marketplace add doublefx/claude-mem
-/plugin install claude-mem
+/plugin marketplace add doublefx/magic-claude-mem
+/plugin install magic-claude-mem
 ```
 
 That's it! The plugin will automatically:
@@ -37,8 +37,8 @@ For development or testing, you can clone and build from source:
 
 ```bash
 # Clone the repository
-git clone https://github.com/doublefx/claude-mem.git
-cd claude-mem
+git clone https://github.com/doublefx/magic-claude-mem.git
+cd magic-claude-mem
 
 # Install dependencies
 npm install
@@ -69,16 +69,16 @@ cat plugin/hooks/hooks.json
 
 #### 3. Data Directory Location
 
-Data is stored in `~/.claude-mem/`:
-- Database: `~/.claude-mem/claude-mem.db`
-- PID file: `~/.claude-mem/.worker.pid`
-- Port file: `~/.claude-mem/.worker.port`
-- Logs: `~/.claude-mem/logs/worker-YYYY-MM-DD.log`
-- Settings: `~/.claude-mem/settings.json`
+Data is stored in `~/.magic-claude-mem/`:
+- Database: `~/.magic-claude-mem/magic-claude-mem.db`
+- PID file: `~/.magic-claude-mem/.worker.pid`
+- Port file: `~/.magic-claude-mem/.worker.port`
+- Logs: `~/.magic-claude-mem/logs/worker-YYYY-MM-DD.log`
+- Settings: `~/.magic-claude-mem/settings.json`
 
 Override with environment variable:
 ```bash
-export CLAUDE_MEM_DATA_DIR=/custom/path
+export MAGIC_CLAUDE_MEM_DATA_DIR=/custom/path
 ```
 
 #### 4. Check Worker Logs
@@ -105,10 +105,10 @@ Upgrades are automatic when updating via the plugin marketplace. Key changes in 
 
 **v5.4.0+**: Skill-based search replaces MCP tools, saving ~2,250 tokens per session.
 
-See [CHANGELOG](https://github.com/doublefx/claude-mem/blob/main/CHANGELOG.md) for complete version history.
+See [CHANGELOG](https://github.com/doublefx/magic-claude-mem/blob/main/CHANGELOG.md) for complete version history.
 
 ## Next Steps
 
-- [Getting Started Guide](usage/getting-started) - Learn how Claude-Mem works automatically
+- [Getting Started Guide](usage/getting-started) - Learn how Magic-Claude-Mem works automatically
 - [MCP Search Tools](usage/search-tools) - Query your project history
-- [Configuration](configuration) - Customize Claude-Mem behavior
+- [Configuration](configuration) - Customize Magic-Claude-Mem behavior

@@ -1,5 +1,5 @@
 /**
- * SearchManager - Core search orchestration for claude-mem
+ * SearchManager - Core search orchestration for magic-claude-mem
  *
  * This class is a thin wrapper that delegates to the modular search infrastructure.
  * It maintains the same public interface for backward compatibility.

@@ -12,7 +12,7 @@ let cachedHost: string | null = null;
 
 /**
  * Get the worker port number from settings
- * Uses CLAUDE_MEM_WORKER_PORT from settings file or default (37777)
+ * Uses MAGIC_CLAUDE_MEM_WORKER_PORT from settings file or default (37777)
  * Caches the port value to avoid repeated file reads
  */
 export function getWorkerPort(): number {
@@ -20,15 +20,15 @@ export function getWorkerPort(): number {
     return cachedPort;
   }
 
-  const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+  const settingsPath = path.join(SettingsDefaultsManager.get('MAGIC_CLAUDE_MEM_DATA_DIR'), 'settings.json');
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+  cachedPort = parseInt(settings.MAGIC_CLAUDE_MEM_WORKER_PORT, 10);
   return cachedPort;
 }
 
 /**
  * Get the worker host address
- * Uses CLAUDE_MEM_WORKER_HOST from settings file or default (127.0.0.1)
+ * Uses MAGIC_CLAUDE_MEM_WORKER_HOST from settings file or default (127.0.0.1)
  * Caches the host value to avoid repeated file reads
  */
 export function getWorkerHost(): string {
@@ -36,9 +36,9 @@ export function getWorkerHost(): string {
     return cachedHost;
   }
 
-  const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+  const settingsPath = path.join(SettingsDefaultsManager.get('MAGIC_CLAUDE_MEM_DATA_DIR'), 'settings.json');
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  cachedHost = settings.CLAUDE_MEM_WORKER_HOST;
+  cachedHost = settings.MAGIC_CLAUDE_MEM_WORKER_HOST;
   return cachedHost;
 }
 
@@ -57,7 +57,7 @@ export function clearPortCache(): void {
  * - Hooks have 15-second timeout, but full initialization can take 5+ minutes (MCP connection)
  * - /api/health returns 200 as soon as HTTP server is up (sufficient for hook communication)
  * - /api/readiness returns 503 until full initialization completes (too slow for hooks)
- * See: https://github.com/doublefx/claude-mem/issues/811
+ * See: https://github.com/doublefx/magic-claude-mem/issues/811
  */
 async function isWorkerHealthy(): Promise<boolean> {
   const port = getWorkerPort();

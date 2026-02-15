@@ -1,5 +1,5 @@
 /**
- * Structured Logger for claude-mem Worker Service
+ * Structured Logger for magic-claude-mem Worker Service
  * Provides readable, traceable logging with correlation IDs and data flow tracking
  */
 
@@ -27,7 +27,7 @@ interface LogContext {
 
 // NOTE: This default must match DEFAULT_DATA_DIR in src/shared/SettingsDefaultsManager.ts
 // Inlined here to avoid circular dependency with SettingsDefaultsManager
-const DEFAULT_DATA_DIR = join(homedir(), '.claude-mem');
+const DEFAULT_DATA_DIR = join(homedir(), '.magic-claude-mem');
 
 export class Logger {
   private level: LogLevel | null = null;
@@ -61,7 +61,7 @@ export class Logger {
 
       // Create log file path with date
       const date = new Date().toISOString().split('T')[0];
-      this.logFilePath = join(logsDir, `claude-mem-${date}.log`);
+      this.logFilePath = join(logsDir, `magic-claude-mem-${date}.log`);
     } catch (error) {
       // If log file initialization fails, just log to console
       console.error('[LOGGER] Failed to initialize log file:', error);
@@ -80,8 +80,8 @@ export class Logger {
         const settingsPath = join(DEFAULT_DATA_DIR, 'settings.json');
         if (existsSync(settingsPath)) {
           const settingsData = readFileSync(settingsPath, 'utf-8');
-          const settings = JSON.parse(settingsData) as { CLAUDE_MEM_LOG_LEVEL?: string };
-          const envLevel: string = (settings.CLAUDE_MEM_LOG_LEVEL || 'INFO').toUpperCase();
+          const settings = JSON.parse(settingsData) as { MAGIC_CLAUDE_MEM_LOG_LEVEL?: string };
+          const envLevel: string = (settings.MAGIC_CLAUDE_MEM_LOG_LEVEL || 'INFO').toUpperCase();
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- envLevel may not be a valid LogLevel key at runtime
           this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
         } else {

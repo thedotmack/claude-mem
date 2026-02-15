@@ -9,9 +9,9 @@
 
 ## 1. Executive Summary
 
-On Windows 11, when claude-mem starts the Chroma MCP server via `uvx`, a blank terminal window (Windows Terminal / PowerShell) appears and does not close automatically. Users must manually close this window each time, which disrupts the workflow.
+On Windows 11, when magic-claude-mem starts the Chroma MCP server via `uvx`, a blank terminal window (Windows Terminal / PowerShell) appears and does not close automatically. Users must manually close this window each time, which disrupts the workflow.
 
-The root cause is that the MCP SDK's `StdioClientTransport` class does not pass the `windowsHide: true` option to the underlying `child_process.spawn()` call. While the claude-mem codebase attempts to set this option, it has no effect because the MCP SDK ignores it.
+The root cause is that the MCP SDK's `StdioClientTransport` class does not pass the `windowsHide: true` option to the underlying `child_process.spawn()` call. While the magic-claude-mem codebase attempts to set this option, it has no effect because the MCP SDK ignores it.
 
 This issue affects all Windows users who have ChromaDB vector search enabled (the default configuration).
 
@@ -32,7 +32,7 @@ This issue affects all Windows users who have ChromaDB vector search enabled (th
 |-----------|-------|
 | OS | Windows 11 64-bit |
 | Terminal | PowerShell 7.6.0-preview.6 |
-| claude-mem version | 9.0.0 |
+| magic-claude-mem version | 9.0.0 |
 | uvx location | `C:\Users\Dell\AppData\Local\Microsoft\WinGet\Links\uvx.exe` |
 | MCP SDK version | ^1.25.1 |
 
@@ -40,7 +40,7 @@ This issue affects all Windows users who have ChromaDB vector search enabled (th
 
 The terminal popup occurs when:
 
-1. Claude Code starts a new session with claude-mem enabled
+1. Claude Code starts a new session with magic-claude-mem enabled
 2. A search query is executed with semantic search enabled
 3. The ChromaSync service initializes for the first time in a session
 4. Any backfill operation triggers Chroma connection
@@ -51,7 +51,7 @@ The terminal popup occurs when:
 
 ### 3.1 Affected Code Location
 
-**File:** `/Users/alexnewman/conductor/workspaces/claude-mem/budapest/src/services/sync/ChromaSync.ts`
+**File:** `/Users/alexnewman/conductor/workspaces/magic-claude-mem/budapest/src/services/sync/ChromaSync.ts`
 
 **Lines:** 106-124
 
@@ -106,11 +106,11 @@ uvx.exe subprocess
 chroma-mcp Python process
 ```
 
-The SDK controls the spawn call, so claude-mem cannot directly influence the spawn options.
+The SDK controls the spawn call, so magic-claude-mem cannot directly influence the spawn options.
 
 ### 3.4 Comparison with Other Subprocess Calls
 
-Other parts of claude-mem successfully hide Windows console windows because they use `child_process.spawn()` directly:
+Other parts of magic-claude-mem successfully hide Windows console windows because they use `child_process.spawn()` directly:
 
 | Component | File | Uses windowsHide | Works on Windows |
 |-----------|------|------------------|------------------|
@@ -149,7 +149,7 @@ Other parts of claude-mem successfully hide Windows console windows because they
 
 ### 5.1 Primary Cause
 
-The MCP SDK's `StdioClientTransport` class does not implement support for the `windowsHide` spawn option. This is a limitation in the SDK, not a bug in claude-mem.
+The MCP SDK's `StdioClientTransport` class does not implement support for the `windowsHide` spawn option. This is a limitation in the SDK, not a bug in magic-claude-mem.
 
 ### 5.2 SDK Gap Analysis
 
@@ -172,7 +172,7 @@ Notable missing options:
 
 ### 5.3 Historical Context
 
-The claude-mem codebase has extensively addressed Windows console popup issues in other areas:
+The magic-claude-mem codebase has extensively addressed Windows console popup issues in other areas:
 
 - **December 4, 2025:** Added `windowsHide` parameter to ProcessManager
 - **December 17, 2025:** PR #378 standardized `windowsHide: true` across all direct spawn calls
@@ -337,7 +337,7 @@ Implement **Solution 1 (PowerShell Wrapper)** as an immediate fix for the next r
 ### 8.3 Documentation
 
 - Windows Woes Report: `/docs/reports/2026-01-06--windows-woes-comprehensive-report.md`
-- Windows Troubleshooting: https://docs.claude-mem.ai/troubleshooting/windows-issues
+- Windows Troubleshooting: https://docs.magic-claude-mem.ai/troubleshooting/windows-issues
 
 ---
 

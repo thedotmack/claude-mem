@@ -121,7 +121,7 @@ The hasIpc field is used only for admin endpoint IPC messaging, which is a separ
 ```typescript
 // src/services/server/Server.ts:209-216
 const isWindowsManaged = process.platform === 'win32' &&
-  process.env.CLAUDE_MEM_MANAGED === 'true' &&
+  process.env.MAGIC_CLAUDE_MEM_MANAGED === 'true' &&
   process.send;
 
 if (isWindowsManaged) {

@@ -33,7 +33,7 @@ The reporter documented the following scenario:
 **Parent daemon process (running 7+ hours):**
 ```
 PID     PPID  RSS(KB)  ELAPSED   COMMAND
-4118969 1     161656   07:28:16  bun ~/.claude/plugins/cache/doublefx/claude-mem/9.0.0/scripts/worker-service.cjs --daemon
+4118969 1     161656   07:28:16  bun ~/.claude/plugins/cache/doublefx/magic-claude-mem/9.0.0/scripts/worker-service.cjs --daemon
 ```
 
 **Sample of leaked children (121 total, all parented to daemon):**
@@ -48,7 +48,7 @@ PID   PPID    RSS(KB)  ELAPSED   COMMAND
 
 ### 2.2 Reproduction Steps
 
-1. Use claude-mem normally throughout a work session
+1. Use magic-claude-mem normally throughout a work session
 2. Run: `ps -o pid,ppid,rss,etime --no-headers | awk '$2 == '$(pgrep -f worker-service.cjs)`
 3. Count grows over time without bound
 
@@ -62,7 +62,7 @@ Child claude processes should terminate when their task completes, or the daemon
 
 ### 3.1 Architecture Overview
 
-The claude-mem worker service uses a modular architecture:
+The magic-claude-mem worker service uses a modular architecture:
 
 ```
 WorkerService (worker-service.ts)
@@ -377,7 +377,7 @@ File an issue with the Claude Agent SDK requesting:
 
 ## 8. References
 
-- **Issue:** https://github.com/doublefx/claude-mem/issues/603
+- **Issue:** https://github.com/doublefx/magic-claude-mem/issues/603
 - **Source Files:**
   - `/src/services/worker/SDKAgent.ts` - SDK query invocation
   - `/src/services/worker/SessionManager.ts` - Session lifecycle

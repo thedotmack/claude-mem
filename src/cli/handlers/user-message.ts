@@ -33,7 +33,7 @@ export const userMessageHandler: EventHandler = {
 
     // Write to stderr for user visibility (Claude Code UI shows stderr)
     console.error(
-      "\n\n" + String.fromCodePoint(0x1F4DD) + " Claude-Mem Context Loaded\n" +
+      "\n\n" + String.fromCodePoint(0x1F4DD) + " Magic-Claude-Mem Context Loaded\n" +
       "   " + String.fromCodePoint(0x2139, 0xFE0F) + "  Note: This appears as stderr but is informational only\n\n" +
       output +
       "\n\n" + String.fromCodePoint(0x1F4A1) + " New! Wrap all or part of any message with <private> ... </private> to prevent storing sensitive information in your observation history.\n" +

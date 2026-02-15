@@ -1,13 +1,13 @@
 ---
 title: "Getting Started"
-description: "Learn how Claude-Mem works automatically in the background"
+description: "Learn how Magic-Claude-Mem works automatically in the background"
 ---
 
-# Getting Started with Claude-Mem
+# Getting Started with Magic-Claude-Mem
 
 ## Automatic Operation
 
-Claude-Mem works automatically once installed. No manual intervention required!
+Magic-Claude-Mem works automatically once installed. No manual intervention required!
 
 ### The Full Cycle
 
@@ -18,7 +18,7 @@ Claude-Mem works automatically once installed. No manual intervention required!
 
 ### What Gets Captured
 
-Every time Claude uses a tool, claude-mem captures it:
+Every time Claude uses a tool, magic-claude-mem captures it:
 
 - **Read** - File reads and content access
 - **Write** - New file creation
@@ -123,13 +123,13 @@ npm run publish:npm
 
 ## Viewing Stored Context
 
-Context is stored in SQLite database at `~/.claude-mem/claude-mem.db`.
+Context is stored in SQLite database at `~/.magic-claude-mem/magic-claude-mem.db`.
 
 Query the database directly:
 
 ```bash
 # Open database
-sqlite3 ~/.claude-mem/claude-mem.db
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db
 
 # View recent sessions
 SELECT session_id, project, created_at, status
@@ -177,7 +177,7 @@ This ensures efficient token usage while maintaining access to complete history 
 
 ## Multi-Prompt Sessions & `/clear` Behavior
 
-Claude-Mem supports sessions that span multiple user prompts:
+Magic-Claude-Mem supports sessions that span multiple user prompts:
 
 - **prompt_counter**: Tracks total prompts in a session
 - **prompt_number**: Identifies specific prompt within session
@@ -195,7 +195,7 @@ The `/clear` command clears the conversation context visible to Claude AND re-in
 
 ## Searching Your History
 
-Claude-Mem provides MCP tools for querying your project history. Simply ask naturally:
+Magic-Claude-Mem provides MCP tools for querying your project history. Simply ask naturally:
 
 ```
 "What bugs did we fix last session?"

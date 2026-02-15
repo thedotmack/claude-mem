@@ -1,9 +1,9 @@
 # Issue #586: Race Condition in memory_session_id Capture
 
 **Report Date:** 2026-01-07
-**Issue:** [#586](https://github.com/doublefx/claude-mem/issues/586)
+**Issue:** [#586](https://github.com/doublefx/magic-claude-mem/issues/586)
 **Reporter:** rocky2431
-**Environment:** claude-mem 9.0.0, macOS Darwin 24.6.0, Node v22.x / Bun 1.x
+**Environment:** magic-claude-mem 9.0.0, macOS Darwin 24.6.0, Node v22.x / Bun 1.x
 
 ---
 

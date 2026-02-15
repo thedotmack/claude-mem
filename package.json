@@ -1,5 +1,5 @@
 {
-  "name": "claude-mem",
+  "name": "magic-claude-mem",
   "version": "9.1.4",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
@@ -15,15 +15,15 @@
     "typescript",
     "nodejs"
   ],
-  "author": "Alex Newman",
+  "author": "Frederic Thomas",
   "license": "AGPL-3.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/doublefx/claude-mem.git"
+    "url": "https://github.com/doublefx/magic-claude-mem.git"
   },
-  "homepage": "https://github.com/doublefx/claude-mem#readme",
+  "homepage": "https://github.com/doublefx/magic-claude-mem#readme",
   "bugs": {
-    "url": "https://github.com/doublefx/claude-mem/issues"
+    "url": "https://github.com/doublefx/magic-claude-mem/issues"
   },
   "type": "module",
   "exports": {
@@ -51,8 +51,8 @@
     "sync-marketplace": "node scripts/sync-marketplace.cjs",
     "sync-marketplace:force": "node scripts/sync-marketplace.cjs --force",
     "build:binaries": "node scripts/build-worker-binary.js",
-    "worker:logs": "tail -n 50 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log",
-    "worker:tail": "tail -f 50 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log",
+    "worker:logs": "tail -n 50 ~/.magic-claude-mem/logs/worker-$(date +%Y-%m-%d).log",
+    "worker:tail": "tail -f 50 ~/.magic-claude-mem/logs/worker-$(date +%Y-%m-%d).log",
     "changelog:generate": "node scripts/generate-changelog.js",
     "discord:notify": "node scripts/discord-release-notify.js",
     "worker:start": "node plugin/scripts/worker-service.cjs start",

@@ -3,11 +3,11 @@
 ---
 <h1 align="center">
   <br>
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-dark-mode.webp">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp" alt="Magic-Claude-Mem" width="400">
     </picture>
   </a>
   <br>
@@ -64,9 +64,9 @@
 <p align="center">
   <a href="https://trendshift.io/repositories/15496" target="_blank">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/claude-mem | Trendshift" width="250" height="55"/>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/magic-claude-mem | Trendshift" width="250" height="55"/>
     </picture>
   </a>
 </p>
@@ -74,9 +74,9 @@
 <br>
 
 <p align="center">
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/cm-preview.gif" alt="Magic-Claude-Mem Preview" width="800">
     </picture>
   </a>
 </p>
@@ -92,7 +92,7 @@
 </p>
 
 <p align="center">
-  Claude-Mem preserva o contexto perfeitamente entre sessões, capturando automaticamente observações de uso de ferramentas, gerando resumos semânticos e disponibilizando-os para sessões futuras. Isso permite que Claude mantenha a continuidade do conhecimento sobre projetos mesmo após o término ou reconexão de sessões.
+  Magic-Claude-Mem preserva o contexto perfeitamente entre sessões, capturando automaticamente observações de uso de ferramentas, gerando resumos semânticos e disponibilizando-os para sessões futuras. Isso permite que Claude mantenha a continuidade do conhecimento sobre projetos mesmo após o término ou reconexão de sessões.
 </p>
 
 ---
@@ -102,9 +102,9 @@
 Inicie uma nova sessão do Claude Code no terminal e digite os seguintes comandos:
 
 ```
-> /plugin marketplace add doublefx/claude-mem
+> /plugin marketplace add doublefx/magic-claude-mem
 
-> /plugin install claude-mem
+> /plugin install magic-claude-mem
 ```
 
 Reinicie o Claude Code. O contexto de sessões anteriores aparecerá automaticamente em novas sessões.
@@ -129,30 +129,30 @@ Reinicie o Claude Code. O contexto de sessões anteriores aparecerá automaticam
 
 ### Começando
 
-- **[Guia de Instalação](https://docs.claude-mem.ai/installation)** - Início rápido e instalação avançada
-- **[Guia de Uso](https://docs.claude-mem.ai/usage/getting-started)** - Como Claude-Mem funciona automaticamente
-- **[Ferramentas de Busca](https://docs.claude-mem.ai/usage/search-tools)** - Consulte seu histórico de projeto com linguagem natural
+- **[Guia de Instalação](https://docs.magic-claude-mem.ai/installation)** - Início rápido e instalação avançada
+- **[Guia de Uso](https://docs.magic-claude-mem.ai/usage/getting-started)** - Como Magic-Claude-Mem funciona automaticamente
+- **[Ferramentas de Busca](https://docs.magic-claude-mem.ai/usage/search-tools)** - Consulte seu histórico de projeto com linguagem natural
 
 ### Melhores Práticas
 
-- **[Engenharia de Contexto](https://docs.claude-mem.ai/context-engineering)** - Princípios de otimização de contexto para agentes de IA
-- **[Divulgação Progressiva](https://docs.claude-mem.ai/progressive-disclosure)** - Filosofia por trás da estratégia de preparação de contexto do Claude-Mem
+- **[Engenharia de Contexto](https://docs.magic-claude-mem.ai/context-engineering)** - Princípios de otimização de contexto para agentes de IA
+- **[Divulgação Progressiva](https://docs.magic-claude-mem.ai/progressive-disclosure)** - Filosofia por trás da estratégia de preparação de contexto do Magic-Claude-Mem
 
 ### Arquitetura
 
-- **[Visão Geral](https://docs.claude-mem.ai/architecture/overview)** - Componentes do sistema e fluxo de dados
-- **[Evolução da Arquitetura](https://docs.claude-mem.ai/architecture-evolution)** - A jornada da v3 à v5
-- **[Arquitetura de Hooks](https://docs.claude-mem.ai/hooks-architecture)** - Como Claude-Mem usa hooks de ciclo de vida
-- **[Referência de Hooks](https://docs.claude-mem.ai/architecture/hooks)** - 7 scripts de hook explicados
-- **[Serviço Worker](https://docs.claude-mem.ai/architecture/worker-service)** - API HTTP e gerenciamento do Node.js
-- **[Banco de Dados](https://docs.claude-mem.ai/architecture/database)** - Schema SQLite e busca FTS5
-- **[Arquitetura de Busca](https://docs.claude-mem.ai/architecture/search-architecture)** - Busca híbrida com banco de dados vetorial Chroma
+- **[Visão Geral](https://docs.magic-claude-mem.ai/architecture/overview)** - Componentes do sistema e fluxo de dados
+- **[Evolução da Arquitetura](https://docs.magic-claude-mem.ai/architecture-evolution)** - A jornada da v3 à v5
+- **[Arquitetura de Hooks](https://docs.magic-claude-mem.ai/hooks-architecture)** - Como Magic-Claude-Mem usa hooks de ciclo de vida
+- **[Referência de Hooks](https://docs.magic-claude-mem.ai/architecture/hooks)** - 7 scripts de hook explicados
+- **[Serviço Worker](https://docs.magic-claude-mem.ai/architecture/worker-service)** - API HTTP e gerenciamento do Node.js
+- **[Banco de Dados](https://docs.magic-claude-mem.ai/architecture/database)** - Schema SQLite e busca FTS5
+- **[Arquitetura de Busca](https://docs.magic-claude-mem.ai/architecture/search-architecture)** - Busca híbrida com banco de dados vetorial Chroma
 
 ### Configuração e Desenvolvimento
 
-- **[Configuração](https://docs.claude-mem.ai/configuration)** - Variáveis de ambiente e configurações
-- **[Desenvolvimento](https://docs.claude-mem.ai/development)** - Build, testes e contribuição
-- **[Solução de Problemas](https://docs.claude-mem.ai/troubleshooting)** - Problemas comuns e soluções
+- **[Configuração](https://docs.magic-claude-mem.ai/configuration)** - Variáveis de ambiente e configurações
+- **[Desenvolvimento](https://docs.magic-claude-mem.ai/development)** - Build, testes e contribuição
+- **[Solução de Problemas](https://docs.magic-claude-mem.ai/troubleshooting)** - Problemas comuns e soluções
 
 ---
 
@@ -167,13 +167,13 @@ Reinicie o Claude Code. O contexto de sessões anteriores aparecerá automaticam
 5. **Skill mem-search** - Consultas em linguagem natural com divulgação progressiva
 6. **Banco de Dados Vetorial Chroma** - Busca híbrida semântica + palavra-chave para recuperação inteligente de contexto
 
-Veja [Visão Geral da Arquitetura](https://docs.claude-mem.ai/architecture/overview) para detalhes.
+Veja [Visão Geral da Arquitetura](https://docs.magic-claude-mem.ai/architecture/overview) para detalhes.
 
 ---
 
 ## Skill mem-search
 
-Claude-Mem fornece busca inteligente através da skill mem-search que se auto-invoca quando você pergunta sobre trabalhos anteriores:
+Magic-Claude-Mem fornece busca inteligente através da skill mem-search que se auto-invoca quando você pergunta sobre trabalhos anteriores:
 
 **Como Funciona:**
 - Apenas pergunte naturalmente: *"O que fizemos na última sessão?"* ou *"Já corrigimos esse bug antes?"*
@@ -202,7 +202,7 @@ Claude-Mem fornece busca inteligente através da skill mem-search que se auto-in
 "O que estava acontecendo quando adicionamos a interface de visualização?"
 ```
 
-Veja [Guia de Ferramentas de Busca](https://docs.claude-mem.ai/usage/search-tools) para exemplos detalhados.
+Veja [Guia de Ferramentas de Busca](https://docs.magic-claude-mem.ai/usage/search-tools) para exemplos detalhados.
 
 ---
 
@@ -217,15 +217,15 @@ Veja [Guia de Ferramentas de Busca](https://docs.claude-mem.ai/usage/search-tool
 
 ## Configuração
 
-As configurações são gerenciadas em `~/.claude-mem/settings.json` (criado automaticamente com valores padrão na primeira execução). Configure modelo de IA, porta do worker, diretório de dados, nível de log e configurações de injeção de contexto.
+As configurações são gerenciadas em `~/.magic-claude-mem/settings.json` (criado automaticamente com valores padrão na primeira execução). Configure modelo de IA, porta do worker, diretório de dados, nível de log e configurações de injeção de contexto.
 
-Veja o **[Guia de Configuração](https://docs.claude-mem.ai/configuration)** para todas as configurações disponíveis e exemplos.
+Veja o **[Guia de Configuração](https://docs.magic-claude-mem.ai/configuration)** para todas as configurações disponíveis e exemplos.
 
 ---
 
 ## Desenvolvimento
 
-Veja o **[Guia de Desenvolvimento](https://docs.claude-mem.ai/development)** para instruções de build, testes e fluxo de contribuição.
+Veja o **[Guia de Desenvolvimento](https://docs.magic-claude-mem.ai/development)** para instruções de build, testes e fluxo de contribuição.
 
 ---
 
@@ -233,7 +233,7 @@ Veja o **[Guia de Desenvolvimento](https://docs.claude-mem.ai/development)** par
 
 Se você estiver enfrentando problemas, descreva o problema para Claude e a skill troubleshoot diagnosticará automaticamente e fornecerá correções.
 
-Veja o **[Guia de Solução de Problemas](https://docs.claude-mem.ai/troubleshooting)** para problemas comuns e soluções.
+Veja o **[Guia de Solução de Problemas](https://docs.magic-claude-mem.ai/troubleshooting)** para problemas comuns e soluções.
 
 ---
 
@@ -256,7 +256,7 @@ Contribuições são bem-vindas! Por favor:
 4. Atualize a documentação
 5. Envie um Pull Request
 
-Veja [Guia de Desenvolvimento](https://docs.claude-mem.ai/development) para o fluxo de contribuição.
+Veja [Guia de Desenvolvimento](https://docs.magic-claude-mem.ai/development) para o fluxo de contribuição.
 
 ---
 
@@ -264,7 +264,7 @@ Veja [Guia de Desenvolvimento](https://docs.claude-mem.ai/development) para o fl
 
 Este projeto está licenciado sob a **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-Copyright (C) 2025 Alex Newman (@doublefx). Todos os direitos reservados.
+Copyright (C) 2026 Frederic Thomas (@doublefx). Todos os direitos reservados.
 
 Veja o arquivo [LICENSE](LICENSE) para detalhes completos.
 
@@ -280,9 +280,9 @@ Veja o arquivo [LICENSE](LICENSE) para detalhes completos.
 ## Suporte
 
 - **Documentação**: [docs/](docs/)
-- **Issues**: [GitHub Issues](https://github.com/doublefx/claude-mem/issues)
-- **Repositório**: [github.com/doublefx/claude-mem](https://github.com/doublefx/claude-mem)
-- **Autor**: Alex Newman ([@doublefx](https://github.com/doublefx))
+- **Issues**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
+- **Repositório**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
+- **Autor**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
 
 ---
 

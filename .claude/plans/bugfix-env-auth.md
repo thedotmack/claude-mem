@@ -2,7 +2,7 @@
 
 ## Problem Summary
 
-Observer sessions fail with "Invalid API key · Please run /login" because the `CLAUDE_CONFIG_DIR` environment variable is being set to an isolated directory (`~/.claude-mem/observer-config/`) that lacks authentication credentials.
+Observer sessions fail with "Invalid API key · Please run /login" because the `CLAUDE_CONFIG_DIR` environment variable is being set to an isolated directory (`~/.magic-claude-mem/observer-config/`) that lacks authentication credentials.
 
 ## Root Cause
 
@@ -26,7 +26,7 @@ This was added in Issue #832 to prevent observer sessions from polluting the `cl
    ```
 
 2. The observer config directory exists but only has cached feature flags, no authentication:
-   - `~/.claude-mem/observer-config/.claude.json` - feature flags only
+   - `~/.magic-claude-mem/observer-config/.claude.json` - feature flags only
    - No credentials copied from main `~/.claude/` directory
 
 ## Solution

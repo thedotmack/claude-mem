@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 export type ThemePreference = 'system' | 'light' | 'dark';
 export type ResolvedTheme = 'light' | 'dark';
 
-const STORAGE_KEY = 'claude-mem-theme';
+const STORAGE_KEY = 'magic-claude-mem-theme';
 
 function getSystemTheme(): ResolvedTheme {
   if (typeof window === 'undefined') return 'dark';

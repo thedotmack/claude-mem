@@ -33,7 +33,7 @@ export async function isPortInUse(port: number): Promise<boolean> {
  * Uses /api/health instead of /api/readiness because:
  * - /api/health returns 200 as soon as HTTP server is listening
  * - /api/readiness waits for full initialization (MCP connection can take 5+ minutes)
- * See: https://github.com/doublefx/claude-mem/issues/811
+ * See: https://github.com/doublefx/magic-claude-mem/issues/811
  * @param port Worker port to check
  * @param timeoutMs Maximum time to wait in milliseconds
  * @returns true if worker became responsive, false if timeout

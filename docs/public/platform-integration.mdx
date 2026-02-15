@@ -1,12 +1,12 @@
 ---
 title: Platform Integration Guide
-description: Complete reference for integrating claude-mem worker service into VSCode extensions, IDE plugins, and CLI tools
+description: Complete reference for integrating magic-claude-mem worker service into VSCode extensions, IDE plugins, and CLI tools
 icon: plug
 ---
 
 <Note>
 **Version:** 9.1.1 (February 2026)
-**Target Audience:** Developers building claude-mem integrations (VSCode extensions, IDE plugins, CLI tools)
+**Target Audience:** Developers building magic-claude-mem integrations (VSCode extensions, IDE plugins, CLI tools)
 </Note>
 
 ## Quick Reference
@@ -15,7 +15,7 @@ icon: plug
 
 ```typescript
 const WORKER_BASE_URL = 'http://localhost:37777';
-const DEFAULT_PORT = 37777; // Override with CLAUDE_MEM_WORKER_PORT
+const DEFAULT_PORT = 37777; // Override with MAGIC_CLAUDE_MEM_WORKER_PORT
 ```
 
 ### Most Common Operations
@@ -46,10 +46,10 @@ GET /api/context/recent?project=my-project&limit=3
 ### Environment Variables
 
 ```bash
-CLAUDE_MEM_MODEL=claude-sonnet-4-5          # Model for observations/summaries
-CLAUDE_MEM_CONTEXT_OBSERVATIONS=50          # Observations injected at SessionStart
-CLAUDE_MEM_WORKER_PORT=37777                # Worker service port
-CLAUDE_MEM_PYTHON_VERSION=3.13              # Python version for chroma-mcp
+MAGIC_CLAUDE_MEM_MODEL=claude-sonnet-4-5          # Model for observations/summaries
+MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS=50          # Observations injected at SessionStart
+MAGIC_CLAUDE_MEM_WORKER_PORT=37777                # Worker service port
+MAGIC_CLAUDE_MEM_PYTHON_VERSION=3.13              # Python version for chroma-mcp
 ```
 
 ### Build Commands (Local Development)
@@ -167,7 +167,7 @@ Content-Type: application/json
 
 <Info>
 **Privacy Check:** Skips if user prompt was entirely wrapped in `<private>` tags.
-**Tag Stripping:** Removes `<private>` and `<claude-mem-context>` tags before storage.
+**Tag Stripping:** Removes `<private>` and `<magic-claude-mem-context>` tags before storage.
 **Auto-Start:** Ensures SDK agent generator is running to process the queue.
 </Info>
 
@@ -314,7 +314,7 @@ GET /api/stats
     "port": 37777
   },
   "database": {
-    "path": "~/.claude-mem/claude-mem.db",
+    "path": "~/.magic-claude-mem/magic-claude-mem.db",
     "size": 1048576,
     "observations": 500,
     "sessions": 50,
@@ -331,7 +331,7 @@ GET /api/projects
 
 ```json Response
 {
-  "projects": ["claude-mem", "other-project", ...]
+  "projects": ["magic-claude-mem", "other-project", ...]
 }
 ```
 
@@ -897,13 +897,13 @@ const searchTool: SearchTool = {
 };
 
 // Register tool
-vscode.lm.registerTool('claude-mem-search', searchTool);
+vscode.lm.registerTool('magic-claude-mem-search', searchTool);
 ```
 
 #### Chat Participant Implementation
 
 ```typescript
-const participant = vscode.chat.createChatParticipant('claude-mem', async (request, context, stream, token) => {
+const participant = vscode.chat.createChatParticipant('magic-claude-mem', async (request, context, stream, token) => {
   const claudeSessionId = context.session.id;
 
   // First message in conversation - no initialization needed
@@ -998,7 +998,7 @@ async function isWorkerHealthy(): Promise<boolean> {
 <Info>
 The worker automatically strips privacy tags before storage:
 - `<private>content</private>` - User-level privacy control
-- `<claude-mem-context>content</claude-mem-context>` - System-level tag (prevents recursive storage)
+- `<magic-claude-mem-context>content</magic-claude-mem-context>` - System-level tag (prevents recursive storage)
 
 **Privacy Check:** Observations/summaries are skipped if the entire user prompt was wrapped in `<private>` tags.
 </Info>
@@ -1091,8 +1091,8 @@ esbuild.build({
 
 ```json
 {
-  "name": "claude-mem-vscode",
-  "displayName": "Claude-Mem",
+  "name": "magic-claude-mem-vscode",
+  "displayName": "Magic-Claude-Mem",
   "version": "1.0.0",
   "engines": {
     "vscode": "^1.95.0"
@@ -1104,14 +1104,14 @@ esbuild.build({
   "contributes": {
     "chatParticipants": [
       {
-        "id": "claude-mem",
+        "id": "magic-claude-mem",
         "name": "memory",
         "description": "Search your persistent memory"
       }
     ],
     "languageModelTools": [
       {
-        "name": "claude-mem-search",
+        "name": "magic-claude-mem-search",
         "displayName": "Search Memory",
         "description": "Search persistent memory for observations, sessions, and prompts"
       }
@@ -1224,7 +1224,7 @@ describe('Worker Integration', () => {
   beforeAll(async () => {
     // Start worker process
     workerProcess = spawn('node', ['dist/worker-service.js'], {
-      env: { ...process.env, CLAUDE_MEM_WORKER_PORT: '37778' }
+      env: { ...process.env, MAGIC_CLAUDE_MEM_WORKER_PORT: '37778' }
     });
 
     // Wait for worker to be ready
@@ -1416,7 +1416,7 @@ import { WorkerClient } from './WorkerClient';
 export function registerSearchTool(context: vscode.ExtensionContext) {
   const client = new WorkerClient();
 
-  const searchTool = vscode.lm.registerTool('claude-mem-search', {
+  const searchTool = vscode.lm.registerTool('magic-claude-mem-search', {
     description: 'Search persistent memory for observations, sessions, and prompts',
     inputSchema: {
       type: 'object',
@@ -1533,10 +1533,10 @@ const userMessage = '<private>API key: sk-1234567890</private>';
 ## Additional Resources
 
 <CardGroup cols={2}>
-  <Card title="Documentation" icon="book" href="https://claude-mem.ai">
-    Complete claude-mem documentation
+  <Card title="Documentation" icon="book" href="https://magic-claude-mem.ai">
+    Complete magic-claude-mem documentation
   </Card>
-  <Card title="GitHub" icon="github" href="https://github.com/doublefx/claude-mem">
+  <Card title="GitHub" icon="github" href="https://github.com/doublefx/magic-claude-mem">
     Source code and issue tracker
   </Card>
   <Card title="Worker Service" icon="server" href="/architecture/worker-service">

@@ -1,7 +1,7 @@
 # Issue #597: Too Many Bugs - Technical Analysis Report
 
 **Date:** 2026-01-07
-**Issue:** [#597](https://github.com/doublefx/claude-mem/issues/597)
+**Issue:** [#597](https://github.com/doublefx/magic-claude-mem/issues/597)
 **Author:** TullyMonster
 **Labels:** bug
 **Status:** Open
@@ -22,7 +22,7 @@ Issue #597 is a bug report from user TullyMonster containing four screenshots do
 
 ### 2.1 Contextual Analysis
 
-Based on the timing (January 7, 2026), the user was running claude-mem v9.0.0, which was released on January 5, 2026. This version introduced the "Live Context System with Distributed CLAUDE.md Generation" (PR #556), a significant architectural change.
+Based on the timing (January 7, 2026), the user was running magic-claude-mem v9.0.0, which was released on January 5, 2026. This version introduced the "Live Context System with Distributed CLAUDE.md Generation" (PR #556), a significant architectural change.
 
 The same user (TullyMonster) also commented on Issue #596 with "same as you," indicating they experienced the ProcessTransport error that causes all observations to fail silently.
 
@@ -154,8 +154,8 @@ Windows users experiencing additional problems:
    investigate these issues more effectively, could you please provide:
 
    1. Which specific errors/behaviors are shown in each screenshot?
-   2. Your environment (OS, claude-mem version, Bun version)?
-   3. Relevant log entries from ~/.claude-mem/logs/worker-YYYY-MM-DD.log?
+   2. Your environment (OS, magic-claude-mem version, Bun version)?
+   3. Relevant log entries from ~/.magic-claude-mem/logs/worker-YYYY-MM-DD.log?
    4. Steps to reproduce any of these issues?
 
    We've identified several related issues (#596, #598, #602) and want to
@@ -253,7 +253,7 @@ Windows users experiencing additional problems:
 
 ## 9. Conclusion
 
-Issue #597 represents user frustration with multiple bugs encountered in claude-mem v9.0.0. While the image-only report makes specific diagnosis difficult, contextual analysis strongly suggests the user experienced:
+Issue #597 represents user frustration with multiple bugs encountered in magic-claude-mem v9.0.0. While the image-only report makes specific diagnosis difficult, contextual analysis strongly suggests the user experienced:
 
 1. ProcessTransport failures causing observation loss (#596)
 2. Possibly worker startup issues (#602)

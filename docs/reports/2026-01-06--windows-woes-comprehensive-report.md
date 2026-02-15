@@ -2,11 +2,11 @@
 
 **Date:** 2026-01-06
 **Coverage:** October 2025 - January 2026
-**Memory Sources:** 100+ observations from claude-mem
+**Memory Sources:** 100+ observations from magic-claude-mem
 
 ## Executive Summary
 
-The claude-mem project has faced significant Windows platform challenges, requiring extensive architectural changes and ongoing maintenance. The issues fall into four major categories:
+The magic-claude-mem project has faced significant Windows platform challenges, requiring extensive architectural changes and ongoing maintenance. The issues fall into four major categories:
 
 1. **Zombie Port Problem** - Bun's socket cleanup bug on Windows
 2. **Console Window Popups** - PowerShell/cmd windows appearing during hook execution
@@ -81,7 +81,7 @@ ProcessManager
 
 ### Known Limitation
 
-**Issue:** The hooks don't set `CLAUDE_MEM_MANAGED=true` environment variable, so the managed restart code path (lines 314-330 of worker-service.ts) is never activated. Every session runs the "standalone Windows" code path which lacks proper serialization.
+**Issue:** The hooks don't set `MAGIC_CLAUDE_MEM_MANAGED=true` environment variable, so the managed restart code path (lines 314-330 of worker-service.ts) is never activated. Every session runs the "standalone Windows" code path which lacks proper serialization.
 
 ---
 
@@ -140,7 +140,7 @@ const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object {
 
 ### 3.3 Lock Acquisition ENOENT Errors
 
-**The Problem (Dec 28):** On Windows, the `.claude-mem` directory can be in flux during filesystem operations, causing `worker.lock` file access to fail with ENOENT.
+**The Problem (Dec 28):** On Windows, the `.magic-claude-mem` directory can be in flux during filesystem operations, causing `worker.lock` file access to fail with ENOENT.
 
 **The Solution (PR #470):**
 ```typescript
@@ -271,7 +271,7 @@ December 20, 2025 decision documented:
 2. **Fix Issue #517** by switching to WMIC or proper escaping
 3. **Increase waitForPortFree timeout** to 60s for Windows TIME_WAIT
 4. **Run cleanup BEFORE worker startup** instead of after
-5. **Set CLAUDE_MEM_MANAGED=true** in hooks.json to activate managed mode
+5. **Set MAGIC_CLAUDE_MEM_MANAGED=true** in hooks.json to activate managed mode
 6. **Consider Windows ARM64** - currently uses x64 emulation
 
 ---
@@ -291,6 +291,6 @@ December 20, 2025 decision documented:
 - v7.3.7: Platform stabilization
 
 ### Documentation
-- https://docs.claude-mem.ai/troubleshooting/windows-issues
+- https://docs.magic-claude-mem.ai/troubleshooting/windows-issues
 - `docs/context/windows-code-evaluation.md`
 - `docs/PM2-TO-BUN-MIGRATION.md`

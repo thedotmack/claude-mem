@@ -169,7 +169,7 @@ output += `3. Group related tools into coherent actions\n`;
 output += `4. Avoid "investigating" - the context is already present\n\n`;
 
 // Write to file
-const outputPath = '/Users/alexnewman/Scripts/claude-mem/docs/context/rich-context-examples.md';
+const outputPath = '/Users/alexnewman/Scripts/magic-claude-mem/docs/context/rich-context-examples.md';
 writeFileSync(outputPath, output, 'utf-8');
 
 console.log(`\nExtracted ${examplesFound} examples with rich context`);

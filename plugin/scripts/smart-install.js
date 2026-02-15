@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Smart Install Script for claude-mem
+ * Smart Install Script for magic-claude-mem
  *
  * Ensures uv (Python package manager) is installed (auto-installs if missing)
  * and handles dependency installation when needed.
@@ -118,11 +118,11 @@ function installUv() {
 }
 
 /**
- * Add shell alias for claude-mem command
+ * Add shell alias for magic-claude-mem command
  */
 function installCLI() {
   const WORKER_CLI = join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs');
-  const aliasLine = `alias claude-mem='node "${WORKER_CLI}"'`;
+  const aliasLine = `alias magic-claude-mem='node "${WORKER_CLI}"'`;
   const markerPath = join(MARKETPLACE_ROOT, '.cli-installed');
 
   // Skip if already installed
@@ -133,17 +133,17 @@ function installCLI() {
       // Windows: Add to PATH via PowerShell profile
       const profilePath = join(process.env.USERPROFILE || homedir(), 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1');
       const profileDir = join(process.env.USERPROFILE || homedir(), 'Documents', 'PowerShell');
-      const functionDef = `function claude-mem { & node "${WORKER_CLI}" $args }\n`;
+      const functionDef = `function magic-claude-mem { & node "${WORKER_CLI}" $args }\n`;
 
       if (!existsSync(profileDir)) {
         execSync(`mkdir "${profileDir}"`, { stdio: 'ignore', shell: true });
       }
 
       const existingContent = existsSync(profilePath) ? readFileSync(profilePath, 'utf-8') : '';
-      if (!existingContent.includes('function claude-mem')) {
+      if (!existingContent.includes('function magic-claude-mem')) {
         writeFileSync(profilePath, existingContent + '\n' + functionDef);
         console.error('PowerShell function added to profile');
-        console.error('   Restart your terminal to use: claude-mem <command>');
+        console.error('   Restart your terminal to use: magic-claude-mem <command>');
       }
     } else {
       // Unix: Add alias to shell configs
@@ -155,13 +155,13 @@ function installCLI() {
       for (const config of shellConfigs) {
         if (existsSync(config)) {
           const content = readFileSync(config, 'utf-8');
-          if (!content.includes('alias claude-mem=')) {
+          if (!content.includes('alias magic-claude-mem=')) {
             writeFileSync(config, content + '\n' + aliasLine + '\n');
             console.error(`Alias added to ${config}`);
           }
         }
       }
-      console.error('   Restart your terminal to use: claude-mem <command>');
+      console.error('   Restart your terminal to use: magic-claude-mem <command>');
     }
 
     writeFileSync(markerPath, new Date().toISOString());
@@ -238,8 +238,8 @@ try {
     console.error('Dependencies installed');
 
     // Auto-restart worker to pick up new code
-    const port = process.env.CLAUDE_MEM_WORKER_PORT || 37777;
-    console.error(`[claude-mem] Plugin updated to v${newVersion} - restarting worker...`);
+    const port = process.env.MAGIC_CLAUDE_MEM_WORKER_PORT || 37777;
+    console.error(`[magic-claude-mem] Plugin updated to v${newVersion} - restarting worker...`);
     try {
       // Graceful shutdown via HTTP (curl is cross-platform enough)
       execSync(`curl -s -X POST http://127.0.0.1:${port}/api/admin/shutdown`, {

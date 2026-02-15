@@ -56,7 +56,7 @@ if (registryEntry && (filesModified.length > 0 || filesRead.length > 0)) {
 ### Related Utils
 
 **`src/utils/tag-stripping.ts`** - Handles *stripping* tags (input filtering)
-- `stripMemoryTagsFromJson()` - removes `<claude-mem-context>` content
+- `stripMemoryTagsFromJson()` - removes `<magic-claude-mem-context>` content
 - `stripMemoryTagsFromPrompt()` - removes `<private>` content
 
 Our `replaceTaggedContent` handles *preserving/replacing* (output writing) - complementary, not duplicative.
@@ -77,7 +77,7 @@ Create `src/utils/claude-md-utils.ts` with extracted and simplified functions.
  *
  * Shared utilities for writing folder-level CLAUDE.md files with
  * auto-generated context sections. Preserves user content outside
- * <claude-mem-context> tags.
+ * <magic-claude-mem-context> tags.
  */
 
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';

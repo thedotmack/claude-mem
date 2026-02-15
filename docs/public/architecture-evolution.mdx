@@ -1,6 +1,6 @@
 ---
 title: "Architecture Evolution"
-description: "How claude-mem evolved from v3 to v5+"
+description: "How magic-claude-mem evolved from v3 to v5+"
 ---
 
 # Architecture Evolution
@@ -11,7 +11,7 @@ description: "How claude-mem evolved from v3 to v5+"
 
 **Challenge:** How do you observe AI agent behavior, compress it intelligently, and serve it back at the right time - all without slowing down or interfering with the main workflow?
 
-This is the story of how claude-mem evolved from a simple idea to a production-ready system, and the key architectural decisions that made it work.
+This is the story of how magic-claude-mem evolved from a simple idea to a production-ready system, and the key architectural decisions that made it work.
 
 ---
 
@@ -34,11 +34,11 @@ After establishing the solid v4 architecture, v5.x focused on user experience, v
 // Theme context with persistence
 const ThemeProvider = ({ children }) => {
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(() => {
-    return localStorage.getItem('claude-mem-theme') || 'system';
+    return localStorage.getItem('magic-claude-mem-theme') || 'system';
   });
 
   useEffect(() => {
-    localStorage.setItem('claude-mem-theme', theme);
+    localStorage.setItem('magic-claude-mem-theme', theme);
   }, [theme]);
 
   return (
@@ -61,7 +61,7 @@ const ThemeProvider = ({ children }) => {
 
 **Current Approach**: The project now uses Node.js for process management, which provides better cross-platform compatibility and eliminates these PATH-related issues.
 
-**Impact**: Cross-platform compatibility restored, Windows users can now use claude-mem without issues.
+**Impact**: Cross-platform compatibility restored, Windows users can now use magic-claude-mem without issues.
 
 ### v5.1.0: Web-Based Viewer UI (October 2025)
 
@@ -1099,7 +1099,7 @@ createObservation({
 ### Step 1: Backup Database
 
 ```bash
-cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem-v3-backup.db
+cp ~/.magic-claude-mem/magic-claude-mem.db ~/.magic-claude-mem/magic-claude-mem-v3-backup.db
 ```
 
 ### Step 2: Update Plugin
@@ -1112,7 +1112,7 @@ git pull
 ### Step 3: Update Plugin
 
 ```bash
-/plugin update claude-mem
+/plugin update magic-claude-mem
 ```
 
 **What happens automatically:**

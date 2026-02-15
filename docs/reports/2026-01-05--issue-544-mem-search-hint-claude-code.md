@@ -1,7 +1,7 @@
 # Investigation Report: Issue #544 - mem-search Skill Hint Shown to Claude Code Users
 
 **Date:** 2026-01-05
-**Issue:** https://github.com/doublefx/claude-mem/issues/544
+**Issue:** https://github.com/doublefx/magic-claude-mem/issues/544
 **Author:** m.woelk (@neifgmbh)
 **Status:** Open
 
@@ -29,7 +29,7 @@ The message appears in **two formatters** and is rendered via **FooterRenderer.t
 
 #### 1. MarkdownFormatter.ts (line 228-234)
 
-**File:** `/Users/alexnewman/Scripts/claude-mem/src/services/context/formatters/MarkdownFormatter.ts`
+**File:** `/Users/alexnewman/Scripts/magic-claude-mem/src/services/context/formatters/MarkdownFormatter.ts`
 
 ```typescript
 export function renderMarkdownFooter(totalDiscoveryTokens: number, totalReadTokens: number): string[] {
@@ -43,7 +43,7 @@ export function renderMarkdownFooter(totalDiscoveryTokens: number, totalReadToke
 
 #### 2. ColorFormatter.ts (line 225-231)
 
-**File:** `/Users/alexnewman/Scripts/claude-mem/src/services/context/formatters/ColorFormatter.ts`
+**File:** `/Users/alexnewman/Scripts/magic-claude-mem/src/services/context/formatters/ColorFormatter.ts`
 
 ```typescript
 export function renderColorFooter(totalDiscoveryTokens: number, totalReadTokens: number): string[] {
@@ -57,7 +57,7 @@ export function renderColorFooter(totalDiscoveryTokens: number, totalReadTokens:
 
 #### 3. Additional References in Context Instructions
 
-**File:** `/Users/alexnewman/Scripts/claude-mem/src/services/context/formatters/MarkdownFormatter.ts` (lines 70-79)
+**File:** `/Users/alexnewman/Scripts/magic-claude-mem/src/services/context/formatters/MarkdownFormatter.ts` (lines 70-79)
 
 ```typescript
 export function renderMarkdownContextIndex(): string[] {
@@ -73,7 +73,7 @@ export function renderMarkdownContextIndex(): string[] {
 }
 ```
 
-**File:** `/Users/alexnewman/Scripts/claude-mem/src/services/context/formatters/ColorFormatter.ts` (lines 72-81)
+**File:** `/Users/alexnewman/Scripts/magic-claude-mem/src/services/context/formatters/ColorFormatter.ts` (lines 72-81)
 
 ```typescript
 export function renderColorContextIndex(): string[] {
@@ -89,7 +89,7 @@ export function renderColorContextIndex(): string[] {
 
 #### 4. Footer Rendering Logic
 
-**File:** `/Users/alexnewman/Scripts/claude-mem/src/services/context/sections/FooterRenderer.ts`
+**File:** `/Users/alexnewman/Scripts/magic-claude-mem/src/services/context/sections/FooterRenderer.ts`
 
 ```typescript
 export function renderFooter(
@@ -166,7 +166,7 @@ Claude Code and Claude Desktop both:
 
 #### Claude Code MCP Tools (via `.mcp.json`)
 
-**File:** `/Users/alexnewman/Scripts/claude-mem/plugin/.mcp.json`
+**File:** `/Users/alexnewman/Scripts/magic-claude-mem/plugin/.mcp.json`
 ```json
 {
   "mcpServers": {
@@ -195,11 +195,11 @@ From documentation (`docs/public/usage/claude-desktop.mdx`):
 
 #### Plugin Skills Directory (Empty)
 
-**Path:** `/Users/alexnewman/Scripts/claude-mem/plugin/skills/`
+**Path:** `/Users/alexnewman/Scripts/magic-claude-mem/plugin/skills/`
 
 ```
 skills/
-  claude-mem-settings/  (empty)
+  magic-claude-mem-settings/  (empty)
   mem-search/
     operations/  (empty)
     principles/  (empty)
@@ -319,7 +319,7 @@ export function renderFooter(economics: TokenEconomics, config: ContextConfig, u
 ```markdown
 ---
 name: mem-search
-description: Search claude-mem memory database using MCP tools
+description: Search magic-claude-mem memory database using MCP tools
 ---
 
 # Memory Search

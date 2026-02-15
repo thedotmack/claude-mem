@@ -3,11 +3,11 @@
 ---
 <h1 align="center">
   <br>
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-dark-mode.webp">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp" alt="Magic-Claude-Mem" width="400">
     </picture>
   </a>
   <br>
@@ -64,9 +64,9 @@
 <p align="center">
   <a href="https://trendshift.io/repositories/15496" target="_blank">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/claude-mem | Trendshift" width="250" height="55"/>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/magic-claude-mem | Trendshift" width="250" height="55"/>
     </picture>
   </a>
 </p>
@@ -74,9 +74,9 @@
 <br>
 
 <p align="center">
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/cm-preview.gif" alt="Magic-Claude-Mem Preview" width="800">
     </picture>
   </a>
 </p>
@@ -92,7 +92,7 @@
 </p>
 
 <p align="center">
-  Claude-Mem duy trì ngữ cảnh liền mạch qua các phiên làm việc bằng cách tự động ghi lại các quan sát về việc sử dụng công cụ, tạo tóm tắt ngữ nghĩa và cung cấp chúng cho các phiên làm việc trong tương lai. Điều này giúp Claude duy trì tính liên tục của kiến thức về các dự án ngay cả sau khi phiên làm việc kết thúc hoặc kết nối lại.
+  Magic-Claude-Mem duy trì ngữ cảnh liền mạch qua các phiên làm việc bằng cách tự động ghi lại các quan sát về việc sử dụng công cụ, tạo tóm tắt ngữ nghĩa và cung cấp chúng cho các phiên làm việc trong tương lai. Điều này giúp Claude duy trì tính liên tục của kiến thức về các dự án ngay cả sau khi phiên làm việc kết thúc hoặc kết nối lại.
 </p>
 
 ---
@@ -102,9 +102,9 @@
 Bắt đầu một phiên Claude Code mới trong terminal và nhập các lệnh sau:
 
 ```
-> /plugin marketplace add doublefx/claude-mem
+> /plugin marketplace add doublefx/magic-claude-mem
 
-> /plugin install claude-mem
+> /plugin install magic-claude-mem
 ```
 
 Khởi động lại Claude Code. Ngữ cảnh từ các phiên trước sẽ tự động xuất hiện trong các phiên mới.
@@ -129,30 +129,30 @@ Khởi động lại Claude Code. Ngữ cảnh từ các phiên trước sẽ t�
 
 ### Bắt Đầu
 
-- **[Hướng Dẫn Cài Đặt](https://docs.claude-mem.ai/installation)** - Bắt đầu nhanh & cài đặt nâng cao
-- **[Hướng Dẫn Sử Dụng](https://docs.claude-mem.ai/usage/getting-started)** - Cách Claude-Mem hoạt động tự động
-- **[Công Cụ Tìm Kiếm](https://docs.claude-mem.ai/usage/search-tools)** - Truy vấn lịch sử dự án bằng ngôn ngữ tự nhiên
+- **[Hướng Dẫn Cài Đặt](https://docs.magic-claude-mem.ai/installation)** - Bắt đầu nhanh & cài đặt nâng cao
+- **[Hướng Dẫn Sử Dụng](https://docs.magic-claude-mem.ai/usage/getting-started)** - Cách Magic-Claude-Mem hoạt động tự động
+- **[Công Cụ Tìm Kiếm](https://docs.magic-claude-mem.ai/usage/search-tools)** - Truy vấn lịch sử dự án bằng ngôn ngữ tự nhiên
 
 ### Thực Hành Tốt Nhất
 
-- **[Kỹ Thuật Ngữ Cảnh](https://docs.claude-mem.ai/context-engineering)** - Các nguyên tắc tối ưu hóa ngữ cảnh cho AI agent
-- **[Tiết Lộ Tuần Tự](https://docs.claude-mem.ai/progressive-disclosure)** - Triết lý đằng sau chiến lược chuẩn bị ngữ cảnh của Claude-Mem
+- **[Kỹ Thuật Ngữ Cảnh](https://docs.magic-claude-mem.ai/context-engineering)** - Các nguyên tắc tối ưu hóa ngữ cảnh cho AI agent
+- **[Tiết Lộ Tuần Tự](https://docs.magic-claude-mem.ai/progressive-disclosure)** - Triết lý đằng sau chiến lược chuẩn bị ngữ cảnh của Magic-Claude-Mem
 
 ### Kiến Trúc
 
-- **[Tổng Quan](https://docs.claude-mem.ai/architecture/overview)** - Các thành phần hệ thống & luồng dữ liệu
-- **[Phát Triển Kiến Trúc](https://docs.claude-mem.ai/architecture-evolution)** - Hành trình từ v3 đến v5
-- **[Kiến Trúc Hooks](https://docs.claude-mem.ai/hooks-architecture)** - Cách Claude-Mem sử dụng lifecycle hooks
-- **[Tham Chiếu Hooks](https://docs.claude-mem.ai/architecture/hooks)** - Giải thích 7 hook scripts
-- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & quản lý Node.js
-- **[Cơ Sở Dữ Liệu](https://docs.claude-mem.ai/architecture/database)** - Schema SQLite & tìm kiếm FTS5
-- **[Kiến Trúc Tìm Kiếm](https://docs.claude-mem.ai/architecture/search-architecture)** - Tìm kiếm kết hợp với cơ sở dữ liệu vector Chroma
+- **[Tổng Quan](https://docs.magic-claude-mem.ai/architecture/overview)** - Các thành phần hệ thống & luồng dữ liệu
+- **[Phát Triển Kiến Trúc](https://docs.magic-claude-mem.ai/architecture-evolution)** - Hành trình từ v3 đến v5
+- **[Kiến Trúc Hooks](https://docs.magic-claude-mem.ai/hooks-architecture)** - Cách Magic-Claude-Mem sử dụng lifecycle hooks
+- **[Tham Chiếu Hooks](https://docs.magic-claude-mem.ai/architecture/hooks)** - Giải thích 7 hook scripts
+- **[Worker Service](https://docs.magic-claude-mem.ai/architecture/worker-service)** - HTTP API & quản lý Node.js
+- **[Cơ Sở Dữ Liệu](https://docs.magic-claude-mem.ai/architecture/database)** - Schema SQLite & tìm kiếm FTS5
+- **[Kiến Trúc Tìm Kiếm](https://docs.magic-claude-mem.ai/architecture/search-architecture)** - Tìm kiếm kết hợp với cơ sở dữ liệu vector Chroma
 
 ### Cấu Hình & Phát Triển
 
-- **[Cấu Hình](https://docs.claude-mem.ai/configuration)** - Biến môi trường & cài đặt
-- **[Phát Triển](https://docs.claude-mem.ai/development)** - Xây dựng, kiểm thử, đóng góp
-- **[Khắc Phục Sự Cố](https://docs.claude-mem.ai/troubleshooting)** - Các vấn đề thường gặp & giải pháp
+- **[Cấu Hình](https://docs.magic-claude-mem.ai/configuration)** - Biến môi trường & cài đặt
+- **[Phát Triển](https://docs.magic-claude-mem.ai/development)** - Xây dựng, kiểm thử, đóng góp
+- **[Khắc Phục Sự Cố](https://docs.magic-claude-mem.ai/troubleshooting)** - Các vấn đề thường gặp & giải pháp
 
 ---
 
@@ -167,13 +167,13 @@ Khởi động lại Claude Code. Ngữ cảnh từ các phiên trước sẽ t�
 5. **mem-search Skill** - Truy vấn ngôn ngữ tự nhiên với tiết lộ tuần tự
 6. **Chroma Vector Database** - Tìm kiếm kết hợp ngữ nghĩa + từ khóa để truy xuất ngữ cảnh thông minh
 
-Xem [Tổng Quan Kiến Trúc](https://docs.claude-mem.ai/architecture/overview) để biết chi tiết.
+Xem [Tổng Quan Kiến Trúc](https://docs.magic-claude-mem.ai/architecture/overview) để biết chi tiết.
 
 ---
 
 ## mem-search Skill
 
-Claude-Mem cung cấp tìm kiếm thông minh thông qua kỹ năng mem-search tự động kích hoạt khi bạn hỏi về công việc trước đây:
+Magic-Claude-Mem cung cấp tìm kiếm thông minh thông qua kỹ năng mem-search tự động kích hoạt khi bạn hỏi về công việc trước đây:
 
 **Cách Hoạt Động:**
 - Chỉ cần hỏi một cách tự nhiên: *"Chúng ta đã làm gì trong phiên trước?"* hoặc *"Chúng ta đã sửa lỗi này trước đây chưa?"*
@@ -202,7 +202,7 @@ Claude-Mem cung cấp tìm kiếm thông minh thông qua kỹ năng mem-search t
 "What was happening when we added the viewer UI?"
 ```
 
-Xem [Hướng Dẫn Công Cụ Tìm Kiếm](https://docs.claude-mem.ai/usage/search-tools) để biết các ví dụ chi tiết.
+Xem [Hướng Dẫn Công Cụ Tìm Kiếm](https://docs.magic-claude-mem.ai/usage/search-tools) để biết các ví dụ chi tiết.
 
 ---
 
@@ -217,15 +217,15 @@ Xem [Hướng Dẫn Công Cụ Tìm Kiếm](https://docs.claude-mem.ai/usage/sea
 
 ## Cấu Hình
 
-Cài đặt được quản lý trong `~/.claude-mem/settings.json` (tự động tạo với giá trị mặc định khi chạy lần đầu). Cấu hình mô hình AI, cổng worker, thư mục dữ liệu, mức độ log và cài đặt chèn ngữ cảnh.
+Cài đặt được quản lý trong `~/.magic-claude-mem/settings.json` (tự động tạo với giá trị mặc định khi chạy lần đầu). Cấu hình mô hình AI, cổng worker, thư mục dữ liệu, mức độ log và cài đặt chèn ngữ cảnh.
 
-Xem **[Hướng Dẫn Cấu Hình](https://docs.claude-mem.ai/configuration)** để biết tất cả các cài đặt và ví dụ có sẵn.
+Xem **[Hướng Dẫn Cấu Hình](https://docs.magic-claude-mem.ai/configuration)** để biết tất cả các cài đặt và ví dụ có sẵn.
 
 ---
 
 ## Phát Triển
 
-Xem **[Hướng Dẫn Phát Triển](https://docs.claude-mem.ai/development)** để biết hướng dẫn xây dựng, kiểm thử và quy trình đóng góp.
+Xem **[Hướng Dẫn Phát Triển](https://docs.magic-claude-mem.ai/development)** để biết hướng dẫn xây dựng, kiểm thử và quy trình đóng góp.
 
 ---
 
@@ -233,7 +233,7 @@ Xem **[Hướng Dẫn Phát Triển](https://docs.claude-mem.ai/development)** �
 
 Nếu gặp sự cố, hãy mô tả vấn đề cho Claude và kỹ năng troubleshoot sẽ tự động chẩn đoán và cung cấp các bản sửa lỗi.
 
-Xem **[Hướng Dẫn Khắc Phục Sự Cố](https://docs.claude-mem.ai/troubleshooting)** để biết các vấn đề thường gặp và giải pháp.
+Xem **[Hướng Dẫn Khắc Phục Sự Cố](https://docs.magic-claude-mem.ai/troubleshooting)** để biết các vấn đề thường gặp và giải pháp.
 
 ---
 
@@ -256,7 +256,7 @@ Chúng tôi hoan nghênh các đóng góp! Vui lòng:
 4. Cập nhật tài liệu
 5. Gửi Pull Request
 
-Xem [Hướng Dẫn Phát Triển](https://docs.claude-mem.ai/development) để biết quy trình đóng góp.
+Xem [Hướng Dẫn Phát Triển](https://docs.magic-claude-mem.ai/development) để biết quy trình đóng góp.
 
 ---
 
@@ -264,7 +264,7 @@ Xem [Hướng Dẫn Phát Triển](https://docs.claude-mem.ai/development) để
 
 Dự án này được cấp phép theo **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-Copyright (C) 2025 Alex Newman (@doublefx). Bảo lưu mọi quyền.
+Copyright (C) 2026 Frederic Thomas (@doublefx). Bảo lưu mọi quyền.
 
 Xem tệp [LICENSE](LICENSE) để biết chi tiết đầy đủ.
 
@@ -280,9 +280,9 @@ Xem tệp [LICENSE](LICENSE) để biết chi tiết đầy đủ.
 ## Hỗ Trợ
 
 - **Tài Liệu**: [docs/](docs/)
-- **Vấn Đề**: [GitHub Issues](https://github.com/doublefx/claude-mem/issues)
-- **Repository**: [github.com/doublefx/claude-mem](https://github.com/doublefx/claude-mem)
-- **Tác Giả**: Alex Newman ([@doublefx](https://github.com/doublefx))
+- **Vấn Đề**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
+- **Repository**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
+- **Tác Giả**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
 
 ---
 

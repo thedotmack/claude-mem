@@ -1,11 +1,11 @@
 ---
 title: "Modes & Languages"
-description: "Configure Claude-Mem behavior and language with the Mode System"
+description: "Configure Magic-Claude-Mem behavior and language with the Mode System"
 ---
 
 # Modes & Languages
 
-Claude-Mem uses a flexible **Mode System** to adapt its behavior, observation types, and output language. This allows you to switch between different workflows (like coding vs. email investigation) or languages without reinstalling the plugin.
+Magic-Claude-Mem uses a flexible **Mode System** to adapt its behavior, observation types, and output language. This allows you to switch between different workflows (like coding vs. email investigation) or languages without reinstalling the plugin.
 
 ## What is a Mode?
 
@@ -17,18 +17,18 @@ A "mode" is a configuration profile that defines:
 
 ## Configuration
 
-Set the active mode using the `CLAUDE_MEM_MODE` setting in `~/.claude-mem/settings.json`:
+Set the active mode using the `MAGIC_CLAUDE_MEM_MODE` setting in `~/.magic-claude-mem/settings.json`:
 
 ```json
 {
-  "CLAUDE_MEM_MODE": "code--es"
+  "MAGIC_CLAUDE_MEM_MODE": "code--es"
 }
 ```
 
 Or via environment variable:
 
 ```bash
-export CLAUDE_MEM_MODE="code--fr"
+export MAGIC_CLAUDE_MEM_MODE="code--fr"
 ```
 
 ## Available Modes

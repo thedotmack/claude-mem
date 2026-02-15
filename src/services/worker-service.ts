@@ -280,7 +280,7 @@ export class WorkerService {
       const { USER_SETTINGS_PATH } = await import('../shared/paths.js');
 
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-      const modeId = settings.CLAUDE_MEM_MODE;
+      const modeId = settings.MAGIC_CLAUDE_MEM_MODE;
       ModeManager.getInstance().loadMode(modeId);
       logger.info('SYSTEM', `Mode loaded: ${modeId}`);
 
@@ -674,7 +674,7 @@ async function main() {
       const platform = process.argv[3];
       const event = process.argv[4];
       if (!platform || !event) {
-        console.error('Usage: claude-mem hook <platform> <event>');
+        console.error('Usage: magic-claude-mem hook <platform> <event>');
         console.error('Platforms: claude-code, cursor, raw');
         console.error('Events: context, session-init, observation, summarize');
         process.exit(1);

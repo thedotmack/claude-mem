@@ -229,7 +229,7 @@ Messages that fail 3 times are marked `failed` and won't auto-retry:
 
 ```bash
 # View failed messages
-sqlite3 ~/.claude-mem/claude-mem.db "
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
   SELECT id, session_db_id, message_type, retry_count
   FROM pending_messages
   WHERE status = 'failed'
@@ -240,7 +240,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 You can manually reset them if needed:
 
 ```bash
-sqlite3 ~/.claude-mem/claude-mem.db "
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
   UPDATE pending_messages
   SET status = 'pending', retry_count = 0
   WHERE status = 'failed';
@@ -272,7 +272,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 4. **Check database integrity**:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "PRAGMA integrity_check;"
    ```
 
 ### Messages Stuck Forever
@@ -283,7 +283,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 ```bash
 # Reset all stuck messages to pending
-sqlite3 ~/.claude-mem/claude-mem.db "
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
   UPDATE pending_messages
   SET status = 'pending', started_processing_at_epoch = NULL
   WHERE status = 'processing';
@@ -327,7 +327,7 @@ npx tsx scripts/check-pending-queue.ts --process
 View all pending messages:
 
 ```bash
-sqlite3 ~/.claude-mem/claude-mem.db "
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
   SELECT
     id,
     session_db_id,
@@ -346,7 +346,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 ### Count Messages by Status
 
 ```bash
-sqlite3 ~/.claude-mem/claude-mem.db "
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
   SELECT status, COUNT(*) as count
   FROM pending_messages
   GROUP BY status;
@@ -356,7 +356,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 ### Find Sessions with Pending Work
 
 ```bash
-sqlite3 ~/.claude-mem/claude-mem.db "
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
   SELECT
     session_db_id,
     COUNT(*) as pending_count,
@@ -370,7 +370,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 ### View Recent Failures
 
 ```bash
-sqlite3 ~/.claude-mem/claude-mem.db "
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
   SELECT
     id,
     session_db_id,
@@ -429,7 +429,7 @@ echo "Waiting for processing to complete..."
 sleep 10
 
 echo "Stopping worker..."
-claude-mem stop
+magic-claude-mem stop
 ```
 
 ## Migration Note

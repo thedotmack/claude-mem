@@ -1,32 +1,32 @@
 ---
 title: "Configuration"
-description: "Environment variables and settings for Claude-Mem"
+description: "Environment variables and settings for Magic-Claude-Mem"
 ---
 
 # Configuration
 
 ## Settings File
 
-Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
+Settings are managed in `~/.magic-claude-mem/settings.json`. The file is auto-created with defaults on first run.
 
 ### Core Settings
 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
-| `CLAUDE_MEM_MODEL`            | `sonnet`                        | AI model for processing observations (when using Claude) |
-| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, or `openai-compat` |
-| `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
-| `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
-| `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
-| `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
-| `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
+| `MAGIC_CLAUDE_MEM_MODEL`            | `sonnet`                        | AI model for processing observations (when using Claude) |
+| `MAGIC_CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, or `openai-compat` |
+| `MAGIC_CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
+| `MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
+| `MAGIC_CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
+| `MAGIC_CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
+| `MAGIC_CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
 
 ### Gemini Provider Settings
 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
-| `CLAUDE_MEM_GEMINI_API_KEY`   | —                               | Gemini API key ([get free key](https://aistudio.google.com/app/apikey)) |
-| `CLAUDE_MEM_GEMINI_MODEL`     | `gemini-2.5-flash-lite`          | Gemini model: `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-3-flash` |
+| `MAGIC_CLAUDE_MEM_GEMINI_API_KEY`   | —                               | Gemini API key ([get free key](https://aistudio.google.com/app/apikey)) |
+| `MAGIC_CLAUDE_MEM_GEMINI_MODEL`     | `gemini-2.5-flash-lite`          | Gemini model: `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-3-flash` |
 
 See [Gemini Provider](usage/gemini-provider) for detailed configuration and free tier information.
 
@@ -34,13 +34,13 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and free
 
 | Setting                                        | Default                     | Description                           |
 |------------------------------------------------|-----------------------------|---------------------------------------|
-| `CLAUDE_MEM_OPENAI_COMPAT_API_KEY`             | —                           | API key (Bearer token). For local servers that don't validate keys, use any non-empty string |
-| `CLAUDE_MEM_OPENAI_COMPAT_MODEL`               | `xiaomi/mimo-v2-flash:free` | Model identifier (format varies by endpoint) |
-| `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL`            | OpenRouter URL              | Full URL to `/v1/chat/completions` endpoint. Set for Ollama, LM Studio, CLIProxyAPI, etc. |
-| `CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES`| `20`                        | Max messages in conversation history (1--100) |
-| `CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS`          | `100000`                    | Estimated token budget for context (1,000--1,000,000). Lower for small context models |
-| `CLAUDE_MEM_OPENAI_COMPAT_SITE_URL`            | —                           | `HTTP-Referer` header for OpenRouter analytics (ignored by other endpoints) |
-| `CLAUDE_MEM_OPENAI_COMPAT_APP_NAME`            | `claude-mem`                | `X-Title` header for OpenRouter analytics (ignored by other endpoints) |
+| `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY`             | —                           | API key (Bearer token). For local servers that don't validate keys, use any non-empty string |
+| `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MODEL`               | `xiaomi/mimo-v2-flash:free` | Model identifier (format varies by endpoint) |
+| `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_BASE_URL`            | OpenRouter URL              | Full URL to `/v1/chat/completions` endpoint. Set for Ollama, LM Studio, CLIProxyAPI, etc. |
+| `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES`| `20`                        | Max messages in conversation history (1--100) |
+| `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS`          | `100000`                    | Estimated token budget for context (1,000--1,000,000). Lower for small context models |
+| `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_SITE_URL`            | —                           | `HTTP-Referer` header for OpenRouter analytics (ignored by other endpoints) |
+| `MAGIC_CLAUDE_MEM_OPENAI_COMPAT_APP_NAME`            | `magic-claude-mem`                | `X-Title` header for OpenRouter analytics (ignored by other endpoints) |
 
 See [OpenAI-Compatible Provider](usage/openai-compat-provider) for detailed settings reference, local model setup (Ollama, LM Studio, CLIProxyAPI), and usage guide.
 
@@ -48,9 +48,9 @@ See [OpenAI-Compatible Provider](usage/openai-compat-provider) for detailed sett
 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
-| `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data directory location               |
-| `CLAUDE_MEM_LOG_LEVEL`        | `INFO`                          | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
-| `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
+| `MAGIC_CLAUDE_MEM_DATA_DIR`         | `~/.magic-claude-mem`                 | Data directory location               |
+| `MAGIC_CLAUDE_MEM_LOG_LEVEL`        | `INFO`                          | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
+| `MAGIC_CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows) |
 
 ## Model Configuration
@@ -68,18 +68,18 @@ Shorthand model names automatically forward to the latest version:
 ### Using the Interactive Script
 
 ```bash
-./claude-mem-settings.sh
+./magic-claude-mem-settings.sh
 ```
 
-This script manages settings in `~/.claude-mem/settings.json`.
+This script manages settings in `~/.magic-claude-mem/settings.json`.
 
 ### Manual Configuration
 
-Edit `~/.claude-mem/settings.json`:
+Edit `~/.magic-claude-mem/settings.json`:
 
 ```json
 {
-  "CLAUDE_MEM_MODEL": "sonnet"
+  "MAGIC_CLAUDE_MEM_MODEL": "sonnet"
 }
 ```
 
@@ -91,21 +91,21 @@ Configure the active workflow mode and language.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_MODE` | `code` | Defines behavior and language. See [Modes & Languages](modes). |
+| `MAGIC_CLAUDE_MEM_MODE` | `code` | Defines behavior and language. See [Modes & Languages](modes). |
 
 ### Examples
 
 **Spanish Code Mode:**
 ```json
 {
-  "CLAUDE_MEM_MODE": "code--es"
+  "MAGIC_CLAUDE_MEM_MODE": "code--es"
 }
 ```
 
 **Email Investigation Mode:**
 ```json
 {
-  "CLAUDE_MEM_MODE": "email-investigation"
+  "MAGIC_CLAUDE_MEM_MODE": "email-investigation"
 }
 ```
 
@@ -114,12 +114,12 @@ Configure the active workflow mode and language.
 ### Data Directory Structure
 
 The data directory location depends on the environment:
-- **Production (installed plugin)**: `~/.claude-mem/` (always, regardless of CLAUDE_PLUGIN_ROOT)
-- **Development**: Can be overridden with `CLAUDE_MEM_DATA_DIR`
+- **Production (installed plugin)**: `~/.magic-claude-mem/` (always, regardless of CLAUDE_PLUGIN_ROOT)
+- **Development**: Can be overridden with `MAGIC_CLAUDE_MEM_DATA_DIR`
 
 ```
-~/.claude-mem/
-├── claude-mem.db           # SQLite database
+~/.magic-claude-mem/
+├── magic-claude-mem.db           # SQLite database
 ├── .install-version        # Cached version for smart installer
 ├── worker.port             # Current worker port file
 └── logs/
@@ -193,7 +193,7 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 
 ### Search Configuration
 
-Claude-Mem provides MCP search tools for querying your project history.
+Magic-Claude-Mem provides MCP search tools for querying your project history.
 
 **No configuration required** - MCP tools are automatically available in Claude Code sessions.
 
@@ -208,7 +208,7 @@ Worker service is managed by Node.js as a background process. The worker auto-st
 
 ## Context Injection Configuration
 
-Claude-Mem injects past observations into each new session, giving Claude awareness of recent work. You can configure exactly what gets injected using the **Context Settings Modal**.
+Magic-Claude-Mem injects past observations into each new session, giving Claude awareness of recent work. You can configure exactly what gets injected using the **Context Settings Modal**.
 
 ### Context Settings Modal
 
@@ -291,21 +291,21 @@ Token economics help you understand the value of cached observations vs. re-read
 
 ### Manual Configuration
 
-Settings are stored in `~/.claude-mem/settings.json`:
+Settings are stored in `~/.magic-claude-mem/settings.json`:
 
 ```json
 {
-  "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100",
-  "CLAUDE_MEM_CONTEXT_SESSION_COUNT": "20",
-  "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
-  "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha",
-  "CLAUDE_MEM_CONTEXT_FULL_COUNT": "10",
-  "CLAUDE_MEM_CONTEXT_FULL_FIELD": "narrative",
-  "CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS": "true",
-  "CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS": "true",
-  "CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT": "true",
-  "CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY": "false",
-  "CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE": "false"
+  "MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100",
+  "MAGIC_CLAUDE_MEM_CONTEXT_SESSION_COUNT": "20",
+  "MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
+  "MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha",
+  "MAGIC_CLAUDE_MEM_CONTEXT_FULL_COUNT": "10",
+  "MAGIC_CLAUDE_MEM_CONTEXT_FULL_FIELD": "narrative",
+  "MAGIC_CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS": "true",
+  "MAGIC_CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS": "true",
+  "MAGIC_CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT": "true",
+  "MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY": "false",
+  "MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE": "false"
 }
 ```
 
@@ -313,23 +313,23 @@ Settings are stored in `~/.claude-mem/settings.json`:
 
 ## Customization
 
-Settings can be customized in `~/.claude-mem/settings.json`.
+Settings can be customized in `~/.magic-claude-mem/settings.json`.
 
 ### Custom Data Directory
 
-Edit `~/.claude-mem/settings.json`:
+Edit `~/.magic-claude-mem/settings.json`:
 ```json
 {
-  "CLAUDE_MEM_DATA_DIR": "/custom/path"
+  "MAGIC_CLAUDE_MEM_DATA_DIR": "/custom/path"
 }
 ```
 
 ### Custom Worker Port
 
-Edit `~/.claude-mem/settings.json`:
+Edit `~/.magic-claude-mem/settings.json`:
 ```json
 {
-  "CLAUDE_MEM_WORKER_PORT": "38000"
+  "MAGIC_CLAUDE_MEM_WORKER_PORT": "38000"
 }
 ```
 
@@ -340,25 +340,25 @@ npm run worker:restart
 
 ### Custom Model
 
-Edit `~/.claude-mem/settings.json`:
+Edit `~/.magic-claude-mem/settings.json`:
 ```json
 {
-  "CLAUDE_MEM_MODEL": "opus"
+  "MAGIC_CLAUDE_MEM_MODEL": "opus"
 }
 ```
 
 Then restart the worker:
 ```bash
-export CLAUDE_MEM_MODEL=opus
+export MAGIC_CLAUDE_MEM_MODEL=opus
 npm run worker:restart
 ```
 
 ### Custom Skip Tools
 
-Control which tools are excluded from observations. Edit `~/.claude-mem/settings.json`:
+Control which tools are excluded from observations. Edit `~/.magic-claude-mem/settings.json`:
 ```json
 {
-  "CLAUDE_MEM_SKIP_TOOLS": "ListMcpResourcesTool,SlashCommand,Skill"
+  "MAGIC_CLAUDE_MEM_SKIP_TOOLS": "ListMcpResourcesTool,SlashCommand,Skill"
 }
 ```
 
@@ -406,7 +406,7 @@ The worker service is managed by Node.js and will automatically restart if it en
 Enable debug logging:
 
 ```bash
-export DEBUG=claude-mem:*
+export DEBUG=magic-claude-mem:*
 npm run worker:restart
 npm run worker:logs
 ```
@@ -430,8 +430,8 @@ npm run worker:logs
 
 2. Verify environment variables:
    ```bash
-   echo $CLAUDE_MEM_MODEL
-   echo $CLAUDE_MEM_WORKER_PORT
+   echo $MAGIC_CLAUDE_MEM_MODEL
+   echo $MAGIC_CLAUDE_MEM_WORKER_PORT
    ```
 
 3. Check worker logs:
@@ -454,7 +454,7 @@ If port 37777 is already in use:
 
 1. Set custom port:
    ```bash
-   export CLAUDE_MEM_WORKER_PORT=38000
+   export MAGIC_CLAUDE_MEM_WORKER_PORT=38000
    ```
 
 2. Restart worker:
@@ -464,7 +464,7 @@ If port 37777 is already in use:
 
 3. Verify new port:
    ```bash
-   cat ~/.claude-mem/worker.port
+   cat ~/.magic-claude-mem/worker.port
    ```
 
 ## Next Steps

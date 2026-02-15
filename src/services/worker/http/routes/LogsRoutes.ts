@@ -1,7 +1,7 @@
 /**
  * Logs Routes
  *
- * Handles fetching and clearing log files from ~/.claude-mem/logs/
+ * Handles fetching and clearing log files from ~/.magic-claude-mem/logs/
  */
 
 import type { Request, Response } from 'express';
@@ -14,14 +14,14 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 
 export class LogsRoutes extends BaseRouteHandler {
   private getLogFilePath(): string {
-    const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+    const dataDir = SettingsDefaultsManager.get('MAGIC_CLAUDE_MEM_DATA_DIR');
     const logsDir = join(dataDir, 'logs');
     const date = new Date().toISOString().split('T')[0];
-    return join(logsDir, `claude-mem-${date}.log`);
+    return join(logsDir, `magic-claude-mem-${date}.log`);
   }
 
   private getLogsDir(): string {
-    const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+    const dataDir = SettingsDefaultsManager.get('MAGIC_CLAUDE_MEM_DATA_DIR');
     return join(dataDir, 'logs');
   }
 

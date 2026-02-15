@@ -3,7 +3,7 @@
  *
  * Mode profiles define observation types, concepts, and prompts for different use cases.
  * Default mode is 'code' (software development). Other modes like 'email-investigation'
- * can be selected via CLAUDE_MEM_MODE setting.
+ * can be selected via MAGIC_CLAUDE_MEM_MODE setting.
  */
 
 import { readFileSync, existsSync } from 'fs';

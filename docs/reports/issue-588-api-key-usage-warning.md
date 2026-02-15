@@ -11,7 +11,7 @@
 
 ## Executive Summary
 
-A user with a Claude Max subscription ($100/month) began receiving unexpected "Auto-recharge credits" invoice emails from Anthropic after installing the claude-mem plugin. The plugin discovered an `ANTHROPIC_API_KEY` in a `.env` file in the project root and used it for AI operations (observation compression, summary generation), causing direct API charges that were not anticipated by the user.
+A user with a Claude Max subscription ($100/month) began receiving unexpected "Auto-recharge credits" invoice emails from Anthropic after installing the magic-claude-mem plugin. The plugin discovered an `ANTHROPIC_API_KEY` in a `.env` file in the project root and used it for AI operations (observation compression, summary generation), causing direct API charges that were not anticipated by the user.
 
 **Financial Impact:** The user expected all AI costs to be covered by their Claude Max subscription. Instead, the plugin consumed their Anthropic API credits separately, triggering auto-recharge billing.
 
@@ -32,7 +32,7 @@ A user with a Claude Max subscription ($100/month) began receiving unexpected "A
 
 ### The Discovery Flow
 
-1. User installs claude-mem plugin via marketplace
+1. User installs magic-claude-mem plugin via marketplace
 2. User has an `ANTHROPIC_API_KEY` in project `.env` file (for other purposes)
 3. Plugin worker starts on first Claude Code session
 4. Worker spawns Claude Agent SDK for observation processing
@@ -44,11 +44,11 @@ A user with a Claude Max subscription ($100/month) began receiving unexpected "A
 
 ## Technical Details
 
-### How claude-mem Uses the Claude Agent SDK
+### How magic-claude-mem Uses the Claude Agent SDK
 
 Claude-mem uses `@anthropic-ai/claude-agent-sdk` (version ^0.1.76) for AI-powered operations:
 
-**File:** `/Users/alexnewman/conductor/workspaces/claude-mem/budapest/src/services/worker/SDKAgent.ts`
+**File:** `/Users/alexnewman/conductor/workspaces/magic-claude-mem/budapest/src/services/worker/SDKAgent.ts`
 
 ```typescript
 // Line 26
@@ -87,14 +87,14 @@ The Claude Agent SDK uses a standard discovery mechanism:
 
 ### Worker Service Environment Inheritance
 
-**File:** `/Users/alexnewman/conductor/workspaces/claude-mem/budapest/src/services/worker-service.ts`
+**File:** `/Users/alexnewman/conductor/workspaces/magic-claude-mem/budapest/src/services/worker-service.ts`
 
 ```typescript
 // Line 263 - Worker spawns with full environment
 env: process.env
 ```
 
-**File:** `/Users/alexnewman/conductor/workspaces/claude-mem/budapest/src/services/infrastructure/ProcessManager.ts`
+**File:** `/Users/alexnewman/conductor/workspaces/magic-claude-mem/budapest/src/services/infrastructure/ProcessManager.ts`
 
 ```typescript
 // Line 273 - Process inherits environment
@@ -121,18 +121,18 @@ This means any `ANTHROPIC_API_KEY` present in the parent process environment or 
 
 Claude-mem supports alternative AI providers that DO NOT use the Anthropic API:
 
-**File:** `/Users/alexnewman/conductor/workspaces/claude-mem/budapest/src/services/worker/GeminiAgent.ts`
+**File:** `/Users/alexnewman/conductor/workspaces/magic-claude-mem/budapest/src/services/worker/GeminiAgent.ts`
 
 ```typescript
 // Line 376
-const apiKey = settings.CLAUDE_MEM_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '';
+const apiKey = settings.MAGIC_CLAUDE_MEM_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '';
 ```
 
-**File:** `/Users/alexnewman/conductor/workspaces/claude-mem/budapest/src/services/worker/OpenRouterAgent.ts`
+**File:** `/Users/alexnewman/conductor/workspaces/magic-claude-mem/budapest/src/services/worker/OpenRouterAgent.ts`
 
 ```typescript
 // Line 418
-const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY || '';
+const apiKey = settings.MAGIC_CLAUDE_MEM_OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY || '';
 ```
 
 These providers require explicit configuration and do not auto-discover.
@@ -204,7 +204,7 @@ The SDK is designed for developer use cases where explicit API key configuration
 Display a prominent warning on first plugin activation:
 
 ```
-[claude-mem] IMPORTANT: This plugin uses the Claude Agent SDK for AI operations.
+[magic-claude-mem] IMPORTANT: This plugin uses the Claude Agent SDK for AI operations.
 
 If you have an ANTHROPIC_API_KEY configured, it will be used for:
 - Observation compression
@@ -212,8 +212,8 @@ If you have an ANTHROPIC_API_KEY configured, it will be used for:
 
 This may incur separate API charges beyond your Claude Max subscription.
 
-To avoid charges, configure an alternative provider in ~/.claude-mem/settings.json:
-- Set CLAUDE_MEM_PROVIDER to "gemini" or "openrouter"
+To avoid charges, configure an alternative provider in ~/.magic-claude-mem/settings.json:
+- Set MAGIC_CLAUDE_MEM_PROVIDER to "gemini" or "openrouter"
 - Or ensure no ANTHROPIC_API_KEY is accessible to the plugin
 
 Continue? [Y/n]
@@ -233,7 +233,7 @@ const hasAnthropicKey = !!(
 if (hasAnthropicKey && provider === 'claude') {
   logger.warn('SYSTEM',
     'ANTHROPIC_API_KEY detected. Plugin AI operations will consume API credits. ' +
-    'Configure CLAUDE_MEM_PROVIDER in settings.json to use a free alternative.'
+    'Configure MAGIC_CLAUDE_MEM_PROVIDER in settings.json to use a free alternative.'
   );
 }
 ```
@@ -246,7 +246,7 @@ Change default provider from 'claude' to 'gemini' (free tier available):
 
 ```typescript
 // Line 66 - Change default
-CLAUDE_MEM_PROVIDER: 'gemini',  // Changed from 'claude' - free tier by default
+MAGIC_CLAUDE_MEM_PROVIDER: 'gemini',  // Changed from 'claude' - free tier by default
 ```
 
 ### Medium-Term Solutions (v9.1.0)
@@ -256,10 +256,10 @@ CLAUDE_MEM_PROVIDER: 'gemini',  // Changed from 'claude' - free tier by default
 Require explicit configuration to use Anthropic API:
 
 ```json
-// ~/.claude-mem/settings.json
+// ~/.magic-claude-mem/settings.json
 {
-  "CLAUDE_MEM_PROVIDER": "claude",
-  "CLAUDE_MEM_ANTHROPIC_API_KEY_CONSENT": true  // New required field
+  "MAGIC_CLAUDE_MEM_PROVIDER": "claude",
+  "MAGIC_CLAUDE_MEM_ANTHROPIC_API_KEY_CONSENT": true  // New required field
 }
 ```
 
@@ -268,7 +268,7 @@ Require explicit configuration to use Anthropic API:
 Show estimated token usage before processing:
 
 ```
-[claude-mem] Processing 25 observations
+[magic-claude-mem] Processing 25 observations
 Estimated API usage: ~37,500 tokens (~$0.15)
 Provider: claude (ANTHROPIC_API_KEY)
 ```
@@ -426,8 +426,8 @@ Anthropic API credits for these operations.
 ### For existing users
 
 If you experienced unexpected charges:
-1. Check your provider setting: `~/.claude-mem/settings.json`
-2. Set `CLAUDE_MEM_PROVIDER` to `"gemini"` for free operation
+1. Check your provider setting: `~/.magic-claude-mem/settings.json`
+2. Set `MAGIC_CLAUDE_MEM_PROVIDER` to `"gemini"` for free operation
 3. Or remove/unset `ANTHROPIC_API_KEY` if not needed for other tools
 
 We apologize for any confusion or unexpected charges caused by this behavior.

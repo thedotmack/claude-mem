@@ -7,7 +7,7 @@ description: "Control what gets stored in memory with privacy tags"
 
 ## Overview
 
-Use `<private>` tags to mark content you don't want persisted in claude-mem's observation database. This gives you fine-grained control over what gets remembered across sessions.
+Use `<private>` tags to mark content you don't want persisted in magic-claude-mem's observation database. This gives you fine-grained control over what gets remembered across sessions.
 
 ## How It Works
 
@@ -96,7 +96,7 @@ The `<private>` tag filters content from storage and memory:
 ### What Doesn't Get Filtered
 
 - Session summaries (generated from non-private observations only)
-- Claude's responses (not captured by claude-mem)
+- Claude's responses (not captured by magic-claude-mem)
 
 ## Examples
 
@@ -130,7 +130,7 @@ The personal context helps Claude understand your request without polluting your
 1. **Don't over-tag**: Only use `<private>` for content you genuinely don't want stored
 2. **Context matters**: Claude's understanding of your project comes from observations - excessive private tagging reduces future context quality
 3. **Secrets belong elsewhere**: While `<private>` prevents storage, sensitive data should still use proper secrets management
-4. **Test it works**: Check `~/.claude-mem/silent.log` if you're unsure whether tags are being stripped
+4. **Test it works**: Check `~/.magic-claude-mem/silent.log` if you're unsure whether tags are being stripped
 
 ## Verification
 
@@ -140,10 +140,10 @@ To verify tags are working:
 2. Check the database to ensure private content is not stored:
    ```bash
    # Check user prompts
-   sqlite3 ~/.claude-mem/claude-mem.db "SELECT prompt_text FROM user_prompts ORDER BY created_at_epoch DESC LIMIT 1;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "SELECT prompt_text FROM user_prompts ORDER BY created_at_epoch DESC LIMIT 1;"
 
    # Check observations
-   sqlite3 ~/.claude-mem/claude-mem.db "SELECT narrative FROM observations ORDER BY created_at_epoch DESC LIMIT 1;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "SELECT narrative FROM observations ORDER BY created_at_epoch DESC LIMIT 1;"
    ```
 3. The private content should NOT appear in either user_prompts or observations
 4. The `<private>` tags themselves should also be stripped
@@ -174,7 +174,7 @@ This design ensures that private content never reaches the database, search indi
 ### Tags Not Being Stripped
 
 1. Verify correct syntax: `<private>content</private>`
-2. Check `~/.claude-mem/silent.log` for errors
+2. Check `~/.magic-claude-mem/silent.log` for errors
 3. Ensure worker is running: `npm run worker:status`
 4. Restart worker: `npm run worker:restart`
 
@@ -187,9 +187,9 @@ If content appears partially in observations:
 
 ### Silent Log Shows Errors
 
-If you see errors in `~/.claude-mem/silent.log`:
+If you see errors in `~/.magic-claude-mem/silent.log`:
 ```
 [save-hook] stripMemoryTags received non-string: { type: 'object' }
 ```
 
-This is usually harmless - it indicates defensive type checking is working. However, if you see these frequently, it may indicate a bug. Please report it at https://github.com/doublefx/claude-mem/issues
+This is usually harmless - it indicates defensive type checking is working. However, if you see these frequently, it may indicate a bug. Please report it at https://github.com/doublefx/magic-claude-mem/issues

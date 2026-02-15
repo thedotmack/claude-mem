@@ -1,4 +1,4 @@
-# Progressive Disclosure: Claude-Mem's Context Priming Philosophy
+# Progressive Disclosure: Magic-Claude-Mem's Context Priming Philosophy
 
 ## Core Principle
 **Show what exists and its retrieval cost first. Let the agent decide what to fetch based on relevance and need.**
@@ -43,7 +43,7 @@ Traditional RAG (Retrieval-Augmented Generation) systems fetch everything upfron
 
 ---
 
-## Claude-Mem's Solution: Progressive Disclosure
+## Magic-Claude-Mem's Solution: Progressive Disclosure
 
 ```
 ✅ Progressive Disclosure Approach:
@@ -71,7 +71,7 @@ Traditional RAG (Retrieval-Augmented Generation) systems fetch everything upfron
 
 ---
 
-## How It Works in Claude-Mem
+## How It Works in Magic-Claude-Mem
 
 ### The Index Format
 
@@ -160,7 +160,7 @@ LLMs have finite attention:
 - Context "rot" happens as window fills
 - Later tokens get less attention than earlier ones
 
-**Claude-Mem's approach:**
+**Magic-Claude-Mem's approach:**
 - Start with ~1,000 tokens of index
 - Agent has 99,000 tokens free for task
 - Agent fetches ~200 tokens when needed
@@ -257,7 +257,7 @@ Observations are grouped by:
 The index is useless without retrieval mechanisms:
 
 ```markdown
-*Use claude-mem MCP search to access records with the given ID*
+*Use magic-claude-mem MCP search to access records with the given ID*
 ```
 
 **Available MCP tools:**
@@ -318,7 +318,7 @@ Is my task related to npm? → YES
 
 ## The Three-Layer Workflow
 
-Claude-Mem implements progressive disclosure through a 3-layer workflow pattern:
+Magic-Claude-Mem implements progressive disclosure through a 3-layer workflow pattern:
 
 ### Layer 1: Search (Index)
 
@@ -378,7 +378,7 @@ get_observations({
 ─────────────────────────────────────────────────
 Date: Oct 26, 2025 2:14 PM
 Type: gotcha
-Project: claude-mem
+Project: magic-claude-mem
 
 Narrative:
 Discovered that the default 60-second hook timeout is insufficient
@@ -662,11 +662,11 @@ Progressive disclosure respects the agent's intelligence and autonomy. We provid
 ## Further Reading
 
 - [Context Engineering for AI Agents](context-engineering) - Foundational principles
-- [Claude-Mem Architecture](architecture/overview) - How it all fits together
+- [Magic-Claude-Mem Architecture](architecture/overview) - How it all fits together
 - Cognitive Load Theory (Sweller, 1988)
 - Information Foraging Theory (Pirolli & Card, 1999)
 - Progressive Disclosure (Nielsen Norman Group)
 
 ---
 
-*This philosophy emerged from real-world usage of Claude-Mem across hundreds of coding sessions. The pattern works because it aligns with both human cognition and LLM attention mechanics.*
+*This philosophy emerged from real-world usage of Magic-Claude-Mem across hundreds of coding sessions. The pattern works because it aligns with both human cognition and LLM attention mechanics.*

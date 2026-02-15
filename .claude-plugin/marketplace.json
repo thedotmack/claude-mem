@@ -5,11 +5,11 @@
   },
   "metadata": {
     "description": "Plugins by doublefx",
-    "homepage": "https://github.com/doublefx/claude-mem"
+    "homepage": "https://github.com/doublefx/magic-claude-mem"
   },
   "plugins": [
     {
-      "name": "claude-mem",
+      "name": "magic-claude-mem",
       "source": "./plugin",
       "description": "Persistent memory system for Claude Code - context compression across sessions"
     }

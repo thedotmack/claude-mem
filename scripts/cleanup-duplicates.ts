@@ -22,7 +22,7 @@ import { Database } from 'bun:sqlite';
 import { homedir } from 'os';
 import { join } from 'path';
 
-const DB_PATH = join(homedir(), '.claude-mem', 'claude-mem.db');
+const DB_PATH = join(homedir(), '.magic-claude-mem', 'magic-claude-mem.db');
 
 // Time window modes for duplicate detection
 const TIME_WINDOW_MODES = {
@@ -64,7 +64,7 @@ function main() {
   const batchWindowSeconds = TIME_WINDOW_MODES[windowMode];
 
   console.log('='.repeat(60));
-  console.log('Claude-Mem Duplicate Observation Cleanup');
+  console.log('Magic-Claude-Mem Duplicate Observation Cleanup');
   console.log('='.repeat(60));
   console.log(`Mode: ${dryRun ? 'DRY RUN (use --execute to delete)' : 'EXECUTE'}`);
   console.log(`Database: ${DB_PATH}`);

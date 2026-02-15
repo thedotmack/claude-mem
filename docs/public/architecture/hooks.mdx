@@ -5,7 +5,7 @@ description: "Complete guide to the 5-stage memory agent lifecycle for platform 
 
 # Hook Lifecycle
 
-Claude-Mem implements a **5-stage hook system** that captures development work across Claude Code sessions. This document provides a complete technical reference for developers implementing this pattern on other platforms.
+Magic-Claude-Mem implements a **5-stage hook system** that captures development work across Claude Code sessions. This document provides a complete technical reference for developers implementing this pattern on other platforms.
 
 ## Architecture Overview
 
@@ -387,7 +387,7 @@ promptNumber = db.incrementPromptCounter(sessionDbId)
 
 // 4. Strip privacy tags
 cleanedPrompt = stripMemoryTagsFromPrompt(prompt)
-// Removes <private>...</private> and <claude-mem-context>...</claude-mem-context>
+// Removes <private>...</private> and <magic-claude-mem-context>...</magic-claude-mem-context>
 
 // 5. Skip if fully private
 if (!cleanedPrompt || cleanedPrompt.trim() === '') {
@@ -823,7 +823,7 @@ Never generate your own session IDs. Always use the `session_id` provided by the
 <private>sensitive data</private>
 
 // System-Level Recursion Prevention (auto-injected)
-<claude-mem-context>...</claude-mem-context>
+<magic-claude-mem-context>...</magic-claude-mem-context>
 ```
 
 ### Processing Pipeline

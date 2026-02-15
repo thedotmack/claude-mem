@@ -1422,7 +1422,7 @@ DEBUG (detailed diagnostics):
 
   src/services/worker/http/routes/SettingsRoutes.ts:353 [SETTINGS]
     message: "Invalid URL format"
-    full: logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_SITE_URL, error: error instanceof Error ? error.message : String(error)
+    full: logger.debug('SETTINGS', 'Invalid URL format', { url: settings.MAGIC_CLAUDE_MEM_OPENROUTER_SITE_URL, error: error instanceof Error ? error.message : String(error)
 
   src/services/worker/http/routes/SettingsRoutes.ts:393 [WORKER]
     message: "(message not captured)"

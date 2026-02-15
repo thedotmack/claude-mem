@@ -8,13 +8,13 @@
 **Author**: @Rob-van-B
 **Created**: January 4, 2026
 
-The `formatTool` method unconditionally calls `JSON.parse()` on string inputs without error handling. When tool inputs are raw strings (not JSON), this throws an exception that propagates up the call stack, causing 400 errors for valid observation requests and silently stopping claude-mem from recording tool usage.
+The `formatTool` method unconditionally calls `JSON.parse()` on string inputs without error handling. When tool inputs are raw strings (not JSON), this throws an exception that propagates up the call stack, causing 400 errors for valid observation requests and silently stopping magic-claude-mem from recording tool usage.
 
 ## Root Cause Analysis
 
 ### Verified Issue Location
 
-**File**: `/Users/alexnewman/Scripts/claude-mem/src/utils/logger.ts`
+**File**: `/Users/alexnewman/Scripts/magic-claude-mem/src/utils/logger.ts`
 **Line**: 139
 **Method**: `formatTool`
 

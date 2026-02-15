@@ -1,8 +1,8 @@
-# Plan: Integrate Workflow Agents and Commands into Claude-Mem
+# Plan: Integrate Workflow Agents and Commands into Magic-Claude-Mem
 
 ## Executive Summary
 
-This plan integrates the `/make-plan` and `/do` orchestration workflow from `~/.claude/commands/` into the claude-mem plugin as project-level development tools.
+This plan integrates the `/make-plan` and `/do` orchestration workflow from `~/.claude/commands/` into the magic-claude-mem plugin as project-level development tools.
 
 ## Dependency Analysis
 
@@ -71,7 +71,7 @@ Located in `.claude/`:
 
 ### Documentation References
 - Pattern: `~/.claude/commands/*.md` (source files)
-- Existing example: `.claude/skills/version-bump/SKILL.md` for claude-mem project tools
+- Existing example: `.claude/skills/version-bump/SKILL.md` for magic-claude-mem project tools
 
 ### Verification Checklist
 ```bash
@@ -102,7 +102,7 @@ Create `.claude/commands/CLAUDE.md` documenting the commands directory (followin
 ```markdown
 # Project-Level Commands
 
-This directory contains slash commands **for developing and maintaining the claude-mem project itself**.
+This directory contains slash commands **for developing and maintaining the magic-claude-mem project itself**.
 
 ## Commands in This Directory
 
@@ -173,7 +173,7 @@ git status
 ```
 feat: add /make-plan, /do, and /anti-pattern-czar workflow commands
 
-Add project-level orchestration commands for claude-mem development:
+Add project-level orchestration commands for magic-claude-mem development:
 - /make-plan: Create LLM-friendly implementation plans in phases
 - /do: Execute plans via coordinated subagents
 - /anti-pattern-czar: Detect and fix error handling anti-patterns

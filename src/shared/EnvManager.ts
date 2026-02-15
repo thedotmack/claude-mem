@@ -1,8 +1,8 @@
 /**
- * EnvManager - Centralized environment variable management for claude-mem
+ * EnvManager - Centralized environment variable management for magic-claude-mem
  *
- * Provides isolated credential storage in ~/.claude-mem/.env
- * This ensures claude-mem uses its own configured credentials,
+ * Provides isolated credential storage in ~/.magic-claude-mem/.env
+ * This ensures magic-claude-mem uses its own configured credentials,
  * not random ANTHROPIC_API_KEY values from project .env files.
  *
  * Issue #733: SDK was auto-discovering API keys from user's shell environment,
@@ -14,8 +14,8 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { logger } from '../utils/logger.js';
 
-// Path to claude-mem's centralized .env file
-const DATA_DIR = join(homedir(), '.claude-mem');
+// Path to magic-claude-mem's centralized .env file
+const DATA_DIR = join(homedir(), '.magic-claude-mem');
 export const ENV_FILE_PATH = join(DATA_DIR, '.env');
 
 // Essential system environment variables that subprocesses need to function
@@ -47,14 +47,14 @@ const ESSENTIAL_SYSTEM_VARS = [
   'CLAUDE_CODE_DEBUG_LOGS_DIR',
 ];
 
-// Credential keys that claude-mem manages
+// Credential keys that magic-claude-mem manages
 export const MANAGED_CREDENTIAL_KEYS = [
   'ANTHROPIC_API_KEY',
   'GEMINI_API_KEY',
   'OPENAI_COMPAT_API_KEY',
 ];
 
-export interface ClaudeMemEnv {
+export interface MagicClaudeMemEnv {
   // Credentials (optional - empty means use CLI billing for Claude)
   ANTHROPIC_API_KEY?: string;
   GEMINI_API_KEY?: string;
@@ -99,9 +99,9 @@ function parseEnvFile(content: string): Record<string, string> {
  */
 function serializeEnvFile(env: Record<string, string>): string {
   const lines: string[] = [
-    '# claude-mem credentials',
-    '# This file stores API keys for claude-mem memory agent',
-    '# Edit this file or use claude-mem settings to configure',
+    '# magic-claude-mem credentials',
+    '# This file stores API keys for magic-claude-mem memory agent',
+    '# Edit this file or use magic-claude-mem settings to configure',
     '',
   ];
 
@@ -117,10 +117,10 @@ function serializeEnvFile(env: Record<string, string>): string {
 }
 
 /**
- * Load credentials from ~/.claude-mem/.env
+ * Load credentials from ~/.magic-claude-mem/.env
  * Returns empty object if file doesn't exist (means use CLI billing)
  */
-export function loadClaudeMemEnv(): ClaudeMemEnv {
+export function loadMagicMagicClaudeMemEnv(): MagicClaudeMemEnv {
   if (!existsSync(ENV_FILE_PATH)) {
     return {};
   }
@@ -130,7 +130,7 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
     const parsed = parseEnvFile(content);
 
     // Only return managed credential keys
-    const result: ClaudeMemEnv = {};
+    const result: MagicClaudeMemEnv = {};
     if (parsed.ANTHROPIC_API_KEY) result.ANTHROPIC_API_KEY = parsed.ANTHROPIC_API_KEY;
     if (parsed.GEMINI_API_KEY) result.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
     if (parsed.OPENAI_COMPAT_API_KEY) result.OPENAI_COMPAT_API_KEY = parsed.OPENAI_COMPAT_API_KEY;
@@ -143,9 +143,9 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
 }
 
 /**
- * Save credentials to ~/.claude-mem/.env
+ * Save credentials to ~/.magic-claude-mem/.env
  */
-export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
+export function saveMagicMagicClaudeMemEnv(env: MagicClaudeMemEnv): void {
   try {
     // Ensure directory exists
     if (!existsSync(DATA_DIR)) {
@@ -195,7 +195,7 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
  *
  * This is the key function that prevents Issue #733:
  * - Includes only essential system variables (PATH, HOME, etc.)
- * - Adds credentials ONLY from claude-mem's .env file
+ * - Adds credentials ONLY from magic-claude-mem's .env file
  * - Does NOT inherit random ANTHROPIC_API_KEY from user's shell
  *
  * @param includeCredentials - Whether to include API keys (default: true)
@@ -214,11 +214,11 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
   // 2. Add SDK entrypoint marker
   isolatedEnv.CLAUDE_CODE_ENTRYPOINT = 'sdk-ts';
 
-  // 3. Add credentials from claude-mem's .env file (NOT from process.env)
+  // 3. Add credentials from magic-claude-mem's .env file (NOT from process.env)
   if (includeCredentials) {
-    const credentials = loadClaudeMemEnv();
+    const credentials = loadMagicMagicClaudeMemEnv();
 
-    // Only add ANTHROPIC_API_KEY if explicitly configured in claude-mem
+    // Only add ANTHROPIC_API_KEY if explicitly configured in magic-claude-mem
     // If not configured, CLI billing will be used (via pathToClaudeCodeExecutable)
     if (credentials.ANTHROPIC_API_KEY) {
       isolatedEnv.ANTHROPIC_API_KEY = credentials.ANTHROPIC_API_KEY;
@@ -236,30 +236,30 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
 }
 
 /**
- * Get a specific credential from claude-mem's .env
+ * Get a specific credential from magic-claude-mem's .env
  * Returns undefined if not set (which means use default/CLI billing)
  */
-export function getCredential(key: keyof ClaudeMemEnv): string | undefined {
-  const env = loadClaudeMemEnv();
+export function getCredential(key: keyof MagicClaudeMemEnv): string | undefined {
+  const env = loadMagicMagicClaudeMemEnv();
   return env[key];
 }
 
 /**
- * Set a specific credential in claude-mem's .env
+ * Set a specific credential in magic-claude-mem's .env
  * Pass empty string to remove the credential
  */
-export function setCredential(key: keyof ClaudeMemEnv, value: string): void {
-  const env = loadClaudeMemEnv();
+export function setCredential(key: keyof MagicClaudeMemEnv, value: string): void {
+  const env = loadMagicMagicClaudeMemEnv();
   env[key] = value || undefined;
-  saveClaudeMemEnv(env);
+  saveMagicMagicClaudeMemEnv(env);
 }
 
 /**
- * Check if claude-mem has an Anthropic API key configured
+ * Check if magic-claude-mem has an Anthropic API key configured
  * If false, it means CLI billing should be used
  */
 export function hasAnthropicApiKey(): boolean {
-  const env = loadClaudeMemEnv();
+  const env = loadMagicMagicClaudeMemEnv();
   return !!env.ANTHROPIC_API_KEY;
 }
 
@@ -268,7 +268,7 @@ export function hasAnthropicApiKey(): boolean {
  */
 export function getAuthMethodDescription(): string {
   if (hasAnthropicApiKey()) {
-    return 'API key (from ~/.claude-mem/.env)';
+    return 'API key (from ~/.magic-claude-mem/.env)';
   }
   return 'Claude Code CLI (subscription billing)';
 }

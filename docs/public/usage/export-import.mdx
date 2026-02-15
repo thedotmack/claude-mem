@@ -1,11 +1,11 @@
 ---
 title: "Memory Export/Import"
-description: "Share knowledge across claude-mem installations with duplicate prevention"
+description: "Share knowledge across magic-claude-mem installations with duplicate prevention"
 ---
 
 # Memory Export/Import Scripts
 
-Share your claude-mem knowledge with other users! These scripts allow you to export specific memories (observations, sessions, summaries, and prompts) and import them into another claude-mem installation.
+Share your magic-claude-mem knowledge with other users! These scripts allow you to export specific memories (observations, sessions, summaries, and prompts) and import them into another magic-claude-mem installation.
 
 ## Use Cases
 
@@ -202,8 +202,8 @@ If you run the import again on the same file, duplicates are automatically skipp
 ### Export by Project
 
 ```bash
-# Export only claude-mem project memories
-npx tsx scripts/export-memories.ts "bugfix" bugfixes.json --project=claude-mem
+# Export only magic-claude-mem project memories
+npx tsx scripts/export-memories.ts "bugfix" bugfixes.json --project=magic-claude-mem
 
 # Export all memories for a specific project
 npx tsx scripts/export-memories.ts "" all-project.json --project=my-app
@@ -246,10 +246,10 @@ npx tsx scripts/import-memories.ts linux.json
 ### Database Not Found
 
 ```
-❌ Database not found at: /Users/you/.claude-mem/claude-mem.db
+❌ Database not found at: /Users/you/.magic-claude-mem/magic-claude-mem.db
 ```
 
-**Solution:** Make sure claude-mem is installed and has been run at least once.
+**Solution:** Make sure magic-claude-mem is installed and has been run at least once.
 
 ### Import File Not Found
 

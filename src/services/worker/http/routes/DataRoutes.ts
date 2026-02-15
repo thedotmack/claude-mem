@@ -300,7 +300,7 @@ export class DataRoutes extends BaseRouteHandler {
     const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
 
     // Get database file size and path
-    const dbPath = path.join(homedir(), '.claude-mem', 'claude-mem.db');
+    const dbPath = path.join(homedir(), '.magic-claude-mem', 'magic-claude-mem.db');
     let dbSize = 0;
     if (existsSync(dbPath)) {
       dbSize = statSync(dbPath).size;

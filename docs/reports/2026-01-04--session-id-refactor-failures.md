@@ -226,7 +226,7 @@ The implementation's design decision is security-critical and intentional. The t
 
 ## 7. Appendix: Test File Location and Structure
 
-**File:** `/Users/alexnewman/Scripts/claude-mem/tests/session_id_refactor.test.ts`
+**File:** `/Users/alexnewman/Scripts/magic-claude-mem/tests/session_id_refactor.test.ts`
 
 **Test Suites:**
 - `Database Migration 17 - Column Renaming` (7 tests, all passing)
@@ -240,4 +240,4 @@ The implementation's design decision is security-critical and intentional. The t
 - `getAllRecentUserPrompts - Joined Query` (1 test, passing)
 - `Resume Functionality - Memory Session ID Usage` (2 tests, 1 failing)
 
-**Implementation File:** `/Users/alexnewman/Scripts/claude-mem/src/services/sqlite/SessionStore.ts`
+**Implementation File:** `/Users/alexnewman/Scripts/magic-claude-mem/src/services/sqlite/SessionStore.ts`

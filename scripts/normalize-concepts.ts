@@ -21,7 +21,7 @@ import { join } from 'path';
 const dbFlagIndex = process.argv.indexOf('--db');
 const DB_PATH = dbFlagIndex !== -1 && process.argv[dbFlagIndex + 1]
   ? process.argv[dbFlagIndex + 1]
-  : join(homedir(), '.claude-mem', 'claude-mem.db');
+  : join(homedir(), '.magic-claude-mem', 'magic-claude-mem.db');
 
 // Valid concept IDs from code.json observation_concepts
 const VALID_CONCEPTS = new Set([
@@ -65,7 +65,7 @@ function main(): void {
   const dryRun = !process.argv.includes('--execute');
 
   console.log('='.repeat(60));
-  console.log('Claude-Mem Concept Normalization');
+  console.log('Magic-Claude-Mem Concept Normalization');
   console.log('='.repeat(60));
   console.log(`Mode: ${dryRun ? 'DRY RUN (use --execute to apply)' : 'EXECUTE'}`);
   console.log(`Database: ${DB_PATH}`);

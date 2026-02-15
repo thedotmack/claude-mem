@@ -1,7 +1,7 @@
 # Issue #596: ProcessTransport is not ready for writing - Generator aborted on every observation
 
 **Date:** 2026-01-07
-**Issue:** [#596](https://github.com/doublefx/claude-mem/issues/596)
+**Issue:** [#596](https://github.com/doublefx/magic-claude-mem/issues/596)
 **Reported by:** soho-dev-account
 **Severity:** Critical
 **Status:** Under Investigation
@@ -11,7 +11,7 @@
 
 ## 1. Executive Summary
 
-After a clean install of claude-mem v9.0.0, the SDK agent aborts every observation with a "ProcessTransport is not ready for writing" error. The worker starts successfully and the HTTP API responds, but no observations are stored to the database. The error originates from the Claude Agent SDK's internal transport layer, specifically in the bundled `worker-service.cjs` at line 1119.
+After a clean install of magic-claude-mem v9.0.0, the SDK agent aborts every observation with a "ProcessTransport is not ready for writing" error. The worker starts successfully and the HTTP API responds, but no observations are stored to the database. The error originates from the Claude Agent SDK's internal transport layer, specifically in the bundled `worker-service.cjs` at line 1119.
 
 **Key Finding:** This is a race condition or timing issue in the Claude Agent SDK's ProcessTransport initialization. The SDK attempts to write messages to its subprocess transport before the transport's ready state is established.
 
@@ -55,7 +55,7 @@ The gap between "Creating message generator" and "Generator aborted" indicates t
 - **Bun:** 1.3.5
 - **Node:** v22.21.1
 - **Claude Code:** 2.0.75
-- **claude-mem:** v9.0.0 (clean install)
+- **magic-claude-mem:** v9.0.0 (clean install)
 
 ---
 
@@ -65,7 +65,7 @@ The gap between "Creating message generator" and "Generator aborted" indicates t
 
 The `ProcessTransport` class is part of the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`), bundled into `worker-service.cjs` during the build process. This transport manages bidirectional IPC communication between:
 
-1. **Parent process:** The claude-mem worker service
+1. **Parent process:** The magic-claude-mem worker service
 2. **Child process:** Claude Code subprocess spawned for SDK queries
 
 The transport uses stdin/stdout pipes to exchange JSON messages with the Claude Code process.
@@ -178,11 +178,11 @@ After this failure:
 
 **Confidence: 85%**
 
-The Claude Agent SDK version (`^0.1.76`) may have introduced changes to ProcessTransport initialization timing that conflict with how claude-mem invokes `query()`.
+The Claude Agent SDK version (`^0.1.76`) may have introduced changes to ProcessTransport initialization timing that conflict with how magic-claude-mem invokes `query()`.
 
 Evidence:
 - v9.0.0 works for some users but fails for others
-- Error occurs in SDK internals, not claude-mem code
+- Error occurs in SDK internals, not magic-claude-mem code
 - Similar timing issues seen in previous SDK versions
 
 ### 5.2 Alternative Hypothesis: Subprocess Spawn Race
@@ -203,7 +203,7 @@ Evidence:
 Bun's process spawning may handle stdin/stdout pipes differently than Node.js, causing transport initialization to fail.
 
 Evidence:
-- claude-mem runs under Bun
+- magic-claude-mem runs under Bun
 - Agent SDK may not be tested extensively with Bun runtime
 - Bun 1.3.5 is relatively new
 
@@ -397,7 +397,7 @@ This should be treated as a P0 (highest priority) issue because:
 
 ```bash
 # Check worker logs
-tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
+tail -f ~/.magic-claude-mem/logs/worker-$(date +%Y-%m-%d).log
 
 # Check pending queue
 npm run queue

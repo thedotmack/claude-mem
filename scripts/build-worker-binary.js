@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Build Windows executable for claude-mem worker service
+ * Build Windows executable for magic-claude-mem worker service
  * Uses Bun's compile feature to create a standalone exe
  */
 

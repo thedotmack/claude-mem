@@ -1,11 +1,11 @@
 ---
 title: "Cursor + Gemini Setup"
-description: "Use Claude-Mem in Cursor with Google's free Gemini API"
+description: "Use Magic-Claude-Mem in Cursor with Google's free Gemini API"
 ---
 
 # Cursor + Gemini Setup
 
-This guide walks you through setting up Claude-Mem in Cursor using Google's Gemini API. Gemini offers a generous free tier that handles typical individual usage.
+This guide walks you through setting up Magic-Claude-Mem in Cursor using Google's Gemini API. Gemini offers a generous free tier that handles typical individual usage.
 
 <Info>
 **Free Tier:** 1,500 requests per day with `gemini-2.5-flash-lite`. No credit card required.
@@ -24,12 +24,12 @@ This guide walks you through setting up Claude-Mem in Cursor using Google's Gemi
 **Higher rate limits:** Enable billing on your Google Cloud project to unlock 4,000 RPM (vs 10 RPM without billing). You won't be charged unless you exceed the free quota.
 </Tip>
 
-## Step 2: Clone and Build Claude-Mem
+## Step 2: Clone and Build Magic-Claude-Mem
 
 ```bash
 # Clone the repository
-git clone https://github.com/doublefx/claude-mem.git
-cd claude-mem
+git clone https://github.com/doublefx/magic-claude-mem.git
+cd magic-claude-mem
 
 # Install dependencies
 npm install
@@ -61,13 +61,13 @@ Create the settings file manually:
 
 ```bash
 # Create settings directory
-mkdir -p ~/.claude-mem
+mkdir -p ~/.magic-claude-mem
 
 # Create settings file with Gemini configuration
-cat > ~/.claude-mem/settings.json << 'EOF'
+cat > ~/.magic-claude-mem/settings.json << 'EOF'
 {
-  "CLAUDE_MEM_PROVIDER": "gemini",
-  "CLAUDE_MEM_GEMINI_API_KEY": "YOUR_GEMINI_API_KEY"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "gemini",
+  "MAGIC_CLAUDE_MEM_GEMINI_API_KEY": "YOUR_GEMINI_API_KEY"
 }
 EOF
 ```
@@ -109,9 +109,9 @@ To change the model, update your settings:
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "gemini",
-  "CLAUDE_MEM_GEMINI_API_KEY": "your-key",
-  "CLAUDE_MEM_GEMINI_MODEL": "gemini-2.5-flash"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "gemini",
+  "MAGIC_CLAUDE_MEM_GEMINI_API_KEY": "your-key",
+  "MAGIC_CLAUDE_MEM_GEMINI_MODEL": "gemini-2.5-flash"
 }
 ```
 
@@ -127,7 +127,7 @@ Claude-mem automatically handles rate limiting for free tier usage:
 
 ```json
 {
-  "CLAUDE_MEM_GEMINI_BILLING_ENABLED": true
+  "MAGIC_CLAUDE_MEM_GEMINI_BILLING_ENABLED": true
 }
 ```
 
@@ -140,14 +140,14 @@ You'll still use the free quota but with much higher rate limits.
 Ensure your settings file exists and has the correct format:
 
 ```bash
-cat ~/.claude-mem/settings.json
+cat ~/.magic-claude-mem/settings.json
 ```
 
 Should output something like:
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "gemini",
-  "CLAUDE_MEM_GEMINI_API_KEY": "AIza..."
+  "MAGIC_CLAUDE_MEM_PROVIDER": "gemini",
+  "MAGIC_CLAUDE_MEM_GEMINI_API_KEY": "AIza..."
 }
 ```
 
@@ -180,7 +180,7 @@ You can switch between Gemini, OpenAI-compatible, and Claude SDK at any time by 
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "openai-compat"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "openai-compat"
 }
 ```
 

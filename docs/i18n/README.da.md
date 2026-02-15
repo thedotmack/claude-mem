@@ -3,11 +3,11 @@
 ---
 <h1 align="center">
   <br>
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-dark-mode.webp">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp" alt="Magic-Claude-Mem" width="400">
     </picture>
   </a>
   <br>
@@ -64,9 +64,9 @@
 <p align="center">
   <a href="https://trendshift.io/repositories/15496" target="_blank">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/claude-mem | Trendshift" width="250" height="55"/>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/magic-claude-mem | Trendshift" width="250" height="55"/>
     </picture>
   </a>
 </p>
@@ -74,9 +74,9 @@
 <br>
 
 <p align="center">
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/cm-preview.gif" alt="Magic-Claude-Mem Preview" width="800">
     </picture>
   </a>
 </p>
@@ -92,7 +92,7 @@
 </p>
 
 <p align="center">
-  Claude-Mem bevarer problemfrit kontekst på tværs af sessioner ved automatisk at fange observationer af værktøjsbrug, generere semantiske resuméer og gøre dem tilgængelige for fremtidige sessioner. Dette gør det muligt for Claude at opretholde kontinuitet i viden om projekter, selv efter sessioner afsluttes eller genopretter forbindelse.
+  Magic-Claude-Mem bevarer problemfrit kontekst på tværs af sessioner ved automatisk at fange observationer af værktøjsbrug, generere semantiske resuméer og gøre dem tilgængelige for fremtidige sessioner. Dette gør det muligt for Claude at opretholde kontinuitet i viden om projekter, selv efter sessioner afsluttes eller genopretter forbindelse.
 </p>
 
 ---
@@ -102,9 +102,9 @@
 Start en ny Claude Code-session i terminalen og indtast følgende kommandoer:
 
 ```
-> /plugin marketplace add doublefx/claude-mem
+> /plugin marketplace add doublefx/magic-claude-mem
 
-> /plugin install claude-mem
+> /plugin install magic-claude-mem
 ```
 
 Genstart Claude Code. Kontekst fra tidligere sessioner vil automatisk vises i nye sessioner.
@@ -129,30 +129,30 @@ Genstart Claude Code. Kontekst fra tidligere sessioner vil automatisk vises i ny
 
 ### Kom Godt I Gang
 
-- **[Installationsguide](https://docs.claude-mem.ai/installation)** - Hurtig start & avanceret installation
-- **[Brugervejledning](https://docs.claude-mem.ai/usage/getting-started)** - Sådan fungerer Claude-Mem automatisk
-- **[Søgeværktøjer](https://docs.claude-mem.ai/usage/search-tools)** - Forespørg din projekthistorik med naturligt sprog
+- **[Installationsguide](https://docs.magic-claude-mem.ai/installation)** - Hurtig start & avanceret installation
+- **[Brugervejledning](https://docs.magic-claude-mem.ai/usage/getting-started)** - Sådan fungerer Magic-Claude-Mem automatisk
+- **[Søgeværktøjer](https://docs.magic-claude-mem.ai/usage/search-tools)** - Forespørg din projekthistorik med naturligt sprog
 
 ### Bedste Praksis
 
-- **[Kontekst-engineering](https://docs.claude-mem.ai/context-engineering)** - AI-agent kontekstoptimeringsprincipper
-- **[Progressiv Afsløring](https://docs.claude-mem.ai/progressive-disclosure)** - Filosofien bag Claude-Mems kontekst-priming-strategi
+- **[Kontekst-engineering](https://docs.magic-claude-mem.ai/context-engineering)** - AI-agent kontekstoptimeringsprincipper
+- **[Progressiv Afsløring](https://docs.magic-claude-mem.ai/progressive-disclosure)** - Filosofien bag Magic-Claude-Mems kontekst-priming-strategi
 
 ### Arkitektur
 
-- **[Oversigt](https://docs.claude-mem.ai/architecture/overview)** - Systemkomponenter & dataflow
-- **[Arkitekturudvikling](https://docs.claude-mem.ai/architecture-evolution)** - Rejsen fra v3 til v5
-- **[Hooks-arkitektur](https://docs.claude-mem.ai/hooks-architecture)** - Hvordan Claude-Mem bruger livscyklus-hooks
-- **[Hooks-reference](https://docs.claude-mem.ai/architecture/hooks)** - 7 hook-scripts forklaret
-- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & Node.js-administration
-- **[Database](https://docs.claude-mem.ai/architecture/database)** - SQLite-skema & FTS5-søgning
-- **[Søgearkitektur](https://docs.claude-mem.ai/architecture/search-architecture)** - Hybrid søgning med Chroma vektordatabase
+- **[Oversigt](https://docs.magic-claude-mem.ai/architecture/overview)** - Systemkomponenter & dataflow
+- **[Arkitekturudvikling](https://docs.magic-claude-mem.ai/architecture-evolution)** - Rejsen fra v3 til v5
+- **[Hooks-arkitektur](https://docs.magic-claude-mem.ai/hooks-architecture)** - Hvordan Magic-Claude-Mem bruger livscyklus-hooks
+- **[Hooks-reference](https://docs.magic-claude-mem.ai/architecture/hooks)** - 7 hook-scripts forklaret
+- **[Worker Service](https://docs.magic-claude-mem.ai/architecture/worker-service)** - HTTP API & Node.js-administration
+- **[Database](https://docs.magic-claude-mem.ai/architecture/database)** - SQLite-skema & FTS5-søgning
+- **[Søgearkitektur](https://docs.magic-claude-mem.ai/architecture/search-architecture)** - Hybrid søgning med Chroma vektordatabase
 
 ### Konfiguration & Udvikling
 
-- **[Konfiguration](https://docs.claude-mem.ai/configuration)** - Miljøvariabler & indstillinger
-- **[Udvikling](https://docs.claude-mem.ai/development)** - Bygning, testning, bidrag
-- **[Fejlfinding](https://docs.claude-mem.ai/troubleshooting)** - Almindelige problemer & løsninger
+- **[Konfiguration](https://docs.magic-claude-mem.ai/configuration)** - Miljøvariabler & indstillinger
+- **[Udvikling](https://docs.magic-claude-mem.ai/development)** - Bygning, testning, bidrag
+- **[Fejlfinding](https://docs.magic-claude-mem.ai/troubleshooting)** - Almindelige problemer & løsninger
 
 ---
 
@@ -167,13 +167,13 @@ Genstart Claude Code. Kontekst fra tidligere sessioner vil automatisk vises i ny
 5. **mem-search-færdighed** - Naturlige sprogforespørgsler med progressiv afsløring
 6. **Chroma Vector Database** - Hybrid semantisk + søgeordssøgning for intelligent konteksthentning
 
-Se [Arkitekturoversigt](https://docs.claude-mem.ai/architecture/overview) for detaljer.
+Se [Arkitekturoversigt](https://docs.magic-claude-mem.ai/architecture/overview) for detaljer.
 
 ---
 
 ## mem-search-færdighed
 
-Claude-Mem leverer intelligent søgning gennem mem-search-færdigheden, der automatisk aktiveres, når du spørger om tidligere arbejde:
+Magic-Claude-Mem leverer intelligent søgning gennem mem-search-færdigheden, der automatisk aktiveres, når du spørger om tidligere arbejde:
 
 **Sådan Virker Det:**
 - Spørg bare naturligt: *"Hvad lavede vi sidste session?"* eller *"Har vi løst denne fejl før?"*
@@ -202,7 +202,7 @@ Claude-Mem leverer intelligent søgning gennem mem-search-færdigheden, der auto
 "Hvad skete der, da vi tilføjede viewer UI?"
 ```
 
-Se [Søgeværktøjsguide](https://docs.claude-mem.ai/usage/search-tools) for detaljerede eksempler.
+Se [Søgeværktøjsguide](https://docs.magic-claude-mem.ai/usage/search-tools) for detaljerede eksempler.
 
 ---
 
@@ -217,15 +217,15 @@ Se [Søgeværktøjsguide](https://docs.claude-mem.ai/usage/search-tools) for det
 
 ## Konfiguration
 
-Indstillinger administreres i `~/.claude-mem/settings.json` (auto-oprettet med standardindstillinger ved første kørsel). Konfigurer AI-model, worker-port, datakatalog, log-niveau og indstillinger for kontekstindsprøjtning.
+Indstillinger administreres i `~/.magic-claude-mem/settings.json` (auto-oprettet med standardindstillinger ved første kørsel). Konfigurer AI-model, worker-port, datakatalog, log-niveau og indstillinger for kontekstindsprøjtning.
 
-Se **[Konfigurationsguide](https://docs.claude-mem.ai/configuration)** for alle tilgængelige indstillinger og eksempler.
+Se **[Konfigurationsguide](https://docs.magic-claude-mem.ai/configuration)** for alle tilgængelige indstillinger og eksempler.
 
 ---
 
 ## Udvikling
 
-Se **[Udviklingsguide](https://docs.claude-mem.ai/development)** for bygningsinstruktioner, testning og bidragsworkflow.
+Se **[Udviklingsguide](https://docs.magic-claude-mem.ai/development)** for bygningsinstruktioner, testning og bidragsworkflow.
 
 ---
 
@@ -233,7 +233,7 @@ Se **[Udviklingsguide](https://docs.claude-mem.ai/development)** for bygningsins
 
 Hvis du oplever problemer, beskriv problemet til Claude, og troubleshoot-færdigheden vil automatisk diagnosticere og levere rettelser.
 
-Se **[Fejlfindingsguide](https://docs.claude-mem.ai/troubleshooting)** for almindelige problemer og løsninger.
+Se **[Fejlfindingsguide](https://docs.magic-claude-mem.ai/troubleshooting)** for almindelige problemer og løsninger.
 
 ---
 
@@ -256,7 +256,7 @@ Bidrag er velkomne! Venligst:
 4. Opdater dokumentation
 5. Indsend en Pull Request
 
-Se [Udviklingsguide](https://docs.claude-mem.ai/development) for bidragsworkflow.
+Se [Udviklingsguide](https://docs.magic-claude-mem.ai/development) for bidragsworkflow.
 
 ---
 
@@ -264,7 +264,7 @@ Se [Udviklingsguide](https://docs.claude-mem.ai/development) for bidragsworkflow
 
 Dette projekt er licenseret under **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-Copyright (C) 2025 Alex Newman (@doublefx). Alle rettigheder forbeholdes.
+Copyright (C) 2026 Frederic Thomas (@doublefx). Alle rettigheder forbeholdes.
 
 Se [LICENSE](LICENSE)-filen for fulde detaljer.
 
@@ -280,9 +280,9 @@ Se [LICENSE](LICENSE)-filen for fulde detaljer.
 ## Support
 
 - **Dokumentation**: [docs/](docs/)
-- **Issues**: [GitHub Issues](https://github.com/doublefx/claude-mem/issues)
-- **Repository**: [github.com/doublefx/claude-mem](https://github.com/doublefx/claude-mem)
-- **Forfatter**: Alex Newman ([@doublefx](https://github.com/doublefx))
+- **Issues**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
+- **Repository**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
+- **Forfatter**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
 
 ---
 

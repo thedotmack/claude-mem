@@ -1,6 +1,6 @@
 ---
 title: "Development"
-description: "Build from source, run tests, and contribute to Claude-Mem"
+description: "Build from source, run tests, and contribute to Magic-Claude-Mem"
 ---
 
 # Development Guide
@@ -17,8 +17,8 @@ description: "Build from source, run tests, and contribute to Claude-Mem"
 
 ```bash
 # Clone repository
-git clone https://github.com/doublefx/claude-mem.git
-cd claude-mem
+git clone https://github.com/doublefx/magic-claude-mem.git
+cd magic-claude-mem
 
 # Install dependencies
 npm install
@@ -320,7 +320,7 @@ createObservation(obs: Observation) {
 
 ```bash
 # Backup database first!
-cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.backup
+cp ~/.magic-claude-mem/magic-claude-mem.db ~/.magic-claude-mem/magic-claude-mem.db.backup
 
 # Run tests
 npm test
@@ -419,7 +419,7 @@ When developing new features:
 
 3. **Check database state**:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "SELECT * FROM your_table;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "SELECT * FROM your_table;"
    ```
 
 4. **Monitor worker logs**:
@@ -443,7 +443,7 @@ npm run worker:status
 curl http://localhost:37777/api/pending-queue
 
 # Database integrity
-sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "PRAGMA integrity_check;"
 ```
 
 **Hook Testing**:
@@ -458,7 +458,7 @@ echo '{"session_id":"test-123","cwd":"'$(pwd)'","prompt":"test"}' | node plugin/
 **Data Verification**:
 ```bash
 # Check recent observations
-sqlite3 ~/.claude-mem/claude-mem.db "
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
   SELECT id, tool_name, created_at
   FROM observations
   ORDER BY created_at_epoch DESC
@@ -466,7 +466,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 "
 
 # Check summaries
-sqlite3 ~/.claude-mem/claude-mem.db "
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
   SELECT id, request, completed
   FROM session_summaries
   ORDER BY created_at_epoch DESC
@@ -481,7 +481,7 @@ For manual recovery features specifically:
 1. **Simulate stuck messages**:
    ```bash
    # Manually create stuck message (for testing only)
-   sqlite3 ~/.claude-mem/claude-mem.db "
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
      UPDATE pending_messages
      SET status = 'processing',
          started_processing_at_epoch = strftime('%s', 'now', '-10 minutes') * 1000
@@ -573,7 +573,7 @@ export async function createObservation(
 ### Enable Debug Logging
 
 ```bash
-export DEBUG=claude-mem:*
+export DEBUG=magic-claude-mem:*
 npm run worker:restart
 npm run worker:logs
 ```
@@ -581,7 +581,7 @@ npm run worker:logs
 ### Inspect Database
 
 ```bash
-sqlite3 ~/.claude-mem/claude-mem.db
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db
 
 # View schema
 .schema observations
@@ -595,7 +595,7 @@ SELECT * FROM observations LIMIT 10;
 Use correlation IDs to trace observations through the pipeline:
 
 ```bash
-sqlite3 ~/.claude-mem/claude-mem.db
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db
 SELECT correlation_id, tool_name, created_at
 FROM observations
 WHERE session_id = 'YOUR_SESSION_ID'
@@ -750,7 +750,7 @@ rm -rf plugin/scripts/*.js plugin/scripts/*.cjs
 
 1. Check database:
    ```bash
-   rm ~/.claude-mem/claude-mem.db
+   rm ~/.magic-claude-mem/magic-claude-mem.db
    npm test
    ```
 
@@ -778,12 +778,12 @@ rm -rf plugin/scripts/*.js plugin/scripts/*.cjs
 
 3. Try custom port:
    ```bash
-   export CLAUDE_MEM_WORKER_PORT=38000
+   export MAGIC_CLAUDE_MEM_WORKER_PORT=38000
    npm run worker:start
    ```
 
 ## Next Steps
 
 - [Architecture Overview](architecture/overview) - Understand the system
-- [Configuration](configuration) - Customize Claude-Mem
+- [Configuration](configuration) - Customize Magic-Claude-Mem
 - [Troubleshooting](troubleshooting) - Common issues

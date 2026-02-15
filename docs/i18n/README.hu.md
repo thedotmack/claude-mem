@@ -3,11 +3,11 @@
 ---
 <h1 align="center">
   <br>
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-dark-mode.webp">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp" alt="Magic-Claude-Mem" width="400">
     </picture>
   </a>
   <br>
@@ -64,9 +64,9 @@
 <p align="center">
   <a href="https://trendshift.io/repositories/15496" target="_blank">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/claude-mem | Trendshift" width="250" height="55"/>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/magic-claude-mem | Trendshift" width="250" height="55"/>
     </picture>
   </a>
 </p>
@@ -74,9 +74,9 @@
 <br>
 
 <p align="center">
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/cm-preview.gif" alt="Magic-Claude-Mem Preview" width="800">
     </picture>
   </a>
 </p>
@@ -92,7 +92,7 @@
 </p>
 
 <p align="center">
-  A Claude-Mem zökkenőmentesen megőrzi a kontextust munkamenetek között azáltal, hogy automatikusan rögzíti az eszközhasználati megfigyeléseket, szemantikus összefoglalókat generál, és elérhetővé teszi azokat a jövőbeli munkamenetekben. Ez lehetővé teszi Claude számára, hogy fenntartsa a projektekkel kapcsolatos tudás folytonosságát még a munkamenetek befejezése vagy újracsatlakozása után is.
+  A Magic-Claude-Mem zökkenőmentesen megőrzi a kontextust munkamenetek között azáltal, hogy automatikusan rögzíti az eszközhasználati megfigyeléseket, szemantikus összefoglalókat generál, és elérhetővé teszi azokat a jövőbeli munkamenetekben. Ez lehetővé teszi Claude számára, hogy fenntartsa a projektekkel kapcsolatos tudás folytonosságát még a munkamenetek befejezése vagy újracsatlakozása után is.
 </p>
 
 ---
@@ -102,9 +102,9 @@
 Indítson el egy új Claude Code munkamenetet a terminálban, és írja be a következő parancsokat:
 
 ```
-> /plugin marketplace add doublefx/claude-mem
+> /plugin marketplace add doublefx/magic-claude-mem
 
-> /plugin install claude-mem
+> /plugin install magic-claude-mem
 ```
 
 Indítsa újra a Claude Code-ot. A korábbi munkamenetek kontextusa automatikusan megjelenik az új munkamenetekben.
@@ -129,30 +129,30 @@ Indítsa újra a Claude Code-ot. A korábbi munkamenetek kontextusa automatikusa
 
 ### Első lépések
 
-- **[Telepítési útmutató](https://docs.claude-mem.ai/installation)** - Gyors indítás és haladó telepítés
-- **[Használati útmutató](https://docs.claude-mem.ai/usage/getting-started)** - Hogyan működik automatikusan a Claude-Mem
-- **[Keresési eszközök](https://docs.claude-mem.ai/usage/search-tools)** - Projekt előzmények lekérdezése természetes nyelvvel
+- **[Telepítési útmutató](https://docs.magic-claude-mem.ai/installation)** - Gyors indítás és haladó telepítés
+- **[Használati útmutató](https://docs.magic-claude-mem.ai/usage/getting-started)** - Hogyan működik automatikusan a Magic-Claude-Mem
+- **[Keresési eszközök](https://docs.magic-claude-mem.ai/usage/search-tools)** - Projekt előzmények lekérdezése természetes nyelvvel
 
 ### Bevált gyakorlatok
 
-- **[Kontextus tervezés](https://docs.claude-mem.ai/context-engineering)** - AI ügynök kontextus optimalizálási elvek
-- **[Progresszív felfedés](https://docs.claude-mem.ai/progressive-disclosure)** - A Claude-Mem kontextus előkészítési stratégiájának filozófiája
+- **[Kontextus tervezés](https://docs.magic-claude-mem.ai/context-engineering)** - AI ügynök kontextus optimalizálási elvek
+- **[Progresszív felfedés](https://docs.magic-claude-mem.ai/progressive-disclosure)** - A Magic-Claude-Mem kontextus előkészítési stratégiájának filozófiája
 
 ### Architektúra
 
-- **[Áttekintés](https://docs.claude-mem.ai/architecture/overview)** - Rendszerkomponensek és adatfolyam
-- **[Architektúra fejlődés](https://docs.claude-mem.ai/architecture-evolution)** - Az út a v3-tól a v5-ig
-- **[Hooks architektúra](https://docs.claude-mem.ai/hooks-architecture)** - Hogyan használja a Claude-Mem az életciklus hookokat
-- **[Hooks referencia](https://docs.claude-mem.ai/architecture/hooks)** - 7 hook szkript magyarázata
-- **[Worker szolgáltatás](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API és Node.js kezelés
-- **[Adatbázis](https://docs.claude-mem.ai/architecture/database)** - SQLite séma és FTS5 keresés
-- **[Keresési architektúra](https://docs.claude-mem.ai/architecture/search-architecture)** - Hibrid keresés Chroma vektor adatbázissal
+- **[Áttekintés](https://docs.magic-claude-mem.ai/architecture/overview)** - Rendszerkomponensek és adatfolyam
+- **[Architektúra fejlődés](https://docs.magic-claude-mem.ai/architecture-evolution)** - Az út a v3-tól a v5-ig
+- **[Hooks architektúra](https://docs.magic-claude-mem.ai/hooks-architecture)** - Hogyan használja a Magic-Claude-Mem az életciklus hookokat
+- **[Hooks referencia](https://docs.magic-claude-mem.ai/architecture/hooks)** - 7 hook szkript magyarázata
+- **[Worker szolgáltatás](https://docs.magic-claude-mem.ai/architecture/worker-service)** - HTTP API és Node.js kezelés
+- **[Adatbázis](https://docs.magic-claude-mem.ai/architecture/database)** - SQLite séma és FTS5 keresés
+- **[Keresési architektúra](https://docs.magic-claude-mem.ai/architecture/search-architecture)** - Hibrid keresés Chroma vektor adatbázissal
 
 ### Konfiguráció és fejlesztés
 
-- **[Konfiguráció](https://docs.claude-mem.ai/configuration)** - Környezeti változók és beállítások
-- **[Fejlesztés](https://docs.claude-mem.ai/development)** - Építés, tesztelés, hozzájárulás
-- **[Hibaelhárítás](https://docs.claude-mem.ai/troubleshooting)** - Gyakori problémák és megoldások
+- **[Konfiguráció](https://docs.magic-claude-mem.ai/configuration)** - Környezeti változók és beállítások
+- **[Fejlesztés](https://docs.magic-claude-mem.ai/development)** - Építés, tesztelés, hozzájárulás
+- **[Hibaelhárítás](https://docs.magic-claude-mem.ai/troubleshooting)** - Gyakori problémák és megoldások
 
 ---
 
@@ -167,13 +167,13 @@ Indítsa újra a Claude Code-ot. A korábbi munkamenetek kontextusa automatikusa
 5. **mem-search Skill** - Természetes nyelvi lekérdezések progresszív felfedéssel
 6. **Chroma vektor adatbázis** - Hibrid szemantikus + kulcsszó keresés intelligens kontextus visszakereséshez
 
-További részletekért lásd az [Architektúra áttekintést](https://docs.claude-mem.ai/architecture/overview).
+További részletekért lásd az [Architektúra áttekintést](https://docs.magic-claude-mem.ai/architecture/overview).
 
 ---
 
 ## mem-search Skill
 
-A Claude-Mem intelligens keresést biztosít a mem-search skillen keresztül, amely automatikusan aktiválódik, amikor múltbeli munkáról kérdez:
+A Magic-Claude-Mem intelligens keresést biztosít a mem-search skillen keresztül, amely automatikusan aktiválódik, amikor múltbeli munkáról kérdez:
 
 **Hogyan működik:**
 - Csak kérdezzen természetesen: *"Mit csináltunk az előző munkamenetben?"* vagy *"Javítottuk már ezt a hibát korábban?"*
@@ -202,7 +202,7 @@ A Claude-Mem intelligens keresést biztosít a mem-search skillen keresztül, am
 "Mi történt, amikor hozzáadtuk a megjelenítő felületet?"
 ```
 
-Részletes példákért lásd a [Keresési eszközök útmutatót](https://docs.claude-mem.ai/usage/search-tools).
+Részletes példákért lásd a [Keresési eszközök útmutatót](https://docs.magic-claude-mem.ai/usage/search-tools).
 
 ---
 
@@ -217,15 +217,15 @@ Részletes példákért lásd a [Keresési eszközök útmutatót](https://docs.
 
 ## Konfiguráció
 
-A beállítások a `~/.claude-mem/settings.json` fájlban kezelhetők (automatikusan létrejön alapértelmezett értékekkel az első futtatáskor). Konfigurálható az AI modell, worker port, adatkönyvtár, naplózási szint és kontextus beillesztési beállítások.
+A beállítások a `~/.magic-claude-mem/settings.json` fájlban kezelhetők (automatikusan létrejön alapértelmezett értékekkel az első futtatáskor). Konfigurálható az AI modell, worker port, adatkönyvtár, naplózási szint és kontextus beillesztési beállítások.
 
-Az összes elérhető beállításért és példákért lásd a **[Konfigurációs útmutatót](https://docs.claude-mem.ai/configuration)**.
+Az összes elérhető beállításért és példákért lásd a **[Konfigurációs útmutatót](https://docs.magic-claude-mem.ai/configuration)**.
 
 ---
 
 ## Fejlesztés
 
-Az építési utasításokért, tesztelésért és hozzájárulási munkafolyamatért lásd a **[Fejlesztési útmutatót](https://docs.claude-mem.ai/development)**.
+Az építési utasításokért, tesztelésért és hozzájárulási munkafolyamatért lásd a **[Fejlesztési útmutatót](https://docs.magic-claude-mem.ai/development)**.
 
 ---
 
@@ -233,7 +233,7 @@ Az építési utasításokért, tesztelésért és hozzájárulási munkafolyama
 
 Problémák esetén írja le a problémát Claude-nak, és a troubleshoot skill automatikusan diagnosztizálja és javítási megoldásokat kínál.
 
-Gyakori problémákért és megoldásokért lásd a **[Hibaelhárítási útmutatót](https://docs.claude-mem.ai/troubleshooting)**.
+Gyakori problémákért és megoldásokért lásd a **[Hibaelhárítási útmutatót](https://docs.magic-claude-mem.ai/troubleshooting)**.
 
 ---
 
@@ -256,7 +256,7 @@ A hozzájárulásokat szívesen fogadjuk! Kérjük:
 4. Frissítse a dokumentációt
 5. Nyújtson be egy Pull Requestet
 
-A hozzájárulási munkafolyamatért lásd a [Fejlesztési útmutatót](https://docs.claude-mem.ai/development).
+A hozzájárulási munkafolyamatért lásd a [Fejlesztési útmutatót](https://docs.magic-claude-mem.ai/development).
 
 ---
 
@@ -264,7 +264,7 @@ A hozzájárulási munkafolyamatért lásd a [Fejlesztési útmutatót](https://
 
 Ez a projekt a **GNU Affero General Public License v3.0** (AGPL-3.0) alatt licencelt.
 
-Copyright (C) 2025 Alex Newman (@doublefx). Minden jog fenntartva.
+Copyright (C) 2026 Frederic Thomas (@doublefx). Minden jog fenntartva.
 
 A teljes részletekért lásd a [LICENSE](LICENSE) fájlt.
 
@@ -280,9 +280,9 @@ A teljes részletekért lásd a [LICENSE](LICENSE) fájlt.
 ## Támogatás
 
 - **Dokumentáció**: [docs/](docs/)
-- **Hibák**: [GitHub Issues](https://github.com/doublefx/claude-mem/issues)
-- **Tároló**: [github.com/doublefx/claude-mem](https://github.com/doublefx/claude-mem)
-- **Szerző**: Alex Newman ([@doublefx](https://github.com/doublefx))
+- **Hibák**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
+- **Tároló**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
+- **Szerző**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
 
 ---
 

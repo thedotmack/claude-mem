@@ -1,6 +1,6 @@
 ---
 title: "Troubleshooting"
-description: "Common issues and solutions for Claude-Mem"
+description: "Common issues and solutions for Magic-Claude-Mem"
 ---
 
 # Troubleshooting Guide
@@ -54,7 +54,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 5. Check for port conflicts:
    ```bash
    # If port 37777 is in use by another service
-   export CLAUDE_MEM_WORKER_PORT=38000
+   export MAGIC_CLAUDE_MEM_WORKER_PORT=38000
    npm run worker:restart
    ```
 
@@ -67,7 +67,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 1. Check browser localStorage is enabled:
    ```javascript
    // In browser console
-   localStorage.getItem('claude-mem-settings')
+   localStorage.getItem('magic-claude-mem-settings')
    ```
 
 2. Verify settings endpoint is working:
@@ -78,7 +78,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 3. Clear localStorage and try again:
    ```javascript
    // In browser console
-   localStorage.removeItem('claude-mem-settings')
+   localStorage.removeItem('magic-claude-mem-settings')
    ```
 
 4. Check for browser privacy mode (blocks localStorage)
@@ -224,13 +224,13 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 3. Or use a different port:
    ```bash
-   export CLAUDE_MEM_WORKER_PORT=38000
+   export MAGIC_CLAUDE_MEM_WORKER_PORT=38000
    npm run worker:restart
    ```
 
 4. Verify new port:
    ```bash
-   cat ~/.claude-mem/worker.port
+   cat ~/.magic-claude-mem/worker.port
    ```
 
 ### Worker Keeps Crashing
@@ -251,7 +251,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 3. Check database for corruption:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "PRAGMA integrity_check;"
    ```
 
 4. Verify Node.js installation:
@@ -277,7 +277,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 3. Verify database has observations:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM observations;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "SELECT COUNT(*) FROM observations;"
    ```
 
 4. Restart worker:
@@ -400,12 +400,12 @@ If recovery fails or messages remain stuck:
 
 2. **Check database for corruption**:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "PRAGMA integrity_check;"
    ```
 
 3. **View stuck messages directly**:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
      SELECT id, session_db_id, status, retry_count,
             (strftime('%s', 'now') * 1000 - started_processing_at_epoch) / 60000 as age_minutes
      FROM pending_messages
@@ -416,7 +416,7 @@ If recovery fails or messages remain stuck:
 
 4. **Force reset stuck messages** (nuclear option):
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
      UPDATE pending_messages
      SET status = 'pending', started_processing_at_epoch = NULL
      WHERE status = 'processing';
@@ -455,14 +455,14 @@ CREATE TABLE pending_messages (
 
 ```bash
 # Count messages by status
-sqlite3 ~/.claude-mem/claude-mem.db "
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
   SELECT status, COUNT(*)
   FROM pending_messages
   GROUP BY status;
 "
 
 # Find sessions with pending work
-sqlite3 ~/.claude-mem/claude-mem.db "
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
   SELECT session_db_id, COUNT(*) as pending_count
   FROM pending_messages
   WHERE status IN ('pending', 'processing')
@@ -470,7 +470,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 "
 
 # View recent failures
-sqlite3 ~/.claude-mem/claude-mem.db "
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
   SELECT id, session_db_id, message_type, retry_count,
          datetime(completed_at_epoch/1000, 'unixepoch') as failed_at
   FROM pending_messages
@@ -517,7 +517,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 1. Check if summaries exist:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM session_summaries;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "SELECT COUNT(*) FROM session_summaries;"
    ```
 
 2. View recent sessions:
@@ -527,7 +527,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 3. Check database integrity:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "PRAGMA integrity_check;"
    ```
 
 4. Manually test context hook:
@@ -555,12 +555,12 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 3. Check database size (large database = slow queries):
    ```bash
-   ls -lh ~/.claude-mem/claude-mem.db
+   ls -lh ~/.magic-claude-mem/magic-claude-mem.db
    ```
 
 4. Optimize database:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "VACUUM;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "VACUUM;"
    ```
 
 ### Dependencies Not Installing
@@ -601,7 +601,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 2. Check for stale locks:
    ```bash
-   lsof ~/.claude-mem/claude-mem.db
+   lsof ~/.magic-claude-mem/magic-claude-mem.db
    ```
 
 3. Kill processes holding locks:
@@ -622,22 +622,22 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 1. Check database integrity:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "PRAGMA integrity_check;"
    ```
 
 2. Backup database:
    ```bash
-   cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.backup
+   cp ~/.magic-claude-mem/magic-claude-mem.db ~/.magic-claude-mem/magic-claude-mem.db.backup
    ```
 
 3. Try to repair:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "VACUUM;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "VACUUM;"
    ```
 
 4. Nuclear option - recreate database:
    ```bash
-   rm ~/.claude-mem/claude-mem.db
+   rm ~/.magic-claude-mem/magic-claude-mem.db
    npm run worker:start  # Will recreate schema
    ```
 
@@ -649,12 +649,12 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 1. Check FTS5 tables exist:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts';"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts';"
    ```
 
 2. Rebuild FTS5 tables:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
      INSERT INTO observations_fts(observations_fts) VALUES('rebuild');
      INSERT INTO session_summaries_fts(session_summaries_fts) VALUES('rebuild');
      INSERT INTO user_prompts_fts(user_prompts_fts) VALUES('rebuild');
@@ -663,7 +663,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 3. Check triggers exist:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "SELECT name FROM sqlite_master WHERE type='trigger';"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "SELECT name FROM sqlite_master WHERE type='trigger';"
    ```
 
 ### Database Too Large
@@ -674,17 +674,17 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 1. Check database size:
    ```bash
-   ls -lh ~/.claude-mem/claude-mem.db
+   ls -lh ~/.magic-claude-mem/magic-claude-mem.db
    ```
 
 2. Vacuum database:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "VACUUM;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "VACUUM;"
    ```
 
 3. Delete old sessions:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
      DELETE FROM observations WHERE created_at_epoch < $(date -v-30d +%s);
      DELETE FROM session_summaries WHERE created_at_epoch < $(date -v-30d +%s);
      DELETE FROM sdk_sessions WHERE created_at_epoch < $(date -v-30d +%s);
@@ -693,7 +693,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 4. Rebuild FTS5 after deletion:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
      INSERT INTO observations_fts(observations_fts) VALUES('rebuild');
      INSERT INTO session_summaries_fts(session_summaries_fts) VALUES('rebuild');
    "
@@ -732,12 +732,12 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 1. Check database has data:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM observations;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "SELECT COUNT(*) FROM observations;"
    ```
 
 2. Verify FTS5 tables populated:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM observations_fts;"
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "SELECT COUNT(*) FROM observations_fts;"
    ```
 
 3. Test simple query:
@@ -813,7 +813,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 2. Optimize database:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
      ANALYZE;
      VACUUM;
    "
@@ -821,7 +821,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 3. Add indexes (if missing):
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "
+   sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
      CREATE INDEX IF NOT EXISTS idx_sessions_project_created ON sdk_sessions(project, created_at_epoch DESC);
    "
    ```
@@ -860,18 +860,18 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 ### Plugin Not Found
 
-**Symptoms**: `/plugin install claude-mem` fails.
+**Symptoms**: `/plugin install magic-claude-mem` fails.
 
 **Solutions**:
 
 1. Add marketplace first:
    ```bash
-   /plugin marketplace add doublefx/claude-mem
+   /plugin marketplace add doublefx/magic-claude-mem
    ```
 
 2. Then install:
    ```bash
-   /plugin install claude-mem
+   /plugin install magic-claude-mem
    ```
 
 3. Verify installation:
@@ -927,7 +927,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 ### Enable Verbose Logging
 
 ```bash
-export DEBUG=claude-mem:*
+export DEBUG=magic-claude-mem:*
 npm run worker:restart
 npm run worker:logs
 ```
@@ -937,7 +937,7 @@ npm run worker:logs
 Trace observations through the pipeline:
 
 ```bash
-sqlite3 ~/.claude-mem/claude-mem.db "
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "
   SELECT correlation_id, tool_name, created_at
   FROM observations
   WHERE session_id = 'YOUR_SESSION_ID'
@@ -955,7 +955,7 @@ npm run worker:status
 npm run worker:logs
 
 # Check port file
-cat ~/.claude-mem/worker.port
+cat ~/.magic-claude-mem/worker.port
 
 # Test worker health
 curl http://localhost:37777/health
@@ -964,7 +964,7 @@ curl http://localhost:37777/health
 ### Database Inspection
 
 ```bash
-sqlite3 ~/.claude-mem/claude-mem.db
+sqlite3 ~/.magic-claude-mem/magic-claude-mem.db
 
 # View schema
 .schema
@@ -1006,7 +1006,7 @@ SELECT created_at, tool_name FROM observations ORDER BY created_at DESC LIMIT 10
 
 **Cause**: Database file permissions or missing directory.
 
-**Solution**: Check `~/.claude-mem/` exists and is writable.
+**Solution**: Check `~/.magic-claude-mem/` exists and is writable.
 
 ### "Module not found"
 
@@ -1023,7 +1023,7 @@ If none of these solutions work:
    npm run worker:logs
    ```
 
-2. **Create issue**: [GitHub Issues](https://github.com/doublefx/claude-mem/issues)
+2. **Create issue**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
    - Include error messages
    - Include relevant logs
    - Include steps to reproduce
@@ -1032,6 +1032,6 @@ If none of these solutions work:
 
 ## Next Steps
 
-- [Configuration](configuration) - Customize Claude-Mem
+- [Configuration](configuration) - Customize Magic-Claude-Mem
 - [Development](development) - Build from source
 - [Architecture](architecture/overview) - Understand the system

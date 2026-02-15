@@ -59,7 +59,7 @@ The primary root cause is that the test session fixtures are incomplete. The `Ac
 
 ### Test 6: "should respect rate limits when billing disabled"
 **Status:** FAIL
-**Expected Behavior:** When `CLAUDE_MEM_GEMINI_BILLING_ENABLED` is 'false', enforce rate limiting via setTimeout
+**Expected Behavior:** When `MAGIC_CLAUDE_MEM_GEMINI_BILLING_ENABLED` is 'false', enforce rate limiting via setTimeout
 **Actual Result:** Error - "Cannot store observations: memorySessionId not yet captured"
 **Root Cause:**
 - Test session fixture missing `memorySessionId` field
@@ -70,12 +70,12 @@ The primary root cause is that the test session fixtures are incomplete. The `Ac
 ## 3. Current Implementation Status
 
 ### GeminiAgent.ts
-- Located at: `/Users/alexnewman/Scripts/claude-mem/src/services/worker/GeminiAgent.ts`
+- Located at: `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/GeminiAgent.ts`
 - Uses shared `processAgentResponse()` from ResponseProcessor module
 - Properly validates `memorySessionId` before storage (line 71 in ResponseProcessor.ts)
 
 ### ResponseProcessor.ts
-- Located at: `/Users/alexnewman/Scripts/claude-mem/src/services/worker/agents/ResponseProcessor.ts`
+- Located at: `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/agents/ResponseProcessor.ts`
 - Contains strict validation at lines 70-73:
   ```typescript
   if (!session.memorySessionId) {
@@ -234,7 +234,7 @@ beforeEach(() => {
 The logger is trying to load settings during test execution:
 
 ```
-TypeError: undefined is not an object (evaluating 'SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_LOG_LEVEL.toUpperCase')
+TypeError: undefined is not an object (evaluating 'SettingsDefaultsManager.loadFromFile(settingsPath).MAGIC_CLAUDE_MEM_LOG_LEVEL.toUpperCase')
 ```
 
 Mock the logger or extend SettingsDefaultsManager mock to handle `get()` calls:
@@ -243,15 +243,15 @@ Mock the logger or extend SettingsDefaultsManager mock to handle `get()` calls:
 mock.module('../src/shared/SettingsDefaultsManager', () => ({
   SettingsDefaultsManager: {
     loadFromFile: () => ({
-      CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
-      CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
-      CLAUDE_MEM_GEMINI_BILLING_ENABLED: billingEnabled,
-      CLAUDE_MEM_LOG_LEVEL: 'INFO',  // Add this
-      CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true'  // Add this
+      MAGIC_CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
+      MAGIC_CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
+      MAGIC_CLAUDE_MEM_GEMINI_BILLING_ENABLED: billingEnabled,
+      MAGIC_CLAUDE_MEM_LOG_LEVEL: 'INFO',  // Add this
+      MAGIC_CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true'  // Add this
     }),
     get: (key: string) => {
-      if (key === 'CLAUDE_MEM_LOG_LEVEL') return 'INFO';
-      if (key === 'CLAUDE_MEM_DATA_DIR') return '/tmp/test-claude-mem';
+      if (key === 'MAGIC_CLAUDE_MEM_LOG_LEVEL') return 'INFO';
+      if (key === 'MAGIC_CLAUDE_MEM_DATA_DIR') return '/tmp/test-magic-claude-mem';
       return '';
     }
   }
@@ -310,8 +310,8 @@ Received message: "Gemini API error: 400 - {...API key not valid...}"
 
 ## 8. Related Files
 
-- `/Users/alexnewman/Scripts/claude-mem/tests/gemini_agent.test.ts` - Test file
-- `/Users/alexnewman/Scripts/claude-mem/src/services/worker/GeminiAgent.ts` - Implementation
-- `/Users/alexnewman/Scripts/claude-mem/src/services/worker/agents/ResponseProcessor.ts` - Shared processor
-- `/Users/alexnewman/Scripts/claude-mem/src/services/worker/agents/FallbackErrorHandler.ts` - Fallback logic
-- `/Users/alexnewman/Scripts/claude-mem/src/services/worker-types.ts` - ActiveSession type definition
+- `/Users/alexnewman/Scripts/magic-claude-mem/tests/gemini_agent.test.ts` - Test file
+- `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/GeminiAgent.ts` - Implementation
+- `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/agents/ResponseProcessor.ts` - Shared processor
+- `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/agents/FallbackErrorHandler.ts` - Fallback logic
+- `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker-types.ts` - ActiveSession type definition

@@ -11,7 +11,7 @@ The reported issue involves PowerShell's `$_` variable being interpreted by Bash
 ## Current State
 
 The `cleanupOrphanedProcesses()` function is located in:
-- **File:** `/Users/alexnewman/Scripts/claude-mem/src/services/infrastructure/ProcessManager.ts`
+- **File:** `/Users/alexnewman/Scripts/magic-claude-mem/src/services/infrastructure/ProcessManager.ts`
 - **Lines:** 164-251
 
 ### Problematic Code (Lines 170-172)

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Worker Service is an Express HTTP server that handles all claude-mem operations. It runs on port 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`) and is managed by PM2.
+The Worker Service is an Express HTTP server that handles all magic-claude-mem operations. It runs on port 37777 (configurable via `MAGIC_CLAUDE_MEM_WORKER_PORT`) and is managed by PM2.
 
 ## Request Flow
 

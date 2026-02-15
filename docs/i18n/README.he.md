@@ -2,11 +2,11 @@
 
 <h1 align="center">
   <br>
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-dark-mode.webp">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp" alt="Magic-Claude-Mem" width="400">
     </picture>
   </a>
   <br>
@@ -63,9 +63,9 @@
 <p align="center">
   <a href="https://trendshift.io/repositories/15496" target="_blank">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/claude-mem | Trendshift" width="250" height="55"/>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/magic-claude-mem | Trendshift" width="250" height="55"/>
     </picture>
   </a>
 </p>
@@ -73,9 +73,9 @@
 <br>
 
 <p align="center">
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/cm-preview.gif" alt="Magic-Claude-Mem Preview" width="800">
     </picture>
   </a>
 </p>
@@ -91,7 +91,7 @@
 </p>
 
 <p align="center">
-  Claude-Mem משמר הקשר בצורה חלקה בין הפעלות על ידי לכידה אוטומטית של תצפיות על שימוש בכלים, יצירת סיכומים סמנטיים, והנגשתם להפעלות עתידיות. זה מאפשר ל-Claude לשמור על המשכיות של ידע על פרויקטים גם לאחר שהפעלות מסתיימות או מתחברות מחדש.
+  Magic-Claude-Mem משמר הקשר בצורה חלקה בין הפעלות על ידי לכידה אוטומטית של תצפיות על שימוש בכלים, יצירת סיכומים סמנטיים, והנגשתם להפעלות עתידיות. זה מאפשר ל-Claude לשמור על המשכיות של ידע על פרויקטים גם לאחר שהפעלות מסתיימות או מתחברות מחדש.
 </p>
 
 ---
@@ -101,9 +101,9 @@
 התחל הפעלה חדשה של Claude Code בטרמינל והזן את הפקודות הבאות:
 
 ```
-> /plugin marketplace add doublefx/claude-mem
+> /plugin marketplace add doublefx/magic-claude-mem
 
-> /plugin install claude-mem
+> /plugin install magic-claude-mem
 ```
 
 הפעל מחדש את Claude Code. הקשר מהפעלות קודמות יופיע אוטומטית בהפעלות חדשות.
@@ -128,30 +128,30 @@
 
 ### תחילת העבודה
 
-- **[מדריך התקנה](https://docs.claude-mem.ai/installation)** - התחלה מהירה והתקנה מתקדמת
-- **[מדריך שימוש](https://docs.claude-mem.ai/usage/getting-started)** - איך Claude-Mem עובד אוטומטית
-- **[כלי חיפוש](https://docs.claude-mem.ai/usage/search-tools)** - שאל את היסטוריית הפרויקט שלך בשפה טבעית
+- **[מדריך התקנה](https://docs.magic-claude-mem.ai/installation)** - התחלה מהירה והתקנה מתקדמת
+- **[מדריך שימוש](https://docs.magic-claude-mem.ai/usage/getting-started)** - איך Magic-Claude-Mem עובד אוטומטית
+- **[כלי חיפוש](https://docs.magic-claude-mem.ai/usage/search-tools)** - שאל את היסטוריית הפרויקט שלך בשפה טבעית
 
 ### שיטות מומלצות
 
-- **[הנדסת הקשר](https://docs.claude-mem.ai/context-engineering)** - עקרונות אופטימיזציה של הקשר לסוכן AI
-- **[גילוי מדורג](https://docs.claude-mem.ai/progressive-disclosure)** - הפילוסופיה מאחורי אסטרטגיית הכנת ההקשר של Claude-Mem
+- **[הנדסת הקשר](https://docs.magic-claude-mem.ai/context-engineering)** - עקרונות אופטימיזציה של הקשר לסוכן AI
+- **[גילוי מדורג](https://docs.magic-claude-mem.ai/progressive-disclosure)** - הפילוסופיה מאחורי אסטרטגיית הכנת ההקשר של Magic-Claude-Mem
 
 ### ארכיטקטורה
 
-- **[סקירה כללית](https://docs.claude-mem.ai/architecture/overview)** - רכיבי המערכת וזרימת הנתונים
-- **[התפתחות הארכיטקטורה](https://docs.claude-mem.ai/architecture-evolution)** - המסע מגרסה 3 לגרסה 5
-- **[ארכיטקטורת Hooks](https://docs.claude-mem.ai/hooks-architecture)** - איך Claude-Mem משתמש ב-lifecycle hooks
-- **[מדריך Hooks](https://docs.claude-mem.ai/architecture/hooks)** - 7 סקריפטי hook מוסברים
-- **[שירות Worker](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API וניהול Node.js
-- **[מסד נתונים](https://docs.claude-mem.ai/architecture/database)** - סכמת SQLite וחיפוש FTS5
-- **[ארכיטקטורת חיפוש](https://docs.claude-mem.ai/architecture/search-architecture)** - חיפוש היברידי עם מסד נתוני וקטורים Chroma
+- **[סקירה כללית](https://docs.magic-claude-mem.ai/architecture/overview)** - רכיבי המערכת וזרימת הנתונים
+- **[התפתחות הארכיטקטורה](https://docs.magic-claude-mem.ai/architecture-evolution)** - המסע מגרסה 3 לגרסה 5
+- **[ארכיטקטורת Hooks](https://docs.magic-claude-mem.ai/hooks-architecture)** - איך Magic-Claude-Mem משתמש ב-lifecycle hooks
+- **[מדריך Hooks](https://docs.magic-claude-mem.ai/architecture/hooks)** - 7 סקריפטי hook מוסברים
+- **[שירות Worker](https://docs.magic-claude-mem.ai/architecture/worker-service)** - HTTP API וניהול Node.js
+- **[מסד נתונים](https://docs.magic-claude-mem.ai/architecture/database)** - סכמת SQLite וחיפוש FTS5
+- **[ארכיטקטורת חיפוש](https://docs.magic-claude-mem.ai/architecture/search-architecture)** - חיפוש היברידי עם מסד נתוני וקטורים Chroma
 
 ### הגדרות ופיתוח
 
-- **[הגדרות](https://docs.claude-mem.ai/configuration)** - משתני סביבה והגדרות
-- **[פיתוח](https://docs.claude-mem.ai/development)** - בנייה, בדיקה, תרומה
-- **[פתרון בעיות](https://docs.claude-mem.ai/troubleshooting)** - בעיות נפוצות ופתרונות
+- **[הגדרות](https://docs.magic-claude-mem.ai/configuration)** - משתני סביבה והגדרות
+- **[פיתוח](https://docs.magic-claude-mem.ai/development)** - בנייה, בדיקה, תרומה
+- **[פתרון בעיות](https://docs.magic-claude-mem.ai/troubleshooting)** - בעיות נפוצות ופתרונות
 
 ---
 
@@ -166,13 +166,13 @@
 5. **מיומנות mem-search** - שאילתות בשפה טבעית עם גילוי מדורג
 6. **מסד נתוני וקטורים Chroma** - חיפוש היברידי סמנטי + מילות מפתח לאחזור הקשר חכם
 
-ראה [סקירה כללית של הארכיטקטורה](https://docs.claude-mem.ai/architecture/overview) לפרטים.
+ראה [סקירה כללית של הארכיטקטורה](https://docs.magic-claude-mem.ai/architecture/overview) לפרטים.
 
 ---
 
 ## מיומנות mem-search
 
-Claude-Mem מספק חיפוש חכם דרך מיומנות mem-search שמופעלת אוטומטית כשאתה שואל על עבודה קודמת:
+Magic-Claude-Mem מספק חיפוש חכם דרך מיומנות mem-search שמופעלת אוטומטית כשאתה שואל על עבודה קודמת:
 
 **איך זה עובד:**
 - פשוט שאל באופן טבעי: *"מה עשינו בהפעלה האחרונה?"* או *"תיקנו את הבאג הזה קודם?"*
@@ -201,7 +201,7 @@ Claude-Mem מספק חיפוש חכם דרך מיומנות mem-search שמופ�
 "What was happening when we added the viewer UI?"
 ```
 
-ראה [מדריך כלי חיפוש](https://docs.claude-mem.ai/usage/search-tools) לדוגמאות מפורטות.
+ראה [מדריך כלי חיפוש](https://docs.magic-claude-mem.ai/usage/search-tools) לדוגמאות מפורטות.
 
 ---
 
@@ -216,15 +216,15 @@ Claude-Mem מספק חיפוש חכם דרך מיומנות mem-search שמופ�
 
 ## הגדרות
 
-ההגדרות מנוהלות ב-`~/.claude-mem/settings.json` (נוצר אוטומטית עם ברירות מחדל בהפעלה הראשונה). הגדר מודל AI, פורט worker, ספריית נתונים, רמת לוג, והגדרות הזרקת הקשר.
+ההגדרות מנוהלות ב-`~/.magic-claude-mem/settings.json` (נוצר אוטומטית עם ברירות מחדל בהפעלה הראשונה). הגדר מודל AI, פורט worker, ספריית נתונים, רמת לוג, והגדרות הזרקת הקשר.
 
-ראה **[מדריך הגדרות](https://docs.claude-mem.ai/configuration)** לכל ההגדרות הזמינות ודוגמאות.
+ראה **[מדריך הגדרות](https://docs.magic-claude-mem.ai/configuration)** לכל ההגדרות הזמינות ודוגמאות.
 
 ---
 
 ## פיתוח
 
-ראה **[מדריך פיתוח](https://docs.claude-mem.ai/development)** להוראות בנייה, בדיקה, ותהליך תרומה.
+ראה **[מדריך פיתוח](https://docs.magic-claude-mem.ai/development)** להוראות בנייה, בדיקה, ותהליך תרומה.
 
 ---
 
@@ -232,7 +232,7 @@ Claude-Mem מספק חיפוש חכם דרך מיומנות mem-search שמופ�
 
 אם אתה נתקל בבעיות, תאר את הבעיה ל-Claude ומיומנות troubleshoot תאבחן אוטומטית ותספק תיקונים.
 
-ראה **[מדריך פתרון בעיות](https://docs.claude-mem.ai/troubleshooting)** לבעיות נפוצות ופתרונות.
+ראה **[מדריך פתרון בעיות](https://docs.magic-claude-mem.ai/troubleshooting)** לבעיות נפוצות ופתרונות.
 
 ---
 
@@ -255,7 +255,7 @@ npm run bug-report
 4. עדכן תיעוד
 5. שלח Pull Request
 
-ראה [מדריך פיתוח](https://docs.claude-mem.ai/development) לתהליך תרומה.
+ראה [מדריך פיתוח](https://docs.magic-claude-mem.ai/development) לתהליך תרומה.
 
 ---
 
@@ -263,7 +263,7 @@ npm run bug-report
 
 פרויקט זה מורשה תחת **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-זכויות יוצרים (C) 2025 Alex Newman (@doublefx). כל הזכויות שמורות.
+זכויות יוצרים (C) 2026 Frederic Thomas (@doublefx). כל הזכויות שמורות.
 
 ראה את קובץ [LICENSE](LICENSE) לפרטים מלאים.
 
@@ -279,9 +279,9 @@ npm run bug-report
 ## תמיכה
 
 - **תיעוד**: [docs/](docs/)
-- **בעיות**: [GitHub Issues](https://github.com/doublefx/claude-mem/issues)
-- **מאגר**: [github.com/doublefx/claude-mem](https://github.com/doublefx/claude-mem)
-- **מחבר**: Alex Newman ([@doublefx](https://github.com/doublefx))
+- **בעיות**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
+- **מאגר**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
+- **מחבר**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
 
 ---
 

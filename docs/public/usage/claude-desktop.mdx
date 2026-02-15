@@ -1,6 +1,6 @@
 ---
 title: Claude Desktop MCP
-description: Use claude-mem memory search in Claude Desktop with MCP tools
+description: Use magic-claude-mem memory search in Claude Desktop with MCP tools
 icon: desktop
 ---
 
@@ -10,13 +10,13 @@ icon: desktop
 
 ## Overview
 
-Claude Desktop can access your claude-mem memory database through **MCP tools**. This allows you to search past sessions, decisions, and observations directly from Claude Desktop conversations.
+Claude Desktop can access your magic-claude-mem memory database through **MCP tools**. This allows you to search past sessions, decisions, and observations directly from Claude Desktop conversations.
 
 ## Prerequisites
 
 Before configuring MCP tools, ensure:
 
-1. **claude-mem is installed** and the worker service is running
+1. **magic-claude-mem is installed** and the worker service is running
 2. **MCP server is configured** in Claude Desktop (uses the `mcp-search` MCP server)
 
 ### Verify Worker is Running
@@ -133,8 +133,8 @@ This 3-layer approach provides ~10x token savings compared to fetching full deta
 
 ### Search Returns No Results
 
-1. Ensure claude-mem has recorded sessions (check http://localhost:37777)
-2. Verify the database exists: `ls ~/.claude-mem/claude-mem.db`
+1. Ensure magic-claude-mem has recorded sessions (check http://localhost:37777)
+2. Verify the database exists: `ls ~/.magic-claude-mem/magic-claude-mem.db`
 3. Test the API directly: `curl "http://localhost:37777/api/search?query=test"`
 
 ## Related

@@ -12,7 +12,7 @@
 
 ## 1. Executive Summary
 
-After upgrading to claude-mem v9.0.0, users report that observations are not being stored in the database. The SDK agent responds with "Ready to observe. Awaiting tool execution data from the primary session" instead of processing tool calls and generating observations. Investigation reveals a **two-part failure mode**:
+After upgrading to magic-claude-mem v9.0.0, users report that observations are not being stored in the database. The SDK agent responds with "Ready to observe. Awaiting tool execution data from the primary session" instead of processing tool calls and generating observations. Investigation reveals a **two-part failure mode**:
 
 1. **Primary Issue:** The SDK agent receives tool execution data but fails to process it into observations, returning a generic "awaiting data" message despite receiving valid input.
 
@@ -35,7 +35,7 @@ The user reports the following behavior after upgrading to v9.0.0:
 
 Key observations:
 - The SDK agent is starting correctly (`Generator auto-starting`)
-- Tool executions are being received (`PostToolUse: Bash(cat ~/.claude-mem/settings.json)`)
+- Tool executions are being received (`PostToolUse: Bash(cat ~/.magic-claude-mem/settings.json)`)
 - Messages are being queued (`ENQUEUED | messageId=596 | type=observation`)
 - Messages are being claimed by the agent (`CLAIMED | messageId=596`)
 - **BUT:** The agent returns "Ready to observe. Awaiting tool execution data" instead of actual observations
@@ -62,7 +62,7 @@ However, the user reports that **even after resolving the restart loop, observat
 
 ### 3.1 Architecture Overview
 
-The claude-mem observation pipeline works as follows:
+The magic-claude-mem observation pipeline works as follows:
 
 ```
 User Session -> PostToolUse Hook -> Worker HTTP API -> Session Queue -> SDK Agent -> Database
@@ -150,7 +150,7 @@ But this only applies when `lastPromptNumber === 1`. If `lastPromptNumber > 1`, 
 ### 4.1 Severity: **Critical**
 
 - **Data Loss:** Observations are not being persisted, resulting in complete loss of session memory
-- **Core Functionality Broken:** The primary purpose of claude-mem (persistent memory) is non-functional
+- **Core Functionality Broken:** The primary purpose of magic-claude-mem (persistent memory) is non-functional
 - **User Experience:** Users see no value from the plugin after upgrade
 
 ### 4.2 Scope
@@ -164,7 +164,7 @@ But this only applies when `lastPromptNumber === 1`. If `lastPromptNumber > 1`, 
 ### 4.3 Workaround
 
 Users can work around by:
-1. Clearing the database: `rm ~/.claude-mem/claude-mem.db`
+1. Clearing the database: `rm ~/.magic-claude-mem/magic-claude-mem.db`
 2. Starting fresh sessions
 
 However, this results in loss of all historical observations.
@@ -325,7 +325,7 @@ This should be addressed immediately with a patch release (v9.0.1).
 ## 9. Appendix: Full Log Excerpt
 
 ```
-[INFO ] [HOOK  ] -> PostToolUse: Bash(cat ~/.claude-mem/settings.json) {workerPort=37777}
+[INFO ] [HOOK  ] -> PostToolUse: Bash(cat ~/.magic-claude-mem/settings.json) {workerPort=37777}
 [INFO ] [HTTP  ] -> POST /api/sessions/observations {requestId=POST-xxx}
 [INFO ] [QUEUE ] [session-1] ENQUEUED | sessionDbId=1 | messageId=596 | type=observation | tool=Bash(...) | depth=1
 [INFO ] [SESSION] [session-1] Generator auto-starting (observation) using Claude SDK {queueDepth=0, historyLength=0}

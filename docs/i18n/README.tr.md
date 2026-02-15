@@ -2,11 +2,11 @@
 
 <h1 align="center">
   <br>
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-dark-mode.webp">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp" alt="Magic-Claude-Mem" width="400">
     </picture>
   </a>
   <br>
@@ -63,9 +63,9 @@
 <p align="center">
   <a href="https://trendshift.io/repositories/15496" target="_blank">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/claude-mem | Trendshift" width="250" height="55"/>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/magic-claude-mem | Trendshift" width="250" height="55"/>
     </picture>
   </a>
 </p>
@@ -73,9 +73,9 @@
 <br>
 
 <p align="center">
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/cm-preview.gif" alt="Magic-Claude-Mem Preview" width="800">
     </picture>
   </a>
 </p>
@@ -91,7 +91,7 @@
 </p>
 
 <p align="center">
-  Claude-Mem, araç kullanım gözlemlerini otomatik olarak yakalayarak, anlamsal özetler oluşturarak ve bunları gelecekteki oturumlarda kullanılabilir hale getirerek bağlamı oturumlar arası sorunsuzca korur. Bu, Claude'un oturumlar sona erse veya yeniden bağlansa bile projeler hakkındaki bilgi sürekliliğini korumasını sağlar.
+  Magic-Claude-Mem, araç kullanım gözlemlerini otomatik olarak yakalayarak, anlamsal özetler oluşturarak ve bunları gelecekteki oturumlarda kullanılabilir hale getirerek bağlamı oturumlar arası sorunsuzca korur. Bu, Claude'un oturumlar sona erse veya yeniden bağlansa bile projeler hakkındaki bilgi sürekliliğini korumasını sağlar.
 </p>
 
 ---
@@ -101,9 +101,9 @@
 Terminal üzerinden yeni bir Claude Code oturumu başlatın ve aşağıdaki komutları girin:
 
 ```
-> /plugin marketplace add doublefx/claude-mem
+> /plugin marketplace add doublefx/magic-claude-mem
 
-> /plugin install claude-mem
+> /plugin install magic-claude-mem
 ```
 
 Claude Code'u yeniden başlatın. Önceki oturumlardaki bağlam otomatik olarak yeni oturumlarda görünecektir.
@@ -128,30 +128,30 @@ Claude Code'u yeniden başlatın. Önceki oturumlardaki bağlam otomatik olarak 
 
 ### Başlarken
 
-- **[Kurulum Kılavuzu](https://docs.claude-mem.ai/installation)** - Hızlı başlangıç ve gelişmiş kurulum
-- **[Kullanım Kılavuzu](https://docs.claude-mem.ai/usage/getting-started)** - Claude-Mem otomatik olarak nasıl çalışır
-- **[Arama Araçları](https://docs.claude-mem.ai/usage/search-tools)** - Doğal dil ile proje geçmişinizi sorgulayın
+- **[Kurulum Kılavuzu](https://docs.magic-claude-mem.ai/installation)** - Hızlı başlangıç ve gelişmiş kurulum
+- **[Kullanım Kılavuzu](https://docs.magic-claude-mem.ai/usage/getting-started)** - Magic-Claude-Mem otomatik olarak nasıl çalışır
+- **[Arama Araçları](https://docs.magic-claude-mem.ai/usage/search-tools)** - Doğal dil ile proje geçmişinizi sorgulayın
 
 ### En İyi Uygulamalar
 
-- **[Bağlam Mühendisliği](https://docs.claude-mem.ai/context-engineering)** - AI ajan bağlam optimizasyon ilkeleri
-- **[Aşamalı Açıklama](https://docs.claude-mem.ai/progressive-disclosure)** - Claude-Mem'in bağlam hazırlama stratejisinin ardındaki felsefe
+- **[Bağlam Mühendisliği](https://docs.magic-claude-mem.ai/context-engineering)** - AI ajan bağlam optimizasyon ilkeleri
+- **[Aşamalı Açıklama](https://docs.magic-claude-mem.ai/progressive-disclosure)** - Magic-Claude-Mem'in bağlam hazırlama stratejisinin ardındaki felsefe
 
 ### Mimari
 
-- **[Genel Bakış](https://docs.claude-mem.ai/architecture/overview)** - Sistem bileşenleri ve veri akışı
-- **[Mimari Evrimi](https://docs.claude-mem.ai/architecture-evolution)** - v3'ten v5'e yolculuk
-- **[Hooks Mimarisi](https://docs.claude-mem.ai/hooks-architecture)** - Claude-Mem yaşam döngüsü hook'larını nasıl kullanır
-- **[Hooks Referansı](https://docs.claude-mem.ai/architecture/hooks)** - 7 hook betiği açıklandı
-- **[Worker Servisi](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API ve Node.js yönetimi
-- **[Veritabanı](https://docs.claude-mem.ai/architecture/database)** - SQLite şeması ve FTS5 arama
-- **[Arama Mimarisi](https://docs.claude-mem.ai/architecture/search-architecture)** - Chroma vektör veritabanı ile hibrit arama
+- **[Genel Bakış](https://docs.magic-claude-mem.ai/architecture/overview)** - Sistem bileşenleri ve veri akışı
+- **[Mimari Evrimi](https://docs.magic-claude-mem.ai/architecture-evolution)** - v3'ten v5'e yolculuk
+- **[Hooks Mimarisi](https://docs.magic-claude-mem.ai/hooks-architecture)** - Magic-Claude-Mem yaşam döngüsü hook'larını nasıl kullanır
+- **[Hooks Referansı](https://docs.magic-claude-mem.ai/architecture/hooks)** - 7 hook betiği açıklandı
+- **[Worker Servisi](https://docs.magic-claude-mem.ai/architecture/worker-service)** - HTTP API ve Node.js yönetimi
+- **[Veritabanı](https://docs.magic-claude-mem.ai/architecture/database)** - SQLite şeması ve FTS5 arama
+- **[Arama Mimarisi](https://docs.magic-claude-mem.ai/architecture/search-architecture)** - Chroma vektör veritabanı ile hibrit arama
 
 ### Yapılandırma ve Geliştirme
 
-- **[Yapılandırma](https://docs.claude-mem.ai/configuration)** - Ortam değişkenleri ve ayarlar
-- **[Geliştirme](https://docs.claude-mem.ai/development)** - Derleme, test etme, katkıda bulunma
-- **[Sorun Giderme](https://docs.claude-mem.ai/troubleshooting)** - Yaygın sorunlar ve çözümler
+- **[Yapılandırma](https://docs.magic-claude-mem.ai/configuration)** - Ortam değişkenleri ve ayarlar
+- **[Geliştirme](https://docs.magic-claude-mem.ai/development)** - Derleme, test etme, katkıda bulunma
+- **[Sorun Giderme](https://docs.magic-claude-mem.ai/troubleshooting)** - Yaygın sorunlar ve çözümler
 
 ---
 
@@ -166,13 +166,13 @@ Claude Code'u yeniden başlatın. Önceki oturumlardaki bağlam otomatik olarak 
 5. **mem-search Becerisi** - Aşamalı açıklama ile doğal dil sorguları
 6. **Chroma Vektör Veritabanı** - Akıllı bağlam erişimi için hibrit anlamsal + anahtar kelime arama
 
-Detaylar için [Mimari Genel Bakış](https://docs.claude-mem.ai/architecture/overview) bölümüne bakın.
+Detaylar için [Mimari Genel Bakış](https://docs.magic-claude-mem.ai/architecture/overview) bölümüne bakın.
 
 ---
 
 ## mem-search Becerisi
 
-Claude-Mem, geçmiş çalışmalarınız hakkında sorduğunuzda otomatik olarak devreye giren mem-search becerisi aracılığıyla akıllı arama sağlar:
+Magic-Claude-Mem, geçmiş çalışmalarınız hakkında sorduğunuzda otomatik olarak devreye giren mem-search becerisi aracılığıyla akıllı arama sağlar:
 
 **Nasıl Çalışır:**
 - Sadece doğal bir şekilde sorun: *"Geçen oturumda ne yaptık?"* veya *"Bu hatayı daha önce düzelttik mi?"*
@@ -201,7 +201,7 @@ Claude-Mem, geçmiş çalışmalarınız hakkında sorduğunuzda otomatik olarak
 "Görüntüleyici arayüzünü eklediğimizde ne oluyordu?"
 ```
 
-Detaylı örnekler için [Arama Araçları Kılavuzu](https://docs.claude-mem.ai/usage/search-tools) bölümüne bakın.
+Detaylı örnekler için [Arama Araçları Kılavuzu](https://docs.magic-claude-mem.ai/usage/search-tools) bölümüne bakın.
 
 ---
 
@@ -216,15 +216,15 @@ Detaylı örnekler için [Arama Araçları Kılavuzu](https://docs.claude-mem.ai
 
 ## Yapılandırma
 
-Ayarlar `~/.claude-mem/settings.json` dosyasında yönetilir (ilk çalıştırmada varsayılanlarla otomatik oluşturulur). AI modelini, worker portunu, veri dizinini, log seviyesini ve bağlam enjeksiyon ayarlarını yapılandırın.
+Ayarlar `~/.magic-claude-mem/settings.json` dosyasında yönetilir (ilk çalıştırmada varsayılanlarla otomatik oluşturulur). AI modelini, worker portunu, veri dizinini, log seviyesini ve bağlam enjeksiyon ayarlarını yapılandırın.
 
-Tüm mevcut ayarlar ve örnekler için **[Yapılandırma Kılavuzu](https://docs.claude-mem.ai/configuration)** bölümüne bakın.
+Tüm mevcut ayarlar ve örnekler için **[Yapılandırma Kılavuzu](https://docs.magic-claude-mem.ai/configuration)** bölümüne bakın.
 
 ---
 
 ## Geliştirme
 
-Derleme talimatları, test etme ve katkı iş akışı için **[Geliştirme Kılavuzu](https://docs.claude-mem.ai/development)** bölümüne bakın.
+Derleme talimatları, test etme ve katkı iş akışı için **[Geliştirme Kılavuzu](https://docs.magic-claude-mem.ai/development)** bölümüne bakın.
 
 ---
 
@@ -232,7 +232,7 @@ Derleme talimatları, test etme ve katkı iş akışı için **[Geliştirme Kıl
 
 Sorunlarla karşılaşırsanız, sorunu Claude'a açıklayın ve troubleshoot becerisi otomatik olarak teşhis edip düzeltmeleri sağlayacaktır.
 
-Yaygın sorunlar ve çözümler için **[Sorun Giderme Kılavuzu](https://docs.claude-mem.ai/troubleshooting)** bölümüne bakın.
+Yaygın sorunlar ve çözümler için **[Sorun Giderme Kılavuzu](https://docs.magic-claude-mem.ai/troubleshooting)** bölümüne bakın.
 
 ---
 
@@ -255,7 +255,7 @@ Katkılar memnuniyetle karşılanır! Lütfen:
 4. Dokümantasyonu güncelleyin
 5. Pull Request gönderin
 
-Katkı iş akışı için [Geliştirme Kılavuzu](https://docs.claude-mem.ai/development) bölümüne bakın.
+Katkı iş akışı için [Geliştirme Kılavuzu](https://docs.magic-claude-mem.ai/development) bölümüne bakın.
 
 ---
 
@@ -263,7 +263,7 @@ Katkı iş akışı için [Geliştirme Kılavuzu](https://docs.claude-mem.ai/dev
 
 Bu proje **GNU Affero General Public License v3.0** (AGPL-3.0) altında lisanslanmıştır.
 
-Telif Hakkı (C) 2025 Alex Newman (@doublefx). Tüm hakları saklıdır.
+Telif Hakkı (C) 2026 Frederic Thomas (@doublefx). Tüm hakları saklıdır.
 
 Tam detaylar için [LICENSE](LICENSE) dosyasına bakın.
 
@@ -279,9 +279,9 @@ Tam detaylar için [LICENSE](LICENSE) dosyasına bakın.
 ## Destek
 
 - **Dokümantasyon**: [docs/](docs/)
-- **Sorunlar**: [GitHub Issues](https://github.com/doublefx/claude-mem/issues)
-- **Depo**: [github.com/doublefx/claude-mem](https://github.com/doublefx/claude-mem)
-- **Yazar**: Alex Newman ([@doublefx](https://github.com/doublefx))
+- **Sorunlar**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
+- **Depo**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
+- **Yazar**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
 
 ---
 

@@ -191,11 +191,11 @@ export class GeminiAgent {
    * summary context) and only trims recent messages from the middle.
    */
   private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settingsPath = path.join(homedir(), '.magic-claude-mem', 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-    const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
-    const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
+    const MAX_CONTEXT_MESSAGES = parseInt(settings.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
+    const MAX_ESTIMATED_TOKENS = parseInt(settings.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
 
     const totalTokens = history.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
     if (history.length <= MAX_CONTEXT_MESSAGES && totalTokens <= MAX_ESTIMATED_TOKENS) {
@@ -251,7 +251,7 @@ export class GeminiAgent {
       const { apiKey, model, rateLimitingEnabled } = this.getGeminiConfig();
 
       if (!apiKey) {
-        throw new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
+        throw new Error('Gemini API key not configured. Set MAGIC_CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
       }
 
       // Ensure memorySessionId is set (Gemini doesn't get session IDs from SDK responses)
@@ -511,19 +511,19 @@ export class GeminiAgent {
 
   /**
    * Get Gemini configuration from settings or environment
-   * Issue #733: Uses centralized ~/.claude-mem/.env for credentials, not random project .env files
+   * Issue #733: Uses centralized ~/.magic-claude-mem/.env for credentials, not random project .env files
    */
   private getGeminiConfig(): { apiKey: string; model: GeminiModel; rateLimitingEnabled: boolean } {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settingsPath = path.join(homedir(), '.magic-claude-mem', 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-    // API key: check settings first, then centralized claude-mem .env (NOT process.env)
+    // API key: check settings first, then centralized magic-claude-mem .env (NOT process.env)
     // This prevents Issue #733 where random project .env files could interfere
-    const apiKey = settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '';
+    const apiKey = settings.MAGIC_CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '';
 
     // Model: from settings or default, with validation
     const defaultModel: GeminiModel = 'gemini-2.5-flash';
-    const configuredModel = settings.CLAUDE_MEM_GEMINI_MODEL || defaultModel;
+    const configuredModel = settings.MAGIC_CLAUDE_MEM_GEMINI_MODEL || defaultModel;
     const validModels: GeminiModel[] = [
       'gemini-2.5-flash-lite',
       'gemini-2.5-flash',
@@ -545,7 +545,7 @@ export class GeminiAgent {
     }
 
     // Rate limiting: enabled by default for free tier users
-    const rateLimitingEnabled = settings.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED !== 'false';
+    const rateLimitingEnabled = settings.MAGIC_CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED !== 'false';
 
     return { apiKey, model, rateLimitingEnabled };
   }
@@ -553,19 +553,19 @@ export class GeminiAgent {
 
 /**
  * Check if Gemini is available (has API key configured)
- * Issue #733: Uses centralized ~/.claude-mem/.env, not random project .env files
+ * Issue #733: Uses centralized ~/.magic-claude-mem/.env, not random project .env files
  */
 export function isGeminiAvailable(): boolean {
-  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  const settingsPath = path.join(homedir(), '.magic-claude-mem', 'settings.json');
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return !!(settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY'));
+  return !!(settings.MAGIC_CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY'));
 }
 
 /**
  * Check if Gemini is the selected provider
  */
 export function isGeminiSelected(): boolean {
-  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  const settingsPath = path.join(homedir(), '.magic-claude-mem', 'settings.json');
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return settings.CLAUDE_MEM_PROVIDER === 'gemini';
+  return settings.MAGIC_CLAUDE_MEM_PROVIDER === 'gemini';
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Build script for claude-mem hooks
+ * Build script for magic-claude-mem hooks
  * Bundles TypeScript hooks into individual standalone executables using esbuild
  */
 
@@ -28,7 +28,7 @@ const CONTEXT_GENERATOR = {
 };
 
 async function buildHooks() {
-  console.log('🔨 Building claude-mem hooks and worker service...\n');
+  console.log('🔨 Building magic-claude-mem hooks and worker service...\n');
 
   try {
     // Read version from package.json
@@ -52,10 +52,10 @@ async function buildHooks() {
     // Generate plugin/package.json for cache directory dependency installation
     console.log('\n📦 Generating plugin package.json...');
     const pluginPackageJson = {
-      name: 'claude-mem-plugin',
+      name: 'magic-claude-mem-plugin',
       version: version,
       private: true,
-      description: 'Runtime dependencies for claude-mem bundled hooks',
+      description: 'Runtime dependencies for magic-claude-mem bundled hooks',
       type: 'module',
       dependencies: {
         'better-sqlite3': packageJson.dependencies['better-sqlite3']

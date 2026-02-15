@@ -32,7 +32,7 @@ id     | title                                          | created_at
 
 The SDK agent has a fatal ordering issue in message processing:
 
-**File: `/Users/alexnewman/Scripts/claude-mem/src/services/worker/SDKAgent.ts`**
+**File: `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/SDKAgent.ts`**
 
 ```typescript
 // Line 328-410: processSDKResponse()
@@ -80,7 +80,7 @@ Between storing observations (line ~340) and marking the message as processed (l
 
 ### How Crash Recovery Makes It Worse
 
-**File: `/Users/alexnewman/Scripts/claude-mem/src/services/worker/http/routes/SessionRoutes.ts`**
+**File: `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/http/routes/SessionRoutes.ts`**
 
 ```typescript
 // Line 183-205: Generator .finally() block
@@ -102,7 +102,7 @@ Between storing observations (line ~340) and marking the message as processed (l
 });
 ```
 
-**File: `/Users/alexnewman/Scripts/claude-mem/src/services/sqlite/PendingMessageStore.ts`**
+**File: `/Users/alexnewman/Scripts/magic-claude-mem/src/services/sqlite/PendingMessageStore.ts`**
 
 ```typescript
 // Line 319-326: getPendingCount()
@@ -154,7 +154,7 @@ resetStuckMessages(thresholdMs: number): number {
 
 ### Why No Database Deduplication?
 
-**File: `/Users/alexnewman/Scripts/claude-mem/src/services/sqlite/SessionStore.ts`**
+**File: `/Users/alexnewman/Scripts/magic-claude-mem/src/services/sqlite/SessionStore.ts`**
 
 ```typescript
 // Line 1224-1229: storeObservation() - NO deduplication!
@@ -371,7 +371,7 @@ storeObservation(...): { id: number; createdAtEpoch: number } {
 Run the existing cleanup script to remove current duplicates:
 
 ```bash
-cd /Users/alexnewman/Scripts/claude-mem
+cd /Users/alexnewman/Scripts/magic-claude-mem
 npm run cleanup-duplicates
 ```
 
@@ -395,5 +395,5 @@ This script identifies duplicates by `(memory_session_id, title, subtitle, type)
 
 - Original issue: Generator failure observations (11 duplicates)
 - Related commit: `776f4ea` "Refactor hooks to streamline error handling"
-- Cleanup script: `/Users/alexnewman/Scripts/claude-mem/src/bin/cleanup-duplicates.ts`
+- Cleanup script: `/Users/alexnewman/Scripts/magic-claude-mem/src/bin/cleanup-duplicates.ts`
 - Related report: `docs/reports/2026-01-02--stuck-observations.md`

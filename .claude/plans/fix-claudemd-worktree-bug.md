@@ -6,7 +6,7 @@ CLAUDE.md files are being written to the wrong directory when using git worktree
 
 **Reproduction scenario:**
 1. Start Claude Code in `budapest` worktree → worker starts with `cwd=budapest`
-2. Run Claude Code in `~/Scripts/claude-mem/` (main repo)
+2. Run Claude Code in `~/Scripts/magic-claude-mem/` (main repo)
 3. Observations created with relative file paths (e.g., `src/utils/foo.ts`)
 4. `updateFolderClaudeMdFiles` writes to `budapest/src/utils/CLAUDE.md` instead of main repo
 

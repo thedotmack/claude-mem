@@ -14,8 +14,8 @@ The `isUvInstalled()` function fails to detect uv when installed via Homebrew on
 
 Two copies of `smart-install.js` exist in the codebase:
 
-1. **Source file**: `/Users/alexnewman/Scripts/claude-mem/scripts/smart-install.js`
-2. **Built/deployed file**: `/Users/alexnewman/Scripts/claude-mem/plugin/scripts/smart-install.js`
+1. **Source file**: `/Users/alexnewman/Scripts/magic-claude-mem/scripts/smart-install.js`
+2. **Built/deployed file**: `/Users/alexnewman/Scripts/magic-claude-mem/plugin/scripts/smart-install.js`
 
 ### Current uv Path Detection
 

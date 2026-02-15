@@ -1,10 +1,10 @@
-# Quick Start: Claude-Mem + Cursor Integration
+# Quick Start: Magic-Claude-Mem + Cursor Integration
 
 > **Give your Cursor AI persistent memory in under 5 minutes**
 
 ## What This Does
 
-Connects claude-mem to Cursor so that:
+Connects magic-claude-mem to Cursor so that:
 - **Agent actions** (MCP tools, shell commands, file edits) are automatically saved
 - **Context from past sessions** is automatically injected via `.cursor/rules/`
 - **Sessions are summarized** for future reference
@@ -21,13 +21,13 @@ If you're using Cursor without Claude Code, see [STANDALONE-SETUP.md](STANDALONE
 
 ```bash
 # Install globally for all projects (recommended)
-claude-mem cursor install user
+magic-claude-mem cursor install user
 
 # Or install for current project only
-claude-mem cursor install
+magic-claude-mem cursor install
 
 # Check installation status
-claude-mem cursor status
+magic-claude-mem cursor status
 ```
 
 ## Configure Provider (Required for Standalone)
@@ -36,12 +36,12 @@ If you don't have Claude Code, configure a provider for AI summarization:
 
 ```bash
 # Option A: Gemini (free tier available - recommended)
-claude-mem settings set CLAUDE_MEM_PROVIDER gemini
-claude-mem settings set CLAUDE_MEM_GEMINI_API_KEY your-api-key
+magic-claude-mem settings set MAGIC_CLAUDE_MEM_PROVIDER gemini
+magic-claude-mem settings set MAGIC_CLAUDE_MEM_GEMINI_API_KEY your-api-key
 
 # Option B: OpenAI-Compatible (free models available via OpenRouter)
-claude-mem settings set CLAUDE_MEM_PROVIDER openai-compat
-claude-mem settings set CLAUDE_MEM_OPENAI_COMPAT_API_KEY your-api-key
+magic-claude-mem settings set MAGIC_CLAUDE_MEM_PROVIDER openai-compat
+magic-claude-mem settings set MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY your-api-key
 ```
 
 **Get free API keys**:
@@ -51,10 +51,10 @@ claude-mem settings set CLAUDE_MEM_OPENAI_COMPAT_API_KEY your-api-key
 ## Start Worker
 
 ```bash
-claude-mem start
+magic-claude-mem start
 
 # Verify it's running
-claude-mem status
+magic-claude-mem status
 ```
 
 ## Restart Cursor
@@ -84,7 +84,7 @@ Restart Cursor to load the hooks.
 - Search your project history
 
 ### Via MCP Tools (if enabled)
-- claude-mem provides search tools via MCP
+- magic-claude-mem provides search tools via MCP
 - Use `search`, `timeline`, and `get_observations` tools
 
 ## Troubleshooting
@@ -96,7 +96,7 @@ Restart Cursor to load the hooks.
 
 **Worker not responding?**
 - Check if worker is running: `curl http://127.0.0.1:37777/api/readiness`
-- Check logs: `tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log`
+- Check logs: `tail -f ~/.magic-claude-mem/logs/worker-$(date +%Y-%m-%d).log`
 - Restart worker: `npm run worker:restart`
 
 **Observations not saving?**
@@ -108,5 +108,5 @@ Restart Cursor to load the hooks.
 
 - Read [README.md](README.md) for detailed documentation
 - Read [INTEGRATION.md](INTEGRATION.md) for architecture details
-- Visit [claude-mem docs](https://docs.claude-mem.ai) for full feature set
+- Visit [magic-claude-mem docs](https://docs.magic-claude-mem.ai) for full feature set
 

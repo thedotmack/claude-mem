@@ -37,10 +37,10 @@ Claude-mem supports Google's Gemini API as an alternative to the Claude Agent SD
 
 | Setting | Values | Default | Description |
 |---------|--------|---------|-------------|
-| `CLAUDE_MEM_PROVIDER` | `claude`, `gemini` | `claude` | AI provider for observation extraction |
-| `CLAUDE_MEM_GEMINI_API_KEY` | string | — | Your Gemini API key |
-| `CLAUDE_MEM_GEMINI_MODEL` | `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-3-flash` | `gemini-2.5-flash-lite` | Gemini model to use |
-| `CLAUDE_MEM_GEMINI_BILLING_ENABLED` | `true`, `false` | `false` | Skip rate limiting if billing is enabled on Google Cloud |
+| `MAGIC_CLAUDE_MEM_PROVIDER` | `claude`, `gemini` | `claude` | AI provider for observation extraction |
+| `MAGIC_CLAUDE_MEM_GEMINI_API_KEY` | string | — | Your Gemini API key |
+| `MAGIC_CLAUDE_MEM_GEMINI_MODEL` | `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-3-flash` | `gemini-2.5-flash-lite` | Gemini model to use |
+| `MAGIC_CLAUDE_MEM_GEMINI_BILLING_ENABLED` | `true`, `false` | `false` | Skip rate limiting if billing is enabled on Google Cloud |
 
 ### Using the Settings UI
 
@@ -54,14 +54,14 @@ Settings are applied immediately—no restart required.
 
 ### Manual Configuration
 
-Edit `~/.claude-mem/settings.json`:
+Edit `~/.magic-claude-mem/settings.json`:
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "gemini",
-  "CLAUDE_MEM_GEMINI_API_KEY": "your-api-key-here",
-  "CLAUDE_MEM_GEMINI_MODEL": "gemini-2.5-flash-lite",
-  "CLAUDE_MEM_GEMINI_BILLING_ENABLED": "true"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "gemini",
+  "MAGIC_CLAUDE_MEM_GEMINI_API_KEY": "your-api-key-here",
+  "MAGIC_CLAUDE_MEM_GEMINI_MODEL": "gemini-2.5-flash-lite",
+  "MAGIC_CLAUDE_MEM_GEMINI_BILLING_ENABLED": "true"
 }
 ```
 
@@ -99,13 +99,13 @@ You can switch between Claude and Gemini at any time:
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "gemini"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "gemini"
 }
 ```
 
 ## Fallback Behavior
 
-If Gemini is selected but encounters errors, claude-mem automatically falls back to the Claude Agent SDK:
+If Gemini is selected but encounters errors, magic-claude-mem automatically falls back to the Claude Agent SDK:
 
 **Triggers fallback:**
 - Rate limiting (HTTP 429)
@@ -126,7 +126,7 @@ When fallback occurs:
 ### "Gemini API key not configured"
 
 Either:
-- Set `CLAUDE_MEM_GEMINI_API_KEY` in `~/.claude-mem/settings.json`, or
+- Set `MAGIC_CLAUDE_MEM_GEMINI_API_KEY` in `~/.magic-claude-mem/settings.json`, or
 - Set the `GEMINI_API_KEY` environment variable
 
 ### Rate Limiting
@@ -152,7 +152,7 @@ Claude-mem enforces these limits automatically with built-in delays between requ
 | gemini-3-flash | 1,000 | 1M |
 
 <Tip>
-**Recommended**: Enable billing on your Google Cloud project to unlock much higher rate limits. You won't be charged unless you exceed the generous free quota. This allows claude-mem to process observations instantly instead of waiting between requests.
+**Recommended**: Enable billing on your Google Cloud project to unlock much higher rate limits. You won't be charged unless you exceed the generous free quota. This allows magic-claude-mem to process observations instantly instead of waiting between requests.
 </Tip>
 
 If you hit rate limits:

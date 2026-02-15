@@ -99,7 +99,7 @@ export class SessionRoutes extends BaseRouteHandler {
         logger.debug('SESSION', 'Using OpenAI-compat agent');
         return this.openaiCompatAgent;
       } else {
-        throw new Error('OpenAI-compatible provider selected but no API key configured. Set CLAUDE_MEM_OPENAI_COMPAT_API_KEY in settings or OPENAI_COMPAT_API_KEY environment variable.');
+        throw new Error('OpenAI-compatible provider selected but no API key configured. Set MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY in settings or OPENAI_COMPAT_API_KEY environment variable.');
       }
     }
     if (isGeminiSelected()) {
@@ -107,7 +107,7 @@ export class SessionRoutes extends BaseRouteHandler {
         logger.debug('SESSION', 'Using Gemini agent');
         return this.geminiAgent;
       } else {
-        throw new Error('Gemini provider selected but no API key configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
+        throw new Error('Gemini provider selected but no API key configured. Set MAGIC_CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
       }
     }
     return this.sdkAgent;
@@ -465,7 +465,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Load skip tools from settings
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const skipTools = new Set(settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim()).filter(Boolean));
+    const skipTools = new Set(settings.MAGIC_CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim()).filter(Boolean));
 
     // Skip low-value or meta tools
     if (skipTools.has(tool_name)) {

@@ -115,7 +115,7 @@ Add an "Exit Code Strategy" section to the main CLAUDE.md to explain the gracefu
 
 ### Implementation Steps
 
-1. **Add section after "File Locations"** in `/Users/alexnewman/Scripts/claude-mem/CLAUDE.md`:
+1. **Add section after "File Locations"** in `/Users/alexnewman/Scripts/magic-claude-mem/CLAUDE.md`:
 
 ```markdown
 ## Exit Code Strategy

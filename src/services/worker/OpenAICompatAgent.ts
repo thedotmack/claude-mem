@@ -30,7 +30,7 @@ import {
   type FallbackAgent
 } from './agents/index.js';
 
-// Default API endpoint (OpenRouter as convenience default, overridable via CLAUDE_MEM_OPENAI_COMPAT_BASE_URL)
+// Default API endpoint (OpenRouter as convenience default, overridable via MAGIC_CLAUDE_MEM_OPENAI_COMPAT_BASE_URL)
 const DEFAULT_OPENAI_COMPAT_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 // Context window management constants (defaults, overridable via settings)
@@ -142,7 +142,7 @@ export class OpenAICompatAgent {
       const { apiKey, model, siteUrl, appName, baseUrl } = this.getOpenAICompatConfig();
 
       if (!apiKey) {
-        throw new Error('OpenAI-compatible API key not configured. Set CLAUDE_MEM_OPENAI_COMPAT_API_KEY in settings or OPENAI_COMPAT_API_KEY environment variable.');
+        throw new Error('OpenAI-compatible API key not configured. Set MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY in settings or OPENAI_COMPAT_API_KEY environment variable.');
       }
 
       // Ensure memorySessionId is set (OpenAI-compatible API doesn't get session IDs from SDK responses)
@@ -347,8 +347,8 @@ export class OpenAICompatAgent {
   private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
-    const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
-    const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
+    const MAX_CONTEXT_MESSAGES = parseInt(settings.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
+    const MAX_ESTIMATED_TOKENS = parseInt(settings.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
 
     const totalTokens = history.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
     if (history.length <= MAX_CONTEXT_MESSAGES && totalTokens <= MAX_ESTIMATED_TOKENS) {
@@ -436,8 +436,8 @@ export class OpenAICompatAgent {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': siteUrl || 'https://github.com/doublefx/claude-mem',
-        'X-Title': appName || 'claude-mem',
+        'HTTP-Referer': siteUrl || 'https://github.com/doublefx/magic-claude-mem',
+        'X-Title': appName || 'magic-claude-mem',
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -498,25 +498,25 @@ export class OpenAICompatAgent {
 
   /**
    * Get OpenAI-compatible API configuration from settings or environment
-   * Issue #733: Uses centralized ~/.claude-mem/.env for credentials, not random project .env files
+   * Issue #733: Uses centralized ~/.magic-claude-mem/.env for credentials, not random project .env files
    */
   private getOpenAICompatConfig(): { apiKey: string; model: string; siteUrl?: string; appName?: string; baseUrl: string } {
     const settingsPath = USER_SETTINGS_PATH;
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-    // API key: check settings first, then centralized claude-mem .env (NOT process.env)
+    // API key: check settings first, then centralized magic-claude-mem .env (NOT process.env)
     // This prevents Issue #733 where random project .env files could interfere
-    const apiKey = settings.CLAUDE_MEM_OPENAI_COMPAT_API_KEY || getCredential('OPENAI_COMPAT_API_KEY') || '';
+    const apiKey = settings.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY || getCredential('OPENAI_COMPAT_API_KEY') || '';
 
     // Model: from settings or default
-    const model = settings.CLAUDE_MEM_OPENAI_COMPAT_MODEL || 'xiaomi/mimo-v2-flash:free';
+    const model = settings.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MODEL || 'xiaomi/mimo-v2-flash:free';
 
     // Optional analytics headers
-    const siteUrl = settings.CLAUDE_MEM_OPENAI_COMPAT_SITE_URL || '';
-    const appName = settings.CLAUDE_MEM_OPENAI_COMPAT_APP_NAME || 'claude-mem';
+    const siteUrl = settings.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_SITE_URL || '';
+    const appName = settings.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_APP_NAME || 'magic-claude-mem';
 
     // Base URL: allows using cli-proxy or other OpenAI-compatible endpoints
-    const baseUrl = settings.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL || DEFAULT_OPENAI_COMPAT_API_URL;
+    const baseUrl = settings.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_BASE_URL || DEFAULT_OPENAI_COMPAT_API_URL;
 
     return { apiKey, model, siteUrl, appName, baseUrl };
   }
@@ -524,12 +524,12 @@ export class OpenAICompatAgent {
 
 /**
  * Check if OpenAI-compatible provider is available (has API key configured)
- * Issue #733: Uses centralized ~/.claude-mem/.env, not random project .env files
+ * Issue #733: Uses centralized ~/.magic-claude-mem/.env, not random project .env files
  */
 export function isOpenAICompatAvailable(): boolean {
   const settingsPath = USER_SETTINGS_PATH;
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return !!(settings.CLAUDE_MEM_OPENAI_COMPAT_API_KEY || getCredential('OPENAI_COMPAT_API_KEY'));
+  return !!(settings.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY || getCredential('OPENAI_COMPAT_API_KEY'));
 }
 
 /**
@@ -538,5 +538,5 @@ export function isOpenAICompatAvailable(): boolean {
 export function isOpenAICompatSelected(): boolean {
   const settingsPath = USER_SETTINGS_PATH;
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return settings.CLAUDE_MEM_PROVIDER === 'openai-compat';
+  return settings.MAGIC_CLAUDE_MEM_PROVIDER === 'openai-compat';
 }

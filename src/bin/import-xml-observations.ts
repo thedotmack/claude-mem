@@ -44,7 +44,7 @@ interface TimestampMapping {
  * Since XML timestamps are rounded to seconds, we map by second
  */
 function buildTimestampMap(): TimestampMapping {
-  const transcriptDir = join(homedir(), '.claude', 'projects', '-Users-alexnewman-Scripts-claude-mem');
+  const transcriptDir = join(homedir(), '.claude', 'projects', '-Users-alexnewman-Scripts-magic-claude-mem');
   const map: TimestampMapping = {};
 
   console.log(`Reading transcript files from ${transcriptDir}...`);

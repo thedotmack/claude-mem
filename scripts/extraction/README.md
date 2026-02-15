@@ -12,7 +12,7 @@ Extracts only actual XML from assistant responses, filtering out:
 - XML from tool_use blocks
 - XML from user messages
 
-**Output:** `~/Scripts/claude-mem/actual_xml_only_with_timestamps.xml`
+**Output:** `~/Scripts/magic-claude-mem/actual_xml_only_with_timestamps.xml`
 
 **Usage:**
 ```bash
@@ -24,7 +24,7 @@ python3 scripts/extraction/filter-actual-xml.py
 
 Extracts ALL XML blocks from transcripts without filtering.
 
-**Output:** `~/Scripts/claude-mem/all_xml_fragments_with_timestamps.xml`
+**Output:** `~/Scripts/magic-claude-mem/all_xml_fragments_with_timestamps.xml`
 
 **Usage:**
 ```bash
@@ -35,7 +35,7 @@ python3 scripts/extraction/extract-all-xml.py
 
 1. **Extract XML from transcripts:**
    ```bash
-   cd ~/Scripts/claude-mem
+   cd ~/Scripts/magic-claude-mem
    python3 scripts/extraction/filter-actual-xml.py
    ```
 
@@ -51,7 +51,7 @@ python3 scripts/extraction/extract-all-xml.py
 
 ## Source Data
 
-Scripts read from: `~/.claude/projects/-Users-alexnewman-Scripts-claude-mem/*.jsonl`
+Scripts read from: `~/.claude/projects/-Users-alexnewman-Scripts-magic-claude-mem/*.jsonl`
 
 These are Claude Code session transcripts stored in JSONL (JSON Lines) format.
 

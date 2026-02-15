@@ -1153,7 +1153,7 @@ export class SessionStore {
    *
    * CRITICAL ARCHITECTURE: Session ID Threading
    * ============================================
-   * This function is the KEY to how claude-mem stays unified across hooks:
+   * This function is the KEY to how magic-claude-mem stays unified across hooks:
    *
    * - NEW hook calls: createSDKSession(session_id, project, prompt)
    * - SAVE hook calls: createSDKSession(session_id, '', '')

@@ -120,7 +120,7 @@ def process_transcript_file(filepath):
 # Get list of Oct 18 transcript files
 import subprocess
 
-transcript_dir = os.path.expanduser('~/.claude/projects/-Users-alexnewman-Scripts-claude-mem/')
+transcript_dir = os.path.expanduser('~/.claude/projects/-Users-alexnewman-Scripts-magic-claude-mem/')
 os.chdir(transcript_dir)
 
 # Get all transcript files sorted by modification time
@@ -136,7 +136,7 @@ for filename in files:
     print(f"  Found {len(results)} actual XML blocks")
 
 # Write results with timestamps
-output_file = os.path.expanduser('~/Scripts/claude-mem/actual_xml_only_with_timestamps.xml')
+output_file = os.path.expanduser('~/Scripts/magic-claude-mem/actual_xml_only_with_timestamps.xml')
 with open(output_file, 'w', encoding='utf-8') as f:
     f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
     f.write('<!-- Actual XML blocks from assistant responses only -->\n')

@@ -17,7 +17,7 @@ This analysis confirms **both issues exist in the current codebase** (v8.5.7). W
 ## 1. SessionManager Session Storage Analysis
 
 ### Location
-`/Users/alexnewman/Scripts/claude-mem/src/services/worker/SessionManager.ts`
+`/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/SessionManager.ts`
 
 ### Current Implementation
 
@@ -41,7 +41,7 @@ Sessions are stored in an in-memory `Map<number, ActiveSession>` with the sessio
 
 ### The Problem: No Automatic Cleanup
 
-Looking at `/Users/alexnewman/Scripts/claude-mem/src/services/worker/http/routes/SessionRoutes.ts` (lines 213-216), the session completion handling has this comment:
+Looking at `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/http/routes/SessionRoutes.ts` (lines 213-216), the session completion handling has this comment:
 
 ```typescript
 // NOTE: We do NOT delete the session here anymore.
@@ -69,7 +69,7 @@ There is **NO automatic cleanup mechanism** based on:
 ## 2. conversationHistory Analysis
 
 ### Location
-`/Users/alexnewman/Scripts/claude-mem/src/services/worker-types.ts` (line 34)
+`/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker-types.ts` (line 34)
 
 ### Type Definition
 
@@ -85,20 +85,20 @@ export interface ActiveSession {
 
 The `conversationHistory` array is populated by three agent implementations:
 
-1. **SDKAgent** (`/Users/alexnewman/Scripts/claude-mem/src/services/worker/SDKAgent.ts`)
+1. **SDKAgent** (`/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/SDKAgent.ts`)
    - Adds user messages at lines 247, 280, 302
    - Assistant responses added via `ResponseProcessor`
 
-2. **GeminiAgent** (`/Users/alexnewman/Scripts/claude-mem/src/services/worker/GeminiAgent.ts`)
+2. **GeminiAgent** (`/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/GeminiAgent.ts`)
    - Adds user messages at lines 143, 196, 232
    - Adds assistant responses at lines 148, 202, 238
 
-3. **OpenRouterAgent** (`/Users/alexnewman/Scripts/claude-mem/src/services/worker/OpenRouterAgent.ts`)
+3. **OpenRouterAgent** (`/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/OpenRouterAgent.ts`)
    - Adds user messages at lines 103, 155, 191
    - Adds assistant responses at lines 108, 161, 197
    - **Implements truncation**: See `truncateHistory()` at lines 262-301
 
-4. **ResponseProcessor** (`/Users/alexnewman/Scripts/claude-mem/src/services/worker/agents/ResponseProcessor.ts`)
+4. **ResponseProcessor** (`/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/agents/ResponseProcessor.ts`)
    - Adds assistant responses at line 57
 
 ### The Problem: Unbounded Growth
@@ -109,8 +109,8 @@ The `conversationHistory` array is populated by three agent implementations:
 
 ```typescript
 private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
-  const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES) || 20;
-  const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS) || 100000;
+  const MAX_CONTEXT_MESSAGES = parseInt(settings.MAGIC_CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES) || 20;
+  const MAX_ESTIMATED_TOKENS = parseInt(settings.MAGIC_CLAUDE_MEM_OPENROUTER_MAX_TOKENS) || 100000;
 
   // Sliding window: keep most recent messages within limits
   // ...
@@ -162,7 +162,7 @@ The v8.5.7 release (2026-01-04) focused on modular architecture refactoring:
 ## 4. Specific Code Locations Requiring Fixes
 
 ### Fix Location 1: SessionManager needs cleanup mechanism
-**File**: `/Users/alexnewman/Scripts/claude-mem/src/services/worker/SessionManager.ts`
+**File**: `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/SessionManager.ts`
 
 Add automatic session cleanup based on:
 - Session completion (when generator finishes and no pending work)
@@ -171,14 +171,14 @@ Add automatic session cleanup based on:
 
 ### Fix Location 2: conversationHistory needs bounds
 **Files**:
-- `/Users/alexnewman/Scripts/claude-mem/src/services/worker/SDKAgent.ts`
-- `/Users/alexnewman/Scripts/claude-mem/src/services/worker/GeminiAgent.ts`
-- `/Users/alexnewman/Scripts/claude-mem/src/services/worker/agents/ResponseProcessor.ts`
+- `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/SDKAgent.ts`
+- `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/GeminiAgent.ts`
+- `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/agents/ResponseProcessor.ts`
 
 Apply sliding window truncation similar to OpenRouterAgent's approach, but mutate the original array.
 
 ### Fix Location 3: Session cleanup on completion
-**File**: `/Users/alexnewman/Scripts/claude-mem/src/services/worker/http/routes/SessionRoutes.ts`
+**File**: `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker/http/routes/SessionRoutes.ts`
 
 Remove the design decision to keep idle sessions in memory. Add cleanup timer after generator completes.
 
@@ -296,9 +296,9 @@ Add these to `settings.json` defaults:
 
 ```json
 {
-  "CLAUDE_MEM_SESSION_TTL_MINUTES": 60,
-  "CLAUDE_MEM_MAX_CONVERSATION_HISTORY": 50,
-  "CLAUDE_MEM_MAX_ACTIVE_SESSIONS": 100
+  "MAGIC_CLAUDE_MEM_SESSION_TTL_MINUTES": 60,
+  "MAGIC_CLAUDE_MEM_MAX_CONVERSATION_HISTORY": 50,
+  "MAGIC_CLAUDE_MEM_MAX_ACTIVE_SESSIONS": 100
 }
 ```
 

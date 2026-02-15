@@ -281,7 +281,7 @@ Concepts are normalized during observation processing to ensure consistent filte
 
 ### Design Philosophy
 
-The 3-layer workflow embodies **progressive disclosure** - a core principle of claude-mem's architecture.
+The 3-layer workflow embodies **progressive disclosure** - a core principle of magic-claude-mem's architecture.
 
 **Layer 1: Index (Search)**
 - **What:** Compact table with IDs, titles, dates, types
@@ -505,7 +505,7 @@ npm run worker:logs         # View logs
 
 **Troubleshooting:**
 1. Test API directly: `curl "http://localhost:37777/api/search?query=test"`
-2. Check database: `ls ~/.claude-mem/claude-mem.db`
+2. Check database: `ls ~/.magic-claude-mem/magic-claude-mem.db`
 3. Verify observations exist: `curl "http://localhost:37777/api/health"`
 
 ## Next Steps

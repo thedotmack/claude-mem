@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-The Logger Coverage test suite enforces consistent logging practices across the claude-mem codebase. Two tests are failing:
+The Logger Coverage test suite enforces consistent logging practices across the magic-claude-mem codebase. Two tests are failing:
 
 1. **Console.log usage in background services** - 2 files using `console.log/console.error` where logs are invisible
 2. **Missing logger imports in high-priority files** - 34 files in critical paths without logger instrumentation

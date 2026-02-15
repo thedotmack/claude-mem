@@ -189,7 +189,7 @@ export class ChromaSync {
   constructor(project: string) {
     this.project = project;
     this.collectionName = `cm__${project}`;
-    this.VECTOR_DB_DIR = path.join(os.homedir(), '.claude-mem', 'vector-db');
+    this.VECTOR_DB_DIR = path.join(os.homedir(), '.magic-claude-mem', 'vector-db');
   }
 
   /**
@@ -205,9 +205,9 @@ export class ChromaSync {
 
     try {
       // Use Python 3.13 by default to avoid onnxruntime compatibility issues with Python 3.14+
-      // See: https://github.com/doublefx/claude-mem/issues/170 (Python 3.14 incompatibility)
+      // See: https://github.com/doublefx/magic-claude-mem/issues/170 (Python 3.14 incompatibility)
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-      const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
+      const pythonVersion = settings.MAGIC_CLAUDE_MEM_PYTHON_VERSION;
       const isWindows = process.platform === 'win32';
 
       const chromaArgs = [
@@ -237,7 +237,7 @@ export class ChromaSync {
 
       // Empty capabilities object: this client only calls Chroma tools, doesn't expose any
       this.client = new Client({
-        name: 'claude-mem-chroma-sync',
+        name: 'magic-claude-mem-chroma-sync',
         version: packageVersion
       }, {
         capabilities: {}

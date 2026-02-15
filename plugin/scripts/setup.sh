@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# claude-mem Setup Hook
+# magic-claude-mem Setup Hook
 # Ensures dependencies are installed before plugin runs
 #
 
@@ -185,7 +185,7 @@ BUN_PATH=$(find_bun) || true
 if [[ -z "$BUN_PATH" ]]; then
   log_error "Bun runtime not found!"
   echo "" >&2
-  echo "claude-mem requires Bun to run. Please install it:" >&2
+  echo "magic-claude-mem requires Bun to run. Please install it:" >&2
   echo "" >&2
   echo "  curl -fsSL https://bun.sh/install | bash" >&2
   echo "" >&2

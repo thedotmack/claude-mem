@@ -27,7 +27,7 @@ export class DatabaseManager {
     this.sessionSearch = new SessionSearch();
 
     // Initialize ChromaSync (lazy - connects on first search, not at startup)
-    this.chromaSync = new ChromaSync('claude-mem');
+    this.chromaSync = new ChromaSync('magic-claude-mem');
 
     logger.info('DB', 'Database initialized');
   }

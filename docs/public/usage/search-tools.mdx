@@ -9,7 +9,7 @@ Claude-mem provides persistent memory across sessions through **4 MCP tools** th
 
 ## Overview
 
-Instead of fetching all historical data upfront (expensive), claude-mem uses a progressive disclosure approach:
+Instead of fetching all historical data upfront (expensive), magic-claude-mem uses a progressive disclosure approach:
 
 1. **Search** → Get a compact index with IDs (~50-100 tokens/result)
 2. **Timeline** → Get context around interesting results
@@ -446,7 +446,7 @@ If searches seem slow:
 
 **Worker Service:** Express API on port 37777, managed by Node.js
 
-**Database:** SQLite FTS5 full-text search on `~/.claude-mem/claude-mem.db`
+**Database:** SQLite FTS5 full-text search on `~/.magic-claude-mem/magic-claude-mem.db`
 
 **Vector Search:** Chroma embeddings for semantic search (underlying implementation)
 

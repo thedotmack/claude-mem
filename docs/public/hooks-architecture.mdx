@@ -1,4 +1,4 @@
-# How Claude-Mem Uses Hooks: A Lifecycle-Driven Architecture
+# How Magic-Claude-Mem Uses Hooks: A Lifecycle-Driven Architecture
 
 ## Core Principle
 **Observe the main Claude Code session from the outside, process observations in the background, inject context at the right time.**
@@ -7,7 +7,7 @@
 
 ## The Big Picture
 
-Claude-Mem is fundamentally a **hook-driven system**. Every piece of functionality happens in response to lifecycle events:
+Magic-Claude-Mem is fundamentally a **hook-driven system**. Every piece of functionality happens in response to lifecycle events:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -31,7 +31,7 @@ Claude-Mem is fundamentally a **hook-driven system**. Every piece of functionali
 As of Claude Code 2.1.0 (ultrathink update), SessionStart hooks no longer display user-visible messages. Context is silently injected via `hookSpecificOutput.additionalContext`.
 </Note>
 
-**Key insight:** Claude-Mem doesn't interrupt or modify Claude Code's behavior. It observes from the outside and provides value through lifecycle hooks.
+**Key insight:** Magic-Claude-Mem doesn't interrupt or modify Claude Code's behavior. It observes from the outside and provides value through lifecycle hooks.
 
 ---
 
@@ -39,7 +39,7 @@ As of Claude Code 2.1.0 (ultrathink update), SessionStart hooks no longer displa
 
 ### The Non-Invasive Requirement
 
-Claude-Mem had several architectural constraints:
+Magic-Claude-Mem had several architectural constraints:
 
 1. **Can't modify Claude Code**: It's a closed-source binary
 2. **Must be fast**: Can't slow down the main session
@@ -74,7 +74,7 @@ Claude Code's hook system provides exactly what we need:
 
 ## The Hook Scripts
 
-Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. SessionStart runs 3 hooks in sequence: smart-install, worker-service start, and context-hook.
+Magic-Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. SessionStart runs 3 hooks in sequence: smart-install, worker-service start, and context-hook.
 
 ### Pre-Hook: Smart Install (Before SessionStart)
 
@@ -137,11 +137,11 @@ Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. SessionStart r
 - ✅ Runs on startup, clear, and compact
 - ✅ 300-second timeout (allows for npm install if needed)
 - ✅ Progressive disclosure format (index, not full details)
-- ✅ Configurable observation count via `CLAUDE_MEM_CONTEXT_OBSERVATIONS`
+- ✅ Configurable observation count via `MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS`
 
 **Output format:**
 ```markdown
-# [claude-mem] recent context
+# [magic-claude-mem] recent context
 
 **Legend:** 🎯 session-request | 🔴 gotcha | 🟡 problem-solution ...
 
@@ -647,7 +647,7 @@ claude --debug
     **Symptoms:** PostToolUse hook runs but observations missing
 
     **Debugging:**
-    1. Check database: `sqlite3 ~/.claude-mem/claude-mem.db "SELECT * FROM observation_queue"`
+    1. Check database: `sqlite3 ~/.magic-claude-mem/magic-claude-mem.db "SELECT * FROM observation_queue"`
     2. Verify session exists: `SELECT * FROM sdk_sessions`
     3. Check worker status: `npm run worker:status`
     4. View worker logs: `npm run worker:logs`
@@ -773,7 +773,7 @@ LIMIT 20
 - Session summaries
 
 **Privacy guarantees:**
-- All data stored locally in `~/.claude-mem/claude-mem.db`
+- All data stored locally in `~/.magic-claude-mem/magic-claude-mem.db`
 - No cloud uploads (API calls only for AI compression)
 - SQLite file permissions: user-only read/write
 - No analytics or telemetry
@@ -807,4 +807,4 @@ LIMIT 20
 
 ---
 
-*The hook-driven architecture enables Claude-Mem to be both powerful and invisible. Users never notice the memory system working - it just makes Claude smarter over time.*
+*The hook-driven architecture enables Magic-Claude-Mem to be both powerful and invisible. Users never notice the memory system working - it just makes Claude smarter over time.*

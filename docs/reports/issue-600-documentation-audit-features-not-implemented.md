@@ -10,7 +10,7 @@
 
 ## 1. Executive Summary
 
-A comprehensive audit by @bguidolim has identified **8 discrepancies** between the claude-mem documentation (`docs/public/`) and the actual implementation in the main branch. The core issue is that documentation describes beta-branch features as if they exist in the production release, leading to user confusion and failed feature expectations.
+A comprehensive audit by @bguidolim has identified **8 discrepancies** between the magic-claude-mem documentation (`docs/public/`) and the actual implementation in the main branch. The core issue is that documentation describes beta-branch features as if they exist in the production release, leading to user confusion and failed feature expectations.
 
 ### Key Findings
 
@@ -91,8 +91,8 @@ There is **no Version Channel section**. A grep for "Version Channel", "version 
 **Documentation Claims** (`docs/public/endless-mode.mdx`):
 ```json
 {
-  "CLAUDE_MEM_ENDLESS_MODE": "false",
-  "CLAUDE_MEM_ENDLESS_WAIT_TIMEOUT_MS": "90000"
+  "MAGIC_CLAUDE_MEM_ENDLESS_MODE": "false",
+  "MAGIC_CLAUDE_MEM_ENDLESS_WAIT_TIMEOUT_MS": "90000"
 }
 ```
 
@@ -102,18 +102,18 @@ The `SettingsRoutes.ts` file (lines 87-124) defines the validated `settingKeys` 
 
 ```typescript
 const settingKeys = [
-  'CLAUDE_MEM_MODEL',
-  'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
-  'CLAUDE_MEM_WORKER_PORT',
-  'CLAUDE_MEM_WORKER_HOST',
-  'CLAUDE_MEM_PROVIDER',
-  'CLAUDE_MEM_GEMINI_API_KEY',
+  'MAGIC_CLAUDE_MEM_MODEL',
+  'MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS',
+  'MAGIC_CLAUDE_MEM_WORKER_PORT',
+  'MAGIC_CLAUDE_MEM_WORKER_HOST',
+  'MAGIC_CLAUDE_MEM_PROVIDER',
+  'MAGIC_CLAUDE_MEM_GEMINI_API_KEY',
   // ... 20+ other settings
-  'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+  'MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
 ];
 ```
 
-**Neither `CLAUDE_MEM_ENDLESS_MODE` nor `CLAUDE_MEM_ENDLESS_WAIT_TIMEOUT_MS` are present in this array.**
+**Neither `MAGIC_CLAUDE_MEM_ENDLESS_MODE` nor `MAGIC_CLAUDE_MEM_ENDLESS_WAIT_TIMEOUT_MS` are present in this array.**
 
 A grep for `ENDLESS_MODE` in `src/` returns only CLAUDE.md context files (auto-generated), not any TypeScript implementation.
 
@@ -169,7 +169,7 @@ The `plugin/skills/` directory **does not exist** in the main branch.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED` | `false` | Enable auto-generation of folder CLAUDE.md files |
+| `MAGIC_CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED` | `false` | Enable auto-generation of folder CLAUDE.md files |
 
 **Actual Implementation**:
 
@@ -195,7 +195,7 @@ if (allFilePaths.length > 0) {
 }
 ```
 
-**The setting `CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED` is never read.** The feature runs unconditionally when files are touched.
+**The setting `MAGIC_CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED` is never read.** The feature runs unconditionally when files are touched.
 
 Additionally, the setting is not in the `SettingsRoutes.ts` settingKeys array, so it cannot be configured through the API.
 
@@ -392,7 +392,7 @@ The claim is technically correct, but `__IMPORTANT` is workflow documentation ra
 |------|---------------|
 | `src/services/worker/http/routes/SettingsRoutes.ts` | Add `beta/endless-mode` to allowed branches |
 | `src/services/worker/agents/ResponseProcessor.ts` | Check `FOLDER_CLAUDEMD_ENABLED` setting (via PR #589) |
-| `src/shared/SettingsDefaultsManager.ts` | Add `CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED` setting |
+| `src/shared/SettingsDefaultsManager.ts` | Add `MAGIC_CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED` setting |
 
 ---
 

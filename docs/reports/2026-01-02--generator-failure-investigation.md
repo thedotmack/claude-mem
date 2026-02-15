@@ -21,7 +21,7 @@ During anti-pattern cleanup (removing large try-catch blocks), we exposed a crit
 ### Symptoms
 ```
 [2026-01-02 21:48:46.198] [ℹ️ INFO ] [🌐 HTTP   ] ← 200 /api/pending-queue/process
-[2026-01-02 21:48:48.240] [❌ ERROR] [📦 SDK    ] [session-75922] Session generator failed {project=claude-mem}
+[2026-01-02 21:48:48.240] [❌ ERROR] [📦 SDK    ] [session-75922] Session generator failed {project=magic-claude-mem}
 ```
 
 When running `npm run queue:process` after logging cleanup:

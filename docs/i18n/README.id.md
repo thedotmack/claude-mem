@@ -3,11 +3,11 @@
 ---
 <h1 align="center">
   <br>
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-dark-mode.webp">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/magic-claude-mem-logo-for-light-mode.webp" alt="Magic-Claude-Mem" width="400">
     </picture>
   </a>
   <br>
@@ -64,9 +64,9 @@
 <p align="center">
   <a href="https://trendshift.io/repositories/15496" target="_blank">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg">
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/claude-mem | Trendshift" width="250" height="55"/>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/trendshift-badge.svg" alt="doublefx/magic-claude-mem | Trendshift" width="250" height="55"/>
     </picture>
   </a>
 </p>
@@ -74,9 +74,9 @@
 <br>
 
 <p align="center">
-  <a href="https://github.com/doublefx/claude-mem">
+  <a href="https://github.com/doublefx/magic-claude-mem">
     <picture>
-      <img src="https://raw.githubusercontent.com/doublefx/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
+      <img src="https://raw.githubusercontent.com/doublefx/magic-claude-mem/main/docs/public/cm-preview.gif" alt="Magic-Claude-Mem Preview" width="800">
     </picture>
   </a>
 </p>
@@ -92,7 +92,7 @@
 </p>
 
 <p align="center">
-  Claude-Mem secara mulus mempertahankan konteks di seluruh sesi dengan secara otomatis menangkap observasi penggunaan alat, menghasilkan ringkasan semantik, dan membuatnya tersedia untuk sesi mendatang. Ini memungkinkan Claude untuk mempertahankan kontinuitas pengetahuan tentang proyek bahkan setelah sesi berakhir atau tersambung kembali.
+  Magic-Claude-Mem secara mulus mempertahankan konteks di seluruh sesi dengan secara otomatis menangkap observasi penggunaan alat, menghasilkan ringkasan semantik, dan membuatnya tersedia untuk sesi mendatang. Ini memungkinkan Claude untuk mempertahankan kontinuitas pengetahuan tentang proyek bahkan setelah sesi berakhir atau tersambung kembali.
 </p>
 
 ---
@@ -102,9 +102,9 @@
 Mulai sesi Claude Code baru di terminal dan masukkan perintah berikut:
 
 ```
-> /plugin marketplace add doublefx/claude-mem
+> /plugin marketplace add doublefx/magic-claude-mem
 
-> /plugin install claude-mem
+> /plugin install magic-claude-mem
 ```
 
 Restart Claude Code. Konteks dari sesi sebelumnya akan secara otomatis muncul di sesi baru.
@@ -129,30 +129,30 @@ Restart Claude Code. Konteks dari sesi sebelumnya akan secara otomatis muncul di
 
 ### Memulai
 
-- **[Panduan Instalasi](https://docs.claude-mem.ai/installation)** - Mulai cepat & instalasi lanjutan
-- **[Panduan Penggunaan](https://docs.claude-mem.ai/usage/getting-started)** - Bagaimana Claude-Mem bekerja secara otomatis
-- **[Alat Pencarian](https://docs.claude-mem.ai/usage/search-tools)** - Query riwayat proyek Anda dengan bahasa alami
+- **[Panduan Instalasi](https://docs.magic-claude-mem.ai/installation)** - Mulai cepat & instalasi lanjutan
+- **[Panduan Penggunaan](https://docs.magic-claude-mem.ai/usage/getting-started)** - Bagaimana Magic-Claude-Mem bekerja secara otomatis
+- **[Alat Pencarian](https://docs.magic-claude-mem.ai/usage/search-tools)** - Query riwayat proyek Anda dengan bahasa alami
 
 ### Praktik Terbaik
 
-- **[Context Engineering](https://docs.claude-mem.ai/context-engineering)** - Prinsip optimisasi konteks agen AI
-- **[Progressive Disclosure](https://docs.claude-mem.ai/progressive-disclosure)** - Filosofi di balik strategi priming konteks Claude-Mem
+- **[Context Engineering](https://docs.magic-claude-mem.ai/context-engineering)** - Prinsip optimisasi konteks agen AI
+- **[Progressive Disclosure](https://docs.magic-claude-mem.ai/progressive-disclosure)** - Filosofi di balik strategi priming konteks Magic-Claude-Mem
 
 ### Arsitektur
 
-- **[Ringkasan](https://docs.claude-mem.ai/architecture/overview)** - Komponen sistem & aliran data
-- **[Evolusi Arsitektur](https://docs.claude-mem.ai/architecture-evolution)** - Perjalanan dari v3 ke v5
-- **[Arsitektur Hooks](https://docs.claude-mem.ai/hooks-architecture)** - Bagaimana Claude-Mem menggunakan lifecycle hooks
-- **[Referensi Hooks](https://docs.claude-mem.ai/architecture/hooks)** - 7 skrip hook dijelaskan
-- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & manajemen Node.js
-- **[Database](https://docs.claude-mem.ai/architecture/database)** - Skema SQLite & pencarian FTS5
-- **[Arsitektur Pencarian](https://docs.claude-mem.ai/architecture/search-architecture)** - Pencarian hybrid dengan database vektor Chroma
+- **[Ringkasan](https://docs.magic-claude-mem.ai/architecture/overview)** - Komponen sistem & aliran data
+- **[Evolusi Arsitektur](https://docs.magic-claude-mem.ai/architecture-evolution)** - Perjalanan dari v3 ke v5
+- **[Arsitektur Hooks](https://docs.magic-claude-mem.ai/hooks-architecture)** - Bagaimana Magic-Claude-Mem menggunakan lifecycle hooks
+- **[Referensi Hooks](https://docs.magic-claude-mem.ai/architecture/hooks)** - 7 skrip hook dijelaskan
+- **[Worker Service](https://docs.magic-claude-mem.ai/architecture/worker-service)** - HTTP API & manajemen Node.js
+- **[Database](https://docs.magic-claude-mem.ai/architecture/database)** - Skema SQLite & pencarian FTS5
+- **[Arsitektur Pencarian](https://docs.magic-claude-mem.ai/architecture/search-architecture)** - Pencarian hybrid dengan database vektor Chroma
 
 ### Konfigurasi & Pengembangan
 
-- **[Konfigurasi](https://docs.claude-mem.ai/configuration)** - Variabel environment & pengaturan
-- **[Pengembangan](https://docs.claude-mem.ai/development)** - Membangun, testing, kontribusi
-- **[Pemecahan Masalah](https://docs.claude-mem.ai/troubleshooting)** - Masalah umum & solusi
+- **[Konfigurasi](https://docs.magic-claude-mem.ai/configuration)** - Variabel environment & pengaturan
+- **[Pengembangan](https://docs.magic-claude-mem.ai/development)** - Membangun, testing, kontribusi
+- **[Pemecahan Masalah](https://docs.magic-claude-mem.ai/troubleshooting)** - Masalah umum & solusi
 
 ---
 
@@ -167,13 +167,13 @@ Restart Claude Code. Konteks dari sesi sebelumnya akan secara otomatis muncul di
 5. **mem-search Skill** - Query bahasa alami dengan progressive disclosure
 6. **Chroma Vector Database** - Pencarian hybrid semantik + keyword untuk pengambilan konteks yang cerdas
 
-Lihat [Ringkasan Arsitektur](https://docs.claude-mem.ai/architecture/overview) untuk detail.
+Lihat [Ringkasan Arsitektur](https://docs.magic-claude-mem.ai/architecture/overview) untuk detail.
 
 ---
 
 ## mem-search Skill
 
-Claude-Mem menyediakan pencarian cerdas melalui mem-search skill yang secara otomatis dipanggil saat Anda bertanya tentang pekerjaan masa lalu:
+Magic-Claude-Mem menyediakan pencarian cerdas melalui mem-search skill yang secara otomatis dipanggil saat Anda bertanya tentang pekerjaan masa lalu:
 
 **Cara Kerja:**
 - Tanya saja secara alami: *"Apa yang kita lakukan sesi terakhir?"* atau *"Apakah kita sudah memperbaiki bug ini sebelumnya?"*
@@ -202,7 +202,7 @@ Claude-Mem menyediakan pencarian cerdas melalui mem-search skill yang secara oto
 "What was happening when we added the viewer UI?"
 ```
 
-Lihat [Panduan Alat Pencarian](https://docs.claude-mem.ai/usage/search-tools) untuk contoh detail.
+Lihat [Panduan Alat Pencarian](https://docs.magic-claude-mem.ai/usage/search-tools) untuk contoh detail.
 
 ---
 
@@ -217,15 +217,15 @@ Lihat [Panduan Alat Pencarian](https://docs.claude-mem.ai/usage/search-tools) un
 
 ## Konfigurasi
 
-Pengaturan dikelola di `~/.claude-mem/settings.json` (otomatis dibuat dengan default saat pertama kali dijalankan). Konfigurasi model AI, port worker, direktori data, level log, dan pengaturan injeksi konteks.
+Pengaturan dikelola di `~/.magic-claude-mem/settings.json` (otomatis dibuat dengan default saat pertama kali dijalankan). Konfigurasi model AI, port worker, direktori data, level log, dan pengaturan injeksi konteks.
 
-Lihat **[Panduan Konfigurasi](https://docs.claude-mem.ai/configuration)** untuk semua pengaturan dan contoh yang tersedia.
+Lihat **[Panduan Konfigurasi](https://docs.magic-claude-mem.ai/configuration)** untuk semua pengaturan dan contoh yang tersedia.
 
 ---
 
 ## Pengembangan
 
-Lihat **[Panduan Pengembangan](https://docs.claude-mem.ai/development)** untuk instruksi build, testing, dan alur kerja kontribusi.
+Lihat **[Panduan Pengembangan](https://docs.magic-claude-mem.ai/development)** untuk instruksi build, testing, dan alur kerja kontribusi.
 
 ---
 
@@ -233,7 +233,7 @@ Lihat **[Panduan Pengembangan](https://docs.claude-mem.ai/development)** untuk i
 
 Jika mengalami masalah, jelaskan masalah ke Claude dan troubleshoot skill akan secara otomatis mendiagnosis dan memberikan perbaikan.
 
-Lihat **[Panduan Pemecahan Masalah](https://docs.claude-mem.ai/troubleshooting)** untuk masalah umum dan solusi.
+Lihat **[Panduan Pemecahan Masalah](https://docs.magic-claude-mem.ai/troubleshooting)** untuk masalah umum dan solusi.
 
 ---
 
@@ -256,7 +256,7 @@ Kontribusi sangat dipersilakan! Silakan:
 4. Perbarui dokumentasi
 5. Kirim Pull Request
 
-Lihat [Panduan Pengembangan](https://docs.claude-mem.ai/development) untuk alur kerja kontribusi.
+Lihat [Panduan Pengembangan](https://docs.magic-claude-mem.ai/development) untuk alur kerja kontribusi.
 
 ---
 
@@ -264,7 +264,7 @@ Lihat [Panduan Pengembangan](https://docs.claude-mem.ai/development) untuk alur 
 
 Proyek ini dilisensikan di bawah **GNU Affero General Public License v3.0** (AGPL-3.0).
 
-Copyright (C) 2025 Alex Newman (@doublefx). All rights reserved.
+Copyright (C) 2026 Frederic Thomas (@doublefx). All rights reserved.
 
 Lihat file [LICENSE](LICENSE) untuk detail lengkap.
 
@@ -280,9 +280,9 @@ Lihat file [LICENSE](LICENSE) untuk detail lengkap.
 ## Dukungan
 
 - **Dokumentasi**: [docs/](docs/)
-- **Issues**: [GitHub Issues](https://github.com/doublefx/claude-mem/issues)
-- **Repositori**: [github.com/doublefx/claude-mem](https://github.com/doublefx/claude-mem)
-- **Penulis**: Alex Newman ([@doublefx](https://github.com/doublefx))
+- **Issues**: [GitHub Issues](https://github.com/doublefx/magic-claude-mem/issues)
+- **Repositori**: [github.com/doublefx/magic-claude-mem](https://github.com/doublefx/magic-claude-mem)
+- **Penulis**: Frederic Thomas ([@doublefx](https://github.com/doublefx))
 
 ---
 

@@ -30,7 +30,7 @@ The issue claimed that after a worker crash:
 
 The current architecture uses `claimAndDelete()` instead of `claimNextMessage()`:
 
-**File:** `/Users/alexnewman/Scripts/claude-mem/src/services/sqlite/PendingMessageStore.ts`
+**File:** `/Users/alexnewman/Scripts/magic-claude-mem/src/services/sqlite/PendingMessageStore.ts`
 
 ```typescript
 // Lines 85-104
@@ -60,7 +60,7 @@ claimAndDelete(sessionDbId: number): PersistentPendingMessage | null {
 
 ### 2. Iterator Uses claimAndDelete
 
-**File:** `/Users/alexnewman/Scripts/claude-mem/src/services/queue/SessionQueueProcessor.ts`
+**File:** `/Users/alexnewman/Scripts/magic-claude-mem/src/services/queue/SessionQueueProcessor.ts`
 
 ```typescript
 // Lines 18-38
@@ -87,7 +87,7 @@ async *createIterator(sessionDbId: number, signal: AbortSignal): AsyncIterableIt
 
 ### 3. getSessionsWithPendingMessages Still Checks Both States
 
-**File:** `/Users/alexnewman/Scripts/claude-mem/src/services/sqlite/PendingMessageStore.ts`
+**File:** `/Users/alexnewman/Scripts/magic-claude-mem/src/services/sqlite/PendingMessageStore.ts`
 
 ```typescript
 // Lines 319-326
@@ -105,7 +105,7 @@ getSessionsWithPendingMessages(): number[] {
 
 ### 4. Startup Recovery Still Exists
 
-**File:** `/Users/alexnewman/Scripts/claude-mem/src/services/worker-service.ts`
+**File:** `/Users/alexnewman/Scripts/magic-claude-mem/src/services/worker-service.ts`
 
 ```typescript
 // Lines 236-242

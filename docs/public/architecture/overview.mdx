@@ -1,13 +1,13 @@
 ---
 title: "Architecture Overview"
-description: "System components and data flow in Claude-Mem"
+description: "System components and data flow in Magic-Claude-Mem"
 ---
 
 # Architecture Overview
 
 ## System Components
 
-Claude-Mem operates as a Claude Code plugin with five core components:
+Magic-Claude-Mem operates as a Claude Code plugin with five core components:
 
 1. **Plugin Hooks** - Capture lifecycle events (6 hook files)
 2. **Smart Install** - Cached dependency checker (pre-hook script, runs before context-hook)
@@ -104,7 +104,7 @@ Uses 3-layer progressive disclosure: search → timeline → get_observations
 ## Directory Structure
 
 ```
-claude-mem/
+magic-claude-mem/
 ├── src/
 │   ├── hooks/                  # Hook implementations (6 hooks)
 │   │   ├── context-hook.ts     # SessionStart
@@ -209,7 +209,7 @@ SQLite3 with better-sqlite3 driver featuring:
 - FTS5 virtual tables for full-text search
 - SessionStore for CRUD operations
 - SessionSearch for FTS5 queries
-- Location: `~/.claude-mem/claude-mem.db`
+- Location: `~/.magic-claude-mem/magic-claude-mem.db`
 
 See [Database Architecture](/architecture/database) for schema and FTS5 search.
 

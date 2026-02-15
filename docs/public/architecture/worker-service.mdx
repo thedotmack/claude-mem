@@ -12,10 +12,10 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 - **Technology**: Express.js HTTP server
 - **Runtime**: Node.js 18+
 - **Process Manager**: Native Node.js process management via ProcessManager
-- **Port**: Fixed port 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`)
+- **Port**: Fixed port 37777 (configurable via `MAGIC_CLAUDE_MEM_WORKER_PORT`)
 - **Location**: `src/services/worker-service.ts`
 - **Built Output**: `plugin/scripts/worker-service.cjs`
-- **Model**: Configurable via `CLAUDE_MEM_MODEL` environment variable (default: sonnet)
+- **Model**: Configurable via `MAGIC_CLAUDE_MEM_MODEL` environment variable (default: sonnet)
 
 ## REST API Endpoints
 
@@ -600,7 +600,7 @@ This lifecycle enables:
 
 The worker is managed by the native `ProcessManager` class which handles:
 - Process spawning with Node.js runtime
-- PID file tracking at `~/.claude-mem/worker.pid`
+- PID file tracking at `~/.magic-claude-mem/worker.pid`
 - Health checks with automatic retry
 - Graceful shutdown with SIGTERM/SIGKILL fallback
 
@@ -666,7 +666,7 @@ The SDK agent uses history compaction instead of simple truncation to manage con
 Set the AI model used for processing via environment variable:
 
 ```bash
-export CLAUDE_MEM_MODEL=sonnet
+export MAGIC_CLAUDE_MEM_MODEL=sonnet
 ```
 
 Available shorthand models (forward to latest version):
@@ -679,7 +679,7 @@ Available shorthand models (forward to latest version):
 The worker uses a fixed port (37777 by default) for consistent communication:
 
 - **Default**: Port 37777
-- **Override**: Set `CLAUDE_MEM_WORKER_PORT` environment variable
+- **Override**: Set `MAGIC_CLAUDE_MEM_WORKER_PORT` environment variable
 - **Port File**: `${CLAUDE_PLUGIN_ROOT}/data/worker.port` tracks current port
 
 If port 37777 is in use, the worker will fail to start. Set a custom port via environment variable.
@@ -689,8 +689,8 @@ If port 37777 is in use, the worker will fail to start. Set a custom port via en
 The worker service stores data in the user data directory:
 
 ```
-~/.claude-mem/
-├── claude-mem.db           # SQLite database (better-sqlite3)
+~/.magic-claude-mem/
+├── magic-claude-mem.db           # SQLite database (better-sqlite3)
 ├── worker.pid              # PID file for process tracking
 ├── settings.json           # User settings
 └── logs/

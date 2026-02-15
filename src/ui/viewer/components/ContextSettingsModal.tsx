@@ -304,8 +304,8 @@ export function ContextSettingsModal({
                   type="number"
                   min="1"
                   max="200"
-                  value={formState.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50'}
-                  onChange={(e) => { updateSetting('CLAUDE_MEM_CONTEXT_OBSERVATIONS', e.target.value); }}
+                  value={formState.MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50'}
+                  onChange={(e) => { updateSetting('MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS', e.target.value); }}
                 />
               </FormField>
               <FormField
@@ -316,8 +316,8 @@ export function ContextSettingsModal({
                   type="number"
                   min="1"
                   max="50"
-                  value={formState.CLAUDE_MEM_CONTEXT_SESSION_COUNT || '10'}
-                  onChange={(e) => { updateSetting('CLAUDE_MEM_CONTEXT_SESSION_COUNT', e.target.value); }}
+                  value={formState.MAGIC_CLAUDE_MEM_CONTEXT_SESSION_COUNT || '10'}
+                  onChange={(e) => { updateSetting('MAGIC_CLAUDE_MEM_CONTEXT_SESSION_COUNT', e.target.value); }}
                 />
               </FormField>
             </CollapsibleSection>
@@ -330,18 +330,18 @@ export function ContextSettingsModal({
               <ChipGroup
                 label="Type"
                 options={observationTypes}
-                selectedValues={getArrayValues('CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES')}
-                onToggle={(value) => { toggleArrayValue('CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES', value); }}
-                onSelectAll={() => { setAllArrayValues('CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES', observationTypes); }}
-                onSelectNone={() => { setAllArrayValues('CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES', []); }}
+                selectedValues={getArrayValues('MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES')}
+                onToggle={(value) => { toggleArrayValue('MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES', value); }}
+                onSelectAll={() => { setAllArrayValues('MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES', observationTypes); }}
+                onSelectNone={() => { setAllArrayValues('MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES', []); }}
               />
               <ChipGroup
                 label="Concept"
                 options={observationConcepts}
-                selectedValues={getArrayValues('CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS')}
-                onToggle={(value) => { toggleArrayValue('CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS', value); }}
-                onSelectAll={() => { setAllArrayValues('CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS', observationConcepts); }}
-                onSelectNone={() => { setAllArrayValues('CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS', []); }}
+                selectedValues={getArrayValues('MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS')}
+                onToggle={(value) => { toggleArrayValue('MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS', value); }}
+                onSelectAll={() => { setAllArrayValues('MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS', observationConcepts); }}
+                onSelectNone={() => { setAllArrayValues('MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS', []); }}
               />
             </CollapsibleSection>
 
@@ -360,8 +360,8 @@ export function ContextSettingsModal({
                     type="number"
                     min="0"
                     max="20"
-                    value={formState.CLAUDE_MEM_CONTEXT_FULL_COUNT || '5'}
-                    onChange={(e) => { updateSetting('CLAUDE_MEM_CONTEXT_FULL_COUNT', e.target.value); }}
+                    value={formState.MAGIC_CLAUDE_MEM_CONTEXT_FULL_COUNT || '5'}
+                    onChange={(e) => { updateSetting('MAGIC_CLAUDE_MEM_CONTEXT_FULL_COUNT', e.target.value); }}
                   />
                 </FormField>
                 <FormField
@@ -369,8 +369,8 @@ export function ContextSettingsModal({
                   tooltip="Which field to expand for full observations"
                 >
                   <select
-                    value={formState.CLAUDE_MEM_CONTEXT_FULL_FIELD || 'narrative'}
-                    onChange={(e) => { updateSetting('CLAUDE_MEM_CONTEXT_FULL_FIELD', e.target.value); }}
+                    value={formState.MAGIC_CLAUDE_MEM_CONTEXT_FULL_FIELD || 'narrative'}
+                    onChange={(e) => { updateSetting('MAGIC_CLAUDE_MEM_CONTEXT_FULL_FIELD', e.target.value); }}
                   >
                     <option value="narrative">Narrative</option>
                     <option value="facts">Facts</option>
@@ -385,22 +385,22 @@ export function ContextSettingsModal({
                     id="show-read-tokens"
                     label="Read cost"
                     description="Tokens to read this observation"
-                    checked={formState.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true'}
-                    onChange={() => { toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS'); }}
+                    checked={formState.MAGIC_CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true'}
+                    onChange={() => { toggleBoolean('MAGIC_CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS'); }}
                   />
                   <ToggleSwitch
                     id="show-work-tokens"
                     label="Work investment"
                     description="Tokens spent creating this observation"
-                    checked={formState.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true'}
-                    onChange={() => { toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS'); }}
+                    checked={formState.MAGIC_CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true'}
+                    onChange={() => { toggleBoolean('MAGIC_CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS'); }}
                   />
                   <ToggleSwitch
                     id="show-savings-amount"
                     label="Savings"
                     description="Total tokens saved by reusing context"
-                    checked={formState.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true'}
-                    onChange={() => { toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT'); }}
+                    checked={formState.MAGIC_CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true'}
+                    onChange={() => { toggleBoolean('MAGIC_CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT'); }}
                   />
                 </div>
               </div>
@@ -417,8 +417,8 @@ export function ContextSettingsModal({
                 tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
               >
                 <select
-                  value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
-                  onChange={(e) => { updateSetting('CLAUDE_MEM_PROVIDER', e.target.value); }}
+                  value={formState.MAGIC_CLAUDE_MEM_PROVIDER || 'claude'}
+                  onChange={(e) => { updateSetting('MAGIC_CLAUDE_MEM_PROVIDER', e.target.value); }}
                 >
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
@@ -426,14 +426,14 @@ export function ContextSettingsModal({
                 </select>
               </FormField>
 
-              {formState.CLAUDE_MEM_PROVIDER === 'claude' && (
+              {formState.MAGIC_CLAUDE_MEM_PROVIDER === 'claude' && (
                 <FormField
                   label="Claude Model"
                   tooltip="Claude model used for generating observations"
                 >
                   <select
-                    value={formState.CLAUDE_MEM_MODEL || 'haiku'}
-                    onChange={(e) => { updateSetting('CLAUDE_MEM_MODEL', e.target.value); }}
+                    value={formState.MAGIC_CLAUDE_MEM_MODEL || 'haiku'}
+                    onChange={(e) => { updateSetting('MAGIC_CLAUDE_MEM_MODEL', e.target.value); }}
                   >
                     <option value="haiku">haiku (fastest)</option>
                     <option value="sonnet">sonnet (balanced)</option>
@@ -442,7 +442,7 @@ export function ContextSettingsModal({
                 </FormField>
               )}
 
-              {formState.CLAUDE_MEM_PROVIDER === 'gemini' && (
+              {formState.MAGIC_CLAUDE_MEM_PROVIDER === 'gemini' && (
                 <>
                   <FormField
                     label="Gemini API Key"
@@ -450,8 +450,8 @@ export function ContextSettingsModal({
                   >
                     <input
                       type="password"
-                      value={formState.CLAUDE_MEM_GEMINI_API_KEY || ''}
-                      onChange={(e) => { updateSetting('CLAUDE_MEM_GEMINI_API_KEY', e.target.value); }}
+                      value={formState.MAGIC_CLAUDE_MEM_GEMINI_API_KEY || ''}
+                      onChange={(e) => { updateSetting('MAGIC_CLAUDE_MEM_GEMINI_API_KEY', e.target.value); }}
                       placeholder="Enter Gemini API key..."
                     />
                   </FormField>
@@ -460,8 +460,8 @@ export function ContextSettingsModal({
                     tooltip="Gemini model used for generating observations"
                   >
                     <select
-                      value={formState.CLAUDE_MEM_GEMINI_MODEL || 'gemini-2.5-flash-lite'}
-                      onChange={(e) => { updateSetting('CLAUDE_MEM_GEMINI_MODEL', e.target.value); }}
+                      value={formState.MAGIC_CLAUDE_MEM_GEMINI_MODEL || 'gemini-2.5-flash-lite'}
+                      onChange={(e) => { updateSetting('MAGIC_CLAUDE_MEM_GEMINI_MODEL', e.target.value); }}
                     >
                       <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (10 RPM free)</option>
                       <option value="gemini-2.5-flash">gemini-2.5-flash (5 RPM free)</option>
@@ -473,14 +473,14 @@ export function ContextSettingsModal({
                       id="gemini-rate-limiting"
                       label="Rate Limiting"
                       description="Enable for free tier (10-30 RPM). Disable if you have billing set up (1000+ RPM)."
-                      checked={formState.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED === 'true'}
-                      onChange={(checked) => { updateSetting('CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED', checked ? 'true' : 'false'); }}
+                      checked={formState.MAGIC_CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED === 'true'}
+                      onChange={(checked) => { updateSetting('MAGIC_CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED', checked ? 'true' : 'false'); }}
                     />
                   </div>
                 </>
               )}
 
-              {formState.CLAUDE_MEM_PROVIDER === 'openai-compat' && (
+              {formState.MAGIC_CLAUDE_MEM_PROVIDER === 'openai-compat' && (
                 <>
                   <FormField
                     label="API Key"
@@ -488,8 +488,8 @@ export function ContextSettingsModal({
                   >
                     <input
                       type="password"
-                      value={formState.CLAUDE_MEM_OPENAI_COMPAT_API_KEY || ''}
-                      onChange={(e) => { updateSetting('CLAUDE_MEM_OPENAI_COMPAT_API_KEY', e.target.value); }}
+                      value={formState.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY || ''}
+                      onChange={(e) => { updateSetting('MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY', e.target.value); }}
                       placeholder="Enter API key..."
                     />
                   </FormField>
@@ -499,8 +499,8 @@ export function ContextSettingsModal({
                   >
                     <input
                       type="text"
-                      value={formState.CLAUDE_MEM_OPENAI_COMPAT_MODEL || 'xiaomi/mimo-v2-flash:free'}
-                      onChange={(e) => { updateSetting('CLAUDE_MEM_OPENAI_COMPAT_MODEL', e.target.value); }}
+                      value={formState.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MODEL || 'xiaomi/mimo-v2-flash:free'}
+                      onChange={(e) => { updateSetting('MAGIC_CLAUDE_MEM_OPENAI_COMPAT_MODEL', e.target.value); }}
                       placeholder="e.g., xiaomi/mimo-v2-flash:free"
                     />
                   </FormField>
@@ -510,8 +510,8 @@ export function ContextSettingsModal({
                   >
                     <input
                       type="text"
-                      value={formState.CLAUDE_MEM_OPENAI_COMPAT_SITE_URL || ''}
-                      onChange={(e) => { updateSetting('CLAUDE_MEM_OPENAI_COMPAT_SITE_URL', e.target.value); }}
+                      value={formState.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_SITE_URL || ''}
+                      onChange={(e) => { updateSetting('MAGIC_CLAUDE_MEM_OPENAI_COMPAT_SITE_URL', e.target.value); }}
                       placeholder="https://yoursite.com"
                     />
                   </FormField>
@@ -521,9 +521,9 @@ export function ContextSettingsModal({
                   >
                     <input
                       type="text"
-                      value={formState.CLAUDE_MEM_OPENAI_COMPAT_APP_NAME || 'claude-mem'}
-                      onChange={(e) => { updateSetting('CLAUDE_MEM_OPENAI_COMPAT_APP_NAME', e.target.value); }}
-                      placeholder="claude-mem"
+                      value={formState.MAGIC_CLAUDE_MEM_OPENAI_COMPAT_APP_NAME || 'magic-claude-mem'}
+                      onChange={(e) => { updateSetting('MAGIC_CLAUDE_MEM_OPENAI_COMPAT_APP_NAME', e.target.value); }}
+                      placeholder="magic-claude-mem"
                     />
                   </FormField>
                 </>
@@ -537,8 +537,8 @@ export function ContextSettingsModal({
                   type="number"
                   min="1024"
                   max="65535"
-                  value={formState.CLAUDE_MEM_WORKER_PORT || '37777'}
-                  onChange={(e) => { updateSetting('CLAUDE_MEM_WORKER_PORT', e.target.value); }}
+                  value={formState.MAGIC_CLAUDE_MEM_WORKER_PORT || '37777'}
+                  onChange={(e) => { updateSetting('MAGIC_CLAUDE_MEM_WORKER_PORT', e.target.value); }}
                 />
               </FormField>
 
@@ -547,15 +547,15 @@ export function ContextSettingsModal({
                   id="show-last-summary"
                   label="Include last summary"
                   description="Add previous session's summary to context"
-                  checked={formState.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true'}
-                  onChange={() => { toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY'); }}
+                  checked={formState.MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true'}
+                  onChange={() => { toggleBoolean('MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY'); }}
                 />
                 <ToggleSwitch
                   id="show-last-message"
                   label="Include last message"
                   description="Add previous session's final message"
-                  checked={formState.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true'}
-                  onChange={() => { toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE'); }}
+                  checked={formState.MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true'}
+                  onChange={() => { toggleBoolean('MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE'); }}
                 />
               </div>
             </CollapsibleSection>

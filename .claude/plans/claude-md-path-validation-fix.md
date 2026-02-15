@@ -2,7 +2,7 @@
 
 ## Problem Summary
 
-Claude-Mem 9.0's distributed CLAUDE.md feature has a **critical path validation bug** that creates invalid directories when Claude SDK agent outputs non-path strings in file tracking XML tags (`<files_read>`, `<files_modified>`).
+Magic-Claude-Mem 9.0's distributed CLAUDE.md feature has a **critical path validation bug** that creates invalid directories when Claude SDK agent outputs non-path strings in file tracking XML tags (`<files_read>`, `<files_modified>`).
 
 ### Root Cause
 
@@ -13,8 +13,8 @@ if (projectRoot && !path.isAbsolute(filePath)) {
 }
 ```
 
-- `path.isAbsolute('~/.claude-mem/logs')` returns `false` (Node.js doesn't recognize `~`)
-- Code joins: `path.join(projectRoot, '~/.claude-mem/logs')` → `/project/~/.claude-mem/logs`
+- `path.isAbsolute('~/.magic-claude-mem/logs')` returns `false` (Node.js doesn't recognize `~`)
+- Code joins: `path.join(projectRoot, '~/.magic-claude-mem/logs')` → `/project/~/.magic-claude-mem/logs`
 - `mkdirSync` creates literal directories
 
 ### Invalid Directories Currently in Repo
@@ -110,7 +110,7 @@ describe('path validation in updateFolderClaudeMdFiles', () => {
     global.fetch = fetchMock;
 
     await updateFolderClaudeMdFiles(
-      ['~/.claude-mem/logs/worker.log'],
+      ['~/.magic-claude-mem/logs/worker.log'],
       'test-project',
       37777,
       tempDir

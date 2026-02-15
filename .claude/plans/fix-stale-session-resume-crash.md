@@ -222,7 +222,7 @@ describe('SDKAgent Resume Parameter Logic', () => {
 grep -n "hasRealMemorySessionId && session.lastPromptNumber > 1" src/services/worker/SDKAgent.ts
 
 # 2. Verify no crashes in recent logs
-tail -100 ~/.claude-mem/logs/claude-mem-$(date +%Y-%m-%d).log | grep -c "exited with code 1"
+tail -100 ~/.magic-claude-mem/logs/magic-claude-mem-$(date +%Y-%m-%d).log | grep -c "exited with code 1"
 
 # 3. Run tests
 bun test tests/sdk-agent-resume.test.ts

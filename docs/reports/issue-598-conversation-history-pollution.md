@@ -24,11 +24,11 @@ When these become conflated, plugin messages pollute the user's conversation his
 
 ### 2.1 User-Reported Symptoms
 
-When using `/resume`, users see multiple messages starting with "Hello memory agent" appearing in their conversation history. These messages are internal to the claude-mem plugin and should be invisible to users.
+When using `/resume`, users see multiple messages starting with "Hello memory agent" appearing in their conversation history. These messages are internal to the magic-claude-mem plugin and should be invisible to users.
 
 ### 2.2 Source of "Hello memory agent" Messages
 
-The message originates from the mode configuration file at `/Users/alexnewman/conductor/workspaces/claude-mem/budapest/plugin/modes/code.json`:
+The message originates from the mode configuration file at `/Users/alexnewman/conductor/workspaces/magic-claude-mem/budapest/plugin/modes/code.json`:
 
 ```json
 {
@@ -39,7 +39,7 @@ The message originates from the mode configuration file at `/Users/alexnewman/co
 }
 ```
 
-This greeting is injected via `buildContinuationPrompt()` in `/Users/alexnewman/conductor/workspaces/claude-mem/budapest/src/sdk/prompts.ts`:
+This greeting is injected via `buildContinuationPrompt()` in `/Users/alexnewman/conductor/workspaces/magic-claude-mem/budapest/src/sdk/prompts.ts`:
 
 ```typescript
 export function buildContinuationPrompt(userPrompt: string, promptNumber: number, contentSessionId: string, mode: ModeConfig): string {
@@ -70,7 +70,7 @@ The plugin uses a dual session ID system to maintain isolation between user conv
 | `contentSessionId` | User's Claude Code session | From hook context | Yes - this IS the user's session |
 | `memorySessionId` | Plugin's internal SDK session | Captured from SDK responses | **NEVER** |
 
-**Critical Code Comments from `/Users/alexnewman/conductor/workspaces/claude-mem/budapest/src/services/sqlite/SessionStore.ts`:**
+**Critical Code Comments from `/Users/alexnewman/conductor/workspaces/magic-claude-mem/budapest/src/services/sqlite/SessionStore.ts`:**
 
 ```typescript
 // NOTE: memory_session_id starts as NULL. It is captured by SDKAgent from the first SDK
@@ -80,7 +80,7 @@ The plugin uses a dual session ID system to maintain isolation between user conv
 
 ### 3.2 SDK Query Flow
 
-The `SDKAgent.startSession()` method at `/Users/alexnewman/conductor/workspaces/claude-mem/budapest/src/services/worker/SDKAgent.ts` controls how the plugin interacts with Claude:
+The `SDKAgent.startSession()` method at `/Users/alexnewman/conductor/workspaces/magic-claude-mem/budapest/src/services/worker/SDKAgent.ts` controls how the plugin interacts with Claude:
 
 ```typescript
 const queryResult = query({
@@ -147,7 +147,7 @@ If the wrong session ID is used, plugin messages get written to the user's trans
 ### 4.3 Affected Users
 
 All users who:
-1. Have claude-mem plugin installed
+1. Have magic-claude-mem plugin installed
 2. Use `/resume` to continue sessions
 3. Have multi-turn conversations where continuation prompts are generated
 
@@ -265,7 +265,7 @@ yield {
 
 Ensure plugin messages are stored in a completely separate transcript path:
 - User transcript: `~/.claude/projects/{cwd}/{contentSessionId}.jsonl`
-- Plugin transcript: `~/.claude-mem/transcripts/{memorySessionId}.jsonl`
+- Plugin transcript: `~/.magic-claude-mem/transcripts/{memorySessionId}.jsonl`
 
 ### 6.3 Long-Term Architecture
 
@@ -310,7 +310,7 @@ This issue should be addressed promptly as it:
 | `tests/sdk-agent-resume.test.ts` | Test file for resume logic |
 
 ### Test Coverage
-The resume parameter logic has unit tests at `/Users/alexnewman/conductor/workspaces/claude-mem/budapest/tests/sdk-agent-resume.test.ts` covering:
+The resume parameter logic has unit tests at `/Users/alexnewman/conductor/workspaces/magic-claude-mem/budapest/tests/sdk-agent-resume.test.ts` covering:
 - INIT prompt scenarios (should NOT resume)
 - Continuation prompt scenarios (should resume with memorySessionId)
 - Edge cases (empty/undefined memorySessionId)

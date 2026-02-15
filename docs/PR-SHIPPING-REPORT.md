@@ -1,4 +1,4 @@
-# Claude-Mem PR Shipping Report
+# Magic-Claude-Mem PR Shipping Report
 *Generated: 2026-02-04*
 
 ## Executive Summary
@@ -111,7 +111,7 @@
 | Risk | Medium |
 
 **What it does:**
-- Adds `claude-mem generate` and `claude-mem clean` CLI commands
+- Adds `magic-claude-mem generate` and `magic-claude-mem clean` CLI commands
 - Fixes validation bugs (deleted folders recreated from stale DB)
 - Fixes Windows path handling
 - Adds automatic shell alias installation

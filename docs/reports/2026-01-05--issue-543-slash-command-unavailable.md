@@ -1,4 +1,4 @@
-# Issue #543 Analysis: /claude-mem Slash Command Not Available Despite Installation
+# Issue #543 Analysis: /magic-claude-mem Slash Command Not Available Despite Installation
 
 **Date:** 2026-01-05
 **Version Analyzed:** 8.5.9
@@ -7,7 +7,7 @@
 
 ## Issue Summary
 
-A user reports that the `/claude-mem diagnostics` command returns "Unknown slash command: claude-mem" after installing claude-mem v8.5.9 on Windows.
+A user reports that the `/magic-claude-mem diagnostics` command returns "Unknown slash command: magic-claude-mem" after installing magic-claude-mem v8.5.9 on Windows.
 
 ### Reported Environment
 - Claude-mem version: 8.5.9
@@ -23,9 +23,9 @@ A user reports that the `/claude-mem diagnostics` command returns "Unknown slash
 
 ## Root Cause Analysis
 
-### Finding 1: No `/claude-mem` Slash Command Exists
+### Finding 1: No `/magic-claude-mem` Slash Command Exists
 
-**Critical Discovery**: The `/claude-mem diagnostics` command does not exist in claude-mem. After extensive codebase analysis:
+**Critical Discovery**: The `/magic-claude-mem diagnostics` command does not exist in magic-claude-mem. After extensive codebase analysis:
 
 1. **No slash command registration found**: The `plugin/commands/` directory is empty. Claude-mem does not register any slash commands.
 
@@ -33,7 +33,7 @@ A user reports that the `/claude-mem diagnostics` command returns "Unknown slash
    - `mem-search/` - Memory search functionality
    - `troubleshoot/` - Troubleshooting functionality
    - `search/` - Search operations
-   - `claude-mem-settings/` - Settings management
+   - `magic-claude-mem-settings/` - Settings management
 
 3. **Empty skill directories**: All skill directories currently contain only empty subdirectories (`operations/`, `principles/`) with no SKILL.md files present in the built plugin. This suggests either:
    - Skills are dynamically loaded from the worker service
@@ -46,7 +46,7 @@ According to the documentation (`docs/public/troubleshooting.mdx`):
 
 > "Describe any issues you're experiencing to Claude, and the troubleshoot skill will automatically activate to provide diagnosis and fixes."
 
-The troubleshoot skill is designed to be **invoked naturally** - users describe their problem to Claude, and the skill auto-invokes. There is no `/claude-mem diagnostics` command.
+The troubleshoot skill is designed to be **invoked naturally** - users describe their problem to Claude, and the skill auto-invokes. There is no `/magic-claude-mem diagnostics` command.
 
 ### Finding 3: Settings.json Creation Flow
 
@@ -120,7 +120,7 @@ After investigation, the skill directories in `plugin/skills/` are scaffolding s
 
 ## Proposed Diagnosis
 
-The user's issue is **not** that `/claude-mem diagnostics` doesn't work - that command never existed. The actual issues are:
+The user's issue is **not** that `/magic-claude-mem diagnostics` doesn't work - that command never existed. The actual issues are:
 
 1. **Misunderstanding of troubleshoot functionality**: The user expects a slash command but should describe issues naturally to Claude.
 
@@ -161,11 +161,11 @@ curl http://localhost:37777/health
 ```powershell
 curl http://localhost:37777/api/settings
 ```
-This will create `~/.claude-mem/settings.json` with defaults.
+This will create `~/.magic-claude-mem/settings.json` with defaults.
 
 ### Step 5: For Diagnostics - Natural Language
-Instead of `/claude-mem diagnostics`, describe the issue to Claude:
-> "I'm having issues with claude-mem. Can you help troubleshoot?"
+Instead of `/magic-claude-mem diagnostics`, describe the issue to Claude:
+> "I'm having issues with magic-claude-mem. Can you help troubleshoot?"
 
 The troubleshoot skill should auto-invoke if the worker is running.
 
@@ -173,10 +173,10 @@ The troubleshoot skill should auto-invoke if the worker is running.
 
 ### 1. Add Diagnostic Slash Command
 
-Create a `/claude-mem` command for diagnostics. File: `plugin/commands/claude-mem.json`:
+Create a `/magic-claude-mem` command for diagnostics. File: `plugin/commands/magic-claude-mem.json`:
 ```json
 {
-  "name": "claude-mem",
+  "name": "magic-claude-mem",
   "description": "Claude-mem diagnostics and status",
   "handler": "scripts/diagnostic-command.js"
 }
@@ -186,9 +186,9 @@ Create a `/claude-mem` command for diagnostics. File: `plugin/commands/claude-me
 
 Modify `smart-install.js` to create settings.json during installation:
 ```javascript
-const settingsPath = join(homedir(), '.claude-mem', 'settings.json');
+const settingsPath = join(homedir(), '.magic-claude-mem', 'settings.json');
 if (!existsSync(settingsPath)) {
-  mkdirSync(join(homedir(), '.claude-mem'), { recursive: true });
+  mkdirSync(join(homedir(), '.magic-claude-mem'), { recursive: true });
   writeFileSync(settingsPath, JSON.stringify(getDefaults(), null, 2));
   console.log('Created settings.json with defaults');
 }
@@ -201,7 +201,7 @@ Add explicit error messages when worker fails to start on Windows:
 if (process.platform === 'win32' && !workerStarted) {
   console.error('Worker failed to start on Windows.');
   console.error('Please run manually: bun plugin/scripts/worker-service.cjs start');
-  console.error('And check: https://docs.claude-mem.ai/troubleshooting');
+  console.error('And check: https://docs.magic-claude-mem.ai/troubleshooting');
 }
 ```
 
@@ -240,9 +240,9 @@ If Issue #557 relates to initialization issues, this analysis confirms:
 
 The reported issue is a **user expectation mismatch** combined with a **Windows initialization failure**:
 
-1. `/claude-mem diagnostics` does not exist - users should use natural language to invoke the troubleshoot skill
+1. `/magic-claude-mem diagnostics` does not exist - users should use natural language to invoke the troubleshoot skill
 2. The worker service failed to start, causing cascading issues (no settings, no context)
 3. Documentation could be clearer about available commands vs skills
 4. Windows-specific initialization issues are a known pattern
 
-The fix should include both user documentation improvements and potentially adding a `/claude-mem` diagnostic command for discoverability.
+The fix should include both user documentation improvements and potentially adding a `/magic-claude-mem` diagnostic command for discoverability.

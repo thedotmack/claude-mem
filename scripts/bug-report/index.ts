@@ -121,7 +121,7 @@ function buildPrompt(
   expectedBehavior?: string,
   stepsToReproduce?: string
 ): string {
-  let prompt = `You are a GitHub issue formatter. Given system diagnostics and a user's bug description, create a well-structured GitHub issue for the claude-mem repository.
+  let prompt = `You are a GitHub issue formatter. Given system diagnostics and a user's bug description, create a well-structured GitHub issue for the magic-claude-mem repository.
 
 SYSTEM DIAGNOSTICS:
 ${diagnostics}

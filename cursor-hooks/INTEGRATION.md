@@ -1,8 +1,8 @@
-# Claude-Mem ↔ Cursor Integration Architecture
+# Magic-Claude-Mem ↔ Cursor Integration Architecture
 
 ## Overview
 
-This integration connects claude-mem's persistent memory system to Cursor's hook system, enabling:
+This integration connects magic-claude-mem's persistent memory system to Cursor's hook system, enabling:
 - Automatic capture of agent actions (MCP tools, shell commands, file edits)
 - Context retrieval from past sessions
 - Session summarization for future reference
@@ -47,7 +47,7 @@ This integration connects claude-mem's persistent memory system to Cursor's hook
        │
        ▼
 ┌─────────────────────────────────────┐
-│   Claude-Mem Worker Service         │
+│   Magic-Claude-Mem Worker Service         │
 │   (Port 37777)                      │
 │  ┌────────────────────────────────┐ │
 │  │ /api/sessions/init            │ │
@@ -78,7 +78,7 @@ beforeSubmitPrompt hook fires
 session-init.sh
     ├─ Extract conversation_id, project name
     ├─ POST /api/sessions/init
-    └─ Initialize session in claude-mem
+    └─ Initialize session in magic-claude-mem
     ↓
 context-inject.sh
     ├─ GET /api/context/inject?project=...
@@ -96,7 +96,7 @@ afterMCPExecution / afterShellExecution hook fires
     ↓
 save-observation.sh
     ├─ Extract tool_name, tool_input, tool_response
-    ├─ Map to claude-mem observation format
+    ├─ Map to magic-claude-mem observation format
     ├─ POST /api/sessions/observations
     └─ Store observation in database
 ```
@@ -131,14 +131,14 @@ session-summary.sh
 
 ### Session ID Mapping
 
-| Cursor Field | Claude-Mem Field | Notes |
+| Cursor Field | Magic-Claude-Mem Field | Notes |
 |-------------|------------------|-------|
 | `conversation_id` | `contentSessionId` | Stable across turns, used as primary session identifier |
 | `generation_id` | (fallback) | Used if conversation_id unavailable |
 
 ### Tool Mapping
 
-| Cursor Event | Claude-Mem Tool Name | Input Format |
+| Cursor Event | Magic-Claude-Mem Tool Name | Input Format |
 |-------------|---------------------|--------------|
 | `afterMCPExecution` | `tool_name` from event | `tool_input` as JSON |
 | `afterShellExecution` | `"Bash"` | `{command: "..."}` |
@@ -168,9 +168,9 @@ session-summary.sh
 ## Configuration
 
 ### Worker Settings
-Located in `~/.claude-mem/settings.json`:
-- `CLAUDE_MEM_WORKER_PORT` (default: 37777)
-- `CLAUDE_MEM_WORKER_HOST` (default: 127.0.0.1)
+Located in `~/.magic-claude-mem/settings.json`:
+- `MAGIC_CLAUDE_MEM_WORKER_PORT` (default: 37777)
+- `MAGIC_CLAUDE_MEM_WORKER_HOST` (default: 127.0.0.1)
 
 ### Hook Settings
 Located in `hooks.json`:
@@ -197,7 +197,7 @@ Located in `hooks.json`:
 ## Limitations
 
 1. **Context Injection**: Cursor's `beforeSubmitPrompt` doesn't support prompt modification. Context must be retrieved via:
-   - MCP tools (claude-mem provides search tools)
+   - MCP tools (magic-claude-mem provides search tools)
    - Manual retrieval from web viewer
    - Future: Agent SDK integration
 

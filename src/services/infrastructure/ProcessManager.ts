@@ -19,7 +19,7 @@ import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 const execAsync = promisify(exec);
 
 // Standard paths for PID file management
-const DATA_DIR = path.join(homedir(), '.claude-mem');
+const DATA_DIR = path.join(homedir(), '.magic-claude-mem');
 const PID_FILE = path.join(DATA_DIR, 'worker.pid');
 
 export interface PidInfo {
@@ -280,7 +280,7 @@ export function spawnDaemon(
   const isWindows = process.platform === 'win32';
   const env = {
     ...process.env,
-    CLAUDE_MEM_WORKER_PORT: String(port),
+    MAGIC_CLAUDE_MEM_WORKER_PORT: String(port),
     ...extraEnv
   };
 
@@ -296,7 +296,7 @@ export function spawnDaemon(
     // Previously we serialized ALL of process.env (~100+ vars), exceeding
     // Windows' ~8191 char command line limit and causing silent spawn failures.
     const newEnvVars: Record<string, string> = {
-      CLAUDE_MEM_WORKER_PORT: String(port),
+      MAGIC_CLAUDE_MEM_WORKER_PORT: String(port),
       ...extraEnv
     };
     const envPairs = Object.entries(newEnvVars)

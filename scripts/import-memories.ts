@@ -9,7 +9,7 @@
 
 import { existsSync, readFileSync } from 'fs';
 
-const WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT || 37777;
+const WORKER_PORT = process.env.MAGIC_CLAUDE_MEM_WORKER_PORT || 37777;
 const WORKER_URL = `http://127.0.0.1:${WORKER_PORT}`;
 
 async function importMemories(inputFile: string) {
@@ -39,7 +39,7 @@ async function importMemories(inputFile: string) {
     }
   } catch (error) {
     console.error(`❌ Worker not running at ${WORKER_URL}`);
-    console.error('   Please ensure the claude-mem worker is running.');
+    console.error('   Please ensure the magic-claude-mem worker is running.');
     process.exit(1);
   }
 

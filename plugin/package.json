@@ -1,8 +1,8 @@
 {
-  "name": "claude-mem-plugin",
+  "name": "magic-claude-mem-plugin",
   "version": "9.1.4",
   "private": true,
-  "description": "Runtime dependencies for claude-mem bundled hooks",
+  "description": "Runtime dependencies for magic-claude-mem bundled hooks",
   "type": "module",
   "dependencies": {
     "better-sqlite3": "^12.6.2"

@@ -165,7 +165,7 @@ async function getDatabaseInfo(
   dataDir: string
 ): Promise<{ exists: boolean; size?: number }> {
   try {
-    const dbPath = path.join(dataDir, "claude-mem.db");
+    const dbPath = path.join(dataDir, "magic-claude-mem.db");
     const stats = await fs.stat(dbPath);
     return { exists: true, size: stats.size };
   } catch (error) {
@@ -177,7 +177,7 @@ export async function collectDiagnostics(
   options: { includeLogs?: boolean } = {}
 ): Promise<SystemDiagnostics> {
   const homeDir = os.homedir();
-  const dataDir = path.join(homeDir, ".claude-mem");
+  const dataDir = path.join(homeDir, ".magic-claude-mem");
   const pluginPath = path.join(
     homeDir,
     ".claude",
@@ -186,7 +186,7 @@ export async function collectDiagnostics(
     "doublefx"
   );
   const cwd = process.cwd();
-  const isDevMode = cwd.includes("claude-mem") && !cwd.includes(".claude");
+  const isDevMode = cwd.includes("magic-claude-mem") && !cwd.includes(".claude");
 
   // Collect version information
   const [claudeMem, claudeCode, bun, osVersion] = await Promise.all([
@@ -258,7 +258,7 @@ export async function collectDiagnostics(
   // Database info
   const dbInfo = await getDatabaseInfo(dataDir);
   const database = {
-    path: sanitizePath(path.join(dataDir, "claude-mem.db")),
+    path: sanitizePath(path.join(dataDir, "magic-claude-mem.db")),
     exists: dbInfo.exists,
     size: dbInfo.size,
     // TODO: Add table counts if we want to query the database
@@ -331,11 +331,11 @@ export function formatDiagnostics(diagnostics: SystemDiagnostics): string {
   if (diagnostics.config.settings) {
     output += "- **Key Settings**:\n";
     const keySettings = [
-      "CLAUDE_MEM_MODEL",
-      "CLAUDE_MEM_WORKER_PORT",
-      "CLAUDE_MEM_WORKER_HOST",
-      "CLAUDE_MEM_LOG_LEVEL",
-      "CLAUDE_MEM_CONTEXT_OBSERVATIONS",
+      "MAGIC_CLAUDE_MEM_MODEL",
+      "MAGIC_CLAUDE_MEM_WORKER_PORT",
+      "MAGIC_CLAUDE_MEM_WORKER_HOST",
+      "MAGIC_CLAUDE_MEM_LOG_LEVEL",
+      "MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS",
     ];
     for (const key of keySettings) {
       if (diagnostics.config.settings[key]) {

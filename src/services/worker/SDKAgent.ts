@@ -77,7 +77,7 @@ export class SDKAgent {
     // NEVER use contentSessionId for resume - that would inject messages into the user's transcript!
     const hasRealMemorySessionId = !!session.memorySessionId;
 
-    // Build isolated environment from ~/.claude-mem/.env
+    // Build isolated environment from ~/.magic-claude-mem/.env
     // This prevents Issue #733: random ANTHROPIC_API_KEY from project .env files
     // being used instead of the configured auth method (CLI subscription or explicit API key)
     const isolatedEnv = buildIsolatedEnv();
@@ -128,7 +128,7 @@ export class SDKAgent {
         pathToClaudeCodeExecutable: claudePath,
         // Custom spawn function captures PIDs to fix zombie process accumulation
         spawnClaudeCodeProcess: createPidCapturingSpawn(session.sessionDbId),
-        env: isolatedEnv  // Use isolated credentials from ~/.claude-mem/.env, not process.env
+        env: isolatedEnv  // Use isolated credentials from ~/.magic-claude-mem/.env, not process.env
       }
     });
 
@@ -412,15 +412,15 @@ export class SDKAgent {
       logger.debug('SDK', 'Claude executable auto-detection failed', {}, error as Error);
     }
 
-    throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json');
+    throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.magic-claude-mem/settings.json');
   }
 
   /**
    * Get model ID from settings or environment
    */
   private getModelId(): string {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settingsPath = path.join(homedir(), '.magic-claude-mem', 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    return settings.CLAUDE_MEM_MODEL;
+    return settings.MAGIC_CLAUDE_MEM_MODEL;
   }
 }

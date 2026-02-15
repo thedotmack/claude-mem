@@ -105,7 +105,7 @@ async function main() {
   // Help flag
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`
-Claude-Mem Pending Queue Manager
+Magic-Claude-Mem Pending Queue Manager
 
 Check and process pending observation queue backlog.
 
@@ -128,7 +128,7 @@ Examples:
   bun scripts/check-pending-queue.ts --process --limit 5
 
 What is this for?
-  If the claude-mem worker crashes or restarts, pending observations may
+  If the magic-claude-mem worker crashes or restarts, pending observations may
   be left unprocessed. This script shows the backlog and lets you trigger
   processing. The worker no longer auto-recovers on startup to give you
   control over when processing happens.
@@ -140,7 +140,7 @@ What is this for?
   const limitArg = args.find((_, i) => args[i - 1] === '--limit');
   const limit = limitArg ? parseInt(limitArg, 10) : 10;
 
-  console.log('\n=== Claude-Mem Pending Queue Status ===\n');
+  console.log('\n=== Magic-Claude-Mem Pending Queue Status ===\n');
 
   // Check worker health
   const healthy = await checkWorkerHealth();

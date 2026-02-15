@@ -35,7 +35,7 @@ import { globSync } from 'glob';
 //
 // REPLACEMENT FORMAT:
 // Original output gets replaced with:
-//   "[Strategically Omitted by Claude-Mem to save tokens]
+//   "[Strategically Omitted by Magic-Claude-Mem to save tokens]
 //
 //    [Observation: Title here]
 //    Facts: ...
@@ -43,11 +43,11 @@ import { globSync } from 'glob';
 // =============================================================================
 
 // Configuration
-const DB_PATH = path.join(homedir(), '.claude-mem', 'claude-mem.db');
+const DB_PATH = path.join(homedir(), '.magic-claude-mem', 'magic-claude-mem.db');
 const MAX_TRANSCRIPTS = parseInt(process.env.MAX_TRANSCRIPTS || '500', 10);
 
 // Find transcript files (most recent first)
-const TRANSCRIPT_DIR = path.join(homedir(), '.claude/projects/-Users-alexnewman-Scripts-claude-mem');
+const TRANSCRIPT_DIR = path.join(homedir(), '.claude/projects/-Users-alexnewman-Scripts-magic-claude-mem');
 const allTranscriptFiles = globSync(path.join(TRANSCRIPT_DIR, '*.jsonl'));
 
 // Sort by modification time (most recent first), take MAX_TRANSCRIPTS

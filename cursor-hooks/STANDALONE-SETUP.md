@@ -1,10 +1,10 @@
-# Claude-Mem for Cursor (No Claude Code Required)
+# Magic-Claude-Mem for Cursor (No Claude Code Required)
 
 > **Persistent AI Memory for Cursor - Zero Cost to Start**
 
 ## Overview
 
-Use claude-mem's persistent memory in Cursor without a Claude Code subscription. Choose between free-tier providers (Gemini, OpenAI-compatible) or paid options.
+Use magic-claude-mem's persistent memory in Cursor without a Claude Code subscription. Choose between free-tier providers (Gemini, OpenAI-compatible) or paid options.
 
 **What You Get**:
 - **Persistent memory** that survives across sessions - your AI remembers what it worked on
@@ -30,12 +30,12 @@ Use claude-mem's persistent memory in Cursor without a Claude Code subscription.
 - Git
 - PowerShell 5.1+ (included with Windows 10/11)
 
-## Step 1: Clone Claude-Mem
+## Step 1: Clone Magic-Claude-Mem
 
 ```bash
 # Clone the repository
-git clone https://github.com/doublefx/claude-mem.git
-cd claude-mem
+git clone https://github.com/doublefx/magic-claude-mem.git
+cd magic-claude-mem
 
 # Install dependencies
 npm install
@@ -46,7 +46,7 @@ npm run build
 
 ## Step 2: Configure Provider (Choose One)
 
-Since you don't have Claude Code, you need to configure an AI provider for claude-mem's summarization engine.
+Since you don't have Claude Code, you need to configure an AI provider for magic-claude-mem's summarization engine.
 
 ### Option A: Gemini (Recommended - Free Tier)
 
@@ -54,15 +54,15 @@ Gemini offers 1500 free requests per day, plenty for typical usage.
 
 ```bash
 # Create settings directory
-mkdir -p ~/.claude-mem
+mkdir -p ~/.magic-claude-mem
 
 # Create settings file
-cat > ~/.claude-mem/settings.json << 'EOF'
+cat > ~/.magic-claude-mem/settings.json << 'EOF'
 {
-  "CLAUDE_MEM_PROVIDER": "gemini",
-  "CLAUDE_MEM_GEMINI_API_KEY": "YOUR_GEMINI_API_KEY",
-  "CLAUDE_MEM_GEMINI_MODEL": "gemini-2.5-flash-lite",
-  "CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED": true
+  "MAGIC_CLAUDE_MEM_PROVIDER": "gemini",
+  "MAGIC_CLAUDE_MEM_GEMINI_API_KEY": "YOUR_GEMINI_API_KEY",
+  "MAGIC_CLAUDE_MEM_GEMINI_MODEL": "gemini-2.5-flash-lite",
+  "MAGIC_CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED": true
 }
 EOF
 ```
@@ -74,11 +74,11 @@ EOF
 Use any OpenAI-compatible endpoint, including OpenRouter which provides access to many models with free options.
 
 ```bash
-mkdir -p ~/.claude-mem
-cat > ~/.claude-mem/settings.json << 'EOF'
+mkdir -p ~/.magic-claude-mem
+cat > ~/.magic-claude-mem/settings.json << 'EOF'
 {
-  "CLAUDE_MEM_PROVIDER": "openai-compat",
-  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "YOUR_API_KEY"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "openai-compat",
+  "MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "YOUR_API_KEY"
 }
 EOF
 ```
@@ -94,10 +94,10 @@ EOF
 If you have Anthropic API credits but not a Claude Code subscription:
 
 ```bash
-mkdir -p ~/.claude-mem
-cat > ~/.claude-mem/settings.json << 'EOF'
+mkdir -p ~/.magic-claude-mem
+cat > ~/.magic-claude-mem/settings.json << 'EOF'
 {
-  "CLAUDE_MEM_PROVIDER": "claude",
+  "MAGIC_CLAUDE_MEM_PROVIDER": "claude",
   "ANTHROPIC_API_KEY": "YOUR_ANTHROPIC_API_KEY"
 }
 EOF
@@ -106,7 +106,7 @@ EOF
 ## Step 3: Install Cursor Hooks
 
 ```bash
-# From the claude-mem repo directory (recommended - all projects)
+# From the magic-claude-mem repo directory (recommended - all projects)
 npm run cursor:install -- user
 
 # Or for project-level only:
@@ -160,14 +160,14 @@ The worker runs in the background and handles:
 
 Verify your settings file exists and has valid credentials:
 ```bash
-cat ~/.claude-mem/settings.json
+cat ~/.magic-claude-mem/settings.json
 ```
 
 ### Worker not starting
 
 Check logs:
 ```bash
-tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
+tail -f ~/.magic-claude-mem/logs/worker-$(date +%Y-%m-%d).log
 ```
 
 ### Hooks not executing
@@ -190,7 +190,7 @@ If you hit the 1500 requests/day limit:
 
 - Read [README.md](README.md) for detailed hook documentation
 - Check [CONTEXT-INJECTION.md](CONTEXT-INJECTION.md) for context behavior details
-- Visit https://docs.claude-mem.ai for full documentation
+- Visit https://docs.magic-claude-mem.ai for full documentation
 
 ## Quick Reference
 
@@ -221,19 +221,19 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 ```powershell
 # Clone and build
-git clone https://github.com/doublefx/claude-mem.git
-cd claude-mem
+git clone https://github.com/doublefx/magic-claude-mem.git
+cd magic-claude-mem
 npm install
 npm run build
 
 # Configure provider (Gemini example)
-$settingsDir = "$env:USERPROFILE\.claude-mem"
+$settingsDir = "$env:USERPROFILE\.magic-claude-mem"
 New-Item -ItemType Directory -Force -Path $settingsDir
 
 @"
 {
-  "CLAUDE_MEM_PROVIDER": "gemini",
-  "CLAUDE_MEM_GEMINI_API_KEY": "YOUR_GEMINI_API_KEY"
+  "MAGIC_CLAUDE_MEM_PROVIDER": "gemini",
+  "MAGIC_CLAUDE_MEM_GEMINI_API_KEY": "YOUR_GEMINI_API_KEY"
 }
 "@ | Out-File -FilePath "$settingsDir\settings.json" -Encoding UTF8
 

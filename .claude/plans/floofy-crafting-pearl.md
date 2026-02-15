@@ -2,7 +2,7 @@
 
 ## Context
 
-The claude-mem project (173 source files, 48 test files) has `strict: true` in tsconfig but no linter. The user wants to enforce stricter typing, particularly around `unknown`, `never`, and `any`. There are currently 5 `catch (error: any)` instances, 10 `as any` casts, and 11 `@ts-ignore`/`@ts-nocheck` comments in the codebase. ESLint with `@typescript-eslint` will provide rules to prevent new type safety violations and flag existing ones.
+The magic-claude-mem project (173 source files, 48 test files) has `strict: true` in tsconfig but no linter. The user wants to enforce stricter typing, particularly around `unknown`, `never`, and `any`. There are currently 5 `catch (error: any)` instances, 10 `as any` casts, and 11 `@ts-ignore`/`@ts-nocheck` comments in the codebase. ESLint with `@typescript-eslint` will provide rules to prevent new type safety violations and flag existing ones.
 
 ## What Gets Installed
 

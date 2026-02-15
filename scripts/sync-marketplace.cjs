@@ -12,7 +12,7 @@ const path = require('path');
 const os = require('os');
 
 const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'doublefx');
-const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'doublefx', 'claude-mem');
+const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'doublefx', 'magic-claude-mem');
 
 function getCurrentBranch() {
   try {
@@ -99,7 +99,7 @@ try {
       winHome = null;
     }
     const winCachePath = winHome
-      ? path.join(winHome, '.claude', 'plugins', 'cache', 'doublefx', 'claude-mem', version)
+      ? path.join(winHome, '.claude', 'plugins', 'cache', 'doublefx', 'magic-claude-mem', version)
       : null;
     if (winCachePath && existsSync(path.dirname(winCachePath))) {
       console.log('Syncing to Windows cache (WSL detected)...');
