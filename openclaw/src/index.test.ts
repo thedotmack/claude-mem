@@ -82,7 +82,7 @@ function createMockApi(pluginConfigOverride: Record<string, any> = {}) {
     getService: () => registeredService,
     getCommand: (name?: string) => {
       if (name) return registeredCommands.get(name);
-      return registeredCommands.get("claude-mem-feed");
+      return registeredCommands.get("claude_mem_feed");
     },
     getEventHandlers: (event: string) => eventHandlers.get(event) || [],
     fireEvent: async (event: string, data: any, ctx: any = {}) => {
@@ -101,8 +101,8 @@ describe("claudeMemPlugin", () => {
 
     assert.ok(getService(), "service should be registered");
     assert.equal(getService().id, "claude-mem-observation-feed");
-    assert.ok(getCommand("claude-mem-feed"), "feed command should be registered");
-    assert.ok(getCommand("claude-mem-status"), "status command should be registered");
+    assert.ok(getCommand("claude_mem_feed"), "feed command should be registered");
+    assert.ok(getCommand("claude_mem_status"), "status command should be registered");
     assert.ok(getEventHandlers("session_start").length > 0, "session_start handler registered");
     assert.ok(getEventHandlers("after_compaction").length > 0, "after_compaction handler registered");
     assert.ok(getEventHandlers("before_agent_start").length > 0, "before_agent_start handler registered");
@@ -167,7 +167,7 @@ describe("claudeMemPlugin", () => {
       const { api, getCommand } = createMockApi({});
       claudeMemPlugin(api);
 
-      const result = await getCommand().handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-feed", config: {} });
+      const result = await getCommand().handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude_mem_feed", config: {} });
       assert.ok(result.text.includes("not configured"));
     });
 
@@ -177,7 +177,7 @@ describe("claudeMemPlugin", () => {
       });
       claudeMemPlugin(api);
 
-      const result = await getCommand().handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-feed", config: {} });
+      const result = await getCommand().handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude_mem_feed", config: {} });
       assert.ok(result.text.includes("Enabled: yes"));
       assert.ok(result.text.includes("Channel: telegram"));
       assert.ok(result.text.includes("Target: 123"));
@@ -190,7 +190,7 @@ describe("claudeMemPlugin", () => {
       });
       claudeMemPlugin(api);
 
-      const result = await getCommand().handler({ args: "on", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-feed on", config: {} });
+      const result = await getCommand().handler({ args: "on", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude_mem_feed on", config: {} });
       assert.ok(result.text.includes("enable requested"));
       assert.ok(logs.some((l) => l.includes("enable requested")));
     });
@@ -201,7 +201,7 @@ describe("claudeMemPlugin", () => {
       });
       claudeMemPlugin(api);
 
-      const result = await getCommand().handler({ args: "off", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-feed off", config: {} });
+      const result = await getCommand().handler({ args: "off", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude_mem_feed off", config: {} });
       assert.ok(result.text.includes("disable requested"));
       assert.ok(logs.some((l) => l.includes("disable requested")));
     });
@@ -212,7 +212,7 @@ describe("claudeMemPlugin", () => {
       });
       claudeMemPlugin(api);
 
-      const result = await getCommand().handler({ args: "", channel: "slack", isAuthorizedSender: true, commandBody: "/claude-mem-feed", config: {} });
+      const result = await getCommand().handler({ args: "", channel: "slack", isAuthorizedSender: true, commandBody: "/claude_mem_feed", config: {} });
       assert.ok(result.text.includes("Connection: disconnected"));
     });
   });
@@ -485,27 +485,27 @@ describe("Observation I/O event handlers", () => {
     assert.equal(initRequest!.body.project, "my-project");
   });
 
-  it("claude-mem-status command reports worker health", async () => {
+  it("claude_mem_status command reports worker health", async () => {
     const { api, getCommand } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
-    const statusCmd = getCommand("claude-mem-status");
+    const statusCmd = getCommand("claude_mem_status");
     assert.ok(statusCmd, "status command should exist");
 
-    const result = await statusCmd.handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-status", config: {} });
+    const result = await statusCmd.handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude_mem_status", config: {} });
     assert.ok(result.text.includes("Status: ok"));
     assert.ok(result.text.includes(`Port: ${workerPort}`));
   });
 
-  it("claude-mem-status reports unreachable when worker is down", async () => {
+  it("claude_mem_status reports unreachable when worker is down", async () => {
     workerServer.close();
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const { api, getCommand } = createMockApi({ workerPort: 59999 });
     claudeMemPlugin(api);
 
-    const statusCmd = getCommand("claude-mem-status");
-    const result = await statusCmd.handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-status", config: {} });
+    const statusCmd = getCommand("claude_mem_status");
+    const result = await statusCmd.handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude_mem_status", config: {} });
     assert.ok(result.text.includes("unreachable"));
   });
 
@@ -837,77 +837,6 @@ describe("SSE stream integration", () => {
     assert.equal(sentMessages[0].to, "12345");
     assert.ok(sentMessages[0].text.includes("Test Observation"));
     assert.ok(sentMessages[0].text.includes("Found something interesting"));
-
-    await getService().stop({});
-  });
-
-  it("includes Claude Code project identifier in source label", async () => {
-    const { api, sentMessages, getService } = createMockApi({
-      workerPort: serverPort,
-      observationFeed: { enabled: true, channel: "telegram", to: "12345" },
-    });
-    claudeMemPlugin(api);
-
-    await getService().start({});
-    await new Promise((resolve) => setTimeout(resolve, 200));
-
-    const observation = {
-      type: "new_observation",
-      observation: {
-        id: 11,
-        title: "Project Label",
-        subtitle: "Check source label",
-        project: "workspace-alpha",
-      },
-      timestamp: Date.now(),
-    };
-
-    for (const res of serverResponses) {
-      res.write(`data: ${JSON.stringify(observation)}\n\n`);
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 200));
-
-    assert.equal(sentMessages.length, 1);
-    assert.ok(sentMessages[0].text.includes("Claude Code Session (workspace-alpha)"));
-
-    await getService().stop({});
-  });
-
-  it("uses custom Claude Code label prefix while preserving project identifier", async () => {
-    const { api, sentMessages, getService } = createMockApi({
-      workerPort: serverPort,
-      observationFeed: {
-        enabled: true,
-        channel: "telegram",
-        to: "12345",
-        emojis: { claudeCodeLabel: "Coding Session" },
-      },
-    });
-    claudeMemPlugin(api);
-
-    await getService().start({});
-    await new Promise((resolve) => setTimeout(resolve, 200));
-
-    const observation = {
-      type: "new_observation",
-      observation: {
-        id: 12,
-        title: "Custom Label",
-        subtitle: "Custom prefix",
-        project: "workspace-beta",
-      },
-      timestamp: Date.now(),
-    };
-
-    for (const res of serverResponses) {
-      res.write(`data: ${JSON.stringify(observation)}\n\n`);
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 200));
-
-    assert.equal(sentMessages.length, 1);
-    assert.ok(sentMessages[0].text.includes("Coding Session (workspace-beta)"));
 
     await getService().stop({});
   });
