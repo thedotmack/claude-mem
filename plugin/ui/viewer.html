@@ -4,8 +4,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>claude-mem viewer</title>
-  <link rel="icon" type="image/webp" href="claude-mem-logomark.webp">
+  <title>magic-claude-mem viewer</title>
+  <link rel="icon" type="image/webp" href="magic-brain-still.webp">
   <style>
     @font-face {
       font-family: 'Monaspace Radon';
@@ -553,12 +553,19 @@
 
 
     .logomark {
-      height: 32px;
+      height: 48px;
       width: auto;
+      transition: filter 0.3s ease;
     }
 
-    .logomark.spinning {
-      animation: spin 1.5s linear infinite;
+    .logomark.processing {
+      filter: drop-shadow(0 0 6px rgba(139, 92, 246, 0.7)) drop-shadow(0 0 14px rgba(139, 92, 246, 0.4));
+      animation: glow-pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes glow-pulse {
+      0%, 100% { filter: drop-shadow(0 0 6px rgba(139, 92, 246, 0.7)) drop-shadow(0 0 14px rgba(139, 92, 246, 0.4)); }
+      50% { filter: drop-shadow(0 0 10px rgba(139, 92, 246, 0.9)) drop-shadow(0 0 24px rgba(139, 92, 246, 0.6)); }
     }
 
     .queue-bubble {
@@ -2053,7 +2060,7 @@
       }
 
       .logomark {
-        height: 28px;
+        height: 40px;
       }
 
       .logo-text {
