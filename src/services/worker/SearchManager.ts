@@ -271,15 +271,17 @@ export class SearchManager {
       logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
-        // Step 2: Filter by recency (90 days)
-        const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+        // Step 2: Filter by date range (user-specified) or recency (90-day default)
+        const dateRange = searchOptions.dateRange;
+        const rangeStart = dateRange?.start ? new Date(dateRange.start).getTime() : (Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS);
+        const rangeEnd = dateRange?.end ? new Date(dateRange.end).getTime() : Infinity;
         const recentMetadata = chromaResults.metadatas.map((meta, idx) => ({
           id: chromaResults.ids[idx],
           meta,
-          isRecent: (meta.created_at_epoch ?? 0) > ninetyDaysAgo
-        })).filter(item => item.isRecent);
+          isInRange: (meta.created_at_epoch ?? 0) >= rangeStart && (meta.created_at_epoch ?? 0) <= rangeEnd
+        })).filter(item => item.isInRange);
 
-        logger.debug('SEARCH', 'Results within 90-day window', { count: recentMetadata.length });
+        logger.debug('SEARCH', 'Results within date window', { count: recentMetadata.length, hasUserDateRange: !!dateRange });
 
         // Step 3: Categorize IDs by document type
         const obsIds: number[] = [];
