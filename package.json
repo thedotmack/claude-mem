@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "9.0.16",
+  "version": "9.1.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -120,6 +120,7 @@
     "@types/react-dom": "^18.3.0",
     "esbuild": "^0.27.2",
     "eslint": "^9.39.2",
+    "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-vitest": "^0.5.4",
     "globals": "^15.15.0",
     "np": "^11.0.2",

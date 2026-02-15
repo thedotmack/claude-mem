@@ -3,15 +3,20 @@
   "version": "9.1.0",
   "description": "Persistent memory system for Claude Code - seamlessly preserve context across sessions",
   "author": {
-    "name": "Alex Newman"
+    "name": "doublefx",
+    "url": "https://github.com/doublefx"
   },
+  "homepage": "https://github.com/doublefx/claude-mem",
   "repository": "https://github.com/doublefx/claude-mem",
   "license": "AGPL-3.0",
   "keywords": [
+    "claude-code",
     "memory",
     "context",
     "persistence",
     "hooks",
-    "mcp"
+    "mcp",
+    "search",
+    "viewer"
   ]
 }

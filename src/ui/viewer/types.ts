@@ -91,6 +91,32 @@ export interface Settings {
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
 }
 
+export interface FilterState {
+  query: string;
+  project: string;
+  obsTypes: string[];
+  concepts: string[];
+  itemKinds: Array<'observations' | 'sessions' | 'prompts'>;
+  dateStart: string;
+  dateEnd: string;
+}
+
+export interface SearchResponse {
+  observations: Observation[];
+  sessions: Summary[];
+  prompts: UserPrompt[];
+  totalResults: number;
+  query: string;
+}
+
+export interface ActivityDay {
+  date: string;
+  count: number;
+  observations: number;
+  summaries: number;
+  prompts: number;
+}
+
 export interface WorkerStats {
   version?: string;
   uptime?: number;
