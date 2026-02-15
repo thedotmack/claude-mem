@@ -10,7 +10,17 @@ export function ThemeToggle({ preference, onThemeChange }: ThemeToggleProps) {
   const cycleTheme = () => {
     const cycle: ThemePreference[] = ['system', 'light', 'dark'];
     const currentIndex = cycle.indexOf(preference);
-    const nextIndex = (currentIndex + 1) % cycle.length;
+    let nextIndex = (currentIndex + 1) % cycle.length;
+
+    // Skip 'system' if it resolves to the same theme as the current preference,
+    // since the visual result would be identical (e.g. dark → system-dark is a no-op).
+    if (cycle[nextIndex] === 'system') {
+      const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      if (systemTheme === preference) {
+        nextIndex = (nextIndex + 1) % cycle.length;
+      }
+    }
+
     onThemeChange(cycle[nextIndex]);
   };
 
