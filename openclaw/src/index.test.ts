@@ -168,7 +168,7 @@ describe("claudeMemPlugin", () => {
       claudeMemPlugin(api);
 
       const result = await getCommand().handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-feed", config: {} });
-      assert.ok(result.includes("not configured"));
+      assert.ok(result.text.includes("not configured"));
     });
 
     it("returns status when no args", async () => {
@@ -178,10 +178,10 @@ describe("claudeMemPlugin", () => {
       claudeMemPlugin(api);
 
       const result = await getCommand().handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-feed", config: {} });
-      assert.ok(result.includes("Enabled: yes"));
-      assert.ok(result.includes("Channel: telegram"));
-      assert.ok(result.includes("Target: 123"));
-      assert.ok(result.includes("Connection:"));
+      assert.ok(result.text.includes("Enabled: yes"));
+      assert.ok(result.text.includes("Channel: telegram"));
+      assert.ok(result.text.includes("Target: 123"));
+      assert.ok(result.text.includes("Connection:"));
     });
 
     it("handles 'on' argument", async () => {
@@ -191,7 +191,7 @@ describe("claudeMemPlugin", () => {
       claudeMemPlugin(api);
 
       const result = await getCommand().handler({ args: "on", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-feed on", config: {} });
-      assert.ok(result.includes("enable requested"));
+      assert.ok(result.text.includes("enable requested"));
       assert.ok(logs.some((l) => l.includes("enable requested")));
     });
 
@@ -202,7 +202,7 @@ describe("claudeMemPlugin", () => {
       claudeMemPlugin(api);
 
       const result = await getCommand().handler({ args: "off", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-feed off", config: {} });
-      assert.ok(result.includes("disable requested"));
+      assert.ok(result.text.includes("disable requested"));
       assert.ok(logs.some((l) => l.includes("disable requested")));
     });
 
@@ -213,7 +213,7 @@ describe("claudeMemPlugin", () => {
       claudeMemPlugin(api);
 
       const result = await getCommand().handler({ args: "", channel: "slack", isAuthorizedSender: true, commandBody: "/claude-mem-feed", config: {} });
-      assert.ok(result.includes("Connection: disconnected"));
+      assert.ok(result.text.includes("Connection: disconnected"));
     });
   });
 });
@@ -493,8 +493,8 @@ describe("Observation I/O event handlers", () => {
     assert.ok(statusCmd, "status command should exist");
 
     const result = await statusCmd.handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-status", config: {} });
-    assert.ok(result.includes("Status: ok"));
-    assert.ok(result.includes(`Port: ${workerPort}`));
+    assert.ok(result.text.includes("Status: ok"));
+    assert.ok(result.text.includes(`Port: ${workerPort}`));
   });
 
   it("claude-mem-status reports unreachable when worker is down", async () => {
@@ -506,7 +506,7 @@ describe("Observation I/O event handlers", () => {
 
     const statusCmd = getCommand("claude-mem-status");
     const result = await statusCmd.handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-status", config: {} });
-    assert.ok(result.includes("unreachable"));
+    assert.ok(result.text.includes("unreachable"));
   });
 
   it("reuses same contentSessionId for same sessionKey", async () => {

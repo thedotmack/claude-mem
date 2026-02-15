@@ -748,28 +748,28 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       const feedConfig = userConfig.observationFeed;
 
       if (!feedConfig) {
-        return "Observation feed not configured. Add observationFeed to your plugin config.";
+        return { text: "Observation feed not configured. Add observationFeed to your plugin config." };
       }
 
       const arg = ctx.args?.trim();
 
       if (arg === "on") {
         api.logger.info("[claude-mem] Feed enable requested via command");
-        return "Feed enable requested. Update observationFeed.enabled in your plugin config to persist.";
+        return { text: "Feed enable requested. Update observationFeed.enabled in your plugin config to persist." };
       }
 
       if (arg === "off") {
         api.logger.info("[claude-mem] Feed disable requested via command");
-        return "Feed disable requested. Update observationFeed.enabled in your plugin config to persist.";
+        return { text: "Feed disable requested. Update observationFeed.enabled in your plugin config to persist." };
       }
 
-      return [
+      return { text: [
         "Claude-Mem Observation Feed",
         `Enabled: ${feedConfig.enabled ? "yes" : "no"}`,
         `Channel: ${feedConfig.channel || "not set"}`,
         `Target: ${feedConfig.to || "not set"}`,
         `Connection: ${connectionState}`,
-      ].join("\n");
+      ].join("\n") };
     },
   });
 
@@ -782,20 +782,20 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     handler: async () => {
       const healthText = await workerGetText(workerPort, "/api/health", api.logger);
       if (!healthText) {
-        return `Claude-Mem worker unreachable at port ${workerPort}`;
+        return { text: `Claude-Mem worker unreachable at port ${workerPort}` };
       }
 
       try {
         const health = JSON.parse(healthText);
-        return [
+        return { text: [
           "Claude-Mem Worker Status",
           `Status: ${health.status || "unknown"}`,
           `Port: ${workerPort}`,
           `Active sessions: ${sessionIds.size}`,
           `Observation feed: ${connectionState}`,
-        ].join("\n");
+        ].join("\n") };
       } catch {
-        return `Claude-Mem worker responded but returned unexpected data`;
+        return { text: `Claude-Mem worker responded but returned unexpected data` };
       }
     },
   });
