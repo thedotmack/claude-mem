@@ -51,10 +51,21 @@ export class MigrationRunner {
     const appliedVersions = this.db.prepare('SELECT version FROM schema_versions ORDER BY version').all() as SchemaVersion[];
     const maxApplied = appliedVersions.length > 0 ? Math.max(...appliedVersions.map(v => v.version)) : 0;
 
-    // Only run migration004 if no migrations have been applied
-    // This creates the sdk_sessions, observations, and session_summaries tables
-    if (maxApplied === 0) {
-      logger.info('DB', 'Initializing fresh database with migration004');
+    // Run migration004 if not yet applied OR if core tables are missing (Issue #979)
+    // Check for table existence to handle databases that have schema_versions
+    // but are missing core tables (e.g., from interrupted migrations or version mismatches)
+    const migration4Applied = appliedVersions.some(v => v.version === 4);
+    const tablesExist = (() => {
+      try {
+        const tables = this.db.prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sdk_sessions', 'observations', 'session_summaries')"
+        ).all() as { name: string }[];
+        return tables.length === 3;
+      } catch { return false; }
+    })();
+
+    if (!migration4Applied || !tablesExist) {
+      logger.info('DB', 'Running migration004 (core tables)', { migration4Applied, tablesExist });
 
       // Migration004: SDK agent architecture tables
       this.db.run(`
@@ -115,8 +126,8 @@ export class MigrationRunner {
         CREATE INDEX IF NOT EXISTS idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
       `);
 
-      // Record migration004 as applied
-      this.db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(4, new Date().toISOString());
+      // Record migration004 as applied (INSERT OR IGNORE for idempotency)
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(4, new Date().toISOString());
 
       logger.info('DB', 'Migration004 applied successfully');
     }

@@ -39,6 +39,7 @@ export interface PersistentPendingMessage {
 export class PendingMessageStore {
   private db: Database;
   private maxRetries: number;
+  private static readonly MAX_QUEUE_DEPTH = 100;
 
   constructor(db: Database, maxRetries: number = 3) {
     this.db = db;
@@ -50,6 +51,24 @@ export class PendingMessageStore {
    * @returns The database ID of the persisted message
    */
   enqueue(sessionDbId: number, contentSessionId: string, message: PendingMessage): number {
+    // Prevent unbounded queue growth - drop oldest pending message if at capacity
+    const currentCount = this.getPendingCount(sessionDbId);
+    if (currentCount >= PendingMessageStore.MAX_QUEUE_DEPTH) {
+      logger.warn('QUEUE', `Queue depth limit reached (${PendingMessageStore.MAX_QUEUE_DEPTH}), dropping oldest pending message`, {
+        sessionDbId,
+        currentCount
+      });
+      this.db.prepare(`
+        DELETE FROM pending_messages
+        WHERE id = (
+          SELECT id FROM pending_messages
+          WHERE session_db_id = ? AND status = 'pending'
+          ORDER BY id ASC
+          LIMIT 1
+        )
+      `).run(sessionDbId);
+    }
+
     const now = Date.now();
     const stmt = this.db.prepare(`
       INSERT INTO pending_messages (

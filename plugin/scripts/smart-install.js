@@ -10,7 +10,8 @@ import { execSync, spawnSync } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
 
-const ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+const CLAUDE_CONFIG = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+const ROOT = join(CLAUDE_CONFIG, 'plugins', 'marketplaces', 'thedotmack');
 const MARKER = join(ROOT, '.install-version');
 const IS_WINDOWS = process.platform === 'win32';
 

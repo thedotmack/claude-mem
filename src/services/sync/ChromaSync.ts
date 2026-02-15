@@ -17,10 +17,11 @@ import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH, VECTOR_DB_DIR, DATA_DIR } from '../../shared/paths.js';
 import { ChromaServerManager } from './ChromaServerManager.js';
 import path from 'path';
-import os from 'os';
+import fs from 'fs';
+import { execSync } from 'child_process';
 
 interface ChromaDocument {
   id: string;
@@ -85,7 +86,88 @@ export class ChromaSync {
   constructor(project: string) {
     this.project = project;
     this.collectionName = `cm__${project}`;
-    this.VECTOR_DB_DIR = path.join(os.homedir(), '.claude-mem', 'vector-db');
+    this.VECTOR_DB_DIR = VECTOR_DB_DIR;
+  }
+
+  /**
+   * Get or create combined SSL certificate bundle for Zscaler/corporate proxy environments
+   * Combines standard certifi certificates with enterprise security certificates (e.g., Zscaler)
+   */
+  private getCombinedCertPath(): string | undefined {
+    const combinedCertPath = path.join(DATA_DIR, 'combined_certs.pem');
+
+    // If combined certs already exist and are recent (less than 24 hours old), use them
+    if (fs.existsSync(combinedCertPath)) {
+      const stats = fs.statSync(combinedCertPath);
+      const ageMs = Date.now() - stats.mtimeMs;
+      if (ageMs < 24 * 60 * 60 * 1000) {
+        return combinedCertPath;
+      }
+    }
+
+    // Only create on macOS (Zscaler certificate extraction uses macOS security command)
+    if (process.platform !== 'darwin') {
+      return undefined;
+    }
+
+    try {
+      // Use uvx to resolve the correct certifi path for the exact Python environment it uses
+      // This is more reliable than scanning the uv cache directory structure
+      let certifiPath: string | undefined;
+      try {
+        certifiPath = execSync(
+          'uvx --with certifi python -c "import certifi; print(certifi.where())"',
+          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 }
+        ).trim();
+      } catch {
+        // uvx or certifi not available
+        return undefined;
+      }
+
+      if (!certifiPath || !fs.existsSync(certifiPath)) {
+        return undefined;
+      }
+
+      // Try to extract Zscaler certificate from macOS keychain
+      let zscalerCert = '';
+      try {
+        zscalerCert = execSync(
+          'security find-certificate -a -c "Zscaler" -p /Library/Keychains/System.keychain',
+          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000 }
+        );
+      } catch {
+        // Zscaler not found, which is fine - not all environments have it
+        return undefined;
+      }
+
+      // Validate PEM certificate format (must have both BEGIN and END markers)
+      if (!zscalerCert ||
+          !zscalerCert.includes('-----BEGIN CERTIFICATE-----') ||
+          !zscalerCert.includes('-----END CERTIFICATE-----')) {
+        return undefined;
+      }
+
+      // Create combined certificate bundle with atomic write (write to temp, then rename)
+      const certifiContent = fs.readFileSync(certifiPath, 'utf8');
+      const tempPath = combinedCertPath + '.tmp';
+      fs.writeFileSync(tempPath, certifiContent + '\n' + zscalerCert);
+      fs.renameSync(tempPath, combinedCertPath);
+      logger.info('CHROMA_SYNC', 'Created combined SSL certificate bundle for Zscaler', {
+        path: combinedCertPath
+      });
+
+      return combinedCertPath;
+    } catch (error) {
+      logger.debug('CHROMA_SYNC', 'Could not create combined cert bundle', {}, error as Error);
+      return undefined;
+    }
+  }
+
+  /**
+   * Check if Chroma is disabled (Windows)
+   */
+  isDisabled(): boolean {
+    return this.disabled;
   }
 
   /**

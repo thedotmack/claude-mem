@@ -18,6 +18,8 @@ import { SessionManager } from '../../SessionManager.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { getResourceDiagnostics } from '../../../infrastructure/ResourceMonitor.js';
+import { getActiveProcesses } from '../../ProcessRegistry.js';
 
 export class DataRoutes extends BaseRouteHandler {
   constructor(
@@ -57,6 +59,9 @@ export class DataRoutes extends BaseRouteHandler {
     app.post('/api/pending-queue/process', this.handleProcessPendingQueue.bind(this));
     app.delete('/api/pending-queue/failed', this.handleClearFailedQueue.bind(this));
     app.delete('/api/pending-queue/all', this.handleClearAllQueue.bind(this));
+
+    // Resource diagnostics endpoint
+    app.get('/api/diagnostics/resources', this.handleGetResourceDiagnostics.bind(this));
 
     // Import endpoint
     app.post('/api/import', this.handleImport.bind(this));
@@ -197,6 +202,15 @@ export class DataRoutes extends BaseRouteHandler {
   /**
    * Get database statistics (with worker metadata)
    */
+  /**
+   * Get resource diagnostics (memory, tokens, alerts)
+   */
+  private handleGetResourceDiagnostics = this.wrapHandler((_req: Request, res: Response): void => {
+    const diagnostics = getResourceDiagnostics();
+    const processes = getActiveProcesses();
+    res.json({ ...diagnostics, processes });
+  });
+
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
     const db = this.dbManager.getSessionStore().db;
 

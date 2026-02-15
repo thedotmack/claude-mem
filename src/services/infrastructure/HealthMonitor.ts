@@ -98,11 +98,22 @@ export async function httpShutdown(port: number): Promise<boolean> {
 /**
  * Get the plugin version from the installed marketplace package.json
  * This is the "expected" version that should be running
+ * Returns 'unknown' if package.json cannot be read (e.g., during shutdown race, file locked)
+ * (Issue #1042)
  */
 export function getInstalledPluginVersion(): string {
   const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-  return packageJson.version;
+  try {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    return packageJson.version;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'EBUSY') {
+      logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
+      return 'unknown';
+    }
+    throw error;
+  }
 }
 
 /**

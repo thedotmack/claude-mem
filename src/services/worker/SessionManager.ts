@@ -416,14 +416,22 @@ export class SessionManager {
     const processor = new SessionQueueProcessor(this.getPendingStore(), emitter);
 
     // Use the robust iterator - messages are deleted on claim (no tracking needed)
-    // CRITICAL: Pass onIdleTimeout callback that triggers abort to kill the subprocess
+    // CRITICAL: Pass onIdleTimeout callback that triggers abort AND verifies subprocess exit
     // Without this, the iterator returns but the Claude subprocess stays alive as a zombie
+    // Fix for Issues #1010, #1068, #1089, #1090: abort() alone is fire-and-forget,
+    // we must also call ensureProcessExit() to guarantee the subprocess is dead.
     for await (const message of processor.createIterator({
       sessionDbId,
       signal: session.abortController.signal,
-      onIdleTimeout: () => {
-        logger.info('SESSION', 'Triggering abort due to idle timeout to kill subprocess', { sessionDbId });
+      onIdleTimeout: async () => {
+        logger.info('SESSION', 'Triggering abort + process cleanup due to idle timeout', { sessionDbId });
         session.abortController.abort();
+
+        // Verify subprocess actually exits (abort alone is not sufficient)
+        const tracked = getProcessBySession(sessionDbId);
+        if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
+          await ensureProcessExit(tracked, 5000);
+        }
       }
     })) {
       // Track earliest timestamp for accurate observation timestamps

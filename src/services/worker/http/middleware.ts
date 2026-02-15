@@ -24,19 +24,22 @@ export function createMiddleware(
   // JSON parsing with 50mb limit
   middlewares.push(express.json({ limit: '50mb' }));
 
-  // CORS - restrict to localhost origins only
+  // CORS - restrict to localhost origins only (Issue #1029)
   middlewares.push(cors({
     origin: (origin, callback) => {
       // Allow: requests without Origin header (hooks, curl, CLI tools)
-      // Allow: localhost and 127.0.0.1 origins
+      // Allow: localhost and 127.0.0.1 origins (with or without port)
+      // Allow: IPv6 localhost [::1]
       if (!origin ||
-          origin.startsWith('http://localhost:') ||
-          origin.startsWith('http://127.0.0.1:')) {
+          /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ||
+          /^https?:\/\/\[::1\](:\d+)?$/.test(origin)) {
         callback(null, true);
       } else {
         callback(new Error('CORS not allowed'));
       }
     },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: false
   }));
 

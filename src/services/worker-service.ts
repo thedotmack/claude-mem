@@ -16,7 +16,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
-import { getAuthMethodDescription } from '../shared/EnvManager.js';
+import { getAuthMethodDescription, resolveNodePath, resolveRuntimeBinDir } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaServerManager } from './sync/ChromaServerManager.js';
 
@@ -115,7 +115,12 @@ import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 
 // Process management for zombie cleanup (Issue #737)
-import { startOrphanReaper, reapOrphanedProcesses } from './worker/ProcessRegistry.js';
+import { startOrphanReaper, reapOrphanedProcesses, getActiveProcesses } from './worker/ProcessRegistry.js';
+
+// Resource monitoring for token/memory leak detection
+import { startResourceMonitor } from './infrastructure/ResourceMonitor.js';
+import type { SessionTokenSnapshot } from './infrastructure/ResourceMonitor.js';
+import type { ActiveSession } from './worker-types.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -174,6 +179,12 @@ export class WorkerService {
 
   // Orphan reaper cleanup function (Issue #737)
   private stopOrphanReaper: (() => void) | null = null;
+
+  // Periodic stuck message recovery (Issues #1036, #1052)
+  private stuckMessageRecoveryInterval: ReturnType<typeof setInterval> | null = null;
+
+  // Resource monitor for token/memory leak detection
+  private stopResourceMonitor: (() => void) | null = null;
 
   // AI interaction tracking for health endpoint
   private lastAiInteraction: {
@@ -423,27 +434,50 @@ export class WorkerService {
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
-      // Connect to MCP server
-      const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
-      const transport = new StdioClientTransport({
-        command: 'node',
-        args: [mcpServerPath],
-        env: process.env
-      });
-
-      const MCP_INIT_TIMEOUT_MS = 300000;
-      const mcpConnectionPromise = this.mcpClient.connect(transport);
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('MCP connection timeout after 5 minutes')), MCP_INIT_TIMEOUT_MS)
-      );
-
-      await Promise.race([mcpConnectionPromise, timeoutPromise]);
-      this.mcpReady = true;
-      logger.success('WORKER', 'Connected to MCP server');
-
+      // Mark core initialization complete BEFORE MCP connection
+      // MCP is optional (vector search) and should not block core functionality
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
-      logger.info('SYSTEM', 'Background initialization complete');
+      logger.info('SYSTEM', 'Core initialization complete (MCP connecting in background)');
+
+      // Connect to MCP server (non-blocking — failure only disables vector search)
+      // Use resolved node path to work around Bun snap PATH restriction
+      const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
+      const nodeCommand = resolveNodePath();
+      const binDir = resolveRuntimeBinDir();
+      const realHome = process.env.REAL_HOME || process.env.HOME?.replace(/\/snap\/bun-js\/\d+$/, '') || require('os').homedir();
+      const localBin = path.join(realHome, '.local', 'bin');
+      const extraDirs = [binDir, existsSync(localBin) ? localBin : null].filter(Boolean) as string[];
+      const currentPath = process.env.PATH || '';
+      const missingDirs = extraDirs.filter(d => !currentPath.split(':').includes(d));
+      const mcpEnv = missingDirs.length > 0
+        ? { ...process.env, PATH: [...missingDirs, currentPath].filter(Boolean).join(':') }
+        : { ...process.env };
+      const transport = new StdioClientTransport({
+        command: nodeCommand,
+        args: [mcpServerPath],
+        env: mcpEnv
+      });
+
+      const MCP_INIT_TIMEOUT_MS = 60000; // 60s timeout (was 5 min — too long)
+      const mcpConnectionPromise = this.mcpClient.connect(transport);
+      let timeoutId: ReturnType<typeof setTimeout>;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('MCP connection timeout after 60s')), MCP_INIT_TIMEOUT_MS);
+      });
+
+      Promise.race([mcpConnectionPromise, timeoutPromise])
+        .then(() => {
+          clearTimeout(timeoutId);
+          this.mcpReady = true;
+          logger.success('WORKER', 'Connected to MCP server');
+        })
+        .catch((error) => {
+          clearTimeout(timeoutId);
+          logger.warn('WORKER', 'MCP connection failed (vector search unavailable)', {
+            error: error instanceof Error ? error.message : String(error)
+          });
+        });
 
       // Start orphan reaper to clean up zombie processes (Issue #737)
       this.stopOrphanReaper = startOrphanReaper(() => {
@@ -454,6 +488,29 @@ export class WorkerService {
         return activeIds;
       });
       logger.info('SYSTEM', 'Started orphan reaper (runs every 5 minutes)');
+
+      // Start periodic stuck message recovery (Issues #1036, #1052)
+      // Resets messages stuck in 'processing' for >5 minutes back to 'pending'
+      this.stuckMessageRecoveryInterval = setInterval(() => {
+        try {
+          const resetCount = pendingStore.resetStaleProcessingMessages(5 * 60 * 1000);
+          if (resetCount > 0) {
+            logger.warn('QUEUE', `Runtime recovery: Reset ${resetCount} stuck processing messages`, {
+              thresholdMinutes: 5
+            });
+          }
+        } catch (error) {
+          logger.error('QUEUE', 'Failed to reset stuck messages during periodic recovery', {}, error as Error);
+        }
+      }, 60 * 1000);
+      logger.info('SYSTEM', 'Started periodic stuck message recovery (every 60s, threshold 5min)');
+
+      // Start resource monitor for token/memory leak detection
+      this.stopResourceMonitor = startResourceMonitor(
+        () => this.getSessionTokenSnapshots(),
+        () => getActiveProcesses().length
+      );
+      logger.info('SYSTEM', 'Started resource monitor (samples every 30s)');
 
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
@@ -794,6 +851,18 @@ export class WorkerService {
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
+    // Stop periodic stuck message recovery (Issues #1036, #1052)
+    if (this.stuckMessageRecoveryInterval) {
+      clearInterval(this.stuckMessageRecoveryInterval);
+      this.stuckMessageRecoveryInterval = null;
+    }
+
+    // Stop resource monitor
+    if (this.stopResourceMonitor) {
+      this.stopResourceMonitor();
+      this.stopResourceMonitor = null;
+    }
+
     // Stop orphan reaper before shutdown (Issue #737)
     if (this.stopOrphanReaper) {
       this.stopOrphanReaper();
@@ -812,6 +881,27 @@ export class WorkerService {
   /**
    * Broadcast processing status change to SSE clients
    */
+  /**
+   * Get token snapshots for all active sessions (used by ResourceMonitor callback)
+   */
+  private getSessionTokenSnapshots(): SessionTokenSnapshot[] {
+    const result: SessionTokenSnapshot[] = [];
+    for (const [id, session] of this.sessionManager['sessions'] as Map<number, ActiveSession>) {
+      const ageMs = Date.now() - session.startTime;
+      const totalTokens = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+      result.push({
+        sessionDbId: id,
+        project: session.project,
+        inputTokens: session.cumulativeInputTokens,
+        outputTokens: session.cumulativeOutputTokens,
+        totalTokens,
+        ageMs,
+        tokensPerMinute: ageMs > 0 ? totalTokens / (ageMs / 60000) : 0
+      });
+    }
+    return result;
+  }
+
   broadcastProcessingStatus(): void {
     const isProcessing = this.sessionManager.isAnySessionProcessing();
     const queueDepth = this.sessionManager.getTotalActiveWork();
