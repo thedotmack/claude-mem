@@ -154,7 +154,7 @@ export class SearchManager {
       let chromaSucceeded = false;
       logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: type || 'all' });
 
-      // Build Chroma where filter for doc_type
+      // Build Chroma where filter for doc_type and project
       let whereFilter: Record<string, any> | undefined;
       if (type === 'observations') {
         whereFilter = { doc_type: 'observation' };
@@ -164,7 +164,17 @@ export class SearchManager {
         whereFilter = { doc_type: 'user_prompt' };
       }
 
-      // Step 1: Chroma semantic search with optional type filter
+      // Include project in the Chroma where clause to scope vector search.
+      // Without this, larger projects dominate the top-N results and smaller
+      // projects get crowded out before the post-hoc SQLite filter.
+      if (options.project) {
+        const projectFilter = { project: options.project };
+        whereFilter = whereFilter
+          ? { $and: [whereFilter, projectFilter] }
+          : projectFilter;
+      }
+
+      // Step 1: Chroma semantic search with optional type + project filter
       const chromaResults = await this.queryChroma(query, 100, whereFilter);
       chromaSucceeded = true; // Chroma didn't throw error
       logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
