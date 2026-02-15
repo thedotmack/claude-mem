@@ -449,7 +449,7 @@ export class WorkerService {
       const localBin = path.join(realHome, '.local', 'bin');
       const extraDirs = [binDir, existsSync(localBin) ? localBin : null].filter(Boolean) as string[];
       const currentPath = process.env.PATH || '';
-      const missingDirs = extraDirs.filter(d => !currentPath.includes(d));
+      const missingDirs = extraDirs.filter(d => !currentPath.split(':').includes(d));
       const mcpEnv = missingDirs.length > 0
         ? { ...process.env, PATH: [...missingDirs, currentPath].filter(Boolean).join(':') }
         : { ...process.env };
@@ -461,16 +461,19 @@ export class WorkerService {
 
       const MCP_INIT_TIMEOUT_MS = 60000; // 60s timeout (was 5 min — too long)
       const mcpConnectionPromise = this.mcpClient.connect(transport);
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('MCP connection timeout after 60s')), MCP_INIT_TIMEOUT_MS)
-      );
+      let timeoutId: ReturnType<typeof setTimeout>;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('MCP connection timeout after 60s')), MCP_INIT_TIMEOUT_MS);
+      });
 
       Promise.race([mcpConnectionPromise, timeoutPromise])
         .then(() => {
+          clearTimeout(timeoutId);
           this.mcpReady = true;
           logger.success('WORKER', 'Connected to MCP server');
         })
         .catch((error) => {
+          clearTimeout(timeoutId);
           logger.warn('WORKER', 'MCP connection failed (vector search unavailable)', {
             error: error instanceof Error ? error.message : String(error)
           });

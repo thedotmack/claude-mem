@@ -245,7 +245,7 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
   const extraDirs = [runtimeBinDir, existsSync(localBinDir) ? localBinDir : null].filter(Boolean) as string[];
   if (extraDirs.length > 0) {
     const currentPath = isolatedEnv.PATH || '';
-    const missing = extraDirs.filter(d => !currentPath.includes(d));
+    const missing = extraDirs.filter(d => !currentPath.split(':').includes(d));
     if (missing.length > 0) {
       isolatedEnv.PATH = [...missing, currentPath].filter(Boolean).join(':');
     }
