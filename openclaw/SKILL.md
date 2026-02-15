@@ -152,7 +152,7 @@ Restart your OpenClaw gateway so it picks up the new plugin configuration. After
 [claude-mem] OpenClaw plugin loaded — v1.0.0 (worker: 127.0.0.1:37777)
 ```
 
-If you see this, the plugin is loaded. You can also verify by running `/claude-mem-status` in any OpenClaw chat:
+If you see this, the plugin is loaded. You can also verify by running `/claude_mem_status` in any OpenClaw chat:
 
 ```
 Claude-Mem Worker Status
@@ -324,7 +324,7 @@ Restart the gateway. Check the logs for these three lines in order:
 [claude-mem] Connected to SSE stream
 ```
 
-Then run `/claude-mem-feed` in any OpenClaw chat:
+Then run `/claude_mem_feed` in any OpenClaw chat:
 
 ```
 Claude-Mem Observation Feed
@@ -340,12 +340,12 @@ If `Connection` shows `connected`, you're done. Have an agent do some work and w
 
 The plugin registers two commands:
 
-### /claude-mem-status
+### /claude_mem_status
 
 Reports worker health and current session state.
 
 ```
-/claude-mem-status
+/claude_mem_status
 ```
 
 Output:
@@ -357,14 +357,14 @@ Active sessions: 2
 Observation feed: connected
 ```
 
-### /claude-mem-feed
+### /claude_mem_feed
 
 Shows observation feed status. Accepts optional `on`/`off` argument.
 
 ```
-/claude-mem-feed          — show status
-/claude-mem-feed on       — request enable (update config to persist)
-/claude-mem-feed off      — request disable (update config to persist)
+/claude_mem_feed          — show status
+/claude_mem_feed on       — request enable (update config to persist)
+/claude_mem_feed off      — request disable (update config to persist)
 ```
 
 ## How It All Works
