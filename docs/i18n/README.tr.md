@@ -274,8 +274,6 @@ Tam detaylar için [LICENSE](LICENSE) dosyasına bakın.
 - Türev çalışmalar da AGPL-3.0 altında lisanslanmalıdır
 - Bu yazılım için HİÇBİR GARANTİ yoktur
 
-**Ragtime Hakkında Not**: `ragtime/` dizini ayrı olarak **PolyForm Noncommercial License 1.0.0** altında lisanslanmıştır. Detaylar için [ragtime/LICENSE](ragtime/LICENSE) dosyasına bakın.
-
 ---
 
 ## Destek

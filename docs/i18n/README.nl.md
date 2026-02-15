@@ -274,8 +274,6 @@ Zie het [LICENSE](LICENSE) bestand voor volledige details.
 - Afgeleide werken moeten ook gelicentieerd zijn onder AGPL-3.0
 - Er is GEEN GARANTIE voor deze software
 
-**Opmerking over Ragtime**: De `ragtime/` directory is afzonderlijk gelicentieerd onder de **PolyForm Noncommercial License 1.0.0**. Zie [ragtime/LICENSE](ragtime/LICENSE) voor details.
-
 ---
 
 ## Ondersteuning

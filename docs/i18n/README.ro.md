@@ -275,8 +275,6 @@ Consultați fișierul [LICENSE](LICENSE) pentru detalii complete.
 - Lucrările derivate trebuie să fie licențiate și ele sub AGPL-3.0
 - NU EXISTĂ NICIO GARANȚIE pentru acest software
 
-**Notă despre Ragtime**: Directorul `ragtime/` este licențiat separat sub **PolyForm Noncommercial License 1.0.0**. Consultați [ragtime/LICENSE](ragtime/LICENSE) pentru detalii.
-
 ---
 
 ## Suport

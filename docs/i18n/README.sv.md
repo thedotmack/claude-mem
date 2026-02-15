@@ -275,8 +275,6 @@ Se [LICENSE](LICENSE)-filen för fullständiga detaljer.
 - Härledda verk måste också licensieras under AGPL-3.0
 - Det finns INGEN GARANTI för denna programvara
 
-**Notering om Ragtime**: Katalogen `ragtime/` är licensierad separat under **PolyForm Noncommercial License 1.0.0**. Se [ragtime/LICENSE](ragtime/LICENSE) för detaljer.
-
 ---
 
 ## Support

@@ -274,8 +274,6 @@ npm run bug-report
 - עבודות נגזרות חייבות להיות מורשות גם כן תחת AGPL-3.0
 - אין אחריות לתוכנה זו
 
-**הערה על Ragtime**: ספריית `ragtime/` מורשית בנפרד תחת **PolyForm Noncommercial License 1.0.0**. ראה [ragtime/LICENSE](ragtime/LICENSE) לפרטים.
-
 ---
 
 ## תמיכה

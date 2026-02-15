@@ -275,8 +275,6 @@ Lihat file [LICENSE](LICENSE) untuk detail lengkap.
 - Karya turunan juga harus dilisensikan di bawah AGPL-3.0
 - TIDAK ADA JAMINAN untuk perangkat lunak ini
 
-**Catatan tentang Ragtime**: Direktori `ragtime/` dilisensikan secara terpisah di bawah **PolyForm Noncommercial License 1.0.0**. Lihat [ragtime/LICENSE](ragtime/LICENSE) untuk detail.
-
 ---
 
 ## Dukungan

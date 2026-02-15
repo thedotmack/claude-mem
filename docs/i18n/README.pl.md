@@ -274,8 +274,6 @@ Zobacz plik [LICENSE](LICENSE) dla pełnych szczegółów.
 - Dzieła pochodne muszą być również licencjonowane na podstawie AGPL-3.0
 - Nie ma GWARANCJI dla tego oprogramowania
 
-**Uwaga o Ragtime**: Katalog `ragtime/` jest licencjonowany osobno na podstawie **PolyForm Noncommercial License 1.0.0**. Zobacz [ragtime/LICENSE](ragtime/LICENSE) dla szczegółów.
-
 ---
 
 ## Wsparcie

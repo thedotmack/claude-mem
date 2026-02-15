@@ -275,8 +275,6 @@ Vedi il file [LICENSE](LICENSE) per i dettagli completi.
 - Le opere derivate devono anche essere rilasciate sotto AGPL-3.0
 - NON c'è GARANZIA per questo software
 
-**Nota su Ragtime**: La directory `ragtime/` è rilasciata separatamente sotto la **PolyForm Noncommercial License 1.0.0**. Vedi [ragtime/LICENSE](ragtime/LICENSE) per i dettagli.
-
 ---
 
 ## Supporto

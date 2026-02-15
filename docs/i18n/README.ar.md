@@ -279,8 +279,6 @@ npm run bug-report
 - الأعمال المشتقة يجب أن تكون مرخصة أيضًا تحت AGPL-3.0
 - لا يوجد ضمان لهذا البرنامج
 
-**ملاحظة حول Ragtime**: دليل `ragtime/` مرخص بشكل منفصل تحت **ترخيص PolyForm Noncommercial 1.0.0**. انظر [ragtime/LICENSE](ragtime/LICENSE) للتفاصيل.
-
 ---
 
 ## الدعم

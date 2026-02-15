@@ -275,8 +275,6 @@ Xem tệp [LICENSE](LICENSE) để biết chi tiết đầy đủ.
 - Các tác phẩm phái sinh cũng phải được cấp phép theo AGPL-3.0
 - KHÔNG CÓ BẢO HÀNH cho phần mềm này
 
-**Lưu Ý Về Ragtime**: Thư mục `ragtime/` được cấp phép riêng theo **PolyForm Noncommercial License 1.0.0**. Xem [ragtime/LICENSE](ragtime/LICENSE) để biết chi tiết.
-
 ---
 
 ## Hỗ Trợ

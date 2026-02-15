@@ -275,8 +275,6 @@ Copyright (C) 2025 Alex Newman (@doublefx). Všechna práva vyhrazena.
 - Odvozená díla musí být také licencována pod AGPL-3.0
 - Pro tento software neexistuje ŽÁDNÁ ZÁRUKA
 
-**Poznámka k Ragtime**: Adresář `ragtime/` je licencován samostatně pod **PolyForm Noncommercial License 1.0.0**. Podrobnosti najdete v [ragtime/LICENSE](ragtime/LICENSE).
-
 ---
 
 ## Podpora

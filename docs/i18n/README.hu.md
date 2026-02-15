@@ -275,8 +275,6 @@ A teljes részletekért lásd a [LICENSE](LICENSE) fájlt.
 - A származékos munkáknak szintén AGPL-3.0 alatt kell licencelve lenniük
 - Ehhez a szoftverhez NINCS GARANCIA
 
-**Megjegyzés a Ragtime-ról**: A `ragtime/` könyvtár külön licencelt a **PolyForm Noncommercial License 1.0.0** alatt. Részletekért lásd a [ragtime/LICENSE](ragtime/LICENSE) fájlt.
-
 ---
 
 ## Támogatás

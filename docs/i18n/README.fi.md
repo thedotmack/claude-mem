@@ -274,8 +274,6 @@ Katso [LICENSE](LICENSE)-tiedosto täydellisistä yksityiskohdista.
 - Johdannaisten teosten on myös oltava AGPL-3.0-lisensoituja
 - Tälle ohjelmistolle EI OLE TAKUUTA
 
-**Huomautus Ragtimesta**: `ragtime/`-hakemisto on erikseen lisensoitu **PolyForm Noncommercial License 1.0.0** -lisenssillä. Katso [ragtime/LICENSE](ragtime/LICENSE) yksityiskohdista.
-
 ---
 
 ## Tuki

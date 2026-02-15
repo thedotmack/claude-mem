@@ -275,8 +275,6 @@ Copyright (C) 2025 Alex Newman (@doublefx)। सर्वाधिकार स
 - व्युत्पन्न कार्यों को भी AGPL-3.0 के तहत लाइसेंस प्राप्त होना चाहिए
 - इस सॉफ़्टवेयर के लिए कोई वारंटी नहीं है
 
-**Ragtime पर नोट**: `ragtime/` डायरेक्टरी को **PolyForm Noncommercial License 1.0.0** के तहत अलग से लाइसेंस प्राप्त है। विवरण के लिए [ragtime/LICENSE](ragtime/LICENSE) देखें।
-
 ---
 
 ## समर्थन
