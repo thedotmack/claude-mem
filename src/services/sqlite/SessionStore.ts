@@ -866,8 +866,13 @@ export class SessionStore {
 
       // Use a transaction to ensure all updates are atomic
       this.db.transaction(() => {
-        // Update child tables first (observations and session_summaries)
-        // This prevents FK constraint violations if ON UPDATE CASCADE isn't working as expected
+        // Update the parent table first so the new ID exists as a valid FK target
+        this.db.prepare(`
+          UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
+        `).run(memorySessionId, sessionDbId);
+
+        // Explicitly update child tables as a safety net
+        // (ON UPDATE CASCADE should handle this, but we do it explicitly for reliability)
         if (oldId) {
           this.db.prepare(`
             UPDATE observations SET memory_session_id = ? WHERE memory_session_id = ?
@@ -877,11 +882,6 @@ export class SessionStore {
             UPDATE session_summaries SET memory_session_id = ? WHERE memory_session_id = ?
           `).run(memorySessionId, oldId);
         }
-
-        // Then update the parent table
-        this.db.prepare(`
-          UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
-        `).run(memorySessionId, sessionDbId);
       })();
 
       logger.info('DB', 'Registered memory_session_id before storage (FK fix + compaction support)', {
