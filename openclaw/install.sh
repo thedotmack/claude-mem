@@ -684,12 +684,50 @@ CLAUDE_MEM_REPO="https://github.com/thedotmack/claude-mem.git"
 CLAUDE_MEM_BRANCH="${CLI_BRANCH:-main}"
 PLUGIN_FRESHLY_INSTALLED=""
 
+# Resolve the target extension directory.
+# Priority: existing installPath from config > plugins.load.paths > default.
+resolve_extension_dir() {
+  local oc_config="${HOME}/.openclaw/openclaw.json"
+  if [[ -f "$oc_config" ]] && command -v node &>/dev/null; then
+    local existing_path
+    existing_path="$(node -e "
+      try {
+        const c = require('$oc_config');
+        const p = c?.plugins?.installs?.['claude-mem']?.installPath;
+        if (p) console.log(p);
+      } catch {}
+    " 2>/dev/null)" || true
+    if [[ -n "$existing_path" ]]; then
+      echo "$existing_path"
+      return
+    fi
+    local load_path
+    load_path="$(node -e "
+      try {
+        const c = require('$oc_config');
+        const paths = c?.plugins?.load?.paths || [];
+        const p = paths.find(p => p.endsWith('/claude-mem'));
+        if (p) console.log(p);
+      } catch {}
+    " 2>/dev/null)" || true
+    if [[ -n "$load_path" ]]; then
+      echo "$load_path"
+      return
+    fi
+  fi
+  echo "${HOME}/.openclaw/extensions/claude-mem"
+}
+
+CLAUDE_MEM_EXTENSION_DIR=""
+
 install_plugin() {
   # Check for git before attempting clone
   check_git
 
+  CLAUDE_MEM_EXTENSION_DIR="$(resolve_extension_dir)"
+
   # Remove existing plugin installation to allow clean re-install
-  local existing_plugin_dir="${HOME}/.openclaw/extensions/claude-mem"
+  local existing_plugin_dir="$CLAUDE_MEM_EXTENSION_DIR"
   if [[ -d "$existing_plugin_dir" ]]; then
     info "Removing existing claude-mem plugin at ${existing_plugin_dir}..."
     rm -rf "$existing_plugin_dir"
@@ -803,7 +841,7 @@ install_plugin() {
   # The actual worker service and Claude Code hooks live in the plugin/ directory
   # of the main repo. We copy them so find_claude_mem_install_dir() can locate
   # the worker-service.cjs and the worker runs the updated version.
-  local extension_dir="${HOME}/.openclaw/extensions/claude-mem"
+  local extension_dir="$CLAUDE_MEM_EXTENSION_DIR"
   local repo_root="${build_dir}/claude-mem"
 
   if [[ -d "$extension_dir" && -d "${repo_root}/plugin" ]]; then
@@ -1137,7 +1175,10 @@ write_settings() {
 CLAUDE_MEM_INSTALL_DIR=""
 
 find_claude_mem_install_dir() {
+  local resolved_dir
+  resolved_dir="$(resolve_extension_dir)"
   local -a search_paths=(
+    "$resolved_dir"
     "${HOME}/.openclaw/extensions/claude-mem"
     "${HOME}/.claude/plugins/marketplaces/thedotmack"
     "${HOME}/.openclaw/plugins/claude-mem"
