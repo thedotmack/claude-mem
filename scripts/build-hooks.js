@@ -67,6 +67,13 @@ async function buildHooks() {
     fs.writeFileSync('plugin/package.json', JSON.stringify(pluginPackageJson, null, 2) + '\n');
     console.log('✓ plugin/package.json generated');
 
+    // Sync version into plugin/.claude-plugin/plugin.json (authoritative manifest for Claude Code)
+    const pluginJsonPath = 'plugin/.claude-plugin/plugin.json';
+    const pluginJson = JSON.parse(fs.readFileSync(pluginJsonPath, 'utf-8'));
+    pluginJson.version = version;
+    fs.writeFileSync(pluginJsonPath, JSON.stringify(pluginJson, null, 2) + '\n');
+    console.log('✓ plugin/.claude-plugin/plugin.json version synced');
+
     // Build React viewer
     console.log('\n📋 Building React viewer...');
     const { spawn } = await import('child_process');

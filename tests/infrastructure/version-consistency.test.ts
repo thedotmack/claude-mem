@@ -13,7 +13,7 @@ interface PackageJson {
 
 /** Shape of marketplace.json */
 interface MarketplaceJson {
-  plugins: Array<{ name: string; version: string }>;
+  plugins: Array<{ name: string; source: string; version?: string }>;
 }
 
 /**
@@ -55,17 +55,17 @@ describe('Version Consistency', () => {
     expect(pluginJson.version).toBe(rootVersion);
   });
 
-  it('should have matching version in .claude-plugin/marketplace.json', () => {
+  it('should have magic-claude-mem plugin entry in .claude-plugin/marketplace.json', () => {
     const marketplaceJsonPath = path.join(projectRoot, '.claude-plugin/marketplace.json');
     expect(existsSync(marketplaceJsonPath)).toBe(true);
-    
+
     const marketplaceJson = JSON.parse(readFileSync(marketplaceJsonPath, 'utf-8')) as MarketplaceJson;
     expect(marketplaceJson.plugins).toBeDefined();
     expect(marketplaceJson.plugins.length).toBeGreaterThan(0);
 
     const claudeMemPlugin = marketplaceJson.plugins.find((p) => p.name === 'magic-claude-mem');
     expect(claudeMemPlugin).toBeDefined();
-    expect((claudeMemPlugin as NonNullable<typeof claudeMemPlugin>).version).toBe(rootVersion);
+    // Version is authoritative in plugin/.claude-plugin/plugin.json, not marketplace.json
   });
 
   it('should have version injected into built worker-service.cjs', () => {
