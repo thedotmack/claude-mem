@@ -25,10 +25,13 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
     onLoadMoreRef.current = onLoadMore;
   }, [onLoadMore]);
 
-  // Set up intersection observer for infinite scroll
+  // Set up intersection observer for infinite scroll.
+  // Root must be the scrollable feed container (not the viewport) because
+  // .feed has overflow-y: scroll, so the sentinel only scrolls within it.
   useEffect(() => {
     const element = loadMoreRef.current;
-    if (!element) return;
+    const root = feedRef.current;
+    if (!element || !root) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -37,7 +40,7 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
           onLoadMoreRef.current();
         }
       },
-      { threshold: UI.LOAD_MORE_THRESHOLD }
+      { root, threshold: UI.LOAD_MORE_THRESHOLD }
     );
 
     observer.observe(element);

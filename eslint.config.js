@@ -1,6 +1,7 @@
 import eslint from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import vitest from 'eslint-plugin-vitest';
+import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 
 export default tseslint.config(
@@ -78,11 +79,16 @@ export default tseslint.config(
     },
   },
 
-  // Layer 1b: Browser UI files — console is the only logging option
+  // Layer 1b: Browser UI files — console is the only logging option + React hooks rules
   {
     files: ['src/ui/**/*.ts', 'src/ui/**/*.tsx'],
+    plugins: {
+      'react-hooks': reactHooks,
+    },
     rules: {
       'no-console': 'off',
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
     },
   },
 

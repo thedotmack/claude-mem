@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
+import { SearchResultsBadge } from './components/SearchResultsBadge';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { LogsDrawer } from './components/LogsModal';
 import { useSSE } from './hooks/useSSE';
@@ -8,60 +9,82 @@ import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
+import { useFilters } from './hooks/useFilters';
+import { useSearch } from './hooks/useSearch';
+import { useActivityDensity } from './hooks/useActivityDensity';
 import type { Observation, Summary, UserPrompt } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
 
 export function App() {
-  const [currentFilter, setCurrentFilter] = useState('');
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
+  const {
+    filters, setQuery, setProject, toggleObsType, toggleConcept,
+    toggleItemKind, setDateRange, clearAll,
+    hasActiveFilters, isFilterMode, activeFilterCount
+  } = useFilters();
+
+  const search = useSearch(filters, isFilterMode);
+  const activityDensity = useActivityDensity(filters.project);
+
   const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats: _stats, refreshStats: _refreshStats } = useStats();
   const { preference, resolvedTheme: _resolvedTheme, setThemePreference } = useTheme();
-  const pagination = usePagination(currentFilter);
+  const [paginationResetKey, setPaginationResetKey] = useState(0);
+  const pagination = usePagination(filters.project, paginationResetKey);
 
-  // When filtering by project: ONLY use paginated data (API-filtered)
-  // When showing all projects: merge SSE live data with paginated data
+  // When in filter/search mode: use search results
+  // When project only: use paginated data (API-filtered)
+  // When no filter: merge SSE + paginated
   const allObservations = useMemo(() => {
-    if (currentFilter) {
-      // Project filter active: API handles filtering, ignore SSE items
+    if (isFilterMode) {
+      return search.results?.observations ?? [];
+    }
+    if (filters.project) {
       return paginatedObservations;
     }
-    // No filter: merge SSE + paginated, deduplicate by ID
     return mergeAndDeduplicateByProject(observations, paginatedObservations);
-  }, [observations, paginatedObservations, currentFilter]);
+  }, [isFilterMode, search.results, filters.project, observations, paginatedObservations]);
 
   const allSummaries = useMemo(() => {
-    if (currentFilter) {
+    if (isFilterMode) {
+      return search.results?.sessions ?? [];
+    }
+    if (filters.project) {
       return paginatedSummaries;
     }
     return mergeAndDeduplicateByProject(summaries, paginatedSummaries);
-  }, [summaries, paginatedSummaries, currentFilter]);
+  }, [isFilterMode, search.results, filters.project, summaries, paginatedSummaries]);
 
   const allPrompts = useMemo(() => {
-    if (currentFilter) {
+    if (isFilterMode) {
+      return search.results?.prompts ?? [];
+    }
+    if (filters.project) {
       return paginatedPrompts;
     }
     return mergeAndDeduplicateByProject(prompts, paginatedPrompts);
-  }, [prompts, paginatedPrompts, currentFilter]);
+  }, [isFilterMode, search.results, filters.project, prompts, paginatedPrompts]);
 
-  // Toggle context preview modal
   const toggleContextPreview = useCallback(() => {
     setContextPreviewOpen(prev => !prev);
   }, []);
 
-  // Toggle logs modal
   const toggleLogsModal = useCallback(() => {
     setLogsModalOpen(prev => !prev);
   }, []);
 
-  // Handle loading more data
   const handleLoadMore = useCallback(async () => {
+    if (isFilterMode) {
+      await search.loadMore();
+      return;
+    }
+
     try {
       const [newObservations, newSummaries, newPrompts] = await Promise.all([
         pagination.observations.loadMore(),
@@ -81,29 +104,70 @@ export function App() {
     } catch (error) {
       console.error('Failed to load more data:', error);
     }
-  }, [currentFilter, pagination.observations, pagination.summaries, pagination.prompts]);
+  }, [isFilterMode, search, pagination.observations, pagination.summaries, pagination.prompts]);
 
-  // Reset paginated data and load first page when filter changes
-  useEffect(() => {
+  // Clear stale paginated data immediately on any mode/project transition.
+  // useLayoutEffect runs synchronously before paint, preventing a flash of stale items.
+  useLayoutEffect(() => {
     setPaginatedObservations([]);
     setPaginatedSummaries([]);
     setPaginatedPrompts([]);
+    if (!isFilterMode) {
+      // Force pagination offset reset by changing the key
+      setPaginationResetKey(k => k + 1);
+    }
+  }, [isFilterMode, filters.project]);
+
+  // Load fresh data after pagination has been reset (driven by resetKey changes)
+  useEffect(() => {
+    if (isFilterMode) return;
     void handleLoadMore();
-    // Intentionally only depends on currentFilter - handleLoadMore is stable via useCallback
-  }, [currentFilter]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleLoadMore excluded: loads are driven by paginationResetKey changes only
+  }, [paginationResetKey, isFilterMode]);
+
+  const isLoading = isFilterMode
+    ? search.isSearching
+    : (pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading);
+
+  const hasMore = isFilterMode
+    ? search.hasMore
+    : (pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore);
 
   return (
     <>
       <Header
         isConnected={isConnected}
         projects={projects}
-        currentFilter={currentFilter}
-        onFilterChange={setCurrentFilter}
+        currentFilter={filters.project}
+        onFilterChange={setProject}
         isProcessing={isProcessing}
         queueDepth={queueDepth}
         themePreference={preference}
         onThemeChange={setThemePreference}
         onContextPreviewToggle={toggleContextPreview}
+        query={filters.query}
+        onQueryChange={setQuery}
+        isSearching={search.isSearching}
+        resultCount={isFilterMode ? `${String(search.totalResults)}${search.hasMore ? '+' : ''}` : null}
+        filterCount={activeFilterCount}
+        filters={filters}
+        onToggleObsType={toggleObsType}
+        onToggleConcept={toggleConcept}
+        onToggleItemKind={toggleItemKind}
+        onDateRangeChange={setDateRange}
+        onClearAllFilters={clearAll}
+        hasActiveFilters={hasActiveFilters}
+        isFilterMode={isFilterMode}
+        activityDays={activityDensity.days}
+        activityLoading={activityDensity.isLoading}
+      />
+
+      <SearchResultsBadge
+        totalResults={search.totalResults}
+        query={filters.query}
+        hasActiveFilters={isFilterMode}
+        hasMore={search.hasMore}
+        onClear={clearAll}
       />
 
       <Feed
@@ -111,8 +175,8 @@ export function App() {
         summaries={allSummaries}
         prompts={allPrompts}
         onLoadMore={() => { void handleLoadMore(); }}
-        isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
-        hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
+        isLoading={isLoading}
+        hasMore={hasMore}
       />
 
       <ContextSettingsModal

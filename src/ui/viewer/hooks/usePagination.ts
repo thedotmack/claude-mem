@@ -14,7 +14,7 @@ type DataItem = Observation | Summary | UserPrompt;
 /**
  * Generic pagination hook for observations, summaries, and prompts
  */
-function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: string) {
+function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: string, resetKey: number) {
   const [state, setState] = useState<PaginationState>({
     isLoading: false,
     hasMore: true
@@ -23,19 +23,21 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
   // Track offset and filter in refs to handle synchronous resets
   const offsetRef = useRef(0);
   const lastFilterRef = useRef(currentFilter);
+  const lastResetKeyRef = useRef(resetKey);
   const stateRef = useRef(state);
 
   /**
    * Load more items from the API
-   * Automatically resets offset to 0 if filter has changed
+   * Automatically resets offset to 0 if filter or resetKey has changed
    */
   const loadMore = useCallback(async (): Promise<DataItem[]> => {
-    // Check if filter changed - if so, reset pagination synchronously
-    const filterChanged = lastFilterRef.current !== currentFilter;
+    // Check if filter or reset key changed - if so, reset pagination synchronously
+    const filterChanged = lastFilterRef.current !== currentFilter || lastResetKeyRef.current !== resetKey;
 
     if (filterChanged) {
       offsetRef.current = 0;
       lastFilterRef.current = currentFilter;
+      lastResetKeyRef.current = resetKey;
 
       // Reset state both in React state and ref synchronously
       const newState = { isLoading: false, hasMore: true };
@@ -80,7 +82,7 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
     offsetRef.current += UI.PAGINATION_PAGE_SIZE;
 
     return data.items;
-  }, [currentFilter, endpoint, dataType]);
+  }, [currentFilter, endpoint, dataType, resetKey]);
 
   return {
     ...state,
@@ -91,10 +93,10 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
 /**
  * Hook for paginating observations
  */
-export function usePagination(currentFilter: string) {
-  const observations = usePaginationFor(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter);
-  const summaries = usePaginationFor(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter);
-  const prompts = usePaginationFor(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter);
+export function usePagination(currentFilter: string, resetKey: number) {
+  const observations = usePaginationFor(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter, resetKey);
+  const summaries = usePaginationFor(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter, resetKey);
+  const prompts = usePaginationFor(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter, resetKey);
 
   return {
     observations,

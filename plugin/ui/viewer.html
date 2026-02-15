@@ -18,6 +18,7 @@
     /* Theme Variables - Light Mode */
     :root,
     [data-theme="light"] {
+      --color-scheme: light;
       --color-bg-primary: #ffffff;
       --color-bg-secondary: #efebe4;
       --color-bg-tertiary: #f0f0f0;
@@ -76,6 +77,21 @@
       --color-observation-badge-bg: rgba(9, 105, 218, 0.12);
       --color-observation-badge-text: #0550ae;
 
+      /* Activity bar — colorblind-safe (blue / orange / teal) */
+      --color-activity-obs: #4280cb;
+      --color-activity-summary: #e68a33;
+      --color-activity-prompt: #2a9d8f;
+
+      /* Filter section group accents */
+      --color-filter-group-type: rgba(66, 128, 203, 0.08);
+      --color-filter-group-concept: rgba(230, 138, 51, 0.08);
+      --color-filter-group-show: rgba(42, 157, 143, 0.08);
+      --color-filter-group-date: rgba(0, 0, 0, 0.03);
+      --color-filter-group-border-type: rgba(66, 128, 203, 0.25);
+      --color-filter-group-border-concept: rgba(230, 138, 51, 0.25);
+      --color-filter-group-border-show: rgba(42, 157, 143, 0.25);
+      --color-filter-group-border-date: rgba(0, 0, 0, 0.08);
+
       --color-skeleton-base: #d0d7de;
       --color-skeleton-highlight: #e8ecef;
 
@@ -87,6 +103,7 @@
 
     /* Theme Variables - Dark Mode */
     [data-theme="dark"] {
+      --color-scheme: dark;
       --color-bg-primary: #1a1916;
       --color-bg-secondary: #252320;
       --color-bg-tertiary: #1f1d1a;
@@ -145,6 +162,21 @@
       --color-observation-badge-bg: rgba(121, 184, 255, 0.15);
       --color-observation-badge-text: #79b8ff;
 
+      /* Activity bar — colorblind-safe, brighter for dark bg */
+      --color-activity-obs: #6aa3e0;
+      --color-activity-summary: #f0a050;
+      --color-activity-prompt: #50c4b0;
+
+      /* Filter section group accents */
+      --color-filter-group-type: rgba(106, 163, 224, 0.10);
+      --color-filter-group-concept: rgba(240, 160, 80, 0.10);
+      --color-filter-group-show: rgba(80, 196, 176, 0.10);
+      --color-filter-group-date: rgba(255, 255, 255, 0.04);
+      --color-filter-group-border-type: rgba(106, 163, 224, 0.25);
+      --color-filter-group-border-concept: rgba(240, 160, 80, 0.25);
+      --color-filter-group-border-show: rgba(80, 196, 176, 0.25);
+      --color-filter-group-border-date: rgba(255, 255, 255, 0.08);
+
       --color-skeleton-base: #3a3834;
       --color-skeleton-highlight: #4a4540;
 
@@ -157,6 +189,7 @@
     /* System preference default */
     @media (prefers-color-scheme: light) {
       :root:not([data-theme]) {
+        --color-scheme: light;
         --color-bg-primary: #ffffff;
         --color-bg-secondary: #f6f8fa;
         --color-bg-tertiary: #f0f0f0;
@@ -215,6 +248,18 @@
         --color-observation-badge-bg: rgba(9, 105, 218, 0.12);
         --color-observation-badge-text: #0550ae;
 
+        --color-activity-obs: #4280cb;
+        --color-activity-summary: #e68a33;
+        --color-activity-prompt: #2a9d8f;
+        --color-filter-group-type: rgba(66, 128, 203, 0.08);
+        --color-filter-group-concept: rgba(230, 138, 51, 0.08);
+        --color-filter-group-show: rgba(42, 157, 143, 0.08);
+        --color-filter-group-date: rgba(0, 0, 0, 0.03);
+        --color-filter-group-border-type: rgba(66, 128, 203, 0.25);
+        --color-filter-group-border-concept: rgba(230, 138, 51, 0.25);
+        --color-filter-group-border-show: rgba(42, 157, 143, 0.25);
+        --color-filter-group-border-date: rgba(0, 0, 0, 0.08);
+
         --color-skeleton-base: #d0d7de;
         --color-skeleton-highlight: #e8ecef;
 
@@ -227,6 +272,7 @@
 
     @media (prefers-color-scheme: dark) {
       :root:not([data-theme]) {
+        --color-scheme: dark;
         --color-bg-primary: #1e1e1e;
         --color-bg-secondary: #2d2d2d;
         --color-bg-tertiary: #252526;
@@ -284,6 +330,18 @@
         --color-prompt-badge-text: #8e6cdb;
         --color-observation-badge-bg: rgba(121, 184, 255, 0.15);
         --color-observation-badge-text: #79b8ff;
+
+        --color-activity-obs: #6aa3e0;
+        --color-activity-summary: #f0a050;
+        --color-activity-prompt: #50c4b0;
+        --color-filter-group-type: rgba(106, 163, 224, 0.10);
+        --color-filter-group-concept: rgba(240, 160, 80, 0.10);
+        --color-filter-group-show: rgba(80, 196, 176, 0.10);
+        --color-filter-group-date: rgba(255, 255, 255, 0.04);
+        --color-filter-group-border-type: rgba(106, 163, 224, 0.25);
+        --color-filter-group-border-concept: rgba(240, 160, 80, 0.25);
+        --color-filter-group-border-show: rgba(80, 196, 176, 0.25);
+        --color-filter-group-border-date: rgba(255, 255, 255, 0.08);
 
         --color-skeleton-base: #404040;
         --color-skeleton-highlight: #505050;
@@ -580,6 +638,456 @@
       border-color: var(--color-bg-button);
       color: var(--color-text-button);
       box-shadow: 0 2px 8px rgba(9, 105, 218, 0.25);
+    }
+
+    /* Search Bar */
+    .search-bar {
+      position: relative;
+      display: flex;
+      align-items: center;
+      height: 36px;
+      min-width: 200px;
+      max-width: 320px;
+      flex: 1;
+    }
+
+    .search-bar-icon {
+      position: absolute;
+      left: 10px;
+      width: 16px;
+      height: 16px;
+      color: var(--color-text-muted);
+      pointer-events: none;
+    }
+
+    .search-bar-input {
+      width: 100%;
+      height: 100%;
+      padding: 0 60px 0 32px;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      background: var(--color-bg-card);
+      color: var(--color-text-primary);
+      font-size: 13px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .search-bar-input:focus {
+      border-color: var(--color-border-focus);
+      box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.15);
+    }
+
+    .search-bar-input::placeholder {
+      color: var(--color-text-muted);
+    }
+
+    .search-bar-spinner {
+      position: absolute;
+      right: 34px;
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--color-border-primary);
+      border-top-color: var(--color-accent-primary);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+
+    .search-bar-count {
+      position: absolute;
+      right: 34px;
+      font-size: 11px;
+      color: var(--color-text-muted);
+      background: var(--color-bg-secondary);
+      padding: 1px 6px;
+      border-radius: 8px;
+    }
+
+    .search-bar-clear {
+      position: absolute;
+      right: 6px;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: none;
+      background: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--color-text-muted);
+      border-radius: 4px;
+      transition: color 0.2s, background 0.2s;
+    }
+
+    .search-bar-clear:hover {
+      color: var(--color-accent-error);
+      background: var(--color-bg-secondary);
+    }
+
+    .search-bar-clear svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    /* Filter Toggle Button */
+    .filter-toggle-btn {
+      position: relative;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      padding: 0;
+      width: 36px;
+      height: 36px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--color-text-secondary);
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    }
+
+    .filter-toggle-btn:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-border-focus);
+      color: var(--color-text-primary);
+      transform: translateY(-1px);
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+    }
+
+    .filter-toggle-btn.active {
+      background: linear-gradient(135deg, var(--color-bg-button) 0%, var(--color-accent-primary) 100%);
+      border-color: var(--color-bg-button);
+      color: var(--color-text-button);
+      box-shadow: 0 2px 8px rgba(9, 105, 218, 0.25);
+    }
+
+    .filter-toggle-badge {
+      position: absolute;
+      top: -4px;
+      right: -4px;
+      min-width: 16px;
+      height: 16px;
+      padding: 0 4px;
+      background: var(--color-accent-error);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 600;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+    }
+
+    /* Filter Bar */
+    .filter-bar {
+      overflow: hidden;
+      transition: max-height 0.3s ease, opacity 0.3s ease;
+      border-bottom: 1px solid var(--color-border-primary);
+      background: var(--color-bg-secondary);
+    }
+
+    .filter-bar.collapsed {
+      max-height: 0;
+      opacity: 0;
+      border-bottom-color: transparent;
+    }
+
+    .filter-bar.expanded {
+      max-height: 400px;
+      opacity: 1;
+    }
+
+    .filter-bar-inner {
+      padding: 12px 20px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .filter-section {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      border-left: 3px solid transparent;
+    }
+
+    /* Per-group tints and left-border accents */
+    .filter-section[data-group="type"] {
+      background: var(--color-filter-group-type);
+      border-left-color: var(--color-filter-group-border-type);
+    }
+    .filter-section[data-group="concept"] {
+      background: var(--color-filter-group-concept);
+      border-left-color: var(--color-filter-group-border-concept);
+    }
+    .filter-section[data-group="show"] {
+      background: var(--color-filter-group-show);
+      border-left-color: var(--color-filter-group-border-show);
+    }
+    .filter-section[data-group="date"] {
+      background: var(--color-filter-group-date);
+      border-left-color: var(--color-filter-group-border-date);
+    }
+
+    .filter-section-label {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--color-text-muted);
+    }
+
+    .filter-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .filter-date-inputs {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .filter-date-input {
+      height: 28px;
+      padding: 0 8px;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      background: var(--color-bg-card);
+      color: var(--color-text-primary);
+      color-scheme: var(--color-scheme, light);
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .filter-date-input:focus {
+      border-color: var(--color-border-focus);
+    }
+
+    .filter-date-separator {
+      font-size: 12px;
+      color: var(--color-text-muted);
+    }
+
+    .filter-clear-btn {
+      align-self: flex-end;
+      padding: 4px 12px;
+      border: 1px solid var(--color-accent-error);
+      border-radius: 6px;
+      background: none;
+      color: var(--color-accent-error);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+    }
+
+    .filter-clear-btn:hover {
+      background: var(--color-accent-error);
+      color: #fff;
+    }
+
+    /* Search Results Badge */
+    .search-results-badge {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 20px;
+      background: var(--color-bg-secondary);
+      border-bottom: 1px solid var(--color-border-primary);
+      font-size: 13px;
+      color: var(--color-text-secondary);
+    }
+
+    .search-results-badge-text {
+      font-weight: 500;
+    }
+
+    .search-results-badge-clear {
+      padding: 2px 10px;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 4px;
+      background: none;
+      color: var(--color-text-secondary);
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+    }
+
+    .search-results-badge-clear:hover {
+      background: var(--color-bg-card-hover);
+      color: var(--color-text-primary);
+    }
+
+    /* Activity Bar */
+    .activity-bar {
+      position: relative;
+      display: flex;
+      align-items: flex-end;
+      height: 60px;
+      padding: 4px 20px 4px;
+      gap: 1px;
+      background: var(--color-bg-tertiary, var(--color-bg-secondary));
+      border-top: 1px solid var(--color-border-primary);
+      user-select: none;
+    }
+
+    .activity-bar-loading {
+      justify-content: center;
+      align-items: center;
+      font-size: 11px;
+      color: var(--color-text-muted);
+    }
+
+    .activity-bar-column {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      align-items: stretch;
+      cursor: pointer;
+      border-radius: 2px 2px 0 0;
+      transition: opacity 0.15s;
+      min-width: 2px;
+    }
+
+    .activity-bar-column:hover {
+      opacity: 0.8;
+    }
+
+    .activity-bar-column.selected {
+      background: rgba(9, 105, 218, 0.1);
+    }
+
+    .activity-bar-stack {
+      display: flex;
+      flex-direction: column;
+      border-radius: 2px 2px 0 0;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    .activity-bar-segment {
+      min-height: 0;
+    }
+
+    /* Colorblind-friendly palette: blue / orange / teal
+       Distinguishable for deuteranopia, protanopia, and tritanopia.
+       Uses CSS variables so both themes can tune contrast. */
+    .activity-bar-obs {
+      background: var(--color-activity-obs);
+    }
+
+    .activity-bar-summary {
+      background: var(--color-activity-summary);
+    }
+
+    .activity-bar-prompt {
+      background: var(--color-activity-prompt);
+    }
+
+    .activity-bar-tooltip {
+      position: absolute;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 10px;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 4px;
+      font-size: 11px;
+      color: var(--color-text-primary);
+      white-space: nowrap;
+      pointer-events: none;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+      z-index: 10;
+      /* transform set dynamically in JS based on cursor position */
+    }
+
+    .activity-bar-tooltip-date {
+      font-weight: 600;
+      padding-right: 4px;
+      border-right: 1px solid var(--color-border-primary);
+      margin-right: -2px;
+    }
+
+    .activity-bar-tooltip-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .activity-bar-legend {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+    }
+
+    .activity-bar-legend-obs {
+      background: var(--color-activity-obs);
+      border-radius: 50%;
+    }
+
+    .activity-bar-legend-summary {
+      background: var(--color-activity-summary);
+    }
+
+    .activity-bar-legend-prompt {
+      background: var(--color-activity-prompt);
+      clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
+    }
+
+    /* Keyboard focus styles for search/filter components */
+    .search-bar-input:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: -2px;
+    }
+
+    .filter-chips .chip:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: 1px;
+    }
+
+    .filter-toggle-btn:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: 1px;
+    }
+
+    .filter-date-input:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: -2px;
+    }
+
+    .filter-clear-btn:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: 1px;
+    }
+
+    .search-bar-clear:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: 1px;
+    }
+
+    .search-results-badge-clear:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: 1px;
+    }
+
+    .activity-bar-column:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: -1px;
+      border-radius: 2px;
     }
 
     .community-btn {
@@ -2863,6 +3371,129 @@
 
       .toggle-switch.on .toggle-knob {
         transform: translateX(16px);
+      }
+    }
+
+    /* ===== Responsive: Search, Filter, Activity Bar ===== */
+
+    /* Tablet: 481px–768px */
+    @media (max-width: 768px) and (min-width: 481px) {
+      .search-bar {
+        min-width: 140px;
+        max-width: 200px;
+      }
+
+      .filter-bar-inner {
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .filter-section {
+        min-width: 0;
+      }
+
+      .activity-bar {
+        height: 40px;
+      }
+    }
+
+    /* Small tablet & mobile: 600px and below */
+    @media (max-width: 600px) {
+      .search-bar {
+        min-width: 100px;
+        max-width: 160px;
+      }
+
+      .search-bar-input {
+        font-size: 12px;
+        padding: 5px 8px 5px 28px;
+        height: 30px;
+      }
+
+      .search-bar-icon {
+        width: 14px;
+        height: 14px;
+        left: 8px;
+      }
+
+      .filter-toggle-btn {
+        width: 32px;
+        height: 32px;
+        flex-shrink: 0;
+      }
+
+      .filter-bar-inner {
+        flex-direction: column;
+        gap: 8px;
+        padding: 8px 12px;
+      }
+
+      .filter-section {
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .filter-section-label {
+        font-size: 10px;
+      }
+
+      .filter-chips {
+        gap: 4px;
+      }
+
+      .filter-chips .chip {
+        font-size: 11px;
+        padding: 2px 8px;
+      }
+
+      .filter-date-inputs {
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+
+      .filter-date-input {
+        font-size: 11px;
+        padding: 4px 6px;
+      }
+
+      .search-results-badge {
+        padding: 6px 12px;
+        font-size: 12px;
+      }
+
+      .activity-bar {
+        height: 36px;
+        padding: 4px 12px;
+      }
+
+      .activity-bar-tooltip {
+        font-size: 10px;
+        padding: 3px 6px;
+      }
+    }
+
+    /* Narrow mobile: 480px and below */
+    @media (max-width: 480px) {
+      .search-bar {
+        min-width: 80px;
+        max-width: 130px;
+      }
+
+      .search-bar-count {
+        display: none;
+      }
+
+      .filter-bar.expanded {
+        max-height: 500px;
+      }
+
+      .activity-bar {
+        height: 30px;
+        gap: 1px;
+      }
+
+      .activity-bar-column {
+        min-width: 2px;
       }
     }
   </style>

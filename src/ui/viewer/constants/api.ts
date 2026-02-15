@@ -9,5 +9,6 @@ export const API_ENDPOINTS = {
   SETTINGS: '/api/settings',
   STATS: '/api/stats',
   PROCESSING_STATUS: '/api/processing-status',
+  SEARCH: '/api/search',
   STREAM: '/stream',
 } as const;
