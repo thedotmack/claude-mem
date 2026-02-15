@@ -1,12 +1,36 @@
 import { useEffect, useRef } from 'react';
 
 /**
- * Hook that animates the browser tab favicon using an animated WebP when isProcessing is true.
- * Creates a hidden <img> with the animated WebP and captures frames to canvas for the favicon.
+ * Heartbeat easing function.
+ * Mimics a real heartbeat: two quick beats (systole + diastole) then a rest.
+ * Returns a scale factor between 0 and 1.
+ */
+function heartbeat(t: number): number {
+  // Normalize t to a 0-1 cycle
+  const phase = t % 1;
+
+  // First beat (systole): sharp spike at ~15% of cycle
+  if (phase < 0.15) {
+    const p = phase / 0.15;
+    return Math.sin(p * Math.PI);
+  }
+  // Brief rest between beats
+  if (phase < 0.25) {
+    return 0;
+  }
+  // Second beat (diastole): smaller spike at ~35% of cycle
+  if (phase < 0.4) {
+    const p = (phase - 0.25) / 0.15;
+    return 0.6 * Math.sin(p * Math.PI);
+  }
+  // Rest phase
+  return 0;
+}
+
+/**
+ * Hook that animates the browser tab favicon with a heartbeat effect when processing.
+ * The icon scales up and down mimicking a real heartbeat rhythm (lub-dub...lub-dub).
  * When idle, restores the static favicon.
- *
- * Note: Canvas drawImage from an animated WebP captures the currently displayed frame,
- * so we use requestAnimationFrame to continuously sample the browser-rendered animation.
  */
 export function useSpinningFavicon(isProcessing: boolean) {
   const animationRef = useRef<number | null>(null);
@@ -47,30 +71,36 @@ export function useSpinningFavicon(isProcessing: boolean) {
       if (!imgRef.current) {
         imgRef.current = new Image();
         imgRef.current.src = 'magic-brain.webp';
-        // Keep it off-screen but in the DOM so the browser animates it
         imgRef.current.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:32px;height:32px;pointer-events:none;';
         document.body.appendChild(imgRef.current);
       }
 
       const img = imgRef.current;
-
-      let glowPhase = 0;
+      const startTime = performance.now();
+      // ~72 BPM heartbeat (one full cycle every ~830ms)
+      const bpm = 72;
+      const cycleDuration = 60000 / bpm;
 
       const animate = () => {
         if (img.complete && img.naturalWidth > 0) {
+          const elapsed = performance.now() - startTime;
+          const t = elapsed / cycleDuration;
+          const beat = heartbeat(t);
+
+          // Scale: resting at 0.85, peak at 1.0
+          const scale = 0.85 + beat * 0.15;
+          const size = 32 * scale;
+          const offset = (32 - size) / 2;
+
           ctx.clearRect(0, 0, 32, 32);
 
-          // Pulsing purple glow matching the in-page CSS effect
-          glowPhase += 0.105;
-          const pulse = 0.5 + 0.5 * Math.sin(glowPhase);
-          const blur = 4 + pulse * 6;
-          ctx.shadowColor = `rgba(139, 92, 246, ${0.6 + pulse * 0.3})`;
-          ctx.shadowBlur = blur;
+          // Purple glow that intensifies with each beat
+          const glowAlpha = 0.2 + beat * 0.7;
+          ctx.shadowColor = `rgba(139, 92, 246, ${glowAlpha})`;
+          ctx.shadowBlur = 2 + beat * 8;
 
-          // Draw centered with margin for glow to be visible
-          ctx.drawImage(img, 4, 4, 24, 24);
+          ctx.drawImage(img, offset, offset, size, size);
 
-          // Reset shadow for next frame
           ctx.shadowColor = 'transparent';
           ctx.shadowBlur = 0;
 
