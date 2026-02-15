@@ -120,7 +120,6 @@ Restartujte Claude Code. Kontext z předchozích sezení se automaticky objeví 
 - ⚙️ **Konfigurace kontextu** - Jemně odstupňovaná kontrola nad tím, jaký kontext se vkládá
 - 🤖 **Automatický provoz** - Není vyžadován žádný manuální zásah
 - 🔗 **Citace** - Odkazujte na minulá pozorování pomocí ID (přístup přes http://localhost:37777/api/observation/{id} nebo zobrazit vše ve webovém prohlížeči na http://localhost:37777)
-- 🧪 **Beta kanál** - Vyzkoušejte experimentální funkce jako Endless Mode přepnutím verze
 
 ---
 
@@ -133,7 +132,6 @@ Restartujte Claude Code. Kontext z předchozích sezení se automaticky objeví 
 - **[Průvodce instalací](https://docs.claude-mem.ai/installation)** - Rychlý start a pokročilá instalace
 - **[Průvodce použitím](https://docs.claude-mem.ai/usage/getting-started)** - Jak Claude-Mem funguje automaticky
 - **[Vyhledávací nástroje](https://docs.claude-mem.ai/usage/search-tools)** - Dotazujte se na historii projektu pomocí přirozeného jazyka
-- **[Beta funkce](https://docs.claude-mem.ai/beta-features)** - Vyzkoušejte experimentální funkce jako Endless Mode
 
 ### Osvědčené postupy
 
@@ -205,14 +203,6 @@ Claude-Mem poskytuje inteligentní vyhledávání prostřednictvím dovednosti m
 ```
 
 Podrobné příklady najdete v [Průvodci vyhledávacími nástroji](https://docs.claude-mem.ai/usage/search-tools).
-
----
-
-## Beta funkce
-
-Claude-Mem nabízí **beta kanál** s experimentálními funkcemi jako **Endless Mode** (biomimetická architektura paměti pro prodloužená sezení). Přepínejte mezi stabilní a beta verzí z webového rozhraní na http://localhost:37777 → Settings.
-
-Podrobnosti o Endless Mode a jak jej vyzkoušet najdete v **[Dokumentaci beta funkcí](https://docs.claude-mem.ai/beta-features)**.
 
 ---
 

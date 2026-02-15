@@ -120,7 +120,6 @@ Starta om Claude Code. Kontext från tidigare sessioner kommer automatiskt att v
 - ⚙️ **Kontextkonfiguration** - Detaljerad kontroll över vilken kontext som injiceras
 - 🤖 **Automatisk drift** - Ingen manuell hantering krävs
 - 🔗 **Citeringar** - Referera till tidigare observationer med ID:n (tillgängliga via http://localhost:37777/api/observation/{id} eller visa alla i webbvyn på http://localhost:37777)
-- 🧪 **Betakanal** - Testa experimentella funktioner som Endless Mode via versionsväxling
 
 ---
 
@@ -133,7 +132,6 @@ Starta om Claude Code. Kontext från tidigare sessioner kommer automatiskt att v
 - **[Installationsguide](https://docs.claude-mem.ai/installation)** - Snabbstart och avancerad installation
 - **[Användarguide](https://docs.claude-mem.ai/usage/getting-started)** - Hur Claude-Mem fungerar automatiskt
 - **[Sökverktyg](https://docs.claude-mem.ai/usage/search-tools)** - Sök i din projekthistorik med naturligt språk
-- **[Betafunktioner](https://docs.claude-mem.ai/beta-features)** - Testa experimentella funktioner som Endless Mode
 
 ### Bästa praxis
 
@@ -205,14 +203,6 @@ Claude-Mem tillhandahåller intelligent sökning genom mem-search-färdigheten s
 ```
 
 Se [Sökverktygsguide](https://docs.claude-mem.ai/usage/search-tools) för detaljerade exempel.
-
----
-
-## Betafunktioner
-
-Claude-Mem erbjuder en **betakanal** med experimentella funktioner som **Endless Mode** (biomimetisk minnesarkitektur för utökade sessioner). Växla mellan stabila och betaversioner från webbvy-gränssnittet på http://localhost:37777 → Settings.
-
-Se **[Dokumentation för betafunktioner](https://docs.claude-mem.ai/beta-features)** för detaljer om Endless Mode och hur du testar det.
 
 ---
 

@@ -26,7 +26,7 @@ src/services/worker/
 │       ├── SessionRoutes.ts      # Session lifecycle (init, observations, summarize, complete)
 │       ├── DataRoutes.ts         # Data retrieval (get observations, summaries, prompts, stats)
 │       ├── SearchRoutes.ts       # Search/MCP proxy (all search endpoints)
-│       ├── SettingsRoutes.ts     # Settings, MCP toggle, branch switching
+│       ├── SettingsRoutes.ts     # Settings, MCP toggle
 │       └── ViewerRoutes.ts       # Health check, viewer UI, SSE stream
 └── services/                     # Business logic services (existing, NO CHANGES in Phase 1)
     ├── DatabaseManager.ts        # SQLite connection management
@@ -34,8 +34,7 @@ src/services/worker/
     ├── SDKAgent.ts               # Claude Agent SDK for observations/summaries
     ├── SSEBroadcaster.ts         # Server-Sent Events for real-time updates
     ├── PaginationHelper.ts       # Query pagination utilities
-    ├── SettingsManager.ts        # User settings CRUD
-    └── BranchManager.ts          # Git branch operations
+    └── SettingsManager.ts        # User settings CRUD
 ```
 
 ## Route Organization
@@ -96,9 +95,6 @@ Settings and configuration (use service layer directly):
 - `POST /settings` - Update user settings
 - `GET /mcp/status` - Get MCP server status
 - `POST /mcp/toggle` - Toggle MCP server on/off
-- `GET /branch/status` - Get git branch info
-- `POST /branch/switch` - Switch git branch
-- `POST /branch/update` - Pull branch updates
 
 ## Current State (Phase 1)
 

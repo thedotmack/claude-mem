@@ -120,7 +120,6 @@ Reporniți Claude Code. Contextul din sesiunile anterioare va apărea automat î
 - ⚙️ **Configurare Context** - Control fin asupra contextului care este injectat
 - 🤖 **Operare Automată** - Nu necesită intervenție manuală
 - 🔗 **Citări** - Referință la observații anterioare cu ID-uri (accesați prin http://localhost:37777/api/observation/{id} sau vizualizați toate în web viewer la http://localhost:37777)
-- 🧪 **Canal Beta** - Încercați funcții experimentale precum Endless Mode prin comutarea versiunii
 
 ---
 
@@ -133,7 +132,6 @@ Reporniți Claude Code. Contextul din sesiunile anterioare va apărea automat î
 - **[Ghid de Instalare](https://docs.claude-mem.ai/installation)** - Start rapid și instalare avansată
 - **[Ghid de Utilizare](https://docs.claude-mem.ai/usage/getting-started)** - Cum funcționează Claude-Mem automat
 - **[Instrumente de Căutare](https://docs.claude-mem.ai/usage/search-tools)** - Interogați istoricul proiectului cu limbaj natural
-- **[Funcții Beta](https://docs.claude-mem.ai/beta-features)** - Încercați funcții experimentale precum Endless Mode
 
 ### Practici Recomandate
 
@@ -205,14 +203,6 @@ Claude-Mem oferă căutare inteligentă prin abilitatea mem-search care se invoc
 ```
 
 Consultați [Ghidul Instrumentelor de Căutare](https://docs.claude-mem.ai/usage/search-tools) pentru exemple detaliate.
-
----
-
-## Funcții Beta
-
-Claude-Mem oferă un **canal beta** cu funcții experimentale precum **Endless Mode** (arhitectură de memorie biomimetică pentru sesiuni extinse). Comutați între versiunile stabile și beta din interfața web viewer la http://localhost:37777 → Settings.
-
-Consultați **[Documentația Funcțiilor Beta](https://docs.claude-mem.ai/beta-features)** pentru detalii despre Endless Mode și cum să îl încercați.
 
 ---
 

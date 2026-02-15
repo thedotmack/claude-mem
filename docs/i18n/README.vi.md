@@ -120,7 +120,6 @@ Khởi động lại Claude Code. Ngữ cảnh từ các phiên trước sẽ t�
 - ⚙️ **Cấu Hình Ngữ Cảnh** - Kiểm soát chi tiết về ngữ cảnh được chèn vào
 - 🤖 **Hoạt Động Tự Động** - Không cần can thiệp thủ công
 - 🔗 **Trích Dẫn** - Tham chiếu các quan sát trong quá khứ với ID (truy cập qua http://localhost:37777/api/observation/{id} hoặc xem tất cả trong web viewer tại http://localhost:37777)
-- 🧪 **Kênh Beta** - Dùng thử các tính năng thử nghiệm như Endless Mode thông qua chuyển đổi phiên bản
 
 ---
 
@@ -133,7 +132,6 @@ Khởi động lại Claude Code. Ngữ cảnh từ các phiên trước sẽ t�
 - **[Hướng Dẫn Cài Đặt](https://docs.claude-mem.ai/installation)** - Bắt đầu nhanh & cài đặt nâng cao
 - **[Hướng Dẫn Sử Dụng](https://docs.claude-mem.ai/usage/getting-started)** - Cách Claude-Mem hoạt động tự động
 - **[Công Cụ Tìm Kiếm](https://docs.claude-mem.ai/usage/search-tools)** - Truy vấn lịch sử dự án bằng ngôn ngữ tự nhiên
-- **[Tính Năng Beta](https://docs.claude-mem.ai/beta-features)** - Dùng thử các tính năng thử nghiệm như Endless Mode
 
 ### Thực Hành Tốt Nhất
 
@@ -205,14 +203,6 @@ Claude-Mem cung cấp tìm kiếm thông minh thông qua kỹ năng mem-search t
 ```
 
 Xem [Hướng Dẫn Công Cụ Tìm Kiếm](https://docs.claude-mem.ai/usage/search-tools) để biết các ví dụ chi tiết.
-
----
-
-## Tính Năng Beta
-
-Claude-Mem cung cấp **kênh beta** với các tính năng thử nghiệm như **Endless Mode** (kiến trúc bộ nhớ sinh học mô phỏng cho các phiên mở rộng). Chuyển đổi giữa các phiên bản ổn định và beta từ giao diện web viewer tại http://localhost:37777 → Settings.
-
-Xem **[Tài Liệu Tính Năng Beta](https://docs.claude-mem.ai/beta-features)** để biết chi tiết về Endless Mode và cách dùng thử.
 
 ---
 

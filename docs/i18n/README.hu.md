@@ -120,7 +120,6 @@ Indítsa újra a Claude Code-ot. A korábbi munkamenetek kontextusa automatikusa
 - ⚙️ **Kontextus konfiguráció** - Finomhangolt kontroll afelett, hogy milyen kontextus kerül beillesztésre
 - 🤖 **Automatikus működés** - Nincs szükség manuális beavatkozásra
 - 🔗 **Hivatkozások** - Hivatkozás múltbeli megfigyelésekre ID-kkal (hozzáférés: http://localhost:37777/api/observation/{id} vagy mindegyik megtekintése a webes felületen a http://localhost:37777 címen)
-- 🧪 **Béta csatorna** - Kísérleti funkciók, mint az Endless Mode kipróbálása verziócserével
 
 ---
 
@@ -133,7 +132,6 @@ Indítsa újra a Claude Code-ot. A korábbi munkamenetek kontextusa automatikusa
 - **[Telepítési útmutató](https://docs.claude-mem.ai/installation)** - Gyors indítás és haladó telepítés
 - **[Használati útmutató](https://docs.claude-mem.ai/usage/getting-started)** - Hogyan működik automatikusan a Claude-Mem
 - **[Keresési eszközök](https://docs.claude-mem.ai/usage/search-tools)** - Projekt előzmények lekérdezése természetes nyelvvel
-- **[Béta funkciók](https://docs.claude-mem.ai/beta-features)** - Kísérleti funkciók, mint az Endless Mode kipróbálása
 
 ### Bevált gyakorlatok
 
@@ -205,14 +203,6 @@ A Claude-Mem intelligens keresést biztosít a mem-search skillen keresztül, am
 ```
 
 Részletes példákért lásd a [Keresési eszközök útmutatót](https://docs.claude-mem.ai/usage/search-tools).
-
----
-
-## Béta funkciók
-
-A Claude-Mem **béta csatornát** kínál kísérleti funkciókkal, mint az **Endless Mode** (biomimetikus memória architektúra hosszabb munkamenetekhez). Váltson a stabil és béta verziók között a webes megjelenítő felületről a http://localhost:37777 → Settings címen.
-
-További részletekért az Endless Mode-ról és annak kipróbálásáról lásd a **[Béta funkciók dokumentációt](https://docs.claude-mem.ai/beta-features)**.
 
 ---
 

@@ -119,7 +119,6 @@
 - ⚙️ **הגדרות הקשר** - בקרה מדויקת על איזה הקשר מוזרק
 - 🤖 **פעולה אוטומטית** - אין צורך בהתערבות ידנית
 - 🔗 **ציטוטים** - הפנה לתצפיות קודמות עם מזהים (גישה דרך http://localhost:37777/api/observation/{id} או צפה בכולם בצופה האינטרנט ב-http://localhost:37777)
-- 🧪 **ערוץ בטא** - נסה תכונות ניסיוניות כמו Endless Mode דרך החלפת גרסאות
 
 ---
 
@@ -132,7 +131,6 @@
 - **[מדריך התקנה](https://docs.claude-mem.ai/installation)** - התחלה מהירה והתקנה מתקדמת
 - **[מדריך שימוש](https://docs.claude-mem.ai/usage/getting-started)** - איך Claude-Mem עובד אוטומטית
 - **[כלי חיפוש](https://docs.claude-mem.ai/usage/search-tools)** - שאל את היסטוריית הפרויקט שלך בשפה טבעית
-- **[תכונות בטא](https://docs.claude-mem.ai/beta-features)** - נסה תכונות ניסיוניות כמו Endless Mode
 
 ### שיטות מומלצות
 
@@ -204,14 +202,6 @@ Claude-Mem מספק חיפוש חכם דרך מיומנות mem-search שמופ�
 ```
 
 ראה [מדריך כלי חיפוש](https://docs.claude-mem.ai/usage/search-tools) לדוגמאות מפורטות.
-
----
-
-## תכונות בטא
-
-Claude-Mem מציע **ערוץ בטא** עם תכונות ניסיוניות כמו **Endless Mode** (ארכיטקטורת זיכרון ביומימטית להפעלות מורחבות). החלף בין גרסאות יציבות ובטא מממשק הצופה האינטרנט ב-http://localhost:37777 → Settings.
-
-ראה **[תיעוד תכונות בטא](https://docs.claude-mem.ai/beta-features)** לפרטים על Endless Mode ואיך לנסות אותו.
 
 ---
 

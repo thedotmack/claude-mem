@@ -120,7 +120,6 @@ Restart Claude Code. Konteks dari sesi sebelumnya akan secara otomatis muncul di
 - ⚙️ **Konfigurasi Konteks** - Kontrol yang detail atas konteks apa yang diinjeksikan
 - 🤖 **Operasi Otomatis** - Tidak memerlukan intervensi manual
 - 🔗 **Kutipan** - Referensi observasi masa lalu dengan ID (akses melalui http://localhost:37777/api/observation/{id} atau lihat semua di web viewer di http://localhost:37777)
-- 🧪 **Beta Channel** - Coba fitur eksperimental seperti Endless Mode melalui peralihan versi
 
 ---
 
@@ -133,7 +132,6 @@ Restart Claude Code. Konteks dari sesi sebelumnya akan secara otomatis muncul di
 - **[Panduan Instalasi](https://docs.claude-mem.ai/installation)** - Mulai cepat & instalasi lanjutan
 - **[Panduan Penggunaan](https://docs.claude-mem.ai/usage/getting-started)** - Bagaimana Claude-Mem bekerja secara otomatis
 - **[Alat Pencarian](https://docs.claude-mem.ai/usage/search-tools)** - Query riwayat proyek Anda dengan bahasa alami
-- **[Fitur Beta](https://docs.claude-mem.ai/beta-features)** - Coba fitur eksperimental seperti Endless Mode
 
 ### Praktik Terbaik
 
@@ -205,14 +203,6 @@ Claude-Mem menyediakan pencarian cerdas melalui mem-search skill yang secara oto
 ```
 
 Lihat [Panduan Alat Pencarian](https://docs.claude-mem.ai/usage/search-tools) untuk contoh detail.
-
----
-
-## Fitur Beta
-
-Claude-Mem menawarkan **beta channel** dengan fitur eksperimental seperti **Endless Mode** (arsitektur memori biomimetik untuk sesi yang diperpanjang). Beralih antara versi stabil dan beta dari web viewer UI di http://localhost:37777 → Settings.
-
-Lihat **[Dokumentasi Fitur Beta](https://docs.claude-mem.ai/beta-features)** untuk detail tentang Endless Mode dan cara mencobanya.
 
 ---
 

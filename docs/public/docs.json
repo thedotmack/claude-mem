@@ -43,9 +43,7 @@
           "usage/claude-desktop",
           "usage/private-tags",
           "usage/export-import",
-          "usage/manual-recovery",
-          "beta-features",
-          "endless-mode"
+          "usage/manual-recovery"
         ]
       },
       {

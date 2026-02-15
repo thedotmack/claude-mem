@@ -119,7 +119,6 @@ Herstart Claude Code. Context van eerdere sessies verschijnt automatisch in nieu
 - ⚙️ **Context Configuratie** - Fijnmazige controle over welke context wordt geïnjecteerd
 - 🤖 **Automatische Werking** - Geen handmatige tussenkomst vereist
 - 🔗 **Citaten** - Verwijs naar eerdere waarnemingen met ID's (toegang via http://localhost:37777/api/observation/{id} of bekijk alle in de web viewer op http://localhost:37777)
-- 🧪 **Bètakanaal** - Probeer experimentele functies zoals Endless Mode via versieschakeling
 
 ---
 
@@ -132,7 +131,6 @@ Herstart Claude Code. Context van eerdere sessies verschijnt automatisch in nieu
 - **[Installatiegids](https://docs.claude-mem.ai/installation)** - Snel starten & geavanceerde installatie
 - **[Gebruikersgids](https://docs.claude-mem.ai/usage/getting-started)** - Hoe Claude-Mem automatisch werkt
 - **[Zoektools](https://docs.claude-mem.ai/usage/search-tools)** - Bevraag je projectgeschiedenis met natuurlijke taal
-- **[Bètafuncties](https://docs.claude-mem.ai/beta-features)** - Probeer experimentele functies zoals Endless Mode
 
 ### Beste Praktijken
 
@@ -204,14 +202,6 @@ Claude-Mem biedt intelligent zoeken via de mem-search vaardigheid die automatisc
 ```
 
 Zie [Zoektools Gids](https://docs.claude-mem.ai/usage/search-tools) voor gedetailleerde voorbeelden.
-
----
-
-## Bètafuncties
-
-Claude-Mem biedt een **bètakanaal** met experimentele functies zoals **Endless Mode** (biomimetische geheugenarchitectuur voor uitgebreide sessies). Schakel tussen stabiele en bètaversies vanuit de web viewer UI op http://localhost:37777 → Settings.
-
-Zie **[Bètafuncties Documentatie](https://docs.claude-mem.ai/beta-features)** voor details over Endless Mode en hoe je het kunt proberen.
 
 ---
 

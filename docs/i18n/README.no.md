@@ -120,7 +120,6 @@ Start Claude Code på nytt. Kontekst fra tidligere økter vil automatisk vises i
 - ⚙️ **Kontekstkonfigurasjon** - Finjustert kontroll over hvilken kontekst som injiseres
 - 🤖 **Automatisk Drift** - Ingen manuell inngripen nødvendig
 - 🔗 **Kildehenvisninger** - Referer til tidligere observasjoner med ID-er (tilgang via http://localhost:37777/api/observation/{id} eller se alle i nettviseren på http://localhost:37777)
-- 🧪 **Beta-kanal** - Prøv eksperimentelle funksjoner som Endless Mode via versjonsbytte
 
 ---
 
@@ -133,7 +132,6 @@ Start Claude Code på nytt. Kontekst fra tidligere økter vil automatisk vises i
 - **[Installasjonsveiledning](https://docs.claude-mem.ai/installation)** - Hurtigstart og avansert installasjon
 - **[Brukerveiledning](https://docs.claude-mem.ai/usage/getting-started)** - Hvordan Claude-Mem fungerer automatisk
 - **[Søkeverktøy](https://docs.claude-mem.ai/usage/search-tools)** - Spør om prosjekthistorikken din med naturlig språk
-- **[Beta-funksjoner](https://docs.claude-mem.ai/beta-features)** - Prøv eksperimentelle funksjoner som Endless Mode
 
 ### Beste Praksis
 
@@ -205,14 +203,6 @@ Claude-Mem tilbyr intelligent søk gjennom mem-search-ferdigheten som automatisk
 ```
 
 Se [Søkeverktøy-veiledning](https://docs.claude-mem.ai/usage/search-tools) for detaljerte eksempler.
-
----
-
-## Beta-funksjoner
-
-Claude-Mem tilbyr en **beta-kanal** med eksperimentelle funksjoner som **Endless Mode** (biomimetisk minnearkitektur for utvidede økter). Bytt mellom stabile og beta-versjoner fra nettleser-UI på http://localhost:37777 → Settings.
-
-Se **[Beta-funksjoner Dokumentasjon](https://docs.claude-mem.ai/beta-features)** for detaljer om Endless Mode og hvordan du prøver det.
 
 ---
 

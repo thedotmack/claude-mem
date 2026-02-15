@@ -120,7 +120,6 @@
 - ⚙️ **上下文配置** - 精细控制注入的上下文内容
 - 🤖 **自动操作** - 无需手动干预
 - 🔗 **引用** - 使用 ID 引用过去的观察(通过 http://localhost:37777/api/observation/{id} 访问,或在 http://localhost:37777 的 Web 查看器中查看全部)
-- 🧪 **测试版渠道** - 通过版本切换尝试实验性功能,如无尽模式
 
 ---
 
@@ -133,7 +132,6 @@
 - **[安装指南](https://docs.claude-mem.ai/installation)** - 快速开始与高级安装
 - **[使用指南](https://docs.claude-mem.ai/usage/getting-started)** - Claude-Mem 如何自动工作
 - **[搜索工具](https://docs.claude-mem.ai/usage/search-tools)** - 使用自然语言查询项目历史
-- **[测试版功能](https://docs.claude-mem.ai/beta-features)** - 尝试实验性功能,如无尽模式
 
 ### 最佳实践
 
@@ -205,14 +203,6 @@ Claude-Mem 通过 mem-search 技能提供智能搜索,当您询问过去的工�
 ```
 
 详见[搜索工具指南](https://docs.claude-mem.ai/usage/search-tools)的详细示例。
-
----
-
-## 测试版功能
-
-Claude-Mem 提供**测试版渠道**,包含实验性功能,如**无尽模式**(用于扩展会话的仿生记忆架构)。从 Web 查看器界面 http://localhost:37777 → 设置 切换稳定版和测试版。
-
-详见**[测试版功能文档](https://docs.claude-mem.ai/beta-features)**了解无尽模式的详细信息和试用方法。
 
 ---
 

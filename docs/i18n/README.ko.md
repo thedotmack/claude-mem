@@ -120,7 +120,6 @@ Claude Code를 재시작하세요. 이전 세션의 컨텍스트가 자동으로
 - ⚙️ **컨텍스트 설정** - 주입되는 컨텍스트에 대한 세밀한 제어
 - 🤖 **자동 작동** - 수동 개입 불필요
 - 🔗 **인용** - ID로 과거 관찰 참조 (http://localhost:37777/api/observation/{id}를 통해 액세스하거나 http://localhost:37777의 웹 뷰어에서 모두 보기)
-- 🧪 **베타 채널** - 버전 전환을 통해 Endless Mode와 같은 실험적 기능 사용
 
 ---
 
@@ -133,7 +132,6 @@ Claude Code를 재시작하세요. 이전 세션의 컨텍스트가 자동으로
 - **[설치 가이드](https://docs.claude-mem.ai/installation)** - 빠른 시작 및 고급 설치
 - **[사용 가이드](https://docs.claude-mem.ai/usage/getting-started)** - Claude-Mem이 자동으로 작동하는 방법
 - **[검색 도구](https://docs.claude-mem.ai/usage/search-tools)** - 자연어로 프로젝트 기록 쿼리
-- **[베타 기능](https://docs.claude-mem.ai/beta-features)** - Endless Mode와 같은 실험적 기능 시도
 
 ### 모범 사례
 
@@ -205,14 +203,6 @@ Claude-Mem은 과거 작업에 대해 질문할 때 자동으로 호출되는 me
 ```
 
 자세한 예제는 [검색 도구 가이드](https://docs.claude-mem.ai/usage/search-tools)를 참조하세요.
-
----
-
-## 베타 기능
-
-Claude-Mem은 **Endless Mode**(확장된 세션을 위한 생체모방 메모리 아키텍처)와 같은 실험적 기능을 제공하는 **베타 채널**을 제공합니다. http://localhost:37777 → Settings의 웹 뷰어 UI에서 안정 버전과 베타 버전 간 전환이 가능합니다.
-
-Endless Mode 및 사용 방법에 대한 자세한 내용은 **[베타 기능 문서](https://docs.claude-mem.ai/beta-features)**를 참조하세요.
 
 ---
 

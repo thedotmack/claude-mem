@@ -120,7 +120,6 @@ Claude Codeを再起動します。以前のセッションからのコンテキ
 - ⚙️ **コンテキスト設定** - どのコンテキストが注入されるかを細かく制御
 - 🤖 **自動動作** - 手動介入不要
 - 🔗 **引用** - IDで過去の観察を参照(http://localhost:37777/api/observation/{id} でアクセス、またはhttp://localhost:37777 のWebビューアですべて表示)
-- 🧪 **ベータチャネル** - バージョン切り替えでEndless Modeなどの実験的機能を試す
 
 ---
 
@@ -133,7 +132,6 @@ Claude Codeを再起動します。以前のセッションからのコンテキ
 - **[インストールガイド](https://docs.claude-mem.ai/installation)** - クイックスタートと高度なインストール
 - **[使用ガイド](https://docs.claude-mem.ai/usage/getting-started)** - Claude-Memが自動的に動作する仕組み
 - **[検索ツール](https://docs.claude-mem.ai/usage/search-tools)** - 自然言語でプロジェクト履歴をクエリ
-- **[ベータ機能](https://docs.claude-mem.ai/beta-features)** - Endless Modeなどの実験的機能を試す
 
 ### ベストプラクティス
 
@@ -205,14 +203,6 @@ Claude-Memは、過去の作業について尋ねると自動的に呼び出さ�
 ```
 
 詳細な例は[検索ツールガイド](https://docs.claude-mem.ai/usage/search-tools)を参照してください。
-
----
-
-## ベータ機能
-
-Claude-Memは、**Endless Mode**(拡張セッション用の生体模倣メモリアーキテクチャ)などの実験的機能を備えた**ベータチャネル**を提供します。http://localhost:37777 → SettingsのWebビューアUIから安定版とベータ版を切り替えます。
-
-Endless Modeと試用方法の詳細については、**[ベータ機能ドキュメント](https://docs.claude-mem.ai/beta-features)**を参照してください。
 
 ---
 

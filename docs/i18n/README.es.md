@@ -121,7 +121,6 @@ Reinicia Claude Code. El contexto de sesiones anteriores aparecerá automáticam
 - ⚙️ **Configuración de Contexto** - Control detallado sobre qué contexto se inyecta
 - 🤖 **Operación Automática** - No se requiere intervención manual
 - 🔗 **Citas** - Referencias a observaciones pasadas con IDs (accede vía http://localhost:37777/api/observation/{id} o visualiza todas en el visor web en http://localhost:37777)
-- 🧪 **Canal Beta** - Prueba características experimentales como Endless Mode mediante cambio de versión
 
 ---
 
@@ -134,7 +133,6 @@ Reinicia Claude Code. El contexto de sesiones anteriores aparecerá automáticam
 - **[Guía de Instalación](https://docs.claude-mem.ai/installation)** - Inicio rápido e instalación avanzada
 - **[Guía de Uso](https://docs.claude-mem.ai/usage/getting-started)** - Cómo funciona Claude-Mem automáticamente
 - **[Herramientas de Búsqueda](https://docs.claude-mem.ai/usage/search-tools)** - Consulta el historial de tu proyecto con lenguaje natural
-- **[Características Beta](https://docs.claude-mem.ai/beta-features)** - Prueba características experimentales como Endless Mode
 
 ### Mejores Prácticas
 
@@ -206,14 +204,6 @@ Claude-Mem proporciona búsqueda inteligente a través de la habilidad mem-searc
 ```
 
 Ver [Guía de Herramientas de Búsqueda](https://docs.claude-mem.ai/usage/search-tools) para ejemplos detallados.
-
----
-
-## Características Beta
-
-Claude-Mem ofrece un **canal beta** con características experimentales como **Endless Mode** (arquitectura de memoria biomimética para sesiones extendidas). Cambia entre versiones estables y beta desde la interfaz del visor web en http://localhost:37777 → Settings.
-
-Ver **[Documentación de Características Beta](https://docs.claude-mem.ai/beta-features)** para detalles sobre Endless Mode y cómo probarlo.
 
 ---
 

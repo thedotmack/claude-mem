@@ -127,7 +127,6 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
 - 🔗 **Citations** - Reference past observations with IDs (access via http://localhost:37777/api/observation/{id} or view all in the web viewer at http://localhost:37777)
-- 🧪 **Beta Channel** - Try experimental features like Endless Mode via version switching
 
 ---
 
@@ -140,7 +139,6 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - **[Installation Guide](https://docs.claude-mem.ai/installation)** - Quick start & advanced installation
 - **[Usage Guide](https://docs.claude-mem.ai/usage/getting-started)** - How Claude-Mem works automatically
 - **[Search Tools](https://docs.claude-mem.ai/usage/search-tools)** - Query your project history with natural language
-- **[Beta Features](https://docs.claude-mem.ai/beta-features)** - Try experimental features like Endless Mode
 
 ### Best Practices
 
@@ -217,14 +215,6 @@ get_observations(ids=[123, 456])
 ```
 
 See [Search Tools Guide](https://docs.claude-mem.ai/usage/search-tools) for detailed examples.
-
----
-
-## Beta Features
-
-Claude-Mem offers a **beta channel** with experimental features like **Endless Mode** (biomimetic memory architecture for extended sessions). Switch between stable and beta versions from the web viewer UI at http://localhost:37777 → Settings.
-
-See **[Beta Features Documentation](https://docs.claude-mem.ai/beta-features)** for details on Endless Mode and how to try it.
 
 ---
 

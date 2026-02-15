@@ -119,7 +119,6 @@ Claude Code'u yeniden başlatın. Önceki oturumlardaki bağlam otomatik olarak 
 - ⚙️ **Bağlam Yapılandırması** - Hangi bağlamın enjekte edileceği üzerinde detaylı kontrol
 - 🤖 **Otomatik Çalışma** - Manuel müdahale gerektirmez
 - 🔗 **Alıntılar** - ID'lerle geçmiş gözlemlere referans verin (http://localhost:37777/api/observation/{id} üzerinden erişin veya http://localhost:37777 adresindeki web görüntüleyicide tümünü görüntüleyin)
-- 🧪 **Beta Kanalı** - Sürüm değiştirme yoluyla Endless Mode gibi deneysel özellikleri deneyin
 
 ---
 
@@ -132,7 +131,6 @@ Claude Code'u yeniden başlatın. Önceki oturumlardaki bağlam otomatik olarak 
 - **[Kurulum Kılavuzu](https://docs.claude-mem.ai/installation)** - Hızlı başlangıç ve gelişmiş kurulum
 - **[Kullanım Kılavuzu](https://docs.claude-mem.ai/usage/getting-started)** - Claude-Mem otomatik olarak nasıl çalışır
 - **[Arama Araçları](https://docs.claude-mem.ai/usage/search-tools)** - Doğal dil ile proje geçmişinizi sorgulayın
-- **[Beta Özellikleri](https://docs.claude-mem.ai/beta-features)** - Endless Mode gibi deneysel özellikleri deneyin
 
 ### En İyi Uygulamalar
 
@@ -204,14 +202,6 @@ Claude-Mem, geçmiş çalışmalarınız hakkında sorduğunuzda otomatik olarak
 ```
 
 Detaylı örnekler için [Arama Araçları Kılavuzu](https://docs.claude-mem.ai/usage/search-tools) bölümüne bakın.
-
----
-
-## Beta Özellikleri
-
-Claude-Mem, **Endless Mode** (genişletilmiş oturumlar için biyomimetik bellek mimarisi) gibi deneysel özellikler içeren bir **beta kanalı** sunar. http://localhost:37777 → Settings adresindeki web görüntüleyici arayüzünden kararlı ve beta sürümleri arasında geçiş yapın.
-
-Endless Mode hakkında detaylar ve nasıl deneyeceğiniz için **[Beta Özellikleri Dokümantasyonu](https://docs.claude-mem.ai/beta-features)** bölümüne bakın.
 
 ---
 

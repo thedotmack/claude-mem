@@ -119,7 +119,6 @@ Käynnistä Claude Code uudelleen. Aiempien istuntojen konteksti ilmestyy automa
 - ⚙️ **Kontekstin määrittely** - Tarkka hallinta siitä, mikä konteksti injektoidaan
 - 🤖 **Automaattinen toiminta** - Ei vaadi manuaalista puuttumista
 - 🔗 **Viittaukset** - Viittaa aiempiin havaintoihin ID:llä (käytettävissä osoitteessa http://localhost:37777/api/observation/{id} tai näytä kaikki web-katselussa osoitteessa http://localhost:37777)
-- 🧪 **Beta-kanava** - Kokeile kokeellisia ominaisuuksia kuten Endless Mode versionvaihdolla
 
 ---
 
@@ -132,7 +131,6 @@ Käynnistä Claude Code uudelleen. Aiempien istuntojen konteksti ilmestyy automa
 - **[Asennusopas](https://docs.claude-mem.ai/installation)** - Pikaopas ja edistynyt asennus
 - **[Käyttöopas](https://docs.claude-mem.ai/usage/getting-started)** - Miten Claude-Mem toimii automaattisesti
 - **[Hakutyökalut](https://docs.claude-mem.ai/usage/search-tools)** - Kysy projektihistoriaasi luonnollisella kielellä
-- **[Beta-ominaisuudet](https://docs.claude-mem.ai/beta-features)** - Kokeile kokeellisia ominaisuuksia kuten Endless Mode
 
 ### Parhaat käytännöt
 
@@ -204,14 +202,6 @@ Claude-Mem tarjoaa älykkään haun mem-search-taidon kautta, joka käynnistyy a
 ```
 
 Katso [Hakutyökalujen opas](https://docs.claude-mem.ai/usage/search-tools) yksityiskohtaisia esimerkkejä varten.
-
----
-
-## Beta-ominaisuudet
-
-Claude-Mem tarjoaa **beta-kanavan** kokeellisilla ominaisuuksilla kuten **Endless Mode** (biomimeettinen muistiarkkitehtuuri pidennetyille istunnoille). Vaihda vakaan ja beta-version välillä web-katselukäyttöliittymästä osoitteessa http://localhost:37777 → Settings.
-
-Katso **[Beta-ominaisuuksien dokumentaatio](https://docs.claude-mem.ai/beta-features)** yksityiskohdista Endless Moden ja sen kokeilemisen osalta.
 
 ---
 
