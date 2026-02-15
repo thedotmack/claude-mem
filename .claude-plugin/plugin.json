@@ -3,7 +3,7 @@
   "version": "9.1.0",
   "description": "Persistent memory system for Claude Code - seamlessly preserve context across sessions",
   "author": {
-    "name": "doublefx",
+    "name": "Frederic Thomas",
     "url": "https://github.com/doublefx"
   },
   "homepage": "https://github.com/doublefx/claude-mem",
