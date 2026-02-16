@@ -272,6 +272,12 @@ export class SDKAgent {
       }
     }
 
+    // Ensure subprocess is terminated after query completes
+    const tracked = getProcessBySession(session.sessionDbId);
+    if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
+      await ensureProcessExit(tracked, 5000);
+    }
+
     // Mark session complete
     const sessionDuration = Date.now() - session.startTime;
     logger.success('SDK', 'Agent completed', {

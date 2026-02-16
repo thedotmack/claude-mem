@@ -97,7 +97,6 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.76",
-    "@chroma-core/default-embed": "^0.1.9",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "ansi-to-html": "^0.7.2",
     "chromadb": "^3.2.2",

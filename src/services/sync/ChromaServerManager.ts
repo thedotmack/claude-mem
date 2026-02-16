@@ -11,7 +11,7 @@
 import { spawn, ChildProcess, execSync } from 'child_process';
 import path from 'path';
 import os from 'os';
-import fs from 'fs';
+import fs, { existsSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 
 export interface ChromaServerConfig {
@@ -108,14 +108,34 @@ export class ChromaServerManager {
 
     // Cross-platform: use npx.cmd on Windows
     const isWindows = process.platform === 'win32';
-    const command = isWindows ? 'npx.cmd' : 'npx';
 
-    const args = [
-      'chroma', 'run',
-      '--path', this.config.dataDir,
-      '--host', this.config.host,
-      '--port', String(this.config.port)
-    ];
+    // Resolve chroma binary absolutely — npx fails when spawned from cache dirs (#1120)
+    let command: string;
+    let args: string[];
+    try {
+      // chromadb package installs a 'chroma' bin entry
+      const chromaBinDir = path.dirname(require.resolve('chromadb/package.json'));
+      const chromaBin = path.join(chromaBinDir, 'node_modules', '.bin', isWindows ? 'chroma.cmd' : 'chroma');
+      // Fallback: check project-level .bin
+      const projectBin = path.join(chromaBinDir, '..', '.bin', isWindows ? 'chroma.cmd' : 'chroma');
+
+      if (existsSync(chromaBin)) {
+        command = chromaBin;
+      } else if (existsSync(projectBin)) {
+        command = projectBin;
+      } else {
+        // Last resort: npx with explicit cwd
+        command = isWindows ? 'npx.cmd' : 'npx';
+      }
+    } catch {
+      command = isWindows ? 'npx.cmd' : 'npx';
+    }
+
+    if (command.includes('npx')) {
+      args = ['chroma', 'run', '--path', this.config.dataDir, '--host', this.config.host, '--port', String(this.config.port)];
+    } else {
+      args = ['run', '--path', this.config.dataDir, '--host', this.config.host, '--port', String(this.config.port)];
+    }
 
     logger.info('CHROMA_SERVER', 'Starting Chroma server', {
       command,
@@ -125,11 +145,20 @@ export class ChromaServerManager {
 
     const spawnEnv = this.getSpawnEnv();
 
+    // Resolve cwd for npx fallback — ensures node_modules is findable (#1120)
+    let spawnCwd: string | undefined;
+    try {
+      spawnCwd = path.dirname(require.resolve('chromadb/package.json'));
+    } catch {
+      // If chromadb isn't resolvable, omit cwd and let npx handle it
+    }
+
     this.serverProcess = spawn(command, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: !isWindows,  // Don't detach on Windows (no process groups)
       windowsHide: true,     // Hide console window on Windows
-      env: spawnEnv
+      env: spawnEnv,
+      ...(spawnCwd && { cwd: spawnCwd })
     });
 
     // Log server output for debugging

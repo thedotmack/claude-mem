@@ -189,14 +189,11 @@ export class ChromaSync {
     }
 
     try {
-      // getOrCreateCollection handles both cases
-      // Lazy-load DefaultEmbeddingFunction to avoid eagerly pulling in
-      // @huggingface/transformers → sharp native binaries at bundle startup
-      const { DefaultEmbeddingFunction } = await import('@chroma-core/default-embed');
-      const embeddingFunction = new DefaultEmbeddingFunction();
+      // Let the Chroma HTTP server handle embeddings server-side.
+      // Removes dependency on @chroma-core/default-embed which requires
+      // onnxruntime + sharp native binaries that fail on many platforms (#1104, #1105, #1110).
       this.collection = await this.chromaClient.getOrCreateCollection({
-        name: this.collectionName,
-        embeddingFunction
+        name: this.collectionName
       });
 
       logger.debug('CHROMA_SYNC', 'Collection ready', { collection: this.collectionName });
