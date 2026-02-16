@@ -213,6 +213,52 @@ describe('ChromaSearchStrategy', () => {
       );
     });
 
+    it('should include project in Chroma where clause when specified', async () => {
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        project: 'my-project'
+      };
+
+      await strategy.search(options);
+
+      expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
+        'test query',
+        100,
+        { project: 'my-project' }
+      );
+    });
+
+    it('should combine doc_type and project with $and when both specified', async () => {
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        searchType: 'observations',
+        project: 'my-project'
+      };
+
+      await strategy.search(options);
+
+      expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
+        'test query',
+        100,
+        { $and: [{ doc_type: 'observation' }, { project: 'my-project' }] }
+      );
+    });
+
+    it('should not include project filter when project is not specified', async () => {
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        searchType: 'observations'
+      };
+
+      await strategy.search(options);
+
+      expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
+        'test query',
+        100,
+        { doc_type: 'observation' }
+      );
+    });
+
     it('should return empty result when no query provided', async () => {
       const options: StrategySearchOptions = {
         query: undefined
