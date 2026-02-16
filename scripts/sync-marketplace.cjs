@@ -98,9 +98,9 @@ try {
     console.log('Cleared stale native module cache (@img/sharp)');
   }
 
-  console.log('Running npm install in marketplace...');
+  console.log('Running bun install in marketplace...');
   execSync(
-    'cd ~/.claude/plugins/marketplaces/thedotmack/ && npm install',
+    'cd ~/.claude/plugins/marketplaces/thedotmack/ && bun install',
     { stdio: 'inherit' }
   );
 
