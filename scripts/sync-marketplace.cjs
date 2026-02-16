@@ -29,6 +29,18 @@ function getCurrentBranch() {
   }
 }
 
+function getGitignoreExcludes(basePath) {
+  const gitignorePath = path.join(basePath, '.gitignore');
+  if (!existsSync(gitignorePath)) return '';
+
+  const lines = readFileSync(gitignorePath, 'utf-8').split('\n');
+  return lines
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#'))
+    .map(pattern => `--exclude='${pattern}'`)
+    .join(' ');
+}
+
 const branch = getCurrentBranch();
 const isForce = process.argv.includes('--force');
 
@@ -60,19 +72,30 @@ function getPluginVersion() {
 // Normal rsync for main branch or fresh install
 console.log('Syncing to marketplace...');
 try {
+  const rootDir = path.join(__dirname, '..');
+  const gitignoreExcludes = getGitignoreExcludes(rootDir);
+
   execSync(
-    'rsync -av --delete --exclude=.git --exclude=/.mcp.json --exclude=bun.lock --exclude=package-lock.json ./ ~/.claude/plugins/marketplaces/thedotmack/',
+    `rsync -av --delete --exclude=.git --exclude=/.mcp.json --exclude=bun.lock --exclude=package-lock.json ${gitignoreExcludes} ./ ~/.claude/plugins/marketplaces/thedotmack/`,
     { stdio: 'inherit' }
   );
 
   // Remove stale lockfiles before install — they pin old native dep versions
-  const { unlinkSync } = require('fs');
+  const { unlinkSync, rmSync } = require('fs');
   for (const lockfile of ['package-lock.json', 'bun.lock']) {
     const lockpath = path.join(INSTALLED_PATH, lockfile);
     if (existsSync(lockpath)) {
       unlinkSync(lockpath);
       console.log(`Removed stale ${lockfile}`);
     }
+  }
+
+  // Clear stale native module cache (sharp/libvips) — Bun's cache can retain
+  // native binaries that reference companion libraries at broken relative paths
+  const bunCacheImgDir = path.join(os.homedir(), '.bun', 'install', 'cache', '@img');
+  if (existsSync(bunCacheImgDir)) {
+    rmSync(bunCacheImgDir, { recursive: true, force: true });
+    console.log('Cleared stale native module cache (@img/sharp)');
   }
 
   console.log('Running npm install in marketplace...');
@@ -85,9 +108,12 @@ try {
   const version = getPluginVersion();
   const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
 
+  const pluginDir = path.join(rootDir, 'plugin');
+  const pluginGitignoreExcludes = getGitignoreExcludes(pluginDir);
+
   console.log(`Syncing to cache folder (version ${version})...`);
   execSync(
-    `rsync -av --delete --exclude=.git plugin/ "${CACHE_VERSION_PATH}/"`,
+    `rsync -av --delete --exclude=.git ${pluginGitignoreExcludes} plugin/ "${CACHE_VERSION_PATH}/"`,
     { stdio: 'inherit' }
   );
 
