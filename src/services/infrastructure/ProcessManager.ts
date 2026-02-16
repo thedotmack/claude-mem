@@ -33,6 +33,93 @@ const ORPHAN_PROCESS_PATTERNS = [
 // Only kill processes older than this to avoid killing the current session
 const ORPHAN_MAX_AGE_MINUTES = 30;
 
+interface RuntimeResolverOptions {
+  platform?: NodeJS.Platform;
+  execPath?: string;
+  env?: NodeJS.ProcessEnv;
+  homeDirectory?: string;
+  pathExists?: (candidatePath: string) => boolean;
+  lookupInPath?: (binaryName: string, platform: NodeJS.Platform) => string | null;
+}
+
+function isBunExecutablePath(executablePath: string | undefined | null): boolean {
+  if (!executablePath) return false;
+
+  return /(^|[\\/])bun(\.exe)?$/i.test(executablePath.trim());
+}
+
+function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): string | null {
+  const command = platform === 'win32' ? `where ${binaryName}` : `which ${binaryName}`;
+
+  try {
+    const output = execSync(command, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf-8'
+    });
+
+    const firstMatch = output
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .find(line => line.length > 0);
+
+    return firstMatch || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the runtime executable for spawning the worker daemon.
+ *
+ * Windows must prefer Bun because worker-service.cjs imports bun:sqlite,
+ * which is unavailable in Node.js.
+ */
+export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): string | null {
+  const platform = options.platform ?? process.platform;
+  const execPath = options.execPath ?? process.execPath;
+
+  // Non-Windows currently relies on the runtime that launched worker-service.
+  if (platform !== 'win32') {
+    return execPath;
+  }
+
+  // If already running under Bun, reuse it directly.
+  if (isBunExecutablePath(execPath)) {
+    return execPath;
+  }
+
+  const env = options.env ?? process.env;
+  const homeDirectory = options.homeDirectory ?? homedir();
+  const pathExists = options.pathExists ?? existsSync;
+  const lookupInPath = options.lookupInPath ?? lookupBinaryInPath;
+
+  const candidatePaths = [
+    env.BUN,
+    env.BUN_PATH,
+    path.join(homeDirectory, '.bun', 'bin', 'bun.exe'),
+    path.join(homeDirectory, '.bun', 'bin', 'bun'),
+    env.USERPROFILE ? path.join(env.USERPROFILE, '.bun', 'bin', 'bun.exe') : undefined,
+    env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bun.exe') : undefined,
+    env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bin', 'bun.exe') : undefined,
+  ];
+
+  for (const candidate of candidatePaths) {
+    const normalized = candidate?.trim();
+    if (!normalized) continue;
+
+    if (isBunExecutablePath(normalized) && pathExists(normalized)) {
+      return normalized;
+    }
+
+    // Allow command-style values from env (e.g. BUN=bun)
+    if (normalized.toLowerCase() === 'bun') {
+      return normalized;
+    }
+  }
+
+  return lookupInPath('bun', platform);
+}
+
 export interface PidInfo {
   pid: number;
   port: number;
@@ -368,9 +455,16 @@ export function spawnDaemon(
     // Use PowerShell Start-Process to spawn a hidden, independent process
     // Unlike WMIC, PowerShell inherits environment variables from parent
     // -WindowStyle Hidden prevents console popup
-    const execPath = process.execPath;
-    const script = scriptPath;
-    const psCommand = `Start-Process -FilePath '${execPath}' -ArgumentList '${script}','--daemon' -WindowStyle Hidden`;
+    const runtimePath = resolveWorkerRuntimePath();
+
+    if (!runtimePath) {
+      logger.error('SYSTEM', 'Failed to locate Bun runtime for Windows worker spawn');
+      return undefined;
+    }
+
+    const escapedRuntimePath = runtimePath.replace(/'/g, "''");
+    const escapedScriptPath = scriptPath.replace(/'/g, "''");
+    const psCommand = `Start-Process -FilePath '${escapedRuntimePath}' -ArgumentList '${escapedScriptPath}','--daemon' -WindowStyle Hidden`;
 
     try {
       execSync(`powershell -NoProfile -Command "${psCommand}"`, {
@@ -379,7 +473,8 @@ export function spawnDaemon(
         env
       });
       return 0;
-    } catch {
+    } catch (error) {
+      logger.error('SYSTEM', 'Failed to spawn worker daemon on Windows', { runtimePath }, error as Error);
       return undefined;
     }
   }
