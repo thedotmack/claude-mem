@@ -189,17 +189,20 @@ export class ChromaSync {
     }
 
     try {
-      // getOrCreateCollection handles both cases
-      // Lazy-load DefaultEmbeddingFunction to avoid eagerly pulling in
-      // @huggingface/transformers → sharp native binaries at bundle startup
+      // Use WASM backend to avoid native ONNX binary issues (#1104, #1105, #1110).
+      // Same model (all-MiniLM-L6-v2), same embeddings, but runs in WASM —
+      // no native binary loading, no segfaults, no ENOENT errors.
       const { DefaultEmbeddingFunction } = await import('@chroma-core/default-embed');
-      const embeddingFunction = new DefaultEmbeddingFunction();
+      const embeddingFunction = new DefaultEmbeddingFunction({ wasm: true });
+
       this.collection = await this.chromaClient.getOrCreateCollection({
         name: this.collectionName,
         embeddingFunction
       });
 
-      logger.debug('CHROMA_SYNC', 'Collection ready', { collection: this.collectionName });
+      logger.debug('CHROMA_SYNC', 'Collection ready', {
+        collection: this.collectionName
+      });
     } catch (error) {
       logger.error('CHROMA_SYNC', 'Failed to get/create collection', { collection: this.collectionName }, error as Error);
       throw new Error(`Collection setup failed: ${error instanceof Error ? error.message : String(error)}`);
