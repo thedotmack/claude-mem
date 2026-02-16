@@ -841,6 +841,77 @@ describe("SSE stream integration", () => {
     await getService().stop({});
   });
 
+  it("includes Claude Code project identifier in source label", async () => {
+    const { api, sentMessages, getService } = createMockApi({
+      workerPort: serverPort,
+      observationFeed: { enabled: true, channel: "telegram", to: "12345" },
+    });
+    claudeMemPlugin(api);
+
+    await getService().start({});
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const observation = {
+      type: "new_observation",
+      observation: {
+        id: 11,
+        title: "Project Label",
+        subtitle: "Check source label",
+        project: "workspace-alpha",
+      },
+      timestamp: Date.now(),
+    };
+
+    for (const res of serverResponses) {
+      res.write(`data: ${JSON.stringify(observation)}\n\n`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    assert.equal(sentMessages.length, 1);
+    assert.ok(sentMessages[0].text.includes("Claude Code Session (workspace-alpha)"));
+
+    await getService().stop({});
+  });
+
+  it("uses custom Claude Code label prefix while preserving project identifier", async () => {
+    const { api, sentMessages, getService } = createMockApi({
+      workerPort: serverPort,
+      observationFeed: {
+        enabled: true,
+        channel: "telegram",
+        to: "12345",
+        emojis: { claudeCodeLabel: "Coding Session" },
+      },
+    });
+    claudeMemPlugin(api);
+
+    await getService().start({});
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const observation = {
+      type: "new_observation",
+      observation: {
+        id: 12,
+        title: "Custom Label",
+        subtitle: "Custom prefix",
+        project: "workspace-beta",
+      },
+      timestamp: Date.now(),
+    };
+
+    for (const res of serverResponses) {
+      res.write(`data: ${JSON.stringify(observation)}\n\n`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    assert.equal(sentMessages.length, 1);
+    assert.ok(sentMessages[0].text.includes("Coding Session (workspace-beta)"));
+
+    await getService().stop({});
+  });
+
   it("filters out non-observation events", async () => {
     const { api, sentMessages, getService } = createMockApi({
       workerPort: serverPort,
