@@ -37,7 +37,12 @@ export const contextHandler: EventHandler = {
     // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
     // Worker service has its own timeouts, so client-side timeout is redundant
     try {
-      const response = await fetch(url);
+      // Fetch both markdown (for Claude context) and colored (for user display) truly in parallel
+      const colorUrl = `${url}&colors=true`;
+      const [response, colorResponse] = await Promise.all([
+        fetch(url),
+        fetch(colorUrl).catch(() => null)
+      ]);
 
       if (!response.ok) {
         // Log but don't throw — context fetch failure should not block session start
@@ -48,14 +53,23 @@ export const contextHandler: EventHandler = {
         };
       }
 
-      const result = await response.text();
-      const additionalContext = result.trim();
+      const [contextResult, colorResult] = await Promise.all([
+        response.text(),
+        colorResponse?.ok ? colorResponse.text() : Promise.resolve('')
+      ]);
+
+      const additionalContext = contextResult.trim();
+      const coloredTimeline = colorResult.trim();
+      const systemMessage = coloredTimeline
+        ? `${coloredTimeline}\n\nView Observations Live @ http://localhost:${port}`
+        : undefined;
 
       return {
         hookSpecificOutput: {
           hookEventName: 'SessionStart',
           additionalContext
-        }
+        },
+        systemMessage
       };
     } catch (error) {
       // Worker unreachable — return empty context gracefully
