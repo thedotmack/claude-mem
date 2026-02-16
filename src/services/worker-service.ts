@@ -27,7 +27,8 @@ import {
   getPlatformTimeout,
   cleanupOrphanedProcesses,
   spawnDaemon,
-  createSignalHandler
+  createSignalHandler,
+  getWorkerNodeBinary
 } from './infrastructure/ProcessManager.js';
 import {
   isPortInUse,
@@ -256,7 +257,8 @@ export class WorkerService {
     writePidFile({
       pid: process.pid,
       port,
-      startedAt: new Date().toISOString()
+      startedAt: new Date().toISOString(),
+      nodeVersion: process.version
     });
 
     logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
@@ -284,20 +286,7 @@ export class WorkerService {
       ModeManager.getInstance().loadMode(modeId);
       logger.info('SYSTEM', `Mode loaded: ${modeId}`);
 
-      try {
-        this.dbManager.initialize();
-      } catch (dbError: unknown) {
-        const msg = dbError instanceof Error ? dbError.message : String(dbError);
-        if (msg.includes('was compiled against a different Node.js version') || msg.includes('NODE_MODULE_VERSION')) {
-          logger.info('SYSTEM', 'Native module mismatch detected, rebuilding better-sqlite3...');
-          const { execSync } = await import('child_process');
-          execSync('npm rebuild better-sqlite3', { cwd: path.resolve(__dirname, '..'), stdio: 'pipe' });
-          logger.info('SYSTEM', 'Rebuild complete, retrying DB initialization');
-          this.dbManager.initialize();
-        } else {
-          throw dbError;
-        }
-      }
+      this.dbManager.initialize();
 
       // Recover stuck messages from previous crashes
       const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
@@ -700,18 +689,34 @@ async function main() {
       let startedWorkerInProcess = false;
 
       if (!portInUse) {
-        // Port free - start worker IN THIS PROCESS (no spawn!)
-        // This process becomes the worker and stays alive
-        try {
-          logger.info('SYSTEM', 'Starting worker in-process for hook', { event });
-          const worker = new WorkerService();
-          await worker.start();
-          startedWorkerInProcess = true;
-          // Worker is now running in this process on the port
-        } catch (error) {
-          logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
-          removePidFile();
-          process.exit(0);
+        const pinnedBinary = getWorkerNodeBinary();
+        if (process.execPath !== pinnedBinary) {
+          // Current Node binary differs from the one that compiled native modules.
+          // Cannot start in-process — spawn daemon with the pinned binary instead.
+          logger.info('SYSTEM', 'Node binary mismatch, spawning daemon with pinned binary', {
+            current: process.execPath,
+            pinned: pinnedBinary
+          });
+          const success = await ensureWorkerStarted(port);
+          if (!success) {
+            logger.failure('SYSTEM', 'Failed to spawn worker with pinned binary');
+            process.exit(0);
+          }
+          // Worker is running as a separate daemon; continue as HTTP client
+        } else {
+          // Port free - start worker IN THIS PROCESS (no spawn!)
+          // This process becomes the worker and stays alive
+          try {
+            logger.info('SYSTEM', 'Starting worker in-process for hook', { event });
+            const worker = new WorkerService();
+            await worker.start();
+            startedWorkerInProcess = true;
+            // Worker is now running in this process on the port
+          } catch (error) {
+            logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
+            removePidFile();
+            process.exit(0);
+          }
         }
       }
       // If port in use, we'll use HTTP to the existing worker

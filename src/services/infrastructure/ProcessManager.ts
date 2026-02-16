@@ -26,6 +26,7 @@ export interface PidInfo {
   pid: number;
   port: number;
   startedAt: string;
+  nodeVersion?: string;
 }
 
 /**
@@ -63,6 +64,27 @@ export function removePidFile(): void {
     // [ANTI-PATTERN IGNORED]: Cleanup function - PID file removal failure is non-critical
     logger.warn('SYSTEM', 'Failed to remove PID file', { path: PID_FILE }, error as Error);
   }
+}
+
+/**
+ * Get the Node binary that was used when native modules were compiled.
+ * Reads the execPath from the install marker written by smart-install.js.
+ * Falls back to process.execPath if marker is missing or binary was deleted.
+ */
+export function getWorkerNodeBinary(): string {
+  const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem');
+  const MARKER = path.join(MARKETPLACE_ROOT, '.install-version');
+
+  try {
+    const marker = JSON.parse(readFileSync(MARKER, 'utf-8'));
+    if (marker.execPath && existsSync(marker.execPath)) {
+      return marker.execPath;
+    }
+  } catch {
+    // Marker missing or corrupt — fall through to default
+  }
+
+  return process.execPath;
 }
 
 /**
@@ -288,7 +310,7 @@ export function spawnDaemon(
     // Use PowerShell Start-Process with -WindowStyle Hidden to spawn a background process
     // This replaces the deprecated WMIC approach (removed in Windows 11 24H2+)
     // and avoids the console popup that occurs with detached: true
-    const execPath = process.execPath;
+    const execPath = getWorkerNodeBinary();
     const script = scriptPath;
 
     // Only set env vars that are NEW or DIFFERENT from the parent environment.
@@ -321,8 +343,8 @@ export function spawnDaemon(
     }
   }
 
-  // Unix: standard detached spawn
-  const child = spawn(process.execPath, [scriptPath, '--daemon'], {
+  // Unix: standard detached spawn — use pinned binary to match compiled native modules
+  const child = spawn(getWorkerNodeBinary(), [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
     env
