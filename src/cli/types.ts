@@ -16,6 +16,7 @@ export interface HookResult {
   continue?: boolean;
   suppressOutput?: boolean;
   hookSpecificOutput?: { hookEventName: string; additionalContext: string };
+  systemMessage?: string;
   exitCode?: number;
 }
 

@@ -48,14 +48,25 @@ export const contextHandler: EventHandler = {
         };
       }
 
-      const result = await response.text();
-      const additionalContext = result.trim();
+      // Fetch both markdown (for Claude context) and colored (for user display) in parallel
+      const colorUrl = `${url}&colors=true`;
+      const [contextResult, colorResult] = await Promise.all([
+        response.text(),
+        fetch(colorUrl).then(r => r.ok ? r.text() : '').catch(() => '')
+      ]);
+
+      const additionalContext = contextResult.trim();
+      const coloredTimeline = colorResult.trim();
+      const systemMessage = coloredTimeline
+        ? `${coloredTimeline}\n\nView Observations Live @ http://localhost:${port}`
+        : undefined;
 
       return {
         hookSpecificOutput: {
           hookEventName: 'SessionStart',
           additionalContext
-        }
+        },
+        systemMessage
       };
     } catch (error) {
       // Worker unreachable — return empty context gracefully
