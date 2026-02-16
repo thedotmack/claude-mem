@@ -118,6 +118,7 @@
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "esbuild": "^0.27.2",
+    "node-addon-api": "^8.5.0",
     "np": "^11.0.2",
     "tsx": "^4.20.6",
     "typescript": "^5.3.0"
