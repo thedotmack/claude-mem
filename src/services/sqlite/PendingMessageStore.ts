@@ -133,16 +133,27 @@ export class PendingMessageStore {
    * @param thresholdMs Messages processing longer than this are considered stale (default: 5 minutes)
    * @returns Number of messages reset
    */
-  resetStaleProcessingMessages(thresholdMs: number = 5 * 60 * 1000): number {
+  resetStaleProcessingMessages(thresholdMs: number = 5 * 60 * 1000, sessionDbId?: number): number {
     const cutoff = Date.now() - thresholdMs;
-    const stmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'pending', started_processing_at_epoch = NULL
-      WHERE status = 'processing' AND started_processing_at_epoch < ?
-    `);
-    const result = stmt.run(cutoff);
+    let stmt;
+    let result;
+    if (sessionDbId !== undefined) {
+      stmt = this.db.prepare(`
+        UPDATE pending_messages
+        SET status = 'pending', started_processing_at_epoch = NULL
+        WHERE status = 'processing' AND started_processing_at_epoch < ? AND session_db_id = ?
+      `);
+      result = stmt.run(cutoff, sessionDbId);
+    } else {
+      stmt = this.db.prepare(`
+        UPDATE pending_messages
+        SET status = 'pending', started_processing_at_epoch = NULL
+        WHERE status = 'processing' AND started_processing_at_epoch < ?
+      `);
+      result = stmt.run(cutoff);
+    }
     if (result.changes > 0) {
-      logger.info('QUEUE', `RESET_STALE | count=${result.changes} | thresholdMs=${thresholdMs}`);
+      logger.info('QUEUE', `RESET_STALE | count=${result.changes} | thresholdMs=${thresholdMs}${sessionDbId !== undefined ? ` | sessionDbId=${sessionDbId}` : ''}`);
     }
     return result.changes;
   }

@@ -238,17 +238,25 @@ export class GeminiAgent {
           }
 
           // Process response using shared ResponseProcessor
-          await processAgentResponse(
-            obsResponse.content || '',
-            session,
-            this.dbManager,
-            this.sessionManager,
-            worker,
-            tokensUsed,
-            originalTimestamp,
-            'Gemini',
-            lastCwd
-          );
+          if (obsResponse.content) {
+            await processAgentResponse(
+              obsResponse.content,
+              session,
+              this.dbManager,
+              this.sessionManager,
+              worker,
+              tokensUsed,
+              originalTimestamp,
+              'Gemini',
+              lastCwd
+            );
+          } else {
+            logger.warn('SDK', 'Empty Gemini observation response, skipping processing to preserve message', {
+              sessionId: session.sessionDbId,
+              messageId: session.processingMessageIds[session.processingMessageIds.length - 1]
+            });
+            // Don't confirm - leave message for stale recovery
+          }
 
         } else if (message.type === 'summarize') {
           // CRITICAL: Check memorySessionId BEFORE making expensive LLM call
@@ -280,17 +288,25 @@ export class GeminiAgent {
           }
 
           // Process response using shared ResponseProcessor
-          await processAgentResponse(
-            summaryResponse.content || '',
-            session,
-            this.dbManager,
-            this.sessionManager,
-            worker,
-            tokensUsed,
-            originalTimestamp,
-            'Gemini',
-            lastCwd
-          );
+          if (summaryResponse.content) {
+            await processAgentResponse(
+              summaryResponse.content,
+              session,
+              this.dbManager,
+              this.sessionManager,
+              worker,
+              tokensUsed,
+              originalTimestamp,
+              'Gemini',
+              lastCwd
+            );
+          } else {
+            logger.warn('SDK', 'Empty Gemini summary response, skipping processing to preserve message', {
+              sessionId: session.sessionDbId,
+              messageId: session.processingMessageIds[session.processingMessageIds.length - 1]
+            });
+            // Don't confirm - leave message for stale recovery
+          }
         }
       }
 
@@ -413,6 +429,7 @@ export class GeminiAgent {
       'gemini-2.5-pro',
       'gemini-2.0-flash',
       'gemini-2.0-flash-lite',
+      'gemini-3-flash',
       'gemini-3-flash-preview',
     ];
 
