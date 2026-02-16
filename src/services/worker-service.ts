@@ -284,7 +284,20 @@ export class WorkerService {
       ModeManager.getInstance().loadMode(modeId);
       logger.info('SYSTEM', `Mode loaded: ${modeId}`);
 
-      this.dbManager.initialize();
+      try {
+        this.dbManager.initialize();
+      } catch (dbError: unknown) {
+        const msg = dbError instanceof Error ? dbError.message : String(dbError);
+        if (msg.includes('was compiled against a different Node.js version') || msg.includes('NODE_MODULE_VERSION')) {
+          logger.info('SYSTEM', 'Native module mismatch detected, rebuilding better-sqlite3...');
+          const { execSync } = await import('child_process');
+          execSync('npm rebuild better-sqlite3', { cwd: path.resolve(__dirname, '..'), stdio: 'pipe' });
+          logger.info('SYSTEM', 'Rebuild complete, retrying DB initialization');
+          this.dbManager.initialize();
+        } else {
+          throw dbError;
+        }
+      }
 
       // Recover stuck messages from previous crashes
       const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');

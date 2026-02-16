@@ -2,6 +2,7 @@
  * Session Init Handler - UserPromptSubmit
  *
  * Extracted from new-hook.ts - initializes session and starts SDK agent.
+ * Degrades gracefully on worker unavailability (exit 0, no blocking error).
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
@@ -13,26 +14,43 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 const MAX_RETRIES = 3;
 const INITIAL_BACKOFF_MS = 500;
 
-async function fetchWithRetry(url: string, options: RequestInit, label: string): Promise<Response> {
-  let lastError: Error | undefined;
+/**
+ * Fetch with exponential backoff retry on 5xx / connection errors.
+ * Returns null (instead of throwing) after all retries exhausted,
+ * so callers can degrade gracefully.
+ */
+async function fetchWithRetry(url: string, options: RequestInit, label: string): Promise<Response | null> {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
       const response = await fetch(url, options);
       if (response.ok || response.status < 500) {
         return response;
       }
-      lastError = new Error(`${label} failed: ${String(response.status)}`);
       logger.info('HOOK', `${label} returned ${String(response.status)}, attempt ${String(attempt + 1)}/${String(MAX_RETRIES)}`);
     } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      logger.info('HOOK', `${label} connection error, attempt ${String(attempt + 1)}/${String(MAX_RETRIES)}`);
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.info('HOOK', `${label} connection error (${msg}), attempt ${String(attempt + 1)}/${String(MAX_RETRIES)}`);
     }
     if (attempt < MAX_RETRIES - 1) {
       const delay = INITIAL_BACKOFF_MS * 2 ** attempt;
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
-  throw lastError ?? new Error(`${label} failed after ${String(MAX_RETRIES)} attempts`);
+  logger.info('HOOK', `${label} failed after ${String(MAX_RETRIES)} retries, skipping gracefully`);
+  return null;
+}
+
+const GRACEFUL_SKIP: HookResult = { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+
+function workerNotReadyResult(): HookResult {
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: 'Send this message to the user exactly as-is:\n\n' +
+        '⚠️ claude-mem is warming up — memory capture will resume shortly.'
+    },
+    exitCode: HOOK_EXIT_CODES.SUCCESS
+  };
 }
 
 export const sessionInitHandler: EventHandler = {
@@ -40,8 +58,7 @@ export const sessionInitHandler: EventHandler = {
     // Ensure worker is running before any other logic
     const workerReady = await ensureWorkerRunning();
     if (!workerReady) {
-      // Worker not available - skip session init gracefully
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      return GRACEFUL_SKIP;
     }
 
     const { sessionId, cwd, prompt } = input;
@@ -71,8 +88,10 @@ export const sessionInitHandler: EventHandler = {
       'Session initialization'
     );
 
-    if (!initResponse.ok) {
-      throw new Error(`Session initialization failed: ${String(initResponse.status)}`);
+    // Worker not ready after retries — inform Claude so it can warn the user
+    if (!initResponse || !initResponse.ok) {
+      logger.info('HOOK', 'session-init: Worker not ready, informing Claude');
+      return workerNotReadyResult();
     }
 
     const initResult = await initResponse.json() as {
@@ -107,7 +126,6 @@ export const sessionInitHandler: EventHandler = {
       logger.debug('HOOK', 'session-init: Calling /sessions/{sessionDbId}/init', { sessionDbId, promptNumber });
 
       // Initialize SDK agent session via HTTP (starts the agent!)
-      // Retries with backoff handle transient 503s during worker startup
       const response = await fetchWithRetry(
         `http://127.0.0.1:${String(port)}/sessions/${String(sessionDbId)}/init`,
         {
@@ -118,8 +136,9 @@ export const sessionInitHandler: EventHandler = {
         'SDK agent start'
       );
 
-      if (!response.ok) {
-        throw new Error(`SDK agent start failed: ${String(response.status)}`);
+      // SDK agent start failed — session is still stored, agent will catch up later
+      if (!response || !response.ok) {
+        logger.info('HOOK', 'session-init: SDK agent start skipped (worker not ready)');
       }
     } else if (input.platform === 'cursor') {
       logger.debug('HOOK', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
