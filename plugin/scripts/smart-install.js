@@ -187,7 +187,12 @@ function needsInstall() {
   try {
     const pkg = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'package.json'), 'utf-8'));
     const marker = JSON.parse(readFileSync(MARKER, 'utf-8'));
-    return pkg.version !== marker.version || getNodeVersion() !== marker.node;
+    // Rebuild triggers: plugin version change or pinned binary no longer exists on disk.
+    // NOT triggered by Node version change — the worker uses the pinned binary,
+    // so different sessions with different Node versions don't cause a tug-of-war.
+    if (pkg.version !== marker.version) return true;
+    if (!marker.execPath || !existsSync(marker.execPath)) return true;
+    return false;
   } catch {
     return true;
   }
@@ -210,6 +215,7 @@ function installDeps() {
   writeFileSync(MARKER, JSON.stringify({
     version: pkg.version,
     node: getNodeVersion(),
+    execPath: process.execPath,
     uv: getUvVersion(),
     installedAt: new Date().toISOString()
   }));
