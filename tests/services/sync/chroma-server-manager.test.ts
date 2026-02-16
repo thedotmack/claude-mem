@@ -469,6 +469,83 @@ describe('ChromaServerManager', () => {
       // Should NOT have spawned — detected externally started server
       expect(spawnSpy).not.toHaveBeenCalled();
     });
+
+    it('allows immediate retry after a successful reconnect', async () => {
+      const manager = ChromaServerManager.getInstance({
+        dataDir: '/tmp/chroma-test',
+        host: '127.0.0.1',
+        port: 49999
+      });
+
+      const managerAny = manager as any;
+      managerAny.isServerReachable = mock(async () => false);
+
+      const startSpy = mock(async () => {
+        if (startSpy.mock.calls.length === 1) {
+          return true;
+        }
+        return false;
+      });
+      managerAny.start = startSpy;
+
+      const first = await manager.retryStart(500);
+      expect(first).toBe(true);
+
+      const second = await manager.retryStart(500);
+      expect(second).toBe(false);
+      expect(startSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('shares in-flight retryStart across concurrent callers', async () => {
+      const manager = ChromaServerManager.getInstance({
+        dataDir: '/tmp/chroma-test',
+        host: '127.0.0.1',
+        port: 49999
+      });
+
+      const managerAny = manager as any;
+      managerAny.isServerReachable = mock(async () => false);
+
+      let resolveStart: ((value: boolean) => void) | null = null;
+      const delayedStart = new Promise<boolean>((resolve) => {
+        resolveStart = resolve;
+      });
+
+      const startSpy = mock(async () => delayedStart);
+      managerAny.start = startSpy;
+
+      const firstPromise = manager.retryStart(500);
+      const secondPromise = manager.retryStart(500);
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(startSpy).toHaveBeenCalledTimes(1);
+
+      resolveStart!(true);
+
+      expect(await firstPromise).toBe(true);
+      expect(await secondPromise).toBe(true);
+      expect(startSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves retry backoff counters when stopping during retryStart', async () => {
+      const manager = ChromaServerManager.getInstance({
+        dataDir: '/tmp/chroma-test',
+        host: '127.0.0.1',
+        port: 49999
+      });
+
+      const managerAny = manager as any;
+      managerAny.serverProcess = createFakeProcess();
+      managerAny.failureCount = 2;
+      managerAny.lastRetryAttempt = 0;
+      managerAny.isServerReachable = mock(async () => false);
+      managerAny.start = mock(async () => false);
+
+      const result = await manager.retryStart(500);
+
+      expect(result).toBe(false);
+      expect(managerAny.failureCount).toBe(3);
+    });
   });
 
   it('waits for ongoing startup instead of returning early', async () => {

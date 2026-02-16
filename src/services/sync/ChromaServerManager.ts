@@ -34,6 +34,7 @@ export class ChromaServerManager {
   // Lazy retry state
   private lastRetryAttempt: number = 0;
   private failureCount: number = 0;
+  private retryPromise: Promise<boolean> | null = null;
   private static readonly RETRY_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes base
   private static readonly MAX_FAILURES_BEFORE_BACKOFF = 3;
 
@@ -423,6 +424,21 @@ export class ChromaServerManager {
    * Enforces cooldown (5min base, exponential after 3 failures, max ~30min).
    */
   async retryStart(timeoutMs: number = 30000): Promise<boolean> {
+    if (this.retryPromise) {
+      logger.debug('CHROMA_SERVER', 'Awaiting existing lazy reconnect attempt');
+      return this.retryPromise;
+    }
+
+    this.retryPromise = this.retryStartInternal(timeoutMs);
+
+    try {
+      return await this.retryPromise;
+    } finally {
+      this.retryPromise = null;
+    }
+  }
+
+  private async retryStartInternal(timeoutMs: number): Promise<boolean> {
     // Already ready — no-op
     if (this.ready) {
       return true;
@@ -432,6 +448,7 @@ export class ChromaServerManager {
     if (await this.isServerReachable()) {
       logger.info('CHROMA_SERVER', 'Externally started server detected during retry');
       this.failureCount = 0;
+      this.lastRetryAttempt = 0;
       return true;
     }
 
@@ -465,7 +482,7 @@ export class ChromaServerManager {
 
     // Stop existing process if any
     if (this.serverProcess) {
-      await this.stop();
+      await this.stopWithOptions({ resetRetryState: false });
     }
 
     // Reset state for fresh start
@@ -477,6 +494,7 @@ export class ChromaServerManager {
 
     if (success) {
       this.failureCount = 0;
+      this.lastRetryAttempt = 0;
       logger.info('CHROMA_SERVER', 'Lazy reconnect succeeded');
     } else {
       this.failureCount++;
@@ -510,6 +528,10 @@ export class ChromaServerManager {
    * Gracefully terminates the server process
    */
   async stop(): Promise<void> {
+    return this.stopWithOptions();
+  }
+
+  private async stopWithOptions(options?: { resetRetryState?: boolean }): Promise<void> {
     if (!this.serverProcess) {
       logger.debug('CHROMA_SERVER', 'No server process to stop');
       return;
@@ -526,9 +548,12 @@ export class ChromaServerManager {
         this.ready = false;
         this.starting = false;
         this.startPromise = null;
+        this.retryPromise = null;
         this.stderrBuffer = [];
-        this.failureCount = 0;
-        this.lastRetryAttempt = 0;
+        if (options?.resetRetryState !== false) {
+          this.failureCount = 0;
+          this.lastRetryAttempt = 0;
+        }
         logger.info('CHROMA_SERVER', 'Server stopped', { pid });
         resolve();
       };
