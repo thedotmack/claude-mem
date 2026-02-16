@@ -67,6 +67,10 @@ async function buildHooks() {
     fs.writeFileSync('plugin/package.json', JSON.stringify(pluginPackageJson, null, 2) + '\n');
     console.log('✓ plugin/package.json generated');
 
+    // Copy smart-install.js to plugin/scripts/ (single source of truth: scripts/smart-install.js)
+    fs.copyFileSync('scripts/smart-install.js', 'plugin/scripts/smart-install.js');
+    console.log('✓ plugin/scripts/smart-install.js synced from source');
+
     // Sync version into plugin/.claude-plugin/plugin.json (authoritative manifest for Claude Code)
     const pluginJsonPath = 'plugin/.claude-plugin/plugin.json';
     const pluginJson = JSON.parse(fs.readFileSync(pluginJsonPath, 'utf-8'));

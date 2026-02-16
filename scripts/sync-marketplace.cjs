@@ -61,7 +61,7 @@ function getPluginVersion() {
 console.log('Syncing to marketplace...');
 try {
   execSync(
-    'rsync -av --delete --exclude=.git --exclude=/.mcp.json ./ ~/.claude/plugins/marketplaces/magic-claude-mem/',
+    'rsync -av --delete --exclude=.git --exclude=/.mcp.json --exclude=.install-version ./ ~/.claude/plugins/marketplaces/magic-claude-mem/',
     { stdio: 'inherit' }
   );
 
