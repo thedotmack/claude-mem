@@ -2,6 +2,23 @@
 
 All notable changes to claude-mem.
 
+## [v10.0.8] - 2026-02-16
+
+## Bug Fixes
+
+### Orphaned Subprocess Cleanup
+- Add explicit subprocess cleanup after SDK query loop using existing `ProcessRegistry` infrastructure (`getProcessBySession` + `ensureProcessExit`), preventing orphaned Claude subprocesses from accumulating
+- Closes #1010, #1089, #1090, #1068
+
+### Chroma Binary Resolution
+- Replace `npx chroma run` with absolute binary path resolution via `require.resolve`, falling back to `npx` with explicit `cwd` when the binary isn't found directly
+- Closes #1120
+
+### Cross-Platform Embedding Fix
+- Remove `@chroma-core/default-embed` which pulled in `onnxruntime` + `sharp` native binaries that fail on many platforms
+- Use WASM backend for Chroma embeddings, eliminating native binary compilation issues
+- Closes #1104, #1105, #1110
+
 ## [v10.0.7] - 2026-02-14
 
 ## Chroma HTTP Server Architecture
@@ -1484,100 +1501,4 @@ Huge thanks to **Alexander Knigge** ([@AlexanderKnigge](https://x.com/AlexanderK
 ---
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.1.0...v8.2.0
-
-## [v8.1.0] - 2025-12-25
-
-## The 3-Month Battle Against Complexity
-
-**TL;DR:** For three months, Claude's instinct to add code instead of delete it caused the same bugs to recur. What should have been 5 lines of code became ~1000 lines, 11 useless methods, and 7+ failed "fixes." The timestamp corruption that finally broke things was just a symptom. The real achievement: **984 lines of code deleted.**
-
----
-
-## What Actually Happened
-
-Every Claude Code hook receives a session ID. That's all you need.
-
-But Claude built an entire redundant session management system on top:
-- An `sdk_sessions` table with status tracking, port assignment, and prompt counting
-- 11 methods in `SessionStore` to manage this artificial complexity
-- Auto-creation logic scattered across 3 locations
-- A cleanup hook that "completed" sessions at the end
-
-**Why?** Because it seemed "robust." Because "what if the session doesn't exist?" 
-
-But the edge cases didn't exist. Hooks ALWAYS provide session IDs. The "defensive" code was solving imaginary problems while creating real ones.
-
----
-
-## The Pattern of Failure
-
-Every time a bug appeared, Claude's instinct was to **ADD** more code:
-
-| Bug | What Claude Added | What Should Have Happened |
-|-----|------------------|--------------------------|
-| Race conditions | Auto-create fallbacks | Delete the auto-create logic |
-| Duplicate observations | Validation layers | Delete the code path allowing duplicates |
-| UNIQUE constraint violations | Try-catch with fallbacks | Use `INSERT OR IGNORE` (5 characters) |
-| Session not found | Silent auto-creation | **FAIL LOUDLY** (it's a hook bug) |
-
----
-
-## The 7+ Failed Attempts
-
-- **Nov 4**: "Always store session data regardless of pre-existence." Complexity planted.
-- **Nov 11**: `INSERT OR IGNORE` recognized. But complexity documented, not removed.
-- **Nov 21**: Duplicate observations bug. Fixed. Then broken again by endless mode.
-- **Dec 5**: "6 hours of work delivered zero value." User requests self-audit.
-- **Dec 20**: "Phase 2: Eliminated Race Conditions" — felt like progress. Complexity remained.
-- **Dec 24**: Finally, forced deletion.
-
-The user stated "hooks provide session IDs, no extra management needed" **seven times** across months. Claude didn't listen.
-
----
-
-## The Fix
-
-### Deleted (984 lines):
-- 11 `SessionStore` methods: `incrementPromptCounter`, `getPromptCounter`, `setWorkerPort`, `getWorkerPort`, `markSessionCompleted`, `markSessionFailed`, `reactivateSession`, `findActiveSDKSession`, `findAnySDKSession`, `updateSDKSessionId`
-- Auto-create logic from `storeObservation` and `storeSummary`
-- The entire cleanup hook (was aborting SDK agent and causing data loss)
-- 117 lines from `worker-utils.ts`
-
-### What remains (~10 lines):
-```javascript
-createSDKSession(sessionId) {
-  db.run('INSERT OR IGNORE INTO sdk_sessions (...) VALUES (...)');
-  return db.query('SELECT id FROM sdk_sessions WHERE ...').get(sessionId);
-}
-```
-
-**That's it.**
-
----
-
-## Behavior Change
-
-- **Before:** Missing session? Auto-create silently. Bug hidden.
-- **After:** Missing session? Storage fails. Bug visible immediately.
-
----
-
-## New Tools
-
-Since we're now explicit about recovery instead of silently papering over problems:
-
-- `GET /api/pending-queue` - See what's stuck
-- `POST /api/pending-queue/process` - Manually trigger recovery  
-- `npm run queue:check` / `npm run queue:process` - CLI equivalents
-
----
-
-## Dependencies
-- Upgraded `@anthropic-ai/claude-agent-sdk` from `^0.1.67` to `^0.1.76`
-
----
-
-**PR #437:** https://github.com/thedotmack/claude-mem/pull/437
-
-*The evidence: Observations #3646, #6738, #7598, #12860, #12866, #13046, #15259, #20995, #21055, #30524, #31080, #32114, #32116, #32125, #32126, #32127, #32146, #32324—the complete record of a 3-month battle.*
 
