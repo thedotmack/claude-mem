@@ -612,7 +612,7 @@ export class WorkerService {
           // Reset stale processing messages so they can be picked up later
           const { PendingMessageStore: PendingMsgStore } = require('./sqlite/PendingMessageStore.js');
           const idlePendingStore = new PendingMsgStore(this.dbManager.getSessionStore().db, 3);
-          idlePendingStore.resetStaleProcessingMessages(0); // Reset immediately, don't wait 5 min
+          idlePendingStore.resetStaleProcessingMessages(0, session.sessionDbId); // Reset this session's messages only
           session.idleTimedOut = false; // Reset flag
           this.broadcastProcessingStatus();
           return;

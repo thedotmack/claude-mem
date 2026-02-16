@@ -288,17 +288,25 @@ export class GeminiAgent {
           }
 
           // Process response using shared ResponseProcessor
-          await processAgentResponse(
-            summaryResponse.content || '',
-            session,
-            this.dbManager,
-            this.sessionManager,
-            worker,
-            tokensUsed,
-            originalTimestamp,
-            'Gemini',
-            lastCwd
-          );
+          if (summaryResponse.content) {
+            await processAgentResponse(
+              summaryResponse.content,
+              session,
+              this.dbManager,
+              this.sessionManager,
+              worker,
+              tokensUsed,
+              originalTimestamp,
+              'Gemini',
+              lastCwd
+            );
+          } else {
+            logger.warn('SDK', 'Empty Gemini summary response, skipping processing to preserve message', {
+              sessionId: session.sessionDbId,
+              messageId: session.processingMessageIds[session.processingMessageIds.length - 1]
+            });
+            // Don't confirm - leave message for stale recovery
+          }
         }
       }
 

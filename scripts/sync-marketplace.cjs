@@ -36,8 +36,8 @@ function getGitignoreExcludes(basePath) {
   const lines = readFileSync(gitignorePath, 'utf-8').split('\n');
   return lines
     .map(line => line.trim())
-    .filter(line => line && !line.startsWith('#'))
-    .map(pattern => `--exclude='${pattern}'`)
+    .filter(line => line && !line.startsWith('#') && !line.startsWith('!'))
+    .map(pattern => `--exclude=${JSON.stringify(pattern)}`)
     .join(' ');
 }
 
