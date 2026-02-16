@@ -812,8 +812,18 @@ install_plugin() {
     # Copy plugin/ directory (worker service, hooks, scripts, skills, UI)
     cp -R "${repo_root}/plugin" "${extension_dir}/"
 
-    # Copy root package.json (contains the canonical version number)
-    cp "${repo_root}/package.json" "${extension_dir}/package.json"
+    # Merge the canonical version from root package.json into the existing
+    # extension package.json, preserving the openclaw.extensions field that
+    # plugin discovery requires.
+    local root_version
+    root_version="$(node -e "console.log(require('${repo_root}/package.json').version)")"
+    node -e "
+      const fs = require('fs');
+      const pkgPath = '${extension_dir}/package.json';
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      pkg.version = '${root_version}';
+      fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+    "
 
     success "Core plugin files updated at ${extension_dir}"
   else
