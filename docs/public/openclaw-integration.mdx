@@ -235,7 +235,7 @@ After starting the gateway, check that the feed is connected:
    [claude-mem] Connected to SSE stream
    ```
 
-2. **Use the status command** — Run `/claude-mem-feed` in any OpenClaw chat to see:
+2. **Use the status command** — Run `/claude_mem_feed` in any OpenClaw chat to see:
    ```
    Claude-Mem Observation Feed
    Enabled: yes
@@ -340,22 +340,22 @@ The claude-mem worker service must be running on the same machine as the OpenCla
 
 ## Commands
 
-### /claude-mem-feed
+### /claude_mem_feed
 
 Show or toggle the observation feed status.
 
 ```
-/claude-mem-feed        # Show current status
-/claude-mem-feed on     # Request enable
-/claude-mem-feed off    # Request disable
+/claude_mem_feed        # Show current status
+/claude_mem_feed on     # Request enable
+/claude_mem_feed off    # Request disable
 ```
 
-### /claude-mem-status
+### /claude_mem_status
 
 Check worker health and session status.
 
 ```
-/claude-mem-status
+/claude_mem_status
 ```
 
 Returns worker status, port, active session count, and observation feed connection state.
