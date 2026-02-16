@@ -604,23 +604,23 @@ export class WorkerService {
           return;
         }
 
+        // Shared store for idle-reset and pending-count checks below
+        const { PendingMessageStore } = require('./sqlite/PendingMessageStore.js');
+        const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+
         // Idle timeout means no new work arrived for 3 minutes - don't restart
         if (session.idleTimedOut) {
           logger.info('SYSTEM', 'Generator exited due to idle timeout, not restarting', {
             sessionId: session.sessionDbId
           });
           // Reset stale processing messages so they can be picked up later
-          const { PendingMessageStore: PendingMsgStore } = require('./sqlite/PendingMessageStore.js');
-          const idlePendingStore = new PendingMsgStore(this.dbManager.getSessionStore().db, 3);
-          idlePendingStore.resetStaleProcessingMessages(0, session.sessionDbId); // Reset this session's messages only
+          pendingStore.resetStaleProcessingMessages(0, session.sessionDbId); // Reset this session's messages only
           session.idleTimedOut = false; // Reset flag
           this.broadcastProcessingStatus();
           return;
         }
 
         // Check if there's pending work that needs processing with a fresh AbortController
-        const { PendingMessageStore } = require('./sqlite/PendingMessageStore.js');
-        const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
         const pendingCount = pendingStore.getPendingCount(session.sessionDbId);
 
         if (pendingCount > 0) {
