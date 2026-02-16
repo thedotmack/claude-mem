@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { EventEmitter } from 'events';
 import * as childProcess from 'child_process';
+import * as fs from 'fs';
 import { ChromaServerManager } from '../../../src/services/sync/ChromaServerManager.js';
 
 function createFakeProcess(pid: number = 4242): childProcess.ChildProcess {
@@ -94,6 +95,131 @@ describe('ChromaServerManager', () => {
     const ready = await manager.start(2000);
     expect(ready).toBe(true);
     expect(spawnSpy).not.toHaveBeenCalled();
+  });
+
+  describe('binary resolution', () => {
+    const originalEnv = process.env.CLAUDE_MEM_CHROMA_BINARY;
+
+    afterEach(() => {
+      if (originalEnv === undefined) {
+        delete process.env.CLAUDE_MEM_CHROMA_BINARY;
+      } else {
+        process.env.CLAUDE_MEM_CHROMA_BINARY = originalEnv;
+      }
+    });
+
+    it('uses CLAUDE_MEM_CHROMA_BINARY env var when file exists', async () => {
+      const fakeBinaryPath = '/tmp/test-chroma-binary';
+      process.env.CLAUDE_MEM_CHROMA_BINARY = fakeBinaryPath;
+
+      // Mock existsSync to return true for our fake binary
+      const existsSyncSpy = spyOn(fs, 'existsSync').mockImplementation((p) => {
+        if (p === fakeBinaryPath) return true;
+        return false;
+      });
+
+      const fetchMock = mock(async () => {
+        if (fetchMock.mock.calls.length === 1) {
+          throw new Error('no server yet');
+        }
+        return new Response(null, { status: 200 });
+      });
+      global.fetch = fetchMock as typeof fetch;
+
+      const spawnSpy = spyOn(childProcess, 'spawn').mockImplementation(
+        () => createFakeProcess() as unknown as ReturnType<typeof childProcess.spawn>
+      );
+
+      const manager = ChromaServerManager.getInstance({
+        dataDir: '/tmp/chroma-test',
+        host: '127.0.0.1',
+        port: 8000
+      });
+
+      await manager.start(2000);
+
+      // Verify spawn was called with the env var binary
+      expect(spawnSpy).toHaveBeenCalledTimes(1);
+      const spawnCall = spawnSpy.mock.calls[0];
+      expect(spawnCall[0]).toBe(fakeBinaryPath);
+
+      existsSyncSpy.mockRestore();
+    });
+
+    it('falls back to marketplace binary when require.resolve fails', async () => {
+      delete process.env.CLAUDE_MEM_CHROMA_BINARY;
+
+      // Import to get the actual MARKETPLACE_ROOT value
+      const { MARKETPLACE_ROOT } = await import('../../../src/shared/paths.js');
+      const expectedMarketplaceBin = `${MARKETPLACE_ROOT}/node_modules/.bin/chroma`;
+
+      const existsSyncSpy = spyOn(fs, 'existsSync').mockImplementation((p) => {
+        // Only the marketplace binary exists
+        if (String(p) === expectedMarketplaceBin) return true;
+        return false;
+      });
+
+      const fetchMock = mock(async () => {
+        if (fetchMock.mock.calls.length === 1) {
+          throw new Error('no server yet');
+        }
+        return new Response(null, { status: 200 });
+      });
+      global.fetch = fetchMock as typeof fetch;
+
+      const spawnSpy = spyOn(childProcess, 'spawn').mockImplementation(
+        () => createFakeProcess() as unknown as ReturnType<typeof childProcess.spawn>
+      );
+
+      const manager = ChromaServerManager.getInstance({
+        dataDir: '/tmp/chroma-test',
+        host: '127.0.0.1',
+        port: 8000
+      });
+
+      await manager.start(2000);
+
+      expect(spawnSpy).toHaveBeenCalledTimes(1);
+      const spawnCall = spawnSpy.mock.calls[0];
+      expect(spawnCall[0]).toBe(expectedMarketplaceBin);
+
+      existsSyncSpy.mockRestore();
+    });
+
+    it('falls back to npx and logs warning when all binary paths fail', async () => {
+      delete process.env.CLAUDE_MEM_CHROMA_BINARY;
+
+      // All existsSync calls return false — no binary found anywhere
+      const existsSyncSpy = spyOn(fs, 'existsSync').mockReturnValue(false);
+
+      const fetchMock = mock(async () => {
+        if (fetchMock.mock.calls.length === 1) {
+          throw new Error('no server yet');
+        }
+        return new Response(null, { status: 200 });
+      });
+      global.fetch = fetchMock as typeof fetch;
+
+      const spawnSpy = spyOn(childProcess, 'spawn').mockImplementation(
+        () => createFakeProcess() as unknown as ReturnType<typeof childProcess.spawn>
+      );
+
+      const manager = ChromaServerManager.getInstance({
+        dataDir: '/tmp/chroma-test',
+        host: '127.0.0.1',
+        port: 8000
+      });
+
+      await manager.start(2000);
+
+      expect(spawnSpy).toHaveBeenCalledTimes(1);
+      const spawnCall = spawnSpy.mock.calls[0];
+      expect(spawnCall[0]).toBe('npx');
+      // npx gets 'chroma' as first arg
+      expect(spawnCall[1][0]).toBe('chroma');
+
+      existsSyncSpy.mockRestore();
+    });
   });
 
   it('waits for ongoing startup instead of returning early', async () => {

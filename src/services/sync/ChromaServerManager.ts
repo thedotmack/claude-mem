@@ -13,6 +13,7 @@ import path from 'path';
 import os from 'os';
 import fs, { existsSync } from 'fs';
 import { logger } from '../../utils/logger.js';
+import { MARKETPLACE_ROOT } from '../../shared/paths.js';
 
 export interface ChromaServerConfig {
   dataDir: string;
@@ -84,6 +85,77 @@ export class ChromaServerManager {
   }
 
   /**
+   * Resolve chroma binary with multi-strategy fallback.
+   * Priority: env override → require.resolve → marketplace .bin → npx fallback
+   */
+  private resolveChromaBinary(): { command: string; resolvedVia: string; spawnCwd?: string } {
+    const isWindows = process.platform === 'win32';
+    const binName = isWindows ? 'chroma.cmd' : 'chroma';
+    const triedPaths: string[] = [];
+
+    // 1. Explicit env var override
+    const envBinary = process.env.CLAUDE_MEM_CHROMA_BINARY;
+    if (envBinary) {
+      if (existsSync(envBinary)) {
+        return { command: envBinary, resolvedVia: 'CLAUDE_MEM_CHROMA_BINARY env var' };
+      }
+      triedPaths.push(`env:${envBinary}`);
+    }
+
+    // 2. require.resolve from chromadb package
+    try {
+      const chromaBinDir = path.dirname(require.resolve('chromadb/package.json'));
+      const projectBin = path.join(chromaBinDir, '..', '.bin', binName);
+      const nestedBin = path.join(chromaBinDir, 'node_modules', '.bin', binName);
+
+      if (existsSync(projectBin)) {
+        return { command: projectBin, resolvedVia: 'require.resolve (project .bin)', spawnCwd: chromaBinDir };
+      }
+      triedPaths.push(projectBin);
+
+      if (existsSync(nestedBin)) {
+        return { command: nestedBin, resolvedVia: 'require.resolve (nested .bin)', spawnCwd: chromaBinDir };
+      }
+      triedPaths.push(nestedBin);
+    } catch {
+      triedPaths.push('require.resolve("chromadb/package.json") failed');
+    }
+
+    // 3. Marketplace installation directory
+    const marketplaceBin = path.join(MARKETPLACE_ROOT, 'node_modules', '.bin', binName);
+    if (existsSync(marketplaceBin)) {
+      return {
+        command: marketplaceBin,
+        resolvedVia: 'marketplace node_modules',
+        spawnCwd: path.join(MARKETPLACE_ROOT, 'node_modules', 'chromadb')
+      };
+    }
+    triedPaths.push(marketplaceBin);
+
+    // 4. npx fallback (with warning)
+    logger.warn('CHROMA_SERVER', 'Falling back to npx for chroma binary', {
+      triedPaths: triedPaths.join(', ')
+    });
+
+    // Try to resolve a cwd for npx so node_modules is findable
+    let spawnCwd: string | undefined;
+    try {
+      spawnCwd = path.dirname(require.resolve('chromadb/package.json'));
+    } catch {
+      // If chromadb isn't resolvable, try marketplace root
+      if (existsSync(path.join(MARKETPLACE_ROOT, 'node_modules', 'chromadb'))) {
+        spawnCwd = path.join(MARKETPLACE_ROOT, 'node_modules', 'chromadb');
+      }
+    }
+
+    return {
+      command: isWindows ? 'npx.cmd' : 'npx',
+      resolvedVia: 'npx fallback',
+      spawnCwd
+    };
+  }
+
+  /**
    * Internal startup path used behind a single shared startPromise lock
    */
   private async startInternal(timeoutMs: number): Promise<boolean> {
@@ -106,32 +178,10 @@ export class ChromaServerManager {
       // No server running, proceed to start one
     }
 
-    // Cross-platform: use npx.cmd on Windows
-    const isWindows = process.platform === 'win32';
+    // Resolve binary with multi-strategy fallback
+    const { command, resolvedVia, spawnCwd } = this.resolveChromaBinary();
 
-    // Resolve chroma binary absolutely — npx fails when spawned from cache dirs (#1120)
-    let command: string;
     let args: string[];
-    try {
-      // chromadb package installs a 'chroma' bin entry
-      const chromaBinDir = path.dirname(require.resolve('chromadb/package.json'));
-      // Check project-level .bin first (most common npm/bun installation layout)
-      const projectBin = path.join(chromaBinDir, '..', '.bin', isWindows ? 'chroma.cmd' : 'chroma');
-      // Fallback: nested node_modules .bin (rare — pnpm or workspace hoisting)
-      const nestedBin = path.join(chromaBinDir, 'node_modules', '.bin', isWindows ? 'chroma.cmd' : 'chroma');
-
-      if (existsSync(projectBin)) {
-        command = projectBin;
-      } else if (existsSync(nestedBin)) {
-        command = nestedBin;
-      } else {
-        // Last resort: npx with explicit cwd
-        command = isWindows ? 'npx.cmd' : 'npx';
-      }
-    } catch {
-      command = isWindows ? 'npx.cmd' : 'npx';
-    }
-
     if (command.includes('npx')) {
       args = ['chroma', 'run', '--path', this.config.dataDir, '--host', this.config.host, '--port', String(this.config.port)];
     } else {
@@ -140,19 +190,13 @@ export class ChromaServerManager {
 
     logger.info('CHROMA_SERVER', 'Starting Chroma server', {
       command,
+      resolvedVia,
       args: args.join(' '),
       dataDir: this.config.dataDir
     });
 
     const spawnEnv = this.getSpawnEnv();
-
-    // Resolve cwd for npx fallback — ensures node_modules is findable (#1120)
-    let spawnCwd: string | undefined;
-    try {
-      spawnCwd = path.dirname(require.resolve('chromadb/package.json'));
-    } catch {
-      // If chromadb isn't resolvable, omit cwd and let npx handle it
-    }
+    const isWindows = process.platform === 'win32';
 
     this.serverProcess = spawn(command, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
