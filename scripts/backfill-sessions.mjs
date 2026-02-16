@@ -64,7 +64,7 @@ const PROJECTS_BASE = join(process.env.HOME, '.claude/projects');
  * e.g. "/home/alice" -> "-home-alice"
  */
 function pathToDirName(fsPath) {
-  return fsPath.replace(/\//g, '-');
+  return fsPath.replace(/[\\/]/g, '-');
 }
 
 /**
@@ -191,7 +191,13 @@ function parseArgs() {
     else if (arg === '--list') opts.list = true;
     else if (arg === '--all') opts.all = true;
     else if (arg.startsWith('--project=')) opts.project = arg.slice(10);
-    else if (arg.startsWith('--after=')) opts.afterDate = new Date(arg.slice(8));
+    else if (arg.startsWith('--after=')) {
+      opts.afterDate = new Date(arg.slice(8));
+      if (isNaN(opts.afterDate.getTime())) {
+        console.error(`Error: Invalid date "${arg.slice(8)}". Use YYYY-MM-DD format.`);
+        process.exit(1);
+      }
+    }
     else if (arg.startsWith('--session=')) opts.sessionId = arg.slice(10);
     else if (arg.startsWith('--min-tools=')) opts.minTools = parseInt(arg.slice(12), 10);
     else if (arg === '--help' || arg === '-h') {
@@ -245,9 +251,6 @@ function parseJsonl(filePath) {
 
 /** Tools that modify files - these become observations. */
 const MODIFY_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
-
-/** Tools that execute commands - selectively become observations. */
-const EXEC_TOOLS = new Set(['Bash', 'Task']);
 
 /** Tools that are read-only discovery - skip for observations. */
 const SKIP_TOOLS = new Set([
@@ -360,6 +363,7 @@ function cleanMetaTags(text) {
     .replace(/<command-name>[\s\S]*?<\/command-name>/g, '')
     .replace(/<command-args>[\s\S]*?<\/command-args>/g, '')
     .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, '')
+    .replace(/<private>[\s\S]*?<\/private>/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -397,13 +401,13 @@ function stripProjectRoot(filePath, cwd) {
  */
 function processSession(filePath, opts, projectName) {
   const entries = parseJsonl(filePath);
-  if (entries.length === 0) return null;
+  if (entries.length === 0) return { skipped: 'no_user' };
 
   // Find the first user entry for session metadata.
   const firstUser = entries.find(
     e => e.type === 'user' && e.sessionId && e.message?.role === 'user'
   );
-  if (!firstUser) return null;
+  if (!firstUser) return { skipped: 'no_user' };
 
   const sessionId = firstUser.sessionId;
   const memorySessionId = `backfill-${sessionId}`;
@@ -413,7 +417,7 @@ function processSession(filePath, opts, projectName) {
   const sessionEpoch = new Date(sessionTimestamp).getTime();
 
   // Date filter.
-  if (opts.afterDate && sessionEpoch < opts.afterDate.getTime()) return null;
+  if (opts.afterDate && sessionEpoch < opts.afterDate.getTime()) return { skipped: 'date' };
 
   // Collect all tool_use items from assistant entries.
   const toolCalls = [];
@@ -446,7 +450,7 @@ function processSession(filePath, opts, projectName) {
   }
 
   // Filter: skip sessions with too few tool calls.
-  if (toolCalls.length < opts.minTools) return null;
+  if (toolCalls.length < opts.minTools) return { skipped: 'too_small' };
 
   // Extract user prompts.
   let promptNumber = 0;
@@ -781,33 +785,10 @@ function processProjectSessions(project, opts) {
   for (const file of files) {
     try {
       const result = processSession(file, opts, projectName);
-      if (result === null) {
-        // Determine why it was skipped.
-        const entries = parseJsonl(file);
-        const firstUser = entries.find(
-          e => e.type === 'user' && e.sessionId
-        );
-        if (firstUser && opts.afterDate) {
-          const ts = new Date(firstUser.timestamp || 0).getTime();
-          if (ts < opts.afterDate.getTime()) {
-            skippedByDate++;
-            continue;
-          }
-        }
-        // Re-check tool count.
-        let toolCount = 0;
-        for (const entry of entries) {
-          if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
-            for (const item of entry.message.content) {
-              if (item.type === 'tool_use') toolCount++;
-            }
-          }
-        }
-        if (toolCount < opts.minTools) {
-          skippedTooSmall++;
-        } else {
-          skippedNoData++;
-        }
+      if (result.skipped) {
+        if (result.skipped === 'date') skippedByDate++;
+        else if (result.skipped === 'too_small') skippedTooSmall++;
+        else skippedNoData++;
         continue;
       }
       results.push(result);
