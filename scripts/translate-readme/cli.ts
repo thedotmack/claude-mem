@@ -12,6 +12,7 @@ interface CliArgs {
   maxBudget?: number;
   verbose: boolean;
   force: boolean;
+  useExisting: boolean;
   help: boolean;
   listLanguages: boolean;
 }
@@ -39,6 +40,7 @@ OPTIONS:
   --no-preserve-code      Translate code blocks too (not recommended)
   -m, --model <model>     Claude model to use (default: sonnet)
   --max-budget <usd>      Maximum budget in USD
+  --use-existing          Use existing translation file as a reference
   -v, --verbose           Show detailed progress
   -f, --force             Force re-translation ignoring cache
   -h, --help              Show this help message
@@ -126,6 +128,7 @@ function parseArgs(argv: string[]): CliArgs {
     preserveCode: true,
     verbose: false,
     force: false,
+    useExisting: false,
     help: false,
     listLanguages: false,
   };
@@ -151,6 +154,9 @@ function parseArgs(argv: string[]): CliArgs {
       case "-f":
       case "--force":
         args.force = true;
+        break;
+      case "--use-existing":
+        args.useExisting = true;
         break;
       case "--no-preserve-code":
         args.preserveCode = false;
@@ -234,6 +240,7 @@ async function main(): Promise<void> {
       maxBudgetUsd: args.maxBudget,
       verbose: args.verbose,
       force: args.force,
+      useExisting: args.useExisting,
     });
 
     // Exit with error code if any translations failed
