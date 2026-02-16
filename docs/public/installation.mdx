@@ -22,6 +22,10 @@ That's it! The plugin will automatically:
 
 Start a new Claude Code session and you'll see context from previous sessions automatically loaded.
 
+> **Important:** Claude-Mem is published on npm, but running `npm install -g claude-mem` installs the
+> **SDK/library only**. It does **not** register plugin hooks or start the worker service.
+> To use Claude-Mem as a persistent memory plugin, always install via the `/plugin` commands above.
+
 ## System Requirements
 
 - **Node.js**: 18.0.0 or higher
