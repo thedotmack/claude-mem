@@ -350,6 +350,127 @@ describe('ChromaServerManager', () => {
     });
   });
 
+  describe('lazy reconnect (retryStart)', () => {
+    it('returns true when already ready', async () => {
+      // Make initial start succeed
+      global.fetch = mock(async () => new Response(null, { status: 200 })) as typeof fetch;
+
+      const manager = ChromaServerManager.getInstance({
+        dataDir: '/tmp/chroma-test',
+        host: '127.0.0.1',
+        port: 8000
+      });
+
+      await manager.start(2000);
+      expect(manager.isRunning()).toBe(true);
+
+      const result = await manager.retryStart(2000);
+      expect(result).toBe(true);
+    });
+
+    it('respects cooldown between retries', async () => {
+      let callCount = 0;
+      global.fetch = mock(async () => {
+        callCount++;
+        // Always fail — simulate server down
+        throw new Error('connection refused');
+      }) as typeof fetch;
+
+      spyOn(childProcess, 'spawn').mockImplementation(
+        () => createFakeProcess() as unknown as ReturnType<typeof childProcess.spawn>
+      );
+
+      const manager = ChromaServerManager.getInstance({
+        dataDir: '/tmp/chroma-test',
+        host: '127.0.0.1',
+        port: 49999
+      });
+
+      // First retry — should attempt
+      const first = await manager.retryStart(500);
+      expect(first).toBe(false);
+
+      // Immediate second retry — should be blocked by cooldown
+      callCount = 0;
+      const second = await manager.retryStart(500);
+      expect(second).toBe(false);
+      // Only 1 fetch call from isServerReachable — cooldown blocked the actual start()
+      expect(callCount).toBe(1);
+    });
+
+    it('resets failure count on success', async () => {
+      let callCount = 0;
+      let shouldSucceed = false;
+      global.fetch = mock(async () => {
+        callCount++;
+        if (shouldSucceed) {
+          return new Response(null, { status: 200 });
+        }
+        throw new Error('connection refused');
+      }) as typeof fetch;
+
+      spyOn(childProcess, 'spawn').mockImplementation(
+        () => createFakeProcess() as unknown as ReturnType<typeof childProcess.spawn>
+      );
+
+      const manager = ChromaServerManager.getInstance({
+        dataDir: '/tmp/chroma-test',
+        host: '127.0.0.1',
+        port: 49999
+      });
+
+      // Force failure
+      const failed = await manager.retryStart(500);
+      expect(failed).toBe(false);
+
+      // Now make isServerReachable succeed (simulating externally started server)
+      shouldSucceed = true;
+      // Need to bypass cooldown — manipulate internal state
+      (manager as any).lastRetryAttempt = 0;
+
+      const succeeded = await manager.retryStart(500);
+      expect(succeeded).toBe(true);
+      // Failure count should be reset
+      expect((manager as any).failureCount).toBe(0);
+    });
+
+    it('detects externally started server without respawning', async () => {
+      let firstCall = true;
+      global.fetch = mock(async () => {
+        if (firstCall) {
+          firstCall = false;
+          throw new Error('connection refused');
+        }
+        // Server appeared externally
+        return new Response(null, { status: 200 });
+      }) as typeof fetch;
+
+      const spawnSpy = spyOn(childProcess, 'spawn').mockImplementation(
+        () => createFakeProcess() as unknown as ReturnType<typeof childProcess.spawn>
+      );
+
+      const manager = ChromaServerManager.getInstance({
+        dataDir: '/tmp/chroma-test',
+        host: '127.0.0.1',
+        port: 49999
+      });
+
+      // First start fails
+      await manager.start(500);
+      // Bypass cooldown
+      (manager as any).lastRetryAttempt = 0;
+
+      // Reset fetch to always succeed (externally started server)
+      global.fetch = mock(async () => new Response(null, { status: 200 })) as typeof fetch;
+      spawnSpy.mockClear();
+
+      const result = await manager.retryStart(2000);
+      expect(result).toBe(true);
+      // Should NOT have spawned — detected externally started server
+      expect(spawnSpy).not.toHaveBeenCalled();
+    });
+  });
+
   it('waits for ongoing startup instead of returning early', async () => {
     let resolveReady: ((value: Response) => void) | null = null;
     const delayedReady = new Promise<Response>((resolve) => {

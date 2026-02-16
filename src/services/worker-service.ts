@@ -389,8 +389,8 @@ export class WorkerService {
         if (ready) {
           logger.success('SYSTEM', 'Chroma server ready');
         } else {
-          logger.warn('SYSTEM', 'Chroma server failed to start - vector search disabled');
-          this.chromaServer = null;
+          logger.warn('SYSTEM', 'Chroma server failed to start — will retry on demand');
+          // Keep chromaServer reference for lazy reconnect via retryStart()
         }
       } else {
         logger.info('SYSTEM', 'Chroma remote mode - skipping local server');

@@ -119,12 +119,16 @@ export class ChromaSync {
       const database = settings.CLAUDE_MEM_CHROMA_DATABASE || 'default_database';
       const apiKey = settings.CLAUDE_MEM_CHROMA_API_KEY || '';
 
-      // In local mode, verify server is reachable
+      // In local mode, verify server is reachable — attempt lazy reconnect if not
       if (mode === 'local') {
         const serverManager = ChromaServerManager.getInstance();
         const reachable = await serverManager.isServerReachable();
         if (!reachable) {
-          throw new Error('Chroma server not reachable. Ensure worker started correctly.');
+          logger.info('CHROMA_SYNC', 'Server not reachable, attempting lazy reconnect...');
+          const reconnected = await serverManager.retryStart(30000);
+          if (!reconnected) {
+            throw new Error('Chroma server not reachable after reconnect attempt. Vector search temporarily unavailable.');
+          }
         }
       }
 
