@@ -304,6 +304,22 @@ async function workerGetText(
   }
 }
 
+async function workerGetJson(
+  port: number,
+  path: string,
+  logger: PluginLogger
+): Promise<Record<string, unknown> | null> {
+  const text = await workerGetText(port, path, logger);
+  if (!text) return null;
+
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    logger.warn(`[claude-mem] Worker GET ${path} returned non-JSON response`);
+    return null;
+  }
+}
+
 // ============================================================================
 // SSE Observation Feed
 // ============================================================================
@@ -767,6 +783,28 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     },
   });
 
+  function summarizeSearchResults(items: unknown[], limit = 5): string {
+    if (!Array.isArray(items) || items.length === 0) {
+      return "No results found.";
+    }
+
+    return items
+      .slice(0, limit)
+      .map((item, index) => {
+        const row = item as Record<string, unknown>;
+        const title = String(row.title || row.subtitle || row.text || "Untitled");
+        const project = row.project ? ` [${String(row.project)}]` : "";
+        return `${index + 1}. ${title}${project}`;
+      })
+      .join("\n");
+  }
+
+  function parseLimit(arg: string | undefined, fallback = 10): number {
+    const parsed = Number(arg);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(1, Math.min(50, Math.trunc(parsed)));
+  }
+
   // ------------------------------------------------------------------
   // Command: /claude-mem-feed — status & toggle
   // ------------------------------------------------------------------
@@ -799,6 +837,141 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         `Channel: ${feedConfig.channel || "not set"}`,
         `Target: ${feedConfig.to || "not set"}`,
         `Connection: ${connectionState}`,
+      ].join("\n");
+    },
+  });
+
+  // ------------------------------------------------------------------
+  // Command: /claude-mem-search — query worker search API
+  // Usage: /claude-mem-search <query> [limit]
+  // ------------------------------------------------------------------
+  api.registerCommand({
+    name: "claude-mem-search",
+    description: "Search Claude-Mem observations by query",
+    acceptsArgs: true,
+    handler: async (ctx) => {
+      const raw = ctx.args?.trim() || "";
+      if (!raw) {
+        return "Usage: /claude-mem-search <query> [limit]";
+      }
+
+      const pieces = raw.split(/\s+/);
+      const maybeLimit = pieces[pieces.length - 1];
+      const hasTrailingLimit = /^\d+$/.test(maybeLimit);
+      const limit = hasTrailingLimit ? parseLimit(maybeLimit, 10) : 10;
+      const query = hasTrailingLimit ? pieces.slice(0, -1).join(" ") : raw;
+
+      const data = await workerGetJson(
+        workerPort,
+        `/api/search/observations?query=${encodeURIComponent(query)}&limit=${limit}`,
+        api.logger,
+      );
+
+      if (!data) {
+        return "Claude-Mem search failed (worker unavailable or invalid response).";
+      }
+
+      const items = Array.isArray(data.items) ? data.items : [];
+      return [
+        `Claude-Mem Search: \"${query}\"`,
+        summarizeSearchResults(items, limit),
+      ].join("\n");
+    },
+  });
+
+  // ------------------------------------------------------------------
+  // Command: /claude-mem-recent — recent context snapshot
+  // Usage: /claude-mem-recent [project] [limit]
+  // ------------------------------------------------------------------
+  api.registerCommand({
+    name: "claude-mem-recent",
+    description: "Show recent Claude-Mem context for a project",
+    acceptsArgs: true,
+    handler: async (ctx) => {
+      const raw = ctx.args?.trim() || "";
+      const parts = raw ? raw.split(/\s+/) : [];
+      const maybeLimit = parts.length > 0 ? parts[parts.length - 1] : "";
+      const hasTrailingLimit = /^\d+$/.test(maybeLimit);
+      const limit = hasTrailingLimit ? parseLimit(maybeLimit, 3) : 3;
+      const project = hasTrailingLimit ? parts.slice(0, -1).join(" ") : raw;
+
+      const params = new URLSearchParams();
+      params.set("limit", String(limit));
+      if (project) params.set("project", project);
+
+      const data = await workerGetJson(
+        workerPort,
+        `/api/context/recent?${params.toString()}`,
+        api.logger,
+      );
+
+      if (!data) {
+        return "Claude-Mem recent context failed (worker unavailable or invalid response).";
+      }
+
+      const summaries = Array.isArray(data.session_summaries) ? data.session_summaries : [];
+      const observations = Array.isArray(data.recent_observations) ? data.recent_observations : [];
+
+      return [
+        "Claude-Mem Recent Context",
+        `Project: ${project || "(auto)"}`,
+        `Session summaries: ${summaries.length}`,
+        `Recent observations: ${observations.length}`,
+        summarizeSearchResults(observations, Math.min(5, observations.length || 5)),
+      ].join("\n");
+    },
+  });
+
+  // ------------------------------------------------------------------
+  // Command: /claude-mem-timeline — search and timeline around best match
+  // Usage: /claude-mem-timeline <query> [depthBefore] [depthAfter]
+  // ------------------------------------------------------------------
+  api.registerCommand({
+    name: "claude-mem-timeline",
+    description: "Find best memory match and show nearby timeline events",
+    acceptsArgs: true,
+    handler: async (ctx) => {
+      const raw = ctx.args?.trim() || "";
+      if (!raw) {
+        return "Usage: /claude-mem-timeline <query> [depthBefore] [depthAfter]";
+      }
+
+      const parts = raw.split(/\s+/);
+      let depthAfter = 5;
+      let depthBefore = 5;
+
+      if (parts.length >= 2 && /^\d+$/.test(parts[parts.length - 1])) {
+        depthAfter = parseLimit(parts.pop(), 5);
+      }
+      if (parts.length >= 2 && /^\d+$/.test(parts[parts.length - 1])) {
+        depthBefore = parseLimit(parts.pop(), 5);
+      }
+
+      const query = parts.join(" ");
+      const params = new URLSearchParams({
+        query,
+        mode: "auto",
+        depth_before: String(depthBefore),
+        depth_after: String(depthAfter),
+      });
+
+      const data = await workerGetJson(
+        workerPort,
+        `/api/timeline/by-query?${params.toString()}`,
+        api.logger,
+      );
+
+      if (!data) {
+        return "Claude-Mem timeline lookup failed (worker unavailable or invalid response).";
+      }
+
+      const timeline = Array.isArray(data.timeline) ? data.timeline : [];
+      const anchor = data.anchor ? String(data.anchor) : "(none)";
+
+      return [
+        `Claude-Mem Timeline: \"${query}\"`,
+        `Anchor: ${anchor}`,
+        summarizeSearchResults(timeline, 8),
       ].join("\n");
     },
   });
