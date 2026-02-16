@@ -12,7 +12,7 @@
 import { logger } from '../../utils/logger.js';
 import { pipelineMetrics } from './metrics.js';
 import { AcquireStage } from './stages/acquire.js';
-import type { AcquireInput, AcquireOutput, PipelineConfig, DEFAULT_PIPELINE_CONFIG } from '../../types/pipeline.js';
+import type { AcquireInput, AcquireOutput, PipelineConfig } from '../../types/pipeline.js';
 
 // Re-export for convenience
 export { AcquireStage } from './stages/acquire.js';

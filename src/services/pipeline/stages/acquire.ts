@@ -55,7 +55,7 @@ export class AcquireStage {
     const outputTokenEstimate = Math.ceil(toolOutputStr.length / 4);
 
     // Categorize tool
-    const toolCategory = this.categorizeool(input.toolName);
+    const toolCategory = this.categorizeTool(input.toolName);
 
     const output: AcquireOutput = {
       rawObservation: {
@@ -110,15 +110,15 @@ export class AcquireStage {
     }
   }
 
-  private categorizeool(toolName: string): string {
-    const readTools = ['Read', 'Glob', 'Grep', 'WebFetch'];
+  private categorizeTool(toolName: string): string {
+    const readTools = ['Read', 'WebFetch'];
     const writeTools = ['Write', 'Edit', 'NotebookEdit'];
     const searchTools = ['Grep', 'Glob', 'WebSearch'];
     const bashTools = ['Bash', 'Task'];
 
+    if (searchTools.includes(toolName)) return 'search';  // Check search first
     if (readTools.includes(toolName)) return 'read';
     if (writeTools.includes(toolName)) return 'write';
-    if (searchTools.includes(toolName)) return 'search';
     if (bashTools.includes(toolName)) return 'bash';
     return 'other';
   }

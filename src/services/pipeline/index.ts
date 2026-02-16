@@ -84,6 +84,7 @@ export class ObservationPipeline {
     const execution: PipelineExecution = {
       id: executionId,
       sessionId: input.sessionId,
+      promptNumber: input.promptNumber,
       startTime: Date.now(),
       status: 'in_progress',
       stages: {},
@@ -326,7 +327,7 @@ export class ObservationPipeline {
           summary: parseResult.data.summary,
           sessionId: execution.sessionId,
           project: 'default',
-          promptNumber: 0,
+          promptNumber: execution.promptNumber,
           discoveryTokens: execution.stages.process.data.usage.totalTokens
         };
 

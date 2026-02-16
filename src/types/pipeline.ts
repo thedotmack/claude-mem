@@ -53,6 +53,7 @@ export interface PipelineExecution {
   id: string;
   sessionId: string;
   messageId?: string;
+  promptNumber: number;  // Original prompt number for retry
   startTime: number;
   endTime?: number;
   status: PipelineStatus;
