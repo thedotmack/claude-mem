@@ -115,14 +115,15 @@ export class ChromaServerManager {
     try {
       // chromadb package installs a 'chroma' bin entry
       const chromaBinDir = path.dirname(require.resolve('chromadb/package.json'));
-      const chromaBin = path.join(chromaBinDir, 'node_modules', '.bin', isWindows ? 'chroma.cmd' : 'chroma');
-      // Fallback: check project-level .bin
+      // Check project-level .bin first (most common npm/bun installation layout)
       const projectBin = path.join(chromaBinDir, '..', '.bin', isWindows ? 'chroma.cmd' : 'chroma');
+      // Fallback: nested node_modules .bin (rare — pnpm or workspace hoisting)
+      const nestedBin = path.join(chromaBinDir, 'node_modules', '.bin', isWindows ? 'chroma.cmd' : 'chroma');
 
-      if (existsSync(chromaBin)) {
-        command = chromaBin;
-      } else if (existsSync(projectBin)) {
+      if (existsSync(projectBin)) {
         command = projectBin;
+      } else if (existsSync(nestedBin)) {
+        command = nestedBin;
       } else {
         // Last resort: npx with explicit cwd
         command = isWindows ? 'npx.cmd' : 'npx';
