@@ -309,7 +309,13 @@ export class WorkerService {
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
-      // Connect to MCP server
+      // DB + search ready — ungate session/observation routes now.
+      // MCP (Chroma) connection can take 30s+ on first run; hooks only need SQLite.
+      this.initializationCompleteFlag = true;
+      this.resolveInitialization();
+      logger.info('SYSTEM', 'Core initialization complete (DB + search ready, accepting requests)');
+
+      // Connect to MCP server (non-blocking for route gate)
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       const transport = new StdioClientTransport({
         command: 'node',
@@ -326,10 +332,6 @@ export class WorkerService {
       await Promise.race([mcpConnectionPromise, timeoutPromise]);
       this.mcpReady = true;
       logger.success('WORKER', 'Connected to MCP server');
-
-      this.initializationCompleteFlag = true;
-      this.resolveInitialization();
-      logger.info('SYSTEM', 'Background initialization complete');
 
       // Start orphan reaper to clean up zombie processes (Issue #737)
       this.stopOrphanReaper = startOrphanReaper(() => {
