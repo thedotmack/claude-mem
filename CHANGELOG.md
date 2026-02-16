@@ -2,6 +2,38 @@
 
 All notable changes to claude-mem.
 
+## [v10.1.0] - 2026-02-16
+
+## SessionStart System Message & Cleaner Defaults
+
+### New Features
+
+- **SessionStart `systemMessage` support** — Hooks can now display user-visible ANSI-colored messages directly in the CLI via a new `systemMessage` field on `HookResult`. The SessionStart hook uses this to render a colored timeline summary (separate from the markdown context injected for Claude), giving users an at-a-glance view of recent activity every time they start a session.
+
+- **"View Observations Live" link** — Each session start now appends a clickable `http://localhost:{port}` URL so users can jump straight to the live observation viewer.
+
+### Performance
+
+- **Truly parallel context fetching** — The SessionStart handler now uses `Promise.all` to fetch both the markdown context (for Claude) and the ANSI-colored timeline (for user display) simultaneously, eliminating the serial fetch overhead.
+
+### Defaults Changes
+
+- **Cleaner out-of-box experience** — New installs now default to a streamlined context display:
+  - Read tokens column: hidden (`CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: false`)
+  - Work tokens column: hidden (`CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: false`)
+  - Savings amount: hidden (`CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: false`)
+  - Full observation expansion: disabled (`CLAUDE_MEM_CONTEXT_FULL_COUNT: 0`)
+  - Savings percentage remains visible by default
+
+  Existing users are unaffected — your `~/.claude-mem/settings.json` overrides these defaults.
+
+### Technical Details
+
+- Added `systemMessage?: string` to `HookResult` interface (`src/cli/types.ts`)
+- Claude Code adapter now forwards `systemMessage` in hook output (`src/cli/adapters/claude-code.ts`)
+- Context handler refactored for parallel fetch with graceful fallback (`src/cli/handlers/context.ts`)
+- Default settings tuned in `SettingsDefaultsManager` (`src/shared/SettingsDefaultsManager.ts`)
+
 ## [v10.0.8] - 2026-02-16
 
 ## Bug Fixes
@@ -1443,62 +1475,4 @@ Added comprehensive test suites:
 ---
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.0...v8.2.1
-
-## [v8.2.0] - 2025-12-26
-
-## 🚀 Gemini API as Alternative AI Provider
-
-This release introduces **Google Gemini API** as an alternative to the Claude Agent SDK for observation extraction. This gives users flexibility in choosing their AI backend while maintaining full feature parity.
-
-### ✨ New Features
-
-#### Gemini Provider Integration
-- **New `GeminiAgent`**: Complete implementation using Gemini's REST API for observation and summary extraction
-- **Provider selection**: Choose between Claude or Gemini directly in the Settings UI
-- **API key management**: Configure via UI or `GEMINI_API_KEY` environment variable
-- **Multi-turn conversations**: Full conversation history tracking for context-aware extraction
-
-#### Supported Gemini Models
-- `gemini-2.5-flash-preview-05-20` (default)
-- `gemini-2.5-pro-preview-05-06`
-- `gemini-2.0-flash`
-- `gemini-2.0-flash-lite`
-
-#### Rate Limiting
-- Built-in rate limiting for Gemini free tier (15 RPM) and paid tier (1000 RPM)
-- Configurable via `gemini_has_billing` setting in the UI
-
-#### Resilience Features
-- **Graceful fallback**: Automatically falls back to Claude SDK if Gemini is selected but no API key is configured
-- **Hot-swap providers**: Switch between Claude and Gemini without restarting the worker
-- **Empty response handling**: Messages properly marked as processed even when Gemini returns empty responses (prevents stuck queue states)
-- **Timestamp preservation**: Recovered backlog messages retain their original timestamps
-
-### 🎨 UI Improvements
-
-- **Spinning favicon**: Visual indicator during observation processing
-- **Provider status**: Clear indication of which AI provider is active
-
-### 📚 Documentation
-
-- New [Gemini Provider documentation](https://docs.claude-mem.ai/usage/gemini-provider) with setup guide and troubleshooting
-
-### ⚙️ New Settings
-
-| Setting | Values | Description |
-|---------|--------|-------------|
-| `CLAUDE_MEM_PROVIDER` | `claude` \| `gemini` | AI provider for observation extraction |
-| `CLAUDE_MEM_GEMINI_API_KEY` | string | Gemini API key |
-| `CLAUDE_MEM_GEMINI_MODEL` | see above | Gemini model to use |
-| `gemini_has_billing` | boolean | Enable higher rate limits for paid accounts |
-
----
-
-## 🙏 Contributor Shout-out
-
-Huge thanks to **Alexander Knigge** ([@AlexanderKnigge](https://x.com/AlexanderKnigge)) for contributing the Gemini provider implementation! This feature significantly expands claude-mem's flexibility and gives users more choice in their AI backend.
-
----
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.1.0...v8.2.0
 
