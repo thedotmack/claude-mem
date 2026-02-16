@@ -9,6 +9,7 @@
  */
 
 import { spawn, ChildProcess, execSync } from 'child_process';
+import net from 'net';
 import path from 'path';
 import os from 'os';
 import fs, { existsSync } from 'fs';
@@ -28,6 +29,7 @@ export class ChromaServerManager {
   private starting: boolean = false;
   private ready: boolean = false;
   private startPromise: Promise<boolean> | null = null;
+  private stderrBuffer: string[] = [];
 
   private constructor(config: ChromaServerConfig) {
     this.config = config;
@@ -160,6 +162,7 @@ export class ChromaServerManager {
    */
   private async startInternal(timeoutMs: number): Promise<boolean> {
     // Check if a server is already running (from previous worker or manual start)
+    let heartbeatOk = false;
     try {
       const response = await fetch(
         `http://${this.config.host}:${this.config.port}/api/v2/heartbeat`,
@@ -174,8 +177,24 @@ export class ChromaServerManager {
         this.starting = false;
         return true;
       }
+      // Non-200 response — something is on this port but it's not Chroma
+      heartbeatOk = false;
     } catch {
-      // No server running, proceed to start one
+      // No server or port not responding at all
+      heartbeatOk = false;
+    }
+
+    // Check for port conflicts before attempting to spawn
+    if (!heartbeatOk) {
+      const conflict = await this.checkPortConflict();
+      if (conflict) {
+        logger.error('CHROMA_SERVER', 'Port conflict detected — another service occupies the Chroma port', {
+          port: this.config.port,
+          diagnostic: conflict
+        });
+        this.starting = false;
+        return false;
+      }
     }
 
     // Resolve binary with multi-strategy fallback
@@ -217,7 +236,12 @@ export class ChromaServerManager {
     this.serverProcess.stderr?.on('data', (data) => {
       const msg = data.toString().trim();
       if (msg) {
-        // Filter out noisy startup messages
+        this.stderrBuffer.push(msg);
+        // Keep buffer bounded (~2KB)
+        while (this.stderrBuffer.join('\n').length > 2048) {
+          this.stderrBuffer.shift();
+        }
+        // Filter out noisy startup messages for debug logging
         if (!msg.includes('Chroma') || msg.includes('error') || msg.includes('Error')) {
           logger.debug('CHROMA_SERVER', msg);
         }
@@ -231,10 +255,19 @@ export class ChromaServerManager {
     });
 
     this.serverProcess.on('exit', (code, signal) => {
-      logger.info('CHROMA_SERVER', 'Server process exited', { code, signal });
+      if (code && code !== 0 && this.stderrBuffer.length > 0) {
+        logger.error('CHROMA_SERVER', 'Server process exited with errors', {
+          code,
+          signal,
+          stderr: this.stderrBuffer.join('\n')
+        });
+      } else {
+        logger.info('CHROMA_SERVER', 'Server process exited', { code, signal });
+      }
       this.ready = false;
       this.starting = false;
       this.serverProcess = null;
+      this.stderrBuffer = [];
     });
 
     return this.waitForReady(timeoutMs);
@@ -280,11 +313,75 @@ export class ChromaServerManager {
     }
 
     this.starting = false;
+    const processAlive = this.serverProcess !== null && !this.serverProcess.killed;
     logger.error('CHROMA_SERVER', 'Server failed to start within timeout', {
       timeoutMs,
-      elapsedMs: Date.now() - startTime
+      elapsedMs: Date.now() - startTime,
+      processAlive,
+      stderr: this.stderrBuffer.length > 0 ? this.stderrBuffer.join('\n') : '(no stderr captured)'
     });
     return false;
+  }
+
+  /**
+   * Detect if the configured port is occupied by a non-Chroma service.
+   * Returns a diagnostic string if conflict detected, or null if port is free.
+   */
+  private async checkPortConflict(): Promise<string | null> {
+    const { host, port } = this.config;
+
+    // Try HTTP heartbeat — if we get a response that isn't Chroma, it's a conflict
+    try {
+      const response = await fetch(
+        `http://${host}:${port}/api/v2/heartbeat`,
+        { signal: AbortSignal.timeout(2000) }
+      );
+      if (!response.ok) {
+        // Port responds to HTTP but not as Chroma
+        return this.buildConflictDiagnostic(port, `HTTP service on port ${port} returned status ${response.status} (not Chroma)`);
+      }
+      // If OK, it IS a Chroma server — not a conflict (caller handles reuse)
+      return null;
+    } catch {
+      // Fetch failed — could be port free, or non-HTTP service
+    }
+
+    // Raw TCP connect to distinguish "port free" from "non-HTTP service"
+    const portInUse = await new Promise<boolean>((resolve) => {
+      const sock = net.createConnection({ host, port }, () => {
+        sock.destroy();
+        resolve(true);
+      });
+      sock.on('error', () => resolve(false));
+      sock.setTimeout(2000, () => {
+        sock.destroy();
+        resolve(false);
+      });
+    });
+
+    if (portInUse) {
+      return this.buildConflictDiagnostic(port, `Non-HTTP service detected on port ${port}`);
+    }
+
+    return null; // Port is free
+  }
+
+  /**
+   * Build diagnostic string for port conflicts, including process info on Linux.
+   */
+  private buildConflictDiagnostic(port: number, base: string): string {
+    let processInfo = '';
+    if (process.platform === 'linux') {
+      try {
+        processInfo = execSync(`ss -tlnp 'sport = :${port}' 2>/dev/null || true`, {
+          encoding: 'utf8',
+          timeout: 3000
+        }).trim();
+      } catch {
+        // Best-effort diagnostics
+      }
+    }
+    return processInfo ? `${base}\n${processInfo}` : base;
   }
 
   /**
@@ -349,6 +446,7 @@ export class ChromaServerManager {
         this.ready = false;
         this.starting = false;
         this.startPromise = null;
+        this.stderrBuffer = [];
         logger.info('CHROMA_SERVER', 'Server stopped', { pid });
         resolve();
       };

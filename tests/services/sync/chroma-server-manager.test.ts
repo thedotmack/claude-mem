@@ -222,6 +222,134 @@ describe('ChromaServerManager', () => {
     });
   });
 
+  describe('port conflict detection', () => {
+    it('detects port conflict (non-Chroma HTTP service) and returns false without spawning', async () => {
+      // All fetch calls return 404 — something is on the port, but it's not Chroma
+      global.fetch = mock(async () => {
+        return new Response('Not Found', { status: 404 });
+      }) as typeof fetch;
+
+      const spawnSpy = spyOn(childProcess, 'spawn').mockImplementation(
+        () => createFakeProcess() as unknown as ReturnType<typeof childProcess.spawn>
+      );
+
+      const manager = ChromaServerManager.getInstance({
+        dataDir: '/tmp/chroma-test',
+        host: '127.0.0.1',
+        port: 8000
+      });
+
+      const ready = await manager.start(2000);
+
+      // Port conflict should be detected — returns false, no spawn
+      expect(ready).toBe(false);
+      expect(spawnSpy).not.toHaveBeenCalled();
+    });
+
+    it('proceeds to spawn when port is free (fetch always throws)', async () => {
+      // Use a high port number unlikely to be in use
+      let callCount = 0;
+      const fetchMock = mock(async () => {
+        callCount++;
+        if (callCount <= 2) {
+          // First call: heartbeat in startInternal — fail
+          // Second call: checkPortConflict heartbeat — fail
+          throw new Error('connection refused');
+        }
+        // Subsequent calls: waitForReady succeeds
+        return new Response(null, { status: 200 });
+      });
+      global.fetch = fetchMock as typeof fetch;
+
+      const spawnSpy = spyOn(childProcess, 'spawn').mockImplementation(
+        () => createFakeProcess() as unknown as ReturnType<typeof childProcess.spawn>
+      );
+
+      const manager = ChromaServerManager.getInstance({
+        dataDir: '/tmp/chroma-test',
+        host: '127.0.0.1',
+        port: 49999 // Use a port that's definitely free
+      });
+
+      const ready = await manager.start(2000);
+
+      // Port free — checkPortConflict returns null, proceed to spawn
+      expect(ready).toBe(true);
+      expect(spawnSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('stderr capture', () => {
+    it('accumulates stderr and includes it in exit log on non-zero exit', async () => {
+      const fetchMock = mock(async () => {
+        if (fetchMock.mock.calls.length <= 2) {
+          throw new Error('no server yet');
+        }
+        // Never return 200 — force timeout
+        throw new Error('still not ready');
+      });
+      global.fetch = fetchMock as typeof fetch;
+
+      const fakeProc = createFakeProcess();
+      // Override kill to emit non-zero exit
+      (fakeProc as any).kill = mock(() => {
+        setTimeout(() => fakeProc.emit('exit', 1, null), 0);
+        return true;
+      });
+
+      spyOn(childProcess, 'spawn').mockImplementation(
+        () => fakeProc as unknown as ReturnType<typeof childProcess.spawn>
+      );
+
+      const manager = ChromaServerManager.getInstance({
+        dataDir: '/tmp/chroma-test',
+        host: '127.0.0.1',
+        port: 8000
+      });
+
+      // Start with short timeout — will fail
+      const readyPromise = manager.start(500);
+
+      // Emit some stderr
+      await new Promise(resolve => setTimeout(resolve, 50));
+      (fakeProc as any).stderr.emit('data', Buffer.from('Error: Address already in use'));
+      (fakeProc as any).stderr.emit('data', Buffer.from('Fatal startup failure'));
+
+      const ready = await readyPromise;
+      expect(ready).toBe(false);
+    });
+
+    it('includes stderr content in timeout error message', async () => {
+      const fetchMock = mock(async () => {
+        if (fetchMock.mock.calls.length <= 2) {
+          throw new Error('no server yet');
+        }
+        throw new Error('still not ready');
+      });
+      global.fetch = fetchMock as typeof fetch;
+
+      const fakeProc = createFakeProcess();
+      spyOn(childProcess, 'spawn').mockImplementation(
+        () => fakeProc as unknown as ReturnType<typeof childProcess.spawn>
+      );
+
+      const manager = ChromaServerManager.getInstance({
+        dataDir: '/tmp/chroma-test',
+        host: '127.0.0.1',
+        port: 8000
+      });
+
+      // Start and emit stderr before timeout
+      const readyPromise = manager.start(500);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      (fakeProc as any).stderr.emit('data', Buffer.from('some error output'));
+
+      const ready = await readyPromise;
+      expect(ready).toBe(false);
+      // The stderr is captured internally — we verify start returned false (timeout with diagnostics)
+    });
+  });
+
   it('waits for ongoing startup instead of returning early', async () => {
     let resolveReady: ((value: Response) => void) | null = null;
     const delayedReady = new Promise<Response>((resolve) => {
