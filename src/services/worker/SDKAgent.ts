@@ -279,6 +279,25 @@ export class SDKAgent {
         }
       }
     } finally {
+      // Cleanup any abandoned processingMessageIds (crash/abort recovery)
+      // If processAgentResponse was never called or threw before clearing these,
+      // the messages would be stuck in 'processing' indefinitely without this cleanup.
+      if (session.processingMessageIds.length > 0) {
+        logger.warn('SDK', `Cleaning up ${session.processingMessageIds.length} abandoned processing messages`, {
+          sessionId: session.sessionDbId,
+          messageIds: session.processingMessageIds
+        });
+        const pendingStore = this.sessionManager.getPendingMessageStore();
+        for (const messageId of session.processingMessageIds) {
+          try {
+            pendingStore.markFailed(messageId);
+          } catch (err) {
+            logger.error('SDK', `Failed to markFailed abandoned messageId=${messageId}`, {}, err as Error);
+          }
+        }
+        session.processingMessageIds = [];
+      }
+
       // Ensure subprocess is terminated after query completes (or on error)
       const tracked = getProcessBySession(session.sessionDbId);
       if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {

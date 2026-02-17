@@ -175,6 +175,9 @@ export class WorkerService {
   // Orphan reaper cleanup function (Issue #737)
   private stopOrphanReaper: (() => void) | null = null;
 
+  // Periodic stale message cleanup timer
+  private staleMessageCleanupInterval: ReturnType<typeof setInterval> | null = null;
+
   // AI interaction tracking for health endpoint
   private lastAiInteraction: {
     timestamp: number;
@@ -455,6 +458,25 @@ export class WorkerService {
       });
       logger.info('SYSTEM', 'Started orphan reaper (runs every 5 minutes)');
 
+      // Start periodic stale message cleanup (every 2 minutes)
+      // Catches messages stuck in 'processing' that weren't cleaned up on generator exit
+      const STALE_CLEANUP_INTERVAL_MS = 2 * 60 * 1000;
+      const STALE_THRESHOLD_MS = 3 * 60 * 1000; // 3 minutes = stale
+      this.staleMessageCleanupInterval = setInterval(() => {
+        try {
+          const store = this.sessionManager.getPendingMessageStore();
+          const resetCount = store.resetStaleProcessingMessages(STALE_THRESHOLD_MS);
+          if (resetCount > 0) {
+            logger.info('QUEUE', `Periodic cleanup: reset ${resetCount} stale processing messages`);
+            this.broadcastProcessingStatus();
+          }
+        } catch (error) {
+          logger.error('QUEUE', 'Periodic stale message cleanup failed', {}, error as Error);
+        }
+      }, STALE_CLEANUP_INTERVAL_MS);
+      this.staleMessageCleanupInterval.unref();
+      logger.info('SYSTEM', 'Started stale message cleanup (runs every 2 minutes, threshold: 3 minutes)');
+
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
         if (result.sessionsStarted > 0) {
@@ -595,26 +617,36 @@ export class WorkerService {
           };
         }
 
+        // Shared store for all exit paths
+        const { PendingMessageStore } = require('./sqlite/PendingMessageStore.js');
+        const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+
+        // Always reset stuck 'processing' messages on generator exit.
+        // If the generator crashed between claimAndDelete() and confirmProcessed(),
+        // these messages would stay in 'processing' forever and keep the spinner spinning.
+        const resetCount = pendingStore.resetStaleProcessingMessages(0, session.sessionDbId);
+        if (resetCount > 0) {
+          logger.info('QUEUE', `Reset ${resetCount} stuck processing messages on generator exit`, {
+            sessionId: session.sessionDbId
+          });
+        }
+
         // Do NOT restart after unrecoverable errors - prevents infinite loops
         if (hadUnrecoverableError) {
           logger.warn('SYSTEM', 'Skipping restart due to unrecoverable error', {
             sessionId: session.sessionDbId
           });
+          // Mark all remaining pending messages as failed - no agent can process them
+          pendingStore.markAllSessionMessagesAbandoned(session.sessionDbId);
           this.broadcastProcessingStatus();
           return;
         }
-
-        // Shared store for idle-reset and pending-count checks below
-        const { PendingMessageStore } = require('./sqlite/PendingMessageStore.js');
-        const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
 
         // Idle timeout means no new work arrived for 3 minutes - don't restart
         if (session.idleTimedOut) {
           logger.info('SYSTEM', 'Generator exited due to idle timeout, not restarting', {
             sessionId: session.sessionDbId
           });
-          // Reset stale processing messages so they can be picked up later
-          pendingStore.resetStaleProcessingMessages(0, session.sessionDbId); // Reset this session's messages only
           session.idleTimedOut = false; // Reset flag
           this.broadcastProcessingStatus();
           return;
@@ -812,6 +844,12 @@ export class WorkerService {
     if (this.stopOrphanReaper) {
       this.stopOrphanReaper();
       this.stopOrphanReaper = null;
+    }
+
+    // Stop stale message cleanup timer
+    if (this.staleMessageCleanupInterval) {
+      clearInterval(this.staleMessageCleanupInterval);
+      this.staleMessageCleanupInterval = null;
     }
 
     await performGracefulShutdown({
@@ -1084,7 +1122,8 @@ async function main() {
       // The HTTP server can continue serving even if a background task throws.
       process.on('unhandledRejection', (reason) => {
         logger.error('SYSTEM', 'Unhandled rejection in daemon', {
-          reason: reason instanceof Error ? reason.message : String(reason)
+          reason: reason instanceof Error ? reason.message : String(reason),
+          stack: reason instanceof Error ? reason.stack : undefined
         });
       });
       process.on('uncaughtException', (error) => {

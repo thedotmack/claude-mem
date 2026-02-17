@@ -303,7 +303,16 @@ export class SessionManager {
       await ensureProcessExit(tracked, 5000);
     }
 
-    // 4. Cleanup
+    // 4. Cleanup - mark ALL pending/processing messages as failed (abandoned)
+    // Without this, pending messages for deleted sessions keep hasAnyPendingWork()
+    // returning true, causing the isProcessing flag and UI spinner to be stuck.
+    const failedCount = this.getPendingStore().markAllSessionMessagesAbandoned(sessionDbId);
+    if (failedCount > 0) {
+      logger.info('SESSION', `Cleaned up ${failedCount} orphaned messages on session delete`, {
+        sessionId: sessionDbId
+      });
+    }
+
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
 
@@ -327,6 +336,14 @@ export class SessionManager {
   removeSessionImmediate(sessionDbId: number): void {
     const session = this.sessions.get(sessionDbId);
     if (!session) return;
+
+    // Mark stuck messages as failed before removing
+    const failedCount = this.getPendingStore().markSessionMessagesFailed(sessionDbId);
+    if (failedCount > 0) {
+      logger.info('SESSION', `Cleaned up ${failedCount} stuck messages on immediate removal`, {
+        sessionId: sessionDbId
+      });
+    }
 
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);

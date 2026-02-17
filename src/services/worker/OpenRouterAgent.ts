@@ -144,6 +144,8 @@ export class OpenRouterAgent {
       let lastCwd: string | undefined;
 
       // Process pending messages
+      // CRITICAL: Wrap in try/finally to cleanup abandoned processingMessageIds on crash/abort.
+      try {
       for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
         // CLAIM-CONFIRM: Track message ID for confirmProcessed() after successful storage
         // The message is now in 'processing' status in DB until ResponseProcessor calls confirmProcessed()
@@ -246,6 +248,24 @@ export class OpenRouterAgent {
             'OpenRouter',
             lastCwd
           );
+        }
+      }
+      } finally {
+        // Cleanup any abandoned processingMessageIds (crash/abort recovery)
+        if (session.processingMessageIds.length > 0) {
+          logger.warn('SDK', `Cleaning up ${session.processingMessageIds.length} abandoned processing messages`, {
+            sessionId: session.sessionDbId,
+            messageIds: session.processingMessageIds
+          });
+          const pendingStore = this.sessionManager.getPendingMessageStore();
+          for (const messageId of session.processingMessageIds) {
+            try {
+              pendingStore.markFailed(messageId);
+            } catch (err) {
+              logger.error('SDK', `Failed to markFailed abandoned messageId=${messageId}`, {}, err as Error);
+            }
+          }
+          session.processingMessageIds = [];
         }
       }
 
