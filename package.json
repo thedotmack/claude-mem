@@ -102,6 +102,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.76",
     "@modelcontextprotocol/sdk": "^1.25.1",
+    "@tanstack/react-virtual": "^3.13.18",
     "ansi-to-html": "^0.7.2",
     "better-sqlite3": "^12.6.2",
     "express": "^4.18.2",

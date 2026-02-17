@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import type { Summary, SessionListItem, SessionGroup } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 
@@ -269,8 +269,12 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
     setSelectedId(id);
   }, []);
 
+  const flatSessions = useMemo(
+    () => sessionGroups.flatMap(g => g.sessions),
+    [sessionGroups],
+  );
+
   const navigateNext = useCallback((): void => {
-    const flatSessions = sessionGroups.flatMap(g => g.sessions);
     if (flatSessions.length === 0) return;
     if (selectedId === null) {
       setSelectedId(flatSessions[0].id);
@@ -279,10 +283,9 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
     const currentIndex = flatSessions.findIndex(s => s.id === selectedId);
     if (currentIndex === -1 || currentIndex >= flatSessions.length - 1) return;
     setSelectedId(flatSessions[currentIndex + 1].id);
-  }, [sessionGroups, selectedId]);
+  }, [flatSessions, selectedId]);
 
   const navigatePrev = useCallback((): void => {
-    const flatSessions = sessionGroups.flatMap(g => g.sessions);
     if (flatSessions.length === 0) return;
     if (selectedId === null) {
       setSelectedId(flatSessions[flatSessions.length - 1].id);
@@ -291,7 +294,7 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
     const currentIndex = flatSessions.findIndex(s => s.id === selectedId);
     if (currentIndex <= 0) return;
     setSelectedId(flatSessions[currentIndex - 1].id);
-  }, [sessionGroups, selectedId]);
+  }, [flatSessions, selectedId]);
 
   return {
     sessionGroups,

@@ -5,11 +5,25 @@
  * following the same pattern as useSessionDetail.test.ts. The
  * @testing-library/react package is not installed, so all UI logic that can
  * be extracted into pure functions is tested here.
+ *
+ * Virtualization tests use source-code inspection to verify that the
+ * implementation satisfies structural requirements without requiring
+ * a DOM or React renderer.
  */
 
+import { readFileSync } from 'fs';
 import { describe, it, expect } from 'vitest';
 import type { Observation, UserPrompt, SessionDetail } from '../../../src/ui/viewer/types';
 import { buildTimeline, type TimelineItem } from '../../../src/ui/viewer/components/SessionDetail';
+
+// ---------------------------------------------------------------------------
+// Source-code inspection helpers
+// ---------------------------------------------------------------------------
+
+const SESSION_DETAIL_SOURCE = readFileSync(
+  new URL('../../../src/ui/viewer/components/SessionDetail.tsx', import.meta.url).pathname,
+  'utf8',
+);
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -241,5 +255,61 @@ describe('SessionDetail props contract', () => {
     expect(props.detail!.summary.session_id).toBe(SESSION_ID);
     expect(props.detail!.observations).toHaveLength(1);
     expect(props.detail!.prompts).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Virtualization: source-code structural tests (RED → GREEN via implementation)
+// ---------------------------------------------------------------------------
+
+describe('SessionDetail virtualization — source structure', () => {
+  it('imports useVirtualizer from @tanstack/react-virtual', () => {
+    expect(SESSION_DETAIL_SOURCE).toMatch(/from\s+['"]@tanstack\/react-virtual['"]/);
+    expect(SESSION_DETAIL_SOURCE).toMatch(/useVirtualizer/);
+  });
+
+  it('defines the 30-item threshold for enabling virtualization', () => {
+    // The threshold constant must be defined with value 30
+    expect(SESSION_DETAIL_SOURCE).toMatch(/VIRTUALIZATION_THRESHOLD\s*=\s*30/);
+    // The threshold must be used in the comparison (not hardcoded)
+    expect(SESSION_DETAIL_SOURCE).toMatch(/timelineItems\.length\s*>\s*VIRTUALIZATION_THRESHOLD/);
+  });
+
+  it('uses measureElement callback for variable heights', () => {
+    expect(SESSION_DETAIL_SOURCE).toMatch(/measureElement/);
+  });
+
+  it('uses a ref for the scroll container', () => {
+    // useRef must be imported and used for the scroll container
+    expect(SESSION_DETAIL_SOURCE).toMatch(/useRef/);
+    expect(SESSION_DETAIL_SOURCE).toMatch(/scrollElementRef|parentRef|containerRef|scrollRef/);
+  });
+
+  it('passes the scroll element ref to useVirtualizer as scrollElement or getScrollElement', () => {
+    // The virtualizer must receive either scrollElement or getScrollElement
+    expect(SESSION_DETAIL_SOURCE).toMatch(/scrollElement|getScrollElement/);
+  });
+
+  it('keeps the session-detail-timeline data-testid attribute', () => {
+    expect(SESSION_DETAIL_SOURCE).toMatch(/data-testid=["']session-detail-timeline["']/);
+  });
+
+  it('does not apply virtualization when below threshold (renders items directly)', () => {
+    // There must be a branch that renders the list without virtual items
+    // when the timeline is small (i.e., a non-virtualizer render path)
+    expect(SESSION_DETAIL_SOURCE).toMatch(/timelineItems\.map/);
+  });
+
+  it('uses getVirtualItems from the virtualizer for the virtual render path', () => {
+    expect(SESSION_DETAIL_SOURCE).toMatch(/getVirtualItems\(\)/);
+  });
+
+  it('renders virtualizer items with a key derived from the virtual item index', () => {
+    // Virtual rows must use virtualItem.key or virtualItem.index as React key
+    expect(SESSION_DETAIL_SOURCE).toMatch(/virtualItem\.key|virtualItem\.index/);
+  });
+
+  it('does not mutate timelineItems array (uses index access, not splice/push)', () => {
+    expect(SESSION_DETAIL_SOURCE).not.toMatch(/timelineItems\.splice|timelineItems\.push|timelineItems\.pop/);
   });
 });

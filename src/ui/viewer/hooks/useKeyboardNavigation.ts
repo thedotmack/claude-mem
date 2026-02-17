@@ -110,6 +110,17 @@ export function resolveKeyAction(
 export function useKeyboardNavigation(
   options: UseKeyboardNavigationOptions
 ): UseKeyboardNavigationResult {
+  const {
+    onNextSession,
+    onPrevSession,
+    onFocusSearch,
+    onTogglePalette,
+    isPaletteOpen,
+    onClosePalette,
+    onClearSearch,
+    hasSearchContent,
+  } = options;
+
   const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
@@ -120,36 +131,36 @@ export function useKeyboardNavigation(
       const isInputFocused = isInputFocusedFromElement(tagName, contentEditable);
 
       const action = resolveKeyAction(event.key, isInputFocused, {
-        isPaletteOpen: options.isPaletteOpen,
+        isPaletteOpen,
         showHelp,
-        hasSearchContent: options.hasSearchContent,
+        hasSearchContent,
       });
 
       switch (action) {
         case 'next':
-          options.onNextSession();
+          onNextSession();
           break;
         case 'prev':
-          options.onPrevSession();
+          onPrevSession();
           break;
         case 'focus-search':
           event.preventDefault();
-          options.onFocusSearch();
+          onFocusSearch();
           break;
         case 'toggle-palette':
-          options.onTogglePalette();
+          onTogglePalette();
           break;
         case 'toggle-help':
           setShowHelp(prev => !prev);
           break;
         case 'close-palette':
-          options.onClosePalette();
+          onClosePalette();
           break;
         case 'close-help':
           setShowHelp(false);
           break;
         case 'clear-search':
-          options.onClearSearch();
+          onClearSearch();
           break;
         case null:
           break;
@@ -162,7 +173,14 @@ export function useKeyboardNavigation(
     };
   }, [
     showHelp,
-    options,
+    isPaletteOpen,
+    hasSearchContent,
+    onNextSession,
+    onPrevSession,
+    onFocusSearch,
+    onTogglePalette,
+    onClosePalette,
+    onClearSearch,
   ]);
 
   return { showHelp, setShowHelp };
