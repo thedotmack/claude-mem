@@ -34,6 +34,11 @@ export const summarizeHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
+    if (input.isSubagent) {
+      logger.debug('HOOK', `Subagent session ${sessionId} - skipping summary`);
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     // Extract last assistant message from transcript (the work Claude did)
     // Note: "user" messages in transcripts are mostly tool_results, not actual user input.
     // The user's original request is already stored in user_prompts table.
