@@ -10,6 +10,9 @@ import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { join } from 'path';
+import { homedir } from 'os';
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -60,7 +63,13 @@ export const contextHandler: EventHandler = {
 
       const additionalContext = contextResult.trim();
       const coloredTimeline = colorResult.trim();
-      const systemMessage = coloredTimeline
+
+      // Check if terminal output should be shown
+      const settingsPath = join(homedir(), '.claude-mem', 'settings.json');
+      const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+      const showTerminalOutput = settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true';
+
+      const systemMessage = showTerminalOutput && coloredTimeline
         ? `${coloredTimeline}\n\nView Observations Live @ http://localhost:${port}`
         : undefined;
 
