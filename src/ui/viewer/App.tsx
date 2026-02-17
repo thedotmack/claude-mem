@@ -156,8 +156,6 @@ export function App() {
         onFilterChange={setProject}
         isProcessing={isProcessing}
         queueDepth={queueDepth}
-        themePreference={preference}
-        onThemeChange={setThemePreference}
         onContextPreviewToggle={toggleContextPreview}
         query={filters.query}
         onQueryChange={setQuery}
@@ -210,6 +208,8 @@ export function App() {
         onSave={(s) => { void saveSettings(s); }}
         isSaving={isSaving}
         saveStatus={saveStatus}
+        themePreference={preference}
+        onThemeChange={setThemePreference}
       />
 
       <button

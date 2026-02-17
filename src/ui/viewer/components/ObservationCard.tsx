@@ -6,8 +6,8 @@ interface ObservationCardProps {
   observation: Observation;
 }
 
-// Helper to strip project root from file paths
-function stripProjectRoot(filePath: string): string {
+// Helper to strip project root from file paths — exported for unit testing
+export function stripProjectRoot(filePath: string): string {
   // Try to extract relative path by finding common project markers
   const markers = ['/Scripts/', '/src/', '/plugin/', '/docs/'];
 
@@ -25,14 +25,13 @@ function stripProjectRoot(filePath: string): string {
     return filePath.substring(projectIndex + 'magic-claude-mem/'.length);
   }
 
-  // If no markers found, return basename or original path
+  // If no markers found, return last 3 segments or original path
   const parts = filePath.split('/');
   return parts.length > 3 ? parts.slice(-3).join('/') : filePath;
 }
 
 export function ObservationCard({ observation }: ObservationCardProps) {
-  const [showFacts, setShowFacts] = useState(false);
-  const [showNarrative, setShowNarrative] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const date = formatDate(observation.created_at_epoch);
 
   // Parse JSON fields
@@ -41,98 +40,86 @@ export function ObservationCard({ observation }: ObservationCardProps) {
   const filesRead: string[] = observation.files_read ? (JSON.parse(observation.files_read) as string[]).map(stripProjectRoot) : [];
   const filesModified: string[] = observation.files_modified ? (JSON.parse(observation.files_modified) as string[]).map(stripProjectRoot) : [];
 
-  // Show facts toggle if there are facts, concepts, or files
-  const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;
+  // Merge subtitle into narrative if subtitle differs from title
+  const mergedNarrative =
+    observation.subtitle && observation.subtitle !== observation.title
+      ? `${observation.narrative ?? ''}\n\n${observation.subtitle}`.trim()
+      : observation.narrative;
+
+  const hasExpandableContent = facts.length > 0 || mergedNarrative;
+
+  const toggleExpand = hasExpandableContent ? () => setExpanded(!expanded) : undefined;
 
   return (
-    <div className="card">
-      {/* Header with toggle buttons in top right */}
+    <div
+      className={`card observation-card${hasExpandableContent ? ' observation-card--expandable' : ''}`}
+      data-obs-type={observation.type}
+      data-testid="obs-card"
+      aria-expanded={expanded}
+      role={hasExpandableContent ? 'button' : undefined}
+      tabIndex={hasExpandableContent ? 0 : undefined}
+      onClick={toggleExpand}
+      onKeyDown={hasExpandableContent ? (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          setExpanded(!expanded);
+        }
+      } : undefined}
+    >
+      {/* Header */}
       <div className="card-header">
         <div className="card-header-left">
-          <span className={`card-type type-${observation.type}`}>
-            {observation.type}
-          </span>
           <span className="card-project">{observation.project}</span>
         </div>
-        <div className="view-mode-toggles">
-          {hasFactsContent && (
-            <button
-              className={`view-mode-toggle ${showFacts ? 'active' : ''}`}
-              onClick={() => {
-                setShowFacts(!showFacts);
-                if (!showFacts) setShowNarrative(false); // Turn off narrative when turning on facts
-              }}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="9 11 12 14 22 4"></polyline>
-                <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
-              </svg>
-              <span>facts</span>
-            </button>
-          )}
-          {observation.narrative && (
-            <button
-              className={`view-mode-toggle ${showNarrative ? 'active' : ''}`}
-              onClick={() => {
-                setShowNarrative(!showNarrative);
-                if (!showNarrative) setShowFacts(false); // Turn off facts when turning on narrative
-              }}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                <polyline points="14 2 14 8 20 8"></polyline>
-                <line x1="16" y1="13" x2="8" y2="13"></line>
-                <line x1="16" y1="17" x2="8" y2="17"></line>
-              </svg>
-              <span>narrative</span>
-            </button>
-          )}
-        </div>
+        <span className="meta-date">#{observation.id} • {date}</span>
       </div>
 
       {/* Title */}
-      <div className="card-title">{observation.title || 'Untitled'}</div>
+      <div className="card-title">{observation.title ?? 'Untitled'}</div>
 
-      {/* Content based on toggle state */}
-      <div className="view-mode-content">
-        {!showFacts && !showNarrative && observation.subtitle && (
-          <div className="card-subtitle">{observation.subtitle}</div>
-        )}
-        {showFacts && facts.length > 0 && (
-          <ul className="facts-list">
-            {facts.map((fact, i) => (
-              <li key={i}>{fact}</li>
-            ))}
-          </ul>
-        )}
-        {showNarrative && observation.narrative && (
-          <div className="narrative">
-            {observation.narrative}
-          </div>
-        )}
-      </div>
+      {/* Concepts and files — always visible */}
+      {(concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (
+        <div className="card__concepts">
+          {concepts.map((concept, i) => (
+            <span key={i} className="observation-card__concept-chip">
+              {concept}
+            </span>
+          ))}
+          {filesRead.length > 0 && (
+            <span className="meta-files">
+              <span className="file-label">read:</span> {filesRead.join(', ')}
+            </span>
+          )}
+          {filesModified.length > 0 && (
+            <span className="meta-files">
+              <span className="file-label">modified:</span> {filesModified.join(', ')}
+            </span>
+          )}
+        </div>
+      )}
 
-      {/* Metadata footer - id, date, and conditionally concepts/files when facts toggle is on */}
+      {/* Expandable facts section */}
+      {expanded && hasExpandableContent && (
+        <div className="card-facts" data-testid="obs-card-facts">
+          {facts.length > 0 && (
+            <ul className="facts-list">
+              {facts.map((fact, i) => (
+                <li key={i}>{fact}</li>
+              ))}
+            </ul>
+          )}
+          {mergedNarrative && (
+            <div className="narrative">
+              {mergedNarrative}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Metadata footer */}
       <div className="card-meta">
-        <span className="meta-date">#{observation.id} • {date}</span>
-        {showFacts && (concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (
-          <div className="observation-card__concepts">
-            {concepts.map((concept, i) => (
-              <span key={i} className="observation-card__concept-chip">
-                {concept}
-              </span>
-            ))}
-            {filesRead.length > 0 && (
-              <span className="meta-files">
-                <span className="file-label">read:</span> {filesRead.join(', ')}
-              </span>
-            )}
-            {filesModified.length > 0 && (
-              <span className="meta-files">
-                <span className="file-label">modified:</span> {filesModified.join(', ')}
-              </span>
-            )}
-          </div>
+        {hasExpandableContent && (
+          <span className="expand-hint">{expanded ? '▲ collapse' : '▼ expand'}</span>
         )}
       </div>
     </div>

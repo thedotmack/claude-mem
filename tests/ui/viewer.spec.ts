@@ -17,8 +17,8 @@ async function waitForViewerReady(page: import('@playwright/test').Page): Promis
   // The header element is always present once React has mounted
   await page.waitForSelector('.header', { state: 'visible', timeout: 15000 });
 
-  // Wait for the feed to appear — it renders once SSE data (or empty state) arrives
-  await page.waitForSelector('.feed', { state: 'visible', timeout: 15000 });
+  // In normal mode, the two-panel layout renders; in filter mode, the feed renders
+  await page.waitForSelector('[data-testid="two-panel"], .feed', { state: 'visible', timeout: 15000 });
 }
 
 /** Force the viewer into the given theme by directly setting `data-theme` on <html>. */
@@ -101,26 +101,26 @@ test.describe('Viewer UI — baseline screenshots', () => {
     await expect(header.locator('.logo-text')).toContainText('magic-claude-mem');
   });
 
-  test('feed with cards — light theme', async ({ page }) => {
+  test('content area — light theme', async ({ page }) => {
     await setTheme(page, 'light');
 
-    // The feed container is always rendered; it shows cards or an empty state
-    const feed = page.locator('.feed');
-    await expect(feed).toBeVisible();
+    // In normal mode, the two-panel layout renders; in filter mode, the feed renders
+    const contentArea = page.locator('[data-testid="two-panel"], .feed');
+    await expect(contentArea.first()).toBeVisible();
 
-    await feed.screenshot({
-      path: `${SCREENSHOT_DIR}/feed-light.png`,
+    await contentArea.first().screenshot({
+      path: `${SCREENSHOT_DIR}/content-area-light.png`,
     });
   });
 
-  test('feed with cards — dark theme', async ({ page }) => {
+  test('content area — dark theme', async ({ page }) => {
     await setTheme(page, 'dark');
 
-    const feed = page.locator('.feed');
-    await expect(feed).toBeVisible();
+    const contentArea = page.locator('[data-testid="two-panel"], .feed');
+    await expect(contentArea.first()).toBeVisible();
 
-    await feed.screenshot({
-      path: `${SCREENSHOT_DIR}/feed-dark.png`,
+    await contentArea.first().screenshot({
+      path: `${SCREENSHOT_DIR}/content-area-dark.png`,
     });
   });
 });

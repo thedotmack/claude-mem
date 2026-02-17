@@ -2,6 +2,41 @@ import React, { useState, useCallback, useEffect } from 'react';
 import type { Settings } from '../types';
 import { TerminalPreview } from './TerminalPreview';
 import { useContextPreview } from '../hooks/useContextPreview';
+import type { ThemePreference } from '../hooks/useTheme';
+
+const THEME_ICONS: Record<ThemePreference, React.ReactNode> = {
+  system: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
+      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+      <line x1="8" y1="21" x2="16" y2="21"></line>
+      <line x1="12" y1="17" x2="12" y2="21"></line>
+    </svg>
+  ),
+  light: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
+      <circle cx="12" cy="12" r="5"></circle>
+      <line x1="12" y1="1" x2="12" y2="3"></line>
+      <line x1="12" y1="21" x2="12" y2="23"></line>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+      <line x1="1" y1="12" x2="3" y2="12"></line>
+      <line x1="21" y1="12" x2="23" y2="12"></line>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+    </svg>
+  ),
+  dark: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+    </svg>
+  ),
+};
+
+const THEME_LABELS: Record<ThemePreference, string> = {
+  system: 'System',
+  light: 'Light',
+  dark: 'Dark',
+};
 
 interface ContextSettingsModalProps {
   isOpen: boolean;
@@ -10,6 +45,8 @@ interface ContextSettingsModalProps {
   onSave: (settings: Settings) => void;
   isSaving: boolean;
   saveStatus: string;
+  themePreference: ThemePreference;
+  onThemeChange: (theme: ThemePreference) => void;
 }
 
 // Collapsible section component
@@ -182,7 +219,9 @@ export function ContextSettingsModal({
   settings,
   onSave,
   isSaving,
-  saveStatus
+  saveStatus,
+  themePreference,
+  onThemeChange
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
 
@@ -291,6 +330,27 @@ export function ContextSettingsModal({
 
           {/* Right column - Settings Panel */}
           <div className="settings-column">
+            {/* Section 0: Appearance */}
+            <CollapsibleSection
+              title="Appearance"
+              description="Color theme"
+            >
+              <div className="theme-option-group">
+                {(['system', 'light', 'dark'] as ThemePreference[]).map((theme) => (
+                    <button
+                      key={theme}
+                      type="button"
+                      className={`theme-option-btn ${themePreference === theme ? 'selected' : ''}`}
+                      onClick={() => { onThemeChange(theme); }}
+                      aria-pressed={themePreference === theme}
+                    >
+                      {THEME_ICONS[theme]}
+                      <span>{THEME_LABELS[theme]}</span>
+                    </button>
+                ))}
+              </div>
+            </CollapsibleSection>
+
             {/* Section 1: Loading */}
             <CollapsibleSection
               title="Loading"
