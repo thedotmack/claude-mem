@@ -1,7 +1,5 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { SearchBar } from './SearchBar';
-import { FilterBar } from './FilterBar';
-import type { FilterState } from '../types';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
 
 interface HeaderProps {
@@ -16,13 +14,7 @@ interface HeaderProps {
   isSearching: boolean;
   resultCount: string | null;
   filterCount: number;
-  filters: FilterState;
-  onToggleObsType: (type: string) => void;
-  onToggleConcept: (concept: string) => void;
-  onToggleItemKind: (kind: 'observations' | 'sessions' | 'prompts') => void;
-  onDateRangeChange: (start: string, end: string) => void;
-  onClearAllFilters: () => void;
-  hasActiveFilters: boolean;
+  onFilterToggle: () => void;
   version?: string;
 }
 
@@ -38,20 +30,12 @@ export function Header({
   isSearching,
   resultCount,
   filterCount,
-  filters,
-  onToggleObsType,
-  onToggleConcept,
-  onToggleItemKind,
-  onDateRangeChange,
-  onClearAllFilters,
-  hasActiveFilters,
+  onFilterToggle,
   version,
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
-  const [filterBarOpen, setFilterBarOpen] = useState(false);
 
   return (
-    <>
       <div className="header">
         <h1>
           <div className="header__logo-wrapper">
@@ -86,8 +70,8 @@ export function Header({
             ))}
           </select>
           <button
-            className={`filter-toggle-btn ${filterBarOpen ? 'active' : ''}`}
-            onClick={() => { setFilterBarOpen(prev => !prev); }}
+            className="filter-toggle-btn"
+            onClick={onFilterToggle}
             title="Toggle filters"
             aria-label="Toggle filters"
           >
@@ -110,16 +94,5 @@ export function Header({
           </button>
         </div>
       </div>
-      <FilterBar
-        filters={filters}
-        onToggleObsType={onToggleObsType}
-        onToggleConcept={onToggleConcept}
-        onToggleItemKind={onToggleItemKind}
-        onDateRangeChange={onDateRangeChange}
-        onClearAll={onClearAllFilters}
-        hasActiveFilters={hasActiveFilters}
-        isOpen={filterBarOpen}
-      />
-    </>
   );
 }

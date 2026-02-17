@@ -2,9 +2,13 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useR
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { TwoPanel } from './components/TwoPanel';
+import type { TwoPanelHandle } from './components/TwoPanel';
 import { SearchResultsBadge } from './components/SearchResultsBadge';
+import { CommandPalette } from './components/CommandPalette';
+import { KeyboardShortcutHelp } from './components/KeyboardShortcutHelp';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { LogsDrawer } from './components/LogsModal';
+import { useKeyboardNavigation } from './hooks/useKeyboardNavigation';
 import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
@@ -18,6 +22,7 @@ import { mergeAndDeduplicateByProject } from './utils/data';
 
 export function App() {
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
+  const [filterPaletteOpen, setFilterPaletteOpen] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
@@ -76,9 +81,43 @@ export function App() {
     setContextPreviewOpen(prev => !prev);
   }, []);
 
+  const toggleFilterPalette = useCallback(() => {
+    setFilterPaletteOpen(prev => !prev);
+  }, []);
+
+  const closePalette = useCallback(() => {
+    setFilterPaletteOpen(false);
+  }, []);
+
   const toggleLogsModal = useCallback(() => {
     setLogsModalOpen(prev => !prev);
   }, []);
+
+  const twoPanelRef = useRef<TwoPanelHandle>(null);
+
+  const focusSearch = useCallback(() => {
+    const input = document.querySelector<HTMLInputElement>('.search-bar-input');
+    input?.focus();
+  }, []);
+
+  const handleNextSession = useCallback(() => {
+    twoPanelRef.current?.navigateNext();
+  }, []);
+
+  const handlePrevSession = useCallback(() => {
+    twoPanelRef.current?.navigatePrev();
+  }, []);
+
+  const { showHelp, setShowHelp } = useKeyboardNavigation({
+    onNextSession: handleNextSession,
+    onPrevSession: handlePrevSession,
+    onFocusSearch: focusSearch,
+    onTogglePalette: toggleFilterPalette,
+    isPaletteOpen: filterPaletteOpen,
+    onClosePalette: closePalette,
+    onClearSearch: clearAll,
+    hasSearchContent: filters.query.length > 0,
+  });
 
   const handleLoadMore = useCallback(async () => {
     if (isFilterMode) {
@@ -162,13 +201,7 @@ export function App() {
         isSearching={search.isSearching}
         resultCount={isFilterMode ? `${String(search.totalResults)}${search.hasMore ? '+' : ''}` : null}
         filterCount={activeFilterCount}
-        filters={filters}
-        onToggleObsType={toggleObsType}
-        onToggleConcept={toggleConcept}
-        onToggleItemKind={toggleItemKind}
-        onDateRangeChange={setDateRange}
-        onClearAllFilters={clearAll}
-        hasActiveFilters={hasActiveFilters}
+        onFilterToggle={toggleFilterPalette}
         version={stats.worker?.version}
       />
 
@@ -191,6 +224,7 @@ export function App() {
         />
       ) : (
         <TwoPanel
+          ref={twoPanelRef}
           project={filters.project}
           newSummary={latestSSESummary}
           activityDays={activityDensity.days}
@@ -200,6 +234,20 @@ export function App() {
           onDateRangeSelect={setDateRange}
         />
       )}
+
+      <CommandPalette
+        isOpen={filterPaletteOpen}
+        onClose={closePalette}
+        filters={filters}
+        onQueryChange={setQuery}
+        onToggleObsType={toggleObsType}
+        onToggleConcept={toggleConcept}
+        onToggleItemKind={toggleItemKind}
+        onDateRangeChange={setDateRange}
+        onClearAll={clearAll}
+        hasActiveFilters={hasActiveFilters}
+        isSearching={search.isSearching}
+      />
 
       <ContextSettingsModal
         isOpen={contextPreviewOpen}
@@ -226,6 +274,11 @@ export function App() {
       <LogsDrawer
         isOpen={logsModalOpen}
         onClose={toggleLogsModal}
+      />
+
+      <KeyboardShortcutHelp
+        isOpen={showHelp}
+        onClose={() => { setShowHelp(false); }}
       />
     </>
   );

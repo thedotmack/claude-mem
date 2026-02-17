@@ -112,11 +112,13 @@ describe('findSessionById', () => {
 // ---------------------------------------------------------------------------
 
 describe('TwoPanel component module', () => {
-  it('exports a TwoPanel function component', async () => {
+  it('exports a TwoPanel component (forwardRef)', async () => {
     const mod = await import(
       '../../../src/ui/viewer/components/TwoPanel.js'
     );
-    expect(typeof mod.TwoPanel).toBe('function');
+    // forwardRef wraps the component as an object with $$typeof and render
+    expect(mod.TwoPanel).toBeDefined();
+    expect(typeof mod.TwoPanel === 'function' || typeof mod.TwoPanel === 'object').toBe(true);
   });
 
   it('exports findSessionById as a function', async () => {

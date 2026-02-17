@@ -195,6 +195,8 @@ interface UseSessionListResult {
   loadMore: () => Promise<void>;
   selectedId: number | null;
   selectSession: (id: number) => void;
+  navigateNext: () => void;
+  navigatePrev: () => void;
 }
 
 export function useSessionList({ project, newSummary }: UseSessionListOptions): UseSessionListResult {
@@ -267,6 +269,30 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
     setSelectedId(id);
   }, []);
 
+  const navigateNext = useCallback((): void => {
+    const flatSessions = sessionGroups.flatMap(g => g.sessions);
+    if (flatSessions.length === 0) return;
+    if (selectedId === null) {
+      setSelectedId(flatSessions[0].id);
+      return;
+    }
+    const currentIndex = flatSessions.findIndex(s => s.id === selectedId);
+    if (currentIndex === -1 || currentIndex >= flatSessions.length - 1) return;
+    setSelectedId(flatSessions[currentIndex + 1].id);
+  }, [sessionGroups, selectedId]);
+
+  const navigatePrev = useCallback((): void => {
+    const flatSessions = sessionGroups.flatMap(g => g.sessions);
+    if (flatSessions.length === 0) return;
+    if (selectedId === null) {
+      setSelectedId(flatSessions[flatSessions.length - 1].id);
+      return;
+    }
+    const currentIndex = flatSessions.findIndex(s => s.id === selectedId);
+    if (currentIndex <= 0) return;
+    setSelectedId(flatSessions[currentIndex - 1].id);
+  }, [sessionGroups, selectedId]);
+
   return {
     sessionGroups,
     isLoading,
@@ -274,5 +300,7 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
     loadMore,
     selectedId,
     selectSession,
+    navigateNext,
+    navigatePrev,
   };
 }

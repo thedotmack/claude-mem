@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useImperativeHandle, forwardRef } from 'react';
 import { SessionList } from './SessionList';
 import { SessionDetail } from './SessionDetail';
 import { ActivityBar } from './ActivityBar';
@@ -41,7 +41,12 @@ interface TwoPanelProps {
   onDateRangeSelect: (start: string, end: string) => void;
 }
 
-export function TwoPanel({
+export interface TwoPanelHandle {
+  navigateNext: () => void;
+  navigatePrev: () => void;
+}
+
+export const TwoPanel = forwardRef<TwoPanelHandle, TwoPanelProps>(function TwoPanel({
   project,
   newSummary,
   activityDays,
@@ -49,7 +54,7 @@ export function TwoPanel({
   dateStart,
   dateEnd,
   onDateRangeSelect,
-}: TwoPanelProps) {
+}, ref) {
   const sessionList = useSessionList({ project, newSummary });
 
   const selectedSession = useMemo(
@@ -61,6 +66,11 @@ export function TwoPanel({
     selectedSession?.session_id ?? null,
     project,
   );
+
+  useImperativeHandle(ref, () => ({
+    navigateNext: sessionList.navigateNext,
+    navigatePrev: sessionList.navigatePrev,
+  }), [sessionList.navigateNext, sessionList.navigatePrev]);
 
   return (
     <div className="two-panel" data-testid="two-panel">
@@ -91,4 +101,4 @@ export function TwoPanel({
       </main>
     </div>
   );
-}
+});

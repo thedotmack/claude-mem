@@ -118,6 +118,38 @@ describe('Header renders filter toggle button', () => {
     const src = readHeader();
     expect(src).toMatch(/filter-toggle-btn/);
   });
+
+  it('calls onFilterToggle prop when clicked', () => {
+    const src = readHeader();
+    expect(src).toMatch(/onFilterToggle/);
+  });
+
+  it('does NOT manage filterBarOpen state internally', () => {
+    const src = readHeader();
+    expect(src).not.toMatch(/filterBarOpen/);
+  });
+});
+
+describe('Header does NOT render FilterBar', () => {
+  it('does not import FilterBar', () => {
+    const src = readHeader();
+    expect(src).not.toMatch(/import.*FilterBar/);
+  });
+
+  it('does not render <FilterBar', () => {
+    const src = readHeader();
+    expect(src).not.toMatch(/<FilterBar/);
+  });
+
+  it('does not accept filter-related props (filters, onToggleObsType, etc)', () => {
+    const src = readHeader();
+    // These props were passed through Header to FilterBar - now removed
+    expect(src).not.toMatch(/onToggleObsType\s*[,:]/);
+    expect(src).not.toMatch(/onToggleConcept\s*[,:]/);
+    expect(src).not.toMatch(/onToggleItemKind\s*[,:]/);
+    expect(src).not.toMatch(/onDateRangeChange\s*[,:]/);
+    expect(src).not.toMatch(/onClearAllFilters\s*[,:]/);
+  });
 });
 
 describe('Header renders logo', () => {

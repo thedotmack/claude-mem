@@ -1,4 +1,4 @@
-import React, { useRef, useCallback, useEffect } from 'react';
+import React, { useRef, useCallback } from 'react';
 
 interface SearchBarProps {
   query: string;
@@ -20,20 +20,6 @@ export function SearchBar({ query, onQueryChange, isSearching, resultCount }: Se
       handleClear();
     }
   }, [handleClear]);
-
-  // Global "/" shortcut to focus search
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        const el = e.target as HTMLElement;
-        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable) return;
-        e.preventDefault();
-        inputRef.current?.focus();
-      }
-    };
-    document.addEventListener('keydown', handler);
-    return () => { document.removeEventListener('keydown', handler); };
-  }, []);
 
   return (
     <div className="search-bar">
