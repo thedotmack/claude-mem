@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { authenticatedFetch } from '../constants/api';
 
 // Log levels and components matching the logger.ts definitions
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
@@ -133,7 +134,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     setIsLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/logs');
+      const response = await authenticatedFetch('/api/logs');
       if (!response.ok) {
         throw new Error(`Failed to fetch logs: ${response.statusText}`);
       }
@@ -158,7 +159,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     setIsLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/logs/clear', { method: 'POST' });
+      const response = await authenticatedFetch('/api/logs/clear', { method: 'POST' });
       if (!response.ok) {
         throw new Error(`Failed to clear logs: ${response.statusText}`);
       }

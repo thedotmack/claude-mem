@@ -11,6 +11,7 @@ import { ensureWorkerRunning, getWorkerPort, fetchWithTimeout } from '../../shar
 import { logger } from '../../utils/logger.js';
 import { extractLastMessage } from '../../shared/transcript-parser.js';
 import { HOOK_EXIT_CODES, HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
+import { ensureAuthToken } from '../../shared/AuthTokenManager.js';
 
 const SUMMARIZE_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.DEFAULT);
 
@@ -45,11 +46,15 @@ export const summarizeHandler: EventHandler = {
     });
 
     // Send to worker - worker handles privacy check and database operations
+    const authToken = ensureAuthToken();
     const response = await fetchWithTimeout(
       `http://127.0.0.1:${port}/api/sessions/summarize`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + authToken,
+        },
         body: JSON.stringify({
           contentSessionId: sessionId,
           last_assistant_message: lastAssistantMessage

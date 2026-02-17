@@ -4,6 +4,7 @@ import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT } from "./paths.js";
+import { ensureAuthToken } from "./AuthTokenManager.js";
 
 // Named constants for health checks
 // Allow env var override for users on slow systems (e.g., CLAUDE_MEM_HEALTH_TIMEOUT_MS=10000)
@@ -126,8 +127,11 @@ function getPluginVersion(): string {
  */
 async function getWorkerVersion(): Promise<string> {
   const port = getWorkerPort();
+  const authToken = ensureAuthToken();
   const response = await fetchWithTimeout(
-    `http://127.0.0.1:${port}/api/version`, {}, HEALTH_CHECK_TIMEOUT_MS
+    `http://127.0.0.1:${port}/api/version`, {
+      headers: { 'Authorization': 'Bearer ' + authToken },
+    }, HEALTH_CHECK_TIMEOUT_MS
   );
   if (!response.ok) {
     throw new Error(`Failed to get worker version: ${response.status}`);

@@ -28,6 +28,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { ensureAuthToken } from '../shared/AuthTokenManager.js';
 
 /**
  * Worker HTTP API configuration
@@ -54,6 +55,7 @@ async function callWorkerAPI(
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint, params });
 
   try {
+    const authToken = ensureAuthToken();
     const searchParams = new URLSearchParams();
 
     // Convert params to query string
@@ -64,7 +66,9 @@ async function callWorkerAPI(
     }
 
     const url = `${WORKER_BASE_URL}${endpoint}?${searchParams}`;
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      headers: { 'Authorization': 'Bearer ' + authToken }
+    });
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -99,11 +103,13 @@ async function callWorkerAPIPost(
   logger.debug('HTTP', 'Worker API request (POST)', undefined, { endpoint });
 
   try {
+    const authToken = ensureAuthToken();
     const url = `${WORKER_BASE_URL}${endpoint}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + authToken
       },
       body: JSON.stringify(body)
     });

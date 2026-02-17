@@ -13,6 +13,7 @@ import path from 'path';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
+import { ensureAuthToken } from '../../shared/AuthTokenManager.js';
 
 /**
  * Check if a port is in use by querying the health endpoint
@@ -73,10 +74,12 @@ export async function waitForPortFree(port: number, timeoutMs: number = 10000): 
  * @returns true if shutdown request was acknowledged, false otherwise
  */
 export async function httpShutdown(port: number): Promise<boolean> {
+  const authToken = ensureAuthToken();
   try {
     // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
     const response = await fetch(`http://127.0.0.1:${port}/api/admin/shutdown`, {
-      method: 'POST'
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + authToken }
     });
     if (!response.ok) {
       logger.warn('SYSTEM', 'Shutdown request returned error', { port, status: response.status });
@@ -110,8 +113,11 @@ export function getInstalledPluginVersion(): string {
  * This is the "actual" version currently running
  */
 export async function getRunningWorkerVersion(port: number): Promise<string | null> {
+  const authToken = ensureAuthToken();
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/version`);
+    const response = await fetch(`http://127.0.0.1:${port}/api/version`, {
+      headers: { 'Authorization': 'Bearer ' + authToken }
+    });
     if (!response.ok) return null;
     const data = await response.json() as { version: string };
     return data.version;

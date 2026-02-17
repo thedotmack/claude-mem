@@ -3,6 +3,7 @@ import * as path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
 import * as os from "os";
+import { ensureAuthToken } from "../../src/shared/AuthTokenManager.js";
 
 const execAsync = promisify(exec);
 
@@ -119,8 +120,10 @@ async function checkWorkerHealth(port: number): Promise<any> {
 
 async function getWorkerStats(port: number): Promise<any> {
   try {
+    const authToken = ensureAuthToken();
     const response = await fetch(`http://127.0.0.1:${port}/api/stats`, {
       signal: AbortSignal.timeout(2000),
+      headers: { 'Authorization': 'Bearer ' + authToken },
     });
     return await response.json();
   } catch (error) {

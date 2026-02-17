@@ -11,6 +11,7 @@
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureAuthToken } from '../../shared/AuthTokenManager.js';
 import { logger } from '../../utils/logger.js';
 
 export const sessionCompleteHandler: EventHandler = {
@@ -35,11 +36,12 @@ export const sessionCompleteHandler: EventHandler = {
       contentSessionId: sessionId
     });
 
+    const authToken = ensureAuthToken();
     try {
       // Call the session complete endpoint by contentSessionId
       const response = await fetch(`http://127.0.0.1:${port}/api/sessions/complete`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
         body: JSON.stringify({
           contentSessionId: sessionId
         })

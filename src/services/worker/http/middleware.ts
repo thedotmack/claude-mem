@@ -105,6 +105,34 @@ export function requireLocalhost(req: Request, res: Response, next: NextFunction
 }
 
 /**
+ * Bearer token authentication middleware factory.
+ * Validates Authorization header on every request except health/readiness endpoints.
+ *
+ * @param expectedToken - The hex token that clients must present
+ * @returns Express middleware that returns 401 on mismatch
+ */
+export function requireBearerToken(expectedToken: string): RequestHandler {
+  const AUTH_EXEMPT_PATHS = ['/health', '/api/health', '/api/readiness'];
+
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (AUTH_EXEMPT_PATHS.includes(req.path)) {
+      return next();
+    }
+
+    // Accept token via Authorization header or query parameter (for SSE/EventSource)
+    const headerToken = req.headers.authorization === 'Bearer ' + expectedToken;
+    const queryToken = req.query.token === expectedToken;
+
+    if (!headerToken && !queryToken) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    next();
+  };
+}
+
+/**
  * Summarize request body for logging
  * Used to avoid logging sensitive data or large payloads
  */

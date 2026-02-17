@@ -17,6 +17,7 @@ import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { getAuthMethodDescription } from '../shared/EnvManager.js';
+import { ensureAuthToken } from '../shared/AuthTokenManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaServerManager } from './sync/ChromaServerManager.js';
 
@@ -106,6 +107,7 @@ import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 
 // HTTP route handlers
+import { requireBearerToken } from './worker/http/middleware.js';
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
@@ -284,6 +286,10 @@ export class WorkerService {
    */
   private registerRoutes(): void {
     // IMPORTANT: Middleware must be registered BEFORE routes (Express processes in order)
+
+    // Bearer token authentication — protects all routes except health/readiness
+    const authToken = ensureAuthToken();
+    this.server.app.use(requireBearerToken(authToken));
 
     // Early handler for /api/context/inject — fail open if not yet initialized
     this.server.app.get('/api/context/inject', async (req, res, next) => {

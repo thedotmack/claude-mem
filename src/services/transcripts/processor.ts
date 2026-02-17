@@ -3,6 +3,7 @@ import { observationHandler } from '../../cli/handlers/observation.js';
 import { fileEditHandler } from '../../cli/handlers/file-edit.js';
 import { sessionCompleteHandler } from '../../cli/handlers/session-complete.js';
 import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureAuthToken } from '../../shared/AuthTokenManager.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext, getProjectName } from '../../utils/project-name.js';
 import { writeAgentsMd } from '../../utils/agents-md-utils.js';
@@ -320,10 +321,11 @@ export class TranscriptEventProcessor {
     const port = getWorkerPort();
     const lastAssistantMessage = session.lastAssistantMessage ?? '';
 
+    const authToken = ensureAuthToken();
     try {
       await fetch(`http://127.0.0.1:${port}/api/sessions/summarize`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
         body: JSON.stringify({
           contentSessionId: session.sessionId,
           last_assistant_message: lastAssistantMessage
@@ -350,9 +352,11 @@ export class TranscriptEventProcessor {
     const projectsParam = context.allProjects.join(',');
     const port = getWorkerPort();
 
+    const contextAuthToken = ensureAuthToken();
     try {
       const response = await fetch(
-        `http://127.0.0.1:${port}/api/context/inject?projects=${encodeURIComponent(projectsParam)}`
+        `http://127.0.0.1:${port}/api/context/inject?projects=${encodeURIComponent(projectsParam)}`,
+        { headers: { 'Authorization': 'Bearer ' + contextAuthToken } }
       );
       if (!response.ok) return;
 

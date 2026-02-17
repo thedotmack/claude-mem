@@ -7,6 +7,7 @@
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureAuthToken } from '../../shared/AuthTokenManager.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
@@ -36,12 +37,14 @@ export const contextHandler: EventHandler = {
 
     // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
     // Worker service has its own timeouts, so client-side timeout is redundant
+    const authToken = ensureAuthToken();
+    const authHeaders = { 'Authorization': 'Bearer ' + authToken };
     try {
       // Fetch both markdown (for Claude context) and colored (for user display) truly in parallel
       const colorUrl = `${url}&colors=true`;
       const [response, colorResponse] = await Promise.all([
-        fetch(url),
-        fetch(colorUrl).catch(() => null)
+        fetch(url, { headers: authHeaders }),
+        fetch(colorUrl, { headers: authHeaders }).catch(() => null)
       ]);
 
       if (!response.ok) {

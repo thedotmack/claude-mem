@@ -6,6 +6,7 @@
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureAuthToken } from '../../shared/AuthTokenManager.js';
 import { getProjectName } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
@@ -38,12 +39,14 @@ export const sessionInitHandler: EventHandler = {
     const project = getProjectName(cwd);
     const port = getWorkerPort();
 
+    const authToken = ensureAuthToken();
+
     logger.debug('HOOK', 'session-init: Calling /api/sessions/init', { contentSessionId: sessionId, project });
 
     // Initialize session via HTTP - handles DB operations and privacy checks
     const initResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
       body: JSON.stringify({
         contentSessionId: sessionId,
         project,
@@ -92,7 +95,7 @@ export const sessionInitHandler: EventHandler = {
       // Initialize SDK agent session via HTTP (starts the agent!)
       const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
         body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber })
         // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
       });

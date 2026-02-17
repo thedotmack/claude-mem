@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { Settings } from '../types';
+import { authenticatedFetch } from '../constants/api';
 
 interface UseContextPreviewResult {
   preview: string;
@@ -22,7 +23,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
   useEffect(() => {
     async function fetchProjects() {
       try {
-        const response = await fetch('/api/projects');
+        const response = await authenticatedFetch('/api/projects');
         const data = await response.json();
         if (data.projects && data.projects.length > 0) {
           setProjects(data.projects);
@@ -48,7 +49,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
       project: selectedProject
     });
 
-    const response = await fetch(`/api/context/preview?${params}`);
+    const response = await authenticatedFetch(`/api/context/preview?${params}`);
     const text = await response.text();
 
     if (response.ok) {

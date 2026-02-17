@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Settings } from '../types';
 import { DEFAULT_SETTINGS } from '../constants/settings';
-import { API_ENDPOINTS } from '../constants/api';
+import { API_ENDPOINTS, authenticatedFetch } from '../constants/api';
 import { TIMING } from '../constants/timing';
 
 export function useSettings() {
@@ -11,7 +11,7 @@ export function useSettings() {
 
   useEffect(() => {
     // Load initial settings
-    fetch(API_ENDPOINTS.SETTINGS)
+    authenticatedFetch(API_ENDPOINTS.SETTINGS)
       .then(res => res.json())
       .then(data => {
         setSettings({
@@ -61,7 +61,7 @@ export function useSettings() {
     setIsSaving(true);
     setSaveStatus('Saving...');
 
-    const response = await fetch(API_ENDPOINTS.SETTINGS, {
+    const response = await authenticatedFetch(API_ENDPOINTS.SETTINGS, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newSettings)

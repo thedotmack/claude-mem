@@ -16,6 +16,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureAuthToken } from '../../shared/AuthTokenManager.js';
 import { DATA_DIR, MARKETPLACE_ROOT, CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import {
   readCursorRegistry as readCursorRegistryFromFile,
@@ -101,10 +102,12 @@ export async function updateCursorContextForProject(projectName: string, port: n
 
   if (!entry) return; // Project doesn't have Cursor hooks installed
 
+  const authToken = ensureAuthToken();
   try {
     // Fetch fresh context from worker
     const response = await fetch(
-      `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
+      `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`,
+      { headers: { 'Authorization': 'Bearer ' + authToken } }
     );
 
     if (!response.ok) return;
@@ -404,13 +407,15 @@ async function setupProjectContext(targetDir: string, workspaceRoot: string): Pr
 
   console.log(`  Generating initial context...`);
 
+  const authToken = ensureAuthToken();
   try {
     // Check if worker is running
     const healthResponse = await fetch(`http://127.0.0.1:${port}/api/readiness`);
     if (healthResponse.ok) {
       // Fetch context
       const contextResponse = await fetch(
-        `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
+        `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`,
+        { headers: { 'Authorization': 'Bearer ' + authToken } }
       );
       if (contextResponse.ok) {
         const context = await contextResponse.text();

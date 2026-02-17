@@ -10,5 +10,6 @@
 export {
   createMiddleware,
   requireLocalhost,
+  requireBearerToken,
   summarizeRequestBody
 } from '../worker/http/middleware.js';

@@ -21,7 +21,12 @@ export function useSSE() {
         eventSourceRef.current.close();
       }
 
-      const eventSource = new EventSource(API_ENDPOINTS.STREAM);
+      // EventSource does not support custom headers, so pass token as query parameter
+      const token = (window as any).__CLAUDE_MEM_TOKEN || '';
+      const streamUrl = token
+        ? `${API_ENDPOINTS.STREAM}?token=${encodeURIComponent(token)}`
+        : API_ENDPOINTS.STREAM;
+      const eventSource = new EventSource(streamUrl);
       eventSourceRef.current = eventSource;
 
       eventSource.onopen = () => {

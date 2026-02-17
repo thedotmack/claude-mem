@@ -10,6 +10,7 @@ import path from 'path';
 import { readFileSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
 import { getPackageRoot } from '../../../../shared/paths.js';
+import { ensureAuthToken } from '../../../../shared/AuthTokenManager.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SessionManager } from '../../SessionManager.js';
@@ -59,7 +60,13 @@ export class ViewerRoutes extends BaseRouteHandler {
       throw new Error('Viewer UI not found at any expected location');
     }
 
-    const html = readFileSync(viewerPath, 'utf-8');
+    let html = readFileSync(viewerPath, 'utf-8');
+
+    // Inject auth token so the viewer's JavaScript can authenticate API calls
+    const authToken = ensureAuthToken();
+    const tokenScript = `<script>window.__CLAUDE_MEM_TOKEN='${authToken}';</script>`;
+    html = html.replace('</head>', tokenScript + '</head>');
+
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   });
