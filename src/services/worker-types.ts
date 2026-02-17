@@ -39,6 +39,9 @@ export interface ActiveSession {
   // CLAIM-CONFIRM FIX: Track IDs of messages currently being processed
   // These IDs will be confirmed (deleted) after successful storage
   processingMessageIds: number[];
+  // Provenance tracking: source tool and input summary for the current observation batch
+  currentSourceTool?: string;
+  currentSourceInputSummary?: string;
 }
 
 export interface PendingMessage {

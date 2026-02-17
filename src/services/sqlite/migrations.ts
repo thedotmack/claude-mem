@@ -500,6 +500,27 @@ export const migration007: Migration = {
 
 
 /**
+ * Migration 008 - Add provenance tracking columns to observations
+ * Tracks which tool produced each observation and a summary of its input
+ */
+export const migration008: Migration = {
+  version: 8,
+  up: (db: Database) => {
+    db.run(`ALTER TABLE observations ADD COLUMN source_tool TEXT`);
+    db.run(`ALTER TABLE observations ADD COLUMN source_input_summary TEXT`);
+
+    console.log('✅ Added provenance tracking columns to observations table');
+  },
+
+  down: (_db: Database) => {
+    // Note: SQLite doesn't support DROP COLUMN in all versions
+    // In production, would need to recreate tables without these columns
+    console.log('⚠️  Warning: SQLite ALTER TABLE DROP COLUMN not fully supported');
+    console.log('⚠️  To rollback, manually recreate the observations table');
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
@@ -509,5 +530,6 @@ export const migrations: Migration[] = [
   migration004,
   migration005,
   migration006,
-  migration007
+  migration007,
+  migration008
 ];

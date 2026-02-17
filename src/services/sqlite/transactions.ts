@@ -67,8 +67,9 @@ export function storeObservationsAndMarkComplete(
     const obsStmt = db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, source_tool, source_input_summary,
+       created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const observation of observations) {
@@ -85,6 +86,8 @@ export function storeObservationsAndMarkComplete(
         JSON.stringify(observation.files_modified),
         promptNumber || null,
         discoveryTokens,
+        observation.source_tool || null,
+        observation.source_input_summary || null,
         timestampIso,
         timestampEpoch
       );
@@ -178,8 +181,9 @@ export function storeObservations(
     const obsStmt = db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, source_tool, source_input_summary,
+       created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const observation of observations) {
@@ -196,6 +200,8 @@ export function storeObservations(
         JSON.stringify(observation.files_modified),
         promptNumber || null,
         discoveryTokens,
+        observation.source_tool || null,
+        observation.source_input_summary || null,
         timestampIso,
         timestampEpoch
       );

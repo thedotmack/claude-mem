@@ -50,7 +50,9 @@ export class MemoryRoutes extends BaseRouteHandler {
       narrative: text,
       concepts: [] as string[],
       files_read: [] as string[],
-      files_modified: [] as string[]
+      files_modified: [] as string[],
+      source_tool: 'manual_save' as string,
+      source_input_summary: text.substring(0, 200) as string
     };
 
     // 3. Store to SQLite

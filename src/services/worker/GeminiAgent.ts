@@ -207,6 +207,13 @@ export class GeminiAgent {
             session.lastPromptNumber = message.prompt_number;
           }
 
+          // Track provenance for this observation batch (consumed by ResponseProcessor)
+          session.currentSourceTool = message.tool_name;
+          const toolInputStr = typeof message.tool_input === 'string'
+            ? message.tool_input
+            : JSON.stringify(message.tool_input);
+          session.currentSourceInputSummary = toolInputStr.substring(0, 200);
+
           // CRITICAL: Check memorySessionId BEFORE making expensive LLM call
           // This prevents wasting tokens when we won't be able to store the result anyway
           if (!session.memorySessionId) {

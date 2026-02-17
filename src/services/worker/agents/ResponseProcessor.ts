@@ -65,6 +65,18 @@ export async function processAgentResponse(
   const observations = parseObservations(text, session.contentSessionId);
   const summary = parseSummary(text, session.sessionDbId);
 
+  // Merge provenance metadata from session into parsed observations
+  // The parser extracts from AI XML and ignores queue metadata, so we merge here
+  if (session.currentSourceTool) {
+    for (const obs of observations) {
+      obs.source_tool = session.currentSourceTool;
+      obs.source_input_summary = session.currentSourceInputSummary;
+    }
+  }
+  // Clear provenance after merging (one-shot per observation batch)
+  session.currentSourceTool = undefined;
+  session.currentSourceInputSummary = undefined;
+
   // Convert nullable fields to empty strings for storeSummary (if summary exists)
   const summaryForStore = normalizeSummaryForStorage(summary);
 

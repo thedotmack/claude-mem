@@ -383,6 +383,13 @@ export class SDKAgent {
           session.lastPromptNumber = message.prompt_number;
         }
 
+        // Track provenance for this observation batch (consumed by ResponseProcessor)
+        session.currentSourceTool = message.tool_name;
+        const toolInputStr = typeof message.tool_input === 'string'
+          ? message.tool_input
+          : JSON.stringify(message.tool_input);
+        session.currentSourceInputSummary = toolInputStr.substring(0, 200);
+
         const obsPrompt = buildObservationPrompt({
           id: 0, // Not used in prompt
           tool_name: message.tool_name!,

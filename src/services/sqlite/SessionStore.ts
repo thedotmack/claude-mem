@@ -1458,6 +1458,8 @@ export class SessionStore {
       concepts: string[];
       files_read: string[];
       files_modified: string[];
+      source_tool?: string;
+      source_input_summary?: string;
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
@@ -1470,8 +1472,9 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, source_tool, source_input_summary,
+       created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1487,6 +1490,8 @@ export class SessionStore {
       JSON.stringify(observation.files_modified),
       promptNumber || null,
       discoveryTokens,
+      observation.source_tool || null,
+      observation.source_input_summary || null,
       timestampIso,
       timestampEpoch
     );
@@ -1576,6 +1581,8 @@ export class SessionStore {
       concepts: string[];
       files_read: string[];
       files_modified: string[];
+      source_tool?: string;
+      source_input_summary?: string;
     }>,
     summary: {
       request: string;
@@ -1601,8 +1608,9 @@ export class SessionStore {
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-         files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         files_read, files_modified, prompt_number, discovery_tokens, source_tool, source_input_summary,
+         created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
@@ -1619,6 +1627,8 @@ export class SessionStore {
           JSON.stringify(observation.files_modified),
           promptNumber || null,
           discoveryTokens,
+          observation.source_tool || null,
+          observation.source_input_summary || null,
           timestampIso,
           timestampEpoch
         );
@@ -1694,6 +1704,8 @@ export class SessionStore {
       concepts: string[];
       files_read: string[];
       files_modified: string[];
+      source_tool?: string;
+      source_input_summary?: string;
     }>,
     summary: {
       request: string;
@@ -1721,8 +1733,9 @@ export class SessionStore {
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-         files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         files_read, files_modified, prompt_number, discovery_tokens, source_tool, source_input_summary,
+         created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
@@ -1739,6 +1752,8 @@ export class SessionStore {
           JSON.stringify(observation.files_modified),
           promptNumber || null,
           discoveryTokens,
+          observation.source_tool || null,
+          observation.source_input_summary || null,
           timestampIso,
           timestampEpoch
         );

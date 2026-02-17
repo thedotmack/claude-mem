@@ -16,6 +16,8 @@ export interface ObservationInput {
   concepts: string[];
   files_read: string[];
   files_modified: string[];
+  source_tool?: string;
+  source_input_summary?: string;
 }
 
 /**
