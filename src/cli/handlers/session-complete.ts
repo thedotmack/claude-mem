@@ -30,6 +30,11 @@ export const sessionCompleteHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
+    if (input.isSubagent) {
+      logger.debug('HOOK', `Subagent session ${sessionId} - skipping session-complete`);
+      return { continue: true, suppressOutput: true };
+    }
+
     logger.info('HOOK', '→ session-complete: Removing session from active map', {
       workerPort: port,
       contentSessionId: sessionId

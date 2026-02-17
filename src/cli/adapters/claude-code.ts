@@ -8,6 +8,7 @@ export const claudeCodeAdapter: PlatformAdapter = {
     return {
       sessionId: r.session_id,
       cwd: r.cwd ?? process.cwd(),
+      isSubagent: r.hook_event_name === 'SubagentStop',
       prompt: r.prompt,
       toolName: r.tool_name,
       toolInput: r.tool_input,
