@@ -80,7 +80,7 @@ export function getRecentSessionsWithStatus(
 }
 
 /**
- * Get full session summary by ID (includes request_summary and learned_summary)
+ * Get full session summary by ID
  */
 export function getSessionSummaryById(
   db: Database,
@@ -93,11 +93,9 @@ export function getSessionSummaryById(
       content_session_id,
       project,
       user_prompt,
-      request_summary,
-      learned_summary,
       status,
-      created_at,
-      created_at_epoch
+      started_at,
+      started_at_epoch
     FROM sdk_sessions
     WHERE id = ?
     LIMIT 1

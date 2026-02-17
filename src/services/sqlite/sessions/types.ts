@@ -51,9 +51,7 @@ export interface SessionSummaryDetail {
   content_session_id: string;
   project: string;
   user_prompt: string;
-  request_summary: string | null;
-  learned_summary: string | null;
   status: string;
-  created_at: string;
-  created_at_epoch: number;
+  started_at: string;
+  started_at_epoch: number;
 }

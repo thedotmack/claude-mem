@@ -2094,7 +2094,7 @@ export class SessionStore {
   }
 
   /**
-   * Get full session summary by ID (includes request_summary and learned_summary)
+   * Get full session summary by ID
    */
   getSessionSummaryById(id: number): {
     id: number;
@@ -2102,11 +2102,9 @@ export class SessionStore {
     content_session_id: string;
     project: string;
     user_prompt: string;
-    request_summary: string | null;
-    learned_summary: string | null;
     status: string;
-    created_at: string;
-    created_at_epoch: number;
+    started_at: string;
+    started_at_epoch: number;
   } | null {
     const stmt = this.db.prepare(`
       SELECT
@@ -2115,11 +2113,9 @@ export class SessionStore {
         content_session_id,
         project,
         user_prompt,
-        request_summary,
-        learned_summary,
         status,
-        created_at,
-        created_at_epoch
+        started_at,
+        started_at_epoch
       FROM sdk_sessions
       WHERE id = ?
       LIMIT 1

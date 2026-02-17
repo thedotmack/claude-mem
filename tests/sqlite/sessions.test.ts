@@ -13,6 +13,7 @@ import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
 import {
   createSDKSession,
   getSessionById,
+  getSessionSummaryById,
   updateMemorySessionId,
 } from '../../src/services/sqlite/Sessions.js';
 import type { Database } from 'bun:sqlite';
@@ -81,6 +82,28 @@ describe('Sessions Module', () => {
       const session = getSessionById(db, 99999);
 
       expect(session).toBeNull();
+    });
+  });
+
+  describe('getSessionSummaryById', () => {
+    it('should retrieve session summary with all expected fields', () => {
+      const sessionId = createSDKSession(db, 'content-summary-1', 'test-project', 'test prompt');
+
+      const summary = getSessionSummaryById(db, sessionId);
+
+      expect(summary).not.toBeNull();
+      expect(summary?.id).toBe(sessionId);
+      expect(summary?.project).toBe('test-project');
+      expect(summary?.user_prompt).toBe('test prompt');
+      expect(summary).toHaveProperty('status');
+      expect(summary).toHaveProperty('started_at');
+      expect(summary).toHaveProperty('started_at_epoch');
+    });
+
+    it('should return null for non-existent session', () => {
+      const summary = getSessionSummaryById(db, 99999);
+
+      expect(summary).toBeNull();
     });
   });
 
