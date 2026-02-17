@@ -32,6 +32,7 @@ interface HeaderProps {
   isFilterMode: boolean;
   activityDays: ActivityDay[];
   activityLoading: boolean;
+  version?: string;
 }
 
 export function Header({
@@ -59,6 +60,7 @@ export function Header({
   isFilterMode: _isFilterMode,
   activityDays,
   activityLoading,
+  version,
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
   const [filterBarOpen, setFilterBarOpen] = useState(false);
@@ -80,6 +82,7 @@ export function Header({
             )}
           </div>
           <span className="logo-text">magic-claude-mem</span>
+          {version && <span className="version-badge">v{version}</span>}
         </h1>
         <div className="status">
           <SearchBar

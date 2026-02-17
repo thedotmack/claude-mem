@@ -1,6 +1,6 @@
 {
   "name": "magic-claude-mem",
-  "version": "9.2.11",
+  "version": "9.2.12",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",

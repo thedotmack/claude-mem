@@ -33,7 +33,7 @@ export function App() {
 
   const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
-  const { stats: _stats, refreshStats: _refreshStats } = useStats();
+  const { stats, refreshStats: _refreshStats } = useStats();
   const { preference, resolvedTheme: _resolvedTheme, setThemePreference } = useTheme();
   const [paginationResetKey, setPaginationResetKey] = useState(0);
   const pagination = usePagination(filters.project, paginationResetKey);
@@ -160,6 +160,7 @@ export function App() {
         isFilterMode={isFilterMode}
         activityDays={activityDensity.days}
         activityLoading={activityDensity.isLoading}
+        version={stats.worker?.version}
       />
 
       <SearchResultsBadge
