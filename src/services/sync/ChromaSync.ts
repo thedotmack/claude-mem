@@ -868,6 +868,36 @@ export class ChromaSync {
   }
 
   /**
+   * Backfill all projects that have observations in SQLite but may be missing from Chroma.
+   * Creates a temporary ChromaSync per project, runs ensureBackfilled(), then releases.
+   * Designed to be called fire-and-forget on worker startup.
+   */
+  static async backfillAllProjects(): Promise<void> {
+    const db = new SessionStore();
+    try {
+      const projects = db.db.prepare(
+        'SELECT DISTINCT project FROM observations WHERE project IS NOT NULL AND project != ?'
+      ).all('') as { project: string }[];
+
+      logger.info('CHROMA_SYNC', `Backfill check for ${projects.length} projects`);
+
+      for (const { project } of projects) {
+        const sync = new ChromaSync(project);
+        try {
+          await sync.ensureBackfilled();
+        } catch (error) {
+          logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, {}, error as Error);
+          // Continue to next project — don't let one failure stop others
+        } finally {
+          await sync.close();
+        }
+      }
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
    * Close the Chroma client connection
    * Server lifecycle is managed by ChromaServerManager, not here
    */
