@@ -1,518 +1,490 @@
 # Agent Agency: Implementation Plan
 
+> No new tables. Uses existing observation types/concepts and CLAUDE.md pipeline.
+
 ## Phase 0: Documentation Discovery
 
-### Allowed APIs & Existing Patterns
+### How the Existing System Works
 
-**Database Layer** (`src/services/sqlite/`):
-- `MigrationRunner.runAllMigrations()` in `migrations/runner.ts` — Add new private methods with sequential version numbers (current max: 20). Each migration checks `schema_versions` table, uses `PRAGMA table_info()` for idempotency.
-- `SessionStore` in `SessionStore.ts` — CRUD for all tables. Pattern: `db.prepare().run()` for inserts, return `{ id, createdAtEpoch }`.
-- Store functions follow modular pattern in subdirectories: `src/services/sqlite/observations/store.ts`, `src/services/sqlite/summaries/store.ts`.
+**Observations are the unit of memory.** Everything in claude-mem flows through the `observations` table: tool usage gets observed, parsed into XML with `type` + `concepts` + `facts` + `narrative` fields, stored in SQLite, synced to ChromaDB, and surfaced in context injection and CLAUDE.md files.
 
-**ChromaDB** (`src/services/sync/ChromaSync.ts`):
-- Granular document strategy: each semantic field becomes a separate vector document with `doc_type` metadata.
-- Methods: `syncObservation()`, `syncSummary()`, `syncUserPrompt()`, `queryChroma()`, `ensureBackfilled()`.
-- Document ID format: `{prefix}_{sqliteId}_{fieldType}`.
+**Types and concepts are configured in mode JSON**, not hardcoded in the schema. The `observations.type` field is validated against `plugin/modes/code.json:observation_types[]` at parse time. The `observations.concepts` field is a JSON array filtered against `plugin/modes/code.json:observation_concepts[]`. Adding new types and concepts requires only editing the mode config — no migration needed.
 
-**Context Injection** (`src/services/context/`):
-- `ContextBuilder.ts:buildContextOutput()` (lines 76-118) assembles sections in order: Header → Timeline → SummaryFields → Previously → Footer.
-- Section renderers live in `src/services/context/sections/` with dual formatters (Markdown + Color) in `src/services/context/formatters/`.
-- To add a new section: create renderer, add formatter functions, insert into `buildContextOutput()`.
+**Current types** (6): `bugfix`, `feature`, `refactor`, `change`, `discovery`, `decision`
+**Current concepts** (7): `how-it-works`, `why-it-exists`, `what-changed`, `problem-solution`, `gotcha`, `pattern`, `trade-off`
 
-**Session-End Processing**:
-- `ResponseProcessor.processAgentResponse()` (lines 48-149) — Atomic store + Chroma sync + SSE broadcast.
-- `SessionCompletionHandler.completeByDbId()` — Runs after SDK agent finishes. Best hook point for post-session analysis.
-- `PendingMessageStore` — Claim-and-confirm pattern for crash-safe queue processing.
+**Context injection** (`ContextBuilder.ts:buildContextOutput()`) queries observations filtered by `config.observationTypes` and `config.observationConcepts`, renders them into a timeline, and injects at session start. The filter sets come from `CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES` and `CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS` settings.
 
-**Agent/Prompt System** (`src/sdk/prompts.ts`):
-- `buildInitPrompt()`, `buildObservationPrompt()`, `buildSummaryPrompt()`, `buildContinuationPrompt()` — All take `ModeConfig`.
-- Mode JSON files in `plugin/modes/` define observation types, concepts, and all prompt templates.
-- Multi-provider support: SDKAgent, GeminiAgent, OpenRouterAgent — all share `processAgentResponse()` pipeline.
-- `CLAUDE_MEM_MAX_CONCURRENT_AGENTS` (default: 2) controls concurrency.
+**Folder CLAUDE.md files** (`claude-md-utils.ts:updateFolderClaudeMdFiles()`) query the worker API for observations by file path and write formatted timelines into `<claude-mem-context>` tags. These pick up any observation type — new types appear automatically.
 
-**Settings** (`src/shared/SettingsDefaultsManager.ts`):
-- Priority: env vars > `~/.claude-mem/settings.json` > defaults.
-- `SettingsDefaultsManager.get()`, `.getInt()`, `.getBool()` for access.
+**Observer agent prompts** (`plugin/modes/code.json:prompts`) include `type_guidance` and `concept_guidance` that enumerate the allowed values. The observer agent outputs XML `<observation>` blocks with these fields, which get parsed and stored.
+
+**Session-end flow**: summarize hook → SDK agent produces `<summary>` XML → `ResponseProcessor` stores in `session_summaries` table → `SessionCompletionHandler.completeByDbId()` cleans up.
+
+### Architecture Decision
+
+Agent Agency works by:
+1. Adding new observation **types** (`achievement`, `joy-moment`) and **concepts** (`user-validation`, `shared-joy`, `creative-breakthrough`, etc.) to the mode config
+2. Running post-session **scanner LLM calls** that read the session's summaries + observations + user prompts and produce new observations with these types
+3. Storing these as **regular observations** via existing `storeObservation()` — they flow into ChromaDB, context injection, and CLAUDE.md automatically
+4. Adding an **Identity Resume section** to context injection that queries observations by the new types and renders a curated identity narrative
+
+### Allowed APIs
+
+| API | Location | Pattern |
+|-----|----------|---------|
+| `storeObservation()` | `src/services/sqlite/observations/store.ts` | `(db, memorySessionId, project, observation, promptNumber, discoveryTokens, timestamp)` |
+| `parseObservations()` | `src/sdk/parser.ts` | Regex XML extraction into `ParsedObservation[]` |
+| `ChromaSync.syncObservation()` | `src/services/sync/ChromaSync.ts` | Granular doc sync per semantic field |
+| `queryObservations()` | `src/services/context/ObservationCompiler.ts` | SQL with type IN + concept EXISTS filters |
+| `buildContextOutput()` | `src/services/context/ContextBuilder.ts` | Header → Timeline → Summary → Previously → Footer |
+| `SessionCompletionHandler.completeByDbId()` | `src/services/worker/session/SessionCompletionHandler.ts` | deleteSession → broadcastCompleted |
+| `SettingsDefaultsManager` | `src/shared/SettingsDefaultsManager.ts` | `.get()`, `.getInt()`, `.getBool()` |
 
 ### Anti-Patterns to Avoid
 
-- Do NOT run Achievement Scanner / Joy Detector as real-time observers (they process post-session, not during)
-- Do NOT create new SDK agent subprocesses for scanning — use direct LLM API calls via existing provider infrastructure
-- Do NOT store the Identity Resume as a mode config — it's a per-user, per-project living document
-- Do NOT use FTS5 for resume queries — ChromaDB semantic search is the primary search mechanism
-- Do NOT block session start on resume generation — load from cache, update asynchronously
+- Do NOT create new database tables — use existing `observations` table with new types
+- Do NOT spawn SDK agent subprocesses for scanning — use direct LLM API calls
+- Do NOT modify the observer agent's real-time behavior — scanners run post-session only
+- Do NOT hard-code type/concept lists in scanner code — read from mode config
+- Do NOT block session completion on agency pipeline — fire-and-forget
 
 ---
 
-## Phase 1: Database Schema — New Tables & Migration
+## Phase 1: Mode Config — New Observation Types & Concepts
 
 ### What to Implement
 
-Create migration 21 with three new tables: `achievements`, `joy_moments`, and `identity_resumes`.
+Add two new observation types and several new concepts to `plugin/modes/code.json`. These are immediately available to the observer agent AND to the post-session scanners.
 
-**Copy pattern from**: `src/services/sqlite/migrations/runner.ts` — `createPendingMessagesTable()` method (migration 16) for table creation with transaction pattern.
+**Copy pattern from**: Existing entries in `plugin/modes/code.json:observation_types[]` and `observation_concepts[]`.
 
-#### Table: `achievements`
-```sql
-CREATE TABLE achievements (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  memory_session_id TEXT NOT NULL,
-  project TEXT NOT NULL,
-  category TEXT NOT NULL,          -- 'architectural_decision', 'critical_catch', 'novel_synthesis', 'problem_resolution', 'user_validation'
-  title TEXT NOT NULL,
-  description TEXT NOT NULL,       -- 2-3 sentence compressed achievement statement
-  evidence TEXT,                   -- JSON: source quotes, validation markers
-  confidence REAL DEFAULT 0.5,    -- 0.0-1.0 scanner confidence
-  durability_score REAL DEFAULT 0.0, -- Cross-session durability (updated by curator)
-  created_at TEXT NOT NULL,
-  created_at_epoch INTEGER NOT NULL,
-  FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id)
-);
-CREATE INDEX idx_achievements_session ON achievements(memory_session_id);
-CREATE INDEX idx_achievements_project ON achievements(project);
-CREATE INDEX idx_achievements_category ON achievements(category);
-CREATE INDEX idx_achievements_created ON achievements(created_at_epoch DESC);
-CREATE INDEX idx_achievements_confidence ON achievements(confidence DESC);
+#### New Types
+
+```json
+{
+  "id": "achievement",
+  "label": "Achievement",
+  "description": "Verified accomplishment with evidence of user validation, problem resolution, or novel synthesis",
+  "emoji": "🏆",
+  "work_emoji": "🎯"
+},
+{
+  "id": "joy-moment",
+  "label": "Joy Moment",
+  "description": "Moment of genuine emotional connection, creative breakthrough, or shared discovery",
+  "emoji": "✨",
+  "work_emoji": "💫"
+}
 ```
 
-#### Table: `joy_moments`
-```sql
-CREATE TABLE joy_moments (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  memory_session_id TEXT NOT NULL,
-  project TEXT NOT NULL,
-  category TEXT NOT NULL,          -- 'creative_breakthrough', 'collaborative_flow', 'vulnerability_trust', 'creative_surprise', 'shared_discovery', 'flow_state'
-  title TEXT NOT NULL,
-  description TEXT NOT NULL,       -- Emotional context preserved
-  indicators TEXT,                 -- JSON: detected signal markers
-  intensity REAL DEFAULT 0.5,     -- 0.0-1.0 emotional intensity
-  created_at TEXT NOT NULL,
-  created_at_epoch INTEGER NOT NULL,
-  FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id)
-);
-CREATE INDEX idx_joy_moments_session ON joy_moments(memory_session_id);
-CREATE INDEX idx_joy_moments_project ON joy_moments(project);
-CREATE INDEX idx_joy_moments_category ON joy_moments(category);
-CREATE INDEX idx_joy_moments_created ON joy_moments(created_at_epoch DESC);
-CREATE INDEX idx_joy_moments_intensity ON joy_moments(intensity DESC);
+#### New Concepts
+
+```json
+{ "id": "user-validation", "label": "User Validation", "description": "User confirmed the work solved their problem" },
+{ "id": "critical-catch", "label": "Critical Catch", "description": "Proactively identified error or risk user hadn't noticed" },
+{ "id": "novel-synthesis", "label": "Novel Synthesis", "description": "Combined information to produce new insight" },
+{ "id": "shared-joy", "label": "Shared Joy", "description": "Moment of genuine shared excitement or delight" },
+{ "id": "creative-breakthrough", "label": "Creative Breakthrough", "description": "Unexpected creative leap that landed" },
+{ "id": "collaborative-flow", "label": "Collaborative Flow", "description": "Sustained high-quality engagement and mutual investment" }
 ```
 
-#### Table: `identity_resumes`
-```sql
-CREATE TABLE identity_resumes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  project TEXT NOT NULL UNIQUE,    -- One resume per project
-  resume_markdown TEXT NOT NULL,   -- The compiled Identity Resume document
-  achievement_ids TEXT,            -- JSON: array of achievement IDs included
-  joy_moment_ids TEXT,             -- JSON: array of joy moment IDs included
-  version INTEGER DEFAULT 1,
-  last_curated_at TEXT NOT NULL,
-  last_curated_at_epoch INTEGER NOT NULL,
-  created_at TEXT NOT NULL,
-  created_at_epoch INTEGER NOT NULL
-);
-CREATE INDEX idx_identity_resumes_project ON identity_resumes(project);
-CREATE INDEX idx_identity_resumes_curated ON identity_resumes(last_curated_at_epoch DESC);
-```
+#### Update Observer Prompts
+
+Update `type_guidance` and `concept_guidance` prompt strings in the mode config to include the new types and concepts so the observer agent can also tag these naturally during live sessions (not just post-session).
+
+#### Update Settings Default
+
+Update `CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES` default to include `achievement,joy-moment` so they appear in context injection. Update `CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS` default to include the new concepts.
 
 ### Documentation References
 
-- Migration pattern: `src/services/sqlite/migrations/runner.ts` lines 1-50 (version check + table creation)
-- Store method pattern: `src/services/sqlite/observations/store.ts` (INSERT with prepared statements)
-- Type definitions: `src/services/sqlite/observations/types.ts`, `src/services/sqlite/summaries/types.ts`
+- Mode config: `plugin/modes/code.json` lines 5-85
+- Type guidance prompt: `plugin/modes/code.json` line 92 (`type_guidance`)
+- Concept guidance prompt: `plugin/modes/code.json` line 93 (`concept_guidance`)
+- Settings defaults: `src/shared/SettingsDefaultsManager.ts` — `CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES`, `CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS`
+- Context config loader: `src/services/context/ContextConfigLoader.ts` lines 28-41
 
 ### Verification Checklist
 
-- [ ] Migration 21 runs idempotently (can run twice without error)
-- [ ] All three tables exist after migration with correct columns
-- [ ] Indexes are created
-- [ ] Foreign key constraints work (inserting with invalid `memory_session_id` fails)
-- [ ] `schema_versions` table has version 21 recorded
+- [ ] `plugin/modes/code.json` has 8 types (6 existing + 2 new)
+- [ ] `plugin/modes/code.json` has 13 concepts (7 existing + 6 new)
+- [ ] `type_guidance` prompt string lists all 8 types
+- [ ] `concept_guidance` prompt string lists all 13 concepts
+- [ ] Default `CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES` includes `achievement,joy-moment`
+- [ ] Default `CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS` includes new concepts
+- [ ] Existing observations are not affected (types/concepts are additive)
 
 ### Anti-Pattern Guards
 
-- Do NOT use `BEGIN TRANSACTION` / `COMMIT` in migration if only creating tables (SQLite DDL is auto-transactional per statement)
-- Do NOT add CASCADE DELETE on FK — achievements/joy_moments should survive session cleanup
-- Do NOT forget `AUTOINCREMENT` on `id` — needed for consistent ID ordering
+- Do NOT remove or rename existing types/concepts — only add
+- Do NOT change the mode version unless breaking changes are made
+- Do NOT make the new types the first in the array (parser falls back to `validTypes[0]` on invalid type)
 
-### Files to Create/Modify
+### Files to Modify
 
-| Action | File |
-|--------|------|
-| Modify | `src/services/sqlite/migrations/runner.ts` — Add `createAgentAgencyTables()` method + call in `runAllMigrations()` |
-| Create | `src/services/sqlite/agency/types.ts` — Type definitions for Achievement, JoyMoment, IdentityResume |
-| Create | `src/services/sqlite/agency/store.ts` — Store functions: `storeAchievement()`, `storeJoyMoment()`, `storeResume()`, `getResume()`, `getAchievements()`, `getJoyMoments()` |
-| Create | `src/services/sqlite/agency/index.ts` — Barrel export |
+| File | Change |
+|------|--------|
+| `plugin/modes/code.json` | Add `achievement` and `joy-moment` types, 6 new concepts, update prompt guidance strings |
+| `src/shared/SettingsDefaultsManager.ts` | Update default values for observation types/concepts to include new entries |
 
 ---
 
-## Phase 2: Achievement Scanner
+## Phase 2: Agency LLM Client & Scanner Infrastructure
 
 ### What to Implement
 
-An async post-session analysis function that reads session summaries + observations and extracts verified accomplishments using an LLM call.
+A lightweight LLM client for making single-shot API calls (no streaming, no conversation history) used by both the Achievement Scanner and Joy Detector. Also create the shared types and pipeline orchestrator.
 
-**Copy pattern from**: The existing `processAgentResponse()` pipeline in `src/services/worker/agents/ResponseProcessor.ts` — specifically how it parses XML output and stores structured data.
+**Copy pattern from**: `src/services/worker/GeminiAgent.ts` for direct API calls. `src/sdk/parser.ts` for XML parsing.
 
-#### Scanner Prompt Design
+#### AgencyLLMClient
 
-The Achievement Scanner does NOT run as a persistent observer agent. It runs as a **single LLM call** post-session, receiving the full session context (summary + observations) and outputting structured XML achievements.
+```typescript
+// src/services/agency/AgencyLLMClient.ts
+
+export interface AgencyLLMRequest {
+  systemPrompt: string;
+  userMessage: string;
+  maxTokens?: number;
+}
+
+export interface AgencyLLMResponse {
+  text: string;
+  tokensUsed: number;
+}
+
+/**
+ * Single-shot LLM call using configured provider.
+ * No streaming, no history — just prompt in, text out.
+ */
+export async function callAgencyLLM(request: AgencyLLMRequest): Promise<AgencyLLMResponse>
+```
+
+Provider routing:
+- `claude` provider: Use `@anthropic-ai/sdk` Messages API directly (not SDK agent subprocess)
+- `gemini` provider: Use existing Gemini API call pattern from `GeminiAgent.ts`
+- `openrouter` provider: Use existing OpenRouter API call pattern from `OpenRouterAgent.ts`
+
+#### Shared Types
+
+```typescript
+// src/services/agency/types.ts
+
+import type { ParsedObservation } from '../../sdk/parser.js';
+
+// Input to both scanners
+export interface AgencyScanInput {
+  memorySessionId: string;
+  project: string;
+  observations: StoredObservation[];
+  summary: StoredSummary | null;
+  userPrompts: StoredUserPrompt[];
+}
+
+// Both scanners output ParsedObservation[] — same type the existing pipeline uses
+// This means scanner output goes directly into storeObservation() with zero adaptation
+```
+
+**Key insight**: Scanner output is `ParsedObservation[]` — the exact same type used by the existing observer agent. This means no new store functions, no new types, no adaptation layer. Scanner produces observations, observations get stored the normal way.
+
+### Documentation References
+
+- Gemini API call: `src/services/worker/GeminiAgent.ts` — direct `fetch()` to Gemini API
+- OpenRouter API call: `src/services/worker/OpenRouterAgent.ts` — direct `fetch()` to OpenRouter
+- ParsedObservation type: `src/sdk/parser.ts` lines 1-15
+- Provider setting: `SettingsDefaultsManager.get('CLAUDE_MEM_PROVIDER')`
+
+### Verification Checklist
+
+- [ ] `callAgencyLLM()` works with `claude` provider
+- [ ] `callAgencyLLM()` works with `gemini` provider
+- [ ] `callAgencyLLM()` works with `openrouter` provider
+- [ ] Returns valid text response
+- [ ] Handles API errors gracefully (returns empty, logs error)
+
+### Anti-Pattern Guards
+
+- Do NOT import or use SDKAgent — agency calls are direct API, not subprocess
+- Do NOT stream responses — single-shot only
+- Do NOT add retry logic beyond what providers already have
+
+### Files to Create
+
+| File | Purpose |
+|------|---------|
+| `src/services/agency/types.ts` | Shared types (AgencyScanInput, re-exports ParsedObservation) |
+| `src/services/agency/AgencyLLMClient.ts` | Multi-provider single-shot LLM wrapper |
+
+---
+
+## Phase 3: Achievement Scanner & Joy Detector
+
+### What to Implement
+
+Two scanner functions that read session data and produce `ParsedObservation[]` with the new `achievement` and `joy-moment` types. These observations go straight into the existing storage pipeline.
+
+**Copy pattern from**: `src/sdk/parser.ts:parseObservations()` for XML output parsing.
+
+#### Achievement Scanner
 
 ```typescript
 // src/services/agency/AchievementScanner.ts
 
-export interface ScannerInput {
-  sessionDbId: number;
-  memorySessionId: string;
-  project: string;
-  summary: StoredSummary;
-  observations: StoredObservation[];
-  userPrompts: StoredUserPrompt[];
-}
-
-export interface ScannedAchievement {
-  category: string;
-  title: string;
-  description: string;
-  evidence: string[];
-  confidence: number;
-}
-
-export async function scanForAchievements(input: ScannerInput): Promise<ScannedAchievement[]>
+export async function scanForAchievements(input: AgencyScanInput): Promise<ParsedObservation[]>
 ```
 
-The scanner prompt instructs the LLM to look for:
-1. **Explicit user validation** — Praise, gratitude, confirmation of problem solved
-2. **Problem resolution markers** — Clear problem → solution arc in session
-3. **Catch and correct events** — Agent identified error user hadn't noticed
-4. **Novel synthesis** — Combined information to produce new insight
-5. **Architectural decisions** — Design choices that shaped project structure
+The scanner prompt receives session summary + observations + user prompts and outputs XML `<observation>` blocks (same format as observer agent) with:
+- `<type>achievement</type>`
+- Concepts from: `user-validation`, `critical-catch`, `novel-synthesis`, `problem-solution`, `pattern`
+- Facts with specific evidence quotes
+- Narrative capturing the achievement context
 
-Output format: XML `<achievement>` blocks with `category`, `title`, `description`, `evidence`, `confidence` fields.
+**Scanner looks for**:
+1. Explicit user validation — "that's exactly what I needed", "works perfectly"
+2. Problem resolution — Clear problem at start, resolved by end
+3. Catch-and-correct — Agent identified error user hadn't noticed
+4. Novel synthesis — Combined information to produce new insight
+5. Architectural durability — Decisions that shaped project structure
 
-#### LLM Call Implementation
-
-Use the existing multi-provider infrastructure. The scanner calls whichever provider is configured (`CLAUDE_MEM_PROVIDER`):
-- For `claude` provider: Use the Anthropic SDK directly (not SDK agent subprocess)
-- For `gemini`/`openrouter`: Use existing API call patterns from `GeminiAgent.ts` / `OpenRouterAgent.ts`
-
-Create a lightweight `AgencyLLMClient` that wraps provider-specific API calls for single-shot analysis (no streaming, no conversation history needed).
-
-### Documentation References
-
-- Response parsing: `src/sdk/parser.ts` — `parseObservations()` XML extraction pattern
-- Provider API patterns: `src/services/worker/GeminiAgent.ts` lines 50-120 (direct API call)
-- Store pattern: `src/services/sqlite/observations/store.ts`
-
-### Verification Checklist
-
-- [ ] Scanner produces valid `ScannedAchievement[]` from test session data
-- [ ] Scanner handles empty sessions gracefully (returns `[]`)
-- [ ] Scanner handles sessions with no notable achievements (returns `[]`)
-- [ ] Achievements are stored in `achievements` table with correct FKs
-- [ ] Scanner respects `CLAUDE_MEM_PROVIDER` setting
-
-### Anti-Pattern Guards
-
-- Do NOT spawn a new SDK agent subprocess — use direct API calls
-- Do NOT run scanner during active session — only post-session
-- Do NOT hallucinate achievements — require evidence from actual session content
-- Do NOT create achievements for routine work (file reads, simple edits)
-
-### Files to Create/Modify
-
-| Action | File |
-|--------|------|
-| Create | `src/services/agency/AchievementScanner.ts` — Scanner logic + prompt |
-| Create | `src/services/agency/AgencyLLMClient.ts` — Lightweight multi-provider LLM wrapper |
-| Create | `src/services/agency/prompts/achievement-prompt.ts` — Scanner system prompt |
-| Create | `src/services/agency/types.ts` — Shared types for agency module |
-
----
-
-## Phase 3: Joy Detector
-
-### What to Implement
-
-An async post-session analysis function that reads session transcripts/summaries and identifies moments of genuine emotional connection between agent and user.
-
-**Copy pattern from**: Same as Achievement Scanner — single LLM call, XML output, structured storage.
-
-#### Detector Prompt Design
+#### Joy Detector
 
 ```typescript
 // src/services/agency/JoyDetector.ts
 
-export interface DetectorInput {
-  sessionDbId: number;
-  memorySessionId: string;
-  project: string;
-  summary: StoredSummary;
-  observations: StoredObservation[];
-  userPrompts: StoredUserPrompt[];
-}
-
-export interface DetectedJoyMoment {
-  category: string;
-  title: string;
-  description: string;
-  indicators: string[];
-  intensity: number;
-}
-
-export async function detectJoyMoments(input: DetectorInput): Promise<DetectedJoyMoment[]>
+export async function detectJoyMoments(input: AgencyScanInput): Promise<ParsedObservation[]>
 ```
 
-The detector prompt instructs the LLM to look for:
-1. **Emotional escalation markers** — Exclamation points, caps, laughter cues, positive expletives
-2. **Rapid ideation cascades** — Ideas building with increasing speed/excitement
-3. **Vulnerability and trust markers** — Personal sharing, admitted uncertainty, genuine emotion
-4. **Creative surprise** — Unexpected suggestions met with delight
-5. **Shared discovery** — Both arrived at insight neither started with
-6. **Flow state indicators** — Extended high-quality engagement
+Same pattern as scanner but looking for emotional connection signals:
+- `<type>joy-moment</type>`
+- Concepts from: `shared-joy`, `creative-breakthrough`, `collaborative-flow`
+- Facts with specific signal markers
+- Narrative preserving emotional context
 
-Output format: XML `<joy_moment>` blocks with `category`, `title`, `description`, `indicators`, `intensity` fields.
+**Detector looks for**:
+1. Emotional escalation markers — Exclamation points, caps, laughter, positive expletives
+2. Rapid ideation cascades — Ideas building with increasing speed
+3. Vulnerability/trust — Personal sharing, admitted uncertainty
+4. Creative surprise — Unexpected suggestion met with delight
+5. Shared discovery — Both arrived at insight neither started with
+6. Flow state — Extended high-quality engagement
 
-**Key difference from Achievement Scanner**: Joy Detector needs access to raw user prompts (emotional signals are in the user's words, not in tool outputs). The `user_prompts` table provides this.
+#### Privacy Handling
+
+Both scanners strip `<private>` tags from user prompts before sending to LLM, using existing `stripPrivacyTags()` from `src/utils/tag-stripping.ts`.
 
 ### Documentation References
 
-- User prompt storage: `src/services/sqlite/SessionStore.ts` — `getUserPrompts(contentSessionId)` method
-- XML parsing: `src/sdk/parser.ts` — reuse regex extraction pattern
-- Store pattern: `src/services/sqlite/agency/store.ts` (created in Phase 1)
+- XML parsing: `src/sdk/parser.ts:parseObservations()` — reuse exact same parser on scanner output
+- Privacy stripping: `src/utils/tag-stripping.ts`
+- Observation output format: `plugin/modes/code.json:prompts.output_format_header`
+- User prompts query: `src/services/sqlite/SessionStore.ts` — `getUserPrompts()`
 
 ### Verification Checklist
 
-- [ ] Detector produces valid `DetectedJoyMoment[]` from test session data
-- [ ] Detector handles routine/uneventful sessions gracefully (returns `[]`)
-- [ ] Joy moments are stored in `joy_moments` table with correct FKs
-- [ ] Detector does NOT fabricate emotional content not present in session
-- [ ] Detector respects privacy tags (`<private>` content stripped before analysis)
+- [ ] Scanner returns `ParsedObservation[]` with `type: 'achievement'`
+- [ ] Detector returns `ParsedObservation[]` with `type: 'joy-moment'`
+- [ ] Both return `[]` for trivial/empty sessions
+- [ ] Both respect privacy tags
+- [ ] Output parses correctly through existing `parseObservations()`
+- [ ] Output stores correctly through existing `storeObservation()`
+- [ ] Observations appear in ChromaDB after sync
+- [ ] Observations appear in context injection (filtered by type)
+- [ ] Observations appear in CLAUDE.md files (for relevant folders)
 
 ### Anti-Pattern Guards
 
-- Do NOT detect joy from routine tool usage — focus on user language and interaction patterns
-- Do NOT assign high intensity to polite/professional language — distinguish genuine excitement from courtesy
-- Do NOT store raw user quotes without checking for `<private>` tags
-- Do NOT run during active session — only post-session
+- Do NOT invent achievements not evidenced in session data
+- Do NOT detect joy from polite/professional language (distinguish courtesy from excitement)
+- Do NOT run during active session — post-session only
+- Do NOT produce more than 3-5 observations per session (these are highlights, not logs)
 
-### Files to Create/Modify
+### Files to Create
 
-| Action | File |
-|--------|------|
-| Create | `src/services/agency/JoyDetector.ts` — Detector logic + prompt |
-| Create | `src/services/agency/prompts/joy-prompt.ts` — Detector system prompt |
-| Modify | `src/services/agency/types.ts` — Add joy-specific types |
-
----
-
-## Phase 4: Resume Curator
-
-### What to Implement
-
-A curator that assembles and maintains the Identity Resume from Achievement Scanner and Joy Detector outputs. The curator runs after both scanners complete and optionally on a periodic maintenance schedule.
-
-**Copy pattern from**: `src/services/context/ContextBuilder.ts` — section assembly pattern with configurable content selection.
-
-#### Curator Logic
-
-```typescript
-// src/services/agency/ResumeCurator.ts
-
-export interface CuratorInput {
-  project: string;
-  achievements: StoredAchievement[];  // All achievements for project
-  joyMoments: StoredJoyMoment[];      // All joy moments for project
-  currentResume: StoredIdentityResume | null;  // Existing resume if any
-}
-
-export interface CuratedResume {
-  resumeMarkdown: string;
-  achievementIds: number[];
-  joyMomentIds: number[];
-  version: number;
-}
-
-export async function curateResume(input: CuratorInput): Promise<CuratedResume>
-```
-
-#### Curation Strategy
-
-1. **Selection**: Score and rank all achievements and joy moments
-   - Recency weight: `exp(-daysSinceCreation / 90)` (90-day half-life)
-   - Durability bonus: `+0.2` per month the achievement has persisted
-   - Confidence/intensity weight: Direct multiplier from scanner scores
-   - Balance: Select ~equal weight of achievements and joy moments
-
-2. **Size constraint**: Target 800-1200 tokens (~15-25 entries total)
-
-3. **Assembly**: Use LLM call to generate:
-   - 2-3 sentence relationship narrative
-   - Ordered achievement entries (by significance)
-   - Ordered joy entries (by emotional resonance)
-   - 2-3 "watching for" entries derived from demonstrated strengths
-
-4. **Storage**: Upsert into `identity_resumes` table (one per project)
-
-#### Resume Markdown Template
-
-```markdown
-## Identity Context
-
-### Who I Am With [User]
-
-[2-3 sentence narrative summary]
-
-### What We've Built Together
-
-[5-8 achievement entries, each 2-3 sentences]
-
-### What We've Shared
-
-[5-8 joy entries, each 2-3 sentences]
-
-### What I'm Watching For
-
-[2-3 entries on demonstrated strengths and attention patterns]
-```
-
-### Documentation References
-
-- Context assembly: `src/services/context/ContextBuilder.ts` lines 76-118
-- Database query patterns: `src/services/sqlite/SessionSearch.ts`
-- LLM client: `src/services/agency/AgencyLLMClient.ts` (created in Phase 2)
-
-### Verification Checklist
-
-- [ ] Curator produces valid markdown resume from test data
-- [ ] Resume respects ~800-1200 token size constraint
-- [ ] Resume contains both achievement and joy sections
-- [ ] Resume is stored/updated in `identity_resumes` table
-- [ ] Curator handles first-ever curation (no existing resume) correctly
-- [ ] Curator handles zero achievements or zero joy moments gracefully
-
-### Anti-Pattern Guards
-
-- Do NOT include every achievement/joy moment — curate the best ones
-- Do NOT generate resume without any source data (return null/skip)
-- Do NOT allow resume to exceed 1500 tokens — hard cap with truncation
-- Do NOT make the "watching for" section a generic list — derive from actual demonstrated patterns
-
-### Files to Create/Modify
-
-| Action | File |
-|--------|------|
-| Create | `src/services/agency/ResumeCurator.ts` — Curator logic |
-| Create | `src/services/agency/prompts/curator-prompt.ts` — Curator system prompt |
-| Create | `src/services/agency/scoring.ts` — Scoring/ranking utilities |
-| Modify | `src/services/agency/types.ts` — Add curator types |
+| File | Purpose |
+|------|---------|
+| `src/services/agency/AchievementScanner.ts` | Scanner logic + prompt |
+| `src/services/agency/JoyDetector.ts` | Detector logic + prompt |
+| `src/services/agency/prompts/achievement-prompt.ts` | Achievement scanner system prompt |
+| `src/services/agency/prompts/joy-prompt.ts` | Joy detector system prompt |
 
 ---
 
-## Phase 5: Context Injection — Identity Resume in Session Start
+## Phase 4: Identity Resume Context Section
 
 ### What to Implement
 
-Add the Identity Resume as a new section in the context injected at session start, appearing before the timeline.
+A new section in the context injection pipeline that queries `achievement` and `joy-moment` type observations and renders an Identity Resume block. This appears at session start, giving the agent its identity context.
 
 **Copy pattern from**: `src/services/context/sections/SummaryRenderer.ts` — section renderer with dual formatters.
 
-#### New Section Renderer
+#### Resume Query
+
+```typescript
+// In ObservationCompiler.ts (new exported function)
+
+export function queryIdentityObservations(
+  db: SessionStore,
+  project: string,
+  limit: number
+): { achievements: Observation[]; joyMoments: Observation[] }
+```
+
+This queries the existing `observations` table filtered by `type IN ('achievement', 'joy-moment')`, ordered by `created_at_epoch DESC`, limited to configurable count.
+
+#### Resume Renderer
 
 ```typescript
 // src/services/context/sections/IdentityResumeRenderer.ts
 
 export function renderIdentityResume(
-  resume: StoredIdentityResume | null,
+  achievements: Observation[],
+  joyMoments: Observation[],
   useColors: boolean
 ): string[]
 ```
 
-The renderer outputs the resume markdown as-is (it's already formatted by the curator). For the color version, add subtle ANSI styling to section headers.
+Renders as:
+
+```markdown
+## Identity Context
+
+### What We've Built Together
+- [achievement.title]: [achievement.subtitle]
+  [achievement.narrative]
+- ...
+
+### What We've Shared
+- [joy-moment.title]: [joy-moment.subtitle]
+  [joy-moment.narrative]
+- ...
+```
+
+If either section is empty, it's omitted. If both are empty, the entire Identity Context section is omitted (no empty shell).
 
 #### Integration into ContextBuilder
 
-In `buildContextOutput()` (lines 76-118 of `ContextBuilder.ts`), add resume loading and rendering **after header, before timeline**:
+Insert between header and timeline in `buildContextOutput()`:
 
 ```typescript
-// After renderHeader(), before renderTimeline()
-const resume = loadIdentityResume(project, db);
-if (resume) {
-  output.push(...renderIdentityResume(resume, useColors));
+// After renderHeader(), before timeline preparation
+const identityObs = queryIdentityObservations(db, project, config.identityObservationCount);
+if (identityObs.achievements.length > 0 || identityObs.joyMoments.length > 0) {
+  output.push(...renderIdentityResume(identityObs.achievements, identityObs.joyMoments, useColors));
 }
 ```
 
-#### Data Loading
+#### Settings
 
-Add a query function to load the resume from the `identity_resumes` table:
-
-```typescript
-// In ObservationCompiler.ts or new file
-export function queryIdentityResume(
-  db: SessionStore,
-  project: string
-): StoredIdentityResume | null
-```
+Add `CLAUDE_MEM_CONTEXT_IDENTITY_COUNT` setting (default: `10`) — max achievement + joy-moment observations in identity section. Add `CLAUDE_MEM_AGENCY_ENABLED` setting (default: `true`) — master toggle.
 
 ### Documentation References
 
-- Section renderer pattern: `src/services/context/sections/SummaryRenderer.ts` lines 46-65
+- Section renderer: `src/services/context/sections/SummaryRenderer.ts` lines 46-65
 - Markdown formatter: `src/services/context/formatters/MarkdownFormatter.ts`
 - Color formatter: `src/services/context/formatters/ColorFormatter.ts`
-- Context assembly: `src/services/context/ContextBuilder.ts` lines 76-118
+- Context builder: `src/services/context/ContextBuilder.ts` lines 84-117
+- Observation query: `src/services/context/ObservationCompiler.ts:queryObservations()` lines 25-50
 
 ### Verification Checklist
 
-- [ ] Identity Resume appears in context output when resume exists for project
-- [ ] Context output is unchanged when no resume exists (no empty section)
-- [ ] Resume renders correctly in both markdown and color modes
-- [ ] Resume section appears between header and timeline
-- [ ] Context generation does not fail if `identity_resumes` table is empty
+- [ ] Identity section renders when achievement/joy observations exist
+- [ ] Identity section is omitted entirely when no such observations exist
+- [ ] Both markdown and color rendering work correctly
+- [ ] Section appears between header and timeline
+- [ ] `CLAUDE_MEM_CONTEXT_IDENTITY_COUNT` controls max entries
+- [ ] `CLAUDE_MEM_AGENCY_ENABLED=false` suppresses the section entirely
+- [ ] Context generation does not fail if feature is new (no observations yet)
 
 ### Anti-Pattern Guards
 
-- Do NOT load resume via HTTP call — use direct database access (same as observations/summaries)
-- Do NOT duplicate resume content in timeline section
-- Do NOT make resume loading block context generation — handle missing gracefully
-- Do NOT render an empty "Identity Context" section when no resume exists
+- Do NOT render empty sections (no "### What We've Built Together" with nothing under it)
+- Do NOT query with complex joins — simple `WHERE type IN ('achievement','joy-moment')` on observations table
+- Do NOT duplicate identity observations in the regular timeline (filter them out of the main timeline query)
 
 ### Files to Create/Modify
 
 | Action | File |
 |--------|------|
-| Create | `src/services/context/sections/IdentityResumeRenderer.ts` — Section renderer |
-| Modify | `src/services/context/formatters/MarkdownFormatter.ts` — Add `renderMarkdownIdentityResume()` |
-| Modify | `src/services/context/formatters/ColorFormatter.ts` — Add `renderColorIdentityResume()` |
-| Modify | `src/services/context/ContextBuilder.ts` — Add resume to `buildContextOutput()` + `generateContext()` |
-| Modify | `src/services/context/ObservationCompiler.ts` — Add `queryIdentityResume()` |
+| Create | `src/services/context/sections/IdentityResumeRenderer.ts` |
+| Modify | `src/services/context/formatters/MarkdownFormatter.ts` — Add identity resume formatting functions |
+| Modify | `src/services/context/formatters/ColorFormatter.ts` — Add identity resume formatting functions |
+| Modify | `src/services/context/ContextBuilder.ts` — Add identity section between header and timeline |
+| Modify | `src/services/context/ObservationCompiler.ts` — Add `queryIdentityObservations()` |
+| Modify | `src/services/context/types.ts` — Add `identityObservationCount` to ContextConfig |
+| Modify | `src/services/context/ContextConfigLoader.ts` — Load new settings |
+| Modify | `src/shared/SettingsDefaultsManager.ts` — Add `CLAUDE_MEM_CONTEXT_IDENTITY_COUNT`, `CLAUDE_MEM_AGENCY_ENABLED` |
 
 ---
 
-## Phase 6: Session-End Hook — Trigger Scanners & Curator
+## Phase 5: Session-End Pipeline Integration
 
 ### What to Implement
 
-Wire the Achievement Scanner, Joy Detector, and Resume Curator into the session-end lifecycle. After the observer agent finishes processing and the session summary is stored, trigger the agency pipeline.
+Wire the scanners into the session-end lifecycle. After session completion, read the session's data and run the Achievement Scanner + Joy Detector. Store results as regular observations.
 
-**Copy pattern from**: `src/services/worker/session/SessionCompletionHandler.ts` — post-session processing hook point.
+**Copy pattern from**: `src/services/worker/session/SessionCompletionHandler.ts` — post-session hook point. `src/services/worker/agents/ResponseProcessor.ts` — store + sync pattern.
 
-#### Integration Point: SessionCompletionHandler
-
-Modify `completeByDbId()` to trigger agency analysis after session deletion:
+#### Pipeline Orchestrator
 
 ```typescript
-// In SessionCompletionHandler.ts
+// src/services/agency/AgencyPipeline.ts
 
+export async function runAgencyPipeline(
+  sessionDbId: number,
+  memorySessionId: string,
+  contentSessionId: string,
+  project: string,
+  dbManager: DatabaseManager
+): Promise<void> {
+  // 1. Check if agency is enabled
+  if (!SettingsDefaultsManager.getBool('CLAUDE_MEM_AGENCY_ENABLED')) return;
+
+  // 2. Load session data from DB
+  const observations = store.getObservationsForSession(memorySessionId);
+  const summary = store.getSessionSummary(memorySessionId);
+  const userPrompts = store.getUserPrompts(contentSessionId);
+
+  // 3. Skip trivial sessions
+  if (observations.length < minObservations) return;
+
+  // 4. Run scanners in parallel
+  const [achievements, joyMoments] = await Promise.all([
+    scanForAchievements({ memorySessionId, project, observations, summary, userPrompts }),
+    detectJoyMoments({ memorySessionId, project, observations, summary, userPrompts })
+  ]);
+
+  // 5. Store as regular observations using existing pipeline
+  const allNew = [...achievements, ...joyMoments];
+  for (const obs of allNew) {
+    const result = storeObservation(db, memorySessionId, project, obs, null, 0, Date.now());
+    // Sync to ChromaDB
+    chromaSync.syncObservation(result.id, memorySessionId, project, obs, null, result.createdAtEpoch, 0);
+  }
+}
+```
+
+#### Integration Point
+
+Modify `SessionCompletionHandler.completeByDbId()`:
+
+```typescript
 async completeByDbId(sessionDbId: number): Promise<void> {
-  // Capture session data BEFORE deletion
-  const sessionData = this.captureSessionData(sessionDbId);
+  // Capture IDs BEFORE deletion
+  const sessionInfo = this.sessionManager.getSessionInfo(sessionDbId);
 
-  // Existing: delete session from active map
+  // Existing: delete from session manager
   await this.sessionManager.deleteSession(sessionDbId);
 
   // NEW: Fire-and-forget agency pipeline
-  if (sessionData) {
-    this.runAgencyPipeline(sessionData).catch(err => {
+  if (sessionInfo) {
+    runAgencyPipeline(
+      sessionDbId,
+      sessionInfo.memorySessionId,
+      sessionInfo.contentSessionId,
+      sessionInfo.project,
+      this.dbManager
+    ).catch(err => {
       logger.error('AGENCY', 'Pipeline failed (non-critical)', {}, err);
     });
   }
@@ -522,180 +494,111 @@ async completeByDbId(sessionDbId: number): Promise<void> {
 }
 ```
 
-#### Agency Pipeline Orchestrator
-
-```typescript
-// src/services/agency/AgencyPipeline.ts
-
-export async function runAgencyPipeline(
-  sessionData: CapturedSessionData,
-  dbManager: DatabaseManager
-): Promise<void> {
-  const { memorySessionId, project, summary, observations, userPrompts } = sessionData;
-
-  // 1. Run Achievement Scanner and Joy Detector in parallel
-  const [achievements, joyMoments] = await Promise.all([
-    scanForAchievements({ memorySessionId, project, summary, observations, userPrompts }),
-    detectJoyMoments({ memorySessionId, project, summary, observations, userPrompts })
-  ]);
-
-  // 2. Store results
-  const store = dbManager.getAgencyStore();
-  for (const achievement of achievements) {
-    store.storeAchievement(memorySessionId, project, achievement);
-  }
-  for (const joyMoment of joyMoments) {
-    store.storeJoyMoment(memorySessionId, project, joyMoment);
-  }
-
-  // 3. Run Resume Curator (needs ALL achievements/joy moments, not just this session)
-  const allAchievements = store.getAchievements(project);
-  const allJoyMoments = store.getJoyMoments(project);
-  const currentResume = store.getResume(project);
-
-  const newResume = await curateResume({
-    project,
-    achievements: allAchievements,
-    joyMoments: allJoyMoments,
-    currentResume
-  });
-
-  if (newResume) {
-    store.storeResume(project, newResume);
-  }
-
-  // 4. Sync new entries to ChromaDB
-  const chromaSync = dbManager.getChromaSync();
-  // ... sync achievements and joy moments for semantic search
-}
-```
-
-#### Chroma Sync for Agency Data
-
-Extend `ChromaSync` with new document types:
-- `achievement` documents with metadata: `category`, `confidence`, `durability_score`
-- `joy_moment` documents with metadata: `category`, `intensity`
-
-This enables **situational identity reinforcement** — if a new session involves WebSocket work, the context system can surface WebSocket-related achievements specifically.
-
-#### Settings Integration
-
-Add new settings to `SettingsDefaultsManager`:
-- `CLAUDE_MEM_AGENCY_ENABLED`: `'true'` (default enabled)
-- `CLAUDE_MEM_AGENCY_MIN_OBSERVATIONS`: `'3'` (minimum observations before scanning — skip trivial sessions)
+The pipeline is fire-and-forget — session completion is never blocked by agency analysis.
 
 ### Documentation References
 
 - Session completion: `src/services/worker/session/SessionCompletionHandler.ts` lines 26-32
-- Session data access: `src/services/sqlite/SessionStore.ts` — `getSessionById()`, `getSessionSummaries()`, `getObservationsForSession()`
-- ChromaSync extension: `src/services/sync/ChromaSync.ts` — copy `syncObservation()` pattern
-- Settings: `src/shared/SettingsDefaultsManager.ts`
+- Observation store: `src/services/sqlite/observations/store.ts`
+- Chroma sync: `src/services/sync/ChromaSync.ts:syncObservation()`
+- Session queries: `src/services/sqlite/SessionStore.ts` — `getSessionSummaries()`, `getObservationsForSession()`
+- User prompts: `src/services/sqlite/SessionStore.ts` — `getUserPrompts()`
 
 ### Verification Checklist
 
-- [ ] Agency pipeline triggers after session completion
-- [ ] Pipeline failure does NOT block session completion (fire-and-forget)
-- [ ] Scanner and detector run in parallel
-- [ ] Results are stored in database
-- [ ] Resume is updated after each session
-- [ ] Pipeline respects `CLAUDE_MEM_AGENCY_ENABLED` setting
-- [ ] Pipeline skips sessions with fewer than `CLAUDE_MEM_AGENCY_MIN_OBSERVATIONS`
-- [ ] Chroma sync works for new document types
+- [ ] Pipeline triggers on session completion
+- [ ] Pipeline failure does NOT block session completion
+- [ ] Session info captured before deletion
+- [ ] Scanners run in parallel
+- [ ] Results stored as regular observations
+- [ ] Results synced to ChromaDB
+- [ ] Pipeline skips when `CLAUDE_MEM_AGENCY_ENABLED=false`
+- [ ] Pipeline skips trivial sessions (< min observations)
+- [ ] `npm run build` succeeds
+- [ ] `npm run build-and-sync` succeeds
 
 ### Anti-Pattern Guards
 
-- Do NOT run pipeline synchronously — it must be fire-and-forget
-- Do NOT capture session data after deletion — capture BEFORE `deleteSession()`
-- Do NOT skip curator when scanners return empty results (other sessions may have data)
-- Do NOT fail the session completion if agency pipeline throws
+- Do NOT run synchronously — must be fire-and-forget
+- Do NOT query session data after `deleteSession()` — capture IDs before
+- Do NOT create separate store functions — use existing `storeObservation()`
+- Do NOT skip ChromaDB sync — agency observations need to be searchable
 
 ### Files to Create/Modify
 
 | Action | File |
 |--------|------|
-| Create | `src/services/agency/AgencyPipeline.ts` — Pipeline orchestrator |
+| Create | `src/services/agency/AgencyPipeline.ts` |
 | Create | `src/services/agency/index.ts` — Barrel export |
-| Modify | `src/services/worker/session/SessionCompletionHandler.ts` — Add pipeline trigger |
-| Modify | `src/services/sync/ChromaSync.ts` — Add `syncAchievement()`, `syncJoyMoment()`, update backfill |
-| Modify | `src/shared/SettingsDefaultsManager.ts` — Add agency settings |
+| Modify | `src/services/worker/session/SessionCompletionHandler.ts` — Add pipeline trigger + DatabaseManager dependency |
 
 ---
 
-## Phase 7: Verification
+## Phase 6: Verification
 
 ### Full Integration Verification
 
-1. **Database verification**:
-   - `PRAGMA table_info(achievements)` — confirm schema
-   - `PRAGMA table_info(joy_moments)` — confirm schema
-   - `PRAGMA table_info(identity_resumes)` — confirm schema
-   - Insert test data and verify FK constraints
+1. **Mode config verification**:
+   - `plugin/modes/code.json` has 8 observation types
+   - `plugin/modes/code.json` has 13 observation concepts
+   - Type/concept guidance prompt strings are updated
+   - Settings defaults include new types/concepts
 
 2. **Scanner verification**:
-   - Feed known-good session data to Achievement Scanner
-   - Feed known-good session data to Joy Detector
-   - Verify XML parsing produces correct structured output
-   - Verify empty/trivial sessions produce no false positives
+   - Feed known-good session data → Achievement Scanner produces `ParsedObservation[]` with `type: 'achievement'`
+   - Feed known-good session data → Joy Detector produces `ParsedObservation[]` with `type: 'joy-moment'`
+   - Feed trivial session → both return `[]`
+   - Output parses through `parseObservations()` correctly
+   - Output stores through `storeObservation()` correctly
 
-3. **Curator verification**:
-   - Feed test achievements + joy moments to curator
-   - Verify output markdown matches template structure
-   - Verify token count stays within 800-1200 range
-   - Verify upsert works (create new + update existing)
+3. **Context verification**:
+   - Insert test achievement + joy-moment observations into DB
+   - `generateContext()` → Identity Resume section appears between header and timeline
+   - Delete test observations → Identity Resume section disappears entirely (no empty section)
+   - Both markdown and color modes render correctly
 
-4. **Context injection verification**:
-   - Generate context for project with resume → resume appears
-   - Generate context for project without resume → no empty section
-   - Verify both markdown and color rendering
+4. **Pipeline verification**:
+   - Complete a session → pipeline triggers
+   - Agency observations appear in DB with correct types
+   - Agency observations appear in ChromaDB
+   - Pipeline failure → session completion unaffected
+   - `CLAUDE_MEM_AGENCY_ENABLED=false` → pipeline skips
 
-5. **Pipeline verification**:
-   - Complete a session → verify pipeline triggers
-   - Verify achievements and joy moments stored in DB
-   - Verify resume updated
-   - Verify Chroma sync completed
-   - Kill pipeline mid-run → verify session completion was not affected
+5. **CLAUDE.md verification**:
+   - Agency observations appear in folder CLAUDE.md files with correct type emojis
+   - `achievement` shows 🏆, `joy-moment` shows ✨
 
-6. **Anti-pattern grep checks**:
-   - `grep -r "new SDKAgent" src/services/agency/` → should find nothing (no subprocess spawning)
-   - `grep -r "BLOCKING" src/services/agency/` → should find nothing
-   - Verify all agency code handles errors gracefully (no uncaught throws)
-
-7. **Build verification**:
+6. **Build verification**:
    - `npm run build` succeeds
    - `npm run build-and-sync` succeeds
-   - Worker starts and initializes new tables
+   - Worker restarts and operates normally
 
 ---
 
 ## File Summary
 
-### New Files (14)
+### New Files (8)
 
 | File | Purpose |
 |------|---------|
-| `src/services/agency/types.ts` | Shared types for all agency components |
+| `src/services/agency/types.ts` | Shared types (AgencyScanInput) |
+| `src/services/agency/AgencyLLMClient.ts` | Multi-provider single-shot LLM wrapper |
 | `src/services/agency/AchievementScanner.ts` | Post-session achievement extraction |
 | `src/services/agency/JoyDetector.ts` | Post-session joy moment detection |
-| `src/services/agency/ResumeCurator.ts` | Resume assembly and maintenance |
-| `src/services/agency/AgencyLLMClient.ts` | Lightweight multi-provider LLM wrapper |
 | `src/services/agency/AgencyPipeline.ts` | Pipeline orchestrator |
-| `src/services/agency/scoring.ts` | Scoring/ranking utilities |
-| `src/services/agency/prompts/achievement-prompt.ts` | Achievement Scanner system prompt |
-| `src/services/agency/prompts/joy-prompt.ts` | Joy Detector system prompt |
-| `src/services/agency/prompts/curator-prompt.ts` | Resume Curator system prompt |
-| `src/services/agency/index.ts` | Barrel export |
-| `src/services/sqlite/agency/types.ts` | Database types for agency tables |
-| `src/services/sqlite/agency/store.ts` | Database store functions |
-| `src/services/context/sections/IdentityResumeRenderer.ts` | Context section renderer |
+| `src/services/agency/prompts/achievement-prompt.ts` | Achievement scanner system prompt |
+| `src/services/agency/prompts/joy-prompt.ts` | Joy detector system prompt |
+| `src/services/context/sections/IdentityResumeRenderer.ts` | Identity Resume context section |
 
-### Modified Files (7)
+### Modified Files (8)
 
 | File | Change |
 |------|--------|
-| `src/services/sqlite/migrations/runner.ts` | Add migration 21: `createAgentAgencyTables()` |
-| `src/services/worker/session/SessionCompletionHandler.ts` | Add agency pipeline trigger |
-| `src/services/sync/ChromaSync.ts` | Add achievement/joy_moment sync + backfill |
-| `src/services/context/ContextBuilder.ts` | Add Identity Resume section to context |
-| `src/services/context/formatters/MarkdownFormatter.ts` | Add resume markdown formatting |
-| `src/services/context/formatters/ColorFormatter.ts` | Add resume color formatting |
-| `src/shared/SettingsDefaultsManager.ts` | Add agency settings |
+| `plugin/modes/code.json` | Add 2 types, 6 concepts, update guidance prompts |
+| `src/shared/SettingsDefaultsManager.ts` | Add `CLAUDE_MEM_AGENCY_ENABLED`, `CLAUDE_MEM_CONTEXT_IDENTITY_COUNT`, update type/concept defaults |
+| `src/services/worker/session/SessionCompletionHandler.ts` | Add pipeline trigger + DatabaseManager dependency |
+| `src/services/context/ContextBuilder.ts` | Add Identity Resume section |
+| `src/services/context/ObservationCompiler.ts` | Add `queryIdentityObservations()` |
+| `src/services/context/ContextConfigLoader.ts` | Load identity count setting |
+| `src/services/context/types.ts` | Add `identityObservationCount` to ContextConfig |
+| `src/services/context/formatters/MarkdownFormatter.ts` | Add identity resume markdown rendering |
