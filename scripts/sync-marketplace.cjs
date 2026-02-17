@@ -80,22 +80,12 @@ try {
     { stdio: 'inherit' }
   );
 
-  // Remove stale lockfiles before install — they pin old native dep versions
-  const { unlinkSync, rmSync } = require('fs');
-  for (const lockfile of ['package-lock.json', 'bun.lock']) {
-    const lockpath = path.join(INSTALLED_PATH, lockfile);
-    if (existsSync(lockpath)) {
-      unlinkSync(lockpath);
-      console.log(`Removed stale ${lockfile}`);
-    }
-  }
-
-  // Clear stale native module cache (sharp/libvips) — Bun's cache can retain
-  // native binaries that reference companion libraries at broken relative paths
-  const bunCacheImgDir = path.join(os.homedir(), '.bun', 'install', 'cache', '@img');
-  if (existsSync(bunCacheImgDir)) {
-    rmSync(bunCacheImgDir, { recursive: true, force: true });
-    console.log('Cleared stale native module cache (@img/sharp)');
+  // Clear Bun's package cache to prevent stale native module artifacts
+  try {
+    execSync('bun pm cache rm', { cwd: INSTALLED_PATH, stdio: 'pipe' });
+    console.log('Cleared Bun package cache');
+  } catch {
+    // Cache may not exist yet on first install
   }
 
   console.log('Running bun install in marketplace...');
