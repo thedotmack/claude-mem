@@ -161,7 +161,7 @@ export const sessionInitHandler: EventHandler = {
         hookSpecificOutput: {
           hookEventName: 'UserPromptSubmit',
           additionalContext:
-            `\u26a0\ufe0f claude-mem: ${String(obsHealth.failures)} observation(s) failed to store since last prompt. ` +
+            `\u26a0\ufe0f claude-mem v${obsHealth.version}: ${String(obsHealth.failures)} observation(s) failed to store since last prompt. ` +
             'Memory capture may be incomplete. If this persists, try restarting the worker with: magic-claude-mem worker:restart'
         },
         exitCode: HOOK_EXIT_CODES.SUCCESS

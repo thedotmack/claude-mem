@@ -7,15 +7,25 @@
  */
 
 import { readFileSync, writeFileSync, unlinkSync } from 'fs';
-import { DATA_DIR } from '../shared/paths.js';
+import { DATA_DIR, getPackageRoot } from '../shared/paths.js';
 import { join } from 'path';
 
 const HEALTH_FILE = join(DATA_DIR, '.obs-health');
+
+function getVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(getPackageRoot(), 'package.json'), 'utf8')) as { version: string };
+    return pkg.version;
+  } catch {
+    return 'unknown';
+  }
+}
 
 interface ObservationHealth {
   failures: number;
   lastError: string;
   since: string;
+  version: string;
 }
 
 export function recordObservationFailure(error: string): void {
@@ -26,7 +36,7 @@ export function recordObservationFailure(error: string): void {
       health.failures += 1;
       health.lastError = error;
     } catch {
-      health = { failures: 1, lastError: error, since: new Date().toISOString() };
+      health = { failures: 1, lastError: error, since: new Date().toISOString(), version: getVersion() };
     }
     writeFileSync(HEALTH_FILE, JSON.stringify(health));
   } catch {

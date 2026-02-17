@@ -1,6 +1,6 @@
 {
   "name": "magic-claude-mem",
-  "version": "9.2.8",
+  "version": "9.2.9",
   "description": "Persistent memory system for Claude Code - seamlessly preserve context across sessions",
   "author": {
     "name": "Frederic Thomas",
