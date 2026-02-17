@@ -365,11 +365,22 @@
       box-sizing: border-box;
     }
 
+    html, body {
+      height: 100%;
+    }
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
       background: var(--color-bg-primary);
       color: var(--color-text-primary);
       font-size: 14px;
+      overflow: hidden;
+    }
+
+    #root {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
       overflow: hidden;
     }
 
@@ -1194,8 +1205,8 @@
 
     .feed {
       flex: 1;
+      min-height: 0;
       overflow-y: scroll;
-      height: 100vh;
       padding: 24px 18px;
       display: flex;
       justify-content: center;
@@ -1440,6 +1451,12 @@
       margin-bottom: 10px;
       cursor: pointer;
       user-select: none;
+    }
+
+    .summary-section-icon {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
     }
 
     .summary-section-chevron {
@@ -2676,7 +2693,9 @@
     .two-panel__right {
       flex: 1;
       min-height: 0;
-      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
     }
 
     @media (max-width: 768px) {
@@ -3259,6 +3278,7 @@
 
     .session-detail {
       flex: 1;
+      min-height: 0;
       overflow-y: auto;
       padding: 24px 18px;
     }

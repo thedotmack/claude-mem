@@ -59,7 +59,6 @@ function dateKeyToLabel(dateKey: string): string {
 
 /**
  * Maps a Summary to a SessionListItem.
- * observationCount is hardcoded to 0 until a count endpoint is available.
  */
 export function mapSummaryToSessionListItem(summary: Summary): SessionListItem {
   return {
@@ -67,7 +66,7 @@ export function mapSummaryToSessionListItem(summary: Summary): SessionListItem {
     session_id: summary.session_id,
     project: summary.project,
     request: summary.request,
-    observationCount: 0,
+    observationCount: summary.observation_count ?? 0,
     created_at_epoch: summary.created_at_epoch,
     status: 'completed',
   };
@@ -223,7 +222,7 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
         const allItems = reset
           ? result.items
           : [...prev.flatMap(g => g.sessions), ...result.items];
-        return buildSessionGroups(allItems);
+        return groupSessionsByDay(allItems);
       });
 
       setHasMore(result.hasMore);

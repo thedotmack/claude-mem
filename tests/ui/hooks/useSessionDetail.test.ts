@@ -122,9 +122,16 @@ describe('fetchSessionDetail', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('fetches observations, prompts, and summaries then filters by session_id', async () => {
+  it('fetches observations, prompts, and summaries with server-side session_id filter', async () => {
+    // Server-side filtering: API returns only items for the requested session_id
+    const sessionObservations = mockObservations.filter(o => o.memory_session_id === SESSION_ID);
+    const sessionPrompts = mockPrompts.filter(p => p.content_session_id === SESSION_ID);
+
     fetchMock.mockImplementation((url: string) => {
       const u = new URL(url, 'http://localhost');
+      // Verify session_id is passed to API
+      expect(u.searchParams.get('session_id')).toBe(SESSION_ID);
+
       if (u.pathname === '/api/summaries') {
         return Promise.resolve({
           ok: true,
@@ -134,13 +141,13 @@ describe('fetchSessionDetail', () => {
       if (u.pathname === '/api/observations') {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve(makeApiResponse(mockObservations)),
+          json: () => Promise.resolve(makeApiResponse(sessionObservations)),
         });
       }
       if (u.pathname === '/api/prompts') {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve(makeApiResponse(mockPrompts)),
+          json: () => Promise.resolve(makeApiResponse(sessionPrompts)),
         });
       }
       return Promise.resolve({ ok: false, statusText: 'Not Found' });
@@ -149,17 +156,14 @@ describe('fetchSessionDetail', () => {
     const result = await fetchSessionDetail(SESSION_ID, PROJECT);
 
     expect(result).not.toBeNull();
-    // Summary matches the session
     expect(result!.summary.session_id).toBe(SESSION_ID);
-    // Only observations for this session
     expect(result!.observations).toHaveLength(1);
     expect(result!.observations[0].memory_session_id).toBe(SESSION_ID);
-    // Only prompts for this session
     expect(result!.prompts).toHaveLength(1);
     expect(result!.prompts[0].content_session_id).toBe(SESSION_ID);
   });
 
-  it('passes project filter to all three API calls', async () => {
+  it('passes session_id and project to all three API calls', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
       json: () => Promise.resolve(makeApiResponse([])),
@@ -170,22 +174,70 @@ describe('fetchSessionDetail', () => {
     const urls = fetchMock.mock.calls.map((call: unknown[]) => call[0] as string);
     expect(urls).toHaveLength(3);
     for (const url of urls) {
+      expect(url).toContain(`session_id=${SESSION_ID}`);
       expect(url).toContain(`project=${PROJECT}`);
     }
   });
 
-  it('returns null when summary is not found for the session_id', async () => {
+  it('passes summary_id to observations and prompts APIs when summaryId is provided', async () => {
+    const SUMMARY_ID = 42;
     fetchMock.mockImplementation((url: string) => {
       const u = new URL(url, 'http://localhost');
       if (u.pathname === '/api/summaries') {
-        // Return summaries for a different session
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve(makeApiResponse([
-            { ...mockSummary, session_id: OTHER_SESSION_ID },
-          ])),
+          json: () => Promise.resolve(makeApiResponse([{ ...mockSummary, id: SUMMARY_ID }])),
         });
       }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(makeApiResponse([])),
+      });
+    });
+
+    await fetchSessionDetail(SESSION_ID, PROJECT, SUMMARY_ID);
+
+    const urls = fetchMock.mock.calls.map((call: unknown[]) => call[0] as string);
+    const summariesUrl = urls.find((u: string) => u.includes('/api/summaries'));
+    const observationsUrl = urls.find((u: string) => u.includes('/api/observations'));
+    const promptsUrl = urls.find((u: string) => u.includes('/api/prompts'));
+
+    // summary_id should NOT be on summaries endpoint (it fetches all summaries for the session)
+    expect(summariesUrl).not.toContain('summary_id=');
+    // summary_id SHOULD be on observations and prompts endpoints
+    expect(observationsUrl).toContain(`summary_id=${SUMMARY_ID}`);
+    expect(promptsUrl).toContain(`summary_id=${SUMMARY_ID}`);
+  });
+
+  it('finds the specific summary by id when summaryId is provided', async () => {
+    const SUMMARY_ID = 99;
+    const targetSummary = { ...mockSummary, id: SUMMARY_ID, request: 'target summary' };
+    const otherSummary = { ...mockSummary, id: 1, request: 'other summary' };
+
+    fetchMock.mockImplementation((url: string) => {
+      const u = new URL(url, 'http://localhost');
+      if (u.pathname === '/api/summaries') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(makeApiResponse([otherSummary, targetSummary])),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(makeApiResponse([])),
+      });
+    });
+
+    const result = await fetchSessionDetail(SESSION_ID, PROJECT, SUMMARY_ID);
+
+    expect(result).not.toBeNull();
+    expect(result!.summary.id).toBe(SUMMARY_ID);
+    expect(result!.summary.request).toBe('target summary');
+  });
+
+  it('returns null when server returns no summary for the session_id', async () => {
+    fetchMock.mockImplementation(() => {
+      // Server-side filtering returns empty results when session not found
       return Promise.resolve({
         ok: true,
         json: () => Promise.resolve(makeApiResponse([])),
@@ -345,6 +397,44 @@ describe('SessionDetailCache', () => {
     cache.set(SESSION_ID, PROJECT, detailV2);
 
     expect(cache.get(SESSION_ID, PROJECT)?.summary.request).toBe('v2');
+  });
+
+  it('caches different summaryIds separately for the same session', () => {
+    const cache = new SessionDetailCache(5);
+    const detail1 = {
+      summary: { ...mockSummary, id: 10, request: 'summary 10' },
+      observations: [],
+      prompts: [],
+    };
+    const detail2 = {
+      summary: { ...mockSummary, id: 20, request: 'summary 20' },
+      observations: [],
+      prompts: [],
+    };
+
+    cache.set(SESSION_ID, PROJECT, detail1, 10);
+    cache.set(SESSION_ID, PROJECT, detail2, 20);
+
+    const retrieved1 = cache.get(SESSION_ID, PROJECT, 10);
+    const retrieved2 = cache.get(SESSION_ID, PROJECT, 20);
+
+    expect(retrieved1?.summary.request).toBe('summary 10');
+    expect(retrieved2?.summary.request).toBe('summary 20');
+  });
+
+  it('returns undefined when summaryId does not match cached entry', () => {
+    const cache = new SessionDetailCache(5);
+    const detail = {
+      summary: { ...mockSummary, id: 10 },
+      observations: [],
+      prompts: [],
+    };
+
+    cache.set(SESSION_ID, PROJECT, detail, 10);
+
+    expect(cache.get(SESSION_ID, PROJECT, 10)).toBeDefined();
+    expect(cache.get(SESSION_ID, PROJECT, 99)).toBeUndefined();
+    expect(cache.get(SESSION_ID, PROJECT)).toBeUndefined();
   });
 
   it('respects a cache capacity of 5', () => {

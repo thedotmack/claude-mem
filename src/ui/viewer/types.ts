@@ -26,6 +26,7 @@ export interface Summary {
   completed?: string;
   next_steps?: string;
   created_at_epoch: number;
+  observation_count?: number;
 }
 
 export interface UserPrompt {

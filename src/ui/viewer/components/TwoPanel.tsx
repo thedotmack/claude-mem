@@ -65,6 +65,7 @@ export const TwoPanel = forwardRef<TwoPanelHandle, TwoPanelProps>(function TwoPa
   const { detail, isLoading: detailLoading } = useSessionDetail(
     selectedSession?.session_id ?? null,
     project,
+    selectedSession?.id ?? null,
   );
 
   useImperativeHandle(ref, () => ({
@@ -97,6 +98,7 @@ export const TwoPanel = forwardRef<TwoPanelHandle, TwoPanelProps>(function TwoPa
         <SessionDetail
           detail={detail}
           isLoading={detailLoading}
+          hasSelection={sessionList.selectedId !== null}
         />
       </main>
     </div>

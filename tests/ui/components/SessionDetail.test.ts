@@ -97,14 +97,14 @@ describe('buildTimeline', () => {
     expect(result).toHaveLength(2);
   });
 
-  it('sorts items in ascending chronological order by created_at_epoch', () => {
+  it('sorts items in descending chronological order by created_at_epoch (newest first)', () => {
     const observations = [makeObservation(10, 3000), makeObservation(11, 1000)];
     const prompts = [makePrompt(20, 2000)];
     const result = buildTimeline(observations, prompts);
 
-    expect(result[0].created_at_epoch).toBe(1000);
+    expect(result[0].created_at_epoch).toBe(3000);
     expect(result[1].created_at_epoch).toBe(2000);
-    expect(result[2].created_at_epoch).toBe(3000);
+    expect(result[2].created_at_epoch).toBe(1000);
   });
 
   it('labels observations with itemType "observation"', () => {
@@ -171,7 +171,7 @@ describe('buildTimeline', () => {
     expect(prompts).toEqual(promptsCopy);
   });
 
-  it('sorts a large mixed list correctly', () => {
+  it('sorts a large mixed list correctly (descending)', () => {
     const observations = Array.from({ length: 5 }, (_, i) =>
       makeObservation(i + 1, (i + 1) * 1000),
     );
@@ -183,7 +183,7 @@ describe('buildTimeline', () => {
 
     expect(result).toHaveLength(10);
     for (let i = 1; i < result.length; i++) {
-      expect(result[i].created_at_epoch).toBeGreaterThanOrEqual(result[i - 1].created_at_epoch);
+      expect(result[i].created_at_epoch).toBeLessThanOrEqual(result[i - 1].created_at_epoch);
     }
   });
 });
@@ -279,10 +279,10 @@ describe('SessionDetail virtualization — source structure', () => {
     expect(SESSION_DETAIL_SOURCE).toMatch(/measureElement/);
   });
 
-  it('uses a ref for the scroll container', () => {
-    // useRef must be imported and used for the scroll container
-    expect(SESSION_DETAIL_SOURCE).toMatch(/useRef/);
-    expect(SESSION_DETAIL_SOURCE).toMatch(/scrollElementRef|parentRef|containerRef|scrollRef/);
+  it('uses a callback ref for the scroll container', () => {
+    // useState + useCallback ref pattern so virtualizer re-renders when scroll element is available
+    expect(SESSION_DETAIL_SOURCE).toMatch(/useState|useCallback/);
+    expect(SESSION_DETAIL_SOURCE).toMatch(/scrollElement|scrollRef/);
   });
 
   it('passes the scroll element ref to useVirtualizer as scrollElement or getScrollElement', () => {

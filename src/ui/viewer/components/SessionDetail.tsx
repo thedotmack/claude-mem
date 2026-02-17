@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { Observation, UserPrompt, SessionDetail as SessionDetailType } from '../types';
 import { SummaryCard } from './SummaryCard';
@@ -19,7 +19,7 @@ export type TimelineItem =
 
 /**
  * Merge observations and prompts into a single list sorted by
- * created_at_epoch ascending (chronological order).
+ * created_at_epoch descending (newest first).
  *
  * The input arrays are never mutated.
  */
@@ -32,7 +32,7 @@ export function buildTimeline(
     ...prompts.map((p): TimelineItem => ({ ...p, itemType: 'prompt' as const })),
   ];
 
-  return items.sort((a, b) => a.created_at_epoch - b.created_at_epoch);
+  return items.sort((a, b) => b.created_at_epoch - a.created_at_epoch);
 }
 
 // ---------------------------------------------------------------------------
@@ -59,13 +59,13 @@ function renderTimelineItem(item: TimelineItem): React.ReactNode {
 
 interface VirtualTimelineProps {
   timelineItems: TimelineItem[];
-  scrollElementRef: React.RefObject<HTMLDivElement | null>;
+  scrollElement: HTMLDivElement | null;
 }
 
-function VirtualTimeline({ timelineItems, scrollElementRef }: VirtualTimelineProps) {
+function VirtualTimeline({ timelineItems, scrollElement }: VirtualTimelineProps) {
   const virtualizer = useVirtualizer({
     count: timelineItems.length,
-    getScrollElement: () => scrollElementRef.current,
+    getScrollElement: () => scrollElement,
     estimateSize: () => 120,
     measureElement:
       typeof window !== 'undefined' && navigator.userAgent.indexOf('Firefox') === -1
@@ -114,10 +114,16 @@ function VirtualTimeline({ timelineItems, scrollElementRef }: VirtualTimelinePro
 interface SessionDetailProps {
   detail: SessionDetailType | null;
   isLoading: boolean;
+  hasSelection?: boolean;
 }
 
-export function SessionDetail({ detail, isLoading }: SessionDetailProps) {
-  const scrollElementRef = useRef<HTMLDivElement | null>(null);
+export function SessionDetail({ detail, isLoading, hasSelection }: SessionDetailProps) {
+  // Use callback ref + state so the virtualizer re-initializes when the
+  // scroll element becomes available (useRef doesn't trigger re-render).
+  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
+  const scrollRef = useCallback((node: HTMLDivElement | null) => {
+    setScrollElement(node);
+  }, []);
 
   if (isLoading) {
     return (
@@ -134,7 +140,9 @@ export function SessionDetail({ detail, isLoading }: SessionDetailProps) {
     return (
       <div className="session-detail" data-testid="session-detail">
         <div className="session-detail__empty" data-testid="session-detail-empty">
-          Select a session to view details
+          {hasSelection
+            ? 'No data available for this session'
+            : 'Select a session to view details'}
         </div>
       </div>
     );
@@ -144,7 +152,7 @@ export function SessionDetail({ detail, isLoading }: SessionDetailProps) {
   const useVirtual = timelineItems.length > VIRTUALIZATION_THRESHOLD;
 
   return (
-    <div className="session-detail" data-testid="session-detail" ref={scrollElementRef}>
+    <div className="session-detail" data-testid="session-detail" ref={scrollRef}>
       <div className="session-detail__content">
         <div className="session-detail__summary">
           <SummaryCard summary={detail.summary} />
@@ -153,7 +161,7 @@ export function SessionDetail({ detail, isLoading }: SessionDetailProps) {
         {useVirtual ? (
           <VirtualTimeline
             timelineItems={timelineItems}
-            scrollElementRef={scrollElementRef}
+            scrollElement={scrollElement}
           />
         ) : (
           <div

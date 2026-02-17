@@ -20,12 +20,12 @@ export class SessionDetailCache {
     this.capacity = capacity;
   }
 
-  private buildKey(sessionId: string, project: string): string {
-    return `${project}::${sessionId}`;
+  private buildKey(sessionId: string, project: string, summaryId?: number | null): string {
+    return summaryId ? `${project}::${sessionId}::${summaryId}` : `${project}::${sessionId}`;
   }
 
-  get(sessionId: string, project: string): SessionDetail | undefined {
-    const key = this.buildKey(sessionId, project);
+  get(sessionId: string, project: string, summaryId?: number | null): SessionDetail | undefined {
+    const key = this.buildKey(sessionId, project, summaryId);
     const value = this.store.get(key);
     if (value !== undefined) {
       // Promote to most-recently-used to maintain LRU ordering
@@ -38,8 +38,8 @@ export class SessionDetailCache {
     return value;
   }
 
-  set(sessionId: string, project: string, detail: SessionDetail): void {
-    const key = this.buildKey(sessionId, project);
+  set(sessionId: string, project: string, detail: SessionDetail, summaryId?: number | null): void {
+    const key = this.buildKey(sessionId, project, summaryId);
 
     if (this.store.has(key)) {
       // Overwrite in-place; move to back so it is considered newest
@@ -85,26 +85,42 @@ interface ApiListResponse<T> {
 export async function fetchSessionDetail(
   sessionId: string | null,
   project: string,
+  summaryId?: number | null,
   signal?: AbortSignal,
 ): Promise<SessionDetail | null> {
   if (!sessionId) {
     return null;
   }
 
-  // TODO: Add session_id query param once the API supports server-side filtering.
-  // Currently fetches all items for the project and filters client-side.
-  const params = new URLSearchParams({
+  // Base params for summaries (filter by session_id)
+  const summaryParams = new URLSearchParams({
     offset: '0',
     limit: '200',
-    project,
+    session_id: sessionId,
   });
+  if (project) {
+    summaryParams.set('project', project);
+  }
+
+  // Params for observations and prompts — scope to summary's time window when summaryId is available
+  const detailParams = new URLSearchParams({
+    offset: '0',
+    limit: '200',
+    session_id: sessionId,
+  });
+  if (project) {
+    detailParams.set('project', project);
+  }
+  if (summaryId) {
+    detailParams.set('summary_id', String(summaryId));
+  }
 
   const fetchOpts = signal ? { signal } : undefined;
 
   const [summariesResp, observationsResp, promptsResp] = await Promise.all([
-    fetch(`${API_ENDPOINTS.SUMMARIES}?${params}`, fetchOpts),
-    fetch(`${API_ENDPOINTS.OBSERVATIONS}?${params}`, fetchOpts),
-    fetch(`${API_ENDPOINTS.PROMPTS}?${params}`, fetchOpts),
+    fetch(`${API_ENDPOINTS.SUMMARIES}?${summaryParams}`, fetchOpts),
+    fetch(`${API_ENDPOINTS.OBSERVATIONS}?${detailParams}`, fetchOpts),
+    fetch(`${API_ENDPOINTS.PROMPTS}?${detailParams}`, fetchOpts),
   ]);
 
   if (!summariesResp.ok) {
@@ -123,19 +139,19 @@ export async function fetchSessionDetail(
     promptsResp.json() as Promise<ApiListResponse<UserPrompt>>,
   ]);
 
-  const summary = summariesData.items.find((s) => s.session_id === sessionId);
+  // When summaryId is provided, find the specific summary; otherwise take the first
+  const summary = summaryId
+    ? summariesData.items.find(s => s.id === summaryId) ?? summariesData.items[0]
+    : summariesData.items[0];
   if (!summary) {
     return null;
   }
 
-  const observations = observationsData.items.filter(
-    (o) => o.memory_session_id === sessionId,
-  );
-  const prompts = promptsData.items.filter(
-    (p) => p.content_session_id === sessionId,
-  );
-
-  return { summary, observations, prompts };
+  return {
+    summary,
+    observations: observationsData.items,
+    prompts: promptsData.items,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -163,9 +179,10 @@ interface UseSessionDetailResult {
 export function useSessionDetail(
   sessionId: string | null,
   project: string,
+  summaryId?: number | null,
 ): UseSessionDetailResult {
   const [detail, setDetail] = useState<SessionDetail | null>(() =>
-    sessionId ? (sessionDetailCache.get(sessionId, project) ?? null) : null,
+    sessionId ? (sessionDetailCache.get(sessionId, project, summaryId) ?? null) : null,
   );
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -179,7 +196,7 @@ export function useSessionDetail(
 
     // Serve from cache immediately so the UI doesn't flash.
     // No background revalidation — cached data is used as-is until evicted.
-    const cached = sessionDetailCache.get(sessionId, project);
+    const cached = sessionDetailCache.get(sessionId, project, summaryId);
     if (cached) {
       setDetail(cached);
       setIsLoading(false);
@@ -193,11 +210,11 @@ export function useSessionDetail(
     const controller = new AbortController();
     abortRef.current = controller;
 
-    void fetchSessionDetail(sessionId, project, controller.signal)
+    void fetchSessionDetail(sessionId, project, summaryId, controller.signal)
       .then((result) => {
         if (controller.signal.aborted) return;
         if (result) {
-          sessionDetailCache.set(sessionId, project, result);
+          sessionDetailCache.set(sessionId, project, result, summaryId);
         }
         setDetail(result);
       })
@@ -216,7 +233,7 @@ export function useSessionDetail(
     return () => {
       controller.abort();
     };
-  }, [sessionId, project]);
+  }, [sessionId, project, summaryId]);
 
   return { detail, isLoading };
 }

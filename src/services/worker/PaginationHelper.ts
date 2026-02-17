@@ -69,9 +69,105 @@ export class PaginationHelper {
   }
 
   /**
+   * Compute the time window for a summary: (previousSummaryEpoch, thisSummaryEpoch].
+   * Returns { epochAfter, epochBefore } where epochAfter is exclusive lower bound
+   * and epochBefore is inclusive upper bound.
+   */
+  private getSummaryTimeWindow(summaryId: number): { memorySessionId: string; epochAfter: number; epochBefore: number } | null {
+    const db = this.dbManager.getSessionStore().db;
+    const summary = db.prepare(
+      'SELECT memory_session_id, created_at_epoch FROM session_summaries WHERE id = ?'
+    ).get(summaryId) as { memory_session_id: string; created_at_epoch: number } | undefined;
+
+    if (!summary) return null;
+
+    const prevSummary = db.prepare(
+      `SELECT MAX(created_at_epoch) as epoch FROM session_summaries
+       WHERE memory_session_id = ? AND created_at_epoch < ?`
+    ).get(summary.memory_session_id, summary.created_at_epoch) as { epoch: number | null } | undefined;
+
+    return {
+      memorySessionId: summary.memory_session_id,
+      epochAfter: prevSummary?.epoch ?? 0,
+      epochBefore: summary.created_at_epoch,
+    };
+  }
+
+  /**
    * Get paginated observations
    */
-  getObservations(offset: number, limit: number, project?: string): PaginatedResult<Observation> {
+  getObservations(offset: number, limit: number, project?: string, sessionId?: string, summaryId?: number): PaginatedResult<Observation> {
+    const db = this.dbManager.getSessionStore().db;
+
+    // When summaryId is provided, scope to that summary's time window
+    if (summaryId) {
+      const window = this.getSummaryTimeWindow(summaryId);
+      if (!window) {
+        return { items: [], hasMore: false, offset, limit };
+      }
+
+      let query = `
+        SELECT o.id, o.memory_session_id, o.project, o.type, o.title, o.subtitle,
+               o.narrative, o.text, o.facts, o.concepts, o.files_read, o.files_modified,
+               o.prompt_number, o.created_at, o.created_at_epoch
+        FROM observations o
+        WHERE o.memory_session_id = ?
+          AND o.created_at_epoch > ?
+          AND o.created_at_epoch <= ?
+      `;
+      const params: (string | number)[] = [window.memorySessionId, window.epochAfter, window.epochBefore];
+
+      if (project) {
+        query += ' AND o.project = ?';
+        params.push(project);
+      }
+
+      query += ' ORDER BY o.created_at_epoch DESC LIMIT ? OFFSET ?';
+      params.push(limit + 1, offset);
+
+      const results = db.prepare(query).all(...params) as Observation[];
+
+      return {
+        items: results.slice(0, limit).map(obs => this.sanitizeObservation(obs)),
+        hasMore: results.length > limit,
+        offset,
+        limit
+      };
+    }
+
+    if (sessionId) {
+      // When filtering by session_id (content_session_id), join through sdk_sessions
+      // since observations use memory_session_id, not content_session_id
+      let query = `
+        SELECT o.id, o.memory_session_id, o.project, o.type, o.title, o.subtitle,
+               o.narrative, o.text, o.facts, o.concepts, o.files_read, o.files_modified,
+               o.prompt_number, o.created_at, o.created_at_epoch
+        FROM observations o
+        JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+      `;
+      const params: (string | number)[] = [];
+      const conditions: string[] = ['s.content_session_id = ?'];
+      params.push(sessionId);
+
+      if (project) {
+        conditions.push('o.project = ?');
+        params.push(project);
+      }
+
+      query += ` WHERE ${conditions.join(' AND ')}`;
+      query += ' ORDER BY o.created_at_epoch DESC LIMIT ? OFFSET ?';
+      params.push(limit + 1, offset);
+
+      const results = db.prepare(query).all(...params) as Observation[];
+
+      return {
+        items: results.slice(0, limit).map(obs => this.sanitizeObservation(obs)),
+        hasMore: results.length > limit,
+        offset,
+        limit
+      };
+    }
+
     const result = this.paginate<Observation>(
       'observations',
       'id, memory_session_id, project, type, title, subtitle, narrative, text, facts, concepts, files_read, files_modified, prompt_number, created_at, created_at_epoch',
@@ -80,7 +176,6 @@ export class PaginationHelper {
       project
     );
 
-    // Strip project paths from file paths before returning
     return {
       ...result,
       items: result.items.map(obs => this.sanitizeObservation(obs))
@@ -90,7 +185,7 @@ export class PaginationHelper {
   /**
    * Get paginated summaries
    */
-  getSummaries(offset: number, limit: number, project?: string): PaginatedResult<Summary> {
+  getSummaries(offset: number, limit: number, project?: string, sessionId?: string): PaginatedResult<Summary> {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `
@@ -104,15 +199,34 @@ export class PaginationHelper {
         ss.next_steps,
         ss.project,
         ss.created_at,
-        ss.created_at_epoch
+        ss.created_at_epoch,
+        (SELECT COUNT(*) FROM observations o
+         WHERE o.memory_session_id = ss.memory_session_id
+           AND o.created_at_epoch <= ss.created_at_epoch
+           AND o.created_at_epoch > COALESCE(
+             (SELECT MAX(ss2.created_at_epoch)
+              FROM session_summaries ss2
+              WHERE ss2.memory_session_id = ss.memory_session_id
+                AND ss2.created_at_epoch < ss.created_at_epoch),
+             0
+           )
+        ) as observation_count
       FROM session_summaries ss
       JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
     `;
     const params: (string | number)[] = [];
+    const conditions: string[] = [];
 
     if (project) {
-      query += ' WHERE ss.project = ?';
+      conditions.push('ss.project = ?');
       params.push(project);
+    }
+    if (sessionId) {
+      conditions.push('s.content_session_id = ?');
+      params.push(sessionId);
+    }
+    if (conditions.length > 0) {
+      query += ` WHERE ${conditions.join(' AND ')}`;
     }
 
     query += ' ORDER BY ss.created_at_epoch DESC LIMIT ? OFFSET ?';
@@ -132,8 +246,43 @@ export class PaginationHelper {
   /**
    * Get paginated user prompts
    */
-  getPrompts(offset: number, limit: number, project?: string): PaginatedResult<UserPrompt> {
+  getPrompts(offset: number, limit: number, project?: string, sessionId?: string, summaryId?: number): PaginatedResult<UserPrompt> {
     const db = this.dbManager.getSessionStore().db;
+
+    // When summaryId is provided, scope prompts to that summary's time window
+    if (summaryId) {
+      const window = this.getSummaryTimeWindow(summaryId);
+      if (!window) {
+        return { items: [], hasMore: false, offset, limit };
+      }
+
+      let query = `
+        SELECT up.id, up.content_session_id, s.project, up.prompt_number, up.prompt_text, up.created_at, up.created_at_epoch
+        FROM user_prompts up
+        JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+        WHERE s.memory_session_id = ?
+          AND up.created_at_epoch > ?
+          AND up.created_at_epoch <= ?
+      `;
+      const params: (string | number)[] = [window.memorySessionId, window.epochAfter, window.epochBefore];
+
+      if (project) {
+        query += ' AND s.project = ?';
+        params.push(project);
+      }
+
+      query += ' ORDER BY up.created_at_epoch DESC LIMIT ? OFFSET ?';
+      params.push(limit + 1, offset);
+
+      const results = db.prepare(query).all(...params) as UserPrompt[];
+
+      return {
+        items: results.slice(0, limit),
+        hasMore: results.length > limit,
+        offset,
+        limit
+      };
+    }
 
     let query = `
       SELECT up.id, up.content_session_id, s.project, up.prompt_number, up.prompt_text, up.created_at, up.created_at_epoch
@@ -141,17 +290,24 @@ export class PaginationHelper {
       JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
     `;
     const params: (string | number)[] = [];
+    const conditions: string[] = [];
 
     if (project) {
-      query += ' WHERE s.project = ?';
+      conditions.push('s.project = ?');
       params.push(project);
+    }
+    if (sessionId) {
+      conditions.push('up.content_session_id = ?');
+      params.push(sessionId);
+    }
+    if (conditions.length > 0) {
+      query += ` WHERE ${conditions.join(' AND ')}`;
     }
 
     query += ' ORDER BY up.created_at_epoch DESC LIMIT ? OFFSET ?';
     params.push(limit + 1, offset);
 
-    const stmt = db.prepare(query);
-    const results = stmt.all(...params) as UserPrompt[];
+    const results = db.prepare(query).all(...params) as UserPrompt[];
 
     return {
       items: results.slice(0, limit),
@@ -169,16 +325,25 @@ export class PaginationHelper {
     columns: string,
     offset: number,
     limit: number,
-    project?: string
+    project?: string,
+    extraFilter?: { column: string; value: string }
   ): PaginatedResult<T> {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `SELECT ${columns} FROM ${table}`;
     const params: (string | number)[] = [];
+    const conditions: string[] = [];
 
     if (project) {
-      query += ' WHERE project = ?';
+      conditions.push('project = ?');
       params.push(project);
+    }
+    if (extraFilter) {
+      conditions.push(`${extraFilter.column} = ?`);
+      params.push(extraFilter.value);
+    }
+    if (conditions.length > 0) {
+      query += ` WHERE ${conditions.join(' AND ')}`;
     }
 
     query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';

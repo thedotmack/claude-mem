@@ -136,6 +136,7 @@ export interface Summary {
   notes: string | null;
   created_at: string;
   created_at_epoch: number;
+  observation_count?: number;
 }
 
 export interface UserPrompt {
