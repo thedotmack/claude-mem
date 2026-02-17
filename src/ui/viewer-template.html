@@ -97,6 +97,12 @@
 
       --shadow-focus: 0 0 0 2px rgba(9, 105, 218, 0.3);
 
+      /* Spacing scale */
+      --space-4: 16px;
+
+      /* Line heights */
+      --line-normal: 1.5;
+
       /* Font families */
       --font-terminal: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
     }
@@ -506,7 +512,7 @@
       align-items: center;
       height: 36px;
       min-width: 200px;
-      max-width: 320px;
+      max-width: 400px;
       flex: 1;
     }
 
@@ -1140,13 +1146,13 @@
 
     .card {
       margin-bottom: 24px;
-      padding: 24px;
+      padding: var(--space-4);
       background: var(--color-bg-card);
       border: 1px solid var(--color-border-primary);
       border-radius: 8px;
       transition: all 0.15s ease;
       animation: slideIn 0.3s ease-out;
-      line-height: 1.7;
+      line-height: var(--line-normal);
     }
 
     @keyframes slideIn {
@@ -1199,86 +1205,6 @@
       font-weight: 600;
       line-height: 1.4;
       letter-spacing: -0.01em;
-    }
-
-    .view-mode-toggles {
-      display: flex;
-      gap: 8px;
-      flex-shrink: 0;
-    }
-
-    .view-mode-toggle {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      background: var(--color-bg-tertiary);
-      border: 1px solid var(--color-border-primary);
-      padding: 4px 8px;
-      border-radius: 4px;
-      cursor: pointer;
-      color: var(--color-text-secondary);
-      transition: all 0.15s ease;
-      font-size: 11px;
-      font-weight: 500;
-      text-transform: lowercase;
-      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
-    }
-
-    .view-mode-toggle svg {
-      flex-shrink: 0;
-      opacity: 0.7;
-      transition: opacity 0.15s ease;
-    }
-
-    .view-mode-toggle:hover {
-      background: var(--color-bg-card-hover);
-      border-color: var(--color-border-hover);
-      color: var(--color-text-primary);
-    }
-
-    .view-mode-toggle:hover svg {
-      opacity: 1;
-    }
-
-    .view-mode-toggle.active {
-      background: var(--color-accent-primary);
-      border-color: var(--color-accent-primary);
-      color: var(--color-text-button);
-    }
-
-    .view-mode-toggle.active svg {
-      opacity: 1;
-    }
-
-    .view-mode-content {
-      margin-bottom: 12px;
-    }
-
-    .view-mode-content .card-subtitle {
-      margin-bottom: 0;
-    }
-
-    .view-mode-content .facts-list {
-      list-style: disc;
-      margin: 0;
-      padding-left: 20px;
-      color: var(--color-text-secondary);
-      font-size: 13px;
-      line-height: 1.7;
-    }
-
-    .view-mode-content .facts-list li {
-      margin-bottom: 6px;
-    }
-
-    .view-mode-content .narrative {
-      max-height: 300px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      word-wrap: break-word;
-      color: var(--color-text-secondary);
-      font-size: 13px;
-      line-height: 1.7;
     }
 
     .card-section {
@@ -1351,6 +1277,7 @@
     .summary-card {
       border-color: var(--color-border-summary);
       background: var(--color-bg-summary);
+      border-left: 3px solid var(--color-accent-summary);
     }
 
     .summary-card:hover {
@@ -1369,11 +1296,12 @@
     /* Enhanced Summary Card Styles - Editorial/Archival Aesthetic */
     .summary-card {
       position: relative;
+      padding: var(--space-4);
     }
 
     .summary-card-header {
-      margin-bottom: 24px;
-      padding-bottom: 20px;
+      margin-bottom: var(--space-4);
+      padding-bottom: var(--space-4);
       border-bottom: 1px solid var(--color-border-summary);
       border-bottom-style: dashed;
     }
@@ -1449,6 +1377,20 @@
       align-items: center;
       gap: 10px;
       margin-bottom: 10px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .summary-section-chevron {
+      margin-left: auto;
+      color: var(--color-accent-summary);
+      font-size: 14px;
+      transition: transform 0.2s ease;
+      display: inline-block;
+    }
+
+    .summary-section-chevron--expanded {
+      transform: rotate(180deg);
     }
 
     .summary-section-label {
@@ -1464,10 +1406,13 @@
       margin-left: 26px;
       color: var(--color-text-secondary);
       font-size: 14px;
-      line-height: 1.6;
+      line-height: var(--line-normal);
       white-space: pre-wrap;
       word-wrap: break-word;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      max-height: 500px;
+      overflow: hidden;
+      transition: max-height 0.2s ease;
     }
 
     .summary-card-footer {
@@ -1557,15 +1502,81 @@
     .prompt-card {
       border-color: var(--color-border-prompt);
       background: var(--color-bg-prompt);
+      border-left: 3px solid var(--color-accent-prompt);
+      padding: var(--space-4, 16px);
     }
 
     .prompt-card:hover {
       border-color: var(--color-border-prompt-hover);
     }
 
-    .prompt-card .card-type {
+    .prompt-card__header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: var(--color-text-muted);
+    }
+
+    .prompt-card__badge {
+      font-size: 11px;
+      font-weight: 600;
       background: var(--color-prompt-badge-bg);
       color: var(--color-prompt-badge-text);
+      padding: 2px 6px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+
+    .prompt-card__project {
+      font-size: 11px;
+      color: var(--color-text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+    }
+
+    .prompt-card__date {
+      font-size: 11px;
+      color: var(--color-text-muted);
+      white-space: nowrap;
+      margin-left: auto;
+    }
+
+    .prompt-card__content {
+      line-height: var(--line-normal, 1.5);
+      color: var(--color-text-primary);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .prompt-card__content--expanded {
+      display: block;
+      -webkit-line-clamp: unset;
+      overflow: visible;
+    }
+
+    .prompt-card__toggle {
+      display: inline-block;
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--color-accent-prompt);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    .prompt-card__toggle:hover {
+      opacity: 0.8;
     }
 
     .observation-card {
@@ -1574,13 +1585,98 @@
       color: var(--color-text-observation);
     }
 
+    .observation-card--expandable {
+      cursor: pointer;
+    }
+
     .observation-card:hover {
       border-color: var(--color-border-observation-hover);
     }
 
-    .observation-card .card-type {
-      background: var(--color-observation-badge-bg);
-      color: var(--color-observation-badge-text);
+    /* Left-border color accents by observation type */
+    .card[data-obs-type] {
+      border-left: 3px solid var(--color-accent-observation);
+    }
+
+    .card[data-obs-type="bugfix"] {
+      border-left-color: var(--color-accent-error);
+    }
+
+    .card[data-obs-type="error_resolution"] {
+      border-left-color: var(--color-accent-error);
+    }
+
+    .card[data-obs-type="feature"] {
+      border-left-color: var(--color-accent-success);
+    }
+
+    .card[data-obs-type="discovery"] {
+      border-left-color: var(--color-accent-primary);
+    }
+
+    .card[data-obs-type="decision"] {
+      border-left-color: var(--color-accent-summary);
+    }
+
+    .card[data-obs-type="refactor"] {
+      border-left-color: var(--color-accent-prompt);
+    }
+
+    /* Always-visible concepts and files section */
+    .card__concepts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 10px;
+      font-size: 11px;
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    }
+
+    .observation-card__concept-chip {
+      display: inline-block;
+      padding: 2px 8px;
+      background: var(--color-observation-badge-bg, rgba(9, 105, 218, 0.12));
+      color: var(--color-observation-badge-text, #0550ae);
+      border-radius: 3px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    /* Expandable facts section */
+    .card-facts {
+      margin-top: 10px;
+      margin-bottom: 6px;
+    }
+
+    .card-facts .facts-list {
+      list-style: disc;
+      margin: 0 0 10px 0;
+      padding-left: 20px;
+      color: var(--color-text-secondary);
+      font-size: 13px;
+      line-height: var(--line-normal);
+    }
+
+    .card-facts .facts-list li {
+      margin-bottom: 6px;
+    }
+
+    .card-facts .narrative {
+      max-height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      color: var(--color-text-secondary);
+      font-size: 13px;
+      line-height: var(--line-normal);
+    }
+
+    /* Expand/collapse hint in card footer */
+    .expand-hint {
+      font-size: 10px;
+      color: var(--color-text-muted);
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      cursor: pointer;
     }
 
     .card-content {
