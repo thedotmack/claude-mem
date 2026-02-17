@@ -1481,7 +1481,7 @@ export class SessionStore {
       JSON.stringify(observation.concepts),
       JSON.stringify(observation.files_read),
       JSON.stringify(observation.files_modified),
-      promptNumber || null,
+      promptNumber ?? null,
       discoveryTokens,
       timestampIso,
       timestampEpoch
@@ -1532,7 +1532,7 @@ export class SessionStore {
       summary.completed,
       summary.next_steps,
       summary.notes,
-      promptNumber || null,
+      promptNumber ?? null,
       discoveryTokens,
       timestampIso,
       timestampEpoch
@@ -1613,7 +1613,7 @@ export class SessionStore {
           JSON.stringify(observation.concepts),
           JSON.stringify(observation.files_read),
           JSON.stringify(observation.files_modified),
-          promptNumber || null,
+          promptNumber ?? null,
           discoveryTokens,
           timestampIso,
           timestampEpoch
@@ -1640,7 +1640,7 @@ export class SessionStore {
           summary.completed,
           summary.next_steps,
           summary.notes,
-          promptNumber || null,
+          promptNumber ?? null,
           discoveryTokens,
           timestampIso,
           timestampEpoch
@@ -1733,7 +1733,7 @@ export class SessionStore {
           JSON.stringify(observation.concepts),
           JSON.stringify(observation.files_read),
           JSON.stringify(observation.files_modified),
-          promptNumber || null,
+          promptNumber ?? null,
           discoveryTokens,
           timestampIso,
           timestampEpoch
@@ -1760,7 +1760,7 @@ export class SessionStore {
           summary.completed,
           summary.next_steps,
           summary.notes,
-          promptNumber || null,
+          promptNumber ?? null,
           discoveryTokens,
           timestampIso,
           timestampEpoch

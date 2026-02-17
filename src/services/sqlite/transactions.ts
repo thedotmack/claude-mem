@@ -83,7 +83,7 @@ export function storeObservationsAndMarkComplete(
         JSON.stringify(observation.concepts),
         JSON.stringify(observation.files_read),
         JSON.stringify(observation.files_modified),
-        promptNumber || null,
+        promptNumber ?? null,
         discoveryTokens,
         timestampIso,
         timestampEpoch
@@ -110,7 +110,7 @@ export function storeObservationsAndMarkComplete(
         summary.completed,
         summary.next_steps,
         summary.notes,
-        promptNumber || null,
+        promptNumber ?? null,
         discoveryTokens,
         timestampIso,
         timestampEpoch
@@ -194,7 +194,7 @@ export function storeObservations(
         JSON.stringify(observation.concepts),
         JSON.stringify(observation.files_read),
         JSON.stringify(observation.files_modified),
-        promptNumber || null,
+        promptNumber ?? null,
         discoveryTokens,
         timestampIso,
         timestampEpoch
@@ -221,7 +221,7 @@ export function storeObservations(
         summary.completed,
         summary.next_steps,
         summary.notes,
-        promptNumber || null,
+        promptNumber ?? null,
         discoveryTokens,
         timestampIso,
         timestampEpoch

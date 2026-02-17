@@ -42,7 +42,7 @@ export function storeObservation(
     JSON.stringify(observation.concepts),
     JSON.stringify(observation.files_read),
     JSON.stringify(observation.files_modified),
-    promptNumber || null,
+    promptNumber ?? null,
     discoveryTokens,
     timestampIso,
     timestampEpoch

@@ -133,6 +133,17 @@ describe('Observations Module', () => {
       expect(result.createdAtEpoch).toBeLessThanOrEqual(after);
     });
 
+    it('should store prompt_number=0 as 0 (not NULL)', () => {
+      const memorySessionId = createSessionWithMemoryId('content-zero', 'session-zero');
+      const observation = createObservationInput();
+
+      const result = storeObservation(db, memorySessionId, 'test-project', observation, 0);
+      const stored = getObservationById(db, result.id);
+
+      expect(stored).not.toBeNull();
+      expect(stored!.prompt_number).toBe(0);
+    });
+
     it('should handle null subtitle and narrative', () => {
       const memorySessionId = createSessionWithMemoryId('content-null', 'session-null');
       const observation = createObservationInput({
