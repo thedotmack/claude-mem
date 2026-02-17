@@ -85,6 +85,8 @@
     "test:context": "vitest run tests/context/",
     "test:infra": "vitest run tests/infrastructure/",
     "test:server": "vitest run tests/server/",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "prepublishOnly": "npm run build",
     "release": "np",
     "release:patch": "np patch --no-cleanup",
@@ -112,6 +114,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
+    "@playwright/test": "^1.58.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.21",

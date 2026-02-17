@@ -116,16 +116,9 @@ export function ObservationCard({ observation }: ObservationCardProps) {
       <div className="card-meta">
         <span className="meta-date">#{observation.id} • {date}</span>
         {showFacts && (concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+          <div className="observation-card__concepts">
             {concepts.map((concept, i) => (
-              <span key={i} style={{
-                padding: '2px 8px',
-                background: 'var(--color-type-badge-bg)',
-                color: 'var(--color-type-badge-text)',
-                borderRadius: '3px',
-                fontWeight: '500',
-                fontSize: '10px'
-              }}>
+              <span key={i} className="observation-card__concept-chip">
                 {concept}
               </span>
             ))}

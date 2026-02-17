@@ -34,3 +34,8 @@ https*/
 
 # ESLint
 .eslintcache
+
+# Playwright
+playwright-report/
+test-results/
+tests/ui/__screenshots__/

@@ -69,7 +69,7 @@ export function Header({
     <>
       <div className="header">
         <h1>
-          <div style={{ position: 'relative', display: 'inline-block' }}>
+          <div className="header__logo-wrapper">
             <img
               src={isProcessing ? 'magic-brain.webp' : 'magic-brain-still.webp'}
               alt=""

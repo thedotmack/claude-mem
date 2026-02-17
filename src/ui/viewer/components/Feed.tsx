@@ -76,21 +76,21 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
           }
         })}
         {items.length === 0 && !isLoading && (
-          <div style={{ textAlign: 'center', padding: '40px', color: '#8b949e' }}>
+          <div className="feed__empty-message">
             No items to display
           </div>
         )}
         {isLoading && (
-          <div style={{ textAlign: 'center', padding: '20px', color: '#8b949e' }}>
-            <div className="spinner" style={{ display: 'inline-block', marginRight: '10px' }}></div>
+          <div className="feed__loading-message">
+            <div className="spinner feed__loading-spinner"></div>
             Loading more...
           </div>
         )}
         {hasMore && !isLoading && items.length > 0 && (
-          <div ref={loadMoreRef} style={{ height: '20px', margin: '10px 0' }} />
+          <div ref={loadMoreRef} className="feed__load-more-sentinel" />
         )}
         {!hasMore && items.length > 0 && (
-          <div style={{ textAlign: 'center', padding: '20px', color: '#8b949e', fontSize: '14px' }}>
+          <div className="feed__end-message">
             No more items to load
           </div>
         )}

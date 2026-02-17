@@ -280,7 +280,7 @@ export function ContextSettingsModal({
           <div className="preview-column">
             <div className="preview-content">
               {error ? (
-                <div style={{ color: '#ff6b6b' }}>
+                <div className="context-settings__error">
                   Error loading preview: {error}
                 </div>
               ) : (
@@ -468,7 +468,7 @@ export function ContextSettingsModal({
                       <option value="gemini-3-flash">gemini-3-flash (5 RPM free)</option>
                     </select>
                   </FormField>
-                  <div className="toggle-group" style={{ marginTop: '8px' }}>
+                  <div className="toggle-group toggle-group--spaced">
                     <ToggleSwitch
                       id="gemini-rate-limiting"
                       label="Rate Limiting"
@@ -542,7 +542,7 @@ export function ContextSettingsModal({
                 />
               </FormField>
 
-              <div className="toggle-group" style={{ marginTop: '12px' }}>
+              <div className="toggle-group toggle-group--spaced-lg">
                 <ToggleSwitch
                   id="show-last-summary"
                   label="Include last summary"

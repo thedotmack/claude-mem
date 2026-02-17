@@ -106,8 +106,7 @@ export function ActivityBar({ days, dateStart, dateEnd, onDateRangeSelect, isLoa
         return (
           <div
             key={day.date}
-            className={`activity-bar-column ${inRange ? 'selected' : ''}`}
-            style={{ height: '100%' }}
+            className={`activity-bar-column activity-bar-column--full-height ${inRange ? 'selected' : ''}`}
             onMouseDown={() => { handleMouseDown(i); }}
             onMouseUp={() => { handleMouseUp(i); }}
             onMouseEnter={e => { handleMouseEnter(day, i, e); }}
@@ -168,7 +167,7 @@ export function ActivityBar({ days, dateStart, dateEnd, onDateRangeSelect, isLoa
               )}
             </>
           ) : (
-            <span style={{ opacity: 0.6 }}>no activity</span>
+            <span className="activity-bar__no-activity">no activity</span>
           )}
         </div>
         );
