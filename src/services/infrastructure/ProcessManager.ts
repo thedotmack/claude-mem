@@ -10,7 +10,7 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
+import { chmodSync, existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
 import { exec, execSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
@@ -130,8 +130,9 @@ export interface PidInfo {
  * Write PID info to the standard PID file location
  */
 export function writePidFile(info: PidInfo): void {
-  mkdirSync(DATA_DIR, { recursive: true });
+  mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   writeFileSync(PID_FILE, JSON.stringify(info, null, 2));
+  chmodSync(PID_FILE, 0o600);
 }
 
 /**

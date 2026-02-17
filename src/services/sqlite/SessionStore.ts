@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite';
+import { chmodSync } from 'node:fs';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
@@ -26,6 +27,9 @@ export class SessionStore {
       ensureDir(DATA_DIR);
     }
     this.db = new Database(dbPath);
+    if (dbPath !== ':memory:') {
+      chmodSync(dbPath, 0o600);
+    }
 
     // Ensure optimized settings
     this.db.run('PRAGMA journal_mode = WAL');

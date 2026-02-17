@@ -68,7 +68,7 @@ export function getWorkerSocketPath(sessionId: number): string {
  * Ensure a directory exists
  */
 export function ensureDir(dirPath: string): void {
-  mkdirSync(dirPath, { recursive: true });
+  mkdirSync(dirPath, { recursive: true, mode: 0o700 });
 }
 
 /**

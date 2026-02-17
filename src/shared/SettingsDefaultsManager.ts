@@ -5,7 +5,7 @@
  * Provides methods to get defaults with optional environment variable overrides.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { chmodSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { DEFAULT_OBSERVATION_TYPES_STRING, DEFAULT_OBSERVATION_CONCEPTS_STRING } from '../constants/observation-metadata.js';
@@ -193,6 +193,7 @@ export class SettingsDefaultsManager {
             mkdirSync(dir, { recursive: true });
           }
           writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+          chmodSync(settingsPath, 0o600);
           // Use console instead of logger to avoid circular dependency
           console.log('[SETTINGS] Created settings file with defaults:', settingsPath);
         } catch (error) {
@@ -214,6 +215,7 @@ export class SettingsDefaultsManager {
         // Auto-migrate the file to flat schema
         try {
           writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
+          chmodSync(settingsPath, 0o600);
           console.log('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
         } catch (error) {
           console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error);

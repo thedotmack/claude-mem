@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite';
+import { chmodSync } from 'node:fs';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { MigrationRunner } from './migrations/runner.js';
@@ -37,6 +38,9 @@ export class ClaudeMemDatabase {
 
     // Create database connection
     this.db = new Database(dbPath, { create: true, readwrite: true });
+    if (dbPath !== ':memory:') {
+      chmodSync(dbPath, 0o600);
+    }
 
     // Apply optimized SQLite settings
     this.db.run('PRAGMA journal_mode = WAL');
@@ -96,6 +100,7 @@ export class DatabaseManager {
     ensureDir(DATA_DIR);
 
     this.db = new Database(DB_PATH, { create: true, readwrite: true });
+    chmodSync(DB_PATH, 0o600);
 
     // Apply optimized SQLite settings
     this.db.run('PRAGMA journal_mode = WAL');

@@ -3,7 +3,7 @@
  * Provides readable, traceable logging with correlation IDs and data flow tracking
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -60,6 +60,9 @@ class Logger {
       // Create log file path with date
       const date = new Date().toISOString().split('T')[0];
       this.logFilePath = join(logsDir, `claude-mem-${date}.log`);
+      // Ensure log file has restrictive permissions (touch + chmod)
+      appendFileSync(this.logFilePath, '', 'utf8');
+      chmodSync(this.logFilePath, 0o600);
     } catch (error) {
       // If log file initialization fails, just log to console
       console.error('[LOGGER] Failed to initialize log file:', error);
