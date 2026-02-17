@@ -263,14 +263,6 @@ function installDeps() {
   // Quote path for Windows paths with spaces
   const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
 
-  // Clear Bun's package cache to prevent stale native module artifacts
-  try {
-    execSync(`${bunCmd} pm cache rm`, { cwd: ROOT, stdio: 'pipe', shell: IS_WINDOWS });
-    console.error('   Cleared Bun package cache');
-  } catch {
-    // Cache may not exist yet on first install
-  }
-
   execSync(`${bunCmd} install`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
 
   // Write version marker

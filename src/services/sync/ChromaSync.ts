@@ -81,6 +81,7 @@ export class ChromaSync {
   private collectionName: string;
   private readonly VECTOR_DB_DIR: string;
   private readonly BATCH_SIZE = 100;
+  private modelCacheCorruptionRetried = false;
 
   constructor(project: string) {
     this.project = project;
@@ -189,6 +190,10 @@ export class ChromaSync {
     }
 
     try {
+      // Store model cache outside node_modules so reinstalls don't corrupt it
+      const { env } = await import('@huggingface/transformers');
+      env.cacheDir = path.join(os.homedir(), '.claude-mem', 'models');
+
       // Use WASM backend to avoid native ONNX binary issues (#1104, #1105, #1110).
       // Same model (all-MiniLM-L6-v2), same embeddings, but runs in WASM —
       // no native binary loading, no segfaults, no ENOENT errors.
@@ -204,8 +209,22 @@ export class ChromaSync {
         collection: this.collectionName
       });
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      // Self-heal: corrupted model cache → clear and retry once
+      if (errorMessage.includes('Protobuf parsing failed') && !this.modelCacheCorruptionRetried) {
+        this.modelCacheCorruptionRetried = true;
+        logger.warn('CHROMA_SYNC', 'Corrupted model cache detected, clearing and retrying...');
+        const modelCacheDir = path.join(os.homedir(), '.claude-mem', 'models');
+        const fs = await import('fs');
+        if (fs.existsSync(modelCacheDir)) {
+          fs.rmSync(modelCacheDir, { recursive: true, force: true });
+        }
+        return this.ensureCollection(); // retry once
+      }
+
       logger.error('CHROMA_SYNC', 'Failed to get/create collection', { collection: this.collectionName }, error as Error);
-      throw new Error(`Collection setup failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Collection setup failed: ${errorMessage}`);
     }
   }
 

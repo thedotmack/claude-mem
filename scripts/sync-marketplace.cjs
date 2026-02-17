@@ -80,14 +80,6 @@ try {
     { stdio: 'inherit' }
   );
 
-  // Clear Bun's package cache to prevent stale native module artifacts
-  try {
-    execSync('bun pm cache rm', { cwd: INSTALLED_PATH, stdio: 'pipe' });
-    console.log('Cleared Bun package cache');
-  } catch {
-    // Cache may not exist yet on first install
-  }
-
   console.log('Running bun install in marketplace...');
   execSync(
     'cd ~/.claude/plugins/marketplaces/thedotmack/ && bun install',
@@ -106,6 +98,10 @@ try {
     `rsync -av --delete --exclude=.git ${pluginGitignoreExcludes} plugin/ "${CACHE_VERSION_PATH}/"`,
     { stdio: 'inherit' }
   );
+
+  // Install dependencies in cache directory so worker can resolve them
+  console.log(`Running bun install in cache folder (version ${version})...`);
+  execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
 
   console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 
