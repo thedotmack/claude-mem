@@ -10,6 +10,7 @@ import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js
 import { getProjectName } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { readAndClearObservationHealth } from '../observation-health.js';
 
 const MAX_RETRIES = 3;
 const INITIAL_BACKOFF_MS = 500;
@@ -59,6 +60,12 @@ export const sessionInitHandler: EventHandler = {
     const workerReady = await ensureWorkerRunning();
     if (!workerReady) {
       return GRACEFUL_SKIP;
+    }
+
+    // Check observation health from previous prompt cycle (report at end)
+    const obsHealth = readAndClearObservationHealth();
+    if (obsHealth && obsHealth.failures > 0) {
+      logger.info('HOOK', `Observation health: ${String(obsHealth.failures)} failures since ${obsHealth.since}`);
     }
 
     const { sessionId, cwd, prompt } = input;
@@ -147,6 +154,19 @@ export const sessionInitHandler: EventHandler = {
     logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${String(sessionDbId)} | promptNumber=${String(promptNumber)} | project=${project}`, {
       sessionId: sessionDbId
     });
+
+    // Include observation health warning if failures occurred since last prompt
+    if (obsHealth && obsHealth.failures > 0) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext:
+            `\u26a0\ufe0f claude-mem: ${String(obsHealth.failures)} observation(s) failed to store since last prompt. ` +
+            'Memory capture may be incomplete. If this persists, try restarting the worker with: magic-claude-mem worker:restart'
+        },
+        exitCode: HOOK_EXIT_CODES.SUCCESS
+      };
+    }
 
     return { continue: true, suppressOutput: true };
   }

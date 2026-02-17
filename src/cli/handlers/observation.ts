@@ -1,15 +1,19 @@
 /**
  * Observation Handler - PostToolUse
  *
- * Extracted from save-hook.ts - sends tool usage to worker for storage.
+ * Sends tool usage to worker for storage using fire-and-forget HTTP.
+ * Waits only for TCP write flush (~1-5ms) instead of full response (~300ms+).
+ * Failures are tracked in a health file and reported at UserPromptSubmit.
  */
 
+import http from 'http';
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { recordObservationFailure, recordObservationSuccess } from '../observation-health.js';
 
 /** Lazily loaded and cached skip tools set */
 let skipToolsCache: Set<string> | null = null;
@@ -40,7 +44,7 @@ export const observationHandler: EventHandler = {
     // Ensure worker is running before any other logic
     const workerReady = await ensureWorkerRunning();
     if (!workerReady) {
-      // Worker not available - skip observation gracefully
+      recordObservationFailure('Worker not available');
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
@@ -57,25 +61,46 @@ export const observationHandler: EventHandler = {
       throw new Error(`Missing cwd in PostToolUse hook input for session ${sessionId}, tool ${toolName}`);
     }
 
-    // Send to worker - worker handles privacy check and database operations
-    const response = await fetch(`http://127.0.0.1:${String(port)}/api/sessions/observations`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contentSessionId: sessionId,
-        tool_name: toolName,
-        tool_input: toolInput,
-        tool_response: toolResponse,
-        cwd
-      })
-      // No AbortSignal — worker service has its own timeouts
+    const body = JSON.stringify({
+      contentSessionId: sessionId,
+      tool_name: toolName,
+      tool_input: toolInput,
+      tool_response: toolResponse,
+      cwd
     });
 
-    if (!response.ok) {
-      throw new Error(`Observation storage failed: ${String(response.status)}`);
-    }
+    // Fire-and-forget HTTP POST — wait only for TCP write flush, not response
+    await new Promise<void>(resolve => {
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port,
+        path: '/api/sessions/observations',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body)
+        }
+      });
 
-    logger.debug('HOOK', 'Observation sent successfully', { toolName });
+      req.on('finish', () => {
+        // TCP write flushed — observation is in-flight
+        recordObservationSuccess();
+        resolve();
+      });
+
+      req.on('error', (err) => {
+        recordObservationFailure(err.message);
+        resolve();
+      });
+
+      // Safety cap — don't block Claude even if TCP stalls
+      setTimeout(resolve, 100);
+
+      req.write(body);
+      req.end();
+    });
+
+    logger.debug('HOOK', 'Observation fired (async)', { toolName });
 
     return { continue: true, suppressOutput: true };
   }

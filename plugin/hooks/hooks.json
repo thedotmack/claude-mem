@@ -62,13 +62,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
-            "timeout": 60
-          },
-          {
-            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" hook claude-code observation",
-            "timeout": 120
+            "timeout": 30
           }
         ]
       }

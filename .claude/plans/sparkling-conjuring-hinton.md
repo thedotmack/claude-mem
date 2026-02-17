@@ -1,58 +1,108 @@
-# Fix: Pin Node Binary to Prevent nvs Version Conflicts
+# Async PostToolUse Observations with Health Reporting
 
 ## Context
 
-The worker daemon (Express on port 37777) uses `better-sqlite3`, a native Node addon compiled against a specific Node ABI version. The user uses **nvs** to switch Node versions between projects (e.g., Node 24 for project A, Node 20 for project B).
+PostToolUse hooks run synchronously, blocking Claude after every tool call (~500ms overhead: Node startup + health check + HTTP POST + response wait). When the worker is unhealthy (503), this blocks Claude with errors that it can't act on mid-tool-use. Yesterday's outage showed 503 errors flooding every PostToolUse, degrading the session.
 
-Currently, `smart-install.js` detects Node version changes and rebuilds native modules for the new version. This causes a tug-of-war: Session A compiles for Node 24, Session B recompiles for Node 20, making the running worker's loaded module incompatible on restart. The auto-rebuild catch block added in the previous session is a band-aid that should be reverted.
-
-**Root cause**: `spawnDaemon()` uses `process.execPath` (the current session's Node binary), and `smart-install.js` rebuilds on every Node version change.
-
-**Fix**: Pin the Node binary at install time. The worker always starts with the binary that compiled its native modules. Stop rebuilding when only the Node version changes.
+**Goal**: Fire-and-forget observations at PostToolUse. Report observation health at UserPromptSubmit (the natural checkpoint where Claude can act on it).
 
 ## Changes
 
-### 1. `scripts/smart-install.js` — Pin execPath, stop rebuilding on Node change
+### 1. `src/cli/handlers/observation.ts` — Fire-and-forget HTTP POST
 
-- Add `execPath: process.execPath` to the marker file
-- Remove `getNodeVersion() !== marker.node` from `needsInstall()` — don't rebuild just because Node changed
-- Add check: if `marker.execPath` is missing or the binary no longer exists on disk → reinstall
-- Keep `node: getNodeVersion()` in marker for diagnostics
+Replace `await fetch()` with `http.request()` fire-and-forget:
 
-### 2. `src/services/infrastructure/ProcessManager.ts` — Use pinned binary
+```typescript
+import http from 'http';
 
-- Add `getWorkerNodeBinary()`: reads marker file, returns stored `execPath` if it exists on disk, falls back to `process.execPath`
-- Update `spawnDaemon()` line 291 (Windows) and line 325 (Unix) to use `getWorkerNodeBinary()` instead of `process.execPath`
-- Add `nodeVersion: string` to `PidInfo` interface for diagnostics
+const req = http.request({ hostname: '127.0.0.1', port, path: '/api/sessions/observations', method: 'POST', headers: { 'Content-Type': 'application/json' } });
+req.on('error', () => {}); // Silently ignore
+req.write(JSON.stringify(body));
+req.end();
 
-### 3. `src/services/worker-service.ts` — Revert auto-rebuild, guard in-process path
+// Wait for TCP write flush only (not response) — ~1ms on localhost
+await new Promise<void>(resolve => {
+  req.on('finish', resolve);
+  req.on('error', resolve);
+  setTimeout(resolve, 100); // Safety cap
+});
+```
 
-- **Revert** the try/catch auto-rebuild block (lines 287-300) → plain `this.dbManager.initialize()`
-- **Guard** the in-process hook start (line 702-716): if `process.execPath !== getWorkerNodeBinary()`, skip in-process start and fall through to `spawnDaemon()` via `ensureWorkerStarted()`
-- Add `nodeVersion: process.version` to `writePidFile()` call
+- Keep `ensureWorkerRunning()` health check (quick, ~50ms) — if unhealthy, track failure and skip
+- Track failures in `~/.magic-claude-mem/.obs-health` (JSON: `{ failures: N, lastError: string, since: ISO }`)
+- On successful fire, reset the failure counter
 
-### 4. Build and deploy
+### 2. `plugin/hooks/hooks.json` — Remove `start` from PostToolUse
 
-- Run `npm run build-and-sync`
-- Bump version, commit, push
+Before:
+```json
+"PostToolUse": [
+  { "command": "worker-service.cjs start", "timeout": 60 },
+  { "command": "worker-service.cjs hook claude-code observation", "timeout": 120 }
+]
+```
+
+After:
+```json
+"PostToolUse": [
+  { "command": "worker-service.cjs hook claude-code observation", "timeout": 30 }
+]
+```
+
+The observation handler already calls `ensureWorkerRunning()` which does a quick health check. The separate `start` step is redundant and adds ~200ms per tool call. Reduced timeout since fire-and-forget should complete in <200ms.
+
+### 3. `src/cli/handlers/session-init.ts` — Report observation health
+
+At the start of `execute()`, after `ensureWorkerRunning()`:
+
+- Read `~/.magic-claude-mem/.obs-health`
+- If `failures > 0`, add warning via existing `hookSpecificOutput` pattern (same as `workerNotReadyResult()`)
+- Clear the file after reading
+
+Message to Claude:
+```
+⚠️ claude-mem: {N} observations failed to store since last prompt. Memory capture may be incomplete. If this persists, try restarting the worker with: magic-claude-mem worker:restart
+```
+
+### 4. `src/cli/observation-health.ts` — Shared health file utilities (new)
+
+Small utility module (~30 lines):
+
+```typescript
+export function recordObservationFailure(error: string): void
+export function recordObservationSuccess(): void
+export function readAndClearObservationHealth(): { failures: number; lastError: string; since: string } | null
+```
+
+- File path: `~/.magic-claude-mem/.obs-health`
+- JSON format: `{ failures: number, lastError: string, since: string }`
+- `recordObservationSuccess()` deletes the file (reset on any success)
+- `readAndClearObservationHealth()` reads and deletes atomically
 
 ## Files
 
 | File | Change |
 |------|--------|
-| `scripts/smart-install.js` | Remove Node version trigger, add execPath to marker |
-| `src/services/infrastructure/ProcessManager.ts` | Add `getWorkerNodeBinary()`, update `spawnDaemon()`, extend `PidInfo` |
-| `src/services/worker-service.ts` | Revert auto-rebuild, guard in-process path, record nodeVersion in PID |
+| `src/cli/handlers/observation.ts` | Fire-and-forget HTTP, track failures |
+| `src/cli/observation-health.ts` | **New** — shared health file read/write |
+| `src/cli/handlers/session-init.ts` | Read health file, report via hookSpecificOutput |
+| `plugin/hooks/hooks.json` | Remove `start` from PostToolUse, reduce timeout |
 
-## Why NOT rebuild on Node version change
+## Sync impact
 
-With the pinned binary, the worker always starts with the Node that compiled its modules. Different Claude Code sessions (different Node versions) interact with the worker via HTTP only — no native module dependency. Rebuilding on Node change creates a tug-of-war between sessions and breaks the running worker.
+**No sync script changes needed.** The new `observation-health.ts` is TypeScript source bundled by esbuild into `worker-service.cjs`. The `hooks.json` lives under `plugin/hooks/` which is already synced to marketplace and cache.
 
-Reinstall triggers (kept): plugin version change, missing node_modules, missing marker, deleted pinned binary.
+## Why this approach
+
+- **No worker changes**: Health tracking is hook-side (temp file), not worker-side
+- **Reuses existing pattern**: `hookSpecificOutput` with `additionalContext` — same as `workerNotReadyResult()`
+- **Self-healing**: Any successful observation clears the failure counter
+- **Minimal overhead**: `http.request()` + `finish` event is ~1-5ms on localhost vs ~300ms for full fetch round-trip
 
 ## Verification
 
-1. Check marker file after install: `cat ~/.claude/plugins/marketplaces/magic-claude-mem/.install-version` — should contain `execPath`
-2. Start Claude Code in a project with a different Node version — worker should NOT rebuild, should use pinned binary
-3. Check PID file: `cat ~/.magic-claude-mem/worker.pid` — should contain `nodeVersion`
-4. Worker health: `curl http://127.0.0.1:37777/health` — should return 200
+1. Start a session, use tools — observations should fire without blocking
+2. Stop the worker (`magic-claude-mem worker:stop`), use tools — observations silently fail
+3. Send next prompt — UserPromptSubmit should show observation health warning
+4. Restart worker — next successful observation clears the warning
+5. Measure timing: `time node worker-service.cjs hook claude-code observation` should be <200ms vs current ~500ms
