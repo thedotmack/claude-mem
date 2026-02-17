@@ -2492,6 +2492,133 @@
       border-color: var(--color-bg-button-hover);
     }
 
+    /* Two-Panel Layout */
+    .two-panel {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .two-panel__left {
+      flex: 0 0 260px;
+      min-height: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--color-border-primary);
+    }
+
+    .two-panel__activity {
+      flex-shrink: 0;
+      border-top: 1px solid var(--color-border-primary);
+      padding: var(--space-2);
+      background: var(--color-bg-secondary);
+    }
+
+    .two-panel__right {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+    }
+
+    @media (max-width: 768px) {
+      .two-panel {
+        flex-direction: column;
+      }
+
+      .two-panel__left {
+        flex: 0 0 auto;
+        max-height: 40vh;
+        overflow-y: auto;
+      }
+
+      .two-panel__right {
+        flex: 1;
+      }
+    }
+
+    /* Session List - Left Panel */
+    .session-list {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      background: var(--color-bg-secondary);
+    }
+
+    .session-list__group {
+      margin-bottom: 4px;
+    }
+
+    .session-list__day-header {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding: 10px 12px 6px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--color-text-muted);
+      background: var(--color-bg-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .session-list__row {
+      cursor: pointer;
+      padding: 10px 12px;
+      border-left: 3px solid transparent;
+      transition: background 0.1s ease, border-color 0.1s ease;
+    }
+
+    .session-list__row:hover {
+      background: var(--color-bg-card-hover);
+    }
+
+    .session-list__row--selected {
+      background: var(--color-bg-card-hover);
+      border-left-color: var(--color-accent-primary);
+    }
+
+    .session-list__request {
+      font-size: 13px;
+      color: var(--color-text-primary);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      line-height: 1.4;
+      margin-bottom: 4px;
+    }
+
+    .session-list__meta {
+      font-size: 11px;
+      color: var(--color-text-muted);
+    }
+
+    .session-list__empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 16px;
+      font-size: 13px;
+      color: var(--color-text-muted);
+      text-align: center;
+    }
+
+    .session-list__loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 16px;
+      font-size: 12px;
+      color: var(--color-text-muted);
+    }
+
+    .session-list__load-more-sentinel {
+      height: 1px;
+    }
+
     /* Console Drawer - Chrome DevTools Style */
     .console-toggle-btn {
       position: fixed;
@@ -2978,6 +3105,51 @@
         font-size: 10px;
         padding: 3px 6px;
       }
+    }
+
+    /* -------------------------------------------------------------------------
+     * SessionDetail — right panel in the two-panel layout
+     * --------------------------------------------------------------------- */
+
+    .session-detail {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 18px;
+    }
+
+    .session-detail__content {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .session-detail__summary {
+      margin-bottom: 24px;
+    }
+
+    .session-detail__timeline {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .session-detail__empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 24px;
+      color: var(--color-text-muted);
+      font-size: 14px;
+      text-align: center;
+    }
+
+    .session-detail__loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 48px 24px;
+      color: var(--color-text-muted);
+      font-size: 14px;
     }
 
     /* Narrow mobile: 480px and below */

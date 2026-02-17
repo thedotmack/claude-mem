@@ -37,6 +37,28 @@ export interface UserPrompt {
   created_at_epoch: number;
 }
 
+export interface SessionDetail {
+  summary: Summary;
+  observations: Observation[];
+  prompts: UserPrompt[];
+}
+
+export interface SessionListItem {
+  id: number;
+  session_id: string;
+  project: string;
+  request?: string;
+  observationCount: number;
+  created_at_epoch: number;
+  status: 'completed' | 'active';
+}
+
+export interface SessionGroup {
+  label: string;
+  dateKey: string;
+  sessions: SessionListItem[];
+}
+
 export type FeedItem =
   | (Observation & { itemType: 'observation' })
   | (Summary & { itemType: 'summary' })

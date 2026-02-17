@@ -3,12 +3,11 @@ import { ThemeToggle } from './ThemeToggle';
 import { SearchBar } from './SearchBar';
 import { FilterBar } from './FilterBar';
 import type { ThemePreference } from '../hooks/useTheme';
-import type { FilterState, ActivityDay } from '../types';
+import type { FilterState } from '../types';
 import { GitHubStarsButton } from './GitHubStarsButton';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
 
 interface HeaderProps {
-  isConnected: boolean;
   projects: string[];
   currentFilter: string;
   onFilterChange: (filter: string) => void;
@@ -29,14 +28,10 @@ interface HeaderProps {
   onDateRangeChange: (start: string, end: string) => void;
   onClearAllFilters: () => void;
   hasActiveFilters: boolean;
-  isFilterMode: boolean;
-  activityDays: ActivityDay[];
-  activityLoading: boolean;
   version?: string;
 }
 
 export function Header({
-  isConnected: _isConnected,
   projects,
   currentFilter,
   onFilterChange,
@@ -57,9 +52,6 @@ export function Header({
   onDateRangeChange,
   onClearAllFilters,
   hasActiveFilters,
-  isFilterMode: _isFilterMode,
-  activityDays,
-  activityLoading,
   version,
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
@@ -151,8 +143,6 @@ export function Header({
         onClearAll={onClearAllFilters}
         hasActiveFilters={hasActiveFilters}
         isOpen={filterBarOpen}
-        activityDays={activityDays}
-        activityLoading={activityLoading}
       />
     </>
   );

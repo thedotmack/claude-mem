@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
+import { TwoPanel } from './components/TwoPanel';
 import { SearchResultsBadge } from './components/SearchResultsBadge';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { LogsDrawer } from './components/LogsModal';
@@ -31,7 +32,7 @@ export function App() {
   const search = useSearch(filters, isFilterMode);
   const activityDensity = useActivityDensity(filters.project);
 
-  const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected } = useSSE();
+  const { observations, summaries, prompts, projects, isProcessing, queueDepth } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats, refreshStats: _refreshStats } = useStats();
   const { preference, resolvedTheme: _resolvedTheme, setThemePreference } = useTheme();
@@ -125,6 +126,20 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- handleLoadMore excluded: loads are driven by paginationResetKey changes only
   }, [paginationResetKey, isFilterMode]);
 
+  // Track new SSE summaries for live updates in TwoPanel.
+  // Skip the initial_load batch; only react to subsequent new_summary events.
+  const sseInitialLoadRef = useRef(true);
+  const [latestSSESummary, setLatestSSESummary] = useState<Summary | null>(null);
+
+  useEffect(() => {
+    if (summaries.length === 0) return;
+    if (sseInitialLoadRef.current) {
+      sseInitialLoadRef.current = false;
+      return;
+    }
+    setLatestSSESummary(summaries[0]);
+  }, [summaries]);
+
   const isLoading = isFilterMode
     ? search.isSearching
     : (pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading);
@@ -136,7 +151,6 @@ export function App() {
   return (
     <>
       <Header
-        isConnected={isConnected}
         projects={projects}
         currentFilter={filters.project}
         onFilterChange={setProject}
@@ -157,9 +171,6 @@ export function App() {
         onDateRangeChange={setDateRange}
         onClearAllFilters={clearAll}
         hasActiveFilters={hasActiveFilters}
-        isFilterMode={isFilterMode}
-        activityDays={activityDensity.days}
-        activityLoading={activityDensity.isLoading}
         version={stats.worker?.version}
       />
 
@@ -171,14 +182,26 @@ export function App() {
         onClear={clearAll}
       />
 
-      <Feed
-        observations={allObservations}
-        summaries={allSummaries}
-        prompts={allPrompts}
-        onLoadMore={() => { void handleLoadMore(); }}
-        isLoading={isLoading}
-        hasMore={hasMore}
-      />
+      {isFilterMode ? (
+        <Feed
+          observations={allObservations}
+          summaries={allSummaries}
+          prompts={allPrompts}
+          onLoadMore={() => { void handleLoadMore(); }}
+          isLoading={isLoading}
+          hasMore={hasMore}
+        />
+      ) : (
+        <TwoPanel
+          project={filters.project}
+          newSummary={latestSSESummary}
+          activityDays={activityDensity.days}
+          activityLoading={activityDensity.isLoading}
+          dateStart={filters.dateStart}
+          dateEnd={filters.dateEnd}
+          onDateRangeSelect={setDateRange}
+        />
+      )}
 
       <ContextSettingsModal
         isOpen={contextPreviewOpen}

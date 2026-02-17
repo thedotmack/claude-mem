@@ -1,8 +1,7 @@
 import React from 'react';
 import { FilterChip } from './FilterChip';
-import { ActivityBar } from './ActivityBar';
 import { OBSERVATION_TYPES, OBSERVATION_CONCEPTS, ITEM_KINDS, ITEM_KIND_LABELS } from '../constants/filters';
-import type { FilterState, ActivityDay } from '../types';
+import type { FilterState } from '../types';
 
 interface FilterBarProps {
   filters: FilterState;
@@ -13,8 +12,6 @@ interface FilterBarProps {
   onClearAll: () => void;
   hasActiveFilters: boolean;
   isOpen: boolean;
-  activityDays: ActivityDay[];
-  activityLoading: boolean;
 }
 
 export function FilterBar({
@@ -26,8 +23,6 @@ export function FilterBar({
   onClearAll,
   hasActiveFilters,
   isOpen,
-  activityDays,
-  activityLoading,
 }: FilterBarProps) {
   return (
     <div className={`filter-bar ${isOpen ? 'expanded' : 'collapsed'}`} role="toolbar" aria-label="Filters">
@@ -102,13 +97,6 @@ export function FilterBar({
         )}
       </div>
 
-      <ActivityBar
-        days={activityDays}
-        dateStart={filters.dateStart}
-        dateEnd={filters.dateEnd}
-        onDateRangeSelect={onDateRangeChange}
-        isLoading={activityLoading}
-      />
     </div>
   );
 }
