@@ -13,6 +13,7 @@ import type {
 } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
+import { sanitizeObservationContent } from '../../../utils/tag-stripping.js';
 
 /**
  * Format current date/time for header display
@@ -74,7 +75,7 @@ export function renderMarkdownContextIndex(): string[] {
     `When you need implementation details, rationale, or debugging context:`,
     `- Use MCP tools (search, get_observations) to fetch full observations on-demand`,
     `- Critical types ( bugfix, decision) often need detailed fetching`,
-    `- Trust this index over re-reading code for past decisions and learnings`,
+    `- This index contains historical observations from past sessions (not independently verified). Use MCP tools to fetch details and verify against current code.`,
     ''
   ];
 }
@@ -137,7 +138,7 @@ export function renderMarkdownTableRow(
   timeDisplay: string,
   config: ContextConfig
 ): string {
-  const title = obs.title || 'Untitled';
+  const title = sanitizeObservationContent(obs.title || 'Untitled').replace(/\|/g, '\\|');
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const { readTokens, discoveryDisplay } = formatObservationTokenDisplay(obs, config);
 
@@ -157,7 +158,7 @@ export function renderMarkdownFullObservation(
   config: ContextConfig
 ): string[] {
   const output: string[] = [];
-  const title = obs.title || 'Untitled';
+  const title = sanitizeObservationContent(obs.title || 'Untitled').replace(/\|/g, '\\|');
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const { readTokens, discoveryDisplay } = formatObservationTokenDisplay(obs, config);
 

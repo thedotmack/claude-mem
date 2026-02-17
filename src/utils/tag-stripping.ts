@@ -71,3 +71,53 @@ export function stripMemoryTagsFromJson(content: string): string {
 export function stripMemoryTagsFromPrompt(content: string): string {
   return stripTagsInternal(content);
 }
+
+/**
+ * Dangerous tag patterns that could be used for prompt injection.
+ * These tags mimic system-level framing and must be stripped from
+ * observation content before context injection or MCP search results.
+ */
+const DANGEROUS_TAG_NAMES = [
+  'system-reminder',
+  'system',
+  'instructions',
+  'tool_use',
+  'antThinking',
+] as const;
+
+/**
+ * Sanitize observation content by stripping dangerous prompt-injection tags.
+ *
+ * Removes:
+ * - Matched pairs: <tag>...content...</tag> (including multiline)
+ * - Unclosed opening tags: <tag>remaining content (consumes to end of string)
+ * - Standalone closing tags: </tag>
+ *
+ * @param content - Observation text (title, narrative, subtitle, facts, etc.)
+ * @returns Content with dangerous tags and their contents removed
+ */
+export function sanitizeObservationContent(content: string): string {
+  let sanitized = content;
+
+  for (const tagName of DANGEROUS_TAG_NAMES) {
+    // Strip matched pairs: <tag>...</tag> (dotAll flag handles multiline)
+    sanitized = sanitized.replace(
+      new RegExp(`<${tagName}>[\\s\\S]*?<\\/${tagName}>`, 'gs'),
+      ''
+    );
+
+    // Strip unclosed opening tags: <tag>...rest of string
+    sanitized = sanitized.replace(
+      new RegExp(`<${tagName}>[\\s\\S]*$`, 'gs'),
+      ''
+    );
+
+    // Strip standalone closing tags: </tag>
+    sanitized = sanitized.replace(
+      new RegExp(`<\\/${tagName}>`, 'g'),
+      ''
+    );
+  }
+
+  return sanitized.trim();
+}

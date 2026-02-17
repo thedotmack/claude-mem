@@ -18,6 +18,7 @@ import { SessionManager } from '../../SessionManager.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { sanitizeObservationContent } from '../../../../utils/tag-stripping.js';
 
 export class DataRoutes extends BaseRouteHandler {
   constructor(
@@ -135,7 +136,15 @@ export class DataRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
     const observations = store.getObservationsByIds(ids, { orderBy, limit, project });
 
-    res.json(observations);
+    const sanitizedObservations = observations.map((obs: Record<string, unknown>) => ({
+      ...obs,
+      title: typeof obs.title === 'string' ? sanitizeObservationContent(obs.title) : obs.title,
+      subtitle: typeof obs.subtitle === 'string' ? sanitizeObservationContent(obs.subtitle) : obs.subtitle,
+      narrative: typeof obs.narrative === 'string' ? sanitizeObservationContent(obs.narrative) : obs.narrative,
+      facts: typeof obs.facts === 'string' ? sanitizeObservationContent(obs.facts) : obs.facts,
+    }));
+
+    res.json(sanitizedObservations);
   });
 
   /**
