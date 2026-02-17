@@ -28,7 +28,8 @@ import {
   cleanupOrphanedProcesses,
   spawnDaemon,
   createSignalHandler,
-  getWorkerNodeBinary
+  getWorkerNodeBinary,
+  verifyNativeModules
 } from './infrastructure/ProcessManager.js';
 import {
   isPortInUse,
@@ -516,11 +517,23 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   if (await waitForHealth(port, 1000)) {
     const versionCheck = await checkVersionMatch(port);
     if (!versionCheck.matches) {
-      logger.info('SYSTEM', 'Worker version mismatch detected - auto-restarting', {
+      logger.info('SYSTEM', 'Worker version mismatch detected', {
         pluginVersion: versionCheck.pluginVersion,
         workerVersion: versionCheck.workerVersion
       });
 
+      // Verify the new native binary loads before killing the old worker.
+      // If verification fails (ABI mismatch, missing module), keep the old
+      // worker running — a working older version beats a broken newer one.
+      if (!verifyNativeModules()) {
+        logger.error('SYSTEM', 'Native module verification failed — keeping old worker running', {
+          pluginVersion: versionCheck.pluginVersion,
+          workerVersion: versionCheck.workerVersion
+        });
+        return true;
+      }
+
+      logger.info('SYSTEM', 'Native modules verified, restarting worker');
       await httpShutdown(port);
       const freed = await waitForPortFree(port, getPlatformTimeout(15000));
       if (!freed) {

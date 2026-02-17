@@ -7,9 +7,9 @@
  *
  * Node.js and better-sqlite3 are the only runtime requirements (no Bun needed).
  */
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
-import { join, dirname } from 'path';
+import { join, dirname, delimiter } from 'path';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
 
@@ -20,6 +20,8 @@ const PLUGIN_ROOT = join(__dirname, '..');
 // MARKETPLACE_ROOT = stable location for CLI alias and version marker
 const MARKETPLACE_ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem');
 const MARKER = join(MARKETPLACE_ROOT, '.install-version');
+const LOCK_FILE = join(MARKETPLACE_ROOT, '.install-lock');
+const LOCK_STALE_MS = 5 * 60 * 1000; // 5 minutes — stale lock threshold
 const IS_WINDOWS = process.platform === 'win32';
 
 /**
@@ -199,13 +201,57 @@ function needsInstall() {
 }
 
 /**
- * Install dependencies using npm
+ * Acquire install lock to prevent concurrent npm installs.
+ * Returns true if lock acquired, false if another install is in progress.
+ */
+function acquireInstallLock() {
+  try {
+    if (existsSync(LOCK_FILE)) {
+      const lockData = JSON.parse(readFileSync(LOCK_FILE, 'utf-8'));
+      const age = Date.now() - lockData.timestamp;
+      if (age < LOCK_STALE_MS) {
+        console.error(`[magic-claude-mem] Install already in progress (pid ${lockData.pid}, ${Math.round(age / 1000)}s ago), skipping`);
+        return false;
+      }
+      // Stale lock — take over
+      console.error('[magic-claude-mem] Removing stale install lock');
+    }
+    writeFileSync(LOCK_FILE, JSON.stringify({ pid: process.pid, timestamp: Date.now() }));
+    return true;
+  } catch {
+    // Best-effort — proceed without lock rather than failing
+    return true;
+  }
+}
+
+/**
+ * Release install lock
+ */
+function releaseInstallLock() {
+  try { unlinkSync(LOCK_FILE); } catch { /* ignore */ }
+}
+
+/**
+ * Install dependencies using npm.
+ * Pins PATH so prebuild-install downloads native modules matching the
+ * Node binary that will run the worker daemon (process.execPath).
  */
 function installDeps() {
   console.error('Installing dependencies with npm...');
 
+  // Pin the current Node binary first in PATH so that prebuild-install
+  // (which spawns `node` to detect ABI version) uses the same binary
+  // that will be recorded in the marker and used to run the daemon.
+  const nodeDir = dirname(process.execPath);
+  const pinnedPath = nodeDir + delimiter + (process.env.PATH || '');
+
   try {
-    execSync('npm install --production', { cwd: PLUGIN_ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+    execSync('npm install --production', {
+      cwd: PLUGIN_ROOT,
+      stdio: 'inherit',
+      shell: IS_WINDOWS,
+      env: { ...process.env, PATH: pinnedPath }
+    });
   } catch (npmError) {
     throw new Error('npm install failed: ' + npmError.message);
   }
@@ -237,31 +283,24 @@ try {
 
   // Step 2: Install dependencies if needed (npm + better-sqlite3 native addon)
   if (needsInstall()) {
-    const pkg = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'package.json'), 'utf-8'));
-    const newVersion = pkg.version;
+    if (!acquireInstallLock()) {
+      // Another session is already installing — skip, use existing worker
+    } else {
+      try {
+        const pkg = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'package.json'), 'utf-8'));
+        const newVersion = pkg.version;
 
-    installDeps();
-    console.error('Dependencies installed');
+        installDeps();
+        console.error(`[magic-claude-mem] Dependencies installed for v${newVersion}`);
 
-    // Auto-restart worker to pick up new code
-    const port = process.env.MAGIC_CLAUDE_MEM_WORKER_PORT || 37777;
-    console.error(`[magic-claude-mem] Plugin updated to v${newVersion} - restarting worker...`);
-    try {
-      // Graceful shutdown via HTTP (curl is cross-platform enough)
-      execSync(`curl -s -X POST http://127.0.0.1:${port}/api/admin/shutdown`, {
-        stdio: 'ignore',
-        shell: IS_WINDOWS,
-        timeout: 5000
-      });
-      // Brief wait for port to free
-      execSync(IS_WINDOWS ? 'timeout /t 1 /nobreak >nul' : 'sleep 0.5', {
-        stdio: 'ignore',
-        shell: true
-      });
-    } catch {
-      // Worker wasn't running or already stopped - that's fine
+        // Do NOT shut down the running worker here.
+        // The next hook in chain (worker-service.cjs start) will detect the
+        // version mismatch, verify the new native binary loads, and swap safely.
+        // This avoids downtime for other sessions during the install window.
+      } finally {
+        releaseInstallLock();
+      }
     }
-    // Worker will be started fresh by next hook in chain (worker-service.cjs start)
   }
 
   // Step 3: Install CLI to PATH

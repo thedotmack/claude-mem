@@ -88,6 +88,59 @@ export function getWorkerNodeBinary(): string {
 }
 
 /**
+ * Verify that native modules (better-sqlite3) load correctly with the pinned Node binary.
+ * Spawns the pinned binary with a quick require test.
+ * Returns true if the module loads, false if ABI mismatch or other load failure.
+ */
+export function verifyNativeModules(): boolean {
+  const nodeBinary = getWorkerNodeBinary();
+  const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem');
+
+  // Check the cache directory first (where the daemon actually loads from),
+  // then fall back to marketplace
+  const cacheBase = path.join(homedir(), '.claude', 'plugins', 'cache', 'magic-claude-mem', 'magic-claude-mem');
+  let modulePath: string | undefined;
+
+  try {
+    const marker = JSON.parse(readFileSync(path.join(MARKETPLACE_ROOT, '.install-version'), 'utf-8'));
+    const cacheDir = path.join(cacheBase, marker.version);
+    const cacheModule = path.join(cacheDir, 'node_modules', 'better-sqlite3');
+    if (existsSync(cacheModule)) {
+      modulePath = cacheModule;
+    }
+  } catch {
+    // Fall through
+  }
+
+  if (!modulePath) {
+    modulePath = path.join(MARKETPLACE_ROOT, 'node_modules', 'better-sqlite3');
+  }
+
+  if (!existsSync(modulePath)) {
+    logger.warn('SYSTEM', 'better-sqlite3 not found for verification', { modulePath });
+    return false;
+  }
+
+  try {
+    // Spawn the pinned binary with a quick load test that constructs a Database
+    // (require alone doesn't load the .node binary — Database constructor does)
+    const result = execSync(
+      `"${nodeBinary}" -e "const b=require('${modulePath.replace(/\\/g, '\\\\')}');const d=new b(':memory:');d.close()"`,
+      { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
+    );
+    return true;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.error('SYSTEM', 'Native module verification failed', {
+      nodeBinary,
+      modulePath,
+      error: msg.substring(0, 200)
+    });
+    return false;
+  }
+}
+
+/**
  * Get platform-adjusted timeout (Windows socket cleanup is slower)
  */
 export function getPlatformTimeout(baseMs: number): number {
