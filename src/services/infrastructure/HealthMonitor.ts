@@ -12,7 +12,7 @@
 import path from 'path';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { MARKETPLACE_ROOT } from '../../shared/paths.js';
+import { getPackageRoot } from '../../shared/paths.js';
 
 /**
  * Check if a port is in use by querying the health endpoint
@@ -96,11 +96,15 @@ export async function httpShutdown(port: number): Promise<boolean> {
 }
 
 /**
- * Get the plugin version from the installed marketplace package.json
- * This is the "expected" version that should be running
+ * Get the plugin version from the installed plugin's package.json
+ *
+ * Uses getPackageRoot() (relative to __dirname) instead of MARKETPLACE_ROOT.
+ * The marketplace directory is a git clone of the repo and may have a different
+ * version than the actually installed/cached plugin. Reading from there caused
+ * infinite restart loops when versions diverged (see issue #1145).
  */
 export function getInstalledPluginVersion(): string {
-  const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
+  const packageJsonPath = path.join(getPackageRoot(), 'package.json');
   const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
   return packageJson.version;
 }

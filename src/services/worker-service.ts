@@ -1125,18 +1125,33 @@ async function main() {
       let startedWorkerInProcess = false;
 
       if (!portInUse) {
-        // Port free - start worker IN THIS PROCESS (no spawn!)
-        // This process becomes the worker and stays alive
-        try {
-          logger.info('SYSTEM', 'Starting worker in-process for hook', { event });
-          const worker = new WorkerService();
-          await worker.start();
-          startedWorkerInProcess = true;
-          // Worker is now running in this process on the port
-        } catch (error) {
-          logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
-          removePidFile();
-          process.exit(0);
+        // Use spawn gate to prevent multiple hook processes from starting
+        // in-process workers simultaneously. With SO_REUSEPORT (Bun on macOS),
+        // multiple processes can bind the same port, creating duplicates.
+        if (!acquireSpawnLock()) {
+          // Another process is starting the worker — wait for it
+          logger.info('SYSTEM', 'Spawn lock held, waiting for worker health in hook', { event });
+          const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
+          if (healthy) {
+            logger.info('SYSTEM', 'Worker started by another process (hook path)');
+          } else {
+            logger.warn('SYSTEM', 'Worker not healthy after waiting in hook path');
+          }
+        } else {
+          // We claimed the lock — start worker IN THIS PROCESS
+          try {
+            logger.info('SYSTEM', 'Starting worker in-process for hook', { event });
+            const worker = new WorkerService();
+            await worker.start();
+            startedWorkerInProcess = true;
+            // Worker is now running in this process on the port
+          } catch (error) {
+            logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
+            removePidFile();
+            process.exit(0);
+          } finally {
+            releaseSpawnLock();
+          }
         }
       }
       // If port in use, we'll use HTTP to the existing worker
