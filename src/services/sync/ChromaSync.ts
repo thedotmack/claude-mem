@@ -85,7 +85,10 @@ export class ChromaSync {
 
   constructor(project: string) {
     this.project = project;
-    this.collectionName = `cm__${project}`;
+    // Chroma collection names only allow [a-zA-Z0-9._-], 3-512 chars,
+    // must start/end with [a-zA-Z0-9]
+    const sanitized = project.replace(/[^a-zA-Z0-9._-]/g, '_');
+    this.collectionName = `cm__${sanitized}`;
     this.VECTOR_DB_DIR = path.join(os.homedir(), '.claude-mem', 'vector-db');
   }
 
