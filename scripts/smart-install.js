@@ -5,7 +5,7 @@
  * Ensures Bun runtime and uv (Python package manager) are installed
  * (auto-installs if missing) and handles dependency installation when needed.
  */
-import { existsSync, readFileSync, writeFileSync, rmSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -260,17 +260,16 @@ function installDeps() {
 
   console.error('📦 Installing dependencies with Bun...');
 
-  // Clear stale native module cache (sharp/libvips) to prevent broken dylib references.
-  // Bun's cache can retain native binaries that reference companion libraries at
-  // broken relative paths after version upgrades.
-  const bunCacheImgDir = join(homedir(), '.bun', 'install', 'cache', '@img');
-  if (existsSync(bunCacheImgDir)) {
-    console.error('   Clearing stale native module cache (@img/sharp)...');
-    rmSync(bunCacheImgDir, { recursive: true, force: true });
-  }
-
   // Quote path for Windows paths with spaces
   const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
+
+  // Clear Bun's package cache to prevent stale native module artifacts
+  try {
+    execSync(`${bunCmd} pm cache rm`, { cwd: ROOT, stdio: 'pipe', shell: IS_WINDOWS });
+    console.error('   Cleared Bun package cache');
+  } catch {
+    // Cache may not exist yet on first install
+  }
 
   execSync(`${bunCmd} install`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
 
