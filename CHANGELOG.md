@@ -2,6 +2,14 @@
 
 All notable changes to claude-mem.
 
+## [v10.2.2] - 2026-02-17
+
+## Bug Fixes
+
+- **Removed `node-addon-api` dev dependency** — was only needed for `sharp`, which was already removed in v10.2.1
+- **Simplified native module cache clearing** in `smart-install.js` and `sync-marketplace.cjs` — replaced targeted `@img/sharp` directory deletion and lockfile removal with `bun pm cache rm`
+- Reduced ~30 lines of brittle file system manipulation to a clean Bun CLI command
+
 ## [v10.2.1] - 2026-02-16
 
 ## Bug Fixes
@@ -1399,27 +1407,4 @@ Patch release v8.2.4
 - Fix worker port environment variable in smart-install script
 - Implement file-based locking mechanism for worker operations to prevent race conditions
 - Fix restart command references in documentation (changed from `claude-mem restart` to `npm run worker:restart`)
-
-## [v8.2.2] - 2025-12-27
-
-## What's Changed
-
-### Features
-- Add OpenRouter provider settings and documentation
-- Add modal footer with save button and status indicators
-- Implement self-spawn pattern for background worker execution
-
-### Bug Fixes
-- Resolve critical error handling issues in worker lifecycle
-- Handle Windows/Unix kill errors in orphaned process cleanup
-- Validate spawn pid before writing PID file
-- Handle process exit in waitForProcessesExit filter
-- Use readiness endpoint for health checks instead of port check
-- Add missing OpenRouter and Gemini settings to settingKeys array
-
-### Other Changes
-- Enhance error handling and validation in agents and routes
-- Delete obsolete process management files (ProcessManager, worker-wrapper, worker-cli)
-- Update hooks.json to use worker-service.cjs CLI
-- Add comprehensive tests for hook constants and worker spawn functionality
 
