@@ -8,7 +8,7 @@
  * Cross-platform: Linux, macOS, Windows
  */
 
-import { spawn, ChildProcess, execSync } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import os from 'os';
 import fs, { existsSync } from 'fs';
@@ -345,70 +345,12 @@ export class ChromaServerManager {
     });
   }
 
-  /**
-   * Get or create combined SSL certificate bundle for Zscaler/corporate proxy environments.
-   * This ports previous MCP SSL handling so local `npx chroma run` works behind enterprise proxies.
-   */
   private getCombinedCertPath(): string | undefined {
     const combinedCertPath = path.join(os.homedir(), '.claude-mem', 'combined_certs.pem');
-
     if (fs.existsSync(combinedCertPath)) {
-      const stats = fs.statSync(combinedCertPath);
-      const ageMs = Date.now() - stats.mtimeMs;
-      if (ageMs < 24 * 60 * 60 * 1000) {
-        return combinedCertPath;
-      }
-    }
-
-    if (process.platform !== 'darwin') {
-      return undefined;
-    }
-
-    try {
-      let certifiPath: string | undefined;
-      try {
-        certifiPath = execSync(
-          'uvx --with certifi python -c "import certifi; print(certifi.where())"',
-          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 }
-        ).trim();
-      } catch {
-        return undefined;
-      }
-
-      if (!certifiPath || !fs.existsSync(certifiPath)) {
-        return undefined;
-      }
-
-      let zscalerCert = '';
-      try {
-        zscalerCert = execSync(
-          'security find-certificate -a -c "Zscaler" -p /Library/Keychains/System.keychain',
-          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000 }
-        );
-      } catch {
-        return undefined;
-      }
-
-      if (!zscalerCert ||
-          !zscalerCert.includes('-----BEGIN CERTIFICATE-----') ||
-          !zscalerCert.includes('-----END CERTIFICATE-----')) {
-        return undefined;
-      }
-
-      const certifiContent = fs.readFileSync(certifiPath, 'utf8');
-      const tempPath = combinedCertPath + '.tmp';
-      fs.writeFileSync(tempPath, certifiContent + '\n' + zscalerCert);
-      fs.renameSync(tempPath, combinedCertPath);
-
-      logger.info('CHROMA_SERVER', 'Created combined SSL certificate bundle for Zscaler', {
-        path: combinedCertPath
-      });
-
       return combinedCertPath;
-    } catch (error) {
-      logger.debug('CHROMA_SERVER', 'Could not create combined cert bundle', {}, error as Error);
-      return undefined;
     }
+    return undefined;
   }
 
   /**

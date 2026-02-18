@@ -231,7 +231,7 @@ export class SearchManager {
     else if (query) {
       chromaFailed = true;
       logger.debug('SEARCH', 'ChromaDB not initialized - semantic search unavailable', {});
-      logger.debug('SEARCH', 'Install UVX/Python to enable vector search', { url: 'https://docs.astral.sh/uv/getting-started/installation/' });
+      logger.debug('SEARCH', 'Chroma server not available for vector search');
       observations = [];
       sessions = [];
       prompts = [];
@@ -255,7 +255,7 @@ export class SearchManager {
         return {
           content: [{
             type: 'text' as const,
-            text: `Vector search failed - semantic search unavailable.\n\nTo enable semantic search:\n1. Install uv: https://docs.astral.sh/uv/getting-started/installation/\n2. Restart the worker: npm run worker:restart\n\nNote: You can still use filter-only searches (date ranges, types, files) without a query term.`
+            text: `Vector search failed - Chroma server not available for semantic search.\n\nTo enable semantic search:\n1. Ensure the Chroma server is running\n2. Restart the worker: npm run worker:restart\n\nNote: You can still use filter-only searches (date ranges, types, files) without a query term.`
           }]
         };
       }

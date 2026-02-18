@@ -37,7 +37,7 @@ export class DatabaseManager {
    * Close database connection and cleanup all resources
    */
   async close(): Promise<void> {
-    // Close ChromaSync first (terminates uvx/python processes)
+    // Close ChromaSync connections first
     if (this.chromaSync) {
       await this.chromaSync.close();
       this.chromaSync = null;
