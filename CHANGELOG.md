@@ -2,6 +2,20 @@
 
 All notable changes to claude-mem.
 
+## [v10.2.5] - 2026-02-18
+
+### Bug Fixes
+
+- **Self-healing message queue**: Renamed `claimAndDelete` → `claimNextMessage` with atomic self-healing — automatically resets stale processing messages (>60s) back to pending before claiming, eliminating stuck messages from generator crashes without external timers
+- **Removed redundant idle-timeout reset**: The `resetStaleProcessingMessages()` call during idle timeout in worker-service was removed (startup reset kept), since the atomic self-healing in `claimNextMessage` now handles recovery inline
+- **TypeScript diagnostic fix**: Added `QUEUE` to logger `Component` type
+
+### Tests
+
+- 5 new tests for self-healing behavior (stuck recovery, active protection, atomicity, empty queue, session isolation)
+- 1 new integration test for stuck recovery in zombie-prevention suite
+- All existing queue tests updated for renamed method
+
 ## [v10.2.4] - 2026-02-18
 
 ## Chroma Vector DB Backfill Fix
@@ -1420,22 +1434,4 @@ This release significantly reduces the token footprint of the plugin's MCP tools
 - Comprehensive test suite for session ID refactoring
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.5...v8.2.6
-
-## [v8.2.5] - 2025-12-28
-
-## Bug Fixes
-
-- **Logger**: Enhanced Error object handling in debug mode to prevent empty JSON serialization
-- **ChromaSync**: Refactored DatabaseManager to initialize ChromaSync lazily, removing background backfill on startup
-- **SessionManager**: Simplified message handling and removed linger timeout that was blocking completion
-
-## Technical Details
-
-This patch release addresses several issues discovered after the session continuity fix:
-
-1. Logger now properly serializes Error objects with stack traces in debug mode
-2. ChromaSync initialization is now lazy to prevent silent failures during startup
-3. Session linger timeout removed to eliminate artificial 5-second delays on session completion
-
-Full changelog: https://github.com/thedotmack/claude-mem/compare/v8.2.4...v8.2.5
 
