@@ -57,6 +57,8 @@ export interface SettingsDefaults {
   // Exclusion Settings
   CLAUDE_MEM_EXCLUDED_PROJECTS: string;  // Comma-separated glob patterns for excluded project paths
   CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;  // JSON array of folder paths to exclude from CLAUDE.md generation
+  // Session Init Deduplication
+  CLAUDE_MEM_SESSION_INIT_DEDUP: string;  // 'true' | 'false' - deduplicate session-init per contentSessionId (default: true)
   // Chroma Vector Database Configuration
   CLAUDE_MEM_CHROMA_MODE: string;      // 'local' | 'remote'
   CLAUDE_MEM_CHROMA_HOST: string;
@@ -117,6 +119,8 @@ export class SettingsDefaultsManager {
     // Exclusion Settings
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
+    // Session Init Deduplication
+    CLAUDE_MEM_SESSION_INIT_DEDUP: 'true',  // Deduplicate session-init per contentSessionId
     // Chroma Vector Database Configuration
     CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' starts npx chroma run, 'remote' connects to existing server
     CLAUDE_MEM_CHROMA_HOST: '127.0.0.1',

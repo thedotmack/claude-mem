@@ -108,7 +108,9 @@ export const sessionInitHandler: EventHandler = {
     // Deduplicate: skip session-init if this contentSessionId was already initialized.
     // Within a single session, only one init is needed. Subsequent UserPromptSubmit
     // events (including system-generated idle pings) should not re-initialize.
-    if (isAlreadyInitialized(sessionId)) {
+    // Controlled by CLAUDE_MEM_SESSION_INIT_DEDUP setting (default: true).
+    const dedupEnabled = settings.CLAUDE_MEM_SESSION_INIT_DEDUP === 'true';
+    if (dedupEnabled && isAlreadyInitialized(sessionId)) {
       logger.info('HOOK', 'session-init skipped: already initialized for this session', { contentSessionId: sessionId });
       return { continue: true, suppressOutput: true };
     }
