@@ -31,6 +31,7 @@ export class MigrationRunner {
     this.renameSessionIdColumns();
     this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
+    this.ensureSourceToolColumns();
   }
 
   /**
@@ -627,5 +628,31 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(20, new Date().toISOString());
+  }
+
+  /**
+   * Add source_tool and source_input_summary columns to observations (migration 22)
+   * Tracks which tool produced each observation and a summary of its input
+   */
+  private ensureSourceToolColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(22) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasSourceTool = tableInfo.some(col => col.name === 'source_tool');
+
+    if (!hasSourceTool) {
+      this.db.run('ALTER TABLE observations ADD COLUMN source_tool TEXT');
+      logger.debug('DB', 'Added source_tool column to observations table');
+    }
+
+    const hasSourceInputSummary = tableInfo.some(col => col.name === 'source_input_summary');
+
+    if (!hasSourceInputSummary) {
+      this.db.run('ALTER TABLE observations ADD COLUMN source_input_summary TEXT');
+      logger.debug('DB', 'Added source_input_summary column to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
   }
 }
