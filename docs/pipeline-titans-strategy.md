@@ -274,10 +274,36 @@ Acquire → Prepare → Process → Parse → Render
 
 ## 參考文件
 
+### 內部文件
 - [Pipeline Architecture Analysis](./pipeline-architecture-analysis.md)
 - [Nested Learning Analysis](./nested-learning-analysis.en.md)
 - [Titans Integration Status](./titans-integration-status.md)
 - [PR #464 Implementation Summary](./pr-464-implementation-summary.md)
+
+### 外部參考來源
+
+#### Mem0 - 記憶管理架構參考
+- **GitHub**: https://github.com/mem0ai/mem0
+- **論文**: [Mem0: Building Production-Ready AI Agents with Scalable Long-Term Memory](https://arxiv.org/abs/2504.19413)
+- **參考內容**:
+  - Extraction → Update Pipeline 架構啟發了 5-stage Pipeline 設計
+  - Multi-level Memory (Short-term → Long-term) 概念對應 Memory Tier
+  - LLM 決策引擎（Add/Update/Delete/NOOP）啟發了衝突處理機制
+  - 最佳實踐參數：M=10（context window）、S=10（相似記憶檢索）
+
+#### Google Titans Paper - 驚喜檢測與動量
+- **論文**: [Learning to Memorize at Test Time](https://arxiv.org/abs/2504.19413) (參考 Mem0 引用)
+- **參考內容**:
+  - Surprise Metric（驚喜檢測）- 偵測語意距離和時間衰減
+  - Momentum Buffer（動量緩衝）- 提升重要話題權重
+  - 這些概念應用於 `SurpriseMetric.ts` 和 `MomentumBuffer.ts`
+
+#### Mem0 Graph Memory - 知識圖譜設計（未來參考）
+- **文檔**: https://docs.mem0.ai/open-source/features/graph-memory
+- **參考內容**:
+  - Entity-Relation 知識圖譜 G=(V,E,L)
+  - Update Resolver 衝突解決機制
+  - 多圖資料庫支援（Neo4j, Memgraph, Neptune, Kuzu）
 
 ---
 
