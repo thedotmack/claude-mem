@@ -1,0 +1,154 @@
+---
+title: "OpenAI Codex Provider"
+description: "Use your ChatGPT Plus or Pro subscription for observation extraction via OAuth — no separate API key required"
+---
+
+# OpenAI Codex Provider
+
+Claude-mem supports OpenAI Codex (ChatGPT Plus/Pro) as an alternative provider for observation extraction. Authentication uses OAuth, so you can use your existing ChatGPT subscription without needing a separate API key.
+
+<Tip>
+**Recommended for OpenClaw users**: Anthropic's Terms of Service (updated February 2026) prohibit using Claude OAuth tokens in third-party apps. If you run claude-mem through OpenClaw, the OpenAI Codex provider is the cleanest migration path — it reuses your existing ChatGPT subscription with zero extra cost.
+</Tip>
+
+## Why Use OpenAI Codex?
+
+- **No API key needed**: Uses your ChatGPT Plus/Pro subscription via OAuth
+- **Zero extra cost**: Observation extraction runs on your existing subscription
+- **GPT-5.x access**: Plus/Pro subscribers get access to the latest GPT Codex models
+- **Shared credentials**: If you already authenticate via OpenClaw, credentials are reused automatically — no double login
+- **Seamless fallback**: Falls back to Claude if the OAuth token can't be refreshed
+
+## How Authentication Works
+
+Claude-mem reads OAuth credentials from the same `auth-profiles.json` file that OpenClaw writes when you run `openclaw auth`. Token refresh is automatic — when the access token expires, claude-mem uses the stored refresh token to get a new one silently.
+
+### Credential Discovery Order
+
+Claude-mem looks for credentials in this order:
+
+1. `CLAUDE_MEM_OPENAI_CODEX_AGENT_DIR` setting (explicit override)
+2. `OPENCLAW_AGENT_DIR` environment variable (set automatically by OpenClaw at runtime)
+3. `~/.openclaw/agents/default/agent/auth-profiles.json` (OpenClaw default location)
+4. `~/.claude-mem/auth-profiles.json` (standalone fallback)
+
+If you're running claude-mem through OpenClaw, credentials are picked up automatically from step 2 or 3 — no extra configuration required.
+
+## Setup
+
+### Step 1: Authenticate with OpenClaw
+
+If you haven't already, authenticate with your ChatGPT account via OpenClaw:
+
+```bash
+openclaw auth
+# Select "OpenAI Codex" from the provider list
+# Follow the browser OAuth flow
+```
+
+Your credentials are saved to `auth-profiles.json` in your OpenClaw agent directory.
+
+### Step 2: Enable the provider
+
+Edit `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-codex"
+}
+```
+
+Or use the **Settings UI** at http://localhost:37777 → Settings → AI Provider → "OpenAI Codex (ChatGPT Plus/Pro OAuth)".
+
+### Step 3: Restart the worker
+
+```bash
+npm run worker:restart
+```
+
+That's it. Claude-mem will now use your ChatGPT subscription for observation extraction.
+
+## Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_PROVIDER` | `claude` | Set to `openai-codex` to activate this provider |
+| `CLAUDE_MEM_OPENAI_CODEX_MODEL` | `gpt-4o` | Model used for observation extraction |
+| `CLAUDE_MEM_OPENAI_CODEX_AGENT_DIR` | _(auto-detect)_ | Path to directory containing `auth-profiles.json`. Leave empty to auto-detect from OpenClaw. |
+
+### Available Models
+
+| Model | Description |
+|-------|-------------|
+| `gpt-4o` | Recommended — fast, capable, included in Plus/Pro |
+| `gpt-4o-mini` | Faster and lighter; good for high-volume extraction |
+| `gpt-5.3-codex` | Latest Codex model (ChatGPT Plus/Pro only) |
+
+<Note>
+Model availability depends on your ChatGPT subscription tier. `gpt-4o` is available on all paid plans.
+</Note>
+
+### Example Configuration
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-codex",
+  "CLAUDE_MEM_OPENAI_CODEX_MODEL": "gpt-4o"
+}
+```
+
+## Standalone Use (Without OpenClaw)
+
+If you're using claude-mem standalone (not through OpenClaw), you can authenticate directly using the `pi-ai` CLI:
+
+```bash
+npx @mariozechner/pi-ai login openai-codex
+```
+
+This saves credentials to `auth.json` in your current directory by default. Point claude-mem to that directory:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-codex",
+  "CLAUDE_MEM_OPENAI_CODEX_AGENT_DIR": "/path/to/directory/containing/auth-profiles.json"
+}
+```
+
+## Troubleshooting
+
+### "No auth-profiles.json found"
+
+Claude-mem can't find your credentials. Either:
+- Run `openclaw auth` to authenticate (if using OpenClaw)
+- Run `npx @mariozechner/pi-ai login openai-codex` and set `CLAUDE_MEM_OPENAI_CODEX_AGENT_DIR`
+
+### "Token refresh failed — Re-authenticate with 'openclaw auth'"
+
+Your refresh token expired or was revoked. Run `openclaw auth` again to get new credentials.
+
+### "No openai-codex profile found"
+
+You have an `auth-profiles.json` but it doesn't contain an OpenAI Codex entry. Run `openclaw auth` and select OpenAI Codex from the provider list.
+
+## Migration from Claude Provider
+
+If you were previously using `CLAUDE_MEM_PROVIDER=claude` (with OAuth) and want to migrate:
+
+1. Run `openclaw auth` to add OpenAI Codex credentials (takes ~1 minute)
+2. Change `CLAUDE_MEM_PROVIDER` to `openai-codex` in `~/.claude-mem/settings.json`
+3. Restart the worker: `npm run worker:restart`
+
+Your memory database, observations, and summaries are unaffected — only the model that extracts new observations changes.
+
+## Comparison with Other Providers
+
+| Provider | Auth | Cost | Best For |
+|----------|------|------|----------|
+| **OpenAI Codex** | OAuth (ChatGPT sub) | Included in subscription | OpenClaw users, ChatGPT subscribers |
+| **Claude** | OAuth (Claude sub) | Included in Claude Code subscription | Claude Code users (not for OpenClaw) |
+| **Gemini** | API key | Free tier available | Cost-conscious users, high volume |
+| **OpenRouter** | API key | Free models available | Multi-model flexibility |
+
+<Warning>
+**Claude provider and OpenClaw**: Using `CLAUDE_MEM_PROVIDER=claude` with OpenClaw violates Anthropic's Terms of Service (updated February 2026), which prohibit using Claude OAuth tokens in third-party apps outside of Claude Code. Switch to `openai-codex`, `gemini`, or `openrouter` when running through OpenClaw.
+</Warning>
