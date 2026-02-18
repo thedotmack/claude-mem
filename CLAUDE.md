@@ -33,6 +33,12 @@ npm run build-and-sync        # Build, sync to marketplace, restart worker
 
 Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
 
+## Build Assets (`plugin/scripts/`)
+
+The `plugin/scripts/` directory contains built CJS files that **must be committed and pushed**. Claude Code loads the plugin directly from these files — they are not built at install time.
+
+When resolving merge conflicts in these files, **always rebuild** via `npm run build-and-sync` rather than manually resolving. Then stage and commit the rebuilt output.
+
 ## File Locations
 
 - **Source**: `<project-root>/src/`

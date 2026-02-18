@@ -20,6 +20,7 @@ import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { ensureAuthToken } from '../shared/AuthTokenManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaServerManager } from './sync/ChromaServerManager.js';
+import { ChromaSync } from './sync/ChromaSync.js';
 
 // Windows: avoid repeated spawn popups when startup fails (issue #921)
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
@@ -428,6 +429,15 @@ export class WorkerService {
       this.searchRoutes = new SearchRoutes(searchManager);
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
+
+      // Auto-backfill Chroma for all projects if out of sync with SQLite (fire-and-forget)
+      if (this.chromaServer !== null || chromaMode !== 'local') {
+        ChromaSync.backfillAllProjects().then(() => {
+          logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
+        }).catch(error => {
+          logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
+        });
+      }
 
       // Connect to MCP server
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
