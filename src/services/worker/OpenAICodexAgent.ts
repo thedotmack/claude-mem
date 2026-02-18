@@ -21,7 +21,7 @@
  * - Sync to database and Chroma
  */
 
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -90,6 +90,16 @@ interface OpenAIResponse {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Token cache (process-lifetime, keyed by authDir)
+// ─────────────────────────────────────────────────────────────
+
+interface CachedToken {
+  access: string;
+  expires: number;  // epoch ms
+}
+const tokenCache = new Map<string, CachedToken>();
+
+// ─────────────────────────────────────────────────────────────
 // Credential helpers
 // ─────────────────────────────────────────────────────────────
 
@@ -144,15 +154,14 @@ function findCodexProfile(store: AuthProfileStore): AuthProfile | null {
  * Only updates the matching profile — leaves everything else untouched.
  */
 function saveCodexProfile(authDir: string, store: AuthProfileStore, updated: AuthProfile): void {
-  const { writeFileSync } = require('fs');
-  const path = join(authDir, 'auth-profiles.json');
+  const filePath = join(authDir, 'auth-profiles.json');
   for (const [id, profile] of Object.entries(store.profiles)) {
     if (id.startsWith('openai-codex:') && profile.type === 'oauth') {
       store.profiles[id] = { ...profile, ...updated };
       break;
     }
   }
-  writeFileSync(path, JSON.stringify(store, null, 2), 'utf-8');
+  writeFileSync(filePath, JSON.stringify(store, null, 2), 'utf-8');
 }
 
 /**
@@ -161,6 +170,15 @@ function saveCodexProfile(authDir: string, store: AuthProfileStore, updated: Aut
  */
 async function getAccessToken(): Promise<string> {
   const authDir = resolveAuthDir();
+  const bufferMs = 5 * 60 * 1000;
+
+  // Fast path: in-memory cache (avoids disk read on every query)
+  const cached = tokenCache.get(authDir);
+  if (cached && Date.now() < (cached.expires - bufferMs)) {
+    return cached.access;
+  }
+
+  // Load from disk to check / get refresh token
   const store = loadAuthStore(authDir);
 
   if (!store) {
@@ -178,9 +196,9 @@ async function getAccessToken(): Promise<string> {
     );
   }
 
-  // Token is still valid (5-minute buffer)
-  const bufferMs = 5 * 60 * 1000;
+  // Token on disk still valid — populate cache and return
   if (profile.access && profile.expires && Date.now() < (profile.expires - bufferMs)) {
+    tokenCache.set(authDir, { access: profile.access, expires: profile.expires });
     return profile.access;
   }
 
@@ -192,6 +210,8 @@ async function getAccessToken(): Promise<string> {
     const { refreshOpenAICodexToken } = await import('@mariozechner/pi-ai') as any;
     const refreshed = await refreshOpenAICodexToken(profile.refresh);
     saveCodexProfile(authDir, store, refreshed);
+    // Update in-memory cache
+    tokenCache.set(authDir, { access: refreshed.access, expires: refreshed.expires });
     logger.info('SDK', 'OpenAI Codex token refreshed successfully');
     return refreshed.access;
   } catch (err) {
@@ -375,9 +395,11 @@ export class OpenAICodexAgent {
   }
 
   private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
+    // Re-use OpenRouter context settings as general limits (same defaults apply)
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const MAX_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
     const MAX_TOKENS = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
+    // Note: these settings will be renamed to CLAUDE_MEM_CONTEXT_MAX_* in a future refactor
 
     if (history.length <= MAX_MESSAGES) {
       const totalTokens = history.reduce((s, m) => s + this.estimateTokens(m.content), 0);
