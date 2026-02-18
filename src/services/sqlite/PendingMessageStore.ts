@@ -2,6 +2,9 @@ import { Database } from './sqlite-compat.js';
 import type { PendingMessage } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
+/** Messages processing longer than this are considered stale and reset to pending by self-healing */
+const STALE_PROCESSING_THRESHOLD_MS = 60_000;
+
 /**
  * Persistent pending message record from database
  */
@@ -88,12 +91,13 @@ export class PendingMessageStore {
    * Uses a transaction to prevent race conditions.
    */
   claimNextMessage(sessionDbId: number): PersistentPendingMessage | null {
-    const now = Date.now();
     const claimTx = this.db.transaction((sessionId: number) => {
+      // Capture time inside transaction so it's fresh if WAL contention causes retry
+      const now = Date.now();
       // Self-healing: reset stale 'processing' messages back to 'pending'
       // This recovers from generator crashes without external timers
-      const STALE_THRESHOLD_MS = 60_000; // 60 seconds
-      const staleCutoff = now - STALE_THRESHOLD_MS;
+      // Note: strict < means messages must be OLDER than threshold to be reset
+      const staleCutoff = now - STALE_PROCESSING_THRESHOLD_MS;
       const resetStmt = this.db.prepare(`
         UPDATE pending_messages
         SET status = 'pending', started_processing_at_epoch = NULL
