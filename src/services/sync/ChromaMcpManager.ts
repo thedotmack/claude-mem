@@ -25,6 +25,7 @@ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 const CHROMA_MCP_CLIENT_NAME = 'claude-mem-chroma';
 const CHROMA_MCP_CLIENT_VERSION = '1.0.0';
 const MCP_CONNECTION_TIMEOUT_MS = 30_000;
+const RECONNECT_BACKOFF_MS = 10_000; // Don't retry connections faster than this after failure
 const DEFAULT_CHROMA_DATA_DIR = path.join(os.homedir(), '.claude-mem', 'chroma');
 
 export class ChromaMcpManager {
@@ -32,6 +33,7 @@ export class ChromaMcpManager {
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
   private connected: boolean = false;
+  private lastConnectionFailureTimestamp: number = 0;
   private connecting: Promise<void> | null = null;
 
   private constructor() {}
@@ -56,6 +58,12 @@ export class ChromaMcpManager {
       return;
     }
 
+    // Backoff: don't retry connections too fast after a failure
+    const timeSinceLastFailure = Date.now() - this.lastConnectionFailureTimestamp;
+    if (this.lastConnectionFailureTimestamp > 0 && timeSinceLastFailure < RECONNECT_BACKOFF_MS) {
+      throw new Error(`chroma-mcp connection in backoff (${Math.ceil((RECONNECT_BACKOFF_MS - timeSinceLastFailure) / 1000)}s remaining)`);
+    }
+
     // If another caller is already connecting, wait for that attempt
     if (this.connecting) {
       await this.connecting;
@@ -65,6 +73,9 @@ export class ChromaMcpManager {
     this.connecting = this.connectInternal();
     try {
       await this.connecting;
+    } catch (error) {
+      this.lastConnectionFailureTimestamp = Date.now();
+      throw error;
     } finally {
       this.connecting = null;
     }
@@ -75,13 +86,18 @@ export class ChromaMcpManager {
    * Called behind the connection lock to ensure only one connection attempt at a time.
    */
   private async connectInternal(): Promise<void> {
-    // Clean up any stale client/transport from a dead subprocess
+    // Clean up any stale client/transport from a dead subprocess.
+    // Close transport first (kills subprocess via SIGTERM) before client
+    // to avoid hanging on a stuck process.
+    if (this.transport) {
+      try { await this.transport.close(); } catch { /* already dead */ }
+    }
     if (this.client) {
       try { await this.client.close(); } catch { /* already dead */ }
-      this.client = null;
-      this.transport = null;
-      this.connected = false;
     }
+    this.client = null;
+    this.transport = null;
+    this.connected = false;
 
     const commandArgs = this.buildCommandArgs();
     const spawnEnvironment = this.getSpawnEnv();
@@ -117,20 +133,39 @@ export class ChromaMcpManager {
 
     try {
       await Promise.race([mcpConnectionPromise, timeoutPromise]);
-    } finally {
+    } catch (connectionError) {
+      // Connection failed or timed out - kill the subprocess to prevent zombies
       clearTimeout(timeoutId!);
+      logger.warn('CHROMA_MCP', 'Connection failed, killing subprocess to prevent zombie', {
+        error: connectionError instanceof Error ? connectionError.message : String(connectionError)
+      });
+      try { await this.transport.close(); } catch { /* best effort */ }
+      try { await this.client.close(); } catch { /* best effort */ }
+      this.client = null;
+      this.transport = null;
+      this.connected = false;
+      throw connectionError;
     }
+    clearTimeout(timeoutId!);
 
     this.connected = true;
 
     logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
 
-    // Listen for transport close to mark connection as dead
+    // Listen for transport close to mark connection as dead and apply backoff.
+    // CRITICAL: Guard with reference check to prevent stale onclose handlers from
+    // previous transports overwriting the current connection (race condition).
+    const currentTransport = this.transport;
     this.transport.onclose = () => {
-      logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, will reconnect on next use');
+      if (this.transport !== currentTransport) {
+        logger.debug('CHROMA_MCP', 'Ignoring stale onclose from previous transport');
+        return;
+      }
+      logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff');
       this.connected = false;
       this.client = null;
       this.transport = null;
+      this.lastConnectionFailureTimestamp = Date.now();
     };
   }
 

@@ -511,7 +511,8 @@ export class ChromaSync {
 
     try {
       // Build exclusion list for observations
-      const existingObsIds = Array.from(existing.observations);
+      // Filter to validated positive integers before interpolating into SQL
+      const existingObsIds = Array.from(existing.observations).filter(id => Number.isInteger(id) && id > 0);
       const obsExclusionClause = existingObsIds.length > 0
         ? `AND id NOT IN (${existingObsIds.join(',')})`
         : '';
@@ -552,7 +553,7 @@ export class ChromaSync {
       }
 
       // Build exclusion list for summaries
-      const existingSummaryIds = Array.from(existing.summaries);
+      const existingSummaryIds = Array.from(existing.summaries).filter(id => Number.isInteger(id) && id > 0);
       const summaryExclusionClause = existingSummaryIds.length > 0
         ? `AND id NOT IN (${existingSummaryIds.join(',')})`
         : '';
@@ -593,7 +594,7 @@ export class ChromaSync {
       }
 
       // Build exclusion list for prompts
-      const existingPromptIds = Array.from(existing.prompts);
+      const existingPromptIds = Array.from(existing.prompts).filter(id => Number.isInteger(id) && id > 0);
       const promptExclusionClause = existingPromptIds.length > 0
         ? `AND up.id NOT IN (${existingPromptIds.join(',')})`
         : '';
@@ -687,8 +688,19 @@ export class ChromaSync {
       // chroma_query_documents returns nested arrays (one per query text)
       // We always pass a single query text, so we access [0]
       const ids: number[] = [];
+      const seen = new Set<number>();
       const docIds = results?.ids?.[0] || [];
-      for (const docId of docIds) {
+      const rawMetadatas = results?.metadatas?.[0] || [];
+      const rawDistances = results?.distances?.[0] || [];
+
+      // Build deduplicated arrays that stay index-aligned:
+      // Multiple Chroma docs map to the same SQLite ID (one per field).
+      // Keep the first (best-ranked) distance and metadata per SQLite ID.
+      const metadatas: any[] = [];
+      const distances: number[] = [];
+
+      for (let i = 0; i < docIds.length; i++) {
+        const docId = docIds[i];
         // Extract sqlite_id from document ID (supports three formats):
         // - obs_{id}_narrative, obs_{id}_fact_0, etc (observations)
         // - summary_{id}_request, summary_{id}_learned, etc (session summaries)
@@ -706,16 +718,15 @@ export class ChromaSync {
           sqliteId = parseInt(promptMatch[1], 10);
         }
 
-        if (sqliteId !== null && !ids.includes(sqliteId)) {
+        if (sqliteId !== null && !seen.has(sqliteId)) {
+          seen.add(sqliteId);
           ids.push(sqliteId);
+          metadatas.push(rawMetadatas[i] ?? null);
+          distances.push(rawDistances[i] ?? 0);
         }
       }
 
-      return {
-        ids,
-        distances: results?.distances?.[0] || [],
-        metadatas: results?.metadatas?.[0] || []
-      };
+      return { ids, distances, metadatas };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
