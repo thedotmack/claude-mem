@@ -20,8 +20,9 @@ export class SessionQueueProcessor {
 
   /**
    * Create an async iterator that yields messages as they become available.
-   * Uses atomic claim-and-delete to prevent duplicates.
-   * The queue is a pure buffer: claim it, delete it, process in memory.
+   * Uses atomic claim-confirm to prevent duplicates.
+   * Messages are claimed (marked processing) and stay in DB until confirmProcessed().
+   * Self-heals stale processing messages before each claim.
    * Waits for 'message' event when queue is empty.
    *
    * CRITICAL: Calls onIdleTimeout callback after 3 minutes of inactivity.
@@ -34,14 +35,14 @@ export class SessionQueueProcessor {
 
     while (!signal.aborted) {
       try {
-        // Atomically claim AND DELETE next message from DB
-        // Message is now in memory only - no "processing" state tracking needed
-        const persistentMessage = this.store.claimAndDelete(sessionDbId);
+        // Atomically claim next pending message (marks as 'processing')
+        // Self-heals any stale processing messages before claiming
+        const persistentMessage = this.store.claimNextMessage(sessionDbId);
 
         if (persistentMessage) {
           // Reset activity time when we successfully yield a message
           lastActivityTime = Date.now();
-          // Yield the message for processing (it's already deleted from queue)
+          // Yield the message for processing (it's marked as 'processing' in DB)
           yield this.toPendingMessageWithId(persistentMessage);
         } else {
           // Queue empty - wait for wake-up event or timeout
