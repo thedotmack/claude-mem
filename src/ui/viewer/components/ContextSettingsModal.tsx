@@ -563,6 +563,22 @@ export function ContextSettingsModal({
               )}
 
               <FormField
+                label="OpenClaw Provider Override"
+                tooltip="AI provider used exclusively for sessions originating from OpenClaw. Leave empty to use the global provider above for all sessions. Recommended: openai-codex (uses ChatGPT subscription, avoids Anthropic ToS restriction for third-party apps)."
+              >
+                <select
+                  value={formState.CLAUDE_MEM_OPENCLAW_PROVIDER || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_OPENCLAW_PROVIDER', e.target.value)}
+                >
+                  <option value="">Same as global provider</option>
+                  <option value="claude">Claude (Anthropic OAuth — not recommended for OpenClaw)</option>
+                  <option value="gemini">Gemini</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="openai-codex">OpenAI Codex (ChatGPT Plus/Pro OAuth)</option>
+                </select>
+              </FormField>
+
+              <FormField
                 label="Worker Port"
                 tooltip="Port for the background worker service"
               >

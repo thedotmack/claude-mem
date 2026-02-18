@@ -53,45 +53,59 @@ export class SessionRoutes extends BaseRouteHandler {
    * Note: Session linking via contentSessionId allows provider switching mid-session.
    * The conversationHistory on ActiveSession maintains context across providers.
    */
-  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent | OpenAICodexAgent {
-    if (isOpenAICodexSelected()) {
+  /**
+   * Resolve which provider string to use for a given session.
+   * If the session originates from OpenClaw (contentSessionId starts with 'openclaw-')
+   * AND CLAUDE_MEM_OPENCLAW_PROVIDER is configured, that takes precedence.
+   * Otherwise falls back to the global CLAUDE_MEM_PROVIDER.
+   */
+  private resolveProviderForSession(contentSessionId?: string): string {
+    if (contentSessionId?.startsWith('openclaw-')) {
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      if (settings.CLAUDE_MEM_OPENCLAW_PROVIDER) {
+        return settings.CLAUDE_MEM_OPENCLAW_PROVIDER;
+      }
+    }
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    return settings.CLAUDE_MEM_PROVIDER || 'claude';
+  }
+
+  private getActiveAgent(contentSessionId?: string): SDKAgent | GeminiAgent | OpenRouterAgent | OpenAICodexAgent {
+    const provider = this.resolveProviderForSession(contentSessionId);
+
+    if (provider === 'openai-codex') {
       if (isOpenAICodexAvailable()) {
-        logger.debug('SESSION', 'Using OpenAI Codex agent');
+        logger.debug('SESSION', 'Using OpenAI Codex agent', { contentSessionId });
         return this.openAICodexAgent;
-      } else {
-        throw new Error('OpenAI Codex provider selected but no OAuth credentials found. Run `openclaw auth` to authenticate with your ChatGPT account.');
       }
+      throw new Error('OpenAI Codex provider selected but no OAuth credentials found. Run `openclaw auth` to authenticate with your ChatGPT account.');
     }
-    if (isOpenRouterSelected()) {
+    if (provider === 'openrouter') {
       if (isOpenRouterAvailable()) {
-        logger.debug('SESSION', 'Using OpenRouter agent');
+        logger.debug('SESSION', 'Using OpenRouter agent', { contentSessionId });
         return this.openRouterAgent;
-      } else {
-        throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
       }
+      throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
     }
-    if (isGeminiSelected()) {
+    if (provider === 'gemini') {
       if (isGeminiAvailable()) {
-        logger.debug('SESSION', 'Using Gemini agent');
+        logger.debug('SESSION', 'Using Gemini agent', { contentSessionId });
         return this.geminiAgent;
-      } else {
-        throw new Error('Gemini provider selected but no API key configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
       }
+      throw new Error('Gemini provider selected but no API key configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
     }
     return this.sdkAgent;
   }
 
   /**
-   * Get the currently selected provider name
+   * Get the currently selected provider name for a session.
    */
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'openai-codex' {
-    if (isOpenAICodexSelected() && isOpenAICodexAvailable()) {
-      return 'openai-codex';
-    }
-    if (isOpenRouterSelected() && isOpenRouterAvailable()) {
-      return 'openrouter';
-    }
-    return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
+  private getSelectedProvider(contentSessionId?: string): 'claude' | 'gemini' | 'openrouter' | 'openai-codex' {
+    const provider = this.resolveProviderForSession(contentSessionId);
+    if (provider === 'openai-codex' && isOpenAICodexAvailable()) return 'openai-codex';
+    if (provider === 'openrouter' && isOpenRouterAvailable()) return 'openrouter';
+    if (provider === 'gemini' && isGeminiAvailable()) return 'gemini';
+    return 'claude';
   }
 
   /**
@@ -115,7 +129,7 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    const selectedProvider = this.getSelectedProvider();
+    const selectedProvider = this.getSelectedProvider(session.contentSessionId);
 
     // Start generator if not running
     if (!session.generatorPromise) {
@@ -177,8 +191,8 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortController = new AbortController();
     }
 
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agent = this.getActiveAgent(session.contentSessionId);
+    const agentName = agent.constructor.name;
 
     // Use database count for accurate telemetry (in-memory array is always empty due to FK constraint fix)
     const pendingStore = this.sessionManager.getPendingMessageStore();
@@ -296,7 +310,7 @@ export class SessionRoutes extends BaseRouteHandler {
                 this.crashRecoveryScheduled.delete(sessionDbId);
                 const stillExists = this.sessionManager.getSession(sessionDbId);
                 if (stillExists && !stillExists.generatorPromise) {
-                  this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
+                  this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(stillExists.contentSessionId), 'crash-recovery');
                 }
               }, backoffMs);
             } else {

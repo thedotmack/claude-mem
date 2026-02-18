@@ -509,16 +509,26 @@ export class WorkerService {
    * Get the appropriate agent based on provider settings.
    * Same logic as SessionRoutes.getActiveAgent() for consistency.
    */
-  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent | OpenAICodexAgent {
-    if (isOpenAICodexSelected() && isOpenAICodexAvailable()) {
-      return this.openAICodexAgent;
+  /**
+   * Resolve the effective provider for a session.
+   * OpenClaw sessions (contentSessionId starts with 'openclaw-') use
+   * CLAUDE_MEM_OPENCLAW_PROVIDER if configured; otherwise fall back to
+   * the global CLAUDE_MEM_PROVIDER.
+   */
+  private resolveProviderForSession(contentSessionId?: string): string {
+    const { USER_SETTINGS_PATH } = require('../shared/paths.js');
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (contentSessionId?.startsWith('openclaw-') && settings.CLAUDE_MEM_OPENCLAW_PROVIDER) {
+      return settings.CLAUDE_MEM_OPENCLAW_PROVIDER;
     }
-    if (isOpenRouterSelected() && isOpenRouterAvailable()) {
-      return this.openRouterAgent;
-    }
-    if (isGeminiSelected() && isGeminiAvailable()) {
-      return this.geminiAgent;
-    }
+    return settings.CLAUDE_MEM_PROVIDER || 'claude';
+  }
+
+  private getActiveAgent(contentSessionId?: string): SDKAgent | GeminiAgent | OpenRouterAgent | OpenAICodexAgent {
+    const provider = this.resolveProviderForSession(contentSessionId);
+    if (provider === 'openai-codex' && isOpenAICodexAvailable()) return this.openAICodexAgent;
+    if (provider === 'openrouter' && isOpenRouterAvailable()) return this.openRouterAgent;
+    if (provider === 'gemini' && isGeminiAvailable()) return this.geminiAgent;
     return this.sdkAgent;
   }
 
@@ -534,7 +544,7 @@ export class WorkerService {
     if (!session) return;
 
     const sid = session.sessionDbId;
-    const agent = this.getActiveAgent();
+    const agent = this.getActiveAgent(session.contentSessionId);
     const providerName = agent.constructor.name;
 
     // Before starting generator, check if AbortController is already aborted
