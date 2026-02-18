@@ -1180,22 +1180,53 @@ async function main() {
 
     case '--daemon':
     default: {
+      // Track whether the server has successfully started listening.
+      // Only keep the process alive on errors AFTER the server is running.
+      let serverListening = false;
+
       // Prevent daemon from dying silently on unhandled errors.
       // The HTTP server can continue serving even if a background task throws.
       process.on('unhandledRejection', (reason) => {
         logger.error('SYSTEM', 'Unhandled rejection in daemon', {
           reason: reason instanceof Error ? reason.message : String(reason)
         });
+        if (!serverListening) {
+          // Server never started — exit instead of hanging as a zombie
+          logger.error('SYSTEM', 'Exiting: unhandled rejection during startup');
+          removePidFile();
+          process.exit(1);
+        }
       });
       process.on('uncaughtException', (error) => {
         logger.error('SYSTEM', 'Uncaught exception in daemon', {}, error as Error);
+        if (!serverListening) {
+          // Server never started — exit instead of hanging as a zombie
+          logger.error('SYSTEM', 'Exiting: uncaught exception during startup');
+          removePidFile();
+          process.exit(1);
+        }
         // Don't exit — keep the HTTP server running
       });
 
+      // Safety net: if the daemon hasn't started within 30s, exit.
+      // Prevents zombie processes from accumulating when startup hangs.
+      const startupTimeout = setTimeout(() => {
+        if (!serverListening) {
+          logger.error('SYSTEM', 'Exiting: daemon startup timed out after 30s');
+          removePidFile();
+          process.exit(1);
+        }
+      }, 30_000);
+      startupTimeout.unref(); // Don't keep process alive just for this timer
+
       const worker = new WorkerService();
-      worker.start().catch((error) => {
+      worker.start().then(() => {
+        serverListening = true;
+        clearTimeout(startupTimeout);
+      }).catch((error) => {
         logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
         removePidFile();
+        clearTimeout(startupTimeout);
         // Exit gracefully: Windows Terminal won't keep tab open on exit 0
         // The wrapper/plugin will handle restart logic if needed
         process.exit(0);
