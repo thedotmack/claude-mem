@@ -29,6 +29,18 @@ function getCurrentBranch() {
   }
 }
 
+function getGitignoreExcludes(basePath) {
+  const gitignorePath = path.join(basePath, '.gitignore');
+  if (!existsSync(gitignorePath)) return '';
+
+  const lines = readFileSync(gitignorePath, 'utf-8').split('\n');
+  return lines
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#') && !line.startsWith('!'))
+    .map(pattern => `--exclude=${JSON.stringify(pattern)}`)
+    .join(' ');
+}
+
 const branch = getCurrentBranch();
 const isForce = process.argv.includes('--force');
 
@@ -60,24 +72,17 @@ function getPluginVersion() {
 // Normal rsync for main branch or fresh install
 console.log('Syncing to marketplace...');
 try {
+  const rootDir = path.join(__dirname, '..');
+  const gitignoreExcludes = getGitignoreExcludes(rootDir);
+
   execSync(
-    'rsync -av --delete --exclude=.git --exclude=/.mcp.json --exclude=bun.lock --exclude=package-lock.json ./ ~/.claude/plugins/marketplaces/thedotmack/',
+    `rsync -av --delete --exclude=.git --exclude=/.mcp.json --exclude=bun.lock --exclude=package-lock.json ${gitignoreExcludes} ./ ~/.claude/plugins/marketplaces/thedotmack/`,
     { stdio: 'inherit' }
   );
 
-  // Remove stale lockfiles before install — they pin old native dep versions
-  const { unlinkSync } = require('fs');
-  for (const lockfile of ['package-lock.json', 'bun.lock']) {
-    const lockpath = path.join(INSTALLED_PATH, lockfile);
-    if (existsSync(lockpath)) {
-      unlinkSync(lockpath);
-      console.log(`Removed stale ${lockfile}`);
-    }
-  }
-
-  console.log('Running npm install in marketplace...');
+  console.log('Running bun install in marketplace...');
   execSync(
-    'cd ~/.claude/plugins/marketplaces/thedotmack/ && npm install',
+    'cd ~/.claude/plugins/marketplaces/thedotmack/ && bun install',
     { stdio: 'inherit' }
   );
 
@@ -85,11 +90,18 @@ try {
   const version = getPluginVersion();
   const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
 
+  const pluginDir = path.join(rootDir, 'plugin');
+  const pluginGitignoreExcludes = getGitignoreExcludes(pluginDir);
+
   console.log(`Syncing to cache folder (version ${version})...`);
   execSync(
-    `rsync -av --delete --exclude=.git plugin/ "${CACHE_VERSION_PATH}/"`,
+    `rsync -av --delete --exclude=.git ${pluginGitignoreExcludes} plugin/ "${CACHE_VERSION_PATH}/"`,
     { stdio: 'inherit' }
   );
+
+  // Install dependencies in cache directory so worker can resolve them
+  console.log(`Running bun install in cache folder (version ${version})...`);
+  execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
 
   console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 

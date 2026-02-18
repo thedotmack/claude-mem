@@ -24,7 +24,8 @@ export const observationHandler: EventHandler = {
     const { sessionId, cwd, toolName, toolInput, toolResponse } = input;
 
     if (!toolName) {
-      throw new Error('observationHandler requires toolName');
+      // No tool name provided - skip observation gracefully
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
     const port = getWorkerPort();

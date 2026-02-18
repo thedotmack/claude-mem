@@ -24,11 +24,12 @@
   <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
   <a href="docs/i18n/README.zh-tw.md">🇹🇼 繁體中文</a> •
   <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
+  <a href="docs/i18n/README.pt.md">🇵🇹 Português</a> •
   <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
   <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
   <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
   <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
-  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a>
+  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a> •
   <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
   <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
   <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
@@ -38,6 +39,7 @@
   <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
   <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
   <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="docs/i18n/README.tl.md">🇵🇭 Tagalog</a> •
   <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
   <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
   <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
@@ -117,6 +119,8 @@ Start a new Claude Code session in the terminal and enter the following commands
 ```
 
 Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
+
+> **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. To use Claude-Mem as a plugin, always install via the `/plugin` commands above.
 
 ### 🦞 OpenClaw Gateway
 
