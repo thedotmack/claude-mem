@@ -3,7 +3,7 @@ import { readFileSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
-import { MARKETPLACE_ROOT } from "./paths.js";
+import { getPackageRoot } from "./paths.js";
 
 // Named constants for health checks
 // Allow env var override for users on slow systems (e.g., CLAUDE_MEM_HEALTH_TIMEOUT_MS=10000)
@@ -108,7 +108,7 @@ async function isWorkerHealthy(): Promise<boolean> {
  */
 function getPluginVersion(): string {
   try {
-    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
+    const packageJsonPath = path.join(getPackageRoot(), 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     return packageJson.version;
   } catch (error: unknown) {
