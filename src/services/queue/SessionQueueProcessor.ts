@@ -34,9 +34,9 @@ export class SessionQueueProcessor {
 
     while (!signal.aborted) {
       try {
-        // Atomically claim AND DELETE next message from DB
-        // Message is now in memory only - no "processing" state tracking needed
-        const persistentMessage = this.store.claimAndDelete(sessionDbId);
+        // Atomically claim next pending message (marks as 'processing')
+        // Self-heals any stale processing messages before claiming
+        const persistentMessage = this.store.claimNextMessage(sessionDbId);
 
         if (persistentMessage) {
           // Reset activity time when we successfully yield a message
