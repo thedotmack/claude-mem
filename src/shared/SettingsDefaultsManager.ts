@@ -57,6 +57,8 @@ export interface SettingsDefaults {
   // Exclusion Settings
   CLAUDE_MEM_EXCLUDED_PROJECTS: string;  // Comma-separated glob patterns for excluded project paths
   CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;  // JSON array of folder paths to exclude from CLAUDE.md generation
+  // Runtime Configuration
+  CLAUDE_MEM_BUN_PATH: string;  // Resolved absolute path to bun binary, cached at install time
   // Chroma Vector Database Configuration
   CLAUDE_MEM_CHROMA_MODE: string;      // 'local' | 'remote'
   CLAUDE_MEM_CHROMA_HOST: string;
@@ -117,6 +119,8 @@ export class SettingsDefaultsManager {
     // Exclusion Settings
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
+    // Runtime Configuration
+    CLAUDE_MEM_BUN_PATH: '',  // Empty = resolve at install time via smart-install
     // Chroma Vector Database Configuration
     CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' starts npx chroma run, 'remote' connects to existing server
     CLAUDE_MEM_CHROMA_HOST: '127.0.0.1',
