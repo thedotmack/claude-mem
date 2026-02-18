@@ -635,18 +635,16 @@ export class MigrationRunner {
    * Tracks which tool produced each observation and a summary of its input
    */
   private ensureSourceToolColumns(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(22) as SchemaVersion | undefined;
-    if (applied) return;
-
     const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const hasSourceTool = tableInfo.some(col => col.name === 'source_tool');
+    const hasSourceInputSummary = tableInfo.some(col => col.name === 'source_input_summary');
+
+    if (hasSourceTool && hasSourceInputSummary) return;
 
     if (!hasSourceTool) {
       this.db.run('ALTER TABLE observations ADD COLUMN source_tool TEXT');
       logger.debug('DB', 'Added source_tool column to observations table');
     }
-
-    const hasSourceInputSummary = tableInfo.some(col => col.name === 'source_input_summary');
 
     if (!hasSourceInputSummary) {
       this.db.run('ALTER TABLE observations ADD COLUMN source_input_summary TEXT');

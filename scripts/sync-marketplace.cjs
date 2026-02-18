@@ -86,6 +86,12 @@ try {
     { stdio: 'inherit' }
   );
 
+  console.log('Trusting packages with postinstall scripts...');
+  execSync(
+    'cd ~/.claude/plugins/marketplaces/thedotmack/ && bun pm trust onnxruntime-node protobufjs',
+    { stdio: 'inherit' }
+  );
+
   // Sync to cache folder with version
   const version = getPluginVersion();
   const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
