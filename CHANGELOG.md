@@ -2,6 +2,30 @@
 
 All notable changes to claude-mem.
 
+## [v10.2.4] - 2026-02-18
+
+## Chroma Vector DB Backfill Fix
+
+Fixes the Chroma backfill system to correctly sync all SQLite observations into the vector database on worker startup.
+
+### Bug Fixes
+
+- **Backfill all projects on startup** — `backfillAllProjects()` now runs on worker startup, iterating all projects in SQLite and syncing missing observations to Chroma. Previously `ensureBackfilled()` existed but was never called, leaving Chroma with incomplete data after cache clears.
+
+- **Fixed critical collection routing bug** — Backfill now uses the shared `cm__claude-mem` collection (matching how DatabaseManager and SearchManager operate) instead of creating per-project orphan collections that no search path reads from.
+
+- **Hardened collection name sanitization** — Project names with special characters (e.g., "YC Stuff") are sanitized for Chroma's naming constraints, including stripping trailing non-alphanumeric characters.
+
+- **Eliminated shared mutable state** — `ensureBackfilled()` and `getExistingChromaIds()` now accept project as a parameter instead of mutating instance state, keeping a single Chroma connection while avoiding fragile property mutation across iterations.
+
+- **Chroma readiness guard** — Backfill waits for Chroma server readiness before running, preventing spurious error logs when Chroma fails to start.
+
+### Changed Files
+
+- `src/services/sync/ChromaSync.ts` — Core backfill logic, sanitization, parameter passing
+- `src/services/worker-service.ts` — Startup backfill trigger + readiness guard
+- `src/utils/logger.ts` — Added `CHROMA_SYNC` log component
+
 ## [v10.2.3] - 2026-02-17
 
 ## Fix Chroma ONNX Model Cache Corruption
@@ -1414,8 +1438,4 @@ This patch release addresses several issues discovered after the session continu
 3. Session linger timeout removed to eliminate artificial 5-second delays on session completion
 
 Full changelog: https://github.com/thedotmack/claude-mem/compare/v8.2.4...v8.2.5
-
-## [v8.2.4] - 2025-12-28
-
-Patch release v8.2.4
 
