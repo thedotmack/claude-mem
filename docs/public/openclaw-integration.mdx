@@ -378,8 +378,51 @@ Each OpenClaw agent session gets a unique `contentSessionId` (format: `openclaw-
 
 Both maps are cleared on `gateway_start`.
 
+## AI Provider for OpenClaw Users
+
+<Warning>
+**Important (February 2026)**: Anthropic's Terms of Service now prohibit using Claude OAuth tokens (Free/Pro/Max plans) in third-party apps outside of Claude Code and Claude.ai — including the Agent SDK. If you run claude-mem through OpenClaw, you must configure an alternative provider for observation extraction.
+</Warning>
+
+Claude-mem supports multiple AI providers for extracting observations. When running through OpenClaw, use one of these:
+
+### Recommended: OpenAI Codex (ChatGPT Plus/Pro OAuth)
+
+If you already have a ChatGPT Plus or Pro subscription, this is the simplest migration — no new API key needed. Credentials are shared automatically between OpenClaw and claude-mem.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-codex"
+}
+```
+
+Then run `openclaw auth` and select "OpenAI Codex" if you haven't authenticated yet.
+
+See [OpenAI Codex Provider](usage/openai-codex-provider) for full setup instructions.
+
+### Alternative: Gemini (Free Tier Available)
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "gemini",
+  "CLAUDE_MEM_GEMINI_API_KEY": "your-key-from-aistudio.google.com"
+}
+```
+
+### Alternative: OpenRouter (Free Models Available)
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "your-key-from-openrouter.ai"
+}
+```
+
+Claude Code sessions are unaffected — when claude-mem runs as a Claude Code plugin (not through OpenClaw), the `claude` provider continues to work normally.
+
 ## Requirements
 
 - Claude-mem worker service running on `localhost:37777` (or configured port)
 - OpenClaw gateway with plugin support
 - Network access between gateway and worker (localhost only)
+- An alternative AI provider configured (see above) if running through OpenClaw
