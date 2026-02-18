@@ -14,6 +14,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH, DATA_DIR } from '../../shared/paths.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { setIdleFlag } from './idle-flags.js';
 
 /**
  * Debounce state stored in a file so it persists across the short-lived hook processes.
@@ -23,7 +24,7 @@ interface DebounceState {
   [contentSessionId: string]: number;
 }
 
-const DEBOUNCE_FILE_PATH = join(DATA_DIR, 'session-init-debounce.json');
+const DEBOUNCE_FILE_PATH = join(DATA_DIR, 'session-init-dedup.json');
 const DEBOUNCE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
@@ -112,6 +113,7 @@ export const sessionInitHandler: EventHandler = {
     const dedupEnabled = settings.CLAUDE_MEM_SESSION_INIT_DEDUP === 'true';
     if (dedupEnabled && isAlreadyInitialized(sessionId)) {
       logger.info('HOOK', 'session-init skipped: already initialized for this session', { contentSessionId: sessionId });
+      setIdleFlag(sessionId);
       return { continue: true, suppressOutput: true };
     }
 
