@@ -1,4 +1,5 @@
 {
+  "_comment_linux_stdin": "On Linux, Bun may crash with EINVAL on inherited pipe fds from Claude Code (#646). The worker-service handles this via stdin-reader.ts isStdinAvailable() guard. If issues recur on Linux, bun-runner.js still exists as a Node.js stdin-buffering fallback.",
   "hooks": {
     "Setup": [
       {
