@@ -63,8 +63,11 @@ export class ChromaMcpManager {
     }
 
     this.connecting = this.connectInternal();
-    await this.connecting;
-    this.connecting = null;
+    try {
+      await this.connecting;
+    } finally {
+      this.connecting = null;
+    }
   }
 
   /**
@@ -104,14 +107,19 @@ export class ChromaMcpManager {
     );
 
     const mcpConnectionPromise = this.client.connect(this.transport);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(
+    let timeoutId: ReturnType<typeof setTimeout>;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(
         () => reject(new Error(`MCP connection to chroma-mcp timed out after ${MCP_CONNECTION_TIMEOUT_MS}ms`)),
         MCP_CONNECTION_TIMEOUT_MS
-      )
-    );
+      );
+    });
 
-    await Promise.race([mcpConnectionPromise, timeoutPromise]);
+    try {
+      await Promise.race([mcpConnectionPromise, timeoutPromise]);
+    } finally {
+      clearTimeout(timeoutId!);
+    }
 
     this.connected = true;
 
@@ -268,11 +276,11 @@ export class ChromaMcpManager {
 
   /**
    * Reset the singleton instance (for testing).
-   * Triggers stop() but does not await it.
+   * Awaits stop() to prevent dual subprocesses.
    */
-  static reset(): void {
+  static async reset(): Promise<void> {
     if (ChromaMcpManager.instance) {
-      ChromaMcpManager.instance.stop().catch(() => {});
+      await ChromaMcpManager.instance.stop();
     }
     ChromaMcpManager.instance = null;
   }
