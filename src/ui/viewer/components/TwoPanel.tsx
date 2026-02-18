@@ -75,7 +75,7 @@ export const TwoPanel = forwardRef<TwoPanelHandle, TwoPanelProps>(function TwoPa
 
   return (
     <div className="two-panel" data-testid="two-panel">
-      <aside className="two-panel__left" data-testid="two-panel-left">
+      <aside className="two-panel__left" data-testid="two-panel-left" aria-label="Session list">
         <SessionList
           sessionGroups={sessionList.sessionGroups}
           selectedId={sessionList.selectedId}
@@ -94,7 +94,7 @@ export const TwoPanel = forwardRef<TwoPanelHandle, TwoPanelProps>(function TwoPa
           />
         </div>
       </aside>
-      <main className="two-panel__right" data-testid="two-panel-right">
+      <main className="two-panel__right" data-testid="two-panel-right" aria-label="Session detail">
         <SessionDetail
           detail={detail}
           isLoading={detailLoading}

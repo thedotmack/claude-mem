@@ -168,7 +168,7 @@ export function SessionList({
 
   return (
     <div className="session-list" data-testid="session-list" ref={containerRef}>
-      {!hasGroups && !isLoading && <div className="session-list__empty">No sessions found</div>}
+      {!hasGroups && !isLoading && <div className="session-list__empty" aria-live="polite">No sessions found</div>}
 
       {useVirtual ? (
         <VirtualContent
@@ -193,7 +193,7 @@ export function SessionList({
       )}
 
       {isLoading && (
-        <div className="session-list__loading" data-testid="session-list-loading">
+        <div className="session-list__loading" data-testid="session-list-loading" aria-live="polite">
           <div className="spinner" />
           Loading...
         </div>

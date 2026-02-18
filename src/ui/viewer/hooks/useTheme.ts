@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { logger } from '../utils/logger';
 
 export type ThemePreference = 'system' | 'light' | 'dark';
 export type ResolvedTheme = 'light' | 'dark';
@@ -17,7 +18,7 @@ function getStoredPreference(): ThemePreference {
       return stored;
     }
   } catch (e) {
-    console.warn('Failed to read theme preference from localStorage:', e);
+    logger.warn('theme', 'Failed to read theme preference from localStorage');
   }
   return 'system';
 }
@@ -62,7 +63,7 @@ export function useTheme() {
       localStorage.setItem(STORAGE_KEY, newPreference);
       setPreference(newPreference);
     } catch (e) {
-      console.warn('Failed to save theme preference to localStorage:', e);
+      logger.warn('theme', 'Failed to save theme preference to localStorage');
       // Still update the theme even if localStorage fails
       setPreference(newPreference);
     }

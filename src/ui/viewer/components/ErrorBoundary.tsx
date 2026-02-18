@@ -1,5 +1,15 @@
 import type { ReactNode, ErrorInfo } from 'react';
 import React, { Component } from 'react';
+import { logger } from '../utils/logger';
+
+/** Show error details only when explicitly enabled via localStorage. */
+function isDebugEnabled(): boolean {
+  try {
+    return localStorage.getItem('viewer-log-level') === 'debug';
+  } catch {
+    return false;
+  }
+}
 
 interface Props {
   children: ReactNode;
@@ -26,7 +36,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('[ErrorBoundary] Caught error:', error, errorInfo);
+    logger.error('ErrorBoundary', error.message);
     this.setState({
       error,
       errorInfo
@@ -36,22 +46,16 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: '20px', color: '#ff6b6b', backgroundColor: '#1a1a1a', minHeight: '100vh' }}>
-          <h1 style={{ fontSize: '24px', marginBottom: '10px' }}>Something went wrong</h1>
-          <p style={{ marginBottom: '10px', color: '#8b949e' }}>
+        <div className="error-boundary">
+          <h1 className="error-boundary__title">Something went wrong</h1>
+          <p className="error-boundary__message">
             The application encountered an error. Please refresh the page to try again.
           </p>
-          {this.state.error && (
-            <details style={{ marginTop: '20px', color: '#8b949e' }}>
-              <summary style={{ cursor: 'pointer', marginBottom: '10px' }}>Error details</summary>
-              <pre style={{
-                backgroundColor: '#0d1117',
-                padding: '10px',
-                borderRadius: '6px',
-                overflow: 'auto'
-              }}>
-                {this.state.error.toString()}
-                {this.state.errorInfo && '\n\n' + String(this.state.errorInfo.componentStack)}
+          {this.state.error && isDebugEnabled() && (
+            <details className="error-boundary__details">
+              <summary className="error-boundary__summary">Error details</summary>
+              <pre className="error-boundary__stack">
+                {this.state.error.message}
               </pre>
             </details>
           )}

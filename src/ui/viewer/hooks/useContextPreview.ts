@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { Settings } from '../types';
+import { logger } from '../utils/logger';
 
 interface UseContextPreviewResult {
   preview: string;
@@ -29,7 +30,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
           setSelectedProject(data.projects[0]); // Default to first project
         }
       } catch (err) {
-        console.error('Failed to fetch projects:', err);
+        logger.error('contextPreview', 'Failed to fetch projects');
       }
     }
     void fetchProjects();
@@ -44,20 +45,25 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     setIsLoading(true);
     setError(null);
 
-    const params = new URLSearchParams({
-      project: selectedProject
-    });
+    try {
+      const params = new URLSearchParams({
+        project: selectedProject
+      });
 
-    const response = await fetch(`/api/context/preview?${params}`);
-    const text = await response.text();
+      const response = await fetch(`/api/context/preview?${params}`);
+      const text = await response.text();
 
-    if (response.ok) {
-      setPreview(text);
-    } else {
-      setError('Failed to load preview');
+      if (response.ok) {
+        setPreview(text);
+      } else {
+        setError('Failed to load preview');
+      }
+    } catch (err) {
+      logger.error('contextPreview', 'Network error loading preview');
+      setError('Unable to load preview. Check that the worker is running.');
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   }, [selectedProject]);
 
   // Debounced refresh when settings or selectedProject change

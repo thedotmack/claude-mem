@@ -278,6 +278,68 @@ describe('toggleSection', () => {
 });
 
 // ---------------------------------------------------------------------------
+// buildSections empty state — "No details available" scenario (F.6 / F.18)
+// ---------------------------------------------------------------------------
+
+describe('buildSections empty state', () => {
+  it('returns empty array when all section fields are undefined', async () => {
+    const { buildSections } = await import(
+      '../../../src/ui/viewer/components/SummaryCard.js'
+    );
+
+    const emptySummary: Summary = {
+      id: 99,
+      session_id: 'session-empty',
+      project: 'test',
+      created_at_epoch: 1000,
+      // All section fields undefined
+    };
+
+    expect(buildSections(emptySummary)).toHaveLength(0);
+  });
+
+  it('returns empty array when all section fields are empty strings', async () => {
+    const { buildSections } = await import(
+      '../../../src/ui/viewer/components/SummaryCard.js'
+    );
+
+    const emptySummary: Summary = {
+      id: 99,
+      session_id: 'session-empty',
+      project: 'test',
+      created_at_epoch: 1000,
+      investigated: '',
+      learned: '',
+      completed: '',
+      next_steps: '',
+    };
+
+    expect(buildSections(emptySummary)).toHaveLength(0);
+  });
+
+  it('returns only sections with content, filtering out empty ones', async () => {
+    const { buildSections } = await import(
+      '../../../src/ui/viewer/components/SummaryCard.js'
+    );
+
+    const partialSummary: Summary = {
+      id: 99,
+      session_id: 'session-partial',
+      project: 'test',
+      created_at_epoch: 1000,
+      investigated: '',
+      learned: undefined,
+      completed: 'Done something',
+      next_steps: '',
+    };
+
+    const sections = buildSections(partialSummary);
+    expect(sections).toHaveLength(1);
+    expect(sections[0].key).toBe('completed');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Component import smoke test
 // ---------------------------------------------------------------------------
 

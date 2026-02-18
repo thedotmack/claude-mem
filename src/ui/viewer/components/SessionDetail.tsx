@@ -127,7 +127,7 @@ export function SessionDetail({ detail, isLoading, hasSelection }: SessionDetail
 
   if (isLoading) {
     return (
-      <div className="session-detail" data-testid="session-detail">
+      <div className="session-detail" data-testid="session-detail" aria-live="polite">
         <div className="session-detail__loading">
           <div className="spinner session-detail__loading-spinner" />
           Loading session...
@@ -138,7 +138,7 @@ export function SessionDetail({ detail, isLoading, hasSelection }: SessionDetail
 
   if (!detail) {
     return (
-      <div className="session-detail" data-testid="session-detail">
+      <div className="session-detail" data-testid="session-detail" aria-live="polite">
         <div className="session-detail__empty" data-testid="session-detail-empty">
           {hasSelection
             ? 'No data available for this session'

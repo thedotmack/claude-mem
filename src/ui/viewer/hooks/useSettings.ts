@@ -3,6 +3,7 @@ import type { Settings } from '../types';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
+import { logger } from '../utils/logger';
 
 interface SaveSettingsResponse {
   success: boolean;
@@ -58,7 +59,7 @@ export function useSettings() {
         });
       })
       .catch((error: unknown) => {
-        console.error('Failed to load settings:', error);
+        logger.error('settings', 'Failed to load settings');
       });
   }, []);
 
@@ -66,23 +67,28 @@ export function useSettings() {
     setIsSaving(true);
     setSaveStatus('Saving...');
 
-    const response = await fetch(API_ENDPOINTS.SETTINGS, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newSettings)
-    });
+    try {
+      const response = await fetch(API_ENDPOINTS.SETTINGS, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newSettings)
+      });
 
-    const result = await response.json() as SaveSettingsResponse;
+      const result = await response.json() as SaveSettingsResponse;
 
-    if (result.success) {
-      setSettings(newSettings);
-      setSaveStatus('✓ Saved');
-      setTimeout(() => { setSaveStatus(''); }, TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
-    } else {
-      setSaveStatus(`✗ Error: ${String(result.error)}`);
+      if (result.success) {
+        setSettings(newSettings);
+        setSaveStatus('✓ Saved');
+        setTimeout(() => { setSaveStatus(''); }, TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
+      } else {
+        setSaveStatus('✗ Failed to save settings');
+      }
+    } catch (error) {
+      logger.error('settings', 'Network error saving settings');
+      setSaveStatus('✗ Unable to save. Check that the worker is running.');
+    } finally {
+      setIsSaving(false);
     }
-
-    setIsSaving(false);
   };
 
   return { settings, saveSettings, isSaving, saveStatus };

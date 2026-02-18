@@ -1027,6 +1027,97 @@
       border-radius: 2px;
     }
 
+    /* Keyboard focus styles for session list, cards, and interactive elements */
+    .session-list__row:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: -2px;
+      border-radius: var(--radius-md);
+    }
+
+    .observation-card--expandable:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: 2px;
+      border-radius: var(--radius-md);
+    }
+
+    .summary-section-header:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: 2px;
+      border-radius: var(--radius-sm);
+    }
+
+    .settings-btn:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: 2px;
+      border-radius: var(--radius-md);
+    }
+
+    .console-control-btn:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: 1px;
+      border-radius: var(--radius-sm);
+    }
+
+    .console-filter-chip:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: 1px;
+    }
+
+    .scroll-to-top:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: 2px;
+    }
+
+    .command-palette__item:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: -2px;
+    }
+
+    .modal-close:focus-visible,
+    .settings-modal__close:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: 2px;
+      border-radius: var(--radius-sm);
+    }
+
+    /* Error Boundary — theme-aware fallback screen */
+    .error-boundary {
+      padding: 20px;
+      color: var(--color-accent-danger);
+      background-color: var(--color-bg-primary);
+      min-height: 100vh;
+    }
+    .error-boundary__title {
+      font-size: 24px;
+      margin-bottom: 10px;
+    }
+    .error-boundary__message {
+      margin-bottom: 10px;
+      color: var(--color-text-secondary);
+    }
+    .error-boundary__details {
+      margin-top: 20px;
+      color: var(--color-text-secondary);
+    }
+    .error-boundary__summary {
+      cursor: pointer;
+      margin-bottom: 10px;
+    }
+    .error-boundary__stack {
+      background-color: var(--color-bg-secondary);
+      padding: 10px;
+      border-radius: var(--radius-md);
+      overflow: auto;
+    }
+
+    /* Summary empty state */
+    .summary-empty {
+      padding: var(--spacing-lg);
+      text-align: center;
+      color: var(--color-text-secondary);
+      font-style: italic;
+    }
+
     /* GitHub Stars Button */
     .github-stars-btn {
       background: var(--color-bg-card);
@@ -1276,6 +1367,10 @@
       color: var(--color-text-title);
       font-weight: 600;
       line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
       letter-spacing: -0.01em;
     }
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Observation, Summary, UserPrompt, SessionDetail } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
+import { logger } from '../utils/logger';
 
 // ---------------------------------------------------------------------------
 // Cache
@@ -220,8 +221,7 @@ export function useSessionDetail(
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
-        // Log error but don't crash — detail stays null
-        console.error('useSessionDetail: fetch failed', err);
+        logger.error('sessionDetail', 'Failed to load session detail');
         setDetail(null);
       })
       .finally(() => {

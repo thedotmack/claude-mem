@@ -100,6 +100,11 @@ export function SummaryCard({ summary }: SummaryCardProps) {
       </header>
 
       <div className="summary-sections">
+        {sections.length === 0 && (
+          <div className="summary-empty" data-testid="summary-empty">
+            No details available
+          </div>
+        )}
         {sections.map((section, index) => {
           const isExpanded = expandedSections[section.key] ?? false;
           return (
@@ -117,6 +122,7 @@ export function SummaryCard({ summary }: SummaryCardProps) {
                 onClick={() => { handleToggle(section.key); }}
                 role="button"
                 tabIndex={0}
+                aria-label={`${section.label} — ${isExpanded ? 'collapse' : 'expand'}`}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();

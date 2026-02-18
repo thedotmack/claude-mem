@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { FilterState, SearchResponse } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { UI } from '../constants/ui';
+import { logger } from '../utils/logger';
 
 interface UseSearchResult {
   results: SearchResponse | null;
@@ -107,7 +108,7 @@ export function useSearch(filters: FilterState, isFilterMode: boolean): UseSearc
       if (error instanceof DOMException && error.name === 'AbortError') {
         return;
       }
-      console.error('Search error:', error);
+      logger.error('search', 'Search request failed');
     } finally {
       if (!controller.signal.aborted) {
         setIsSearching(false);

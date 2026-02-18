@@ -76,7 +76,7 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
           }
         })}
         {items.length === 0 && !isLoading && (
-          <div className="feed__empty-message">
+          <div className="feed__empty-message" aria-live="polite">
             No items to display
           </div>
         )}

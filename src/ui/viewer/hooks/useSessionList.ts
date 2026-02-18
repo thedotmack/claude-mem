@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import type { Summary, SessionListItem, SessionGroup } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
+import { logger } from '../utils/logger';
 
 // ─────────────────────────────────────────────────────────
 // Pure utility functions (exported for unit testing)
@@ -232,7 +233,7 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
         setSelectedId(current => current === null ? result.items[0].id : current);
       }
     } catch (error) {
-      console.error('[useSessionList] Failed to load sessions:', error);
+      logger.error('sessionList', 'Failed to load sessions');
     } finally {
       isLoadingRef.current = false;
       setIsLoading(false);

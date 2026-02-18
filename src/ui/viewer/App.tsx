@@ -19,6 +19,7 @@ import { useSearch } from './hooks/useSearch';
 import { useActivityDensity } from './hooks/useActivityDensity';
 import type { Observation, Summary, UserPrompt } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
+import { logger } from './utils/logger';
 
 export function App() {
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
@@ -39,8 +40,8 @@ export function App() {
 
   const { observations, summaries, prompts, projects, isProcessing, queueDepth } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
-  const { stats, refreshStats: _refreshStats } = useStats();
-  const { preference, resolvedTheme: _resolvedTheme, setThemePreference } = useTheme();
+  const { stats } = useStats();
+  const { preference, setThemePreference } = useTheme();
   const [paginationResetKey, setPaginationResetKey] = useState(0);
   const pagination = usePagination(filters.project, paginationResetKey);
 
@@ -142,7 +143,7 @@ export function App() {
         setPaginatedPrompts(prev => [...prev, ...newPrompts as UserPrompt[]]);
       }
     } catch (error) {
-      console.error('Failed to load more data:', error);
+      logger.error('app', 'Failed to load more data');
     }
   }, [isFilterMode, search, pagination.observations, pagination.summaries, pagination.prompts]);
 
@@ -264,6 +265,7 @@ export function App() {
         className="console-toggle-btn"
         onClick={toggleLogsModal}
         title="Toggle Console"
+        aria-label="Toggle Console"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="4 17 10 11 4 5"></polyline>

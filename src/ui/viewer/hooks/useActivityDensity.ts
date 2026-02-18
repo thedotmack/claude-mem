@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import type { ActivityDay, SearchResponse } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { UI } from '../constants/ui';
+import { logger } from '../utils/logger';
 
 interface UseActivityDensityResult {
   days: ActivityDay[];
@@ -79,7 +80,7 @@ export function useActivityDensity(project: string): UseActivityDensityResult {
       })
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === 'AbortError') return;
-        console.error('Activity density fetch error:', err);
+        logger.error('activityDensity', 'Failed to load activity data');
       })
       .finally(() => {
         if (!controller.signal.aborted) setIsLoading(false);

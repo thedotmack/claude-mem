@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { Stats } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
+import { logger } from '../utils/logger';
 
 export function useStats() {
   const [stats, setStats] = useState<Stats>({});
@@ -11,7 +12,7 @@ export function useStats() {
       const data = await response.json() as Stats;
       setStats(data);
     } catch (error) {
-      console.error('Failed to load stats:', error);
+      logger.error('stats', 'Failed to load stats');
     }
   }, []);
 

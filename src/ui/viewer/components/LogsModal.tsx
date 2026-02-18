@@ -269,7 +269,6 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   // Get style for a parsed log line
   const getLineStyle = (line: ParsedLogLine): React.CSSProperties => {
     const levelConfig = LOG_LEVELS.find(l => l.key === line.level);
-    const _componentConfig = LOG_COMPONENTS.find(c => c.key === line.component);
 
     let color = 'var(--color-text-primary)';
     const fontWeight = 'normal';

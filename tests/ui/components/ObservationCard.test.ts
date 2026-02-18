@@ -18,7 +18,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { stripProjectRoot } from '../../../src/ui/viewer/components/ObservationCard';
+import { stripProjectRoot, safeParseJsonArray } from '../../../src/ui/viewer/components/ObservationCard';
 import type { Observation } from '../../../src/ui/viewer/types';
 
 // ---------------------------------------------------------------------------
@@ -305,6 +305,59 @@ describe('ObservationCard minimal observation — renders without crash', () => 
         : [];
       return { facts, concepts, filesRead, filesModified };
     }).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// safeParseJsonArray — malformed JSON guard tests (F.3 / F.17)
+// ---------------------------------------------------------------------------
+
+describe('safeParseJsonArray', () => {
+  it('returns empty array for null input', () => {
+    expect(safeParseJsonArray(null)).toEqual([]);
+  });
+
+  it('returns empty array for undefined input', () => {
+    expect(safeParseJsonArray(undefined)).toEqual([]);
+  });
+
+  it('returns empty array for empty string', () => {
+    expect(safeParseJsonArray('')).toEqual([]);
+  });
+
+  it('parses valid JSON array of strings', () => {
+    expect(safeParseJsonArray('["a","b","c"]')).toEqual(['a', 'b', 'c']);
+  });
+
+  it('returns empty array for valid JSON that is not an array', () => {
+    expect(safeParseJsonArray('{"key": "value"}')).toEqual([]);
+  });
+
+  it('returns empty array for valid JSON number', () => {
+    expect(safeParseJsonArray('42')).toEqual([]);
+  });
+
+  it('returns empty array for valid JSON string (not array)', () => {
+    expect(safeParseJsonArray('"hello"')).toEqual([]);
+  });
+
+  it('returns empty array for malformed JSON', () => {
+    expect(safeParseJsonArray('{broken json')).toEqual([]);
+  });
+
+  it('returns empty array for truncated JSON array', () => {
+    expect(safeParseJsonArray('["a","b"')).toEqual([]);
+  });
+
+  it('parses valid empty JSON array', () => {
+    expect(safeParseJsonArray('[]')).toEqual([]);
+  });
+
+  it('does not throw on any input', () => {
+    const inputs = [null, undefined, '', 'null', '{}', '"str"', '42', '{bad', '["truncated'];
+    for (const input of inputs) {
+      expect(() => safeParseJsonArray(input)).not.toThrow();
+    }
   });
 });
 

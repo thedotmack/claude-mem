@@ -6,6 +6,17 @@ interface ObservationCardProps {
   observation: Observation;
 }
 
+// Safely parse a JSON string expected to be a string[]. Returns [] on null/malformed input.
+export function safeParseJsonArray(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? (parsed as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 // Helper to strip project root from file paths — exported for unit testing
 export function stripProjectRoot(filePath: string): string {
   // Try to extract relative path by finding common project markers
@@ -34,11 +45,11 @@ export function ObservationCard({ observation }: ObservationCardProps) {
   const [expanded, setExpanded] = useState(false);
   const date = formatDate(observation.created_at_epoch);
 
-  // Parse JSON fields
-  const facts: string[] = observation.facts ? JSON.parse(observation.facts) as string[] : [];
-  const concepts: string[] = observation.concepts ? JSON.parse(observation.concepts) as string[] : [];
-  const filesRead: string[] = observation.files_read ? (JSON.parse(observation.files_read) as string[]).map(stripProjectRoot) : [];
-  const filesModified: string[] = observation.files_modified ? (JSON.parse(observation.files_modified) as string[]).map(stripProjectRoot) : [];
+  // Parse JSON fields safely — malformed data from API should not crash the card
+  const facts: string[] = safeParseJsonArray(observation.facts);
+  const concepts: string[] = safeParseJsonArray(observation.concepts);
+  const filesRead: string[] = safeParseJsonArray(observation.files_read).map(stripProjectRoot);
+  const filesModified: string[] = safeParseJsonArray(observation.files_modified).map(stripProjectRoot);
 
   // Merge subtitle into narrative if subtitle differs from title
   const mergedNarrative =
@@ -56,6 +67,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
       data-obs-type={observation.type}
       data-testid="obs-card"
       aria-expanded={expanded}
+      aria-label={hasExpandableContent ? `${observation.title ?? 'Observation'} — ${expanded ? 'collapse' : 'expand'}` : undefined}
       role={hasExpandableContent ? 'button' : undefined}
       tabIndex={hasExpandableContent ? 0 : undefined}
       onClick={toggleExpand}

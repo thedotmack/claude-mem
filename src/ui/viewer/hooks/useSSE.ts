@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import type { Observation, Summary, UserPrompt, StreamEvent } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
+import { logger } from '../utils/logger';
 
 export function useSSE() {
   const [observations, setObservations] = useState<Observation[]>([]);
@@ -25,7 +26,6 @@ export function useSSE() {
       eventSourceRef.current = eventSource;
 
       eventSource.onopen = () => {
-        console.log('[SSE] Connected');
         setIsConnected(true);
         // Clear any pending reconnect
         if (reconnectTimeoutRef.current) {
@@ -34,14 +34,13 @@ export function useSSE() {
       };
 
       eventSource.onerror = (error) => {
-        console.error('[SSE] Connection error:', error);
+        logger.error('SSE', 'Connection error');
         setIsConnected(false);
         eventSource.close();
 
         // Reconnect after delay
         reconnectTimeoutRef.current = setTimeout(() => {
           reconnectTimeoutRef.current = undefined; // Clear before reconnecting
-          console.log('[SSE] Attempting to reconnect...');
           connect();
         }, TIMING.SSE_RECONNECT_DELAY_MS);
       };
@@ -51,40 +50,30 @@ export function useSSE() {
 
         switch (data.type) {
           case 'initial_load':
-            console.log('[SSE] Initial load:', {
-              projects: data.projects?.length || 0
-            });
             // Only load projects list - data will come via pagination
             setProjects(data.projects || []);
             break;
 
           case 'new_observation':
             if (data.observation) {
-              const obs = data.observation;
-              console.log('[SSE] New observation:', obs.id);
-              setObservations(prev => [obs, ...prev]);
+              setObservations(prev => [data.observation, ...prev]);
             }
             break;
 
           case 'new_summary':
             if (data.summary) {
-              const summary = data.summary;
-              console.log('[SSE] New summary:', summary.id);
-              setSummaries(prev => [summary, ...prev]);
+              setSummaries(prev => [data.summary, ...prev]);
             }
             break;
 
           case 'new_prompt':
             if (data.prompt) {
-              const prompt = data.prompt;
-              console.log('[SSE] New prompt:', prompt.id);
-              setPrompts(prev => [prompt, ...prev]);
+              setPrompts(prev => [data.prompt, ...prev]);
             }
             break;
 
           case 'processing_status':
             if (typeof data.isProcessing === 'boolean') {
-              console.log('[SSE] Processing status:', data.isProcessing, 'Queue depth:', data.queueDepth);
               setIsProcessing(data.isProcessing);
               setQueueDepth(data.queueDepth || 0);
             }
