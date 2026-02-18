@@ -300,6 +300,36 @@ function installDeps() {
   }));
 }
 
+/**
+ * Cache the resolved bun path to settings.json so hooks can skip the
+ * expensive Node.js bun-runner shim and invoke bun directly.
+ */
+function saveBunPathToSettings() {
+  const bunPath = getBunPath();
+  if (!bunPath) return;
+
+  const settingsPath = join(homedir(), '.claude-mem', 'settings.json');
+  try {
+    let settings = {};
+    if (existsSync(settingsPath)) {
+      settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    }
+    if (settings.CLAUDE_MEM_BUN_PATH !== bunPath) {
+      settings.CLAUDE_MEM_BUN_PATH = bunPath;
+      const settingsDir = join(homedir(), '.claude-mem');
+      if (!existsSync(settingsDir)) {
+        execSync(`mkdir -p "${settingsDir}"`, { stdio: 'ignore', shell: true });
+      }
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+      // Also write plaintext bun-path file for direct shell consumption (no JSON parsing needed)
+      writeFileSync(join(settingsDir, 'bun-path'), bunPath);
+      console.error(`✅ Bun path cached: ${bunPath}`);
+    }
+  } catch (error) {
+    console.error(`⚠️  Could not cache bun path to settings: ${error.message}`);
+  }
+}
+
 // Main execution
 try {
   // Step 1: Ensure Bun is installed and meets minimum version (REQUIRED)
@@ -332,6 +362,9 @@ try {
       process.exit(1);
     }
   }
+
+  // Step 1.75: Cache resolved bun path to settings.json
+  saveBunPathToSettings();
 
   // Step 2: Install dependencies if needed
   if (needsInstall()) {
