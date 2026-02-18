@@ -64,7 +64,7 @@ export class ViewerRoutes extends BaseRouteHandler {
 
     // Inject auth token so the viewer's JavaScript can authenticate API calls
     const authToken = ensureAuthToken();
-    const tokenScript = `<script>window.__CLAUDE_MEM_TOKEN='${authToken}';</script>`;
+    const tokenScript = `<script>window.__CLAUDE_MEM_TOKEN=${JSON.stringify(authToken)};</script>`;
     html = html.replace('</head>', tokenScript + '</head>');
 
     res.setHeader('Content-Type', 'text/html');

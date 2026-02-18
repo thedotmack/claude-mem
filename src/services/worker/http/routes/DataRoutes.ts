@@ -69,7 +69,17 @@ export class DataRoutes extends BaseRouteHandler {
   private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
     const { offset, limit, project } = this.parsePaginationParams(req);
     const result = this.paginationHelper.getObservations(offset, limit, project);
-    res.json(result);
+
+    // Sanitize observation content before returning to clients
+    const sanitizedItems = result.items.map((obs: Record<string, unknown>) => ({
+      ...obs,
+      title: typeof obs.title === 'string' ? sanitizeObservationContent(obs.title) : obs.title,
+      subtitle: typeof obs.subtitle === 'string' ? sanitizeObservationContent(obs.subtitle) : obs.subtitle,
+      narrative: typeof obs.narrative === 'string' ? sanitizeObservationContent(obs.narrative) : obs.narrative,
+      facts: typeof obs.facts === 'string' ? sanitizeObservationContent(obs.facts) : obs.facts,
+    }));
+
+    res.json({ ...result, items: sanitizedItems });
   });
 
   /**
@@ -106,7 +116,15 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    res.json(observation);
+    const sanitized = {
+      ...observation,
+      title: typeof observation.title === 'string' ? sanitizeObservationContent(observation.title) : observation.title,
+      subtitle: typeof observation.subtitle === 'string' ? sanitizeObservationContent(observation.subtitle) : observation.subtitle,
+      narrative: typeof observation.narrative === 'string' ? sanitizeObservationContent(observation.narrative) : observation.narrative,
+      facts: typeof observation.facts === 'string' ? sanitizeObservationContent(observation.facts) : observation.facts,
+    };
+
+    res.json(sanitized);
   });
 
   /**

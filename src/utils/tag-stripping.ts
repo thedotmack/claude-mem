@@ -83,6 +83,10 @@ const DANGEROUS_TAG_NAMES = [
   'instructions',
   'tool_use',
   'antThinking',
+  'function_calls',
+  'antml:function_calls',
+  'invoke',
+  'antml:invoke',
 ] as const;
 
 /**
@@ -100,21 +104,23 @@ export function sanitizeObservationContent(content: string): string {
   let sanitized = content;
 
   for (const tagName of DANGEROUS_TAG_NAMES) {
-    // Strip matched pairs: <tag>...</tag> (dotAll flag handles multiline)
+    const escapedTagName = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // Strip matched pairs: <tag>...</tag> and <tag attr="x">...</tag> (dotAll handles multiline)
     sanitized = sanitized.replace(
-      new RegExp(`<${tagName}>[\\s\\S]*?<\\/${tagName}>`, 'gs'),
+      new RegExp(`<${escapedTagName}(?:\\s[^>]*)?>[\\s\\S]*?<\\/${escapedTagName}>`, 'gs'),
       ''
     );
 
-    // Strip unclosed opening tags: <tag>...rest of string
+    // Strip unclosed opening tags (with optional attributes): <tag>...rest of string
     sanitized = sanitized.replace(
-      new RegExp(`<${tagName}>[\\s\\S]*$`, 'gs'),
+      new RegExp(`<${escapedTagName}(?:\\s[^>]*)?>[\\s\\S]*$`, 'gs'),
       ''
     );
 
     // Strip standalone closing tags: </tag>
     sanitized = sanitized.replace(
-      new RegExp(`<\\/${tagName}>`, 'g'),
+      new RegExp(`<\\/${escapedTagName}>`, 'g'),
       ''
     );
   }

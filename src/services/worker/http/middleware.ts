@@ -8,6 +8,7 @@
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import cors from 'cors';
 import path from 'path';
+import { timingSafeEqual } from 'node:crypto';
 import { getPackageRoot } from '../../../shared/paths.js';
 import { logger } from '../../../utils/logger.js';
 
@@ -120,10 +121,17 @@ export function requireBearerToken(expectedToken: string): RequestHandler {
     }
 
     // Accept token via Authorization header or query parameter (for SSE/EventSource)
-    const headerToken = req.headers.authorization === 'Bearer ' + expectedToken;
-    const queryToken = req.query.token === expectedToken;
+    const providedViaHeader = typeof req.headers.authorization === 'string'
+      ? req.headers.authorization.replace('Bearer ', '')
+      : '';
+    const providedViaQuery = typeof req.query.token === 'string' ? req.query.token : '';
 
-    if (!headerToken && !queryToken) {
+    const headerTokenValid = providedViaHeader.length === expectedToken.length &&
+      timingSafeEqual(Buffer.from(providedViaHeader), Buffer.from(expectedToken));
+    const queryTokenValid = providedViaQuery.length === expectedToken.length &&
+      timingSafeEqual(Buffer.from(providedViaQuery), Buffer.from(expectedToken));
+
+    if (!headerTokenValid && !queryTokenValid) {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
