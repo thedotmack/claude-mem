@@ -14,7 +14,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_MODEL`            | `sonnet`                        | AI model for processing observations (when using Claude) |
-| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, or `openrouter` |
+| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, `openrouter`, or `openai-codex` |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
@@ -42,6 +42,19 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and free
 | `CLAUDE_MEM_OPENROUTER_APP_NAME`             | `claude-mem`                | Optional: App name for analytics      |
 
 See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
+
+### OpenAI Codex Provider Settings
+
+| Setting                              | Default         | Description                           |
+|--------------------------------------|-----------------|---------------------------------------|
+| `CLAUDE_MEM_OPENAI_CODEX_MODEL`      | `gpt-4o`        | Model for observation extraction (`gpt-4o`, `gpt-4o-mini`, `gpt-5.3-codex`) |
+| `CLAUDE_MEM_OPENAI_CODEX_AGENT_DIR`  | _(auto-detect)_ | Path to dir containing `auth-profiles.json`. Leave empty to auto-detect from OpenClaw. |
+
+See [OpenAI Codex Provider](usage/openai-codex-provider) for OAuth setup, credential discovery, and migration guide.
+
+<Warning>
+**OpenClaw users**: Anthropic's Terms of Service (updated February 2026) prohibit using Claude OAuth tokens in third-party apps outside of Claude Code. If you run claude-mem through OpenClaw, use `openai-codex`, `gemini`, or `openrouter` as your provider instead of `claude`.
+</Warning>
 
 ### System Configuration
 
