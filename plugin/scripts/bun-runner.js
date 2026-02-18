@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 /**
- * Bun Runner - Finds and executes Bun even when not in PATH
+ * DEPRECATED: No longer referenced by hooks.json as of 2026-02-18.
+ * Hooks now resolve bun directly via $(cat ~/.claude-mem/bun-path).
+ * Kept as a fallback for Linux stdin buffering (#646) if needed.
  *
- * This script solves the fresh install problem where:
- * 1. smart-install.js installs Bun to ~/.bun/bin/bun
- * 2. But Bun isn't in PATH until terminal restart
- * 3. Subsequent hooks fail because they can't find `bun`
+ * Original purpose: Finds and executes Bun even when not in PATH.
+ * Solved the fresh install problem where bun isn't in PATH until
+ * terminal restart. Also buffers stdin to work around a Linux-specific
+ * Bun bug where libuv crashes with EINVAL on inherited pipe fds.
  *
  * Usage: node bun-runner.js <script> [args...]
- *
  * Fixes #818: Worker fails to start on fresh install
  */
 import { spawnSync, spawn } from 'child_process';
