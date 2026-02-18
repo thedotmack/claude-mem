@@ -231,6 +231,104 @@ describe('flattenGroups', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Source-code-based checks: sticky date header (G.7)
+// ---------------------------------------------------------------------------
+
+describe('SessionList sticky day header (non-virtual path)', () => {
+  const sourceFile = join(
+    import.meta.dirname ?? new URL('.', import.meta.url).pathname,
+    '../../../src/ui/viewer/components/SessionList.tsx'
+  );
+
+  let source: string;
+  try {
+    source = readFileSync(sourceFile, 'utf8');
+  } catch {
+    source = '';
+  }
+
+  it('does NOT wrap non-virtual path content in session-list__group divs', () => {
+    // In the non-virtual rendering path, day headers and session rows must be
+    // rendered as flat children of the container so that position:sticky works.
+    // The .session-list__group wrapper must not appear in the non-virtual branch.
+    //
+    // Strategy: find the non-virtual branch (the else / fallback of useVirtual).
+    // It must not contain className="session-list__group" or session-list__group.
+    //
+    // We detect the non-virtual branch as the JSX returned when useVirtual is
+    // false.  The simplest structural check: any occurrence of
+    // className="session-list__group" in the non-virtual portion is a failure.
+    //
+    // We use a negative assertion: after the implementation the pattern must NOT
+    // appear paired with the non-virtual mapping of sessionGroups.
+    //
+    // The test checks that the source does NOT contain the combination of
+    // sessionGroups.map with session-list__group class wrapper — which is the
+    // old pattern we are removing.
+    const hasGroupWrapperInNonVirtualMap = /sessionGroups\.map[\s\S]*?session-list__group/.test(source);
+    expect(hasGroupWrapperInNonVirtualMap).toBe(false);
+  });
+
+  it('renders day headers as direct siblings of session rows in non-virtual path', () => {
+    // After flattening, the non-virtual path should use flatItems (or equivalent)
+    // to render headers and rows interleaved without a group wrapper div.
+    // We verify the non-virtual branch renders from the flat items list.
+    //
+    // The implementation should map over flatItems (or similar flat array) in
+    // the non-virtual path, not over sessionGroups with a nested group div.
+    expect(source).toMatch(/flatItems/);
+  });
+
+  it('the virtual path (VirtualContent) is still present and used above threshold', () => {
+    // VirtualContent sub-component must still exist and be conditionally rendered
+    // based on useVirtual / VIRTUAL_THRESHOLD.
+    expect(source).toMatch(/VirtualContent/);
+    expect(source).toMatch(/useVirtual/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CSS check: .session-list__day-header has position sticky
+// ---------------------------------------------------------------------------
+
+describe('SessionList CSS sticky header verification', () => {
+  const cssSourceFile = join(
+    import.meta.dirname ?? new URL('.', import.meta.url).pathname,
+    '../../../src/ui/viewer-template.html'
+  );
+
+  let cssSource: string;
+  try {
+    cssSource = readFileSync(cssSourceFile, 'utf8');
+  } catch {
+    cssSource = '';
+  }
+
+  it('.session-list__day-header has position: sticky in viewer-template.html', () => {
+    // Find the rule block for .session-list__day-header and confirm sticky is present.
+    const dayHeaderRuleMatch = cssSource.match(/\.session-list__day-header\s*\{([^}]*)\}/s);
+    expect(dayHeaderRuleMatch).not.toBeNull();
+    const ruleBody = dayHeaderRuleMatch![1];
+    expect(ruleBody).toMatch(/position\s*:\s*sticky/);
+  });
+
+  it('.session-list__day-header has top: 0 in viewer-template.html', () => {
+    const dayHeaderRuleMatch = cssSource.match(/\.session-list__day-header\s*\{([^}]*)\}/s);
+    expect(dayHeaderRuleMatch).not.toBeNull();
+    const ruleBody = dayHeaderRuleMatch![1];
+    expect(ruleBody).toMatch(/top\s*:\s*0/);
+  });
+
+  it('.session-list container has overflow-y in viewer-template.html', () => {
+    // The scroll context must be established on .session-list.
+    const sessionListRuleMatch = cssSource.match(/\.session-list\s*\{([^}]*)\}/s);
+    expect(sessionListRuleMatch).not.toBeNull();
+    const ruleBody = sessionListRuleMatch![1];
+    expect(ruleBody).toMatch(/overflow-y\s*:/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Source-code-based checks: virtualization integration
 // ---------------------------------------------------------------------------
 

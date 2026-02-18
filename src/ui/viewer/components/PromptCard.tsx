@@ -22,6 +22,7 @@ export function PromptCard({ prompt }: PromptCardProps) {
   return (
     <div className="card prompt-card" data-testid="prompt-card" aria-expanded={expanded}>
       <div className="prompt-card__header">
+        <span className="prompt-card__type-badge">PROMPT</span>
         <span className="prompt-card__badge">#{prompt.id}</span>
         <span className="prompt-card__project">{prompt.project}</span>
         <span className="prompt-card__date">{date}</span>

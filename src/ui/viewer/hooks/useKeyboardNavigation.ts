@@ -5,9 +5,9 @@ import { useState, useEffect } from 'react';
 // ─────────────────────────────────────────────────────────
 
 export interface UseKeyboardNavigationOptions {
-  /** Callback to navigate to next session (j key) */
+  /** Callback to navigate to next session (ArrowDown key) */
   onNextSession: () => void;
-  /** Callback to navigate to previous session (k key) */
+  /** Callback to navigate to previous session (ArrowUp key) */
   onPrevSession: () => void;
   /** Callback to focus the search input (/ key) */
   onFocusSearch: () => void;
@@ -21,6 +21,8 @@ export interface UseKeyboardNavigationOptions {
   onClearSearch: () => void;
   /** Whether search input has content */
   hasSearchContent: boolean;
+  /** Optional callback for day navigation (ArrowLeft/ArrowRight keys) */
+  onDayNavigate?: (direction: 'prev' | 'next') => void;
 }
 
 export interface UseKeyboardNavigationResult {
@@ -33,6 +35,8 @@ export interface UseKeyboardNavigationResult {
 type KeyAction =
   | 'next'
   | 'prev'
+  | 'prev-day'
+  | 'next-day'
   | 'focus-search'
   | 'toggle-palette'
   | 'toggle-help'
@@ -89,8 +93,10 @@ export function resolveKeyAction(
   if (isInputFocused) return null;
 
   switch (key) {
-    case 'j': return 'next';
-    case 'k': return 'prev';
+    case 'ArrowDown': return 'next';
+    case 'ArrowUp': return 'prev';
+    case 'ArrowLeft': return 'prev-day';
+    case 'ArrowRight': return 'next-day';
     case '/': return 'focus-search';
     case 'f': return 'toggle-palette';
     case '?': return 'toggle-help';
@@ -119,6 +125,7 @@ export function useKeyboardNavigation(
     onClosePalette,
     onClearSearch,
     hasSearchContent,
+    onDayNavigate,
   } = options;
 
   const [showHelp, setShowHelp] = useState(false);
@@ -138,16 +145,27 @@ export function useKeyboardNavigation(
 
       switch (action) {
         case 'next':
+          event.preventDefault();
           onNextSession();
           break;
         case 'prev':
+          event.preventDefault();
           onPrevSession();
+          break;
+        case 'prev-day':
+          event.preventDefault();
+          onDayNavigate?.('prev');
+          break;
+        case 'next-day':
+          event.preventDefault();
+          onDayNavigate?.('next');
           break;
         case 'focus-search':
           event.preventDefault();
           onFocusSearch();
           break;
         case 'toggle-palette':
+          event.preventDefault();
           onTogglePalette();
           break;
         case 'toggle-help':
@@ -181,6 +199,7 @@ export function useKeyboardNavigation(
     onTogglePalette,
     onClosePalette,
     onClearSearch,
+    onDayNavigate,
   ]);
 
   return { showHelp, setShowHelp };

@@ -6,8 +6,8 @@ interface KeyboardShortcutHelpProps {
 }
 
 const SHORTCUTS: Array<{ keys: string; description: string }> = [
-  { keys: 'j / k', description: 'Navigate sessions' },
-  { keys: 'Enter', description: 'Select session' },
+  { keys: '↑ / ↓', description: 'Navigate sessions' },
+  { keys: '← / →', description: 'Navigate days' },
   { keys: '/', description: 'Focus search' },
   { keys: 'f', description: 'Filter palette' },
   { keys: 'Esc', description: 'Clear / close' },

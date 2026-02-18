@@ -177,19 +177,23 @@ export function SessionList({
           onSelectSession={onSelectSession}
         />
       ) : (
-        sessionGroups.map((group) => (
-          <div key={group.dateKey} className="session-list__group" data-testid="session-group">
-            <div className="session-list__day-header">{group.label}</div>
-            {group.sessions.map((session) => (
-              <SessionRow
-                key={session.id}
-                session={session}
-                isSelected={session.id === selectedId}
-                onSelect={onSelectSession}
-              />
-            ))}
-          </div>
-        ))
+        flatItems.map((item) => {
+          if (item.type === 'header') {
+            return (
+              <div key={`header-${item.dateKey}`} className="session-list__day-header">
+                {item.label}
+              </div>
+            );
+          }
+          return (
+            <SessionRow
+              key={`session-${item.session.id}`}
+              session={item.session}
+              isSelected={item.isSelected}
+              onSelect={onSelectSession}
+            />
+          );
+        })
       )}
 
       {isLoading && (

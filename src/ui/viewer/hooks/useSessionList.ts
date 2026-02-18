@@ -60,14 +60,20 @@ function dateKeyToLabel(dateKey: string): string {
 
 /**
  * Maps a Summary to a SessionListItem.
+ *
+ * When `observationCountOverride` is provided it is used in place of
+ * `summary.observation_count`.  This is needed for SSE-delivered summaries
+ * whose payload does not carry an `observation_count` field — in that case the
+ * caller can supply the count derived from the in-memory SSE observations array
+ * so the session list item shows a non-zero count immediately.
  */
-export function mapSummaryToSessionListItem(summary: Summary): SessionListItem {
+export function mapSummaryToSessionListItem(summary: Summary, observationCountOverride?: number): SessionListItem {
   return {
     id: summary.id,
     session_id: summary.session_id,
     project: summary.project,
     request: summary.request,
-    observationCount: summary.observation_count ?? 0,
+    observationCount: summary.observation_count ?? observationCountOverride ?? 0,
     created_at_epoch: summary.created_at_epoch,
     status: 'completed',
   };
@@ -153,10 +159,14 @@ export async function fetchSessionPage(opts: FetchSessionPageOptions): Promise<F
  * Prepends a new Summary to the existing session groups.
  * If the summary belongs to an existing day group, it is inserted at the front of that group.
  * If not, a new group is created and inserted at the front of the groups array.
+ *
+ * `sseObservationCount` is used as a fallback when `summary.observation_count` is absent
+ * (e.g. for SSE-delivered summaries whose payload omits that field).
+ *
  * Exported for unit testing.
  */
-export function prependSession(groups: SessionGroup[], summary: Summary): SessionGroup[] {
-  const item = mapSummaryToSessionListItem(summary);
+export function prependSession(groups: SessionGroup[], summary: Summary, sseObservationCount?: number): SessionGroup[] {
+  const item = mapSummaryToSessionListItem(summary, sseObservationCount);
   const dateKey = epochToLocalDateKey(item.created_at_epoch);
 
   const existingIndex = groups.findIndex(g => g.dateKey === dateKey);
@@ -258,7 +268,13 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
     if (!newSummary) return;
     setSessionGroups(prev => prependSession(prev, newSummary));
     setSelectedId(current => current === null ? newSummary.id : current);
-  }, [newSummary]);
+    // SSE-delivered summaries omit `observation_count`.  Reload the first page
+    // immediately after prepending so the DB-computed count replaces the
+    // placeholder 0 shown while the prepended item is live.
+    if (newSummary.observation_count === undefined) {
+      void loadPage(true);
+    }
+  }, [newSummary, loadPage]);
 
   const loadMore = useCallback(async (): Promise<void> => {
     if (isLoading || !hasMore) return;

@@ -18,8 +18,17 @@ const HEADER_SRC = path.resolve(
   '../../../src/ui/viewer/components/Header.tsx'
 );
 
+const TEMPLATE_SRC = path.resolve(
+  __dirname,
+  '../../../src/ui/viewer-template.html'
+);
+
 function readHeader(): string {
   return fs.readFileSync(HEADER_SRC, 'utf-8');
+}
+
+function readTemplate(): string {
+  return fs.readFileSync(TEMPLATE_SRC, 'utf-8');
 }
 
 // ---------------------------------------------------------------------------
@@ -177,5 +186,83 @@ describe('Header component module', () => {
   it('exports a Header function', async () => {
     const mod = await import('../../../src/ui/viewer/components/Header.js');
     expect(typeof mod.Header).toBe('function');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// queue-bubble rendering — conditional on queueDepth
+// ---------------------------------------------------------------------------
+
+describe('Header queue-bubble — JSX structure', () => {
+  it('renders queue-bubble div when queueDepth > 0', () => {
+    const src = readHeader();
+    // The conditional guard must reference queueDepth > 0
+    expect(src).toMatch(/queueDepth\s*>\s*0/);
+  });
+
+  it('renders queue-bubble div with class "queue-bubble"', () => {
+    const src = readHeader();
+    expect(src).toMatch(/className="queue-bubble"/);
+  });
+
+  it('displays the queueDepth value inside the bubble', () => {
+    const src = readHeader();
+    // The JSX expression {queueDepth} must appear inside the bubble
+    expect(src).toMatch(/\{queueDepth\}/);
+  });
+
+  it('does NOT render queue-bubble unconditionally', () => {
+    const src = readHeader();
+    // The bubble must be wrapped in a conditional — not rendered without a guard
+    // Verify the conditional wraps the element (queueDepth > 0 present in source)
+    expect(src).toMatch(/queueDepth\s*>\s*0/);
+    // And the className appears only once (no duplicate unconditional render)
+    const matches = src.match(/className="queue-bubble"/g);
+    expect(matches).not.toBeNull();
+    expect(matches!.length).toBe(1);
+  });
+
+  it('accepts queueDepth as a prop in the interface', () => {
+    const src = readHeader();
+    expect(src).toMatch(/queueDepth\s*:/);
+  });
+
+  it('places queue-bubble inside header__logo-wrapper', () => {
+    const src = readHeader();
+    // Both the wrapper and the bubble must be present
+    expect(src).toMatch(/header__logo-wrapper/);
+    expect(src).toMatch(/queue-bubble/);
+    // The wrapper div must precede the bubble in source order
+    const wrapperIdx = src.indexOf('header__logo-wrapper');
+    const bubbleIdx = src.indexOf('queue-bubble');
+    expect(wrapperIdx).toBeGreaterThanOrEqual(0);
+    expect(bubbleIdx).toBeGreaterThanOrEqual(0);
+    expect(bubbleIdx).toBeGreaterThan(wrapperIdx);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// queue-bubble CSS positioning — requires positioned ancestor
+// ---------------------------------------------------------------------------
+
+describe('CSS queue-bubble positioning', () => {
+  it('defines .queue-bubble with position: absolute', () => {
+    const css = readTemplate();
+    expect(css).toMatch(/\.queue-bubble\s*\{[^}]*position\s*:\s*absolute/s);
+  });
+
+  it('defines .header__logo-wrapper with position: relative', () => {
+    const css = readTemplate();
+    expect(css).toMatch(/\.header__logo-wrapper\s*\{[^}]*position\s*:\s*relative/s);
+  });
+
+  it('defines .queue-bubble with a z-index', () => {
+    const css = readTemplate();
+    expect(css).toMatch(/\.queue-bubble\s*\{[^}]*z-index\s*:/s);
+  });
+
+  it('defines .queue-bubble with a background color', () => {
+    const css = readTemplate();
+    expect(css).toMatch(/\.queue-bubble\s*\{[^}]*background/s);
   });
 });

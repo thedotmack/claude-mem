@@ -82,18 +82,28 @@ describe('KeyboardShortcutHelp data-testid', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Shortcut key labels
+// G.1: Shortcut key labels — arrow symbols replace j/k, add left/right arrows
 // ---------------------------------------------------------------------------
 
-describe('KeyboardShortcutHelp shortcut keys', () => {
-  it('contains j shortcut key', () => {
+describe('KeyboardShortcutHelp shortcut keys (G.1)', () => {
+  it('contains up arrow symbol for session navigation', () => {
     const src = readSource();
-    expect(src).toMatch(/\bj\b/);
+    expect(src).toMatch(/↑/);
   });
 
-  it('contains k shortcut key', () => {
+  it('contains down arrow symbol for session navigation', () => {
     const src = readSource();
-    expect(src).toMatch(/\bk\b/);
+    expect(src).toMatch(/↓/);
+  });
+
+  it('contains left arrow symbol for day navigation', () => {
+    const src = readSource();
+    expect(src).toMatch(/←/);
+  });
+
+  it('contains right arrow symbol for day navigation', () => {
+    const src = readSource();
+    expect(src).toMatch(/→/);
   });
 
   it('contains / shortcut key', () => {
@@ -115,10 +125,35 @@ describe('KeyboardShortcutHelp shortcut keys', () => {
     const src = readSource();
     expect(src).toMatch(/\?/);
   });
+});
 
-  it('contains Enter shortcut key', () => {
+// ---------------------------------------------------------------------------
+// G.1: Enter key MUST NOT appear in shortcuts list
+// ---------------------------------------------------------------------------
+
+describe('KeyboardShortcutHelp — Enter key removed (G.1)', () => {
+  it('does not contain Enter in the SHORTCUTS array', () => {
     const src = readSource();
-    expect(src).toMatch(/Enter/);
+    // Matches 'Enter' as a shortcut key value — should NOT be present in SHORTCUTS array
+    // The pattern checks for Enter as a key value in the shortcuts data structure
+    expect(src).not.toMatch(/keys:\s*['"]Enter['"]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G.1: Day navigation entry must be present
+// ---------------------------------------------------------------------------
+
+describe('KeyboardShortcutHelp — day navigation shortcut (G.1)', () => {
+  it('contains Navigate days description', () => {
+    const src = readSource();
+    expect(src).toMatch(/[Nn]avigate days/);
+  });
+
+  it('contains left and right arrow symbols together for day navigation entry', () => {
+    const src = readSource();
+    // Both arrows should appear, forming the '← / →' or similar pattern
+    expect(src).toMatch(/←[\s/]*→|→[\s/]*←/);
   });
 });
 
@@ -132,9 +167,10 @@ describe('KeyboardShortcutHelp shortcut descriptions', () => {
     expect(src).toMatch(/[Nn]avigate/);
   });
 
-  it('describes select session action', () => {
+  it('does not describe select session action (Enter removed)', () => {
     const src = readSource();
-    expect(src).toMatch(/[Ss]elect/);
+    // 'Select session' description is removed along with the Enter key entry
+    expect(src).not.toMatch(/[Ss]elect session/);
   });
 
   it('describes focus search action', () => {

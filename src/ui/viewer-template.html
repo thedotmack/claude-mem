@@ -411,6 +411,11 @@
 
 
 
+    .header__logo-wrapper {
+      position: relative;
+      display: inline-flex;
+    }
+
     .logomark {
       height: 48px;
       width: auto;
@@ -1752,6 +1757,123 @@
       opacity: 0.8;
     }
 
+    .prompt-card__type-badge {
+      display: inline-block;
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: #6b21a8;
+      color: #f3e8ff;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+
+    /* Task Notification Card */
+    .task-notification-card {
+      border-left: 3px solid #d97706;
+      background: var(--color-bg-secondary, #1e1e1e);
+      color: var(--color-text-primary);
+    }
+
+    .task-notification-card:hover {
+      border-color: var(--color-border-secondary);
+    }
+
+    .task-notification-card__header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: var(--color-text-muted);
+    }
+
+    .task-notification-card__type-badge {
+      display: inline-block;
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: #d97706;
+      color: #fff7ed;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+
+    .task-notification-card__task-id {
+      font-family: var(--font-terminal, monospace);
+      font-size: 11px;
+      color: var(--color-text-muted);
+    }
+
+    .task-notification-card__status {
+      font-size: 11px;
+      font-weight: 600;
+      color: #d97706;
+    }
+
+    .task-notification-card__date {
+      font-size: 11px;
+      color: var(--color-text-muted);
+      margin-left: auto;
+      white-space: nowrap;
+    }
+
+    .task-notification-card__summary {
+      font-size: 13px;
+      color: var(--color-text-primary);
+      line-height: var(--line-normal, 1.5);
+    }
+
+    .task-notification-card__raw {
+      font-size: 12px;
+      color: var(--color-text-muted);
+      font-family: var(--font-terminal, monospace);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .task-notification-card__toggle {
+      display: inline-block;
+      margin-top: 6px;
+      font-size: 12px;
+      color: #d97706;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    .task-notification-card__toggle:hover {
+      opacity: 0.8;
+    }
+
+    .task-notification-card__result {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--color-text-secondary);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      border-top: 1px solid var(--color-border-secondary, #333);
+      padding-top: 8px;
+    }
+
+    /* Observation type badge */
+    .observation-card__type-badge {
+      display: inline-block;
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: var(--color-accent-observation, #1d4ed8);
+      color: #eff6ff;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+
     .observation-card {
       border-color: var(--color-border-observation);
       background: var(--color-bg-observation);
@@ -2791,6 +2913,84 @@
       display: flex;
       flex-direction: column;
       overflow: hidden;
+    }
+
+    /* Day Navigator */
+    .day-navigator {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--color-border-primary);
+      background: var(--color-bg-secondary);
+      flex-shrink: 0;
+    }
+
+    .day-navigator__btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--color-text-muted);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      transition: background 0.1s ease, color 0.1s ease, border-color 0.1s ease;
+      flex-shrink: 0;
+    }
+
+    .day-navigator__btn:hover:not(:disabled) {
+      background: var(--color-bg-card-hover);
+      color: var(--color-text-primary);
+      border-color: var(--color-border-primary);
+    }
+
+    .day-navigator__btn:focus-visible {
+      outline: none;
+      box-shadow: var(--shadow-focus);
+    }
+
+    .day-navigator__btn:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+
+    .day-navigator__label {
+      flex: 1;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      padding: 2px 4px;
+      border-radius: 4px;
+      letter-spacing: 0.02em;
+      transition: color 0.1s ease, background 0.1s ease;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .day-navigator__label:hover {
+      color: var(--color-accent-primary);
+      background: var(--color-bg-card-hover);
+    }
+
+    .day-navigator__label:focus-visible {
+      outline: none;
+      box-shadow: var(--shadow-focus);
+    }
+
+    .day-navigator__label--all {
+      color: var(--color-text-muted);
     }
 
     @media (max-width: 768px) {

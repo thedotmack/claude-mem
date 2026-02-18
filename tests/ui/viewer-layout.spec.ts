@@ -54,19 +54,21 @@ test.describe('Two-panel layout', () => {
     expect(box!.width).toBeLessThanOrEqual(262);
   });
 
-  test('session list shows sessions grouped by day', async ({ page }) => {
+  test('session list shows sessions with day headers', async ({ page }) => {
     const sessionList = page.locator('[data-testid="session-list"]');
     await expect(sessionList).toBeVisible();
 
-    // Check for day group headers
-    const groups = page.locator('[data-testid="session-group"]');
-    // There should be at least one group if data exists
-    const groupCount = await groups.count();
+    // Phase G.7: day headers are now direct children (no group wrapper) for sticky positioning
+    const dayHeaders = sessionList.locator('.session-list__day-header');
+    const sessionRows = page.locator('[data-testid="session-row"]');
+    const headerCount = await dayHeaders.count();
+    const rowCount = await sessionRows.count();
+
     // If no sessions exist, the empty state should be shown
-    if (groupCount === 0) {
+    if (rowCount === 0) {
       await expect(sessionList.locator('.session-list__empty')).toBeVisible();
     } else {
-      expect(groupCount).toBeGreaterThan(0);
+      expect(headerCount).toBeGreaterThan(0);
     }
   });
 
@@ -97,10 +99,9 @@ test.describe('Two-panel layout', () => {
       const selected = page.locator('[data-testid="session-row"][aria-selected="true"]');
       await expect(selected).toBeVisible();
 
-      // It should be the first item in the first group
-      const firstGroup = page.locator('[data-testid="session-group"]').first();
-      const firstSelectedInGroup = firstGroup.locator('[data-testid="session-row"][aria-selected="true"]');
-      await expect(firstSelectedInGroup).toBeVisible();
+      // Phase G.7: groups removed; the selected row should be the first session row
+      const firstRow = sessionRows.first();
+      await expect(firstRow).toHaveAttribute('aria-selected', 'true');
     }
   });
 

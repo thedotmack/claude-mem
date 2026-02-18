@@ -3,6 +3,7 @@ import type { ActivityDay, SearchResponse } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { UI } from '../constants/ui';
 import { logger } from '../utils/logger';
+import { inclusiveDateStart, inclusiveDateEnd } from './useSearch';
 
 interface UseActivityDensityResult {
   days: ActivityDay[];
@@ -67,8 +68,8 @@ export function useActivityDensity(project: string): UseActivityDensityResult {
     const params = new URLSearchParams({
       format: 'json',
       limit: UI.ACTIVITY_DENSITY_LIMIT.toString(),
-      dateStart: startStr,
-      dateEnd: `${endDateStr}T23:59:59.999Z`,
+      dateStart: inclusiveDateStart(startStr),
+      dateEnd: inclusiveDateEnd(endDateStr),
     });
     if (project) params.set('project', project);
 

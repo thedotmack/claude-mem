@@ -2,6 +2,8 @@ import React, { useMemo, useImperativeHandle, forwardRef } from 'react';
 import { SessionList } from './SessionList';
 import { SessionDetail } from './SessionDetail';
 import { ActivityBar } from './ActivityBar';
+import { DayNavigator, navigateDay } from './DayNavigator';
+import { getTodayString } from '../utils/date';
 import { useSessionList } from '../hooks/useSessionList';
 import { useSessionDetail } from '../hooks/useSessionDetail';
 import type { SessionGroup, SessionListItem, Summary, ActivityDay } from '../types';
@@ -44,6 +46,8 @@ interface TwoPanelProps {
 export interface TwoPanelHandle {
   navigateNext: () => void;
   navigatePrev: () => void;
+  /** Navigate the day filter by one step. */
+  navigateDay: (direction: 'prev' | 'next') => void;
 }
 
 export const TwoPanel = forwardRef<TwoPanelHandle, TwoPanelProps>(function TwoPanel({
@@ -68,14 +72,35 @@ export const TwoPanel = forwardRef<TwoPanelHandle, TwoPanelProps>(function TwoPa
     selectedSession?.id ?? null,
   );
 
+  function handleDayNavigate(direction: 'prev' | 'next'): void {
+    const today = getTodayString();
+    const newDate = navigateDay(dateStart, direction, today);
+    onDateRangeSelect(newDate, newDate);
+  }
+
+  function handleDayNavigatorNavigate(date: string): void {
+    onDateRangeSelect(date, date);
+  }
+
+  function handleDayNavigatorReset(): void {
+    onDateRangeSelect('', '');
+  }
+
   useImperativeHandle(ref, () => ({
     navigateNext: sessionList.navigateNext,
     navigatePrev: sessionList.navigatePrev,
-  }), [sessionList.navigateNext, sessionList.navigatePrev]);
+    navigateDay: handleDayNavigate,
+  }), [sessionList.navigateNext, sessionList.navigatePrev, dateStart, onDateRangeSelect]);
 
   return (
     <div className="two-panel" data-testid="two-panel">
       <aside className="two-panel__left" data-testid="two-panel-left" aria-label="Session list">
+        <DayNavigator
+          dateStart={dateStart}
+          dateEnd={dateEnd}
+          onNavigate={handleDayNavigatorNavigate}
+          onReset={handleDayNavigatorReset}
+        />
         <SessionList
           sessionGroups={sessionList.sessionGroups}
           selectedId={sessionList.selectedId}

@@ -49,8 +49,20 @@ describe('mapSummaryToSessionListItem', () => {
     expect(item.status).toBe('completed');
   });
 
-  it('maps observationCount as 0 (placeholder until count endpoint available)', () => {
+  it('maps observationCount as 0 when summary has no observation_count (e.g. SSE payload)', () => {
     const summary = makeSummary({ created_at_epoch: 1700000000000 });
+    const item = mapSummaryToSessionListItem(summary);
+    expect(item.observationCount).toBe(0);
+  });
+
+  it('uses observation_count from summary when present (DB-fetched summaries)', () => {
+    const summary = makeSummary({ created_at_epoch: 1700000000000, observation_count: 7 });
+    const item = mapSummaryToSessionListItem(summary);
+    expect(item.observationCount).toBe(7);
+  });
+
+  it('uses observation_count of 0 when summary has observation_count explicitly set to 0', () => {
+    const summary = makeSummary({ created_at_epoch: 1700000000000, observation_count: 0 });
     const item = mapSummaryToSessionListItem(summary);
     expect(item.observationCount).toBe(0);
   });
@@ -335,4 +347,37 @@ describe('prependSession', () => {
     expect(updated).toHaveLength(1);
     expect(updated[0].sessions[0].id).toBe(1);
   });
+
+  it('uses observation_count from summary when present, ignoring sseObservationCount', async () => {
+    const { prependSession } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
+
+    // Summary has DB-accurate observation_count of 5
+    const newSummary = makeSummary({ id: 1, session_id: 'sess-1', created_at_epoch: TODAY.getTime(), observation_count: 5 });
+    const updated = prependSession([], newSummary, 99);
+
+    // DB count (5) should take priority over SSE count (99)
+    expect(updated[0].sessions[0].observationCount).toBe(5);
+  });
+
+  it('uses sseObservationCount when summary lacks observation_count (SSE-delivered summary)', async () => {
+    const { prependSession } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
+
+    // SSE-delivered summary has no observation_count
+    const newSummary = makeSummary({ id: 1, session_id: 'sess-1', created_at_epoch: TODAY.getTime() });
+    delete newSummary.observation_count;
+    const updated = prependSession([], newSummary, 3);
+
+    expect(updated[0].sessions[0].observationCount).toBe(3);
+  });
+
+  it('falls back to 0 when summary lacks observation_count and no sseObservationCount provided', async () => {
+    const { prependSession } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
+
+    const newSummary = makeSummary({ id: 1, session_id: 'sess-1', created_at_epoch: TODAY.getTime() });
+    delete newSummary.observation_count;
+    const updated = prependSession([], newSummary);
+
+    expect(updated[0].sessions[0].observationCount).toBe(0);
+  });
 });
+

@@ -109,6 +109,10 @@ export function App() {
     twoPanelRef.current?.navigatePrev();
   }, []);
 
+  const handleDayNavigate = useCallback((direction: 'prev' | 'next') => {
+    twoPanelRef.current?.navigateDay(direction);
+  }, []);
+
   const { showHelp, setShowHelp } = useKeyboardNavigation({
     onNextSession: handleNextSession,
     onPrevSession: handlePrevSession,
@@ -118,6 +122,7 @@ export function App() {
     onClosePalette: closePalette,
     onClearSearch: clearAll,
     hasSearchContent: filters.query.length > 0,
+    onDayNavigate: handleDayNavigate,
   });
 
   const handleLoadMore = useCallback(async () => {

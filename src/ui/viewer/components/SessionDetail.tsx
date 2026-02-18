@@ -4,6 +4,8 @@ import type { Observation, UserPrompt, SessionDetail as SessionDetailType } from
 import { SummaryCard } from './SummaryCard';
 import { ObservationCard } from './ObservationCard';
 import { PromptCard } from './PromptCard';
+import { TaskNotificationCard } from './TaskNotificationCard';
+import { isTaskNotification } from '../utils/taskNotification';
 
 // ---------------------------------------------------------------------------
 // Timeline types
@@ -49,6 +51,9 @@ function renderTimelineItem(item: TimelineItem): React.ReactNode {
   const key = `${item.itemType}-${String(item.id)}`;
   if (item.itemType === 'observation') {
     return <ObservationCard key={key} observation={item} />;
+  }
+  if (isTaskNotification(item)) {
+    return <TaskNotificationCard key={key} prompt={item} />;
   }
   return <PromptCard key={key} prompt={item} />;
 }

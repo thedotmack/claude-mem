@@ -81,6 +81,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
       {/* Header */}
       <div className="card-header">
         <div className="card-header-left">
+          <span className="observation-card__type-badge">{observation.type || 'observation'}</span>
           <span className="card-project">{observation.project}</span>
         </div>
         <span className="meta-date">#{observation.id} • {date}</span>

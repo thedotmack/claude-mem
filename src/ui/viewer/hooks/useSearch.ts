@@ -13,13 +13,23 @@ interface UseSearchResult {
 }
 
 /**
- * Make dateEnd inclusive by advancing to end-of-day.
- * The API compares `created_at_epoch <= new Date(dateEnd).getTime()` which
- * resolves to midnight (start of day). Adding T23:59:59.999Z ensures the
- * entire day is included.
+ * Make dateStart inclusive by anchoring to local midnight (start of day).
+ * Using "YYYY-MM-DDT00:00:00" (no Z suffix) lets the browser interpret it
+ * as local time, so observations from early local morning are not excluded
+ * when the user is behind UTC.
  */
-function inclusiveDateEnd(dateEnd: string): string {
-  return `${dateEnd}T23:59:59.999Z`;
+export function inclusiveDateStart(dateStart: string): string {
+  return `${dateStart}T00:00:00`;
+}
+
+/**
+ * Make dateEnd inclusive by anchoring to local end-of-day.
+ * Using "YYYY-MM-DDT23:59:59" (no Z suffix) lets the browser interpret it
+ * as local time, so all observations within the selected day are included
+ * for users in any timezone.
+ */
+export function inclusiveDateEnd(dateEnd: string): string {
+  return `${dateEnd}T23:59:59`;
 }
 
 function buildSearchParams(filters: FilterState, offset: number): URLSearchParams {
@@ -32,7 +42,7 @@ function buildSearchParams(filters: FilterState, offset: number): URLSearchParam
   if (filters.project) params.set('project', filters.project);
   if (filters.obsTypes.length > 0) params.set('obs_type', filters.obsTypes.join(','));
   if (filters.concepts.length > 0) params.set('concepts', filters.concepts.join(','));
-  if (filters.dateStart) params.set('dateStart', filters.dateStart);
+  if (filters.dateStart) params.set('dateStart', inclusiveDateStart(filters.dateStart));
   if (filters.dateEnd) params.set('dateEnd', inclusiveDateEnd(filters.dateEnd));
 
   // obs_type and concepts are observation-specific filters — the API errors if

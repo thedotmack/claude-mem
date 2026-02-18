@@ -125,12 +125,12 @@ test.describe('Keyboard navigation', () => {
     await expect(help).not.toBeVisible({ timeout: 3000 });
   });
 
-  test('j/k navigate sessions without errors', async ({ page }) => {
+  test('j/k keys are silently ignored (no longer mapped)', async ({ page }) => {
     // Wait for sessions to load
     const sessionRows = page.locator('[data-testid="session-row"]');
     await expect(sessionRows.first()).toBeVisible({ timeout: 10000 });
 
-    // Press j then k - verify no console errors
+    // Press j then k - these are no longer mapped (replaced by ArrowUp/ArrowDown in Phase G)
     const consoleErrors: string[] = [];
     page.on('console', msg => {
       if (msg.type() === 'error') consoleErrors.push(msg.text());
@@ -172,9 +172,9 @@ test.describe('KeyboardShortcutHelp', () => {
     const help = page.locator('[data-testid="keyboard-help"]');
     await expect(help).toBeVisible({ timeout: 3000 });
 
-    // Check for all shortcut keys
-    await expect(help.locator('.keyboard-help__key', { hasText: 'j / k' })).toBeVisible();
-    await expect(help.locator('.keyboard-help__key', { hasText: 'Enter' })).toBeVisible();
+    // Check for all shortcut keys (Phase G: arrows replaced j/k, Enter removed, day nav added)
+    await expect(help.locator('.keyboard-help__key', { hasText: '↑ / ↓' })).toBeVisible();
+    await expect(help.locator('.keyboard-help__key', { hasText: '← / →' })).toBeVisible();
     await expect(help.getByText('/', { exact: true })).toBeVisible();
     await expect(help.getByText('f', { exact: true })).toBeVisible();
     await expect(help.locator('.keyboard-help__key', { hasText: 'Esc' })).toBeVisible();

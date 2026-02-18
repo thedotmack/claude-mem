@@ -3,7 +3,9 @@ import type { Observation, Summary, UserPrompt, FeedItem } from '../types';
 import { ObservationCard } from './ObservationCard';
 import { SummaryCard } from './SummaryCard';
 import { PromptCard } from './PromptCard';
+import { TaskNotificationCard } from './TaskNotificationCard';
 import { ScrollToTop } from './ScrollToTop';
+import { isTaskNotification } from '../utils/taskNotification';
 import { UI } from '../constants/ui';
 
 interface FeedProps {
@@ -71,6 +73,8 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
             return <ObservationCard key={key} observation={item} />;
           } else if (item.itemType === 'summary') {
             return <SummaryCard key={key} summary={item} />;
+          } else if (isTaskNotification(item)) {
+            return <TaskNotificationCard key={key} prompt={item} />;
           } else {
             return <PromptCard key={key} prompt={item} />;
           }

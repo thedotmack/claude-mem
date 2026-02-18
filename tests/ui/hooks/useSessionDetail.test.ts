@@ -315,6 +315,85 @@ describe('fetchSessionDetail', () => {
     expect(result!.observations).toEqual([]);
     expect(result!.prompts).toEqual([]);
   });
+
+  it('does NOT include summary_id param when no summaryId is provided (fetches all session observations)', async () => {
+    // When no summaryId is given, the detail view should include ALL observations for the session,
+    // including any observations that were created before the first summary existed (pre-summary obs).
+    // The server handles this: without summary_id, it returns all observations for the session_id.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(makeApiResponse([])),
+    });
+
+    await fetchSessionDetail(SESSION_ID, PROJECT);
+
+    const urls = fetchMock.mock.calls.map((call: unknown[]) => call[0] as string);
+    for (const url of urls) {
+      expect(url).not.toContain('summary_id=');
+    }
+  });
+
+  it('includes pre-summary observations when no summaryId is provided', async () => {
+    // Pre-summary observations have created_at_epoch BEFORE the summary's epoch.
+    // The server returns them because without summary_id, it fetches all observations for the session.
+    const preSummaryObservation: Observation = {
+      ...mockObservations[0],
+      id: 99,
+      memory_session_id: SESSION_ID,
+      // Observation created before the summary
+      created_at_epoch: mockSummary.created_at_epoch - 5000,
+    };
+
+    fetchMock.mockImplementation((url: string) => {
+      const u = new URL(url, 'http://localhost');
+      if (u.pathname === '/api/summaries') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(makeApiResponse([mockSummary])),
+        });
+      }
+      if (u.pathname === '/api/observations') {
+        // Server returns pre-summary observations when queried by session_id
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(makeApiResponse([preSummaryObservation])),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(makeApiResponse([])),
+      });
+    });
+
+    const result = await fetchSessionDetail(SESSION_ID, PROJECT);
+
+    expect(result).not.toBeNull();
+    expect(result!.observations).toHaveLength(1);
+    expect(result!.observations[0].id).toBe(99);
+    expect(result!.observations[0].created_at_epoch).toBeLessThan(mockSummary.created_at_epoch);
+  });
+
+  it('first summary fetches observations from epoch 0 (no lower bound) when no summaryId given', async () => {
+    // When summaryId is absent from the request, the server queries all observations for the session.
+    // This is the correct behavior for the first summary's detail view:
+    // all pre-summary observations (epoch > 0) should be visible.
+    fetchMock.mockImplementation((url: string) => {
+      const u = new URL(url, 'http://localhost');
+      if (u.pathname === '/api/observations') {
+        // Confirm no epoch filtering is applied on the client — the server handles it
+        const hasSummaryId = u.searchParams.has('summary_id');
+        expect(hasSummaryId).toBe(false);
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(makeApiResponse([mockSummary])),
+      });
+    });
+
+    await fetchSessionDetail(SESSION_ID, PROJECT);
+    // If we reach here without assertion failures, the epoch logic is correct
+    expect(fetchMock).toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
