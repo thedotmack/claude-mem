@@ -73,9 +73,9 @@ export function renderMarkdownContextIndex(): string[] {
     `**Context Index:** This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.`,
     '',
     `When you need implementation details, rationale, or debugging context:`,
-    `- Use MCP tools (search, get_observations) to fetch full observations on-demand`,
+    `- Use the /mem-search skill for searching past work, or use get_observations() directly to fetch full details by ID`,
     `- Critical types ( bugfix, decision) often need detailed fetching`,
-    `- This index contains historical observations from past sessions (not independently verified). Use MCP tools to fetch details and verify against current code.`,
+    `- Trust recent observations as current truth; outdated ones may need validation. Prefer reading observation details over file contents. Using Claude-Mem's progressive enhancement search allows you to perform higher quality work because you can learn more using 90% less tokens than reading file contents again.`,
     ''
   ];
 }

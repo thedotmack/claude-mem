@@ -115,8 +115,22 @@ export function requireLocalhost(req: Request, res: Response, next: NextFunction
 export function requireBearerToken(expectedToken: string): RequestHandler {
   const AUTH_EXEMPT_PATHS = ['/health', '/api/health', '/api/readiness'];
 
+  // Static asset extensions that can be served without auth (no sensitive data)
+  const STATIC_ASSET_EXTENSIONS = ['.html', '.js', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.woff', '.woff2', '.ttf', '.eot', '.map'];
+
   return (req: Request, res: Response, next: NextFunction) => {
+    // Exempt health/readiness probes
     if (AUTH_EXEMPT_PATHS.includes(req.path)) {
+      return next();
+    }
+
+    // Exempt the viewer HTML page (it injects the auth token into the page for JS to use)
+    if (req.path === '/') {
+      return next();
+    }
+
+    // Exempt static assets (JS bundles, CSS, fonts, images)
+    if (STATIC_ASSET_EXTENSIONS.some(ext => req.path.endsWith(ext))) {
       return next();
     }
 

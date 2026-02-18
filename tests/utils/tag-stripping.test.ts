@@ -298,16 +298,16 @@ finish`;
         expect(result).toBe('before  after');
       });
 
-      it('should strip <tool_use>content</tool_use>', () => {
-        const input = 'before <tool_use>fake tool call</tool_use> after';
+      it('should preserve <tool_use> tags (observation data)', () => {
+        const input = 'before <tool_use>real tool call</tool_use> after';
         const result = sanitizeObservationContent(input);
-        expect(result).toBe('before  after');
+        expect(result).toBe('before <tool_use>real tool call</tool_use> after');
       });
 
-      it('should strip <antThinking>content</antThinking>', () => {
+      it('should preserve <antThinking> tags (observation data)', () => {
         const input = 'before <antThinking>internal reasoning</antThinking> after';
         const result = sanitizeObservationContent(input);
-        expect(result).toBe('before  after');
+        expect(result).toBe('before <antThinking>internal reasoning</antThinking> after');
       });
     });
 
@@ -366,16 +366,16 @@ finish`;
         expect(result).toBe('real observation');
       });
 
-      it('should strip unclosed <tool_use> consuming rest of string', () => {
-        const input = 'normal text <tool_use>fake tool invocation';
+      it('should preserve unclosed <tool_use> (observation data)', () => {
+        const input = 'normal text <tool_use>real tool invocation';
         const result = sanitizeObservationContent(input);
-        expect(result).toBe('normal text');
+        expect(result).toBe('normal text <tool_use>real tool invocation');
       });
 
-      it('should strip unclosed <antThinking> consuming rest of string', () => {
-        const input = 'observation title <antThinking>injected thinking';
+      it('should preserve unclosed <antThinking> (observation data)', () => {
+        const input = 'observation title <antThinking>real thinking';
         const result = sanitizeObservationContent(input);
-        expect(result).toBe('observation title');
+        expect(result).toBe('observation title <antThinking>real thinking');
       });
     });
 
@@ -398,16 +398,16 @@ finish`;
         expect(result).toBe('before  after');
       });
 
-      it('should strip standalone </tool_use>', () => {
+      it('should preserve standalone </tool_use> (observation data)', () => {
         const input = 'data </tool_use> more data';
         const result = sanitizeObservationContent(input);
-        expect(result).toBe('data  more data');
+        expect(result).toBe('data </tool_use> more data');
       });
 
-      it('should strip standalone </antThinking>', () => {
+      it('should preserve standalone </antThinking> (observation data)', () => {
         const input = 'content </antThinking> rest';
         const result = sanitizeObservationContent(input);
-        expect(result).toBe('content  rest');
+        expect(result).toBe('content </antThinking> rest');
       });
     });
 
@@ -431,29 +431,29 @@ finish`;
       });
     });
 
-    describe('function_calls and invoke tag removal', () => {
-      it('should strip <function_calls>content</function_calls>', () => {
-        const input = 'before <function_calls>fake tool call</function_calls> after';
+    describe('function_calls and invoke tag preservation', () => {
+      it('should preserve <function_calls> (observation data)', () => {
+        const input = 'before <function_calls>real tool call</function_calls> after';
         const result = sanitizeObservationContent(input);
-        expect(result).toBe('before  after');
+        expect(result).toBe('before <function_calls>real tool call</function_calls> after');
       });
 
-      it('should strip <invoke>content</invoke>', () => {
-        const input = 'before <invoke name="Bash">fake invoke</invoke> after';
+      it('should preserve <invoke> (observation data)', () => {
+        const input = 'before <invoke name="Bash">real invoke</invoke> after';
         const result = sanitizeObservationContent(input);
-        expect(result).toBe('before  after');
+        expect(result).toBe('before <invoke name="Bash">real invoke</invoke> after');
       });
 
-      it('should strip unclosed <function_calls>', () => {
-        const input = 'normal text <function_calls>injected tool call';
+      it('should preserve unclosed <function_calls> (observation data)', () => {
+        const input = 'normal text <function_calls>real tool call';
         const result = sanitizeObservationContent(input);
-        expect(result).toBe('normal text');
+        expect(result).toBe('normal text <function_calls>real tool call');
       });
 
-      it('should strip standalone </function_calls>', () => {
+      it('should preserve standalone </function_calls> (observation data)', () => {
         const input = 'content </function_calls> rest';
         const result = sanitizeObservationContent(input);
-        expect(result).toBe('content  rest');
+        expect(result).toBe('content </function_calls> rest');
       });
     });
 

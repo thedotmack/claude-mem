@@ -81,12 +81,6 @@ const DANGEROUS_TAG_NAMES = [
   'system-reminder',
   'system',
   'instructions',
-  'tool_use',
-  'antThinking',
-  'function_calls',
-  'antml:function_calls',
-  'invoke',
-  'antml:invoke',
 ] as const;
 
 /**
