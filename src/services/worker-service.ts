@@ -18,7 +18,7 @@ import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
-import { ChromaServerManager } from './sync/ChromaServerManager.js';
+import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
 
 // Windows: avoid repeated spawn popups when startup fails (issue #921)
@@ -166,8 +166,8 @@ export class WorkerService {
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
 
-  // Chroma server (local mode)
-  private chromaServer: ChromaServerManager | null = null;
+  // Chroma MCP manager (lazy - connects on first use)
+  private chromaMcpManager: ChromaMcpManager | null = null;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -373,31 +373,12 @@ export class WorkerService {
       const { ModeManager } = await import('./domain/ModeManager.js');
       const { SettingsDefaultsManager } = await import('../shared/SettingsDefaultsManager.js');
       const { USER_SETTINGS_PATH } = await import('../shared/paths.js');
-      const os = await import('os');
 
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
-      // Start Chroma server if in local mode
-      const chromaMode = settings.CLAUDE_MEM_CHROMA_MODE || 'local';
-      if (chromaMode === 'local') {
-        logger.info('SYSTEM', 'Starting local Chroma server...');
-        this.chromaServer = ChromaServerManager.getInstance({
-          dataDir: path.join(os.homedir(), '.claude-mem', 'vector-db'),
-          host: settings.CLAUDE_MEM_CHROMA_HOST || '127.0.0.1',
-          port: parseInt(settings.CLAUDE_MEM_CHROMA_PORT || '8000', 10)
-        });
-
-        const ready = await this.chromaServer.start(60000);
-
-        if (ready) {
-          logger.success('SYSTEM', 'Chroma server ready');
-        } else {
-          logger.warn('SYSTEM', 'Chroma server failed to start - vector search disabled');
-          this.chromaServer = null;
-        }
-      } else {
-        logger.info('SYSTEM', 'Chroma remote mode - skipping local server');
-      }
+      // Initialize ChromaMcpManager (lazy - connects on first use via ChromaSync)
+      this.chromaMcpManager = ChromaMcpManager.getInstance();
+      logger.info('SYSTEM', 'ChromaMcpManager initialized (lazy - connects on first use)');
 
       const modeId = settings.CLAUDE_MEM_MODE;
       ModeManager.getInstance().loadMode(modeId);
@@ -428,7 +409,7 @@ export class WorkerService {
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
       // Auto-backfill Chroma for all projects if out of sync with SQLite (fire-and-forget)
-      if (this.chromaServer !== null || chromaMode !== 'local') {
+      if (this.chromaMcpManager) {
         ChromaSync.backfillAllProjects().then(() => {
           logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
         }).catch(error => {
@@ -855,7 +836,7 @@ export class WorkerService {
       sessionManager: this.sessionManager,
       mcpClient: this.mcpClient,
       dbManager: this.dbManager,
-      chromaServer: this.chromaServer || undefined
+      chromaMcpManager: this.chromaMcpManager || undefined
     });
   }
 
