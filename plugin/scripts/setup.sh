@@ -61,34 +61,6 @@ find_bun() {
 }
 
 #
-# Detect uv - check PATH and common locations
-#
-find_uv() {
-  # Try PATH first
-  if command -v uv &>/dev/null; then
-    echo "uv"
-    return 0
-  fi
-  
-  # Check common install locations
-  local paths=(
-    "$HOME/.local/bin/uv"
-    "$HOME/.cargo/bin/uv"
-    "/usr/local/bin/uv"
-    "/opt/homebrew/bin/uv"
-  )
-  
-  for p in "${paths[@]}"; do
-    if [[ -x "$p" ]]; then
-      echo "$p"
-      return 0
-    fi
-  done
-  
-  return 1
-}
-
-#
 # Get package.json version
 #
 get_pkg_version() {
@@ -156,21 +128,14 @@ needs_install() {
 # Write version marker after successful install
 #
 write_marker() {
-  local bun_ver uv_ver pkg_ver
+  local bun_ver pkg_ver
   pkg_ver=$(get_pkg_version)
   bun_ver=$("$BUN_PATH" --version 2>/dev/null || echo "unknown")
-  
-  if UV_PATH=$(find_uv); then
-    uv_ver=$("$UV_PATH" --version 2>/dev/null | head -1 || echo "unknown")
-  else
-    uv_ver="not-installed"
-  fi
-  
+
   cat > "$MARKER" <<EOF
 {
   "version": "$pkg_ver",
   "bun": "$bun_ver",
-  "uv": "$uv_ver",
   "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
@@ -200,17 +165,7 @@ fi
 BUN_VERSION=$("$BUN_PATH" --version 2>/dev/null || echo "unknown")
 log_ok "Bun $BUN_VERSION found at $BUN_PATH"
 
-# 2. Check for uv (optional - for Python/Chroma support)
-UV_PATH=$(find_uv) || true
-if [[ -z "$UV_PATH" ]]; then
-  log_warn "uv not found (optional - needed for Python/Chroma vector search)"
-  echo "  To install: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
-else
-  UV_VERSION=$("$UV_PATH" --version 2>/dev/null | head -1 || echo "unknown")
-  log_ok "uv $UV_VERSION found"
-fi
-
-# 3. Install dependencies if needed
+# 2. Install dependencies if needed
 if needs_install; then
   log_info "Installing dependencies with Bun..."
   

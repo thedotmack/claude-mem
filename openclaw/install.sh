@@ -541,74 +541,6 @@ install_bun() {
 }
 
 ###############################################################################
-# uv detection and installation
-# Translated from plugin/scripts/smart-install.js patterns
-###############################################################################
-
-UV_PATH=""
-
-find_uv_path() {
-  # Try PATH first
-  if command -v uv &>/dev/null; then
-    UV_PATH="$(command -v uv)"
-    return 0
-  fi
-
-  # Check common installation paths (handles fresh installs before PATH reload)
-  local -a uv_paths=(
-    "${HOME}/.local/bin/uv"
-    "${HOME}/.cargo/bin/uv"
-    "/usr/local/bin/uv"
-    "/opt/homebrew/bin/uv"
-  )
-
-  for candidate in "${uv_paths[@]}"; do
-    if [[ -x "$candidate" ]]; then
-      UV_PATH="$candidate"
-      return 0
-    fi
-  done
-
-  UV_PATH=""
-  return 1
-}
-
-check_uv() {
-  if ! find_uv_path; then
-    return 1
-  fi
-
-  local uv_version
-  uv_version="$("$UV_PATH" --version 2>/dev/null)" || return 1
-  success "uv ${uv_version} found at ${UV_PATH}"
-  return 0
-}
-
-install_uv() {
-  info "Installing uv (Python package manager for Chroma support)..."
-
-  if ! curl -LsSf https://astral.sh/uv/install.sh | sh; then
-    error "Failed to install uv automatically"
-    error "Please install manually:"
-    error "  curl -LsSf https://astral.sh/uv/install.sh | sh"
-    error "  Or: brew install uv (macOS)"
-    error "Then restart your terminal and re-run this installer."
-    exit 1
-  fi
-
-  # Re-detect after install
-  if ! find_uv_path; then
-    error "uv installation completed but binary not found in expected locations"
-    error "Please restart your terminal and re-run this installer."
-    exit 1
-  fi
-
-  local uv_version
-  uv_version="$("$UV_PATH" --version 2>/dev/null)" || true
-  success "uv ${uv_version} installed at ${UV_PATH}"
-}
-
-###############################################################################
 # OpenClaw gateway detection
 ###############################################################################
 
@@ -1609,7 +1541,7 @@ print_completion_summary() {
   echo "  └──────────────────────────────────────────┘"
   echo -e "${COLOR_RESET}"
 
-  echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Dependencies installed (Bun, uv)"
+  echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Dependencies installed (Bun)"
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  OpenClaw gateway detected"
 
   # Show installed version from health data if available
@@ -1684,10 +1616,6 @@ main() {
 
   if ! check_bun; then
     install_bun
-  fi
-
-  if ! check_uv; then
-    install_uv
   fi
 
   echo ""

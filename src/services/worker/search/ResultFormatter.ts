@@ -273,10 +273,10 @@ export class ResultFormatter {
    * Format Chroma failure message
    */
   private formatChromaFailureMessage(): string {
-    return `Vector search failed - semantic search unavailable.
+    return `Vector search failed - Chroma server not available for semantic search.
 
 To enable semantic search:
-1. Install uv: https://docs.astral.sh/uv/getting-started/installation/
+1. Ensure the Chroma server is running
 2. Restart the worker: npm run worker:restart
 
 Note: You can still use filter-only searches (date ranges, types, files) without a query term.`;

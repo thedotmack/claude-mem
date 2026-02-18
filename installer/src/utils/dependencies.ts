@@ -64,11 +64,3 @@ export function installBun(): void {
   }
 }
 
-export function installUv(): void {
-  const os = detectOS();
-  if (os === 'windows') {
-    execSync('powershell -c "irm https://astral.sh/uv/install.ps1 | iex"', { stdio: 'inherit' });
-  } else {
-    execSync('curl -fsSL https://astral.sh/uv/install.sh | sh', { stdio: 'inherit' });
-  }
-}

@@ -1,18 +1,14 @@
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
-import { findBinary, compareVersions, installBun, installUv } from '../utils/dependencies.js';
+import { findBinary, compareVersions, installBun } from '../utils/dependencies.js';
 import { detectOS } from '../utils/system.js';
 
 const BUN_EXTRA_PATHS = ['~/.bun/bin/bun', '/usr/local/bin/bun', '/opt/homebrew/bin/bun'];
-const UV_EXTRA_PATHS = ['~/.local/bin/uv', '~/.cargo/bin/uv'];
-
 interface DependencyStatus {
   nodeOk: boolean;
   gitOk: boolean;
   bunOk: boolean;
-  uvOk: boolean;
   bunPath: string | null;
-  uvPath: string | null;
 }
 
 export async function runDependencyChecks(): Promise<DependencyStatus> {
@@ -20,9 +16,7 @@ export async function runDependencyChecks(): Promise<DependencyStatus> {
     nodeOk: false,
     gitOk: false,
     bunOk: false,
-    uvOk: false,
     bunPath: null,
-    uvPath: null,
   };
 
   await p.tasks([
@@ -61,18 +55,6 @@ export async function runDependencyChecks(): Promise<DependencyStatus> {
           return `Bun ${info.version} — requires >= 1.1.14 ${pc.yellow('⚠')}`;
         }
         return `Bun not found ${pc.yellow('⚠')}`;
-      },
-    },
-    {
-      title: 'Checking uv',
-      task: async () => {
-        const info = findBinary('uv', UV_EXTRA_PATHS);
-        if (info.found) {
-          status.uvOk = true;
-          status.uvPath = info.path;
-          return `uv ${info.version ?? ''} ${pc.green('✓')}`;
-        }
-        return `uv not found ${pc.yellow('⚠')}`;
       },
     },
   ]);
@@ -129,38 +111,6 @@ export async function runDependencyChecks(): Promise<DependencyStatus> {
       p.log.warn('Bun is required for claude-mem. Install manually: curl -fsSL https://bun.sh/install | bash');
       p.cancel('Cannot continue without Bun.');
       process.exit(1);
-    }
-  }
-
-  if (!status.uvOk) {
-    const shouldInstall = await p.confirm({
-      message: 'uv (Python package manager) is recommended for Chroma. Install it now?',
-      initialValue: true,
-    });
-
-    if (p.isCancel(shouldInstall)) {
-      p.cancel('Installation cancelled.');
-      process.exit(0);
-    }
-
-    if (shouldInstall) {
-      const s = p.spinner();
-      s.start('Installing uv...');
-      try {
-        installUv();
-        const recheck = findBinary('uv', UV_EXTRA_PATHS);
-        if (recheck.found) {
-          status.uvOk = true;
-          status.uvPath = recheck.path;
-          s.stop(`uv installed ${pc.green('✓')}`);
-        } else {
-          s.stop('uv installed but not found in PATH. You may need to restart your shell.');
-        }
-      } catch {
-        s.stop('uv installation failed. Install manually: curl -fsSL https://astral.sh/uv/install.sh | sh');
-      }
-    } else {
-      p.log.warn('Skipping uv — Chroma vector search will not be available.');
     }
   }
 

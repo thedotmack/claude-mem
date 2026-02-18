@@ -2,8 +2,8 @@
 /**
  * Smart Install Script for claude-mem
  *
- * Ensures Bun runtime and uv (Python package manager) are installed
- * (auto-installs if missing) and handles dependency installation when needed.
+ * Ensures Bun runtime is installed (auto-installs if missing)
+ * and handles dependency installation when needed.
  */
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
@@ -115,45 +115,6 @@ function getBunVersion() {
 }
 
 /**
- * Check if uv is installed and accessible
- */
-function isUvInstalled() {
-  try {
-    const result = spawnSync('uv', ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
-    });
-    if (result.status === 0) return true;
-  } catch {
-    // PATH check failed, try common installation paths
-  }
-
-  // Check common installation paths (handles fresh installs before PATH reload)
-  const uvPaths = IS_WINDOWS
-    ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
-    : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv', '/opt/homebrew/bin/uv'];
-
-  return uvPaths.some(existsSync);
-}
-
-/**
- * Get uv version if installed
- */
-function getUvVersion() {
-  try {
-    const result = spawnSync('uv', ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
-    });
-    return result.status === 0 ? result.stdout.trim() : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Install Bun automatically based on platform
  */
 function installBun() {
@@ -212,71 +173,6 @@ function installBun() {
     } else {
       console.error('   - curl -fsSL https://bun.sh/install | bash');
       console.error('   - Or: brew install oven-sh/bun/bun');
-    }
-    console.error('   Then restart your terminal and try again.');
-    throw error;
-  }
-}
-
-/**
- * Install uv automatically based on platform
- */
-function installUv() {
-  console.error('🐍 Installing uv for Python/Chroma support...');
-
-  try {
-    if (IS_WINDOWS) {
-      // Windows: Use PowerShell installer
-      console.error('   Installing via PowerShell...');
-      execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
-        stdio: 'inherit',
-        shell: true
-      });
-    } else {
-      // Unix/macOS: Use curl installer
-      console.error('   Installing via curl...');
-      execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
-        stdio: 'inherit',
-        shell: true
-      });
-    }
-
-    // Verify installation
-    if (isUvInstalled()) {
-      const version = getUvVersion();
-      console.error(`✅ uv ${version} installed successfully`);
-      return true;
-    } else {
-      // uv may be installed but not in PATH yet for this session
-      // Try common installation paths
-      const uvPaths = IS_WINDOWS
-        ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
-        : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv', '/opt/homebrew/bin/uv'];
-
-      for (const uvPath of uvPaths) {
-        if (existsSync(uvPath)) {
-          console.error(`✅ uv installed at ${uvPath}`);
-          console.error('⚠️  Please restart your terminal or add uv to PATH:');
-          if (IS_WINDOWS) {
-            console.error(`   $env:Path += ";${join(homedir(), '.local', 'bin')}"`);
-          } else {
-            console.error(`   export PATH="$HOME/.local/bin:$PATH"`);
-          }
-          return true;
-        }
-      }
-
-      throw new Error('uv installation completed but binary not found');
-    }
-  } catch (error) {
-    console.error('❌ Failed to install uv automatically');
-    console.error('   Please install manually:');
-    if (IS_WINDOWS) {
-      console.error('   - winget install astral-sh.uv');
-      console.error('   - Or: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"');
-    } else {
-      console.error('   - curl -LsSf https://astral.sh/uv/install.sh | sh');
-      console.error('   - Or: brew install uv (macOS)');
     }
     console.error('   Then restart your terminal and try again.');
     throw error;
@@ -400,7 +296,6 @@ function installDeps() {
   writeFileSync(MARKER, JSON.stringify({
     version: pkg.version,
     bun: getBunVersion(),
-    uv: getUvVersion(),
     installedAt: new Date().toISOString()
   }));
 }
@@ -438,19 +333,7 @@ try {
     }
   }
 
-  // Step 2: Ensure uv is installed (REQUIRED for vector search)
-  if (!isUvInstalled()) {
-    installUv();
-
-    // Re-check after installation
-    if (!isUvInstalled()) {
-      console.error('❌ uv is required but not available in PATH');
-      console.error('   Please restart your terminal after installation');
-      process.exit(1);
-    }
-  }
-
-  // Step 3: Install dependencies if needed
+  // Step 2: Install dependencies if needed
   if (needsInstall()) {
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
     const newVersion = pkg.version;
@@ -479,7 +362,7 @@ try {
     // Worker will be started fresh by next hook in chain (worker-service.cjs start)
   }
 
-  // Step 4: Install CLI to PATH
+  // Step 3: Install CLI to PATH
   installCLI();
 } catch (e) {
   console.error('❌ Installation failed:', e.message);
