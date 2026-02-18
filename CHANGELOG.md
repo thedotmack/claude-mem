@@ -2,6 +2,23 @@
 
 All notable changes to claude-mem.
 
+## [v10.2.6] - 2026-02-18
+
+## Bug Fixes
+
+### Zombie Process Prevention (#1168, #1175)
+
+Observer Claude CLI subprocesses were accumulating as zombies — processes that never exited after their session ended, causing massive resource leaks on long-running systems.
+
+**Root cause:** When observer sessions ended (via idle timeout, abort, or error), the spawned Claude CLI subprocesses were not being reliably killed. The existing `ensureProcessExit()` in `SDKAgent` only covered the happy path; sessions terminated through `SessionRoutes` or `worker-service` bypassed process cleanup entirely.
+
+**Fix — dual-layer approach:**
+
+1. **Immediate cleanup:** Added `ensureProcessExit()` calls to the `finally` blocks in both `SessionRoutes.ts` and `worker-service.ts`, ensuring every session exit path kills its subprocess
+2. **Periodic reaping:** Added `reapStaleSessions()` to `SessionManager` — a background interval that scans `~/.claude-mem/observer-sessions/` for stale PID files, verifies the process is still running, and kills any orphans with SIGKILL escalation
+
+This ensures no observer subprocess survives beyond its session lifetime, even in crash scenarios.
+
 ## [v10.2.5] - 2026-02-18
 
 ### Bug Fixes
@@ -1422,16 +1439,4 @@ This patch release addresses a race condition where SIGTERM/SIGINT signals arriv
 This release significantly reduces the token footprint of the plugin's MCP tools and documentation.
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.6...v8.2.7
-
-## [v8.2.6] - 2025-12-29
-
-## What's Changed
-
-### Bug Fixes & Improvements
-- Session ID semantic renaming for clarity (content_session_id, memory_session_id)
-- Queue system simplification with unified processing logic
-- Memory session ID capture for agent resume functionality
-- Comprehensive test suite for session ID refactoring
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.5...v8.2.6
 
