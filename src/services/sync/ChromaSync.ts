@@ -87,8 +87,10 @@ export class ChromaSync {
     this.project = project;
     // Chroma collection names only allow [a-zA-Z0-9._-], 3-512 chars,
     // must start/end with [a-zA-Z0-9]
-    const sanitized = project.replace(/[^a-zA-Z0-9._-]/g, '_');
-    this.collectionName = `cm__${sanitized}`;
+    const sanitized = project
+      .replace(/[^a-zA-Z0-9._-]/g, '_')
+      .replace(/[^a-zA-Z0-9]+$/, '');  // strip trailing non-alphanumeric
+    this.collectionName = `cm__${sanitized || 'unknown'}`;
     this.VECTOR_DB_DIR = path.join(os.homedir(), '.claude-mem', 'vector-db');
   }
 
@@ -872,11 +874,14 @@ export class ChromaSync {
 
   /**
    * Backfill all projects that have observations in SQLite but may be missing from Chroma.
-   * Creates a temporary ChromaSync per project, runs ensureBackfilled(), then releases.
+   * Uses a single shared ChromaSync('claude-mem') instance — all documents live in the
+   * cm__claude-mem collection with project scoped via metadata, matching how DatabaseManager
+   * and SearchManager operate.
    * Designed to be called fire-and-forget on worker startup.
    */
   static async backfillAllProjects(): Promise<void> {
     const db = new SessionStore();
+    const sync = new ChromaSync('claude-mem');
     try {
       const projects = db.db.prepare(
         'SELECT DISTINCT project FROM observations WHERE project IS NOT NULL AND project != ?'
@@ -885,17 +890,18 @@ export class ChromaSync {
       logger.info('CHROMA_SYNC', `Backfill check for ${projects.length} projects`);
 
       for (const { project } of projects) {
-        const sync = new ChromaSync(project);
         try {
+          // Scope this iteration to the current project for SQL queries and Chroma metadata filters.
+          // The collection stays cm__claude-mem (shared), matching the normal sync path.
+          sync.project = project;
           await sync.ensureBackfilled();
         } catch (error) {
           logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, {}, error as Error);
           // Continue to next project — don't let one failure stop others
-        } finally {
-          await sync.close();
         }
       }
     } finally {
+      await sync.close();
       db.close();
     }
   }

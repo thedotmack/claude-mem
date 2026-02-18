@@ -425,11 +425,13 @@ export class WorkerService {
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
       // Auto-backfill Chroma for all projects if out of sync with SQLite (fire-and-forget)
-      ChromaSync.backfillAllProjects().then(() => {
-        logger.info('SYSTEM', 'Chroma backfill check complete for all projects');
-      }).catch(error => {
-        logger.error('SYSTEM', 'Chroma backfill failed (non-blocking)', {}, error as Error);
-      });
+      if (this.chromaServer !== null || chromaMode !== 'local') {
+        ChromaSync.backfillAllProjects().then(() => {
+          logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
+        }).catch(error => {
+          logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
+        });
+      }
 
       // Connect to MCP server
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
