@@ -27,6 +27,7 @@ import {
   type FallbackAgent,
   type WorkerRef
 } from './agents/index.js';
+import { appendConversationMessage } from './session/ConversationHistoryManager.js';
 
 // OpenRouter API endpoint
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -109,7 +110,7 @@ export class OpenRouterAgent {
         : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
       // Add to conversation history and query OpenRouter with full context
-      session.conversationHistory.push({ role: 'user', content: initPrompt });
+      appendConversationMessage(session, { role: 'user', content: initPrompt });
       const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
 
       if (initResponse.content) {
@@ -179,7 +180,7 @@ export class OpenRouterAgent {
           });
 
           // Add to conversation history and query OpenRouter with full context
-          session.conversationHistory.push({ role: 'user', content: obsPrompt });
+          appendConversationMessage(session, { role: 'user', content: obsPrompt });
           const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
 
           let tokensUsed = 0;
@@ -221,7 +222,7 @@ export class OpenRouterAgent {
           }, mode);
 
           // Add to conversation history and query OpenRouter with full context
-          session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+          appendConversationMessage(session, { role: 'user', content: summaryPrompt });
           const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
 
           let tokensUsed = 0;

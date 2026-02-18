@@ -24,6 +24,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
+import { appendConversationMessage } from '../session/ConversationHistoryManager.js';
 
 /**
  * Process agent response text (parse XML, save to database, sync to Chroma, broadcast SSE)
@@ -58,7 +59,7 @@ export async function processAgentResponse(
 ): Promise<void> {
   // Add assistant response to shared conversation history for provider interop
   if (text) {
-    session.conversationHistory.push({ role: 'assistant', content: text });
+    appendConversationMessage(session, { role: 'assistant', content: text });
   }
 
   // Parse observations and summary
@@ -192,7 +193,7 @@ async function syncAndBroadcastObservations(
     // Sync to Chroma (fire-and-forget)
     dbManager.getChromaSync().syncObservation(
       obsId,
-      session.contentSessionId,
+      session.memorySessionId!,
       session.project,
       obs,
       session.lastPromptNumber,
@@ -285,7 +286,7 @@ async function syncAndBroadcastSummary(
   // Sync to Chroma (fire-and-forget)
   dbManager.getChromaSync().syncSummary(
     result.summaryId,
-    session.contentSessionId,
+    session.memorySessionId!,
     session.project,
     summaryForStore,
     session.lastPromptNumber,

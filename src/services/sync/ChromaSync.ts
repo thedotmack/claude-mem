@@ -189,11 +189,10 @@ export class ChromaSync {
     }
 
     try {
-      // Use WASM backend to avoid native ONNX binary issues (#1104, #1105, #1110).
-      // Same model (all-MiniLM-L6-v2), same embeddings, but runs in WASM —
-      // no native binary loading, no segfaults, no ENOENT errors.
+      // Use WASM backend and uint8 quantization to reduce embedding memory footprint.
+      // Same model (all-MiniLM-L6-v2), but quantized weights significantly lower RSS.
       const { DefaultEmbeddingFunction } = await import('@chroma-core/default-embed');
-      const embeddingFunction = new DefaultEmbeddingFunction({ wasm: true });
+      const embeddingFunction = new DefaultEmbeddingFunction({ wasm: true, dtype: 'uint8' });
 
       this.collection = await this.chromaClient.getOrCreateCollection({
         name: this.collectionName,

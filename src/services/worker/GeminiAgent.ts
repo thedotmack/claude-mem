@@ -27,6 +27,7 @@ import {
   type WorkerRef,
   type FallbackAgent
 } from './agents/index.js';
+import { appendConversationMessage } from './session/ConversationHistoryManager.js';
 
 // Gemini API endpoint — use v1 (stable), not v1beta.
 // v1beta does not support newer models like gemini-3-flash.
@@ -154,12 +155,11 @@ export class GeminiAgent {
         : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
       // Add to conversation history and query Gemini with full context
-      session.conversationHistory.push({ role: 'user', content: initPrompt });
+      appendConversationMessage(session, { role: 'user', content: initPrompt });
       const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
       if (initResponse.content) {
-        // Add response to conversation history
-        session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
+        // Assistant response is appended in processAgentResponse() to avoid duplicates
 
         // Track token usage
         const tokensUsed = initResponse.tokensUsed || 0;
@@ -224,13 +224,12 @@ export class GeminiAgent {
           });
 
           // Add to conversation history and query Gemini with full context
-          session.conversationHistory.push({ role: 'user', content: obsPrompt });
+          appendConversationMessage(session, { role: 'user', content: obsPrompt });
           const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
           let tokensUsed = 0;
           if (obsResponse.content) {
-            // Add response to conversation history
-            session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
+            // Assistant response is appended in processAgentResponse() to avoid duplicates
 
             tokensUsed = obsResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
@@ -266,13 +265,12 @@ export class GeminiAgent {
           }, mode);
 
           // Add to conversation history and query Gemini with full context
-          session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+          appendConversationMessage(session, { role: 'user', content: summaryPrompt });
           const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
-            // Add response to conversation history
-            session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
+            // Assistant response is appended in processAgentResponse() to avoid duplicates
 
             tokensUsed = summaryResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);

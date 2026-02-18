@@ -22,6 +22,7 @@ import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
 import { createPidCapturingSpawn, getProcessBySession, ensureProcessExit, waitForSlot } from './ProcessRegistry.js';
+import { appendConversationMessage } from './session/ConversationHistoryManager.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -351,7 +352,7 @@ export class SDKAgent {
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
     // Add to shared conversation history for provider interop
-    session.conversationHistory.push({ role: 'user', content: initPrompt });
+    appendConversationMessage(session, { role: 'user', content: initPrompt });
 
     // Yield initial user prompt with context (or continuation if prompt #2+)
     // CRITICAL: Both paths use session.contentSessionId from the hook
@@ -393,7 +394,7 @@ export class SDKAgent {
         });
 
         // Add to shared conversation history for provider interop
-        session.conversationHistory.push({ role: 'user', content: obsPrompt });
+        appendConversationMessage(session, { role: 'user', content: obsPrompt });
 
         yield {
           type: 'user',
@@ -415,7 +416,7 @@ export class SDKAgent {
         }, mode);
 
         // Add to shared conversation history for provider interop
-        session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+        appendConversationMessage(session, { role: 'user', content: summaryPrompt });
 
         yield {
           type: 'user',
