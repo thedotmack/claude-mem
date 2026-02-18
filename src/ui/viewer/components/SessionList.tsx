@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useMemo } from 'react';
+import React, { useRef, useEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { SessionGroup, SessionListItem } from '../types';
 
@@ -16,6 +16,11 @@ export const VIRTUAL_THRESHOLD = 100;
 export type VirtualItem =
   | { type: 'header'; label: string; dateKey: string }
   | { type: 'session'; session: SessionListItem; isSelected: boolean };
+
+export interface SessionListHandle {
+  scrollToDate: (dateKey: string) => void;
+  scrollToSession: (id: number) => void;
+}
 
 interface SessionListProps {
   sessionGroups: SessionGroup[];
@@ -63,10 +68,12 @@ function SessionRow({ session, isSelected, onSelect }: {
   isSelected: boolean;
   onSelect: (id: number) => void;
 }) {
+  const isActive = session.status === 'active';
   return (
     <div
-      className={isSelected ? 'session-list__row session-list__row--selected' : 'session-list__row'}
+      className={`session-list__row${isSelected ? ' session-list__row--selected' : ''}${isActive ? ' session-list__row--active' : ''}`}
       data-testid="session-row"
+      data-session-id={session.id}
       aria-selected={isSelected}
       onClick={() => onSelect(session.id)}
       role="button"
@@ -78,8 +85,11 @@ function SessionRow({ session, isSelected, onSelect }: {
         }
       }}
     >
-      <div className="session-list__request">{session.request ?? '(no description)'}</div>
+      <div className="session-list__request">
+        {isActive ? 'Processing...' : (session.request ?? '(no description)')}
+      </div>
       <div className="session-list__meta">
+        {isActive && <span className="session-list__status-badge">In Progress</span>}
         {formatSessionTime(session.created_at_epoch)} &bull; {session.observationCount} obs
       </div>
     </div>
@@ -90,10 +100,11 @@ function SessionRow({ session, isSelected, onSelect }: {
 // VirtualContent sub-component (above threshold)
 // ─────────────────────────────────────────────────────────
 
-function VirtualContent({ items, containerRef, onSelectSession }: {
+function VirtualContent({ items, containerRef, onSelectSession, scrollToIndexRef }: {
   items: VirtualItem[];
   containerRef: React.RefObject<HTMLDivElement>;
   onSelectSession: (id: number) => void;
+  scrollToIndexRef: React.MutableRefObject<((index: number, opts?: { align?: string }) => void) | null>;
 }) {
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -102,6 +113,14 @@ function VirtualContent({ items, containerRef, onSelectSession }: {
     measureElement: (el) => el.getBoundingClientRect().height,
     overscan: 5,
   });
+
+  // Register scrollToIndex with parent for imperative access
+  useEffect(() => {
+    scrollToIndexRef.current = (index, opts) => {
+      virtualizer.scrollToIndex(index, opts as Parameters<typeof virtualizer.scrollToIndex>[1]);
+    };
+    return () => { scrollToIndexRef.current = null; };
+  }, [virtualizer, scrollToIndexRef]);
 
   return (
     <div
@@ -118,7 +137,7 @@ function VirtualContent({ items, containerRef, onSelectSession }: {
         if (item.type === 'header') {
           return (
             <div key={`header-${item.dateKey}`} data-index={vItem.index} ref={virtualizer.measureElement} style={style}>
-              <div className="session-list__day-header" style={{ position: 'sticky', top: 0 }}>
+              <div className="session-list__day-header" data-date-key={item.dateKey} style={{ position: 'sticky', top: 0 }}>
                 {item.label}
               </div>
             </div>
@@ -138,12 +157,14 @@ function VirtualContent({ items, containerRef, onSelectSession }: {
 // Main component
 // ─────────────────────────────────────────────────────────
 
-export function SessionList({
-  sessionGroups, selectedId, onSelectSession, onLoadMore, hasMore, isLoading,
-}: SessionListProps) {
+export const SessionList = forwardRef<SessionListHandle, SessionListProps>(function SessionList(
+  { sessionGroups, selectedId, onSelectSession, onLoadMore, hasMore, isLoading },
+  ref,
+) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
+  const scrollToIndexRef = useRef<((index: number, opts?: { align?: string }) => void) | null>(null);
 
   useEffect(() => { onLoadMoreRef.current = onLoadMore; }, [onLoadMore]);
 
@@ -166,6 +187,29 @@ export function SessionList({
   const hasGroups = sessionGroups.length > 0;
   const flatItems = useMemo(() => flattenGroups(sessionGroups, selectedId), [sessionGroups, selectedId]);
 
+  useImperativeHandle(ref, () => ({
+    scrollToDate(dateKey: string) {
+      const index = flatItems.findIndex(item => item.type === 'header' && item.dateKey === dateKey);
+      if (index === -1) return;
+      if (useVirtual && scrollToIndexRef.current) {
+        scrollToIndexRef.current(index, { align: 'start' });
+      } else if (containerRef.current) {
+        const el = containerRef.current.querySelector(`[data-date-key="${dateKey}"]`);
+        el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    },
+    scrollToSession(id: number) {
+      const index = flatItems.findIndex(item => item.type === 'session' && item.session.id === id);
+      if (index === -1) return;
+      if (useVirtual && scrollToIndexRef.current) {
+        scrollToIndexRef.current(index, { align: 'nearest' });
+      } else if (containerRef.current) {
+        const el = containerRef.current.querySelector(`[data-session-id="${id}"]`);
+        el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    },
+  }), [flatItems, useVirtual]);
+
   return (
     <div className="session-list" data-testid="session-list" ref={containerRef}>
       {!hasGroups && !isLoading && <div className="session-list__empty" aria-live="polite">No sessions found</div>}
@@ -175,12 +219,13 @@ export function SessionList({
           items={flatItems}
           containerRef={containerRef as React.RefObject<HTMLDivElement>}
           onSelectSession={onSelectSession}
+          scrollToIndexRef={scrollToIndexRef}
         />
       ) : (
         flatItems.map((item) => {
           if (item.type === 'header') {
             return (
-              <div key={`header-${item.dateKey}`} className="session-list__day-header">
+              <div key={`header-${item.dateKey}`} className="session-list__day-header" data-date-key={item.dateKey}>
                 {item.label}
               </div>
             );
@@ -208,4 +253,4 @@ export function SessionList({
       )}
     </div>
   );
-}
+});

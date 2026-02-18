@@ -84,17 +84,15 @@ export function formatDayLabel(dateStart: string, dateEnd: string, today: string
 // ---------------------------------------------------------------------------
 
 export interface DayNavigatorProps {
-  /** Current start date filter in YYYY-MM-DD format, or "" for no filter. */
-  dateStart: string;
-  /** Current end date filter in YYYY-MM-DD format, or "" for no filter. */
-  dateEnd: string;
-  /**
-   * Called when the user navigates by clicking an arrow button.
-   * Receives the new single day as a YYYY-MM-DD string.
-   * Pass the same value for both start and end to set a single-day filter.
-   */
-  onNavigate: (date: string) => void;
-  /** Called when the user clicks the date label to reset to "All sessions". */
+  /** Available date keys from session groups, in display order (newest first). */
+  availableDateKeys: string[];
+  /** The currently active/visible date key, or null for "All sessions". */
+  activeDateKey: string | null;
+  /** Navigate to the previous (older) day. */
+  onPrev: () => void;
+  /** Navigate to the next (newer) day. */
+  onNext: () => void;
+  /** Reset to show all sessions (scroll to top). */
   onReset: () => void;
   /** Today's date in YYYY-MM-DD format. Defaults to the current local date. */
   today?: string;
@@ -105,43 +103,33 @@ export interface DayNavigatorProps {
 // ---------------------------------------------------------------------------
 
 /**
- * DayNavigator renders a compact [←] label [→] row for day-by-day date
- * filter navigation. Clicking the label resets to "All sessions".
+ * DayNavigator renders a compact [←] label [→] row for day-by-day
+ * scroll navigation between available session groups.
+ * Clicking the label resets to "All sessions" (scroll to top).
  */
 export function DayNavigator({
-  dateStart,
-  dateEnd,
-  onNavigate,
+  availableDateKeys,
+  activeDateKey,
+  onPrev,
+  onNext,
   onReset,
   today = getTodayString(),
 }: DayNavigatorProps): React.ReactElement {
-  const label = formatDayLabel(dateStart, dateEnd, today);
+  const label = activeDateKey
+    ? formatDayLabel(activeDateKey, '', today)
+    : 'All sessions';
 
-  // The "active" date used for single-step navigation is the start date
-  // when a single day is filtered, or empty when no filter is active.
-  const activeDate = dateStart;
-
-  const isAtToday = activeDate === today;
-
-  function handlePrev(): void {
-    const newDate = navigateDay(activeDate, 'prev', today);
-    onNavigate(newDate);
-  }
-
-  function handleNext(): void {
-    if (isAtToday && !dateEnd) return;
-    const newDate = navigateDay(activeDate, 'next', today);
-    onNavigate(newDate);
-  }
-
-  const isAllSessions = !dateStart && !dateEnd;
-  const isRange = Boolean(dateStart && dateEnd && dateEnd !== dateStart);
+  const hasKeys = availableDateKeys.length > 0;
+  const isAtOldest = activeDateKey !== null && activeDateKey === availableDateKeys[availableDateKeys.length - 1];
+  const prevDisabled = !hasKeys || isAtOldest;
+  const nextDisabled = !hasKeys || activeDateKey === null;
 
   return (
     <div className="day-navigator" data-testid="day-navigator">
       <button
         className="day-navigator__btn"
-        onClick={handlePrev}
+        onClick={onPrev}
+        disabled={prevDisabled}
         title="Previous day"
         aria-label="Previous day"
         type="button"
@@ -150,10 +138,10 @@ export function DayNavigator({
       </button>
 
       <button
-        className={`day-navigator__label${isAllSessions ? ' day-navigator__label--all' : ''}`}
+        className={`day-navigator__label${!activeDateKey ? ' day-navigator__label--all' : ''}`}
         onClick={onReset}
-        title={isAllSessions ? 'Showing all sessions' : 'Click to show all sessions'}
-        aria-label={isAllSessions ? 'All sessions — click to clear date filter' : `${label} — click to clear date filter`}
+        title={!activeDateKey ? 'Showing all sessions' : 'Click to show all sessions'}
+        aria-label={!activeDateKey ? 'All sessions — click to clear date filter' : `${label} — click to clear date filter`}
         type="button"
       >
         {label}
@@ -161,10 +149,10 @@ export function DayNavigator({
 
       <button
         className="day-navigator__btn"
-        onClick={handleNext}
+        onClick={onNext}
+        disabled={nextDisabled}
         title="Next day"
         aria-label="Next day"
-        disabled={isAtToday && !isRange}
         type="button"
       >
         →

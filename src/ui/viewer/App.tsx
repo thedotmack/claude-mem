@@ -185,6 +185,19 @@ export function App() {
     setLatestSSESummary(summaries[0]);
   }, [summaries]);
 
+  // Detect active session: SSE observations without a matching summary
+  const activeSessionId = useMemo(() => {
+    if (observations.length === 0) return null;
+    const latestObs = observations[0];
+    const hasMatchingSummary = summaries.some(s => s.session_id === latestObs.memory_session_id);
+    return hasMatchingSummary ? null : latestObs.memory_session_id;
+  }, [observations, summaries]);
+
+  const activeSessionObsCount = useMemo(() => {
+    if (!activeSessionId) return 0;
+    return observations.filter(o => o.memory_session_id === activeSessionId).length;
+  }, [activeSessionId, observations]);
+
   const isLoading = isFilterMode
     ? search.isSearching
     : (pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading);
@@ -238,6 +251,8 @@ export function App() {
           dateStart={filters.dateStart}
           dateEnd={filters.dateEnd}
           onDateRangeSelect={setDateRange}
+          activeSessionId={activeSessionId}
+          activeSessionObsCount={activeSessionObsCount}
         />
       )}
 

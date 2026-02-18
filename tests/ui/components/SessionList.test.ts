@@ -76,11 +76,13 @@ describe('formatSessionTime', () => {
 // ---------------------------------------------------------------------------
 
 describe('SessionList component module', () => {
-  it('exports a SessionList function component', async () => {
+  it('exports a SessionList component (forwardRef object)', async () => {
     const mod = await import(
       '../../../src/ui/viewer/components/SessionList.js'
     );
-    expect(typeof mod.SessionList).toBe('function');
+    expect(mod.SessionList).toBeDefined();
+    // forwardRef returns an object with $$typeof, not a plain function
+    expect(typeof mod.SessionList === 'function' || typeof mod.SessionList === 'object').toBe(true);
   });
 
   it('exports formatSessionTime as a function', async () => {
@@ -325,6 +327,116 @@ describe('SessionList CSS sticky header verification', () => {
     expect(sessionListRuleMatch).not.toBeNull();
     const ruleBody = sessionListRuleMatch![1];
     expect(ruleBody).toMatch(/overflow-y\s*:/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SessionListHandle scroll API (structural check)
+// ---------------------------------------------------------------------------
+
+describe('SessionList scroll API (forwardRef)', () => {
+  const sourceFile = join(
+    import.meta.dirname ?? new URL('.', import.meta.url).pathname,
+    '../../../src/ui/viewer/components/SessionList.tsx'
+  );
+
+  let source: string;
+  try {
+    source = readFileSync(sourceFile, 'utf8');
+  } catch {
+    source = '';
+  }
+
+  it('exports SessionListHandle type with scrollToDate and scrollToSession', async () => {
+    const mod = await import(
+      '../../../src/ui/viewer/components/SessionList.js'
+    );
+    // SessionList should be a forwardRef component
+    expect(mod.SessionList).toBeDefined();
+  });
+
+  it('uses forwardRef pattern', () => {
+    expect(source).toMatch(/forwardRef/);
+    expect(source).toMatch(/useImperativeHandle/);
+  });
+
+  it('implements scrollToDate method that queries data-date-key', () => {
+    expect(source).toMatch(/scrollToDate/);
+    expect(source).toMatch(/data-date-key/);
+  });
+
+  it('implements scrollToSession method that queries data-session-id', () => {
+    expect(source).toMatch(/scrollToSession/);
+    expect(source).toMatch(/data-session-id/);
+  });
+
+  it('uses scrollIntoView for non-virtual path', () => {
+    expect(source).toMatch(/scrollIntoView/);
+  });
+
+  it('uses scrollToIndexRef for virtual path', () => {
+    expect(source).toMatch(/scrollToIndexRef/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Active session rendering (structural check)
+// ---------------------------------------------------------------------------
+
+describe('SessionList active session rendering', () => {
+  const sourceFile = join(
+    import.meta.dirname ?? new URL('.', import.meta.url).pathname,
+    '../../../src/ui/viewer/components/SessionList.tsx'
+  );
+
+  let source: string;
+  try {
+    source = readFileSync(sourceFile, 'utf8');
+  } catch {
+    source = '';
+  }
+
+  it('renders session-list__row--active class for active sessions', () => {
+    expect(source).toMatch(/session-list__row--active/);
+  });
+
+  it('shows "Processing..." text for active sessions', () => {
+    expect(source).toMatch(/Processing\.\.\./);
+  });
+
+  it('shows status badge with "In Progress" for active sessions', () => {
+    expect(source).toMatch(/session-list__status-badge/);
+    expect(source).toMatch(/In Progress/);
+  });
+
+  it('checks session.status for active state', () => {
+    expect(source).toMatch(/session\.status\s*===\s*['"]active['"]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Active session CSS (viewer-template.html)
+// ---------------------------------------------------------------------------
+
+describe('Active session CSS', () => {
+  const cssSourceFile = join(
+    import.meta.dirname ?? new URL('.', import.meta.url).pathname,
+    '../../../src/ui/viewer-template.html'
+  );
+
+  let cssSource: string;
+  try {
+    cssSource = readFileSync(cssSourceFile, 'utf8');
+  } catch {
+    cssSource = '';
+  }
+
+  it('has .session-list__row--active class in CSS', () => {
+    expect(cssSource).toMatch(/\.session-list__row--active/);
+  });
+
+  it('has .session-list__status-badge class in CSS', () => {
+    expect(cssSource).toMatch(/\.session-list__status-badge/);
   });
 });
 

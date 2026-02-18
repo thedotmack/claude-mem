@@ -240,7 +240,7 @@ describe('DayNavigator module', () => {
 });
 
 // ─────────────────────────────────────────────────────────
-// TwoPanel integration — DayNavigator wired to onDateRangeSelect
+// TwoPanel integration — DayNavigator wired via scroll-based navigation
 // ─────────────────────────────────────────────────────────
 
 describe('TwoPanel — DayNavigator integration (structural test)', () => {
@@ -254,21 +254,32 @@ describe('TwoPanel — DayNavigator integration (structural test)', () => {
     expect(src).toMatch(/DayNavigator/);
   });
 
-  it('TwoPanel passes onDateRangeSelect or equivalent down to DayNavigator usage', async () => {
+  it('TwoPanel passes scroll-based props to DayNavigator', async () => {
     const fs = await import('fs');
     const path = await import('path');
     const src = fs.readFileSync(
       path.resolve(__dirname, '../../../src/ui/viewer/components/TwoPanel.tsx'),
       'utf-8'
     );
-    // DayNavigator must receive the date range callback
-    expect(src).toMatch(/onDateRangeSelect|onDateChange|dateStart|dateEnd/);
+    // DayNavigator receives scroll-based props (not filter-based)
+    expect(src).toMatch(/availableDateKeys/);
+    expect(src).toMatch(/activeDateKey/);
   });
 
-  it('TwoPanel passes onDayNavigate prop to useKeyboardNavigation', async () => {
+  it('TwoPanel uses SessionListHandle ref for scrolling', async () => {
     const fs = await import('fs');
     const path = await import('path');
-    // Check App.tsx passes onDayNavigate to useKeyboardNavigation
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '../../../src/ui/viewer/components/TwoPanel.tsx'),
+      'utf-8'
+    );
+    expect(src).toMatch(/SessionListHandle/);
+    expect(src).toMatch(/scrollToDate/);
+  });
+
+  it('App.tsx passes onDayNavigate prop to useKeyboardNavigation', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
     const appSrc = fs.readFileSync(
       path.resolve(__dirname, '../../../src/ui/viewer/App.tsx'),
       'utf-8'

@@ -3050,6 +3050,28 @@
       border-left-color: var(--color-accent-primary);
     }
 
+    .session-list__row--active {
+      border-left-color: var(--color-accent-primary);
+    }
+
+    .session-list__row--active .session-list__request {
+      font-style: italic;
+      opacity: 0.85;
+    }
+
+    .session-list__status-badge {
+      display: inline-block;
+      font-size: 0.6rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: var(--color-accent-primary);
+      color: #fff;
+      margin-right: 4px;
+      text-transform: uppercase;
+    }
+
     .session-list__request {
       font-size: 13px;
       color: var(--color-text-primary);
