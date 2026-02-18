@@ -116,7 +116,7 @@ import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 
 // Process management for zombie cleanup (Issue #737)
-import { startOrphanReaper, reapOrphanedProcesses } from './worker/ProcessRegistry.js';
+import { startOrphanReaper, reapOrphanedProcesses, getProcessBySession, ensureProcessExit } from './worker/ProcessRegistry.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -175,6 +175,9 @@ export class WorkerService {
 
   // Orphan reaper cleanup function (Issue #737)
   private stopOrphanReaper: (() => void) | null = null;
+
+  // Stale session reaper interval (Issue #1168)
+  private staleSessionReaperInterval: ReturnType<typeof setInterval> | null = null;
 
   // AI interaction tracking for health endpoint
   private lastAiInteraction: {
@@ -465,6 +468,18 @@ export class WorkerService {
       });
       logger.info('SYSTEM', 'Started orphan reaper (runs every 5 minutes)');
 
+      // Reap stale sessions to unblock orphan process cleanup (Issue #1168)
+      this.staleSessionReaperInterval = setInterval(async () => {
+        try {
+          const reaped = await this.sessionManager.reapStaleSessions();
+          if (reaped > 0) {
+            logger.info('SYSTEM', `Reaped ${reaped} stale sessions`);
+          }
+        } catch (e) {
+          logger.error('SYSTEM', 'Stale session reaper error', { error: e instanceof Error ? e.message : String(e) });
+        }
+      }, 2 * 60 * 1000);
+
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
         if (result.sessionsStarted > 0) {
@@ -593,7 +608,13 @@ export class WorkerService {
         };
         throw error;
       })
-      .finally(() => {
+      .finally(async () => {
+        // CRITICAL: Verify subprocess exit to prevent zombie accumulation (Issue #1168)
+        const trackedProcess = getProcessBySession(session.sessionDbId);
+        if (trackedProcess && !trackedProcess.process.killed && trackedProcess.process.exitCode === null) {
+          await ensureProcessExit(trackedProcess, 5000);
+        }
+
         session.generatorPromise = null;
 
         // Record successful AI interaction if no error occurred
@@ -821,6 +842,12 @@ export class WorkerService {
     if (this.stopOrphanReaper) {
       this.stopOrphanReaper();
       this.stopOrphanReaper = null;
+    }
+
+    // Stop stale session reaper (Issue #1168)
+    if (this.staleSessionReaperInterval) {
+      clearInterval(this.staleSessionReaperInterval);
+      this.staleSessionReaperInterval = null;
     }
 
     await performGracefulShutdown({
