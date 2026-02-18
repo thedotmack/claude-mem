@@ -84,6 +84,7 @@ describe('ResponseProcessor', () => {
     mockDbManager = {
       getSessionStore: () => ({
         storeObservations: mockStoreObservations,
+        completeSession: vi.fn(),
       }),
       getChromaSync: () => ({
         syncObservation: mockChromaSyncObservation,
@@ -284,6 +285,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
+        completeSession: vi.fn(),
       });
 
       processAgentResponse(
@@ -383,6 +385,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
+        completeSession: vi.fn(),
       });
 
       processAgentResponse(
@@ -465,6 +468,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
+        completeSession: vi.fn(),
       });
 
       processAgentResponse(
@@ -496,6 +500,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
+        completeSession: vi.fn(),
       });
 
       processAgentResponse(
@@ -538,6 +543,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
+        completeSession: vi.fn(),
       });
 
       processAgentResponse(
@@ -574,6 +580,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
+        completeSession: vi.fn(),
       });
 
       processAgentResponse(
@@ -614,6 +621,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager as unknown as { getSessionStore: () => { storeObservations: typeof mockStoreObservations } }).getSessionStore = () => ({
         storeObservations: mockStoreObservations,
+        completeSession: vi.fn(),
       });
 
       processAgentResponse(
