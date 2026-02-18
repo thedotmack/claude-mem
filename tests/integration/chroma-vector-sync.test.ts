@@ -2,7 +2,7 @@
  * Chroma Vector Sync Integration Tests
  *
  * Tests ChromaSync vector embedding and semantic search.
- * Skips tests if uvx/chroma not installed (CI-safe).
+ * Skips tests if Chroma server is not reachable (CI-safe).
  *
  * Sources:
  * - ChromaSync implementation from src/services/sync/ChromaSync.ts
@@ -15,26 +15,23 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 
-// Check if uvx/chroma is available
+// Check if Chroma server is reachable
 let chromaAvailable = false;
 let skipReason = '';
 
 async function checkChromaAvailability(): Promise<{ available: boolean; reason: string }> {
   try {
-    // Check if uvx is available
-    const uvxCheck = Bun.spawn(['uvx', '--version'], {
-      stdout: 'pipe',
-      stderr: 'pipe',
+    const response = await fetch('http://localhost:8100/api/v1/heartbeat', {
+      signal: AbortSignal.timeout(2000),
     });
-    await uvxCheck.exited;
 
-    if (uvxCheck.exitCode !== 0) {
-      return { available: false, reason: 'uvx not installed' };
+    if (!response.ok) {
+      return { available: false, reason: `Chroma server responded with status ${response.status}` };
     }
 
     return { available: true, reason: '' };
   } catch (error) {
-    return { available: false, reason: `uvx check failed: ${error}` };
+    return { available: false, reason: `Chroma server not reachable: ${error}` };
   }
 }
 
@@ -81,7 +78,7 @@ describe('ChromaSync Vector Sync Integration', () => {
   });
 
   describe('ChromaSync availability check', () => {
-    it('should detect uvx availability status', async () => {
+    it('should detect Chroma server availability status', async () => {
       const check = await checkChromaAvailability();
       // This test always passes - it just logs the status
       expect(typeof check.available).toBe('boolean');
@@ -328,7 +325,7 @@ describe('ChromaSync Vector Sync Integration', () => {
      */
     it('should have transport cleanup in connection error handlers', async () => {
       // This test verifies the fix exists by checking the source code pattern
-      // The actual runtime behavior depends on uvx/chroma availability
+      // The actual runtime behavior depends on chroma server availability
       const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
       const sync = new ChromaSync(testProject);
 

@@ -254,7 +254,6 @@ See **[Beta Features Documentation](https://docs.claude-mem.ai/beta-features)** 
 - **Node.js**: 18.0.0 or higher
 - **Claude Code**: Latest version with plugin support
 - **Bun**: JavaScript runtime and process manager (auto-installed if missing)
-- **uv**: Python package manager for vector search (auto-installed if missing)
 - **SQLite 3**: For persistent storage (bundled)
 
 ---

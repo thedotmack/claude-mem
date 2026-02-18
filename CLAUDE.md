@@ -62,7 +62,6 @@ See `private/context/claude-code/exit-codes.md` for full hook behavior matrix.
 ## Requirements
 
 - **Bun** (all platforms - auto-installed if missing)
-- **uv** (all platforms - auto-installed if missing, provides Python for Chroma)
 - Node.js
 
 ## Documentation
