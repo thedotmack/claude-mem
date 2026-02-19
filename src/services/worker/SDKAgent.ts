@@ -17,7 +17,7 @@ import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../shared/paths.js';
-import { buildIsolatedEnv, getAuthMethodDescription } from '../../shared/EnvManager.js';
+import { buildIsolatedEnv, getAuthMethodDescription, attemptOAuthTokenRefresh, hasAnthropicApiKey } from '../../shared/EnvManager.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
@@ -257,6 +257,36 @@ export class SDKAgent {
           // Throw so it surfaces in health endpoint and prevents silent failures.
           if (typeof textContent === 'string' && textContent.includes('Invalid API key')) {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
+          }
+
+          // Detect authentication errors (e.g., expired OAuth token).
+          // The SDK returns 401 errors as response text, not exceptions.
+          // Without this check, the worker retries infinitely on expired tokens.
+          if (typeof textContent === 'string' && (
+            textContent.includes('authentication_error') ||
+            textContent.includes('Failed to authenticate') ||
+            textContent.includes('API Error: 401')
+          )) {
+            // If using CLI subscription billing, attempt auto-refresh before giving up
+            if (!hasAnthropicApiKey()) {
+              logger.warn('SDK', 'Authentication error detected, attempting OAuth token refresh...', {
+                sessionId: session.sessionDbId,
+                authMethod
+              });
+              const refreshed = await attemptOAuthTokenRefresh();
+              if (refreshed) {
+                logger.info('SDK', 'OAuth token refreshed successfully — retrying will use new token', {
+                  sessionId: session.sessionDbId
+                });
+                // Don't throw — let the generator exit normally so the retry logic
+                // picks up with the fresh token
+                return;
+              }
+            }
+            throw new Error(
+              'Authentication failed: OAuth token may be expired. ' +
+              'Run "claude" to refresh the token, or configure an API key in ~/.claude-mem/settings.json'
+            );
           }
 
           // Parse and process response using shared ResponseProcessor
