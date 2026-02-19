@@ -262,24 +262,29 @@ export class SDKAgent {
           // Detect authentication errors (e.g., expired OAuth token).
           // The SDK returns 401 errors as response text, not exceptions.
           // Without this check, the worker retries infinitely on expired tokens.
+          // Use structured patterns to avoid false positives (e.g., Claude discussing auth errors).
           if (typeof textContent === 'string' && (
-            textContent.includes('authentication_error') ||
-            textContent.includes('Failed to authenticate') ||
-            textContent.includes('API Error: 401')
+            textContent.includes('"type":"authentication_error"') ||
+            textContent.includes('Failed to authenticate. API Error: 401')
           )) {
-            // If using CLI subscription billing, attempt auto-refresh before giving up
-            if (!hasAnthropicApiKey()) {
+            // Only attempt refresh for CLI subscription billing path.
+            // Parent OAuth token (CLAUDE_CODE_OAUTH_TOKEN) can't be refreshed by us —
+            // it's the parent process's responsibility.
+            const usingParentOAuthToken = !!process.env.CLAUDE_CODE_OAUTH_TOKEN;
+            if (!hasAnthropicApiKey() && !usingParentOAuthToken) {
               logger.warn('SDK', 'Authentication error detected, attempting OAuth token refresh...', {
                 sessionId: session.sessionDbId,
                 authMethod
               });
               const refreshed = await attemptOAuthTokenRefresh();
               if (refreshed) {
-                logger.info('SDK', 'OAuth token refreshed successfully — retrying will use new token', {
+                logger.info('SDK', 'OAuth token refreshed — aborting session for clean retry', {
                   sessionId: session.sessionDbId
                 });
-                // Don't throw — let the generator exit normally so the retry logic
-                // picks up with the fresh token
+                // Abort the current session so the pending-work-restart path fires
+                // immediately with the fresh token, instead of waiting for the 60s
+                // stale message reclaim in PendingMessageStore.
+                session.abortController.abort();
                 return;
               }
             }

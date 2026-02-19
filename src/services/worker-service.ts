@@ -569,8 +569,6 @@ export class WorkerService {
           'spawn',
           'Invalid API key',
           'Authentication failed',       // Thrown by SDKAgent after refresh attempt fails
-          'authentication_error',        // Raw API 401 response pattern
-          'Failed to authenticate',      // Claude Code SDK auth failure message
         ];
         if (unrecoverablePatterns.some(pattern => errorMessage.includes(pattern))) {
           hadUnrecoverableError = true;
