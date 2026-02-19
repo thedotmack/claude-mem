@@ -27,6 +27,11 @@ const CONTEXT_GENERATOR = {
   source: 'src/services/context-generator.ts'
 };
 
+const CLI = {
+  name: 'cli',
+  source: 'src/cli/cli.ts'
+};
+
 async function buildHooks() {
   console.log('🔨 Building claude-mem hooks and worker service...\n');
 
@@ -153,10 +158,35 @@ async function buildHooks() {
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
 
-    // Build compiled Bun binary from CLI entry point
-    // This is non-fatal: CI environments or developers without Bun can still
-    // build the esbuild artifacts. The binary is for local development; esbuild
-    // bundles remain the distribution format.
+    // Build CLI (the hook entry point — this ESM bundle is the primary way hooks execute)
+    // Uses ESM format because cli.ts has top-level await (not supported in CJS)
+    console.log(`\n🔧 Building CLI...`);
+    await build({
+      entryPoints: [CLI.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'esm',
+      outfile: `${hooksDir}/${CLI.name}.js`,
+      minify: true,
+      logLevel: 'error',
+      external: ['bun:sqlite'],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      },
+      banner: {
+        js: '#!/usr/bin/env bun'
+      }
+    });
+
+    // Make CLI executable
+    fs.chmodSync(`${hooksDir}/${CLI.name}.js`, 0o755);
+    const cliStats = fs.statSync(`${hooksDir}/${CLI.name}.js`);
+    console.log(`✓ cli built (${(cliStats.size / 1024).toFixed(2)} KB)`);
+
+    // Build compiled Bun binary from CLI entry point (optional optimization)
+    // Non-fatal: the cli.cjs bundle above is the universal fallback.
+    // The binary provides faster startup for local CLI usage.
     console.log('\n🔧 Building compiled binary...');
     try {
       execSyncChild(
@@ -173,11 +203,12 @@ async function buildHooks() {
       console.warn(`   ${binaryBuildError.message}`);
     }
 
-    console.log('\n✅ Worker service, MCP server, and context generator built successfully!');
+    console.log('\n✅ All hook scripts built successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Context Generator: context-generator.cjs`);
+    console.log(`   - CLI: cli.js (hook entry point, ESM)`);
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);

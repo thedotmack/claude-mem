@@ -1,25 +1,18 @@
 {
   "description": "Claude-mem memory system hooks",
   "hooks": {
-    "Setup": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh",
-            "timeout": 300
-          }
-        ]
-      }
-    ],
     "SessionStart": [
       {
         "matcher": "startup|clear|compact",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/claude-mem hook context",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh",
+            "timeout": 300
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/cli.js hook context",
             "timeout": 60
           }
         ]
@@ -30,7 +23,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/claude-mem hook session-init",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/cli.js hook session-init",
             "timeout": 60
           }
         ]
@@ -42,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/claude-mem hook observation",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/cli.js hook observation",
             "timeout": 120
           }
         ]
@@ -53,12 +46,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/claude-mem hook summarize",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/cli.js hook summarize",
             "timeout": 120
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/claude-mem hook session-complete",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/cli.js hook session-complete",
             "timeout": 30
           }
         ]

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # claude-mem Setup Hook
-# Ensures data directory exists, binary is executable, and CLI is on PATH
+# Ensures data directory exists and CLI is accessible on PATH
 #
 
 set -euo pipefail
@@ -15,6 +15,7 @@ else
 fi
 
 BINARY="$ROOT/scripts/claude-mem"
+CLI_CJS="$ROOT/scripts/cli.js"
 DATA_DIR="$HOME/.claude-mem"
 LOCAL_BIN="$HOME/.local/bin"
 
@@ -37,11 +38,17 @@ if [[ ! -d "$DATA_DIR" ]]; then
   log_ok "Created data directory: $DATA_DIR"
 fi
 
-# ── Step 2: Ensure binary is executable ───────────────────────────────
+# ── Step 2: Ensure CLI entry point exists ─────────────────────────────
+#    Prefer compiled binary (fast native execution).
+#    Fall back to cli.js (runs via bun, always available since it's committed).
 if [[ -f "$BINARY" ]]; then
   chmod +x "$BINARY"
+  CLI_MODE="binary"
+elif [[ -f "$CLI_CJS" ]]; then
+  chmod +x "$CLI_CJS"
+  CLI_MODE="cjs"
 else
-  log_warn "Binary not found at $BINARY — build required"
+  log_warn "No CLI entry point found — neither binary nor cli.js exist"
   exit 0
 fi
 
@@ -60,10 +67,21 @@ for profile_path in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/
   fi
 done
 
-# ── Step 4: Symlink binary to ~/.local/bin/ ───────────────────────────
+# ── Step 4: Install CLI at ~/.local/bin/claude-mem ────────────────────
 mkdir -p "$LOCAL_BIN"
-ln -sf "$BINARY" "$LOCAL_BIN/claude-mem"
-log_ok "Symlinked $LOCAL_BIN/claude-mem → $BINARY"
+
+if [[ "$CLI_MODE" == "binary" ]]; then
+  ln -sf "$BINARY" "$LOCAL_BIN/claude-mem"
+  log_ok "Symlinked $LOCAL_BIN/claude-mem → $BINARY"
+else
+  # Create a shell wrapper that invokes cli.js via bun
+  cat > "$LOCAL_BIN/claude-mem" <<WRAPPER
+#!/usr/bin/env bash
+exec bun "$CLI_CJS" "\$@"
+WRAPPER
+  chmod +x "$LOCAL_BIN/claude-mem"
+  log_ok "Created CLI wrapper at $LOCAL_BIN/claude-mem (using cli.js via bun)"
+fi
 
 # ── Step 5: Add ~/.local/bin to PATH in shell profile ─────────────────
 if ! echo "$PATH" | tr ':' '\n' | grep -q '\.local/bin'; then
