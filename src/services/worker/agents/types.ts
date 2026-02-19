@@ -52,6 +52,7 @@ export interface ObservationSSEPayload {
 export interface SummarySSEPayload {
   id: number;
   session_id: string;
+  memory_session_id?: string;
   request: string | null;
   investigated: string | null;
   learned: string | null;

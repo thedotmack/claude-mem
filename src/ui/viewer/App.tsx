@@ -32,14 +32,20 @@ import { logger } from './utils/logger';
  * observation reorders don't break detection.  Uses a Set for O(1) summary
  * lookups.
  *
- * @returns The session_id of the first unsummarized observation, or null.
+ * Compares against `memory_session_id` (the plugin's session ID) since
+ * observations use `memory_session_id` while summaries may return
+ * `session_id` as the Claude Code `content_session_id`.
+ *
+ * @returns The memory_session_id of the first unsummarized observation, or null.
  */
 export function detectActiveSessionId(
   observations: Observation[],
   summaries: Summary[],
 ): string | null {
   if (observations.length === 0) return null;
-  const summarizedIds = new Set(summaries.map(s => s.session_id));
+  // Build a set of memory_session_ids that have summaries.
+  // Use memory_session_id when available (matches observations), fall back to session_id.
+  const summarizedIds = new Set(summaries.map(s => s.memory_session_id ?? s.session_id));
   for (const obs of observations) {
     if (!summarizedIds.has(obs.memory_session_id)) return obs.memory_session_id;
   }
@@ -172,7 +178,7 @@ export function App() {
       if (newPrompts.length > 0) {
         setPaginatedPrompts(prev => [...prev, ...newPrompts as UserPrompt[]]);
       }
-    } catch (error) {
+    } catch (_error) {
       logger.error('app', 'Failed to load more data');
     }
   }, [isFilterMode, search, pagination.observations, pagination.summaries, pagination.prompts]);

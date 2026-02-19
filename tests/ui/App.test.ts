@@ -23,7 +23,7 @@ function makeObservation(id: number, sessionId: string): Observation {
     memory_session_id: sessionId,
     project: PROJECT,
     type: 'discovery',
-    title: `Observation ${id}`,
+    title: `Observation ${String(id)}`,
     subtitle: null,
     narrative: null,
     text: null,
@@ -37,12 +37,13 @@ function makeObservation(id: number, sessionId: string): Observation {
   };
 }
 
-function makeSummary(id: number, sessionId: string): Summary {
+function makeSummary(id: number, sessionId: string, memorySessionId?: string): Summary {
   return {
     id,
     session_id: sessionId,
+    ...(memorySessionId ? { memory_session_id: memorySessionId } : {}),
     project: PROJECT,
-    request: `Session ${id}`,
+    request: `Session ${String(id)}`,
     created_at_epoch: FIXED_EPOCH - id * 1000,
   };
 }
@@ -147,12 +148,38 @@ describe('detectActiveSessionId', () => {
     expect(result).toBe('session-x');
   });
 
+  it('matches via memory_session_id when session_id differs (content vs memory ID)', async () => {
+    const { detectActiveSessionId } = await import('../../src/ui/viewer/App.js');
+    // Observations use memory_session_id; summaries may return content_session_id as session_id
+    const observations = [
+      makeObservation(1, 'memory-id-abc'),
+    ];
+    const summaries = [
+      // session_id is content_session_id (different!), memory_session_id matches the observation
+      makeSummary(1, 'content-id-xyz', 'memory-id-abc'),
+    ];
+
+    const result = detectActiveSessionId(observations, summaries);
+    // Should detect as summarized (NOT active) because memory_session_id matches
+    expect(result).toBeNull();
+  });
+
+  it('falls back to session_id when memory_session_id is not present on summary', async () => {
+    const { detectActiveSessionId } = await import('../../src/ui/viewer/App.js');
+    const observations = [makeObservation(1, 'session-a')];
+    // Old-format summary without memory_session_id — falls back to session_id comparison
+    const summaries = [makeSummary(1, 'session-a')];
+
+    const result = detectActiveSessionId(observations, summaries);
+    expect(result).toBeNull();
+  });
+
   it('uses Set for efficient lookups (many summaries)', async () => {
     const { detectActiveSessionId } = await import('../../src/ui/viewer/App.js');
     // Create many summaries to verify Set-based approach works at scale
-    const summaries = Array.from({ length: 100 }, (_, i) => makeSummary(i, `session-${i}`));
+    const summaries = Array.from({ length: 100 }, (_, i) => makeSummary(i, `session-${String(i)}`));
     const observations = [
-      ...Array.from({ length: 50 }, (_, i) => makeObservation(i, `session-${i}`)),
+      ...Array.from({ length: 50 }, (_, i) => makeObservation(i, `session-${String(i)}`)),
       makeObservation(999, 'active-session'),
     ];
 

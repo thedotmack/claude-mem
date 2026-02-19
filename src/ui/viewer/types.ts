@@ -19,6 +19,8 @@ export interface Observation {
 export interface Summary {
   id: number;
   session_id: string;
+  /** The memory_session_id (plugin's session ID). May differ from session_id (content_session_id). */
+  memory_session_id?: string;
   project: string;
   request?: string;
   investigated?: string;

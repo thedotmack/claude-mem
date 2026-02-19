@@ -218,6 +218,7 @@ export class PaginationHelper {
       SELECT
         ss.id,
         s.content_session_id as session_id,
+        ss.memory_session_id,
         ss.request,
         ss.investigated,
         ss.learned,
