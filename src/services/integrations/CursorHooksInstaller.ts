@@ -572,7 +572,10 @@ export function checkCursorHooksStatus(): number {
             console.log(`   Mode: Unknown configuration`);
           }
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof Error) {
+          logger.debug('SYSTEM', 'Unable to parse hooks.json during diagnostic', {}, error);
+        }
         console.log(`   Mode: Unable to parse hooks.json`);
       }
 

@@ -6,6 +6,7 @@
  */
 
 import { homedir } from 'os';
+import { logger } from './logger.js';
 
 /**
  * Convert a glob pattern to a regular expression
@@ -63,8 +64,10 @@ export function isProjectExcluded(projectPath: string, exclusionPatterns: string
       if (regex.test(normalizedProjectPath)) {
         return true;
       }
-    } catch {
-      // Invalid pattern, skip it
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.warn('SYSTEM', 'Invalid exclusion glob pattern', { pattern }, error);
+      }
       continue;
     }
   }

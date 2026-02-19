@@ -10,6 +10,7 @@
 
 import { statSync, readFileSync } from 'fs';
 import path from 'path';
+import { logger } from './logger.js';
 
 export interface WorktreeInfo {
   isWorktree: boolean;
@@ -38,8 +39,11 @@ export function detectWorktree(cwd: string): WorktreeInfo {
   let stat;
   try {
     stat = statSync(gitPath);
-  } catch {
+  } catch (error) {
     // No .git at all - not a git repo
+    if (error instanceof Error) {
+      logger.debug('SYSTEM', 'No .git found, not a git repo', { cwd }, error);
+    }
     return NOT_A_WORKTREE;
   }
 
@@ -52,7 +56,10 @@ export function detectWorktree(cwd: string): WorktreeInfo {
   let content: string;
   try {
     content = readFileSync(gitPath, 'utf-8').trim();
-  } catch {
+  } catch (error) {
+    if (error instanceof Error) {
+      logger.debug('SYSTEM', 'Failed to read .git file for worktree detection', { cwd }, error);
+    }
     return NOT_A_WORKTREE;
   }
 

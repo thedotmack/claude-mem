@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync, chmodSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'path';
 import { DATA_DIR, ensureDir } from './paths.js';
+import { logger } from '../utils/logger.js';
 
 export const AUTH_TOKEN_FILENAME = '.auth-token';
 
@@ -31,8 +32,11 @@ export function ensureAuthToken(): string {
     writeFileSync(tokenPath, token, { flag: 'wx', encoding: 'utf8' });
     chmodSync(tokenPath, 0o600);
     return token;
-  } catch {
+  } catch (error) {
     // File already exists (race loser or subsequent call) — read it
+    if (error instanceof Error) {
+      logger.debug('SYSTEM', 'Auth token file already exists, reading existing token', {}, error);
+    }
     return readFileSync(tokenPath, 'utf8').trim();
   }
 }

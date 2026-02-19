@@ -230,6 +230,9 @@ export class Server {
           content: [{ type: 'text', text: content }]
         });
       } catch (error) {
+        if (error instanceof Error) {
+          logger.warn('HTTP', 'Failed to load instruction file', {}, error);
+        }
         res.status(404).json({ error: 'Instruction not found' });
       }
     });

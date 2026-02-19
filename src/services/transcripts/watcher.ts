@@ -43,7 +43,10 @@ class FileTailer {
     let size = 0;
     try {
       size = statSync(this.filePath).size;
-    } catch {
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.debug('SYSTEM', 'File stat race during transcript tail', { filePath: this.filePath }, error);
+      }
       return;
     }
 
@@ -152,7 +155,10 @@ export class TranscriptWatcher {
           return globSync(pattern, { nodir: true, absolute: true });
         }
         return [inputPath];
-      } catch {
+      } catch (error) {
+        if (error instanceof Error) {
+          logger.debug('SYSTEM', 'File stat race during watch file resolution', { inputPath }, error);
+        }
         return [];
       }
     }
@@ -173,7 +179,10 @@ export class TranscriptWatcher {
     if (offset === 0 && watch.startAtEnd) {
       try {
         offset = statSync(filePath).size;
-      } catch {
+      } catch (error) {
+        if (error instanceof Error) {
+          logger.debug('SYSTEM', 'File stat race during tailer offset init', { filePath }, error);
+        }
         offset = 0;
       }
     }

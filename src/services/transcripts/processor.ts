@@ -275,7 +275,10 @@ export class TranscriptEventProcessor {
     if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return value;
     try {
       return JSON.parse(trimmed);
-    } catch {
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.debug('SYSTEM', 'Optional JSON parse failed, using raw value', {}, error);
+      }
       return value;
     }
   }

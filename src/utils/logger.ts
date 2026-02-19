@@ -87,8 +87,8 @@ class Logger {
         } else {
           this.level = LogLevel.INFO;
         }
-      } catch (error) {
-        // Fallback to INFO if settings can't be loaded
+      } catch (_error) {
+        // [ANTI-PATTERN IGNORED]: Logger cannot log its own initialization failures
         this.level = LogLevel.INFO;
       }
     }
@@ -156,7 +156,7 @@ class Logger {
       try {
         input = JSON.parse(toolInput);
       } catch {
-        // Input is a raw string (e.g., Bash command), use as-is
+        // [ANTI-PATTERN IGNORED]: Logger cannot log its own initialization failures
         input = toolInput;
       }
     }

@@ -1,3 +1,5 @@
+import { logger } from '../utils/logger.js';
+
 // Stdin reading utility for Claude Code hooks
 //
 // Problem: Claude Code doesn't close stdin after writing hook input,
@@ -29,9 +31,12 @@ function isStdinAvailable(): boolean {
     // eslint-disable-next-line @typescript-eslint/no-unused-expressions
     stdin.readable;
     return true;
-  } catch {
+  } catch (error) {
     // Bun crashed trying to access stdin (EINVAL from fstat)
     // This is expected when Claude Code doesn't provide valid stdin
+    if (error instanceof Error) {
+      logger.debug('HOOK', 'Stdin not available (Bun EINVAL compatibility)', {}, error);
+    }
     return false;
   }
 }
@@ -49,8 +54,11 @@ function tryParseJson(input: string): { success: true; value: unknown } | { succ
   try {
     const value = JSON.parse(trimmed);
     return { success: true, value };
-  } catch {
+  } catch (error) {
     // JSON is incomplete or invalid
+    if (error instanceof Error) {
+      logger.debug('HOOK', 'JSON parse incomplete or invalid during stdin read', {}, error);
+    }
     return { success: false };
   }
 }
@@ -167,8 +175,11 @@ export async function readJsonFromStdin(): Promise<unknown> {
           resolveWith(undefined);
         }
       });
-    } catch {
+    } catch (error) {
       // If attaching listeners fails (Bun stdin issue), resolve with undefined
+      if (error instanceof Error) {
+        logger.debug('HOOK', 'Failed to attach stdin listeners (Bun compatibility)', {}, error);
+      }
       resolved = true;
       clearTimeout(safetyTimeoutId);
       cleanup();

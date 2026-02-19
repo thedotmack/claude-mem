@@ -141,7 +141,11 @@ function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
       if (Array.isArray(files)) {
         return files.some(f => isDirectChild(f, folderPath));
       }
-    } catch {}
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.debug('CLAUDE_MD', 'Failed to parse files JSON from DB', {}, error);
+      }
+    }
     return false;
   };
 
@@ -187,7 +191,11 @@ function extractRelevantFile(obs: ObservationRow, relativeFolder: string): strin
           }
         }
       }
-    } catch {}
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.debug('CLAUDE_MD', 'Failed to parse files_modified JSON from DB', {}, error);
+      }
+    }
   }
 
   if (obs.files_read) {
@@ -200,7 +208,11 @@ function extractRelevantFile(obs: ObservationRow, relativeFolder: string): strin
           }
         }
       }
-    } catch {}
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.debug('CLAUDE_MD', 'Failed to parse files_read JSON from DB', {}, error);
+      }
+    }
   }
 
   return 'General';
@@ -338,6 +350,9 @@ function regenerateFolder(
 
     return { success: true, observationCount: observations.length };
   } catch (error) {
+    if (error instanceof Error) {
+      logger.debug('CLAUDE_MD', 'Failed to regenerate folder', { absoluteFolder }, error);
+    }
     return { success: false, observationCount: 0, error: String(error) };
   }
 }

@@ -263,9 +263,12 @@ export class ChromaMcpManager {
     // Try JSON parse first; if it fails, return the raw text for non-error responses.
     try {
       return JSON.parse(firstTextContent.text);
-    } catch {
+    } catch (error) {
       // Plain text response (e.g. "Successfully created collection cm__foo")
       // Return null for void-like success messages, callers don't need the text
+      if (error instanceof Error) {
+        logger.debug('CHROMA_MCP', 'MCP response is plain text, not JSON', {}, error);
+      }
       return null;
     }
   }
@@ -278,7 +281,10 @@ export class ChromaMcpManager {
     try {
       await this.callTool('chroma_list_collections', { limit: 1 });
       return true;
-    } catch {
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.debug('CHROMA_MCP', 'Health check failed', {}, error);
+      }
       return false;
     }
   }
@@ -349,7 +355,8 @@ export class ChromaMcpManager {
           'uvx --with certifi python -c "import certifi; print(certifi.where())"',
           { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 }
         ).trim();
-      } catch {
+      } catch (error) {
+        // [ANTI-PATTERN IGNORED]: Expected when certifi/uvx not installed — optional SSL cert injection
         return undefined;
       }
 
@@ -363,7 +370,8 @@ export class ChromaMcpManager {
           'security find-certificate -a -c "Zscaler" -p /Library/Keychains/System.keychain',
           { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000 }
         );
-      } catch {
+      } catch (error) {
+        // [ANTI-PATTERN IGNORED]: Expected when Zscaler cert not in keychain — optional SSL injection
         return undefined;
       }
 
