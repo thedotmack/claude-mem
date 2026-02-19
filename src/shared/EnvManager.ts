@@ -276,8 +276,14 @@ export function getAuthMethodDescription(): string {
 // OAuth Token Health & Refresh
 // ============================================================================
 
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
+
 const CLAUDE_CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
 const TOKEN_EXPIRY_WARNING_MS = 60 * 60 * 1000; // 1 hour
+const TOKEN_CACHE_TTL_MS = 60_000; // 1 minute — token expiry changes at most once per hour
 
 export interface OAuthTokenStatus {
   /** Whether a credentials file exists and contains a valid-looking token */
@@ -292,11 +298,10 @@ export interface OAuthTokenStatus {
   authMethod?: string;
 }
 
-/**
- * Check the status of the Claude Code OAuth token.
- * Returns token health information for health endpoint reporting.
- */
-export function checkOAuthTokenStatus(): OAuthTokenStatus {
+// Cache to avoid disk I/O on every health check (called frequently by hooks)
+let _tokenStatusCache: { value: OAuthTokenStatus; ts: number } | null = null;
+
+function _checkOAuthTokenStatusUncached(): OAuthTokenStatus {
   try {
     if (!existsSync(CLAUDE_CREDENTIALS_PATH)) {
       return { valid: false, authMethod: getAuthMethodDescription() };
@@ -333,30 +338,50 @@ export function checkOAuthTokenStatus(): OAuthTokenStatus {
 }
 
 /**
+ * Check the status of the Claude Code OAuth token.
+ * Returns token health information for health endpoint reporting.
+ * Results are cached for 1 minute to avoid disk I/O on every health check.
+ */
+export function checkOAuthTokenStatus(): OAuthTokenStatus {
+  const now = Date.now();
+  if (_tokenStatusCache && (now - _tokenStatusCache.ts) < TOKEN_CACHE_TTL_MS) {
+    return _tokenStatusCache.value;
+  }
+  const value = _checkOAuthTokenStatusUncached();
+  _tokenStatusCache = { value, ts: now };
+  return value;
+}
+
+/** Invalidate the token status cache (call after refresh attempts) */
+function invalidateTokenCache(): void {
+  _tokenStatusCache = null;
+}
+
+/**
  * Attempt to refresh the Claude Code OAuth token by spawning `claude --version`.
  * Claude Code auto-refreshes its token on startup when it detects expiry.
+ *
+ * NOTE: This is only called AFTER the API returned a 401 — do NOT trust the
+ * credentials file's expiry timestamp (it may be stale, clock-skewed, or the
+ * token may have been revoked). Always attempt the refresh.
  *
  * @returns true if refresh succeeded (token is now valid), false otherwise
  */
 export async function attemptOAuthTokenRefresh(): Promise<boolean> {
-  const { execSync } = await import('child_process');
-
   logger.info('SYSTEM', 'Attempting OAuth token refresh via Claude CLI...');
 
-  // Check current state first
-  const before = checkOAuthTokenStatus();
-  if (before.valid && !before.expiringSoon) {
-    logger.info('SYSTEM', 'Token is still valid, no refresh needed');
-    return true;
-  }
+  // Invalidate cache — we're about to change the credentials file
+  invalidateTokenCache();
 
   try {
-    // `claude --version` is lightweight and triggers token refresh on startup
-    execSync('claude --version', {
-      encoding: 'utf-8',
+    // `claude --version` is lightweight and triggers token refresh on startup.
+    // Uses async execFile to avoid blocking the event loop.
+    await execFileAsync('claude', ['--version'], {
       timeout: 30_000,
-      stdio: ['ignore', 'pipe', 'pipe'],
     });
+
+    // Invalidate again to force a fresh read after CLI ran
+    invalidateTokenCache();
 
     // Verify the token was actually refreshed
     const after = checkOAuthTokenStatus();
