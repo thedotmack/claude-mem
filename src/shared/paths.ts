@@ -41,6 +41,11 @@ export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
 export const DB_PATH = join(DATA_DIR, 'claude-mem.db');
 export const VECTOR_DB_DIR = join(DATA_DIR, 'vector-db');
 
+// Litestream backup directories
+export const LITESTREAM_DIR = join(DATA_DIR, 'litestream');
+export const LITESTREAM_CONFIG_PATH = join(LITESTREAM_DIR, 'litestream.yml');
+export const LITESTREAM_BINARY_DIR = join(LITESTREAM_DIR, 'bin');
+
 // Observer sessions directory - used as cwd for SDK queries
 // Sessions here won't appear in user's `claude --resume` for their actual projects
 export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');

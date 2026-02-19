@@ -66,6 +66,16 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_API_KEY: string;
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
+  // Litestream Cloud Backup Configuration
+  CLAUDE_MEM_BACKUP_ENABLED: string;          // 'true' | 'false'
+  CLAUDE_MEM_BACKUP_PROVIDER: string;         // 'gcs' | 's3' | 'abs' | 'sftp'
+  CLAUDE_MEM_BACKUP_BUCKET: string;           // bucket name
+  CLAUDE_MEM_BACKUP_PATH: string;             // path prefix inside bucket
+  CLAUDE_MEM_BACKUP_ENDPOINT: string;         // custom endpoint (e.g. R2/MinIO)
+  CLAUDE_MEM_BACKUP_REGION: string;           // cloud region (optional, for S3/GCS)
+  CLAUDE_MEM_BACKUP_ACCESS_KEY_ID: string;    // S3/R2 access key
+  CLAUDE_MEM_BACKUP_SECRET_ACCESS_KEY: string; // S3/R2 secret key
+  CLAUDE_MEM_BACKUP_GCS_CREDENTIALS_PATH: string; // path to GCS service-account JSON
 }
 
 export class SettingsDefaultsManager {
@@ -126,6 +136,16 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_API_KEY: '',
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
+    // Litestream Cloud Backup Configuration
+    CLAUDE_MEM_BACKUP_ENABLED: 'false',
+    CLAUDE_MEM_BACKUP_PROVIDER: 'gcs',
+    CLAUDE_MEM_BACKUP_BUCKET: '',
+    CLAUDE_MEM_BACKUP_PATH: 'claude-mem/backup',
+    CLAUDE_MEM_BACKUP_ENDPOINT: '',
+    CLAUDE_MEM_BACKUP_REGION: '',
+    CLAUDE_MEM_BACKUP_ACCESS_KEY_ID: '',
+    CLAUDE_MEM_BACKUP_SECRET_ACCESS_KEY: '',
+    CLAUDE_MEM_BACKUP_GCS_CREDENTIALS_PATH: '',
   };
 
   /**
