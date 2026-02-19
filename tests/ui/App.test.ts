@@ -136,6 +136,17 @@ describe('detectActiveSessionId', () => {
     expect(result).toBe('session-active');
   });
 
+  it('returns first unsummarized session when summaries array is empty', async () => {
+    const { detectActiveSessionId } = await import('../../src/ui/viewer/App.js');
+    const observations = [
+      makeObservation(1, 'session-x'),
+      makeObservation(2, 'session-y'),
+    ];
+    // Empty summaries — all sessions are "active"
+    const result = detectActiveSessionId(observations, []);
+    expect(result).toBe('session-x');
+  });
+
   it('uses Set for efficient lookups (many summaries)', async () => {
     const { detectActiveSessionId } = await import('../../src/ui/viewer/App.js');
     // Create many summaries to verify Set-based approach works at scale

@@ -32,6 +32,17 @@ describe('calculateBackoffDelay', () => {
     expect(calculateBackoffDelay(2, 1000, 50000, 3)).toBe(9000);
   });
 
+  it('returns base when factor is 0 (attempt 0)', () => {
+    // factor=0: base * 0^0 = base * 1 = base
+    expect(calculateBackoffDelay(0, BASE, MAX, 0)).toBe(3000);
+  });
+
+  it('returns 0 when factor is 0 and attempt > 0', () => {
+    // factor=0: base * 0^n = 0 for n > 0
+    expect(calculateBackoffDelay(1, BASE, MAX, 0)).toBe(0);
+    expect(calculateBackoffDelay(5, BASE, MAX, 0)).toBe(0);
+  });
+
   it('returns base * 2^-1 = 1500 for negative attempt -1', () => {
     // attempt -1: 3000 * 2^-1 = 1500
     // Documents behavior for out-of-range negative attempts
