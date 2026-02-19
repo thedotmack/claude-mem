@@ -117,15 +117,16 @@ export class ChromaSync {
 
     logger.info('CHROMA_SYNC', 'Creating persistent venv for chroma-mcp...', { venvDir: this.VENV_DIR });
 
-    // Create venv with the specified Python version
+    // Create venv with the specified Python version.
+    // JSON.stringify escapes the version string to prevent command injection.
     if (!fs.existsSync(venvPython)) {
-      execSync(`uv venv --python ${pythonVersion} "${this.VENV_DIR}"`, {
+      execSync(`uv venv --python ${JSON.stringify(pythonVersion)} "${this.VENV_DIR}"`, {
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 60000
       });
     }
 
-    // Install chroma-mcp into the persistent venv
+    // Install chroma-mcp (certifi is a transitive dependency — no separate install needed)
     execSync(`uv pip install --python "${venvPython}" chroma-mcp`, {
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 120000
@@ -171,11 +172,7 @@ export class ChromaSync {
         const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
         const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
         const venvPython = this.ensureVenv(pythonVersion);
-        // Install certifi into the persistent venv if not already present
-        execSync(`uv pip install --python "${venvPython}" certifi`, {
-          stdio: ['pipe', 'pipe', 'pipe'],
-          timeout: 30000
-        });
+        // certifi is a transitive dependency of chroma-mcp — already present in the venv.
         certifiPath = execSync(
           `"${venvPython}" -c "import certifi; print(certifi.where())"`,
           { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 }
