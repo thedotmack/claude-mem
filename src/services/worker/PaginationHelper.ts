@@ -361,6 +361,11 @@ export class PaginationHelper {
   /** Allowed table names for pagination queries */
   private static readonly ALLOWED_TABLES = ['observations', 'session_summaries', 'user_prompts'];
 
+  /** Allowed column names for extra filter parameters */
+  private static readonly ALLOWED_FILTER_COLUMNS = new Set([
+    'project', 'memory_session_id', 'content_session_id', 'type',
+  ]);
+
   /**
    * Generic pagination implementation (DRY)
    */
@@ -387,6 +392,9 @@ export class PaginationHelper {
       params.push(project);
     }
     if (extraFilter) {
+      if (!PaginationHelper.ALLOWED_FILTER_COLUMNS.has(extraFilter.column)) {
+        throw new Error(`Invalid filter column: ${extraFilter.column}`);
+      }
       conditions.push(`${extraFilter.column} = ?`);
       params.push(extraFilter.value);
     }

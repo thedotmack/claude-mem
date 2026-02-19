@@ -398,7 +398,7 @@ export class DataRoutes extends BaseRouteHandler {
 
   /** Create a PendingMessageStore for queue operations. */
   private createPendingStore(): PendingMessageStore {
-    return this.createPendingStore();
+    return new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
   }
 
   /**
