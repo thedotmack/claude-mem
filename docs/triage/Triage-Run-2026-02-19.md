@@ -1,0 +1,829 @@
+---
+type: report
+title: "Triage-Run-2026-02-19 ranked triage"
+created: 2026-02-19
+tags:
+  - triage
+  - issue-pr-bot
+  - run-report
+related:
+  - "[[Triage-Run-2026-02-19]]"
+  - "[[Issue-1049]]"
+  - "[[Issue-1172]]"
+  - "[[Issue-1166]]"
+  - "[[Issue-1162]]"
+  - "[[Issue-1155]]"
+  - "[[Issue-1153]]"
+  - "[[Issue-1149]]"
+  - "[[Issue-1146]]"
+  - "[[Issue-1104]]"
+  - "[[Issue-1139]]"
+  - "[[Issue-1137]]"
+  - "[[Issue-1131]]"
+  - "[[Issue-1124]]"
+  - "[[Issue-1123]]"
+  - "[[Issue-1120]]"
+  - "[[Issue-1110]]"
+  - "[[Issue-1099]]"
+  - "[[Issue-730]]"
+  - "[[Issue-1079]]"
+  - "[[Issue-1073]]"
+  - "[[Issue-1062]]"
+  - "[[Issue-1060]]"
+  - "[[Issue-1052]]"
+  - "[[Issue-1023]]"
+  - "[[Issue-785]]"
+  - "[[Issue-642]]"
+  - "[[Issue-979]]"
+  - "[[Issue-793]]"
+  - "[[Issue-807]]"
+  - "[[Issue-1156]]"
+  - "[[Issue-1145]]"
+  - "[[Issue-1089]]"
+  - "[[Issue-1041]]"
+  - "[[Issue-1185]]"
+  - "[[Issue-1183]]"
+  - "[[Issue-1182]]"
+  - "[[Issue-1096]]"
+  - "[[Issue-1161]]"
+  - "[[Issue-1163]]"
+  - "[[Issue-1165]]"
+  - "[[Issue-1160]]"
+  - "[[Issue-1148]]"
+  - "[[Issue-1135]]"
+  - "[[Issue-1128]]"
+  - "[[Issue-838]]"
+  - "[[Issue-1105]]"
+  - "[[Issue-1058]]"
+  - "[[Issue-1091]]"
+  - "[[Issue-1090]]"
+  - "[[Issue-1068]]"
+  - "[[Issue-1036]]"
+  - "[[Issue-1048]]"
+  - "[[Issue-1045]]"
+  - "[[Issue-1029]]"
+  - "[[Issue-1024]]"
+  - "[[Issue-1027]]"
+  - "[[Issue-1038]]"
+  - "[[Issue-978]]"
+  - "[[Issue-918]]"
+  - "[[Issue-984]]"
+  - "[[Issue-598]]"
+  - "[[Issue-923]]"
+  - "[[Issue-744]]"
+  - "[[Issue-781]]"
+  - "[[Issue-784]]"
+  - "[[Issue-987]]"
+  - "[[Issue-957]]"
+  - "[[Issue-975]]"
+  - "[[Issue-791]]"
+  - "[[Issue-707]]"
+  - "[[Issue-1042]]"
+  - "[[Issue-1158]]"
+  - "[[Issue-1187]]"
+  - "[[Issue-1181]]"
+  - "[[Issue-1107]]"
+  - "[[Issue-1077]]"
+  - "[[Issue-1075]]"
+  - "[[Issue-1046]]"
+  - "[[Issue-1061]]"
+  - "[[Issue-1081]]"
+  - "[[Issue-943]]"
+  - "[[Issue-1026]]"
+  - "[[PR-1157]]"
+  - "[[PR-1101]]"
+  - "[[PR-474]]"
+  - "[[PR-1072]]"
+  - "[[PR-1085]]"
+  - "[[PR-1143]]"
+  - "[[PR-1134]]"
+  - "[[PR-1133]]"
+  - "[[PR-1102]]"
+  - "[[PR-1092]]"
+  - "[[PR-1127]]"
+  - "[[PR-1064]]"
+  - "[[PR-1078]]"
+  - "[[PR-1111]]"
+  - "[[PR-1144]]"
+  - "[[PR-1142]]"
+  - "[[PR-1169]]"
+  - "[[PR-1180]]"
+  - "[[PR-1177]]"
+  - "[[PR-1132]]"
+  - "[[PR-1186]]"
+  - "[[PR-1088]]"
+  - "[[PR-1129]]"
+  - "[[PR-1150]]"
+  - "[[PR-1164]]"
+  - "[[PR-1083]]"
+  - "[[PR-1151]]"
+  - "[[PR-1152]]"
+---
+# Issue/PR Prototype Triage Report
+
+Repository: thedotmack/claude-mem
+Generated: 2026-02-19T20:15:22.083Z
+Run Link: [[Triage-Run-2026-02-19]]
+
+## Summary
+
+- Open issues: 82
+- Open pull requests: 28
+- Outdated-close issue candidates: 0
+- Outdated-close PR candidates: 0
+
+## Issues
+
+- [[Issue-1049]] [#1049 SessionStart hook not triggering in VSCode extension - context injection and auto-observation broken](https://github.com/thedotmack/claude-mem/issues/1049) | rank 1 | score 4741
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 9 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1172]] [#1172 get_observations fails: MCP serializes ids array as string](https://github.com/thedotmack/claude-mem/issues/1172) | rank 2 | score 4660
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 0 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1166]] [#1166 v10.2.5: cache directory missing node_modules — semantic search broken on marketplace install](https://github.com/thedotmack/claude-mem/issues/1166) | rank 3 | score 4659
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 1 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1162]] [#1162 ChromaDB 1.1.1 Rust panic: range start index 10 out of range for slice of length 9](https://github.com/thedotmack/claude-mem/issues/1162) | rank 4 | score 4659
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 1 days
+  - related: [[Issue-1149]], [[Issue-1155]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1155]] [#1155 chromadb missing from plugin/package.json - Chroma fails to start from cache](https://github.com/thedotmack/claude-mem/issues/1155) | rank 5 | score 4659
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 1 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1153]] [#1153 Security findings — requesting private disclosure channel](https://github.com/thedotmack/claude-mem/issues/1153) | rank 6 | score 4658
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 2 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1149]] [#1149 Chroma server fails to start: chromadb npm package not included in distribution](https://github.com/thedotmack/claude-mem/issues/1149) | rank 7 | score 4658
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 2 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1146]] [#1146 Chroma server fails on Windows x64 - npm chromadb only supports ARM64](https://github.com/thedotmack/claude-mem/issues/1146) | rank 8 | score 4658
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 2 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1104]] [#1104 Search fails on Windows: "ENOENT while resolving package 'onnxruntime-common'"](https://github.com/thedotmack/claude-mem/issues/1104) | rank 9 | score 4658
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 2 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1139]] [#1139 Claude-mem fails to start on Windows 11](https://github.com/thedotmack/claude-mem/issues/1139) | rank 10 | score 4658
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 2 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1137]] [#1137 Plan mode triggers excessive pending message accumulation and stuck processing](https://github.com/thedotmack/claude-mem/issues/1137) | rank 11 | score 4658
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 2 days
+  - related: [[Issue-1036]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1131]] [#1131 chroma-mcp subprocess leak: ensureConnection() never closes old transport before reconnect](https://github.com/thedotmack/claude-mem/issues/1131) | rank 12 | score 4657
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 3 days
+  - related: [[Issue-1077]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1124]] [#1124 [Bug] Multiple hooks race on version mismatch restart — no cross-session coordination](https://github.com/thedotmack/claude-mem/issues/1124) | rank 13 | score 4657
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 3 days
+  - related: [[Issue-1123]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1123]] [#1123 [Bug] Chroma server fails to auto-recover after port conflict — permanent 500 errors until worker restart](https://github.com/thedotmack/claude-mem/issues/1123) | rank 14 | score 4657
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 3 days
+  - related: [[Issue-1120]], [[Issue-1110]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1120]] [#1120 [Bug] Worker daemon spawned from cache dir cannot find chroma binary -- npx resolution fails](https://github.com/thedotmack/claude-mem/issues/1120) | rank 15 | score 4657
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 3 days
+  - related: [[Issue-1110]], [[Issue-1104]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1110]] [#1110 [Bug] ChromaDB segfaults on Linux (exit 139) — workaround with external Python server](https://github.com/thedotmack/claude-mem/issues/1110) | rank 16 | score 4656
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 4 days
+  - related: [[Issue-1104]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1099]] [#1099 Stale AbortController in ensureGeneratorRunning causes queue stall](https://github.com/thedotmack/claude-mem/issues/1099) | rank 17 | score 4655
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 5 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-730]] [#730 Vector-db folder grows to 1TB+ when multiple Docker containers share the same .claude-mem mount](https://github.com/thedotmack/claude-mem/issues/730) | rank 18 | score 4654
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 6 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1079]] [#1079 UserPromptSubmit hook injects security guidance block into every turn](https://github.com/thedotmack/claude-mem/issues/1079) | rank 19 | score 4653
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 7 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1073]] [#1073 Obsearvations and session advice](https://github.com/thedotmack/claude-mem/issues/1073) | rank 20 | score 4653
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 7 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1062]] [#1062 [Windows] Claude Code hangs on startup from Git Bash — PowerShell not in PATH breaks worker hooks](https://github.com/thedotmack/claude-mem/issues/1062) | rank 21 | score 4653
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 7 days
+  - related: [[Issue-1026]], [[Issue-1048]], [[Issue-1023]], [[Issue-1058]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1060]] [#1060 Stop hook error: Failed with non-blocking status code: 46](https://github.com/thedotmack/claude-mem/issues/1060) | rank 22 | score 4652
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 8 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1052]] [#1052 isProcessing flag stuck true after session deleted during pending summarize](https://github.com/thedotmack/claude-mem/issues/1052) | rank 23 | score 4651
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 9 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1023]] [#1023 Zombie TCP socket on Windows blocks worker restart (regression from #415)](https://github.com/thedotmack/claude-mem/issues/1023) | rank 24 | score 4651
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 9 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-785]] [#785 fix: Worker fails to spawn on Windows 11 25H2+ (WMIC removed)](https://github.com/thedotmack/claude-mem/issues/785) | rank 25 | score 4649
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-642]] [#642 ChromaDB search fails with JSON parse error due to initialization timing](https://github.com/thedotmack/claude-mem/issues/642) | rank 26 | score 4649
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-979]] [#979 Bug: MigrationRunner.initializeSchema() fails to create observations and session_summaries tables](https://github.com/thedotmack/claude-mem/issues/979) | rank 27 | score 4649
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-793]] [#793 Bug: isProjectRoot() doesn't detect subdirectories within git repos, causing CLAUDE.md files in all subfolders](https://github.com/thedotmack/claude-mem/issues/793) | rank 28 | score 4649
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-807]] [#807 [Windows] ProcessTransport error - Worker fails with "ProcessTransport is not ready for writing" on Bun 1.3.5](https://github.com/thedotmack/claude-mem/issues/807) | rank 29 | score 4649
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1156]] [#1156 np (npm publish tool) should be a devDependency, not a runtime dependency](https://github.com/thedotmack/claude-mem/issues/1156) | rank 30 | score 4609
+  - classification: intent=maintenance, severity=critical, priority=urgent
+  - inactivity: 1 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Prepare a scoped implementation update with rollback awareness.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1145]] [#1145 Bug: duplicate worker daemons from version mismatch restart loop + spawn races](https://github.com/thedotmack/claude-mem/issues/1145) | rank 31 | score 3658
+  - classification: intent=bug, severity=high, priority=urgent
+  - inactivity: 2 days
+  - related: [[PR-1144]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1089]] [#1089 Worker daemon spawns Claude SDK subprocesses that never terminate, causing massive memory leak](https://github.com/thedotmack/claude-mem/issues/1089) | rank 32 | score 3658
+  - classification: intent=bug, severity=high, priority=urgent
+  - inactivity: 2 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1041]] [#1041 Plugin marketplace not found — claude-mem fails to load after add](https://github.com/thedotmack/claude-mem/issues/1041) | rank 33 | score 3651
+  - classification: intent=bug, severity=high, priority=urgent
+  - inactivity: 9 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1185]] [#1185 chroma-mcp CPU/memory leak in v10.3.1](https://github.com/thedotmack/claude-mem/issues/1185) | rank 34 | score 3560
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 0 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1183]] [#1183 v10.3.0+: backfill fails with MetadataValue conversion error via chroma-mcp](https://github.com/thedotmack/claude-mem/issues/1183) | rank 35 | score 3560
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 0 days
+  - related: [[Issue-1182]], [[Issue-1166]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1182]] [#1182 v10.3.0+: chroma-mcp SSL default breaks CHROMA_MODE=remote with local HTTP server](https://github.com/thedotmack/claude-mem/issues/1182) | rank 36 | score 3560
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 0 days
+  - related: [[Issue-1166]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1096]] [#1096 Startup hook error & claude-mem:mcp-search failed](https://github.com/thedotmack/claude-mem/issues/1096) | rank 37 | score 3560
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 0 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1161]] [#1161 [Windows] Zombie bun worker blocks Claude Code startup — hangs for 60s+ on SessionStart](https://github.com/thedotmack/claude-mem/issues/1161) | rank 38 | score 3559
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 1 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1163]] [#1163 Claude provider (SDK spawn) fails when used behind API proxy or in nested Claude Code environments](https://github.com/thedotmack/claude-mem/issues/1163) | rank 39 | score 3559
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 1 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1165]] [#1165 Bug: CLAUDE.md created inside .git/ directory corrupts git refs](https://github.com/thedotmack/claude-mem/issues/1165) | rank 40 | score 3559
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 1 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1160]] [#1160 [Architecture] worker-cli.js and worker-service.cjs hardcode marketplace path — should resolve dynamically](https://github.com/thedotmack/claude-mem/issues/1160) | rank 41 | score 3559
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 1 days
+  - related: [[Issue-1120]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1148]] [#1148 Gemini 3 models fail with 404: API endpoint uses v1 instead of v1beta](https://github.com/thedotmack/claude-mem/issues/1148) | rank 42 | score 3558
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 2 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1135]] [#1135 Hhh](https://github.com/thedotmack/claude-mem/issues/1135) | rank 43 | score 3557
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 3 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1128]] [#1128 setup.sh: node_modules not restored after hard reset causes onnxruntime-common ENOENT](https://github.com/thedotmack/claude-mem/issues/1128) | rank 44 | score 3557
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 3 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-838]] [#838 Bug: `session-init` hook fails with HTTP 400 when invoked from Cursor's `beforeSubmitPrompt`](https://github.com/thedotmack/claude-mem/issues/838) | rank 45 | score 3557
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 3 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1105]] [#1105 [Bug] ONNX model protobuf parsing failed with @huggingface/transformers 3.8.1](https://github.com/thedotmack/claude-mem/issues/1105) | rank 46 | score 3556
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 4 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1058]] [#1058 [Windows] PostToolUse and Stop hooks fail to generate observations/session summaries](https://github.com/thedotmack/claude-mem/issues/1058) | rank 47 | score 3555
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 5 days
+  - related: [[Issue-1027]], [[Issue-1024]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1091]] [#1091 PostToolUse auto-observation: persistent 500 errors on every tool call — feature non-functional](https://github.com/thedotmack/claude-mem/issues/1091) | rank 48 | score 3555
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 5 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1090]] [#1090 Worker spawns hundreds of leaked Claude CLI processes, consuming massive API tokens](https://github.com/thedotmack/claude-mem/issues/1090) | rank 49 | score 3554
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 6 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1068]] [#1068 Worker daemon leaks Claude subagent processes](https://github.com/thedotmack/claude-mem/issues/1068) | rank 50 | score 3552
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 8 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1036]] [#1036 Bug: summarize messages stuck in 'processing' — confirmProcessed() never reached](https://github.com/thedotmack/claude-mem/issues/1036) | rank 51 | score 3552
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 8 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1048]] [#1048 [Windows] worker-service daemon spawns persistent visible console window](https://github.com/thedotmack/claude-mem/issues/1048) | rank 52 | score 3551
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 9 days
+  - related: [[Issue-1023]], [[Issue-1024]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1045]] [#1045 PostToolUse matcher:* creates uninterruptible cascade during high tool throughput](https://github.com/thedotmack/claude-mem/issues/1045) | rank 53 | score 3551
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 9 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1029]] [#1029 CORS error when saving Settings in Claude-mem 9.1.1](https://github.com/thedotmack/claude-mem/issues/1029) | rank 54 | score 3551
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 9 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1024]] [#1024 Orphan reaper fails on Windows: $_ PowerShell syntax error (regression from #517)](https://github.com/thedotmack/claude-mem/issues/1024) | rank 55 | score 3551
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 9 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1027]] [#1027 [❌ ERROR] [📦 SDK    ] [session-9] Missing last_assistant_message in session for summary prompt](https://github.com/thedotmack/claude-mem/issues/1027) | rank 56 | score 3551
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 9 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1038]] [#1038 claude-mem web-mcp-search not save](https://github.com/thedotmack/claude-mem/issues/1038) | rank 57 | score 3550
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 10 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-978]] [#978 Bug: SessionStart hook doesn't fire for 'Continue' sessions](https://github.com/thedotmack/claude-mem/issues/978) | rank 58 | score 3550
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 10 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-918]] [#918 SessionStart hooks block input in terminal on Windows — needs "async": true](https://github.com/thedotmack/claude-mem/issues/918) | rank 59 | score 3549
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-984]] [#984 Stop hook fails with "Unknown event type: session-complete"](https://github.com/thedotmack/claude-mem/issues/984) | rank 60 | score 3549
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-598]] [#598 Too many messages, polluting my conversation history](https://github.com/thedotmack/claude-mem/issues/598) | rank 61 | score 3549
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-923]] [#923 Slow Plugin Loading Time on Claude Startup](https://github.com/thedotmack/claude-mem/issues/923) | rank 62 | score 3549
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-744]] [#744 sessionInitHandler throws error when prompt is empty (breaks Codex CLI integration)](https://github.com/thedotmack/claude-mem/issues/744) | rank 63 | score 3549
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-781]] [#781 Plugin doesn't respect disabled state - requires manual intervention to fully stop](https://github.com/thedotmack/claude-mem/issues/781) | rank 64 | score 3549
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-784]] [#784 Internal memory agent output leaks to user on claude --continue](https://github.com/thedotmack/claude-mem/issues/784) | rank 65 | score 3549
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-987]] [#987 Stop hook can cause infinite session loop when summarize output is interpreted as instructions](https://github.com/thedotmack/claude-mem/issues/987) | rank 66 | score 3549
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-957]] [#957 SessionStart hook chain unnecessarily stops worker on every startup](https://github.com/thedotmack/claude-mem/issues/957) | rank 67 | score 3549
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 11 days
+  - related: [[Issue-918]], [[Issue-923]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-975]] [#975 Stop hook error: Zod cyclical schema resolution fails in worker-service.cjs](https://github.com/thedotmack/claude-mem/issues/975) | rank 68 | score 3549
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-791]] [#791 [Windows] Keyword search (FTS5) returns 'No results' despite data existing in database (v9.0.6)](https://github.com/thedotmack/claude-mem/issues/791) | rank 69 | score 3549
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-707]] [#707 Feature: SQLite-only backend mode to prevent Chroma memory consumption (35GB RAM fix)](https://github.com/thedotmack/claude-mem/issues/707) | rank 70 | score 3519
+  - classification: intent=feature, severity=high, priority=high
+  - inactivity: 11 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Define acceptance criteria and scope a minimal implementation.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1042]] [#1042 ENOENT error in stop hooks: race condition reading package.json during shutdown](https://github.com/thedotmack/claude-mem/issues/1042) | rank 71 | score 3351
+  - classification: intent=bug, severity=high, priority=low
+  - inactivity: 9 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1158]] [#1158 Duplicate observations: each PostToolUse creates 6-10 identical records](https://github.com/thedotmack/claude-mem/issues/1158) | rank 72 | score 2660
+  - classification: intent=bug, severity=medium, priority=urgent
+  - inactivity: 0 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1187]] [#1187 skills/ directory missing after install — skill paths in openclaw.plugin.json don't match installer output](https://github.com/thedotmack/claude-mem/issues/1187) | rank 73 | score 2560
+  - classification: intent=bug, severity=medium, priority=high
+  - inactivity: 0 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1181]] [#1181 SessionStart hooks show as 'error' in Claude Code UI due to stderr usage](https://github.com/thedotmack/claude-mem/issues/1181) | rank 74 | score 2560
+  - classification: intent=bug, severity=medium, priority=high
+  - inactivity: 0 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1107]] [#1107 Bug: task-notification system messages recorded as user_prompts (massive duplication)](https://github.com/thedotmack/claude-mem/issues/1107) | rank 75 | score 2557
+  - classification: intent=bug, severity=medium, priority=high
+  - inactivity: 3 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1077]] [#1077 chroma-mcp processes are never cleaned up when Claude Code sessions end — causes OOM](https://github.com/thedotmack/claude-mem/issues/1077) | rank 76 | score 2555
+  - classification: intent=bug, severity=medium, priority=high
+  - inactivity: 5 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1075]] [#1075 🐛 Infinite notification loop causes token/storage exhaustion when background agents complete](https://github.com/thedotmack/claude-mem/issues/1075) | rank 77 | score 2553
+  - classification: intent=bug, severity=medium, priority=high
+  - inactivity: 7 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1046]] [#1046 Race condition: observations stored with empty project string](https://github.com/thedotmack/claude-mem/issues/1046) | rank 78 | score 2553
+  - classification: intent=bug, severity=medium, priority=high
+  - inactivity: 7 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1061]] [#1061 [Bug] Duplicate observations persist in v10.0.1 - same user prompt generates 40+ near-identical records](https://github.com/thedotmack/claude-mem/issues/1061) | rank 79 | score 2552
+  - classification: intent=bug, severity=medium, priority=high
+  - inactivity: 8 days
+  - related: [[Issue-598]]
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Reproduce the failure and isolate the smallest safe fix.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1081]] [#1081 Bug: Worktree observations tagged with worktree dir name instead of parent project](https://github.com/thedotmack/claude-mem/issues/1081) | rank 80 | score 2424
+  - classification: intent=feature, severity=medium, priority=normal
+  - inactivity: 6 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Define acceptance criteria and scope a minimal implementation.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-943]] [#943 Feature Request: Support custom API endpoint / LiteLLM proxy](https://github.com/thedotmack/claude-mem/issues/943) | rank 81 | score 1422
+  - classification: intent=feature, severity=low, priority=normal
+  - inactivity: 8 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Define acceptance criteria and scope a minimal implementation.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+- [[Issue-1026]] [#1026 ChromaDB vector search unconditionally disabled on Windows with no opt-in](https://github.com/thedotmack/claude-mem/issues/1026) | rank 82 | score 1421
+  - classification: intent=feature, severity=low, priority=normal
+  - inactivity: 9 days
+  - plan next: Review the latest issue timeline and confirm the current problem statement. Define acceptance criteria and scope a minimal implementation.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Re-check the original report scenario end-to-end.
+
+## Pull Requests
+
+- [[PR-1157]] [#1157 Security hardening: auth, permissions, sanitization, provenance](https://github.com/thedotmack/claude-mem/pull/1157) | rank 1 | score 4810
+  - classification: intent=feature, severity=critical, priority=urgent
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1101]] [#1101 feat: interactive feed setup wizard and standalone daemon](https://github.com/thedotmack/claude-mem/pull/1101) | rank 2 | score 4684
+  - classification: intent=infra, severity=critical, priority=urgent
+  - inactivity: 1 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Dry-run automation/workflow changes before rollout.
+- [[PR-474]] [#474 fix(windows): prevent libuv assertion failure in smart-install.js](https://github.com/thedotmack/claude-mem/pull/474) | rank 3 | score 4660
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1072]] [#1072 fix: add error handling to prevent Stop hook failures from package.json read errors](https://github.com/thedotmack/claude-mem/pull/1072) | rank 4 | score 4660
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1085]] [#1085 fix: eliminate unbounded process spawning with 4-layer defense](https://github.com/thedotmack/claude-mem/pull/1085) | rank 5 | score 4660
+  - classification: intent=bug, severity=critical, priority=urgent
+  - inactivity: 0 days
+  - related: [[Issue-1068]], [[Issue-1077]], [[Issue-1062]], [[Issue-1023]], [[Issue-1024]]
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1143]] [#1143 feat: add terminal output control for SessionStart context](https://github.com/thedotmack/claude-mem/pull/1143) | rank 6 | score 4630
+  - classification: intent=feature, severity=critical, priority=urgent
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Critical severity may need immediate coordination and rollback options. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1134]] [#1134 feat(chroma): add lazy reconnect when vector search is requested](https://github.com/thedotmack/claude-mem/pull/1134) | rank 7 | score 3719
+  - classification: intent=bug, severity=high, priority=urgent
+  - inactivity: 1 days
+  - related: [[PR-1132]], [[PR-1133]]
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1133]] [#1133 fix(chroma): capture stderr and detect port conflicts on startup](https://github.com/thedotmack/claude-mem/pull/1133) | rank 8 | score 3719
+  - classification: intent=bug, severity=high, priority=urgent
+  - inactivity: 1 days
+  - related: [[PR-1132]]
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1102]] [#1102 fix: critical bug fixes, snap sandbox support, and resource monitoring](https://github.com/thedotmack/claude-mem/pull/1102) | rank 9 | score 3660
+  - classification: intent=bug, severity=high, priority=urgent
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1092]] [#1092 fix: harden OpenClaw integration, auth chain, and SSE stability](https://github.com/thedotmack/claude-mem/pull/1092) | rank 10 | score 3619
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 1 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1127]] [#1127 feat: implement 5-stage observation processing pipeline](https://github.com/thedotmack/claude-mem/pull/1127) | rank 11 | score 3560
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1064]] [#1064 feat: sync imported observations to Chroma vector DB](https://github.com/thedotmack/claude-mem/pull/1064) | rank 12 | score 3560
+  - classification: intent=bug, severity=high, priority=high
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1078]] [#1078 Título: Add Spanish translations and Windows improvementsAdd Spanish translations and Windows improvements](https://github.com/thedotmack/claude-mem/pull/1078) | rank 13 | score 3530
+  - classification: intent=feature, severity=high, priority=high
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1111]] [#1111 Add ChromaDB vector index backfill script](https://github.com/thedotmack/claude-mem/pull/1111) | rank 14 | score 3530
+  - classification: intent=feature, severity=high, priority=high
+  - inactivity: 0 days
+  - related: [[Issue-1110]], [[Issue-1104]]
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1144]] [#1144 fix: prevent duplicate worker daemons (version mismatch loop + spawn races)](https://github.com/thedotmack/claude-mem/pull/1144) | rank 15 | score 3525
+  - classification: intent=infra, severity=high, priority=high
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: High-severity changes can regress user-critical flows if scope drifts. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Dry-run automation/workflow changes before rollout.
+- [[PR-1142]] [#1142 Skip summary generation for subagent runs](https://github.com/thedotmack/claude-mem/pull/1142) | rank 16 | score 2805
+  - classification: intent=infra, severity=medium, priority=urgent
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Dry-run automation/workflow changes before rollout.
+- [[PR-1169]] [#1169 fix: deduplicate session-init to prevent redundant re-initialization](https://github.com/thedotmack/claude-mem/pull/1169) | rank 17 | score 2660
+  - classification: intent=bug, severity=medium, priority=urgent
+  - inactivity: 0 days
+  - related: [[PR-1142]]
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1180]] [#1180 fix: detect auth errors and prevent infinite retry loops](https://github.com/thedotmack/claude-mem/pull/1180) | rank 18 | score 2620
+  - classification: intent=bug, severity=medium, priority=high
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1177]] [#1177 feat(provider): add OpenAI Codex OAuth provider for observation extraction](https://github.com/thedotmack/claude-mem/pull/1177) | rank 19 | score 2590
+  - classification: intent=feature, severity=medium, priority=high
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1132]] [#1132 fix(chroma): robust binary resolution for daemon-spawned workers](https://github.com/thedotmack/claude-mem/pull/1132) | rank 20 | score 2584
+  - classification: intent=infra, severity=medium, priority=high
+  - inactivity: 1 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Dry-run automation/workflow changes before rollout.
+- [[PR-1186]] [#1186 feat: Litestream cloud backup integration for SQLite database](https://github.com/thedotmack/claude-mem/pull/1186) | rank 21 | score 2560
+  - classification: intent=bug, severity=medium, priority=high
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1088]] [#1088 fix: use persistent venv instead of uvx to prevent cache bloat](https://github.com/thedotmack/claude-mem/pull/1088) | rank 22 | score 2430
+  - classification: intent=feature, severity=medium, priority=normal
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1129]] [#1129 feat: add generic session backfill script](https://github.com/thedotmack/claude-mem/pull/1129) | rank 23 | score 2430
+  - classification: intent=feature, severity=medium, priority=normal
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1150]] [#1150 fix: use nullish coalescing for promptNumber to preserve zero values](https://github.com/thedotmack/claude-mem/pull/1150) | rank 24 | score 2430
+  - classification: intent=feature, severity=medium, priority=normal
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1164]] [#1164 perf(memory): bound conversation history + lower Chroma embed footprint](https://github.com/thedotmack/claude-mem/pull/1164) | rank 25 | score 2429
+  - classification: intent=feature, severity=medium, priority=normal
+  - inactivity: 1 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1083]] [#1083 Add thoughts timeline: capture, store, search & broadcast Claude thinking blocks](https://github.com/thedotmack/claude-mem/pull/1083) | rank 26 | score 1765
+  - classification: intent=test, severity=low, priority=urgent
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1151]] [#1151 fix: make privacy tag stripping case-insensitive](https://github.com/thedotmack/claude-mem/pull/1151) | rank 27 | score 1385
+  - classification: intent=test, severity=low, priority=normal
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+- [[PR-1152]] [#1152 fix: remove non-existent columns from getSessionSummaryById query](https://github.com/thedotmack/claude-mem/pull/1152) | rank 28 | score 1385
+  - classification: intent=test, severity=low, priority=normal
+  - inactivity: 0 days
+  - plan next: Review PR diff, unresolved comments, and merge-readiness blockers. Validate branch scope against the stated intent before merge.
+  - plan risks: Hidden edge cases may remain if the issue context is incomplete. Ongoing discussion churn can change acceptance criteria mid-implementation.
+  - plan validation: Run targeted tests for affected areas and verify no new failures. Confirm CI state, review status, and merge conflict readiness.
+
+## Developer Breakdown
+
+### thedotmack (3 items)
+
+- #1157 [Security hardening: auth, permissions, sanitization, provenance](https://github.com/thedotmack/claude-mem/pull/1157) — pr, severity: critical
+- #1142 [Skip summary generation for subagent runs](https://github.com/thedotmack/claude-mem/pull/1142) — pr, severity: medium
+- #1083 [Add thoughts timeline: capture, store, search & broadcast Claude thinking blocks](https://github.com/thedotmack/claude-mem/pull/1083) — pr, severity: low
+

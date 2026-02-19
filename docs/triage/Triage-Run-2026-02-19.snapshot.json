@@ -1,0 +1,3489 @@
+{
+  "runId": "Triage-Run-2026-02-19",
+  "runWikiLink": "[[Triage-Run-2026-02-19]]",
+  "generatedAt": "2026-02-19T20:15:22.083Z",
+  "repository": {
+    "owner": "thedotmack",
+    "repo": "claude-mem"
+  },
+  "summary": {
+    "totalIssues": 82,
+    "totalPullRequests": 28,
+    "outdatedIssueCandidates": 0,
+    "outdatedPullRequestCandidates": 0
+  },
+  "sections": {
+    "issues": [
+      {
+        "number": 1049,
+        "type": "issue",
+        "title": "SessionStart hook not triggering in VSCode extension - context injection and auto-observation broken",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1049",
+        "rank": 1,
+        "score": 4741,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 9,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1049]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "guishuyunye-lyw"
+      },
+      {
+        "number": 1172,
+        "type": "issue",
+        "title": "get_observations fails: MCP serializes ids array as string",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1172",
+        "rank": 2,
+        "score": 4660,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1172]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "stefandeml"
+      },
+      {
+        "number": 1166,
+        "type": "issue",
+        "title": "v10.2.5: cache directory missing node_modules — semantic search broken on marketplace install",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1166",
+        "rank": 3,
+        "score": 4659,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 1,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1166]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "GigiTiti-Kai"
+      },
+      {
+        "number": 1162,
+        "type": "issue",
+        "title": "ChromaDB 1.1.1 Rust panic: range start index 10 out of range for slice of length 9",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1162",
+        "rank": 4,
+        "score": 4659,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 1,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1162]]",
+        "relatedWikiLinks": [
+          "[[Issue-1149]]",
+          "[[Issue-1155]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "antonevane"
+      },
+      {
+        "number": 1155,
+        "type": "issue",
+        "title": "chromadb missing from plugin/package.json - Chroma fails to start from cache",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1155",
+        "rank": 5,
+        "score": 4659,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 1,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1155]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "maccie01"
+      },
+      {
+        "number": 1153,
+        "type": "issue",
+        "title": "Security findings — requesting private disclosure channel",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1153",
+        "rank": 6,
+        "score": 4658,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 2,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1153]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "Trypto1019"
+      },
+      {
+        "number": 1149,
+        "type": "issue",
+        "title": "Chroma server fails to start: chromadb npm package not included in distribution",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1149",
+        "rank": 7,
+        "score": 4658,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 2,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1149]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "hidetsugu-miya"
+      },
+      {
+        "number": 1146,
+        "type": "issue",
+        "title": "Chroma server fails on Windows x64 - npm chromadb only supports ARM64",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1146",
+        "rank": 8,
+        "score": 4658,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 2,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1146]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "Boysiee"
+      },
+      {
+        "number": 1104,
+        "type": "issue",
+        "title": "Search fails on Windows: \"ENOENT while resolving package 'onnxruntime-common'\"",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1104",
+        "rank": 9,
+        "score": 4658,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 2,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1104]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "Surfinite"
+      },
+      {
+        "number": 1139,
+        "type": "issue",
+        "title": "Claude-mem fails to start on Windows 11",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1139",
+        "rank": 10,
+        "score": 4658,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 2,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1139]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "AlleTest46"
+      },
+      {
+        "number": 1137,
+        "type": "issue",
+        "title": "Plan mode triggers excessive pending message accumulation and stuck processing",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1137",
+        "rank": 11,
+        "score": 4658,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 2,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1137]]",
+        "relatedWikiLinks": [
+          "[[Issue-1036]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "pitimon"
+      },
+      {
+        "number": 1131,
+        "type": "issue",
+        "title": "chroma-mcp subprocess leak: ensureConnection() never closes old transport before reconnect",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1131",
+        "rank": 12,
+        "score": 4657,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 3,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1131]]",
+        "relatedWikiLinks": [
+          "[[Issue-1077]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "majiayu000"
+      },
+      {
+        "number": 1124,
+        "type": "issue",
+        "title": "[Bug] Multiple hooks race on version mismatch restart — no cross-session coordination",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1124",
+        "rank": 13,
+        "score": 4657,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 3,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1124]]",
+        "relatedWikiLinks": [
+          "[[Issue-1123]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "GigiTiti-Kai"
+      },
+      {
+        "number": 1123,
+        "type": "issue",
+        "title": "[Bug] Chroma server fails to auto-recover after port conflict — permanent 500 errors until worker restart",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1123",
+        "rank": 14,
+        "score": 4657,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 3,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1123]]",
+        "relatedWikiLinks": [
+          "[[Issue-1120]]",
+          "[[Issue-1110]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "GigiTiti-Kai"
+      },
+      {
+        "number": 1120,
+        "type": "issue",
+        "title": "[Bug] Worker daemon spawned from cache dir cannot find chroma binary -- npx resolution fails",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1120",
+        "rank": 15,
+        "score": 4657,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 3,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1120]]",
+        "relatedWikiLinks": [
+          "[[Issue-1110]]",
+          "[[Issue-1104]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "antonevane"
+      },
+      {
+        "number": 1110,
+        "type": "issue",
+        "title": "[Bug] ChromaDB segfaults on Linux (exit 139) — workaround with external Python server",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1110",
+        "rank": 16,
+        "score": 4656,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 4,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1110]]",
+        "relatedWikiLinks": [
+          "[[Issue-1104]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "ACT900"
+      },
+      {
+        "number": 1099,
+        "type": "issue",
+        "title": "Stale AbortController in ensureGeneratorRunning causes queue stall",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1099",
+        "rank": 17,
+        "score": 4655,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 5,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1099]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "hophuongnam"
+      },
+      {
+        "number": 730,
+        "type": "issue",
+        "title": "Vector-db folder grows to 1TB+ when multiple Docker containers share the same .claude-mem mount",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/730",
+        "rank": 18,
+        "score": 4654,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 6,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-730]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "lucacri"
+      },
+      {
+        "number": 1079,
+        "type": "issue",
+        "title": "UserPromptSubmit hook injects security guidance block into every turn",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1079",
+        "rank": 19,
+        "score": 4653,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 7,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1079]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "costa-marcello"
+      },
+      {
+        "number": 1073,
+        "type": "issue",
+        "title": "Obsearvations and session advice",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1073",
+        "rank": 20,
+        "score": 4653,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 7,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1073]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "costa-marcello"
+      },
+      {
+        "number": 1062,
+        "type": "issue",
+        "title": "[Windows] Claude Code hangs on startup from Git Bash — PowerShell not in PATH breaks worker hooks",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1062",
+        "rank": 21,
+        "score": 4653,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 7,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1062]]",
+        "relatedWikiLinks": [
+          "[[Issue-1026]]",
+          "[[Issue-1048]]",
+          "[[Issue-1023]]",
+          "[[Issue-1058]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "xQuestx"
+      },
+      {
+        "number": 1060,
+        "type": "issue",
+        "title": "Stop hook error: Failed with non-blocking status code: 46",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1060",
+        "rank": 22,
+        "score": 4652,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 8,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1060]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "slavag"
+      },
+      {
+        "number": 1052,
+        "type": "issue",
+        "title": "isProcessing flag stuck true after session deleted during pending summarize",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1052",
+        "rank": 23,
+        "score": 4651,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 9,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1052]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "bmccann36"
+      },
+      {
+        "number": 1023,
+        "type": "issue",
+        "title": "Zombie TCP socket on Windows blocks worker restart (regression from #415)",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1023",
+        "rank": 24,
+        "score": 4651,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 9,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1023]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "LayZeeDK"
+      },
+      {
+        "number": 785,
+        "type": "issue",
+        "title": "fix: Worker fails to spawn on Windows 11 25H2+ (WMIC removed)",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/785",
+        "rank": 25,
+        "score": 4649,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-785]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "bivlked"
+      },
+      {
+        "number": 642,
+        "type": "issue",
+        "title": "ChromaDB search fails with JSON parse error due to initialization timing",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/642",
+        "rank": 26,
+        "score": 4649,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-642]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "darconada"
+      },
+      {
+        "number": 979,
+        "type": "issue",
+        "title": "Bug: MigrationRunner.initializeSchema() fails to create observations and session_summaries tables",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/979",
+        "rank": 27,
+        "score": 4649,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-979]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "kitadesign"
+      },
+      {
+        "number": 793,
+        "type": "issue",
+        "title": "Bug: isProjectRoot() doesn't detect subdirectories within git repos, causing CLAUDE.md files in all subfolders",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/793",
+        "rank": 28,
+        "score": 4649,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-793]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "alexrodriguezintegrityxd"
+      },
+      {
+        "number": 807,
+        "type": "issue",
+        "title": "[Windows] ProcessTransport error - Worker fails with \"ProcessTransport is not ready for writing\" on Bun 1.3.5",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/807",
+        "rank": 29,
+        "score": 4649,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-807]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "Istrebitel98"
+      },
+      {
+        "number": 1156,
+        "type": "issue",
+        "title": "np (npm publish tool) should be a devDependency, not a runtime dependency",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1156",
+        "rank": 30,
+        "score": 4609,
+        "intent": "maintenance",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 1,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1156]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Prepare a scoped implementation update with rollback awareness."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "deant89"
+      },
+      {
+        "number": 1145,
+        "type": "issue",
+        "title": "Bug: duplicate worker daemons from version mismatch restart loop + spawn races",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1145",
+        "rank": 31,
+        "score": 3658,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "urgent",
+        "inactivityDays": 2,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1145]]",
+        "relatedWikiLinks": [
+          "[[PR-1144]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "influenist"
+      },
+      {
+        "number": 1089,
+        "type": "issue",
+        "title": "Worker daemon spawns Claude SDK subprocesses that never terminate, causing massive memory leak",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1089",
+        "rank": 32,
+        "score": 3658,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "urgent",
+        "inactivityDays": 2,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1089]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "bencium"
+      },
+      {
+        "number": 1041,
+        "type": "issue",
+        "title": "Plugin marketplace not found — claude-mem fails to load after add",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1041",
+        "rank": 33,
+        "score": 3651,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "urgent",
+        "inactivityDays": 9,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1041]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "costa-marcello"
+      },
+      {
+        "number": 1185,
+        "type": "issue",
+        "title": "chroma-mcp CPU/memory leak in v10.3.1",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1185",
+        "rank": 34,
+        "score": 3560,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1185]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "nyflyer"
+      },
+      {
+        "number": 1183,
+        "type": "issue",
+        "title": "v10.3.0+: backfill fails with MetadataValue conversion error via chroma-mcp",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1183",
+        "rank": 35,
+        "score": 3560,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1183]]",
+        "relatedWikiLinks": [
+          "[[Issue-1182]]",
+          "[[Issue-1166]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "GigiTiti-Kai"
+      },
+      {
+        "number": 1182,
+        "type": "issue",
+        "title": "v10.3.0+: chroma-mcp SSL default breaks CHROMA_MODE=remote with local HTTP server",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1182",
+        "rank": 36,
+        "score": 3560,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1182]]",
+        "relatedWikiLinks": [
+          "[[Issue-1166]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "GigiTiti-Kai"
+      },
+      {
+        "number": 1096,
+        "type": "issue",
+        "title": "Startup hook error & claude-mem:mcp-search failed",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1096",
+        "rank": 37,
+        "score": 3560,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1096]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "guyver30"
+      },
+      {
+        "number": 1161,
+        "type": "issue",
+        "title": "[Windows] Zombie bun worker blocks Claude Code startup — hangs for 60s+ on SessionStart",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1161",
+        "rank": 38,
+        "score": 3559,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 1,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1161]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "zuiho-kai"
+      },
+      {
+        "number": 1163,
+        "type": "issue",
+        "title": "Claude provider (SDK spawn) fails when used behind API proxy or in nested Claude Code environments",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1163",
+        "rank": 39,
+        "score": 3559,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 1,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1163]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "zuiho-kai"
+      },
+      {
+        "number": 1165,
+        "type": "issue",
+        "title": "Bug: CLAUDE.md created inside .git/ directory corrupts git refs",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1165",
+        "rank": 40,
+        "score": 3559,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 1,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1165]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "seongjinlim"
+      },
+      {
+        "number": 1160,
+        "type": "issue",
+        "title": "[Architecture] worker-cli.js and worker-service.cjs hardcode marketplace path — should resolve dynamically",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1160",
+        "rank": 41,
+        "score": 3559,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 1,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1160]]",
+        "relatedWikiLinks": [
+          "[[Issue-1120]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "ptanik01"
+      },
+      {
+        "number": 1148,
+        "type": "issue",
+        "title": "Gemini 3 models fail with 404: API endpoint uses v1 instead of v1beta",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1148",
+        "rank": 42,
+        "score": 3558,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 2,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1148]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "hidetsugu-miya"
+      },
+      {
+        "number": 1135,
+        "type": "issue",
+        "title": "Hhh",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1135",
+        "rank": 43,
+        "score": 3557,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 3,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1135]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "bazaaralsultana1-a11y"
+      },
+      {
+        "number": 1128,
+        "type": "issue",
+        "title": "setup.sh: node_modules not restored after hard reset causes onnxruntime-common ENOENT",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1128",
+        "rank": 44,
+        "score": 3557,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 3,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1128]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "influenist"
+      },
+      {
+        "number": 838,
+        "type": "issue",
+        "title": "Bug: `session-init` hook fails with HTTP 400 when invoked from Cursor's `beforeSubmitPrompt`",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/838",
+        "rank": 45,
+        "score": 3557,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 3,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-838]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "Chachamaru127"
+      },
+      {
+        "number": 1105,
+        "type": "issue",
+        "title": "[Bug] ONNX model protobuf parsing failed with @huggingface/transformers 3.8.1",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1105",
+        "rank": 46,
+        "score": 3556,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 4,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1105]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "samwangdd"
+      },
+      {
+        "number": 1058,
+        "type": "issue",
+        "title": "[Windows] PostToolUse and Stop hooks fail to generate observations/session summaries",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1058",
+        "rank": 47,
+        "score": 3555,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 5,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1058]]",
+        "relatedWikiLinks": [
+          "[[Issue-1027]]",
+          "[[Issue-1024]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "guishuyunye-lyw"
+      },
+      {
+        "number": 1091,
+        "type": "issue",
+        "title": "PostToolUse auto-observation: persistent 500 errors on every tool call — feature non-functional",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1091",
+        "rank": 48,
+        "score": 3555,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 5,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1091]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "schmidt1200"
+      },
+      {
+        "number": 1090,
+        "type": "issue",
+        "title": "Worker spawns hundreds of leaked Claude CLI processes, consuming massive API tokens",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1090",
+        "rank": 49,
+        "score": 3554,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 6,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1090]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "justin-zeno"
+      },
+      {
+        "number": 1068,
+        "type": "issue",
+        "title": "Worker daemon leaks Claude subagent processes",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1068",
+        "rank": 50,
+        "score": 3552,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 8,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1068]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "jplimack-ai"
+      },
+      {
+        "number": 1036,
+        "type": "issue",
+        "title": "Bug: summarize messages stuck in 'processing' — confirmProcessed() never reached",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1036",
+        "rank": 51,
+        "score": 3552,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 8,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1036]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "GigiTiti-Kai"
+      },
+      {
+        "number": 1048,
+        "type": "issue",
+        "title": "[Windows] worker-service daemon spawns persistent visible console window",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1048",
+        "rank": 52,
+        "score": 3551,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 9,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1048]]",
+        "relatedWikiLinks": [
+          "[[Issue-1023]]",
+          "[[Issue-1024]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "kimnamwook1"
+      },
+      {
+        "number": 1045,
+        "type": "issue",
+        "title": "PostToolUse matcher:* creates uninterruptible cascade during high tool throughput",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1045",
+        "rank": 53,
+        "score": 3551,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 9,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1045]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "SaumilBapat"
+      },
+      {
+        "number": 1029,
+        "type": "issue",
+        "title": "CORS error when saving Settings in Claude-mem 9.1.1",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1029",
+        "rank": 54,
+        "score": 3551,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 9,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1029]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "Lichmaker"
+      },
+      {
+        "number": 1024,
+        "type": "issue",
+        "title": "Orphan reaper fails on Windows: $_ PowerShell syntax error (regression from #517)",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1024",
+        "rank": 55,
+        "score": 3551,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 9,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1024]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "LayZeeDK"
+      },
+      {
+        "number": 1027,
+        "type": "issue",
+        "title": "[❌ ERROR] [📦 SDK    ] [session-9] Missing last_assistant_message in session for summary prompt",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1027",
+        "rank": 56,
+        "score": 3551,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 9,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1027]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "luoli-51world"
+      },
+      {
+        "number": 1038,
+        "type": "issue",
+        "title": "claude-mem web-mcp-search not save",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1038",
+        "rank": 57,
+        "score": 3550,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 10,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1038]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "TTT1231"
+      },
+      {
+        "number": 978,
+        "type": "issue",
+        "title": "Bug: SessionStart hook doesn't fire for 'Continue' sessions",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/978",
+        "rank": 58,
+        "score": 3550,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 10,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-978]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "firmcarrot"
+      },
+      {
+        "number": 918,
+        "type": "issue",
+        "title": "SessionStart hooks block input in terminal on Windows — needs \"async\": true",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/918",
+        "rank": 59,
+        "score": 3549,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-918]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "23rdletter"
+      },
+      {
+        "number": 984,
+        "type": "issue",
+        "title": "Stop hook fails with \"Unknown event type: session-complete\"",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/984",
+        "rank": 60,
+        "score": 3549,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-984]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "opsbl"
+      },
+      {
+        "number": 598,
+        "type": "issue",
+        "title": "Too many messages, polluting my conversation history",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/598",
+        "rank": 61,
+        "score": 3549,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-598]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "abhijit8ganguly-afk"
+      },
+      {
+        "number": 923,
+        "type": "issue",
+        "title": "Slow Plugin Loading Time on Claude Startup",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/923",
+        "rank": 62,
+        "score": 3549,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-923]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "ruslanlap"
+      },
+      {
+        "number": 744,
+        "type": "issue",
+        "title": "sessionInitHandler throws error when prompt is empty (breaks Codex CLI integration)",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/744",
+        "rank": 63,
+        "score": 3549,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-744]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "JKVirus"
+      },
+      {
+        "number": 781,
+        "type": "issue",
+        "title": "Plugin doesn't respect disabled state - requires manual intervention to fully stop",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/781",
+        "rank": 64,
+        "score": 3549,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-781]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "Nickonomic"
+      },
+      {
+        "number": 784,
+        "type": "issue",
+        "title": "Internal memory agent output leaks to user on claude --continue",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/784",
+        "rank": 65,
+        "score": 3549,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-784]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "paseriINU"
+      },
+      {
+        "number": 987,
+        "type": "issue",
+        "title": "Stop hook can cause infinite session loop when summarize output is interpreted as instructions",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/987",
+        "rank": 66,
+        "score": 3549,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-987]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "costa-marcello"
+      },
+      {
+        "number": 957,
+        "type": "issue",
+        "title": "SessionStart hook chain unnecessarily stops worker on every startup",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/957",
+        "rank": 67,
+        "score": 3549,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-957]]",
+        "relatedWikiLinks": [
+          "[[Issue-918]]",
+          "[[Issue-923]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "rodboev"
+      },
+      {
+        "number": 975,
+        "type": "issue",
+        "title": "Stop hook error: Zod cyclical schema resolution fails in worker-service.cjs",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/975",
+        "rank": 68,
+        "score": 3549,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-975]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "ViktorMotor"
+      },
+      {
+        "number": 791,
+        "type": "issue",
+        "title": "[Windows] Keyword search (FTS5) returns 'No results' despite data existing in database (v9.0.6)",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/791",
+        "rank": 69,
+        "score": 3549,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-791]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "ChampPABA"
+      },
+      {
+        "number": 707,
+        "type": "issue",
+        "title": "Feature: SQLite-only backend mode to prevent Chroma memory consumption (35GB RAM fix)",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/707",
+        "rank": 70,
+        "score": 3519,
+        "intent": "feature",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 11,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-707]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Define acceptance criteria and scope a minimal implementation."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "soho-dev-account"
+      },
+      {
+        "number": 1042,
+        "type": "issue",
+        "title": "ENOENT error in stop hooks: race condition reading package.json during shutdown",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1042",
+        "rank": 71,
+        "score": 3351,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "low",
+        "inactivityDays": 9,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1042]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "guzman109"
+      },
+      {
+        "number": 1158,
+        "type": "issue",
+        "title": "Duplicate observations: each PostToolUse creates 6-10 identical records",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1158",
+        "rank": 72,
+        "score": 2660,
+        "intent": "bug",
+        "severityBucket": "medium",
+        "priorityBucket": "urgent",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1158]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "tmseco"
+      },
+      {
+        "number": 1187,
+        "type": "issue",
+        "title": "skills/ directory missing after install — skill paths in openclaw.plugin.json don't match installer output",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1187",
+        "rank": 73,
+        "score": 2560,
+        "intent": "bug",
+        "severityBucket": "medium",
+        "priorityBucket": "high",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1187]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "lawong888"
+      },
+      {
+        "number": 1181,
+        "type": "issue",
+        "title": "SessionStart hooks show as 'error' in Claude Code UI due to stderr usage",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1181",
+        "rank": 74,
+        "score": 2560,
+        "intent": "bug",
+        "severityBucket": "medium",
+        "priorityBucket": "high",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1181]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "nir-singher-thenvoi"
+      },
+      {
+        "number": 1107,
+        "type": "issue",
+        "title": "Bug: task-notification system messages recorded as user_prompts (massive duplication)",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1107",
+        "rank": 75,
+        "score": 2557,
+        "intent": "bug",
+        "severityBucket": "medium",
+        "priorityBucket": "high",
+        "inactivityDays": 3,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1107]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "GigiTiti-Kai"
+      },
+      {
+        "number": 1077,
+        "type": "issue",
+        "title": "chroma-mcp processes are never cleaned up when Claude Code sessions end — causes OOM",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1077",
+        "rank": 76,
+        "score": 2555,
+        "intent": "bug",
+        "severityBucket": "medium",
+        "priorityBucket": "high",
+        "inactivityDays": 5,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1077]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "omar-elmountassir"
+      },
+      {
+        "number": 1075,
+        "type": "issue",
+        "title": "🐛 Infinite notification loop causes token/storage exhaustion when background agents complete",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1075",
+        "rank": 77,
+        "score": 2553,
+        "intent": "bug",
+        "severityBucket": "medium",
+        "priorityBucket": "high",
+        "inactivityDays": 7,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1075]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "akiyoshBH"
+      },
+      {
+        "number": 1046,
+        "type": "issue",
+        "title": "Race condition: observations stored with empty project string",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1046",
+        "rank": 78,
+        "score": 2553,
+        "intent": "bug",
+        "severityBucket": "medium",
+        "priorityBucket": "high",
+        "inactivityDays": 7,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1046]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "hophuongnam"
+      },
+      {
+        "number": 1061,
+        "type": "issue",
+        "title": "[Bug] Duplicate observations persist in v10.0.1 - same user prompt generates 40+ near-identical records",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1061",
+        "rank": 79,
+        "score": 2552,
+        "intent": "bug",
+        "severityBucket": "medium",
+        "priorityBucket": "high",
+        "inactivityDays": 8,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1061]]",
+        "relatedWikiLinks": [
+          "[[Issue-598]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Reproduce the failure and isolate the smallest safe fix."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "yulflow"
+      },
+      {
+        "number": 1081,
+        "type": "issue",
+        "title": "Bug: Worktree observations tagged with worktree dir name instead of parent project",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1081",
+        "rank": 80,
+        "score": 2424,
+        "intent": "feature",
+        "severityBucket": "medium",
+        "priorityBucket": "normal",
+        "inactivityDays": 6,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1081]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Define acceptance criteria and scope a minimal implementation."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "liqweed"
+      },
+      {
+        "number": 943,
+        "type": "issue",
+        "title": "Feature Request: Support custom API endpoint / LiteLLM proxy",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/943",
+        "rank": 81,
+        "score": 1422,
+        "intent": "feature",
+        "severityBucket": "low",
+        "priorityBucket": "normal",
+        "inactivityDays": 8,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-943]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Define acceptance criteria and scope a minimal implementation."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "jiang-yuan"
+      },
+      {
+        "number": 1026,
+        "type": "issue",
+        "title": "ChromaDB vector search unconditionally disabled on Windows with no opt-in",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/issues/1026",
+        "rank": 82,
+        "score": 1421,
+        "intent": "feature",
+        "severityBucket": "low",
+        "priorityBucket": "normal",
+        "inactivityDays": 9,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[Issue-1026]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review the latest issue timeline and confirm the current problem statement.",
+            "Define acceptance criteria and scope a minimal implementation."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Re-check the original report scenario end-to-end."
+          ]
+        },
+        "authorLogin": "LayZeeDK"
+      }
+    ],
+    "prs": [
+      {
+        "number": 1157,
+        "type": "pr",
+        "title": "Security hardening: auth, permissions, sanitization, provenance",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1157",
+        "rank": 1,
+        "score": 4810,
+        "intent": "feature",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1157]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "thedotmack"
+      },
+      {
+        "number": 1101,
+        "type": "pr",
+        "title": "feat: interactive feed setup wizard and standalone daemon",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1101",
+        "rank": 2,
+        "score": 4684,
+        "intent": "infra",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 1,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1101]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Dry-run automation/workflow changes before rollout."
+          ]
+        },
+        "authorLogin": "Glucksberg"
+      },
+      {
+        "number": 474,
+        "type": "pr",
+        "title": "fix(windows): prevent libuv assertion failure in smart-install.js",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/474",
+        "rank": 3,
+        "score": 4660,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-474]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "CCavalancia"
+      },
+      {
+        "number": 1072,
+        "type": "pr",
+        "title": "fix: add error handling to prevent Stop hook failures from package.json read errors",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1072",
+        "rank": 4,
+        "score": 4660,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1072]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "rajivsinclair"
+      },
+      {
+        "number": 1085,
+        "type": "pr",
+        "title": "fix: eliminate unbounded process spawning with 4-layer defense",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1085",
+        "rank": 5,
+        "score": 4660,
+        "intent": "bug",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1085]]",
+        "relatedWikiLinks": [
+          "[[Issue-1068]]",
+          "[[Issue-1077]]",
+          "[[Issue-1062]]",
+          "[[Issue-1023]]",
+          "[[Issue-1024]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "rodboev"
+      },
+      {
+        "number": 1143,
+        "type": "pr",
+        "title": "feat: add terminal output control for SessionStart context",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1143",
+        "rank": 6,
+        "score": 4630,
+        "intent": "feature",
+        "severityBucket": "critical",
+        "priorityBucket": "urgent",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1143]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Critical severity may need immediate coordination and rollback options.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "adong"
+      },
+      {
+        "number": 1134,
+        "type": "pr",
+        "title": "feat(chroma): add lazy reconnect when vector search is requested",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1134",
+        "rank": 7,
+        "score": 3719,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "urgent",
+        "inactivityDays": 1,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1134]]",
+        "relatedWikiLinks": [
+          "[[PR-1132]]",
+          "[[PR-1133]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "Glucksberg"
+      },
+      {
+        "number": 1133,
+        "type": "pr",
+        "title": "fix(chroma): capture stderr and detect port conflicts on startup",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1133",
+        "rank": 8,
+        "score": 3719,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "urgent",
+        "inactivityDays": 1,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1133]]",
+        "relatedWikiLinks": [
+          "[[PR-1132]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "Glucksberg"
+      },
+      {
+        "number": 1102,
+        "type": "pr",
+        "title": "fix: critical bug fixes, snap sandbox support, and resource monitoring",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1102",
+        "rank": 9,
+        "score": 3660,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "urgent",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1102]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "chadru"
+      },
+      {
+        "number": 1092,
+        "type": "pr",
+        "title": "fix: harden OpenClaw integration, auth chain, and SSE stability",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1092",
+        "rank": 10,
+        "score": 3619,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 1,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1092]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "Glucksberg"
+      },
+      {
+        "number": 1127,
+        "type": "pr",
+        "title": "feat: implement 5-stage observation processing pipeline",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1127",
+        "rank": 11,
+        "score": 3560,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1127]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "laihenyi"
+      },
+      {
+        "number": 1064,
+        "type": "pr",
+        "title": "feat: sync imported observations to Chroma vector DB",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1064",
+        "rank": 12,
+        "score": 3560,
+        "intent": "bug",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1064]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "colangelo"
+      },
+      {
+        "number": 1078,
+        "type": "pr",
+        "title": "Título: Add Spanish translations and Windows improvementsAdd Spanish translations and Windows improvements",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1078",
+        "rank": 13,
+        "score": 3530,
+        "intent": "feature",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1078]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "oreginha"
+      },
+      {
+        "number": 1111,
+        "type": "pr",
+        "title": "Add ChromaDB vector index backfill script",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1111",
+        "rank": 14,
+        "score": 3530,
+        "intent": "feature",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1111]]",
+        "relatedWikiLinks": [
+          "[[Issue-1110]]",
+          "[[Issue-1104]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "ACT900"
+      },
+      {
+        "number": 1144,
+        "type": "pr",
+        "title": "fix: prevent duplicate worker daemons (version mismatch loop + spawn races)",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1144",
+        "rank": 15,
+        "score": 3525,
+        "intent": "infra",
+        "severityBucket": "high",
+        "priorityBucket": "high",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1144]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "High-severity changes can regress user-critical flows if scope drifts.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Dry-run automation/workflow changes before rollout."
+          ]
+        },
+        "authorLogin": "influenist"
+      },
+      {
+        "number": 1142,
+        "type": "pr",
+        "title": "Skip summary generation for subagent runs",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1142",
+        "rank": 16,
+        "score": 2805,
+        "intent": "infra",
+        "severityBucket": "medium",
+        "priorityBucket": "urgent",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1142]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Dry-run automation/workflow changes before rollout."
+          ]
+        },
+        "authorLogin": "thedotmack"
+      },
+      {
+        "number": 1169,
+        "type": "pr",
+        "title": "fix: deduplicate session-init to prevent redundant re-initialization",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1169",
+        "rank": 17,
+        "score": 2660,
+        "intent": "bug",
+        "severityBucket": "medium",
+        "priorityBucket": "urgent",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1169]]",
+        "relatedWikiLinks": [
+          "[[PR-1142]]"
+        ],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "greghughespdx"
+      },
+      {
+        "number": 1180,
+        "type": "pr",
+        "title": "fix: detect auth errors and prevent infinite retry loops",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1180",
+        "rank": 18,
+        "score": 2620,
+        "intent": "bug",
+        "severityBucket": "medium",
+        "priorityBucket": "high",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1180]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "Glucksberg"
+      },
+      {
+        "number": 1177,
+        "type": "pr",
+        "title": "feat(provider): add OpenAI Codex OAuth provider for observation extraction",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1177",
+        "rank": 19,
+        "score": 2590,
+        "intent": "feature",
+        "severityBucket": "medium",
+        "priorityBucket": "high",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1177]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "Glucksberg"
+      },
+      {
+        "number": 1132,
+        "type": "pr",
+        "title": "fix(chroma): robust binary resolution for daemon-spawned workers",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1132",
+        "rank": 20,
+        "score": 2584,
+        "intent": "infra",
+        "severityBucket": "medium",
+        "priorityBucket": "high",
+        "inactivityDays": 1,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1132]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Dry-run automation/workflow changes before rollout."
+          ]
+        },
+        "authorLogin": "Glucksberg"
+      },
+      {
+        "number": 1186,
+        "type": "pr",
+        "title": "feat: Litestream cloud backup integration for SQLite database",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1186",
+        "rank": 21,
+        "score": 2560,
+        "intent": "bug",
+        "severityBucket": "medium",
+        "priorityBucket": "high",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1186]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "leepokai"
+      },
+      {
+        "number": 1088,
+        "type": "pr",
+        "title": "fix: use persistent venv instead of uvx to prevent cache bloat",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1088",
+        "rank": 22,
+        "score": 2430,
+        "intent": "feature",
+        "severityBucket": "medium",
+        "priorityBucket": "normal",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1088]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "influenist"
+      },
+      {
+        "number": 1129,
+        "type": "pr",
+        "title": "feat: add generic session backfill script",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1129",
+        "rank": 23,
+        "score": 2430,
+        "intent": "feature",
+        "severityBucket": "medium",
+        "priorityBucket": "normal",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1129]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "gkastanis"
+      },
+      {
+        "number": 1150,
+        "type": "pr",
+        "title": "fix: use nullish coalescing for promptNumber to preserve zero values",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1150",
+        "rank": 24,
+        "score": 2430,
+        "intent": "feature",
+        "severityBucket": "medium",
+        "priorityBucket": "normal",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1150]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "AI-Reviewer-QS"
+      },
+      {
+        "number": 1164,
+        "type": "pr",
+        "title": "perf(memory): bound conversation history + lower Chroma embed footprint",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1164",
+        "rank": 25,
+        "score": 2429,
+        "intent": "feature",
+        "severityBucket": "medium",
+        "priorityBucket": "normal",
+        "inactivityDays": 1,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1164]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "akornfarm"
+      },
+      {
+        "number": 1083,
+        "type": "pr",
+        "title": "Add thoughts timeline: capture, store, search & broadcast Claude thinking blocks",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1083",
+        "rank": 26,
+        "score": 1765,
+        "intent": "test",
+        "severityBucket": "low",
+        "priorityBucket": "urgent",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1083]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "thedotmack"
+      },
+      {
+        "number": 1151,
+        "type": "pr",
+        "title": "fix: make privacy tag stripping case-insensitive",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1151",
+        "rank": 27,
+        "score": 1385,
+        "intent": "test",
+        "severityBucket": "low",
+        "priorityBucket": "normal",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1151]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "AI-Reviewer-QS"
+      },
+      {
+        "number": 1152,
+        "type": "pr",
+        "title": "fix: remove non-existent columns from getSessionSummaryById query",
+        "htmlUrl": "https://github.com/thedotmack/claude-mem/pull/1152",
+        "rank": 28,
+        "score": 1385,
+        "intent": "test",
+        "severityBucket": "low",
+        "priorityBucket": "normal",
+        "inactivityDays": 0,
+        "outdatedCandidate": false,
+        "outdatedReasons": [],
+        "wikiLink": "[[PR-1152]]",
+        "relatedWikiLinks": [],
+        "draftPlan": {
+          "nextSteps": [
+            "Review PR diff, unresolved comments, and merge-readiness blockers.",
+            "Validate branch scope against the stated intent before merge."
+          ],
+          "risks": [
+            "Hidden edge cases may remain if the issue context is incomplete.",
+            "Ongoing discussion churn can change acceptance criteria mid-implementation."
+          ],
+          "validationChecks": [
+            "Run targeted tests for affected areas and verify no new failures.",
+            "Confirm CI state, review status, and merge conflict readiness."
+          ]
+        },
+        "authorLogin": "AI-Reviewer-QS"
+      }
+    ]
+  }
+}
