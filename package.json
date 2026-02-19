@@ -99,6 +99,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.1.76",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "ansi-to-html": "^0.7.2",
+    "commander": "^14.0.3",
     "dompurify": "^3.3.1",
     "express": "^4.18.2",
     "glob": "^11.0.3",
