@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import type { Summary, SessionListItem, SessionGroup } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { logger } from '../utils/logger';
+import { toLocalDateKey } from '../utils/date';
 
 // ─────────────────────────────────────────────────────────
 // Pure utility functions (exported for unit testing)
@@ -10,22 +11,10 @@ import { logger } from '../utils/logger';
 const SESSION_LIST_LIMIT = 50;
 
 /**
- * Returns the local date string "YYYY-MM-DD" for a given epoch (ms).
- * Uses local time so that "Today" / "Yesterday" match the user's timezone.
- */
-function epochToLocalDateKey(epoch: number): string {
-  const d = new Date(epoch);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-/**
  * Returns the local date key for today ("YYYY-MM-DD").
  */
 function todayKey(): string {
-  return epochToLocalDateKey(Date.now());
+  return toLocalDateKey(new Date());
 }
 
 /**
@@ -34,7 +23,7 @@ function todayKey(): string {
 function yesterdayKey(): string {
   const d = new Date();
   d.setDate(d.getDate() - 1);
-  return epochToLocalDateKey(d.getTime());
+  return toLocalDateKey(d);
 }
 
 /**
@@ -88,7 +77,7 @@ export function groupSessionsByDay(items: SessionListItem[]): SessionGroup[] {
   const order: string[] = [];
 
   for (const item of items) {
-    const dateKey = epochToLocalDateKey(item.created_at_epoch);
+    const dateKey = toLocalDateKey(new Date(item.created_at_epoch));
     if (!groupMap.has(dateKey)) {
       groupMap.set(dateKey, {
         label: dateKeyToLabel(dateKey),
@@ -169,7 +158,7 @@ export async function fetchSessionPage(opts: FetchSessionPageOptions, signal?: A
  */
 export function prependSession(groups: SessionGroup[], summary: Summary, sseObservationCount?: number): SessionGroup[] {
   const item = mapSummaryToSessionListItem(summary, sseObservationCount);
-  const dateKey = epochToLocalDateKey(item.created_at_epoch);
+  const dateKey = toLocalDateKey(new Date(item.created_at_epoch));
 
   const existingIndex = groups.findIndex(g => g.dateKey === dateKey);
 
@@ -197,7 +186,7 @@ export function prependSession(groups: SessionGroup[], summary: Summary, sseObse
 export function nextDayString(dateKey: string): string {
   const [year, month, day] = dateKey.split('-').map(Number);
   const d = new Date(year, month - 1, day + 1);
-  return epochToLocalDateKey(d.getTime());
+  return toLocalDateKey(d);
 }
 
 /**

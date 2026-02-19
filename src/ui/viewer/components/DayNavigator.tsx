@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { CalendarPicker } from './CalendarPicker';
 import type { ActivityDay } from '../types';
-import { getTodayString } from '../utils/date';
+import { getTodayString, toLocalDateKey } from '../utils/date';
 
 // ---------------------------------------------------------------------------
 // Pure utilities (exported for unit testing)
@@ -25,11 +25,7 @@ function formatSingleDate(date: string, today: string): string {
  */
 function addDays(dateStr: string, days: number): string {
   const [year, month, day] = dateStr.split('-').map(Number);
-  const d = new Date(year, month - 1, day + days);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${dd}`;
+  return toLocalDateKey(new Date(year, month - 1, day + days));
 }
 
 /**

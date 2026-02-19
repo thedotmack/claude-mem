@@ -12,6 +12,17 @@ import path from 'path';
 import { getPackageRoot } from '../../../shared/paths.js';
 import { logger } from '../../../utils/logger.js';
 
+/** File extensions to skip in HTTP request logging. */
+const STATIC_EXTENSIONS = new Set([
+  '.html', '.js', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.woff', '.woff2', '.ttf', '.eot',
+]);
+
+/** Returns true when the request path ends with a known static file extension. */
+function isStaticAsset(path: string): boolean {
+  const dotIndex = path.lastIndexOf('.');
+  return dotIndex !== -1 && STATIC_EXTENSIONS.has(path.slice(dotIndex));
+}
+
 /**
  * Create all middleware for the worker service
  * @param summarizeRequestBody - Function to summarize request bodies for logging
@@ -31,10 +42,7 @@ export function createMiddleware(
   // HTTP request/response logging
   middlewares.push((req: Request, res: Response, next: NextFunction) => {
     // Skip logging for static assets, health checks, and polling endpoints
-    const staticExtensions = ['.html', '.js', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.woff', '.woff2', '.ttf', '.eot'];
-    const isStaticAsset = staticExtensions.some(ext => req.path.endsWith(ext));
-    const isPollingEndpoint = req.path === '/api/logs'; // Skip logs endpoint to avoid noise from auto-refresh
-    if (req.path.startsWith('/health') || req.path === '/' || isStaticAsset || isPollingEndpoint) {
+    if (req.path.startsWith('/health') || req.path === '/' || req.path === '/api/logs' || isStaticAsset(req.path)) {
       next(); return;
     }
 

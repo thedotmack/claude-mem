@@ -316,9 +316,6 @@ export class DataRoutes extends BaseRouteHandler {
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
     const db = this.dbManager.getSessionStore().db;
 
-    // Use cached version (read once at module load)
-    const version: string = cachedPackageVersion;
-
     // Get database stats
     const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
     const totalSessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
@@ -338,7 +335,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     res.json({
       worker: {
-        version,
+        version: cachedPackageVersion,
         uptime,
         activeSessions,
         sseClients,
@@ -398,6 +395,11 @@ export class DataRoutes extends BaseRouteHandler {
 
     res.json({ status: 'ok', isProcessing, queueDepth, activeSessions });
   });
+
+  /** Create a PendingMessageStore for queue operations. */
+  private createPendingStore(): PendingMessageStore {
+    return this.createPendingStore();
+  }
 
   /**
    * Parse pagination parameters from request query
@@ -483,7 +485,7 @@ export class DataRoutes extends BaseRouteHandler {
    * Returns all pending, processing, and failed messages with optional recently processed
    */
   private handleGetPendingQueue = this.wrapHandler((req: Request, res: Response): void => {
-    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+    const pendingStore = this.createPendingStore();
 
     // Get queue contents (pending, processing, failed)
     const queueMessages = pendingStore.getQueueMessages();
@@ -497,12 +499,19 @@ export class DataRoutes extends BaseRouteHandler {
     // Get sessions with pending work
     const sessionsWithPending = pendingStore.getSessionsWithPendingMessages();
 
+    const statusCounts = { pending: 0, processing: 0, failed: 0 };
+    for (const m of queueMessages) {
+      if (m.status in statusCounts) {
+        statusCounts[m.status as keyof typeof statusCounts]++;
+      }
+    }
+
     res.json({
       queue: {
         messages: queueMessages,
-        totalPending: queueMessages.filter((m) => m.status === 'pending').length,
-        totalProcessing: queueMessages.filter((m) => m.status === 'processing').length,
-        totalFailed: queueMessages.filter((m) => m.status === 'failed').length,
+        totalPending: statusCounts.pending,
+        totalProcessing: statusCounts.processing,
+        totalFailed: statusCounts.failed,
         stuckCount
       },
       recentlyProcessed,
@@ -537,7 +546,7 @@ export class DataRoutes extends BaseRouteHandler {
    * Returns the number of messages cleared
    */
   private handleClearFailedQueue = this.wrapHandler((req: Request, res: Response): void => {
-    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+    const pendingStore = this.createPendingStore();
 
     const clearedCount = pendingStore.clearFailed();
 
@@ -555,7 +564,7 @@ export class DataRoutes extends BaseRouteHandler {
    * Returns the number of messages cleared
    */
   private handleClearAllQueue = this.wrapHandler((req: Request, res: Response): void => {
-    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+    const pendingStore = this.createPendingStore();
 
     const clearedCount = pendingStore.clearAll();
 

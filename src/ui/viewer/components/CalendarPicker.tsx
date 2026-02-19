@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { ActivityDay } from '../types';
-import { getTodayString } from '../utils/date';
+import { getTodayString, toLocalDateKey } from '../utils/date';
 
 // ---------------------------------------------------------------------------
 // Pure functions (exported for unit testing)
@@ -40,15 +40,12 @@ export function buildMonthGrid(year: number, month: number): CalendarCell[][] {
   for (let week = 0; week < 6; week++) {
     const row: CalendarCell[] = [];
     for (let day = 0; day < 7; day++) {
-      const y = currentDate.getFullYear();
-      const m = String(currentDate.getMonth() + 1).padStart(2, '0');
-      const d = String(currentDate.getDate()).padStart(2, '0');
       row.push({
-        date: `${y}-${m}-${d}`,
+        date: toLocalDateKey(currentDate),
         dayOfMonth: currentDate.getDate(),
         isCurrentMonth: currentDate.getMonth() === month && currentDate.getFullYear() === year,
       });
-      currentDate = new Date(y, currentDate.getMonth(), currentDate.getDate() + 1);
+      currentDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate() + 1);
     }
     grid.push(row);
   }

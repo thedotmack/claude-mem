@@ -3,23 +3,14 @@ import type { ActivityDay, SearchResponse } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { UI } from '../constants/ui';
 import { logger } from '../utils/logger';
+import { toLocalDateKey } from '../utils/date';
 import { inclusiveDateStart, inclusiveDateEnd } from './useSearch';
-
-interface UseActivityDensityResult {
-  days: ActivityDay[];
-  isLoading: boolean;
-}
-
-/** Format a Date as a local YYYY-MM-DD string (avoids UTC drift from toISOString). */
-function toLocalDateStr(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 
 function bucketByDay(data: SearchResponse): ActivityDay[] {
   const buckets = new Map<string, ActivityDay>();
 
   const addItem = (epoch: number, type: 'observations' | 'summaries' | 'prompts') => {
-    const date = toLocalDateStr(new Date(epoch));
+    const date = toLocalDateKey(new Date(epoch));
     const existing = buckets.get(date) ?? { date, count: 0, observations: 0, summaries: 0, prompts: 0 };
     buckets.set(date, { ...existing, count: existing.count + 1, [type]: existing[type] + 1 });
   };
@@ -35,8 +26,7 @@ function bucketByDay(data: SearchResponse): ActivityDay[] {
   }
 
   // Fill in missing days with zeros
-  const allDates = [...buckets.keys()].sort();
-  if (allDates.length === 0) return [];
+  if (buckets.size === 0) return [];
 
   const result: ActivityDay[] = [];
   const endDate = new Date();
@@ -45,12 +35,17 @@ function bucketByDay(data: SearchResponse): ActivityDay[] {
 
   const cursor = new Date(startDate);
   while (cursor <= endDate) {
-    const dateStr = toLocalDateStr(cursor);
+    const dateStr = toLocalDateKey(cursor);
     result.push(buckets.get(dateStr) ?? { date: dateStr, count: 0, observations: 0, summaries: 0, prompts: 0 });
     cursor.setDate(cursor.getDate() + 1);
   }
 
   return result;
+}
+
+interface UseActivityDensityResult {
+  days: ActivityDay[];
+  isLoading: boolean;
 }
 
 export function useActivityDensity(project: string): UseActivityDensityResult {
@@ -59,16 +54,15 @@ export function useActivityDensity(project: string): UseActivityDensityResult {
   const cacheKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const cacheKey = project;
-    if (cacheKeyRef.current === cacheKey) return;
+    if (cacheKeyRef.current === project) return;
 
     const controller = new AbortController();
     setIsLoading(true);
 
-    const endDateStr = toLocalDateStr(new Date());
+    const endDateStr = toLocalDateKey(new Date());
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - UI.ACTIVITY_BAR_DAYS);
-    const startStr = toLocalDateStr(startDate);
+    const startStr = toLocalDateKey(startDate);
 
     const params = new URLSearchParams({
       format: 'json',
@@ -82,7 +76,7 @@ export function useActivityDensity(project: string): UseActivityDensityResult {
       .then(res => res.json() as Promise<SearchResponse>)
       .then(data => {
         setDays(bucketByDay(data));
-        cacheKeyRef.current = cacheKey;
+        cacheKeyRef.current = project;
       })
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === 'AbortError') return;

@@ -215,41 +215,29 @@ export class Server {
     // Admin endpoints for process management (localhost-only)
     this.app.post('/api/admin/restart', requireLocalhost, (_req: Request, res: Response) => {
       res.json({ status: 'restarting' });
-
-      // Handle Windows managed mode via IPC
-      const isWindowsManaged = process.platform === 'win32' &&
-        process.env.MAGIC_CLAUDE_MEM_MANAGED === 'true' &&
-        typeof process.send === 'function';
-
-      if (isWindowsManaged && process.send) {
-        logger.info('SYSTEM', 'Sending restart request to wrapper');
-        process.send({ type: 'restart' });
-      } else {
-        // Unix or standalone Windows - handle restart ourselves
-        setTimeout(() => {
-          void this.options.onRestart();
-        }, 100);
-      }
+      this.sendAdminAction('restart', this.options.onRestart);
     });
 
     this.app.post('/api/admin/shutdown', requireLocalhost, (_req: Request, res: Response) => {
       res.json({ status: 'shutting_down' });
-
-      // Handle Windows managed mode via IPC
-      const isWindowsManaged = process.platform === 'win32' &&
-        process.env.MAGIC_CLAUDE_MEM_MANAGED === 'true' &&
-        typeof process.send === 'function';
-
-      if (isWindowsManaged && process.send) {
-        logger.info('SYSTEM', 'Sending shutdown request to wrapper');
-        process.send({ type: 'shutdown' });
-      } else {
-        // Unix or standalone Windows - handle shutdown ourselves
-        setTimeout(() => {
-          void this.options.onShutdown();
-        }, 100);
-      }
+      this.sendAdminAction('shutdown', this.options.onShutdown);
     });
+  }
+
+  /**
+   * Dispatch an admin action via IPC (Windows managed mode) or directly.
+   */
+  private sendAdminAction(action: 'restart' | 'shutdown', fallback: () => Promise<void>): void {
+    const isWindowsManaged = process.platform === 'win32' &&
+      process.env.MAGIC_CLAUDE_MEM_MANAGED === 'true' &&
+      typeof process.send === 'function';
+
+    if (isWindowsManaged && process.send) {
+      logger.info('SYSTEM', `Sending ${action} request to wrapper`);
+      process.send({ type: action });
+    } else {
+      setTimeout(() => { void fallback(); }, 100);
+    }
   }
 
   /**
