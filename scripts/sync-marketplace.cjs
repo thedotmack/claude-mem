@@ -1,137 +1,224 @@
 #!/usr/bin/env node
 /**
- * Protected sync-marketplace script
+ * Dev sync script: checkout branch in marketplace, build, sync to cache.
  *
- * Prevents accidental rsync overwrite when installed plugin is on beta branch.
- * If on beta, the user should use the UI to update instead.
+ * Instead of rsync from the dev repo (which fights .gitignore exclusions
+ * and leaves the binary out), this script:
+ *   1. Pushes current branch to origin
+ *   2. Checks out that branch in the marketplace git clone
+ *   3. Pulls latest
+ *   4. Installs deps and builds (CJS + binary) in-place
+ *   5. Nukes stale cache dirs, rsyncs plugin/ to the versioned cache
+ *   6. Restarts the worker and waits for health check
  */
 
 const { execSync } = require('child_process');
-const { existsSync, readFileSync } = require('fs');
+const { existsSync, readFileSync, readdirSync, rmSync } = require('fs');
 const path = require('path');
 const os = require('os');
+const http = require('http');
 
-const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+// ── Paths ───────────────────────────────────────────────────────────
+const DEV_REPO = path.join(__dirname, '..');
+const MARKETPLACE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
 
-function getCurrentBranch() {
-  try {
-    if (!existsSync(path.join(INSTALLED_PATH, '.git'))) {
-      return null;
-    }
-    return execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd: INSTALLED_PATH,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe']
-    }).trim();
-  } catch {
-    return null;
-  }
+// ── Helpers ─────────────────────────────────────────────────────────
+function log(message) { console.log(`\x1b[32m[sync]\x1b[0m ${message}`); }
+function warn(message) { console.log(`\x1b[33m[sync]\x1b[0m ${message}`); }
+function fail(message) { console.error(`\x1b[31m[sync]\x1b[0m ${message}`); process.exit(1); }
+
+function run(command, options = {}) {
+  const defaults = { stdio: 'inherit', encoding: 'utf-8' };
+  return execSync(command, { ...defaults, ...options });
 }
 
-function getGitignoreExcludes(basePath) {
-  const gitignorePath = path.join(basePath, '.gitignore');
-  if (!existsSync(gitignorePath)) return '';
-
-  const lines = readFileSync(gitignorePath, 'utf-8').split('\n');
-  return lines
-    .map(line => line.trim())
-    .filter(line => line && !line.startsWith('#') && !line.startsWith('!'))
-    .map(pattern => `--exclude=${JSON.stringify(pattern)}`)
-    .join(' ');
+function runQuiet(command, options = {}) {
+  return execSync(command, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], ...options }).trim();
 }
 
-const branch = getCurrentBranch();
-const isForce = process.argv.includes('--force');
-
-if (branch && branch !== 'main' && !isForce) {
-  console.log('');
-  console.log('\x1b[33m%s\x1b[0m', `WARNING: Installed plugin is on beta branch: ${branch}`);
-  console.log('\x1b[33m%s\x1b[0m', 'Running rsync would overwrite beta code.');
-  console.log('');
-  console.log('Options:');
-  console.log('  1. Use UI at http://localhost:37777 to update beta');
-  console.log('  2. Switch to stable in UI first, then run sync');
-  console.log('  3. Force rsync: npm run sync-marketplace:force');
-  console.log('');
-  process.exit(1);
+function getPluginVersion(repoPath) {
+  const pluginJsonPath = path.join(repoPath, 'plugin', '.claude-plugin', 'plugin.json');
+  return JSON.parse(readFileSync(pluginJsonPath, 'utf-8')).version;
 }
 
-// Get version from plugin.json
-function getPluginVersion() {
-  try {
-    const pluginJsonPath = path.join(__dirname, '..', 'plugin', '.claude-plugin', 'plugin.json');
-    const pluginJson = JSON.parse(readFileSync(pluginJsonPath, 'utf-8'));
-    return pluginJson.version;
-  } catch (error) {
-    console.error('\x1b[31m%s\x1b[0m', 'Failed to read plugin version:', error.message);
-    process.exit(1);
-  }
+// ── Step 1: Push current branch ─────────────────────────────────────
+log('Step 1/6: Pushing current branch to origin...');
+
+const devBranch = runQuiet('git rev-parse --abbrev-ref HEAD', { cwd: DEV_REPO });
+if (!devBranch) fail('Could not determine current branch');
+log(`  Branch: ${devBranch}`);
+
+// Push to origin (create upstream if needed)
+run(`git push -u origin ${devBranch}`, { cwd: DEV_REPO });
+
+// ── Step 2: Checkout branch in marketplace ──────────────────────────
+log(`Step 2/6: Checking out ${devBranch} in marketplace...`);
+
+if (!existsSync(path.join(MARKETPLACE_PATH, '.git'))) {
+  fail(`Marketplace path is not a git repo: ${MARKETPLACE_PATH}`);
 }
 
-// Normal rsync for main branch or fresh install
-console.log('Syncing to marketplace...');
+// Claude Code installs plugins as single-branch clones (main only).
+// Widen the fetch refspec so we can checkout any branch.
+const currentRefspec = runQuiet('git config remote.origin.fetch', { cwd: MARKETPLACE_PATH });
+if (!currentRefspec.includes('refs/heads/*')) {
+  log('  Widening fetch refspec (was single-branch clone)');
+  run('git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"', { cwd: MARKETPLACE_PATH });
+}
+
+// Discard any dirty state from previous rsync-based syncs
+run('git checkout -- .', { cwd: MARKETPLACE_PATH });
+run('git clean -fd', { cwd: MARKETPLACE_PATH });
+
+run('git fetch origin', { cwd: MARKETPLACE_PATH });
+
+// Checkout: try local branch first, fall back to creating from remote tracking
 try {
-  const rootDir = path.join(__dirname, '..');
-  const gitignoreExcludes = getGitignoreExcludes(rootDir);
-
-  execSync(
-    `rsync -av --delete --exclude=.git --exclude=/.mcp.json --exclude=bun.lock --exclude=package-lock.json ${gitignoreExcludes} ./ ~/.claude/plugins/marketplaces/thedotmack/`,
-    { stdio: 'inherit' }
-  );
-
-  console.log('Running bun install in marketplace...');
-  execSync(
-    'cd ~/.claude/plugins/marketplaces/thedotmack/ && bun install',
-    { stdio: 'inherit' }
-  );
-
-
-  // Sync to cache folder with version
-  const version = getPluginVersion();
-  const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
-
-  const pluginDir = path.join(rootDir, 'plugin');
-  const pluginGitignoreExcludes = getGitignoreExcludes(pluginDir);
-
-  console.log(`Syncing to cache folder (version ${version})...`);
-  execSync(
-    `rsync -av --delete --exclude=.git ${pluginGitignoreExcludes} plugin/ "${CACHE_VERSION_PATH}/"`,
-    { stdio: 'inherit' }
-  );
-
-  // Install dependencies in cache directory so worker can resolve them
-  console.log(`Running bun install in cache folder (version ${version})...`);
-  execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
-
-  console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
-
-  // Trigger worker restart after file sync
-  console.log('\n🔄 Triggering worker restart...');
-  const http = require('http');
-  const req = http.request({
-    hostname: '127.0.0.1',
-    port: 37777,
-    path: '/api/admin/restart',
-    method: 'POST',
-    timeout: 2000
-  }, (res) => {
-    if (res.statusCode === 200) {
-      console.log('\x1b[32m%s\x1b[0m', '✓ Worker restart triggered');
-    } else {
-      console.log('\x1b[33m%s\x1b[0m', `ℹ Worker restart returned status ${res.statusCode}`);
-    }
-  });
-  req.on('error', () => {
-    console.log('\x1b[33m%s\x1b[0m', 'ℹ Worker not running, will start on next hook');
-  });
-  req.on('timeout', () => {
-    req.destroy();
-    console.log('\x1b[33m%s\x1b[0m', 'ℹ Worker restart timed out');
-  });
-  req.end();
-
-} catch (error) {
-  console.error('\x1b[31m%s\x1b[0m', 'Sync failed:', error.message);
-  process.exit(1);
+  runQuiet(`git rev-parse --verify ${devBranch}`, { cwd: MARKETPLACE_PATH });
+  run(`git checkout ${devBranch}`, { cwd: MARKETPLACE_PATH });
+} catch {
+  run(`git checkout -b ${devBranch} origin/${devBranch}`, { cwd: MARKETPLACE_PATH });
 }
+
+run(`git reset --hard origin/${devBranch}`, { cwd: MARKETPLACE_PATH });
+
+log(`  Marketplace now on: ${runQuiet('git rev-parse --short HEAD', { cwd: MARKETPLACE_PATH })}`);
+
+// ── Step 3: Install deps in marketplace ─────────────────────────────
+log('Step 3/6: Installing dependencies...');
+run('bun install', { cwd: MARKETPLACE_PATH });
+
+// ── Step 4: Build CJS hooks + binary in marketplace ─────────────────
+log('Step 4/6: Building hooks and binary...');
+run('npm run build', { cwd: MARKETPLACE_PATH });
+
+// ── Step 5: Sync plugin/ to versioned cache ─────────────────────────
+log('Step 5/6: Syncing to cache...');
+
+const version = getPluginVersion(MARKETPLACE_PATH);
+const cacheVersionPath = path.join(CACHE_BASE_PATH, version);
+
+// Remove ALL stale cache versions
+if (existsSync(CACHE_BASE_PATH)) {
+  const staleVersions = readdirSync(CACHE_BASE_PATH)
+    .filter(entry => !entry.startsWith('.') && entry !== version);
+  if (staleVersions.length > 0) {
+    log(`  Removing ${staleVersions.length} stale version(s): ${staleVersions.join(', ')}`);
+    for (const stale of staleVersions) {
+      rmSync(path.join(CACHE_BASE_PATH, stale), { recursive: true, force: true });
+    }
+  }
+}
+
+// Nuke current version cache to guarantee clean state
+if (existsSync(cacheVersionPath)) {
+  rmSync(cacheVersionPath, { recursive: true, force: true });
+}
+
+// rsync from marketplace's plugin/ (which has the freshly-built binary)
+run(`rsync -a --delete --exclude=.git "${MARKETPLACE_PATH}/plugin/" "${cacheVersionPath}/"`);
+
+// Verify binary landed in cache
+const binaryInCache = path.join(cacheVersionPath, 'scripts', 'claude-mem');
+if (existsSync(binaryInCache)) {
+  log(`  Binary in cache: ${binaryInCache}`);
+} else {
+  warn('  Binary NOT in cache — hooks using binary commands will fail');
+}
+
+// Verify hooks.json is the new format
+const cachedHooksPath = path.join(cacheVersionPath, 'hooks', 'hooks.json');
+if (existsSync(cachedHooksPath)) {
+  const cachedHooks = readFileSync(cachedHooksPath, 'utf-8');
+  if (cachedHooks.includes('bun-runner')) {
+    warn('  Cache has OLD hooks format (bun-runner). Expected new binary format.');
+  } else {
+    log('  Hooks format verified (binary commands)');
+  }
+}
+
+// ── Step 6: Restart worker and wait ─────────────────────────────────
+log('Step 6/6: Restarting worker...');
+
+function restartWorker() {
+  return new Promise((resolve) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: 37777,
+      path: '/api/admin/restart',
+      method: 'POST',
+      timeout: 5000
+    }, (res) => {
+      if (res.statusCode === 200) {
+        log('  Worker restart triggered');
+        resolve(true);
+      } else {
+        warn(`  Worker restart returned status ${res.statusCode}`);
+        resolve(false);
+      }
+    });
+    req.on('error', () => {
+      warn('  Worker not running, will start on next hook');
+      resolve(false);
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      warn('  Worker restart timed out');
+      resolve(false);
+    });
+    req.end();
+  });
+}
+
+function waitForWorkerHealthy(maxAttempts = 10, intervalMs = 1000) {
+  return new Promise((resolve) => {
+    let attempts = 0;
+    const check = () => {
+      attempts++;
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port: 37777,
+        path: '/api/health',
+        method: 'GET',
+        timeout: 2000
+      }, (res) => {
+        if (res.statusCode === 200) {
+          log(`  Worker healthy after ${attempts} check(s)`);
+          resolve(true);
+        } else if (attempts < maxAttempts) {
+          setTimeout(check, intervalMs);
+        } else {
+          warn(`  Worker not healthy after ${maxAttempts} checks`);
+          resolve(false);
+        }
+      });
+      req.on('error', () => {
+        if (attempts < maxAttempts) {
+          setTimeout(check, intervalMs);
+        } else {
+          warn(`  Worker not reachable after ${maxAttempts} checks`);
+          resolve(false);
+        }
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        if (attempts < maxAttempts) {
+          setTimeout(check, intervalMs);
+        } else {
+          resolve(false);
+        }
+      });
+      req.end();
+    };
+    check();
+  });
+}
+
+(async () => {
+  const restarted = await restartWorker();
+  if (restarted) {
+    await waitForWorkerHealthy();
+  }
+  log('Done.');
+})();
