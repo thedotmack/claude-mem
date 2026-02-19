@@ -860,16 +860,16 @@
     /* Analytics Bar */
     .analytics-bar {
       display: flex;
+      flex-direction: column;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
       flex: 1;
       min-width: 0;
-      justify-content: center;
     }
 
     .analytics-bar__cards {
       display: flex;
-      align-items: center;
+      align-items: stretch;
       gap: 1px;
       background: var(--color-border-secondary);
       border-radius: 6px;
@@ -878,9 +878,10 @@
     .analytics-card {
       position: relative;
       display: flex;
-      align-items: baseline;
-      gap: 4px;
-      padding: 4px 10px;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 2px;
+      padding: 6px 14px;
       background: var(--color-bg-elevated, var(--color-bg-secondary));
     }
 
@@ -899,12 +900,11 @@
       color: var(--color-text-muted);
       text-transform: uppercase;
       white-space: nowrap;
-      flex-shrink: 0;
     }
 
     .analytics-card__value {
       font-family: 'Monaspace Radon', 'Monaco', 'Menlo', monospace;
-      font-size: 13px;
+      font-size: 18px;
       font-weight: 700;
       line-height: 1;
       color: var(--color-text-primary);
@@ -912,7 +912,7 @@
     }
 
     .analytics-card--accent .analytics-card__value {
-      color: var(--color-accent-primary, #2f81f7);
+      color: var(--color-accent-success, #3fb950);
     }
 
     .analytics-card--purple .analytics-card__value {
@@ -925,7 +925,6 @@
 
     .analytics-card--muted .analytics-card__value {
       color: var(--color-text-muted);
-      font-size: 11px;
     }
 
     .analytics-card__subtitle {
@@ -996,11 +995,10 @@
 
     .analytics-skeleton {
       display: inline-block;
-      width: 32px;
-      height: 13px;
+      width: 44px;
+      height: 18px;
       background: var(--color-border-secondary);
       border-radius: 3px;
-      vertical-align: middle;
       animation: analytics-pulse 1.5s ease-in-out infinite;
     }
 

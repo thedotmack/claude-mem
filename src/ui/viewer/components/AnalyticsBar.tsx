@@ -21,8 +21,8 @@ const TOOLTIPS = {
 } as const;
 
 /**
- * Compact horizontal bar showing token analytics stats.
- * Cards flow inline with label + value on a single row.
+ * Vertical card bar showing token analytics stats.
+ * Each card shows: uppercase label, large colored value, muted subtitle.
  * Hovering or focusing a card shows a descriptive tooltip via CSS.
  */
 export const AnalyticsBar = React.memo(function AnalyticsBar({ project }: AnalyticsBarProps) {
@@ -39,6 +39,7 @@ export const AnalyticsBar = React.memo(function AnalyticsBar({ project }: Analyt
           <span className="analytics-card__value">
             {isLoading ? <span className="analytics-skeleton" role="status" aria-label="Loading read tokens" /> : formatTokenCount(data?.readTokens ?? 0)}
           </span>
+          <span className="analytics-card__subtitle">tokens</span>
           <span className="analytics-tooltip" role="tooltip">{TOOLTIPS.read}</span>
         </div>
 
@@ -47,6 +48,7 @@ export const AnalyticsBar = React.memo(function AnalyticsBar({ project }: Analyt
           <span className="analytics-card__value">
             {isLoading ? <span className="analytics-skeleton" role="status" aria-label="Loading work tokens" /> : formatTokenCount(data?.workTokens ?? 0)}
           </span>
+          <span className="analytics-card__subtitle">tokens</span>
           <span className="analytics-tooltip" role="tooltip">{TOOLTIPS.work}</span>
         </div>
 
@@ -55,6 +57,7 @@ export const AnalyticsBar = React.memo(function AnalyticsBar({ project }: Analyt
           <span className="analytics-card__value">
             {isLoading ? <span className="analytics-skeleton" role="status" aria-label="Loading recalled tokens" /> : (hasSavings ? formatTokenCount(data?.savingsTokens ?? 0) : '\u2014')}
           </span>
+          <span className="analytics-card__subtitle">tokens recalled</span>
           <span className="analytics-tooltip" role="tooltip">{TOOLTIPS.recalled}</span>
         </div>
 
@@ -65,7 +68,7 @@ export const AnalyticsBar = React.memo(function AnalyticsBar({ project }: Analyt
           </span>
           {!isLoading && (
             <span className="analytics-card__subtitle" title="sessions">
-              / {data ? String(data.sessionCount) : '0'} sess
+              {data ? String(data.sessionCount) : '0'} sessions
             </span>
           )}
           <span className="analytics-tooltip" role="tooltip">{TOOLTIPS.obs}</span>
