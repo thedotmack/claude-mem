@@ -3,6 +3,7 @@ import { createTriageConfig, type TriageConfigOverrides } from "./config.ts";
 import { detectDuplicates } from "./duplicate-detector.ts";
 import { fetchOpenItemsFromGitHub } from "./github-fetcher.ts";
 import { ingestOpenItems, type IngestionDependencies } from "./ingestion.ts";
+import { generateRecommendations } from "./recommender.ts";
 import { renderTriageReport, writeTriageArtifacts } from "./reporting.ts";
 import { scoreAndRankItems } from "./scoring.ts";
 import type { TriageResult } from "./types.ts";
@@ -36,7 +37,10 @@ export async function runTriagePrototype(
   // Detect duplicates after categorization
   const duplicateGroups = detectDuplicates(categorized);
 
-  const report = renderTriageReport(config, scoring, { categorized, duplicateGroups });
+  // Generate recommendations based on categorization and duplicate detection
+  const recommendations = generateRecommendations(categorized, duplicateGroups, config);
+
+  const report = renderTriageReport(config, scoring, { categorized, duplicateGroups, recommendations });
   if (options.writeArtifacts !== false) {
     report.artifacts = await writeTriageArtifacts(config, report, {
       outputRootDir: options.outputRootDir,
@@ -50,5 +54,6 @@ export async function runTriagePrototype(
     report,
     categorized,
     duplicateGroups,
+    recommendations,
   };
 }

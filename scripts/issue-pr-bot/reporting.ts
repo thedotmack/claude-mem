@@ -10,6 +10,8 @@ import type {
   TriageArtifactPaths,
   TriageConfig,
   TriageItemType,
+  TriageRecommendation,
+  TriageRecommendationsResult,
   TriageReport,
   TriageReportItem,
   TriageSnapshot,
@@ -286,6 +288,7 @@ function renderDeveloperBreakdown(
 export interface CategorizationEnrichment {
   categorized: CategorizedItem[];
   duplicateGroups: DuplicateGroup[];
+  recommendations?: TriageRecommendationsResult;
 }
 
 const CATEGORY_DISPLAY_NAMES: Record<CategoryCluster, string> = {
@@ -366,6 +369,107 @@ function renderDuplicateGroups(duplicateGroups: DuplicateGroup[]): string {
   return lines.join("\n");
 }
 
+function renderCloseRecommendations(
+  closeCandidates: TriageRecommendation[]
+): string {
+  const lines: string[] = ["## Close Recommendations", ""];
+
+  if (closeCandidates.length === 0) {
+    lines.push("No items recommended for closure.");
+    return lines.join("\n");
+  }
+
+  for (const recommendation of closeCandidates) {
+    lines.push(
+      `- #${recommendation.itemNumber} — **${recommendation.action}**: ${recommendation.reason}${recommendation.targetIssue ? ` (see #${recommendation.targetIssue})` : ""}`
+    );
+  }
+
+  return lines.join("\n");
+}
+
+function renderMergeRecommendations(
+  mergeCandidates: TriageRecommendation[]
+): string {
+  const lines: string[] = ["## Merge Recommendations", ""];
+
+  if (mergeCandidates.length === 0) {
+    lines.push("No duplicate groups recommended for consolidation.");
+    return lines.join("\n");
+  }
+
+  for (const recommendation of mergeCandidates) {
+    lines.push(
+      `- #${recommendation.itemNumber} — ${recommendation.reason}`
+    );
+  }
+
+  return lines.join("\n");
+}
+
+function renderDeveloperAssignments(
+  assignmentMap: Record<string, number[]>
+): string {
+  const lines: string[] = ["## Developer Assignments", ""];
+
+  const developers = Object.keys(assignmentMap);
+  if (developers.length === 0) {
+    lines.push("No developer assignments generated.");
+    return lines.join("\n");
+  }
+
+  lines.push("| Developer | Assigned Items |");
+  lines.push("|-----------|---------------|");
+
+  for (const developer of developers) {
+    const itemNumbers = assignmentMap[developer];
+    const itemLinks = itemNumbers.map((num) => `#${num}`).join(", ");
+    lines.push(`| ${developer} | ${itemLinks} |`);
+  }
+
+  return lines.join("\n");
+}
+
+function renderPrActions(
+  recommendations: TriageRecommendation[]
+): string {
+  const lines: string[] = ["## PR Actions", ""];
+
+  const prActionRecommendations = recommendations.filter(
+    (recommendation) => recommendation.action === "needs-rebase" || recommendation.action === "ready-to-merge"
+  );
+
+  if (prActionRecommendations.length === 0) {
+    lines.push("No PR-specific actions needed.");
+    return lines.join("\n");
+  }
+
+  const needsRebase = prActionRecommendations.filter(
+    (recommendation) => recommendation.action === "needs-rebase"
+  );
+  const readyToMerge = prActionRecommendations.filter(
+    (recommendation) => recommendation.action === "ready-to-merge"
+  );
+
+  if (needsRebase.length > 0) {
+    lines.push("### Needs Rebase", "");
+    for (const recommendation of needsRebase) {
+      lines.push(`- #${recommendation.itemNumber}: ${recommendation.reason}`);
+    }
+    lines.push("");
+  }
+
+  if (readyToMerge.length > 0) {
+    lines.push("### Ready to Merge", "");
+    for (const recommendation of readyToMerge) {
+      lines.push(`- #${recommendation.itemNumber}: ${recommendation.reason}`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
 function renderRunBody(
   config: TriageConfig,
   runWikiLink: string,
@@ -397,6 +501,17 @@ function renderRunBody(
       headerLines.push(`- Categories: ${categorySummary}`);
     }
     headerLines.push(`- Duplicate groups: ${enrichment.duplicateGroups.length}`);
+
+    if (enrichment.recommendations) {
+      const { closeCandidates, mergeCandidates, assignmentMap, recommendations: allRecs } = enrichment.recommendations;
+      const prActionCount = allRecs.filter(
+        (r) => r.action === "needs-rebase" || r.action === "ready-to-merge"
+      ).length;
+      const totalAssigned = Object.values(assignmentMap).reduce(
+        (sum, items) => sum + items.length, 0
+      );
+      headerLines.push(`- Recommendations: Close: ${closeCandidates.length}, Merge: ${mergeCandidates.length}, Assign: ${totalAssigned}, PR Actions: ${prActionCount}`);
+    }
   }
 
   const header = headerLines.join("\n");
@@ -417,6 +532,13 @@ function renderRunBody(
   if (enrichment) {
     markdownParts.push(renderIssuesByCategory(enrichment.categorized));
     markdownParts.push(renderDuplicateGroups(enrichment.duplicateGroups));
+
+    if (enrichment.recommendations) {
+      markdownParts.push(renderCloseRecommendations(enrichment.recommendations.closeCandidates));
+      markdownParts.push(renderMergeRecommendations(enrichment.recommendations.mergeCandidates));
+      markdownParts.push(renderDeveloperAssignments(enrichment.recommendations.assignmentMap));
+      markdownParts.push(renderPrActions(enrichment.recommendations.recommendations));
+    }
   }
 
   return {

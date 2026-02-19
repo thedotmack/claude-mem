@@ -122,7 +122,7 @@ related:
 # Issue/PR Prototype Triage Report
 
 Repository: thedotmack/claude-mem
-Generated: 2026-02-19T20:20:55.644Z
+Generated: 2026-02-19T20:24:01.944Z
 Run Link: [[Triage-Run-2026-02-19]]
 
 ## Summary
@@ -133,6 +133,7 @@ Run Link: [[Triage-Run-2026-02-19]]
 - Outdated-close PR candidates: 0
 - Categories: Chroma: 42, Process: 45, Windows: 1, Hooks: 2, Installation: 4, Security: 11, Feature Request: 1, Uncategorized: 4
 - Duplicate groups: 9
+- Recommendations: Close: 15, Merge: 3, Assign: 92, PR Actions: 0
 
 ## Issues
 
@@ -1014,3 +1015,39 @@ Run Link: [[Triage-Run-2026-02-19]]
 - Duplicates: #1157
 - Reason: shared-issue-reference
 
+
+## Close Recommendations
+
+- #1111 — **close-duplicate**: Duplicate of #1110 (shared-issue-reference) (see #1110)
+- #1120 — **close-duplicate**: Duplicate of #1110 (shared-issue-reference) (see #1110)
+- #1123 — **close-duplicate**: Duplicate of #1110 (shared-issue-reference) (see #1110)
+- #1160 — **close-duplicate**: Duplicate of #1110 (shared-issue-reference) (see #1110)
+- #1062 — **close-duplicate**: Duplicate of #1024 (shared-issue-reference) (see #1024)
+- #1085 — **close-duplicate**: Duplicate of #1024 (shared-issue-reference) (see #1024)
+- #1131 — **close-duplicate**: Duplicate of #1024 (shared-issue-reference) (see #1024)
+- #1052 — **close-duplicate**: Duplicate of #1036 (shared-issue-reference) (see #1036)
+- #1137 — **close-duplicate**: Duplicate of #1036 (shared-issue-reference) (see #1036)
+- #1183 — **close-duplicate**: Duplicate of #1182 (shared-issue-reference) (see #1182)
+- #730 — **close-duplicate**: Duplicate of #707 (shared-issue-reference) (see #707)
+- #1134 — **close-duplicate**: Duplicate of #1133 (shared-issue-reference) (see #1133)
+- #1145 — **close-duplicate**: Duplicate of #1144 (title-similarity (0.62)) (see #1144)
+- #1058 — **close-duplicate**: Duplicate of #1048 (shared-issue-reference) (see #1048)
+- #1157 — **close-duplicate**: Duplicate of #1153 (shared-issue-reference) (see #1153)
+
+## Merge Recommendations
+
+- #1110 — Group has 5 related items — consolidate into tracking issue
+- #1024 — Group has 4 related items — consolidate into tracking issue
+- #1036 — Group has 3 related items — consolidate into tracking issue
+
+## Developer Assignments
+
+| Developer | Assigned Items |
+|-----------|---------------|
+| thedotmack | #1187, #1181, #1165, #1156, #1153, #1107, #1096, #1079, #1073, #1061, #1060, #1049, #1041, #943, #642, #1151, #1150, #1143, #1101, #474 |
+| glucksberg | #1185, #1182, #1172, #1166, #1163, #1162, #1161, #1158, #1155, #1149, #1148, #1146, #1139, #1135, #1128, #1124, #1105, #1104, #1099, #1091, #1090, #1089, #1081, #1077, #1075, #1068, #1048, #1046, #1045, #1042, #1038, #1029, #1027, #1026, #1023, #987, #984, #979, #978, #975, #957, #923, #918, #838, #807, #791, #785, #784, #781, #744, #707, #598, #1186, #1180, #1177, #1169, #1164, #1144, #1142, #1133, #1132, #1129, #1127, #1102, #1092, #1088, #1083, #1078, #1072, #1064 |
+| bigph00t | #793, #1152 |
+
+## PR Actions
+
+No PR-specific actions needed.

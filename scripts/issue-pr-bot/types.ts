@@ -166,6 +166,31 @@ export interface TriageArtifactPaths {
   prItemPaths: string[];
 }
 
+export type TriageAction =
+  | "close-outdated"
+  | "close-duplicate"
+  | "close-spam"
+  | "merge-into-tracking"
+  | "assign-developer"
+  | "keep-as-is"
+  | "needs-rebase"
+  | "ready-to-merge";
+
+export interface TriageRecommendation {
+  itemNumber: number;
+  action: TriageAction;
+  reason: string;
+  targetIssue?: number;
+  assignTo?: string;
+}
+
+export interface TriageRecommendationsResult {
+  recommendations: TriageRecommendation[];
+  closeCandidates: TriageRecommendation[];
+  mergeCandidates: TriageRecommendation[];
+  assignmentMap: Record<string, number[]>;
+}
+
 export interface TriageResult {
   config: TriageConfig;
   ingestion: IngestionResult;
@@ -173,6 +198,7 @@ export interface TriageResult {
   report: TriageReport;
   categorized: CategorizedItem[];
   duplicateGroups: DuplicateGroup[];
+  recommendations: TriageRecommendationsResult;
 }
 
 export interface TriageReport {
