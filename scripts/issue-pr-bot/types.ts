@@ -85,6 +85,13 @@ export interface CategorizedItem extends NormalizedItem {
   category: CategoryCluster;
 }
 
+export interface DuplicateGroup {
+  groupId: number;
+  canonical: number;
+  duplicates: number[];
+  reason: string;
+}
+
 export interface IngestionResult {
   items: NormalizedItem[];
   warnings: string[];
@@ -157,6 +164,15 @@ export interface TriageArtifactPaths {
   snapshotPath: string;
   issueItemPaths: string[];
   prItemPaths: string[];
+}
+
+export interface TriageResult {
+  config: TriageConfig;
+  ingestion: IngestionResult;
+  scoring: ScoringResult;
+  report: TriageReport;
+  categorized: CategorizedItem[];
+  duplicateGroups: DuplicateGroup[];
 }
 
 export interface TriageReport {

@@ -1,7 +1,10 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import type {
+  CategorizedItem,
+  CategoryCluster,
   DraftExecutionPlan,
+  DuplicateGroup,
   RankedItem,
   ScoringResult,
   TriageArtifactPaths,
@@ -280,16 +283,100 @@ function renderDeveloperBreakdown(
   return lines.join("\n");
 }
 
+export interface CategorizationEnrichment {
+  categorized: CategorizedItem[];
+  duplicateGroups: DuplicateGroup[];
+}
+
+const CATEGORY_DISPLAY_NAMES: Record<CategoryCluster, string> = {
+  chroma: "Chroma",
+  "process-lifecycle": "Process",
+  windows: "Windows",
+  hooks: "Hooks",
+  installation: "Installation",
+  security: "Security",
+  "feature-request": "Feature Request",
+  spam: "Spam",
+  uncategorized: "Uncategorized",
+};
+
+function renderCategorySummary(categorized: CategorizedItem[]): string {
+  const countsByCategory = new Map<CategoryCluster, number>();
+  for (const item of categorized) {
+    countsByCategory.set(item.category, (countsByCategory.get(item.category) ?? 0) + 1);
+  }
+
+  const parts: string[] = [];
+  for (const [category, displayName] of Object.entries(CATEGORY_DISPLAY_NAMES)) {
+    const count = countsByCategory.get(category as CategoryCluster) ?? 0;
+    if (count > 0) {
+      parts.push(`${displayName}: ${count}`);
+    }
+  }
+
+  return parts.join(", ");
+}
+
+function renderIssuesByCategory(categorized: CategorizedItem[]): string {
+  const lines: string[] = ["## Issues by Category", ""];
+
+  const itemsByCategory = new Map<CategoryCluster, CategorizedItem[]>();
+  for (const item of categorized) {
+    const existing = itemsByCategory.get(item.category) ?? [];
+    existing.push(item);
+    itemsByCategory.set(item.category, existing);
+  }
+
+  for (const [category, displayName] of Object.entries(CATEGORY_DISPLAY_NAMES)) {
+    const items = itemsByCategory.get(category as CategoryCluster);
+    if (!items || items.length === 0) {
+      continue;
+    }
+
+    lines.push(`### ${displayName} (${items.length})`, "");
+    for (const item of items) {
+      lines.push(`- #${item.number} ${item.title} (${item.htmlUrl})`);
+    }
+    lines.push("");
+  }
+
+  if (lines.length === 2) {
+    lines.push("No categorized items.");
+  }
+
+  return lines.join("\n");
+}
+
+function renderDuplicateGroups(duplicateGroups: DuplicateGroup[]): string {
+  const lines: string[] = ["## Duplicate Groups", ""];
+
+  if (duplicateGroups.length === 0) {
+    lines.push("No duplicate groups detected.");
+    return lines.join("\n");
+  }
+
+  for (const group of duplicateGroups) {
+    lines.push(`### Group ${group.groupId}`);
+    lines.push(`- Canonical: #${group.canonical}`);
+    lines.push(`- Duplicates: ${group.duplicates.map((num) => `#${num}`).join(", ")}`);
+    lines.push(`- Reason: ${group.reason}`);
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
 function renderRunBody(
   config: TriageConfig,
   runWikiLink: string,
   issues: TriageReportItem[],
-  prs: TriageReportItem[]
+  prs: TriageReportItem[],
+  enrichment?: CategorizationEnrichment
 ): { markdown: string; issuesSection: string; prsSection: string } {
   const issueOutdatedCount = issues.filter((item) => item.outdatedCandidate).length;
   const prOutdatedCount = prs.filter((item) => item.outdatedCandidate).length;
 
-  const header = [
+  const headerLines = [
     "# Issue/PR Prototype Triage Report",
     "",
     `Repository: ${config.repository.owner}/${config.repository.repo}`,
@@ -302,7 +389,17 @@ function renderRunBody(
     `- Open pull requests: ${prs.length}`,
     `- Outdated-close issue candidates: ${issueOutdatedCount}`,
     `- Outdated-close PR candidates: ${prOutdatedCount}`,
-  ].join("\n");
+  ];
+
+  if (enrichment) {
+    const categorySummary = renderCategorySummary(enrichment.categorized);
+    if (categorySummary.length > 0) {
+      headerLines.push(`- Categories: ${categorySummary}`);
+    }
+    headerLines.push(`- Duplicate groups: ${enrichment.duplicateGroups.length}`);
+  }
+
+  const header = headerLines.join("\n");
 
   const issuesSection = renderSection("Issues", issues);
   const prsSection = renderSection("Pull Requests", prs);
@@ -315,8 +412,15 @@ function renderRunBody(
     .map((section) => (section === "issues" ? issuesSection : prsSection))
     .join("\n\n");
 
+  const markdownParts = [header, configuredSections, developerBreakdown];
+
+  if (enrichment) {
+    markdownParts.push(renderIssuesByCategory(enrichment.categorized));
+    markdownParts.push(renderDuplicateGroups(enrichment.duplicateGroups));
+  }
+
   return {
-    markdown: [header, configuredSections, developerBreakdown].join("\n\n"),
+    markdown: markdownParts.join("\n\n"),
     issuesSection,
     prsSection,
   };
@@ -454,7 +558,8 @@ async function writeItemArtifacts(
 
 export function renderTriageReport(
   config: TriageConfig,
-  scoring: ScoringResult
+  scoring: ScoringResult,
+  enrichment?: CategorizationEnrichment
 ): TriageReport {
   const createdDate = toCreatedDate(config.generatedAt);
   const runId = toRunId(createdDate);
@@ -469,7 +574,7 @@ export function renderTriageReport(
 
   const issueItems = toReportItems(scoring.issues, itemTypeByNumber);
   const prItems = toReportItems(scoring.prs, itemTypeByNumber);
-  const rendered = renderRunBody(config, runWikiLink, issueItems, prItems);
+  const rendered = renderRunBody(config, runWikiLink, issueItems, prItems, enrichment);
   const snapshot = buildSnapshot(config, runId, runWikiLink, issueItems, prItems);
 
   return {
