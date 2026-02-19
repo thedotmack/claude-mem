@@ -14,6 +14,11 @@ const os = require('os');
 const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem');
 const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'magic-claude-mem', 'magic-claude-mem');
 
+// Additional Claude config directories to sync (e.g., work profile)
+const EXTRA_CONFIG_DIRS = [
+  path.join(os.homedir(), '.claude-work'),
+];
+
 function getCurrentBranch() {
   try {
     if (!existsSync(path.join(INSTALLED_PATH, '.git'))) {
@@ -111,6 +116,18 @@ try {
     'cd ~/.claude/plugins/marketplaces/magic-claude-mem/ && npm rebuild better-sqlite3',
     { stdio: 'inherit', env: pinnedEnv }
   );
+
+  // Mirror to additional config directories (e.g., ~/.claude-work)
+  for (const configDir of EXTRA_CONFIG_DIRS) {
+    const extraMarketplace = path.join(configDir, 'plugins', 'marketplaces', 'magic-claude-mem');
+    if (!existsSync(path.join(configDir, 'plugins', 'marketplaces'))) continue;
+    console.log(`\nSyncing to ${extraMarketplace}...`);
+    execSync(
+      `rsync -av --delete --exclude=.git --exclude=/.mcp.json --exclude=.install-version "${INSTALLED_PATH}/" "${extraMarketplace}/"`,
+      { stdio: 'inherit' }
+    );
+    console.log('\x1b[32m%s\x1b[0m', `✓ Synced to ${path.basename(configDir)}`);
+  }
 
   // Sync to cache folder with version
   const version = getPluginVersion();
