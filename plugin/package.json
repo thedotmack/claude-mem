@@ -4,9 +4,7 @@
   "private": true,
   "description": "Runtime dependencies for claude-mem bundled hooks",
   "type": "module",
-  "dependencies": {
-    "@chroma-core/default-embed": "^0.1.9"
-  },
+  "dependencies": {},
   "engines": {
     "node": ">=18.0.0",
     "bun": ">=1.0.0"

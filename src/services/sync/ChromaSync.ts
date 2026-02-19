@@ -251,6 +251,30 @@ export class ChromaSync {
   }
 
   /**
+   * Sanitize metadata for Chroma MCP compatibility.
+   * The old chromadb JS client validated metadata implicitly; the MCP path
+   * passes raw JSON to Python which rejects null/undefined/object/array values.
+   * Only string, number, and boolean are valid MetadataValue types in Chroma.
+   */
+  private sanitizeMetadataForChroma(
+    metadata: Record<string, string | number>
+  ): Record<string, string | number | boolean> {
+    const sanitized: Record<string, string | number | boolean> = {};
+    for (const [key, value] of Object.entries(metadata)) {
+      if (value === null || value === undefined) {
+        continue; // Drop null/undefined — Chroma can't store them
+      }
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        sanitized[key] = value;
+      } else {
+        // Coerce unexpected types (arrays, objects) to string
+        sanitized[key] = String(value);
+      }
+    }
+    return sanitized;
+  }
+
+  /**
    * Add documents to Chroma in batch via MCP
    * Throws error if batch add fails
    */
@@ -271,7 +295,7 @@ export class ChromaSync {
         collection_name: this.collectionName,
         ids: batch.map(d => d.id),
         documents: batch.map(d => d.document),
-        metadatas: batch.map(d => d.metadata)
+        metadatas: batch.map(d => this.sanitizeMetadataForChroma(d.metadata))
       });
     }
 
