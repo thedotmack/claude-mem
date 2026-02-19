@@ -271,3 +271,108 @@ export function getAuthMethodDescription(): string {
   }
   return 'Claude Code CLI (subscription billing)';
 }
+
+// ============================================================================
+// OAuth Token Health & Refresh
+// ============================================================================
+
+const CLAUDE_CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
+const TOKEN_EXPIRY_WARNING_MS = 60 * 60 * 1000; // 1 hour
+
+export interface OAuthTokenStatus {
+  /** Whether a credentials file exists and contains a valid-looking token */
+  valid: boolean;
+  /** Token expiry timestamp in ms (if available) */
+  expiresAt?: number;
+  /** Whether the token is currently expired */
+  expired?: boolean;
+  /** Whether the token expires within the next hour */
+  expiringSoon?: boolean;
+  /** Auth method description */
+  authMethod?: string;
+}
+
+/**
+ * Check the status of the Claude Code OAuth token.
+ * Returns token health information for health endpoint reporting.
+ */
+export function checkOAuthTokenStatus(): OAuthTokenStatus {
+  try {
+    if (!existsSync(CLAUDE_CREDENTIALS_PATH)) {
+      return { valid: false, authMethod: getAuthMethodDescription() };
+    }
+
+    const content = readFileSync(CLAUDE_CREDENTIALS_PATH, 'utf-8');
+    const creds = JSON.parse(content);
+    const oauth = creds?.claudeAiOauth;
+
+    if (!oauth?.accessToken) {
+      return { valid: false, authMethod: getAuthMethodDescription() };
+    }
+
+    const expiresAt = oauth.expiresAt;
+    if (!expiresAt || typeof expiresAt !== 'number') {
+      // Token exists but no expiry info — assume valid
+      return { valid: true, authMethod: getAuthMethodDescription() };
+    }
+
+    const now = Date.now();
+    const expired = now >= expiresAt;
+    const expiringSoon = !expired && (expiresAt - now) < TOKEN_EXPIRY_WARNING_MS;
+
+    return {
+      valid: !expired,
+      expiresAt,
+      expired,
+      expiringSoon,
+      authMethod: getAuthMethodDescription(),
+    };
+  } catch {
+    return { valid: false, authMethod: getAuthMethodDescription() };
+  }
+}
+
+/**
+ * Attempt to refresh the Claude Code OAuth token by spawning `claude --version`.
+ * Claude Code auto-refreshes its token on startup when it detects expiry.
+ *
+ * @returns true if refresh succeeded (token is now valid), false otherwise
+ */
+export async function attemptOAuthTokenRefresh(): Promise<boolean> {
+  const { execSync } = await import('child_process');
+
+  logger.info('SYSTEM', 'Attempting OAuth token refresh via Claude CLI...');
+
+  // Check current state first
+  const before = checkOAuthTokenStatus();
+  if (before.valid && !before.expiringSoon) {
+    logger.info('SYSTEM', 'Token is still valid, no refresh needed');
+    return true;
+  }
+
+  try {
+    // `claude --version` is lightweight and triggers token refresh on startup
+    execSync('claude --version', {
+      encoding: 'utf-8',
+      timeout: 30_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    // Verify the token was actually refreshed
+    const after = checkOAuthTokenStatus();
+    if (after.valid) {
+      const expiresIn = after.expiresAt
+        ? `${((after.expiresAt - Date.now()) / 3600_000).toFixed(1)}h`
+        : 'unknown';
+      logger.info('SYSTEM', `OAuth token refreshed successfully (expires in ${expiresIn})`);
+      return true;
+    }
+
+    logger.warn('SYSTEM', 'Token refresh command ran but token is still invalid');
+    return false;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error('SYSTEM', `OAuth token refresh failed: ${message}`);
+    return false;
+  }
+}
