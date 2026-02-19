@@ -36,7 +36,10 @@ function shouldSkipSpawnOnWindows(): boolean {
   try {
     const modifiedTimeMs = statSync(lockPath).mtimeMs;
     return Date.now() - modifiedTimeMs < WINDOWS_SPAWN_COOLDOWN_MS;
-  } catch {
+  } catch (error) {
+    if (error instanceof Error) {
+      logger.debug('SYSTEM', 'Windows lock file stat failed, treating as no lock', {}, error);
+    }
     return false;
   }
 }
@@ -320,11 +323,17 @@ export class WorkerService {
         await Promise.race([this.initializationComplete, timeoutPromise]);
         next();
       } catch (error) {
-        logger.error('HTTP', `Request to ${req.method} ${req.path} rejected — DB not initialized`, {}, error as Error);
+        const isTimeout = error instanceof Error && error.message.includes('initialization timeout');
+        if (isTimeout) {
+          logger.warn('HTTP', `Request to ${req.method} ${req.path} timed out waiting for DB initialization`, {}, error as Error);
+        } else {
+          logger.error('HTTP', `Request to ${req.method} ${req.path} rejected — initialization failed unexpectedly`, {}, error as Error);
+        }
         res.status(503).json({
           error: 'Service initializing',
           message: 'Database is still initializing, please retry'
         });
+        return;
       }
     });
 
@@ -465,7 +474,10 @@ export class WorkerService {
             logger.info('SYSTEM', `Reaped ${reaped} stale sessions`);
           }
         } catch (e) {
-          logger.error('SYSTEM', 'Stale session reaper error', { error: e instanceof Error ? e.message : String(e) });
+          if (e instanceof Error) {
+            logger.error('SYSTEM', 'Stale session reaper failed — will retry on next interval', {}, e);
+          }
+          return;
         }
       }, 2 * 60 * 1000);
 
@@ -570,9 +582,13 @@ export class WorkerService {
           return this.runFallbackForTerminatedSession(session, error);
         }
 
-        // Detect stale resume failures - SDK session context was lost
-        if ((errorMessage.includes('aborted by user') || errorMessage.includes('No conversation found'))
-            && session.memorySessionId) {
+        // Detect stale resume failures - SDK session context was lost.
+        // String matching is required here: the Claude CLI SDK emits plain Error objects
+        // without .code properties for these conditions — no typed error classes exist.
+        const isStaleResumeFailure = error instanceof Error
+          // [ANTI-PATTERN IGNORED]: Claude CLI SDK emits plain Error objects without .code — string matching required
+          && (errorMessage.includes('aborted by user') || errorMessage.includes('No conversation found'));
+        if (isStaleResumeFailure && session.memorySessionId) {
           logger.warn('SDK', 'Detected stale resume failure, clearing memorySessionId for fresh start', {
             sessionId: session.sessionDbId,
             memorySessionId: session.memorySessionId,
@@ -697,10 +713,10 @@ export class WorkerService {
         await this.geminiAgent.startSession(session, this);
         return;
       } catch (e) {
-        logger.warn('SDK', 'Fallback Gemini failed, trying OpenRouter', {
-          sessionId: sessionDbId,
-          error: e instanceof Error ? e.message : String(e)
-        });
+        // [ANTI-PATTERN IGNORED]: Must continue to try next fallback agent (OpenRouter)
+        if (e instanceof Error) {
+          logger.warn('SDK', 'Fallback Gemini failed, trying OpenRouter', { sessionId: sessionDbId }, e);
+        }
       }
     }
 
@@ -709,10 +725,10 @@ export class WorkerService {
         await this.openRouterAgent.startSession(session, this);
         return;
       } catch (e) {
-        logger.warn('SDK', 'Fallback OpenRouter failed', {
-          sessionId: sessionDbId,
-          error: e instanceof Error ? e.message : String(e)
-        });
+        // [ANTI-PATTERN IGNORED]: Falls through to abandon messages and cleanup below
+        if (e instanceof Error) {
+          logger.warn('SDK', 'Fallback OpenRouter failed — no fallback agents remaining', { sessionId: sessionDbId }, e);
+        }
       }
     }
 
@@ -747,37 +763,38 @@ export class WorkerService {
     const STALE_SESSION_THRESHOLD_MS = 6 * 60 * 60 * 1000;
     const staleThreshold = Date.now() - STALE_SESSION_THRESHOLD_MS;
 
+    let staleSessionIds: { id: number }[] = [];
     try {
-      const staleSessionIds = sessionStore.db.prepare(`
+      staleSessionIds = sessionStore.db.prepare(`
         SELECT id FROM sdk_sessions
         WHERE status = 'active' AND started_at_epoch < ?
       `).all(staleThreshold) as { id: number }[];
+    } catch (error) {
+      // [ANTI-PATTERN IGNORED]: Stale session cleanup is best-effort — failure shouldn't block orphan processing
+      if (error instanceof Error) {
+        logger.error('SYSTEM', 'Failed to query stale sessions', {}, error);
+      }
+    }
 
-      if (staleSessionIds.length > 0) {
-        const ids = staleSessionIds.map(r => r.id);
-        const placeholders = ids.map(() => '?').join(',');
+    if (staleSessionIds.length > 0) {
+      const ids = staleSessionIds.map(r => r.id);
+      const placeholders = ids.map(() => '?').join(',');
+      const updateSessionsSql = `UPDATE sdk_sessions SET status = 'failed', completed_at_epoch = ? WHERE id IN (${placeholders})`;
+      const updateMessagesSql = `UPDATE pending_messages SET status = 'failed', failed_at_epoch = ? WHERE status = 'pending' AND session_db_id IN (${placeholders})`;
 
-        sessionStore.db.prepare(`
-          UPDATE sdk_sessions
-          SET status = 'failed', completed_at_epoch = ?
-          WHERE id IN (${placeholders})
-        `).run(Date.now(), ...ids);
-
+      try {
+        sessionStore.db.prepare(updateSessionsSql).run(Date.now(), ...ids);
         logger.info('SYSTEM', `Marked ${ids.length} stale sessions as failed`);
-
-        const msgResult = sessionStore.db.prepare(`
-          UPDATE pending_messages
-          SET status = 'failed', failed_at_epoch = ?
-          WHERE status = 'pending'
-          AND session_db_id IN (${placeholders})
-        `).run(Date.now(), ...ids);
-
+        const msgResult = sessionStore.db.prepare(updateMessagesSql).run(Date.now(), ...ids);
         if (msgResult.changes > 0) {
           logger.info('SYSTEM', `Marked ${msgResult.changes} pending messages from stale sessions as failed`);
         }
+      } catch (error) {
+        // [ANTI-PATTERN IGNORED]: Best-effort stale session cleanup — failure shouldn't block orphan processing
+        if (error instanceof Error) {
+          logger.error('SYSTEM', 'Failed to mark stale sessions as failed', { staleSessionIds: ids }, error);
+        }
       }
-    } catch (error) {
-      logger.error('SYSTEM', 'Failed to clean up stale sessions', {}, error as Error);
     }
 
     const orphanedSessionIds = pendingStore.getSessionsWithPendingMessages();
@@ -796,28 +813,34 @@ export class WorkerService {
     for (const sessionDbId of orphanedSessionIds) {
       if (result.sessionsStarted >= sessionLimit) break;
 
-      try {
-        const existingSession = this.sessionManager.getSession(sessionDbId);
-        if (existingSession?.generatorPromise) {
-          result.sessionsSkipped++;
-          continue;
-        }
-
-        const session = this.sessionManager.initializeSession(sessionDbId);
-        logger.info('SYSTEM', `Starting processor for session ${sessionDbId}`, {
-          project: session.project,
-          pendingCount: pendingStore.getPendingCount(sessionDbId)
-        });
-
-        this.startSessionProcessor(session, 'startup-recovery');
-        result.sessionsStarted++;
-        result.startedSessionIds.push(sessionDbId);
-
-        await new Promise(resolve => setTimeout(resolve, 100));
-      } catch (error) {
-        logger.error('SYSTEM', `Failed to process session ${sessionDbId}`, {}, error as Error);
+      const existingSession = this.sessionManager.getSession(sessionDbId);
+      if (existingSession?.generatorPromise) {
         result.sessionsSkipped++;
+        continue;
       }
+
+      let session: ReturnType<typeof this.sessionManager.initializeSession>;
+      try {
+        session = this.sessionManager.initializeSession(sessionDbId);
+      } catch (error) {
+        // [ANTI-PATTERN IGNORED]: Loop iteration — continue to next session after logging
+        if (error instanceof Error) {
+          logger.error('SYSTEM', `Failed to initialize session ${sessionDbId}`, {}, error);
+        }
+        result.sessionsSkipped++;
+        continue;
+      }
+
+      logger.info('SYSTEM', `Starting processor for session ${sessionDbId}`, {
+        project: session.project,
+        pendingCount: pendingStore.getPendingCount(sessionDbId)
+      });
+
+      this.startSessionProcessor(session, 'startup-recovery');
+      result.sessionsStarted++;
+      result.startedSessionIds.push(sessionDbId);
+
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
     return result;
