@@ -58,10 +58,7 @@ async function buildHooks() {
       private: true,
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
-      dependencies: {
-        // Chroma embedding function with native ONNX binaries (can't be bundled)
-        '@chroma-core/default-embed': '^0.1.9'
-      },
+      dependencies: {},
       engines: {
         node: '>=18.0.0',
         bun: '>=1.0.0'
@@ -72,7 +69,7 @@ async function buildHooks() {
 
     // Build React viewer
     console.log('\n📋 Building React viewer...');
-    const { spawn } = await import('child_process');
+    const { spawn, execSync: execSyncChild } = await import('child_process');
     const viewerBuild = spawn('node', ['scripts/build-viewer.js'], { stdio: 'inherit' });
     await new Promise((resolve, reject) => {
       viewerBuild.on('exit', (code) => {
@@ -97,12 +94,6 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
-        // Optional chromadb embedding providers
-        'cohere-ai',
-        'ollama',
-        // Default embedding function with native binaries
-        '@chroma-core/default-embed',
-        'onnxruntime-node'
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
@@ -161,6 +152,26 @@ async function buildHooks() {
 
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
+
+    // Build compiled Bun binary from CLI entry point
+    // This is non-fatal: CI environments or developers without Bun can still
+    // build the esbuild artifacts. The binary is for local development; esbuild
+    // bundles remain the distribution format.
+    console.log('\n🔧 Building compiled binary...');
+    try {
+      execSyncChild(
+        `bun build src/cli/cli.ts --compile --outfile plugin/scripts/claude-mem --define __DEFAULT_PACKAGE_VERSION__='"${version}"'`,
+        {
+          stdio: 'inherit',
+          cwd: path.join(__dirname, '..')
+        }
+      );
+      const binaryStats = fs.statSync(`${hooksDir}/claude-mem`);
+      console.log(`✓ claude-mem binary built (${(binaryStats.size / 1024 / 1024).toFixed(1)} MB)`);
+    } catch (binaryBuildError) {
+      console.warn('⚠️  Binary compilation skipped (bun not available or compile failed)');
+      console.warn(`   ${binaryBuildError.message}`);
+    }
 
     console.log('\n✅ Worker service, MCP server, and context generator built successfully!');
     console.log(`   Output: ${hooksDir}/`);

@@ -21,6 +21,9 @@ private/
 datasets/
 Auto Run Docs/
 
+# Compiled Bun binary (platform-specific, built locally via npm run build)
+plugin/scripts/claude-mem
+
 # Generated UI files (built from viewer-template.html)
 src/ui/viewer.html
 

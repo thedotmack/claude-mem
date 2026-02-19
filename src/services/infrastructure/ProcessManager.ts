@@ -628,8 +628,33 @@ export function spawnDaemon(
     ...extraEnv
   };
 
+  // Detect compiled binary: when scriptPath IS the executable itself,
+  // we're running as a compiled Bun binary and should use Commander.js commands
+  // instead of passing scriptPath as an argument to the runtime.
+  const isCompiledBinary = scriptPath === process.execPath;
+  const spawnArgs = isCompiledBinary
+    ? ['daemon']                   // Commander.js command name
+    : [scriptPath, '--daemon'];    // Legacy: bun/node scriptPath --daemon
+
   if (isWindows) {
-    // Use PowerShell Start-Process to spawn a hidden, independent process
+    if (isCompiledBinary) {
+      // Compiled binary on Windows: the binary IS the runtime, just pass 'daemon' command
+      const child = spawn(scriptPath, ['daemon'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env
+      });
+
+      if (child.pid === undefined) {
+        return undefined;
+      }
+
+      child.unref();
+      return child.pid;
+    }
+
+    // Legacy Windows path: Use PowerShell Start-Process to spawn a hidden, independent process
     // Unlike WMIC, PowerShell inherits environment variables from parent
     // -WindowStyle Hidden prevents console popup
     const runtimePath = resolveWorkerRuntimePath();
@@ -662,7 +687,13 @@ export function spawnDaemon(
   // Fall back to standard detached spawn if setsid is not available.
   const setsidPath = '/usr/bin/setsid';
   if (existsSync(setsidPath)) {
-    const child = spawn(setsidPath, [process.execPath, scriptPath, '--daemon'], {
+    // For compiled binary: setsid ./claude-mem daemon
+    // For legacy: setsid bun scriptPath --daemon
+    const setsidArgs = isCompiledBinary
+      ? [scriptPath, 'daemon']
+      : [process.execPath, scriptPath, '--daemon'];
+
+    const child = spawn(setsidPath, setsidArgs, {
       detached: true,
       stdio: 'ignore',
       env
@@ -677,7 +708,10 @@ export function spawnDaemon(
   }
 
   // Fallback: standard detached spawn (macOS, systems without setsid)
-  const child = spawn(process.execPath, [scriptPath, '--daemon'], {
+  // For compiled binary: spawn the binary directly with 'daemon' command
+  // For legacy: spawn the runtime (bun/node) with scriptPath --daemon
+  const spawnExecutable = isCompiledBinary ? scriptPath : process.execPath;
+  const child = spawn(spawnExecutable, spawnArgs, {
     detached: true,
     stdio: 'ignore',
     env
