@@ -56,6 +56,38 @@ function buildItem(
 }
 
 describe("issue-pr-bot reporting artifacts", () => {
+  it("keeps issue and PR report sections separated", () => {
+    const config = createTriageConfig({ generatedAt: NOW });
+    const items: NormalizedItem[] = [
+      buildItem(101, "issue", {
+        title: "Issue-only title with no cross references",
+        labels: ["bug"],
+      }),
+      buildItem(202, "pr", {
+        title: "PR-only title with no cross references",
+        labels: ["maintenance"],
+        pullRequest: {
+          changedFiles: 2,
+          additions: 25,
+          deletions: 5,
+          commits: 1,
+        },
+      }),
+    ];
+
+    const scoring = scoreAndRankItems(items, {
+      now: NOW,
+      outdatedThresholdDays: 90,
+      developerPriorityOrder: [...DEFAULT_DEVELOPER_PRIORITY_ORDER],
+    });
+    const report = renderTriageReport(config, scoring);
+
+    expect(report.sections.issues).toContain("[[Issue-101]]");
+    expect(report.sections.issues).not.toContain("[[PR-202]]");
+    expect(report.sections.prs).toContain("[[PR-202]]");
+    expect(report.sections.prs).not.toContain("[[Issue-101]]");
+  });
+
   it("renders wiki-linked triage sections with draft plans", () => {
     const config = createTriageConfig({ generatedAt: NOW });
     const items: NormalizedItem[] = [
@@ -156,6 +188,7 @@ describe("issue-pr-bot reporting artifacts", () => {
       expect(runReportContent).toContain("created: 2026-02-19");
       expect(runReportContent).toContain("tags:");
       expect(runReportContent).toContain("related:");
+      expect(runReportContent).toContain('  - "[[Triage-Run-2026-02-19]]"');
       expect(runReportContent).toContain("[[Issue-11]]");
       expect(runReportContent).toContain("[[PR-21]]");
 
@@ -174,18 +207,29 @@ describe("issue-pr-bot reporting artifacts", () => {
       expect(pr21Path).toBeDefined();
 
       const issue11Content = await fs.readFile(issue11Path!, "utf-8");
+      expect(issue11Content.startsWith("---\n")).toBe(true);
       expect(issue11Content).toContain("type: analysis");
       expect(issue11Content).toContain("created: 2026-02-19");
+      expect(issue11Content).toContain("related:");
       expect(issue11Content).toContain("[[Triage-Run-2026-02-19]]");
+      expect(issue11Content).toContain("[[Issue-11]]");
       expect(issue11Content).toContain("## Draft Execution Plan");
       expect(issue11Content).toContain("### Next Steps");
       expect(issue11Content).toContain("### Risks");
       expect(issue11Content).toContain("### Validation Checks");
 
       const issue12Content = await fs.readFile(issue12Path!, "utf-8");
+      expect(issue12Content.startsWith("---\n")).toBe(true);
       expect(issue12Content).toContain("## Outdated Candidate Review");
       expect(issue12Content).not.toContain("## Draft Execution Plan");
       expect(issue12Content).toContain("[[PR-21]]");
+
+      const pr21Content = await fs.readFile(pr21Path!, "utf-8");
+      expect(pr21Content.startsWith("---\n")).toBe(true);
+      expect(pr21Content).toContain("type: analysis");
+      expect(pr21Content).toContain("related:");
+      expect(pr21Content).toContain("[[Triage-Run-2026-02-19]]");
+      expect(pr21Content).toContain("[[PR-21]]");
 
       const snapshotRaw = await fs.readFile(artifacts.snapshotPath, "utf-8");
       const snapshot = JSON.parse(snapshotRaw) as {

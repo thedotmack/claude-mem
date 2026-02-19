@@ -57,6 +57,45 @@ function buildItem(
 }
 
 describe("issue-pr-bot scoring heuristics", () => {
+  it("produces deterministic issue/pr rankings across repeated runs", () => {
+    const items: NormalizedItem[] = [
+      buildItem(41, "issue", {
+        title: "Critical startup crash on macOS",
+        labels: ["bug", "priority:high"],
+        author: "external-user",
+      }),
+      buildItem(42, "issue", {
+        title: "Docs: clarify troubleshooting steps",
+        labels: ["documentation"],
+        updatedAt: "2026-02-15T00:00:00.000Z",
+      }),
+      buildItem(51, "pr", {
+        title: "Refactor worker queue lifecycle",
+        labels: ["maintenance"],
+        pullRequest: {
+          changedFiles: 22,
+          additions: 480,
+          deletions: 120,
+          commits: 4,
+        },
+      }),
+    ];
+
+    const options = {
+      now: NOW,
+      outdatedThresholdDays: DEFAULT_OUTDATED_THRESHOLD_DAYS,
+      developerPriorityOrder: [...DEFAULT_DEVELOPER_PRIORITY_ORDER],
+    };
+
+    const first = scoreAndRankItems(items, options);
+    const second = scoreAndRankItems(items, options);
+
+    expect(first.issues.map((item) => item.number)).toEqual([41, 42]);
+    expect(first.prs.map((item) => item.number)).toEqual([51]);
+    expect(first.issues).toEqual(second.issues);
+    expect(first.prs).toEqual(second.prs);
+  });
+
   it("classifies intent using labels and title/body heuristics", () => {
     const items: NormalizedItem[] = [
       buildItem(11, "issue", {

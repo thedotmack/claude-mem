@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import * as fs from "fs/promises";
 
 import { createTriageConfig } from "../../../scripts/issue-pr-bot/config.ts";
 import {
@@ -6,12 +7,27 @@ import {
   ingestOpenItems,
 } from "../../../scripts/issue-pr-bot/ingestion.ts";
 
+const INGESTION_FIXTURE_ROOT = new URL(
+  "../../fixtures/issue-pr-bot/ingestion/",
+  import.meta.url
+);
+
+async function loadFixtureJson<T>(fileName: string): Promise<T> {
+  const raw = await fs.readFile(new URL(fileName, INGESTION_FIXTURE_ROOT), "utf-8");
+  return JSON.parse(raw) as T;
+}
+
 describe("issue-pr-bot ingestion", () => {
   it("normalizes open issues and PRs, including PR file stats", async () => {
     const config = createTriageConfig({
       repository: { owner: "thedotmack", repo: "claude-mem" },
       generatedAt: "2026-02-19T00:00:00.000Z",
     });
+    const firstPage = await loadFixtureJson<unknown[]>("open-issues-page-1.json");
+    const secondPage = await loadFixtureJson<unknown[]>("open-issues-page-2-empty.json");
+    const prDetails = await loadFixtureJson<Record<string, number>>(
+      "pull-12-details.json"
+    );
     const requests: Array<{ url: string; authorization: string | null }> = [];
 
     const result = await ingestOpenItems(config, {
@@ -25,65 +41,24 @@ describe("issue-pr-bot ingestion", () => {
         requests.push({ url, authorization });
 
         if (pathname.endsWith("/issues") && page === "1") {
-          return new Response(
-            JSON.stringify([
-              {
-                id: 101,
-                number: 11,
-                title: "Fix race condition in session startup",
-                body: "Details",
-                html_url: "https://github.com/thedotmack/claude-mem/issues/11",
-                url: "https://api.github.com/repos/thedotmack/claude-mem/issues/11",
-                user: { login: "contributor-a" },
-                labels: [{ name: "bug" }],
-                assignees: [{ login: "maintainer-a" }],
-                created_at: "2026-02-01T00:00:00.000Z",
-                updated_at: "2026-02-18T00:00:00.000Z",
-              },
-              {
-                id: 102,
-                number: 12,
-                title: "Improve hook worker startup handling",
-                body: null,
-                html_url: "https://github.com/thedotmack/claude-mem/pull/12",
-                url: "https://api.github.com/repos/thedotmack/claude-mem/issues/12",
-                user: { login: "contributor-b" },
-                labels: [{ name: "enhancement" }],
-                assignees: [],
-                created_at: "2026-02-02T00:00:00.000Z",
-                updated_at: "2026-02-19T00:00:00.000Z",
-                pull_request: {
-                  url: "https://api.github.com/repos/thedotmack/claude-mem/pulls/12",
-                },
-              },
-            ]),
-            {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            }
-          );
+          return new Response(JSON.stringify(firstPage), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
         }
 
         if (pathname.endsWith("/issues") && page === "2") {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(secondPage), {
             status: 200,
             headers: { "content-type": "application/json" },
           });
         }
 
         if (pathname.endsWith("/pulls/12")) {
-          return new Response(
-            JSON.stringify({
-              changed_files: 7,
-              additions: 180,
-              deletions: 45,
-              commits: 3,
-            }),
-            {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            }
-          );
+          return new Response(JSON.stringify(prDetails), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
         }
 
         return new Response(JSON.stringify({ message: `unexpected url: ${url}` }), {
@@ -132,6 +107,10 @@ describe("issue-pr-bot ingestion", () => {
       repository: { owner: "thedotmack", repo: "claude-mem" },
       generatedAt: "2026-02-19T00:00:00.000Z",
     });
+    const rateLimitBody = await loadFixtureJson<{ message: string }>(
+      "rate-limit-exceeded.json"
+    );
+    const emptyPage = await loadFixtureJson<unknown[]>("open-issues-page-2-empty.json");
 
     const requestAuthHeaders: Array<string | null> = [];
     let issueRequestAttempt = 0;
@@ -149,26 +128,23 @@ describe("issue-pr-bot ingestion", () => {
           issueRequestAttempt += 1;
 
           if (issueRequestAttempt === 1) {
-            return new Response(
-              JSON.stringify({ message: "API rate limit exceeded" }),
-              {
-                status: 403,
-                headers: {
-                  "content-type": "application/json",
-                  "x-ratelimit-remaining": "0",
-                },
-              }
-            );
+            return new Response(JSON.stringify(rateLimitBody), {
+              status: 403,
+              headers: {
+                "content-type": "application/json",
+                "x-ratelimit-remaining": "0",
+              },
+            });
           }
 
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(emptyPage), {
             status: 200,
             headers: { "content-type": "application/json" },
           });
         }
 
         if (pathname.endsWith("/issues") && page === "2") {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(emptyPage), {
             status: 200,
             headers: { "content-type": "application/json" },
           });

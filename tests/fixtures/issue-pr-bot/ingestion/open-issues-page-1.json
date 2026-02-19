@@ -1,0 +1,31 @@
+[
+  {
+    "id": 101,
+    "number": 11,
+    "title": "Fix race condition in session startup",
+    "body": "Details",
+    "html_url": "https://github.com/thedotmack/claude-mem/issues/11",
+    "url": "https://api.github.com/repos/thedotmack/claude-mem/issues/11",
+    "user": { "login": "contributor-a" },
+    "labels": [{ "name": "bug" }],
+    "assignees": [{ "login": "maintainer-a" }],
+    "created_at": "2026-02-01T00:00:00.000Z",
+    "updated_at": "2026-02-18T00:00:00.000Z"
+  },
+  {
+    "id": 102,
+    "number": 12,
+    "title": "Improve hook worker startup handling",
+    "body": null,
+    "html_url": "https://github.com/thedotmack/claude-mem/pull/12",
+    "url": "https://api.github.com/repos/thedotmack/claude-mem/issues/12",
+    "user": { "login": "contributor-b" },
+    "labels": [{ "name": "enhancement" }],
+    "assignees": [],
+    "created_at": "2026-02-02T00:00:00.000Z",
+    "updated_at": "2026-02-19T00:00:00.000Z",
+    "pull_request": {
+      "url": "https://api.github.com/repos/thedotmack/claude-mem/pulls/12"
+    }
+  }
+]
