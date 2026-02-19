@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { homedir } from 'os';
+import { tmpdir } from 'os';
 import path from 'path';
 import {
   writePidFile,
@@ -12,6 +13,7 @@ import {
   cleanStalePidFile,
   spawnDaemon,
   resolveWorkerRuntimePath,
+  runOneTimeChromaMigration,
   type PidInfo
 } from '../../src/services/infrastructure/index.js';
 
@@ -32,7 +34,6 @@ describe('ProcessManager', () => {
   afterEach(() => {
     // Restore original PID file or remove test one
     if (originalPidContent !== null) {
-      const { writeFileSync } = require('fs');
       writeFileSync(PID_FILE, originalPidContent);
       originalPidContent = null;
     } else {
@@ -105,7 +106,6 @@ describe('ProcessManager', () => {
     });
 
     it('should return null for corrupted JSON', () => {
-      const { writeFileSync } = require('fs');
       writeFileSync(PID_FILE, 'not valid json {{{');
 
       const result = readPidFile();
@@ -413,6 +413,55 @@ describe('ProcessManager', () => {
 
       // Verify the non-daemon path: SIGHUP should trigger shutdown (covered by registerSignalHandlers)
       // This is a logic verification test — actual signal delivery is tested manually
+    });
+  });
+
+  describe('runOneTimeChromaMigration', () => {
+    let testDataDir: string;
+
+    beforeEach(() => {
+      testDataDir = path.join(tmpdir(), `claude-mem-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      mkdirSync(testDataDir, { recursive: true });
+    });
+
+    afterEach(() => {
+      rmSync(testDataDir, { recursive: true, force: true });
+    });
+
+    it('should wipe chroma directory and write marker file', () => {
+      // Create a fake chroma directory with data
+      const chromaDir = path.join(testDataDir, 'chroma');
+      mkdirSync(chromaDir, { recursive: true });
+      writeFileSync(path.join(chromaDir, 'test-data.bin'), 'fake chroma data');
+
+      runOneTimeChromaMigration(testDataDir);
+
+      // Chroma dir should be gone
+      expect(existsSync(chromaDir)).toBe(false);
+      // Marker file should exist
+      expect(existsSync(path.join(testDataDir, '.chroma-cleaned-v10.3'))).toBe(true);
+    });
+
+    it('should skip when marker file already exists (idempotent)', () => {
+      // Write marker file first
+      writeFileSync(path.join(testDataDir, '.chroma-cleaned-v10.3'), 'already done');
+
+      // Create a chroma directory that should NOT be wiped
+      const chromaDir = path.join(testDataDir, 'chroma');
+      mkdirSync(chromaDir, { recursive: true });
+      writeFileSync(path.join(chromaDir, 'important.bin'), 'should survive');
+
+      runOneTimeChromaMigration(testDataDir);
+
+      // Chroma dir should still exist (migration was skipped)
+      expect(existsSync(chromaDir)).toBe(true);
+      expect(existsSync(path.join(chromaDir, 'important.bin'))).toBe(true);
+    });
+
+    it('should handle missing chroma directory gracefully', () => {
+      // No chroma dir exists — should just write marker without error
+      expect(() => runOneTimeChromaMigration(testDataDir)).not.toThrow();
+      expect(existsSync(path.join(testDataDir, '.chroma-cleaned-v10.3'))).toBe(true);
     });
   });
 });

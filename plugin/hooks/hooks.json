@@ -8,7 +8,7 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh",
-            "timeout": 120
+            "timeout": 300
           }
         ]
       }

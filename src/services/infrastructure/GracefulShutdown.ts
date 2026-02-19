@@ -30,9 +30,9 @@ export interface CloseableDatabase {
 }
 
 /**
- * Stoppable service interface for Chroma server
+ * Stoppable service interface for ChromaMcpManager
  */
-export interface StoppableServer {
+export interface StoppableService {
   stop(): Promise<void>;
 }
 
@@ -44,7 +44,7 @@ export interface GracefulShutdownConfig {
   sessionManager: ShutdownableService;
   mcpClient?: CloseableClient;
   dbManager?: CloseableDatabase;
-  chromaServer?: StoppableServer;
+  chromaMcpManager?: StoppableService;
 }
 
 /**
@@ -79,11 +79,11 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
     logger.info('SYSTEM', 'MCP client closed');
   }
 
-  // STEP 5: Stop Chroma server (local mode only)
-  if (config.chromaServer) {
-    logger.info('SHUTDOWN', 'Stopping Chroma server...');
-    await config.chromaServer.stop();
-    logger.info('SHUTDOWN', 'Chroma server stopped');
+  // STEP 5: Stop Chroma MCP connection
+  if (config.chromaMcpManager) {
+    logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
+    await config.chromaMcpManager.stop();
+    logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
   }
 
   // STEP 6: Close database connection (includes ChromaSync cleanup)

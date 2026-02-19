@@ -2,6 +2,63 @@
 
 All notable changes to claude-mem.
 
+## [v10.3.1] - 2026-02-19
+
+## Fix: Prevent Duplicate Worker Daemons and Zombie Processes
+
+Three root causes of chroma-mcp timeouts identified and fixed:
+
+### PID-based daemon guard
+Exit immediately on startup if PID file points to a live process. Prevents the race condition where hooks firing simultaneously could start multiple daemons before either wrote a PID file.
+
+### Port-based daemon guard
+Exit if port 37777 is already bound — runs before WorkerService constructor registers keepalive signal handlers that previously prevented exit on EADDRINUSE.
+
+### Guaranteed process.exit() after HTTP shutdown
+HTTP shutdown (POST /api/admin/shutdown) now calls `process.exit(0)` in a `try/finally` block. Previously, zombie workers stayed alive after shutdown, and background tasks reconnected to chroma-mcp, spawning duplicate subprocesses contending for the same data directory.
+
+## [v10.3.0] - 2026-02-18
+
+## Replace WASM Embeddings with Persistent chroma-mcp MCP Connection
+
+### Highlights
+
+- **New: ChromaMcpManager** — Singleton stdio MCP client communicating with chroma-mcp via `uvx`, replacing the previous ChromaServerManager (`npx chroma run` + `chromadb` npm + ONNX/WASM)
+- **Eliminates native binary issues** — No more segfaults, WASM embedding failures, or cross-platform install headaches
+- **Graceful subprocess lifecycle** — Wired into GracefulShutdown for clean teardown; zombie process prevention with kill-on-failure and stale `onclose` handler guards
+- **Connection backoff** — 10-second reconnect backoff prevents chroma-mcp spawn storms
+- **SQL injection guards** — Added parameterization to ChromaSync ID exclusion queries
+- **Simplified ChromaSync** — Reduced complexity by delegating embedding concerns to chroma-mcp
+
+### Breaking Changes
+
+None — backward compatible. ChromaDB data is preserved; only the connection mechanism changed.
+
+### Files Changed
+
+- `src/services/sync/ChromaMcpManager.ts` (new) — MCP client singleton
+- `src/services/sync/ChromaServerManager.ts` (deleted) — Old WASM/native approach
+- `src/services/sync/ChromaSync.ts` — Simplified to use MCP client
+- `src/services/worker-service.ts` — Updated startup sequence
+- `src/services/infrastructure/GracefulShutdown.ts` — Subprocess cleanup integration
+
+## [v10.2.6] - 2026-02-18
+
+## Bug Fixes
+
+### Zombie Process Prevention (#1168, #1175)
+
+Observer Claude CLI subprocesses were accumulating as zombies — processes that never exited after their session ended, causing massive resource leaks on long-running systems.
+
+**Root cause:** When observer sessions ended (via idle timeout, abort, or error), the spawned Claude CLI subprocesses were not being reliably killed. The existing `ensureProcessExit()` in `SDKAgent` only covered the happy path; sessions terminated through `SessionRoutes` or `worker-service` bypassed process cleanup entirely.
+
+**Fix — dual-layer approach:**
+
+1. **Immediate cleanup:** Added `ensureProcessExit()` calls to the `finally` blocks in both `SessionRoutes.ts` and `worker-service.ts`, ensuring every session exit path kills its subprocess
+2. **Periodic reaping:** Added `reapStaleSessions()` to `SessionManager` — a background interval that scans `~/.claude-mem/observer-sessions/` for stale PID files, verifies the process is still running, and kills any orphans with SIGKILL escalation
+
+This ensures no observer subprocess survives beyond its session lifetime, even in crash scenarios.
+
 ## [v10.2.5] - 2026-02-18
 
 ### Bug Fixes
@@ -1393,45 +1450,4 @@ Thanks @yungweng for the detailed bug report!
 
 - Updated worker CLI scripts to reference worker-service.cjs directly
 - Simplified hook command configurations
-
-## [v8.2.8] - 2025-12-29
-
-## Bug Fixes
-
-- Fixed orphaned chroma-mcp processes during shutdown (#489)
-  - Added graceful shutdown handling with signal handlers registered early in WorkerService lifecycle
-  - Ensures ChromaSync subprocess cleanup even when interrupted during initialization
-  - Removes PID file during shutdown to prevent stale process tracking
-
-## Technical Details
-
-This patch release addresses a race condition where SIGTERM/SIGINT signals arriving during ChromaSync initialization could leave orphaned chroma-mcp processes. The fix moves signal handler registration from the start() method to the constructor, ensuring cleanup handlers exist throughout the entire initialization lifecycle.
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.7...v8.2.8
-
-## [v8.2.7] - 2025-12-29
-
-## What's Changed
-
-### Token Optimizations
-- Simplified MCP server tool definitions for reduced token usage
-- Removed outdated troubleshooting and mem-search skill documentation
-- Enhanced search parameter descriptions for better clarity
-- Streamlined MCP workflows for improved efficiency
-
-This release significantly reduces the token footprint of the plugin's MCP tools and documentation.
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.6...v8.2.7
-
-## [v8.2.6] - 2025-12-29
-
-## What's Changed
-
-### Bug Fixes & Improvements
-- Session ID semantic renaming for clarity (content_session_id, memory_session_id)
-- Queue system simplification with unified processing logic
-- Memory session ID capture for agent resume functionality
-- Comprehensive test suite for session ID refactoring
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.5...v8.2.6
 
