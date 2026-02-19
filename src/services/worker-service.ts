@@ -69,7 +69,8 @@ import {
   readPidFile,
   removePidFile,
   getPlatformTimeout,
-  cleanupOrphanedProcesses,
+  aggressiveStartupCleanup,
+  runOneTimeChromaMigration,
   cleanStalePidFile,
   isProcessAlive,
   spawnDaemon,
@@ -368,7 +369,7 @@ export class WorkerService {
    */
   private async initializeBackground(): Promise<void> {
     try {
-      await cleanupOrphanedProcesses();
+      await aggressiveStartupCleanup();
 
       // Load mode configuration
       const { ModeManager } = await import('./domain/ModeManager.js');
@@ -376,6 +377,12 @@ export class WorkerService {
       const { USER_SETTINGS_PATH } = await import('../shared/paths.js');
 
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+
+      // One-time chroma wipe for users upgrading from versions with duplicate worker bugs.
+      // Only runs in local mode (chroma is local-only). Backfill at line ~414 rebuilds from SQLite.
+      if (settings.CLAUDE_MEM_MODE === 'local' || !settings.CLAUDE_MEM_MODE) {
+        runOneTimeChromaMigration();
+      }
 
       // Initialize ChromaMcpManager (lazy - connects on first use via ChromaSync)
       this.chromaMcpManager = ChromaMcpManager.getInstance();
