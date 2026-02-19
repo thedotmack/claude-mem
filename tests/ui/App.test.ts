@@ -14,6 +14,9 @@ import type { Observation, Summary } from '../../src/ui/viewer/types';
 
 const PROJECT = 'test-project';
 
+/** Fixed epoch to avoid non-deterministic Date.now() in tests */
+const FIXED_EPOCH = 1700000000000;
+
 function makeObservation(id: number, sessionId: string): Observation {
   return {
     id,
@@ -29,8 +32,8 @@ function makeObservation(id: number, sessionId: string): Observation {
     files_read: null,
     files_modified: null,
     prompt_number: 1,
-    created_at: new Date().toISOString(),
-    created_at_epoch: Date.now() - id * 1000,
+    created_at: new Date(FIXED_EPOCH).toISOString(),
+    created_at_epoch: FIXED_EPOCH - id * 1000,
   };
 }
 
@@ -40,7 +43,7 @@ function makeSummary(id: number, sessionId: string): Summary {
     session_id: sessionId,
     project: PROJECT,
     request: `Session ${id}`,
-    created_at_epoch: Date.now() - id * 1000,
+    created_at_epoch: FIXED_EPOCH - id * 1000,
   };
 }
 

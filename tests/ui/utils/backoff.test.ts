@@ -31,4 +31,10 @@ describe('calculateBackoffDelay', () => {
     // attempt 2: 1000 * 3^2 = 9000
     expect(calculateBackoffDelay(2, 1000, 50000, 3)).toBe(9000);
   });
+
+  it('returns base * 2^-1 = 1500 for negative attempt -1', () => {
+    // attempt -1: 3000 * 2^-1 = 1500
+    // Documents behavior for out-of-range negative attempts
+    expect(calculateBackoffDelay(-1, BASE, MAX, FACTOR, 0)).toBe(1500);
+  });
 });

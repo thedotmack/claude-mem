@@ -81,7 +81,7 @@ export abstract class BaseRouteHandler {
   protected handleError(res: Response, error: Error, context?: string): void {
     logger.failure('WORKER', context || 'Request failed', {}, error);
     if (!res.headersSent) {
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: 'Internal server error' });
     }
   }
 }

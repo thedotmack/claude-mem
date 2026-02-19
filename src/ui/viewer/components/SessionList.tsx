@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
+import React, { useRef, useEffect, useMemo, forwardRef, useImperativeHandle, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { SessionGroup, SessionListItem } from '../types';
 
@@ -225,11 +225,13 @@ export const SessionList = forwardRef<SessionListHandle, SessionListProps>(funct
   const totalCount = sessionGroups.reduce((sum, g) => sum + g.sessions.length, 0);
   // Lock rendering mode after initial load to prevent scroll-destroying mode
   // switches when loadMore crosses VIRTUAL_THRESHOLD mid-session.
-  const virtualModeRef = useRef<boolean | null>(null);
-  if (virtualModeRef.current === null && totalCount > 0) {
-    virtualModeRef.current = totalCount > VIRTUAL_THRESHOLD;
-  }
-  const useVirtual = virtualModeRef.current ?? false;
+  const [virtualModeLocked, setVirtualModeLocked] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (virtualModeLocked === null && totalCount > 0) {
+      setVirtualModeLocked(totalCount > VIRTUAL_THRESHOLD);
+    }
+  }, [totalCount, virtualModeLocked]);
+  const useVirtual = virtualModeLocked ?? false;
   const hasGroups = sessionGroups.length > 0;
   const flatItems = useMemo(() => flattenGroups(sessionGroups, selectedId), [sessionGroups, selectedId]);
 

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useCallback } from "react";
 import type { Summary } from "../types";
 import { formatDate } from "../utils/formatters";
 
@@ -82,10 +82,11 @@ export function SummaryCard({ summary }: SummaryCardProps) {
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(
     getDefaultExpandedSections,
   );
+  const contentRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
-  const handleToggle = (key: string) => {
+  const handleToggle = useCallback((key: string) => {
     setExpandedSections((prev) => toggleSection(prev, key));
-  };
+  }, []);
 
   return (
     <article className="card summary-card" data-testid="summary-card">
@@ -145,8 +146,11 @@ export function SummaryCard({ summary }: SummaryCardProps) {
               </div>
               <div
                 className="summary-section-content"
+                ref={(el) => { contentRefs.current[section.key] = el; }}
                 style={{
-                  maxHeight: isExpanded ? "500px" : "0",
+                  maxHeight: isExpanded
+                    ? `${String(contentRefs.current[section.key]?.scrollHeight ?? 0)}px`
+                    : "0",
                   overflow: "hidden",
                 }}
               >

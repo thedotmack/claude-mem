@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import type { Observation } from '../types';
 import { formatDate } from '../utils/formatters';
 
@@ -59,7 +59,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
 
   const hasExpandableContent = facts.length > 0 || mergedNarrative;
 
-  const toggleExpand = hasExpandableContent ? () => setExpanded(!expanded) : undefined;
+  const toggleExpand = useCallback(() => setExpanded(prev => !prev), []);
 
   return (
     <div
@@ -70,11 +70,11 @@ export function ObservationCard({ observation }: ObservationCardProps) {
       aria-label={hasExpandableContent ? `${observation.title ?? 'Observation'} — ${expanded ? 'collapse' : 'expand'}` : undefined}
       role={hasExpandableContent ? 'button' : undefined}
       tabIndex={hasExpandableContent ? 0 : undefined}
-      onClick={toggleExpand}
+      onClick={hasExpandableContent ? toggleExpand : undefined}
       onKeyDown={hasExpandableContent ? (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          setExpanded(!expanded);
+          toggleExpand();
         }
       } : undefined}
     >
@@ -93,8 +93,8 @@ export function ObservationCard({ observation }: ObservationCardProps) {
       {/* Concepts and files — always visible */}
       {(concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (
         <div className="card__concepts">
-          {concepts.map((concept, i) => (
-            <span key={i} className="observation-card__concept-chip">
+          {concepts.map((concept) => (
+            <span key={concept} className="observation-card__concept-chip">
               {concept}
             </span>
           ))}
@@ -116,8 +116,8 @@ export function ObservationCard({ observation }: ObservationCardProps) {
         <div className="card-facts" data-testid="obs-card-facts">
           {facts.length > 0 && (
             <ul className="facts-list">
-              {facts.map((fact, i) => (
-                <li key={i}>{fact}</li>
+              {facts.map((fact) => (
+                <li key={fact}>{fact}</li>
               ))}
             </ul>
           )}

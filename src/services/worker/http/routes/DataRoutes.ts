@@ -103,6 +103,18 @@ interface ImportUserPrompt {
   created_at_epoch: number;
 }
 
+// Cache package version at module load time (read once at startup)
+const cachedPackageVersion: string = (() => {
+  try {
+    const packageRoot = getPackageRoot();
+    const packageJsonPath = path.join(packageRoot, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version: string };
+    return packageJson.version;
+  } catch {
+    return 'unknown';
+  }
+})();
+
 export class DataRoutes extends BaseRouteHandler {
   constructor(
     private paginationHelper: PaginationHelper,
@@ -211,6 +223,11 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
+    if (ids.length > 500) {
+      this.badRequest(res, 'Maximum 500 IDs per batch request');
+      return;
+    }
+
     // Validate all IDs are numbers
     if (!ids.every((id: unknown) => typeof id === 'number' && Number.isInteger(id))) {
       this.badRequest(res, 'All ids must be integers');
@@ -257,6 +274,17 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
+    if (memorySessionIds.length > 500) {
+      this.badRequest(res, 'Maximum 500 IDs per batch request');
+      return;
+    }
+
+    // Validate each element is a non-empty string
+    if (!memorySessionIds.every((id: unknown) => typeof id === 'string' && id.length > 0)) {
+      this.badRequest(res, 'All memorySessionIds must be non-empty strings');
+      return;
+    }
+
     const validatedIds = memorySessionIds as string[];
     const store = this.dbManager.getSessionStore();
     const sessions = store.getSdkSessionsBySessionIds(validatedIds);
@@ -288,11 +316,8 @@ export class DataRoutes extends BaseRouteHandler {
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
     const db = this.dbManager.getSessionStore().db;
 
-    // Read version from package.json
-    const packageRoot = getPackageRoot();
-    const packageJsonPath = path.join(packageRoot, 'package.json');
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version: string };
-    const version: string = packageJson.version;
+    // Use cached version (read once at module load)
+    const version: string = cachedPackageVersion;
 
     // Get database stats
     const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
@@ -379,7 +404,7 @@ export class DataRoutes extends BaseRouteHandler {
    */
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; sessionId?: string; summaryId?: number; unsummarized?: boolean } {
     const offset = Math.max(0, parseInt(req.query.offset as string, 10) || 0);
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100);
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit as string, 10) || 20, 100));
     const project = req.query.project as string | undefined;
     const sessionId = req.query.session_id as string | undefined;
     const unsummarized = req.query.unsummarized === 'true';
@@ -399,6 +424,15 @@ export class DataRoutes extends BaseRouteHandler {
     const body = req.body as ImportBody;
     const { sessions, summaries, observations, prompts } = body;
 
+    // Validate size limits per entity type (max 10000 each)
+    const MAX_IMPORT_SIZE = 10000;
+    for (const [name, items] of Object.entries({ sessions, summaries, observations, prompts })) {
+      if (Array.isArray(items) && items.length > MAX_IMPORT_SIZE) {
+        this.badRequest(res, `Maximum ${String(MAX_IMPORT_SIZE)} items per entity type (${name} has ${String((items as unknown[]).length)})`);
+        return;
+      }
+    }
+
     const store = this.dbManager.getSessionStore();
 
     function runImport<T>(items: unknown, importFn: (item: T) => { imported: boolean }): { imported: number; skipped: number } {
@@ -416,10 +450,15 @@ export class DataRoutes extends BaseRouteHandler {
       return { imported, skipped };
     }
 
-    const sessionsResult = runImport<ImportSdkSession>(sessions, s => store.importSdkSession(s));
-    const summariesResult = runImport<ImportSessionSummary>(summaries, s => store.importSessionSummary(s));
-    const observationsResult = runImport<ImportObservation>(observations, o => store.importObservation(o));
-    const promptsResult = runImport<ImportUserPrompt>(prompts, p => store.importUserPrompt(p));
+    // Wrap all imports in a single transaction for atomicity
+    const importAll = store.db.transaction(() => {
+      const sessionsResult = runImport<ImportSdkSession>(sessions, s => store.importSdkSession(s));
+      const summariesResult = runImport<ImportSessionSummary>(summaries, s => store.importSessionSummary(s));
+      const observationsResult = runImport<ImportObservation>(observations, o => store.importObservation(o));
+      const promptsResult = runImport<ImportUserPrompt>(prompts, p => store.importUserPrompt(p));
+      return { sessionsResult, summariesResult, observationsResult, promptsResult };
+    });
+    const { sessionsResult, summariesResult, observationsResult, promptsResult } = importAll();
 
     const stats = {
       sessionsImported: sessionsResult.imported,

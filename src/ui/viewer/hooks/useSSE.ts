@@ -5,6 +5,8 @@ import { TIMING } from '../constants/timing';
 import { logger } from '../utils/logger';
 import { calculateBackoffDelay } from '../utils/backoff';
 
+const MAX_RECONNECT_ATTEMPTS = 20;
+
 export function useSSE() {
   const [observations, setObservations] = useState<Observation[]>([]);
   const [summaries, setSummaries] = useState<Summary[]>([]);
@@ -35,14 +37,20 @@ export function useSSE() {
         logger.error('SSE', 'Connection error');
         setIsConnected(false);
         eventSource.close();
+        clearTimeout(reconnectTimeoutRef.current);
 
         // Reconnect with exponential backoff
         const attempt = reconnectAttemptRef.current;
+        if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+          logger.error('SSE', `Giving up after ${MAX_RECONNECT_ATTEMPTS} reconnect attempts`);
+          return;
+        }
         const delay = calculateBackoffDelay(
           attempt,
           TIMING.SSE_RECONNECT_DELAY_MS,
           TIMING.SSE_RECONNECT_MAX_DELAY_MS,
           TIMING.SSE_RECONNECT_BACKOFF_FACTOR,
+          0.25,
         );
         reconnectAttemptRef.current = attempt + 1;
 

@@ -293,11 +293,11 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
   const abortRef = useRef<AbortController | null>(null);
 
   const loadPage = useCallback(async (reset: boolean): Promise<void> => {
-    if (isLoadingRef.current) return;
-
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+
+    if (isLoadingRef.current && !reset) return;
 
     isLoadingRef.current = true;
     setIsLoading(true);
@@ -348,7 +348,11 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
   // React to new_summary SSE events
   useEffect(() => {
     if (!newSummary) return;
-    setSessionGroups(prev => prependSession(prev, newSummary));
+    setSessionGroups(prev => {
+      const alreadyExists = prev.some(g => g.sessions.some(s => s.id === newSummary.id));
+      if (alreadyExists) return prev;
+      return prependSession(prev, newSummary);
+    });
     setSelectedId(current => current === null ? newSummary.id : current);
     // SSE-delivered summaries omit `observation_count`.  Reload the first page
     // immediately after prepending so the DB-computed count replaces the
@@ -359,9 +363,9 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
   }, [newSummary, loadPage]);
 
   const loadMore = useCallback(async (): Promise<void> => {
-    if (isLoading || !hasMore) return;
+    if (isLoadingRef.current || !hasMore) return;
     await loadPage(false);
-  }, [isLoading, hasMore, loadPage]);
+  }, [hasMore, loadPage]);
 
   const selectSession = useCallback((id: number): void => {
     setSelectedId(id);

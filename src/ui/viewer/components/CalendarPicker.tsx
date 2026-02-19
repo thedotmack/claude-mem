@@ -87,12 +87,14 @@ export function CalendarPicker({
   const [viewYear, setViewYear] = useState(year);
   const [viewMonth, setViewMonth] = useState(month - 1); // Convert to 0-based
   const containerRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
   const activitySet = useMemo(
     () => new Set(activityDays.filter(d => d.count > 0).map(d => d.date)),
     [activityDays],
   );
-  const grid = buildMonthGrid(viewYear, viewMonth);
+  const grid = useMemo(() => buildMonthGrid(viewYear, viewMonth), [viewYear, viewMonth]);
 
   const handlePrevMonth = useCallback(() => {
     setViewMonth(m => {
@@ -117,11 +119,11 @@ export function CalendarPicker({
   // Close on outside click or Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
     };
     const handleClickOutside = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        onClose();
+        onCloseRef.current();
       }
     };
 
@@ -136,7 +138,7 @@ export function CalendarPicker({
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('click', handleClickOutside);
     };
-  }, [onClose]);
+  }, []);
 
   return (
     <div className="calendar-picker" data-testid="calendar-picker" ref={containerRef}>

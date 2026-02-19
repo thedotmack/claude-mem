@@ -72,6 +72,8 @@ function VirtualTimeline({ timelineItems, scrollElement }: VirtualTimelineProps)
     count: timelineItems.length,
     getScrollElement: () => scrollElement,
     estimateSize: () => 120,
+    // Firefox has a known bug with measureElement + ResizeObserver, so we skip
+    // dynamic measurement and fall back to estimateSize in Firefox.
     measureElement:
       typeof window !== 'undefined' && navigator.userAgent.indexOf('Firefox') === -1
         ? (element) => element.getBoundingClientRect().height

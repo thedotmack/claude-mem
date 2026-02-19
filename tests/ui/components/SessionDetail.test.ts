@@ -299,7 +299,7 @@ describe('SessionDetail live session rendering', () => {
 
 describe('SessionDetail accepts null summary in SessionDetail type', () => {
   it('SessionDetail type accepts null summary (active session)', () => {
-    const detail: SessionDetailType = {
+    const detail: SessionDetail = {
       summary: null,
       observations: [makeObservation(1, 2000)],
       prompts: [makePrompt(1, 1500)],

@@ -68,6 +68,8 @@ export const TwoPanel = forwardRef<TwoPanelHandle, TwoPanelProps>(function TwoPa
 }, ref) {
   const sessionList = useSessionList({ project, newSummary });
   const sessionListRef = useRef<SessionListHandle>(null);
+  const sessionGroupsRef = useRef(sessionList.sessionGroups);
+  useEffect(() => { sessionGroupsRef.current = sessionList.sessionGroups; }, [sessionList.sessionGroups]);
   const [activeDateKey, setActiveDateKey] = useState<string | null>(getTodayString());
   const [pendingScrollDate, setPendingScrollDate] = useState<string | null>(null);
 
@@ -160,7 +162,7 @@ export const TwoPanel = forwardRef<TwoPanelHandle, TwoPanelProps>(function TwoPa
   // otherwise load the data and use pendingScrollDate for async scroll.
   // Falls back to the nearest available date when no sessions exist for the target.
   const scrollOrLoadDate = useCallback((dateKey: string): void => {
-    const alreadyLoaded = sessionList.sessionGroups.some(g => g.dateKey === dateKey);
+    const alreadyLoaded = sessionGroupsRef.current.some(g => g.dateKey === dateKey);
     if (alreadyLoaded) {
       sessionListRef.current?.scrollToDate(dateKey);
     } else {
@@ -178,7 +180,7 @@ export const TwoPanel = forwardRef<TwoPanelHandle, TwoPanelProps>(function TwoPa
         // If found, the pendingScrollDate effect handles the scroll
       });
     }
-  }, [sessionList.sessionGroups, sessionList.loadForDate, findNearestLoadedDate]);
+  }, [sessionList.loadForDate, findNearestLoadedDate]);
 
   // Day navigation handlers (Task #60 — scroll-based, not filter-based)
   const handleDayPrev = useCallback((): void => {

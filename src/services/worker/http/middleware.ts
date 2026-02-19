@@ -25,8 +25,8 @@ export function createMiddleware(
   // JSON parsing with 50mb limit
   middlewares.push(express.json({ limit: '50mb' }));
 
-  // CORS
-  middlewares.push(cors());
+  // CORS — restrict to localhost origins only
+  middlewares.push(cors({ origin: ['http://localhost:37777', 'http://127.0.0.1:37777'] }));
 
   // HTTP request/response logging
   middlewares.push((req: Request, res: Response, next: NextFunction) => {

@@ -262,8 +262,9 @@ export function useSessionDetail(
             setDetail(result);
           }
         })
-        .catch(() => {
-          // Swallow errors during polling — don't clear existing detail
+        .catch((err: unknown) => {
+          if (err instanceof DOMException && err.name === 'AbortError') return;
+          logger.warn('HOOK', 'Poll failed for active session');
         });
     };
 

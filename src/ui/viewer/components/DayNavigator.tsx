@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { CalendarPicker } from './CalendarPicker';
 import type { ActivityDay } from '../types';
 import { getTodayString } from '../utils/date';
@@ -116,14 +116,15 @@ export function DayNavigator({
   activeDateKey,
   onPrev,
   onNext,
-  today = getTodayString(),
+  today,
   activityDays,
   onSelectDate,
 }: DayNavigatorProps): React.ReactElement {
+  const resolvedToday = useMemo(() => today ?? getTodayString(), [today]);
   const [calendarOpen, setCalendarOpen] = useState(false);
 
   const label = activeDateKey
-    ? formatDayLabel(activeDateKey, '', today)
+    ? formatDayLabel(activeDateKey, '', resolvedToday)
     : 'Today';
 
   const hasKeys = availableDateKeys.length > 0;

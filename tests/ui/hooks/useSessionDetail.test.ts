@@ -373,6 +373,12 @@ describe('fetchSessionDetail', () => {
     for (const url of urls) {
       expect(url).not.toContain('summary_id=');
     }
+
+    // When no summaryId is provided, unsummarized=true should be present on observations and prompts URLs
+    const observationsUrl = urls.find((u: string) => u.includes('/api/observations'));
+    const promptsUrl = urls.find((u: string) => u.includes('/api/prompts'));
+    expect(observationsUrl).toContain('unsummarized=true');
+    expect(promptsUrl).toContain('unsummarized=true');
   });
 
   it('includes pre-summary observations when no summaryId is provided', async () => {

@@ -358,6 +358,9 @@ export class PaginationHelper {
     };
   }
 
+  /** Allowed table names for pagination queries */
+  private static readonly ALLOWED_TABLES = ['observations', 'session_summaries', 'user_prompts'];
+
   /**
    * Generic pagination implementation (DRY)
    */
@@ -369,6 +372,10 @@ export class PaginationHelper {
     project?: string,
     extraFilter?: { column: string; value: string }
   ): PaginatedResult<T> {
+    if (!PaginationHelper.ALLOWED_TABLES.includes(table)) {
+      throw new Error(`Invalid table name: ${table}`);
+    }
+
     const db = this.dbManager.getSessionStore().db;
 
     let query = `SELECT ${columns} FROM ${table}`;

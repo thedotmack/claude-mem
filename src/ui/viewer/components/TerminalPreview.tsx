@@ -15,6 +15,21 @@ const ansiConverter = new AnsiToHtml({
   stream: false
 });
 
+/**
+ * Lightweight allowlist sanitizer for ansi-to-html output.
+ * Only permits <span style="..."> and </span> tags — strips everything else.
+ * ansi-to-html with escapeXML:true already escapes user content, so this is
+ * defense-in-depth against any bypass or future library change.
+ */
+function sanitizeAnsiHtml(html: string): string {
+  return html.replace(/<\/?[^>]+>/g, (tag) => {
+    if (/^<span\s+style="[^"]*"\s*>$/i.test(tag)) return tag;
+    if (/^<\/span>$/i.test(tag)) return tag;
+    // Strip any unexpected tag by escaping it
+    return tag.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  });
+}
+
 export function TerminalPreview({ content, isLoading = false, className = '' }: TerminalPreviewProps) {
   const preRef = useRef<HTMLPreElement>(null);
   const scrollTopRef = useRef(0);
@@ -26,7 +41,7 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
       scrollTopRef.current = preRef.current.scrollTop;
     }
     if (!content) return '';
-    return ansiConverter.toHtml(content);
+    return sanitizeAnsiHtml(ansiConverter.toHtml(content));
   }, [content]);
 
   // Restore scroll position after render

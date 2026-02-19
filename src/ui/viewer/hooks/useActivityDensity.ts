@@ -10,11 +10,16 @@ interface UseActivityDensityResult {
   isLoading: boolean;
 }
 
+/** Format a Date as a local YYYY-MM-DD string (avoids UTC drift from toISOString). */
+function toLocalDateStr(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function bucketByDay(data: SearchResponse): ActivityDay[] {
   const buckets = new Map<string, ActivityDay>();
 
   const addItem = (epoch: number, type: 'observations' | 'summaries' | 'prompts') => {
-    const date = new Date(epoch).toISOString().slice(0, 10);
+    const date = toLocalDateStr(new Date(epoch));
     const existing = buckets.get(date) ?? { date, count: 0, observations: 0, summaries: 0, prompts: 0 };
     buckets.set(date, { ...existing, count: existing.count + 1, [type]: existing[type] + 1 });
   };
@@ -40,7 +45,7 @@ function bucketByDay(data: SearchResponse): ActivityDay[] {
 
   const cursor = new Date(startDate);
   while (cursor <= endDate) {
-    const dateStr = cursor.toISOString().slice(0, 10);
+    const dateStr = toLocalDateStr(cursor);
     result.push(buckets.get(dateStr) ?? { date: dateStr, count: 0, observations: 0, summaries: 0, prompts: 0 });
     cursor.setDate(cursor.getDate() + 1);
   }
@@ -60,10 +65,10 @@ export function useActivityDensity(project: string): UseActivityDensityResult {
     const controller = new AbortController();
     setIsLoading(true);
 
-    const endDateStr = new Date().toISOString().slice(0, 10);
+    const endDateStr = toLocalDateStr(new Date());
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - UI.ACTIVITY_BAR_DAYS);
-    const startStr = startDate.toISOString().slice(0, 10);
+    const startStr = toLocalDateStr(startDate);
 
     const params = new URLSearchParams({
       format: 'json',

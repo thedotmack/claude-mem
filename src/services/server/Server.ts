@@ -190,6 +190,11 @@ export class Server {
           let content: string;
 
           if (operation) {
+            // Validate operation parameter to prevent path traversal
+            if (!/^[a-zA-Z0-9-]+$/.test(operation)) {
+              res.status(400).json({ error: 'Invalid operation parameter' });
+              return;
+            }
             const operationPath = path.join(__dirname, '../skills/mem-search/operations', `${operation}.md`);
             content = await fs.promises.readFile(operationPath, 'utf-8');
           } else {
