@@ -4,7 +4,13 @@ import {
   DEFAULT_DEVELOPER_PRIORITY_ORDER,
   DEFAULT_OUTDATED_THRESHOLD_DAYS,
 } from "../../../scripts/issue-pr-bot/config.ts";
-import { scoreAndRankItems } from "../../../scripts/issue-pr-bot/scoring.ts";
+import {
+  resolvePriorityBucket,
+  resolveSeverityBucket,
+  scoreAndRankItems,
+  toNormalizedLabels,
+  toSearchableText,
+} from "../../../scripts/issue-pr-bot/scoring.ts";
 import type { NormalizedItem, TriageItemType } from "../../../scripts/issue-pr-bot/types.ts";
 
 const NOW = "2026-02-19T00:00:00.000Z";
@@ -158,5 +164,159 @@ describe("issue-pr-bot scoring heuristics", () => {
 
     expect(byNumber.get(32)?.outdatedCandidate).toBe(false);
     expect(byNumber.get(33)?.outdatedCandidate).toBe(false);
+  });
+});
+
+describe("resolveSeverityBucket", () => {
+  it("returns 'critical' for items with critical keywords in title/body", () => {
+    const crashItem = buildItem(100, "issue", {
+      title: "Application crash on startup",
+    });
+    const securityItem = buildItem(101, "issue", {
+      title: "Potential security vulnerability in auth flow",
+    });
+
+    expect(
+      resolveSeverityBucket(crashItem, "bug", toSearchableText(crashItem), toNormalizedLabels(crashItem))
+    ).toBe("critical");
+    expect(
+      resolveSeverityBucket(securityItem, "bug", toSearchableText(securityItem), toNormalizedLabels(securityItem))
+    ).toBe("critical");
+  });
+
+  it("returns 'high' for items with high keywords in title/body", () => {
+    const leakItem = buildItem(102, "issue", {
+      title: "Memory leak in worker process",
+    });
+    const zombieItem = buildItem(103, "issue", {
+      title: "Zombie process left after shutdown",
+    });
+
+    expect(
+      resolveSeverityBucket(leakItem, "bug", toSearchableText(leakItem), toNormalizedLabels(leakItem))
+    ).toBe("high");
+    expect(
+      resolveSeverityBucket(zombieItem, "bug", toSearchableText(zombieItem), toNormalizedLabels(zombieItem))
+    ).toBe("high");
+  });
+
+  it("returns 'high' for items with 'bug' label", () => {
+    const bugLabelItem = buildItem(104, "issue", {
+      title: "Something is wrong",
+      labels: ["bug"],
+    });
+
+    expect(
+      resolveSeverityBucket(bugLabelItem, "bug", toSearchableText(bugLabelItem), toNormalizedLabels(bugLabelItem))
+    ).toBe("high");
+  });
+
+  it("returns 'low' for items with 'enhancement' label", () => {
+    const enhancementLabelItem = buildItem(105, "issue", {
+      title: "Add dark mode support",
+      labels: ["enhancement"],
+    });
+
+    expect(
+      resolveSeverityBucket(
+        enhancementLabelItem,
+        "feature",
+        toSearchableText(enhancementLabelItem),
+        toNormalizedLabels(enhancementLabelItem)
+      )
+    ).toBe("low");
+  });
+
+  it("returns 'medium' for plain items with no special signals", () => {
+    const plainItem = buildItem(106, "issue", {
+      title: "Update configuration defaults",
+    });
+
+    expect(
+      resolveSeverityBucket(plainItem, "maintenance", toSearchableText(plainItem), toNormalizedLabels(plainItem))
+    ).toBe("medium");
+  });
+});
+
+describe("resolvePriorityBucket", () => {
+  it("returns 'urgent' when thedotmack is the author", () => {
+    const item = buildItem(200, "issue", {
+      title: "Add dark mode support",
+      labels: ["enhancement"],
+      author: "thedotmack",
+    });
+
+    expect(
+      resolvePriorityBucket(
+        item,
+        "low",
+        "feature",
+        toSearchableText(item),
+        toNormalizedLabels(item),
+        1,
+        [...DEFAULT_DEVELOPER_PRIORITY_ORDER]
+      )
+    ).toBe("urgent");
+  });
+
+  it("returns 'high' when glucksberg is an assignee", () => {
+    const item = buildItem(201, "issue", {
+      title: "Add dark mode support",
+      labels: ["enhancement"],
+      author: "external-contributor",
+    });
+    item.assignees = [{ login: "glucksberg" }];
+
+    expect(
+      resolvePriorityBucket(
+        item,
+        "low",
+        "feature",
+        toSearchableText(item),
+        toNormalizedLabels(item),
+        1,
+        [...DEFAULT_DEVELOPER_PRIORITY_ORDER]
+      )
+    ).toBe("high");
+  });
+
+  it("returns 'normal' for recent item with no priority developer", () => {
+    const item = buildItem(202, "issue", {
+      title: "Improve logging output format",
+      author: "external-contributor",
+    });
+    item.assignees = [{ login: "someone-else" }];
+
+    expect(
+      resolvePriorityBucket(
+        item,
+        "medium",
+        "feature",
+        toSearchableText(item),
+        toNormalizedLabels(item),
+        5,
+        [...DEFAULT_DEVELOPER_PRIORITY_ORDER]
+      )
+    ).toBe("normal");
+  });
+
+  it("returns 'low' for stale item with no assignee", () => {
+    const item = buildItem(203, "issue", {
+      title: "Improve logging output format",
+      author: "external-contributor",
+      updatedAt: "2025-12-01T00:00:00.000Z",
+    });
+
+    expect(
+      resolvePriorityBucket(
+        item,
+        "medium",
+        "feature",
+        toSearchableText(item),
+        toNormalizedLabels(item),
+        45,
+        [...DEFAULT_DEVELOPER_PRIORITY_ORDER]
+      )
+    ).toBe("low");
   });
 });
