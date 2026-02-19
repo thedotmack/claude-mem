@@ -8,7 +8,7 @@
  * - Exposes status and point-in-time restore
  */
 
-import { ChildProcess, spawn, execFileSync, execSync } from 'child_process';
+import { ChildProcess, spawn, execFile } from 'child_process';
 import { existsSync, writeFileSync, chmodSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { arch, platform } from 'os';
@@ -141,15 +141,19 @@ export class LitestreamManager {
 
     try {
       const env = this.buildEnv(settings);
-      execFileSync(binaryPath, [
-        'restore',
-        '-config', LITESTREAM_CONFIG_PATH,
-        '-o', restoreTo,
-        DB_PATH
-      ], {
-        env: { ...process.env, ...env },
-        timeout: 120_000,
-        stdio: ['pipe', 'pipe', 'pipe'],
+      await new Promise<void>((resolve, reject) => {
+        execFile(binaryPath, [
+          'restore',
+          '-config', LITESTREAM_CONFIG_PATH,
+          '-o', restoreTo,
+          DB_PATH
+        ], {
+          env: { ...process.env, ...env },
+          timeout: 120_000,
+        }, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
       });
 
       return { success: true, message: `Database restored to ${restoreTo}` };
@@ -229,13 +233,15 @@ export class LitestreamManager {
     const arrayBuf = await response.arrayBuffer();
     writeFileSync(tmpFile, Buffer.from(arrayBuf));
 
-    // Extract
-    if (ext === 'tar.gz') {
-      execSync(`tar xzf "${tmpFile}" -C "${LITESTREAM_BINARY_DIR}"`, { stdio: 'pipe' });
-    } else {
-      // zip on Windows
-      execSync(`unzip -o "${tmpFile}" -d "${LITESTREAM_BINARY_DIR}"`, { stdio: 'pipe' });
-    }
+    // Extract (async to avoid blocking event loop)
+    await new Promise<void>((resolve, reject) => {
+      const args = ext === 'tar.gz'
+        ? ['tar', ['xzf', tmpFile, '-C', LITESTREAM_BINARY_DIR]]
+        : ['unzip', ['-o', tmpFile, '-d', LITESTREAM_BINARY_DIR]];
+      const proc = spawn(args[0] as string, args[1] as string[], { stdio: 'pipe' });
+      proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`${args[0]} exited with code ${code}`)));
+      proc.on('error', reject);
+    });
 
     // Make executable on Unix
     if (os !== 'win32') {
