@@ -31,6 +31,8 @@ export class MigrationRunner {
     this.renameSessionIdColumns();
     this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
+    this.ensureReadTokensColumn();
+    this.createContextInjectionsTable();
   }
 
   /**
@@ -627,5 +629,79 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(20, new Date().toISOString());
+  }
+
+  /**
+   * Ensure read_tokens column exists on observations and backfill existing rows (migration 21)
+   * read_tokens estimates how many tokens are consumed when this observation is read back.
+   * Computed as ceiling of total content length / 4 across narrative, title, facts, concepts, text.
+   *
+   * NOTE: Version 21 is historically claimed by SessionStore.addCompositeIndexes() for
+   * databases created through the worker path. MigrationRunner reassigns it here for the
+   * read_tokens column. Both paths use PRAGMA column-existence checks for idempotency,
+   * so version 21 is safe regardless of which migration path recorded it first.
+   */
+  private ensureReadTokensColumn(): void {
+    // Check column existence first (not version), since version 21 may have been
+    // recorded by a prior build without actually adding the column.
+    const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasReadTokens = observationsInfo.some(col => col.name === 'read_tokens');
+
+    if (!hasReadTokens) {
+      this.db.run('ALTER TABLE observations ADD COLUMN read_tokens INTEGER DEFAULT 0');
+      logger.debug('DB', 'Added read_tokens column to observations table');
+
+      // Backfill existing rows using integer ceiling division: (total_len + 3) / 4
+      this.db.run(`
+        UPDATE observations SET read_tokens = (
+          COALESCE(LENGTH(narrative), 0) +
+          COALESCE(LENGTH(title), 0) +
+          COALESCE(LENGTH(facts), 0) +
+          COALESCE(LENGTH(concepts), 0) +
+          COALESCE(LENGTH(text), 0) + 3
+        ) / 4
+      `);
+      logger.debug('DB', 'Backfilled read_tokens for existing observations');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+  }
+
+  /**
+   * Create context_injections table for token analytics (migration 22)
+   * Tracks which observations were injected into each session context,
+   * enabling analytics on context injection patterns and token usage.
+   */
+  private createContextInjectionsTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(22) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='context_injections'").all() as TableNameRow[];
+    if (tables.length > 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+      return;
+    }
+
+    logger.debug('DB', 'Creating context_injections table');
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS context_injections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT,
+        project TEXT NOT NULL,
+        observation_ids TEXT NOT NULL,
+        total_read_tokens INTEGER NOT NULL,
+        injection_source TEXT NOT NULL CHECK(injection_source IN ('session_start', 'prompt_submit', 'mcp_search')),
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_context_injections_project ON context_injections(project);
+      CREATE INDEX IF NOT EXISTS idx_context_injections_created ON context_injections(created_at_epoch DESC);
+      CREATE INDEX IF NOT EXISTS idx_context_injections_source ON context_injections(injection_source);
+    `);
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+
+    logger.debug('DB', 'context_injections table created successfully');
   }
 }

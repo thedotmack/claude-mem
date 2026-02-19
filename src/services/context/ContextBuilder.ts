@@ -80,12 +80,10 @@ function buildContextOutput(
   config: ContextConfig,
   cwd: string,
   sessionId: string | undefined,
-  useColors: boolean
+  useColors: boolean,
+  economics: ReturnType<typeof calculateTokenEconomics>
 ): string {
   const output: string[] = [];
-
-  // Calculate token economics
-  const economics = calculateTokenEconomics(observations);
 
   // Render header section
   output.push(...renderHeader(project, economics, config, useColors));
@@ -118,6 +116,18 @@ function buildContextOutput(
 }
 
 /**
+ * Result from context generation with analytics metadata
+ */
+export interface ContextResult {
+  /** Formatted context text ready for display */
+  text: string;
+  /** IDs of all observations included in the context */
+  observationIds: number[];
+  /** Estimated read tokens for all included observations */
+  totalReadTokens: number;
+}
+
+/**
  * Generate context for a project
  *
  * Main entry point for context generation. Orchestrates loading config,
@@ -127,6 +137,19 @@ export function generateContext(
   input?: ContextInput,
   useColors: boolean = false
 ): string {
+  return generateContextWithMeta(input, useColors).text;
+}
+
+/**
+ * Generate context for a project and return analytics metadata alongside the text.
+ *
+ * Returns the same formatted context as generateContext() plus the observation
+ * IDs and estimated read token count needed for injection tracking.
+ */
+export function generateContextWithMeta(
+  input?: ContextInput,
+  useColors: boolean = false
+): ContextResult {
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
   const project = getProjectName(cwd);
@@ -137,7 +160,7 @@ export function generateContext(
   // Initialize database
   const db = initializeDatabase();
   if (!db) {
-    return '';
+    return { text: '', observationIds: [], totalReadTokens: 0 };
   }
 
   try {
@@ -151,19 +174,32 @@ export function generateContext(
 
     // Handle empty state
     if (observations.length === 0 && summaries.length === 0) {
-      return renderEmptyState(project, useColors);
+      return {
+        text: renderEmptyState(project, useColors),
+        observationIds: [],
+        totalReadTokens: 0,
+      };
     }
 
-    // Build and return context
-    return buildContextOutput(
-      project,
-      observations,
-      summaries,
-      config,
-      cwd,
-      input?.session_id,
-      useColors
-    );
+    // Compute metadata from observations (single call, shared with buildContextOutput)
+    const observationIds = observations.map(obs => obs.id);
+    const economics = calculateTokenEconomics(observations);
+
+    // Build and return context with metadata
+    return {
+      text: buildContextOutput(
+        project,
+        observations,
+        summaries,
+        config,
+        cwd,
+        input?.session_id,
+        useColors,
+        economics
+      ),
+      observationIds,
+      totalReadTokens: economics.totalReadTokens,
+    };
   } finally {
     db.close();
   }

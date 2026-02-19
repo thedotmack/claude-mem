@@ -1,0 +1,89 @@
+import React from 'react';
+import { useAnalytics } from '../hooks/useAnalytics';
+import { formatTokenCount } from '../utils/format';
+
+interface AnalyticsBarProps {
+  project: string;
+}
+
+const TIME_RANGE_OPTIONS: Array<{ label: string; value: number | null }> = [
+  { label: '7d', value: 7 },
+  { label: '30d', value: 30 },
+  { label: '90d', value: 90 },
+  { label: 'All', value: null },
+];
+
+const TOOLTIPS = {
+  read: 'Tokens spent reading observations back into context',
+  work: 'AI tokens invested in research, building, and decisions',
+  recalled: 'Tokens recalled from stored memories into sessions. Additional savings include avoided codebase exploration, reduced user re-explanation, and fewer wrong paths.',
+  obs: 'Observations recorded / distinct Claude sessions (one session can have multiple summaries)',
+} as const;
+
+/**
+ * Compact horizontal bar showing token analytics stats.
+ * Cards flow inline with label + value on a single row.
+ * Hovering or focusing a card shows a descriptive tooltip via CSS.
+ */
+export const AnalyticsBar = React.memo(function AnalyticsBar({ project }: AnalyticsBarProps) {
+  const { data, isLoading, timeRange, setTimeRange } = useAnalytics(project);
+
+  const hasSavings = (data?.savingsTokens ?? 0) > 0;
+  const savingsClass = hasSavings ? 'analytics-card--green' : 'analytics-card--muted';
+
+  return (
+    <div className="analytics-bar" role="region" aria-label="Token analytics">
+      <div className="analytics-bar__cards" aria-busy={isLoading}>
+        <div className="analytics-card analytics-card--accent" tabIndex={0}>
+          <span className="analytics-card__label" title="Read tokens">Read</span>
+          <span className="analytics-card__value">
+            {isLoading ? <span className="analytics-skeleton" role="status" aria-label="Loading read tokens" /> : formatTokenCount(data?.readTokens ?? 0)}
+          </span>
+          <span className="analytics-tooltip" role="tooltip">{TOOLTIPS.read}</span>
+        </div>
+
+        <div className="analytics-card analytics-card--purple" tabIndex={0}>
+          <span className="analytics-card__label" title="Work tokens">Work</span>
+          <span className="analytics-card__value">
+            {isLoading ? <span className="analytics-skeleton" role="status" aria-label="Loading work tokens" /> : formatTokenCount(data?.workTokens ?? 0)}
+          </span>
+          <span className="analytics-tooltip" role="tooltip">{TOOLTIPS.work}</span>
+        </div>
+
+        <div className={`analytics-card ${savingsClass}`} tabIndex={0}>
+          <span className="analytics-card__label" title="Recalled tokens">Recalled</span>
+          <span className="analytics-card__value">
+            {isLoading ? <span className="analytics-skeleton" role="status" aria-label="Loading recalled tokens" /> : (hasSavings ? formatTokenCount(data?.savingsTokens ?? 0) : '\u2014')}
+          </span>
+          <span className="analytics-tooltip" role="tooltip">{TOOLTIPS.recalled}</span>
+        </div>
+
+        <div className="analytics-card" tabIndex={0}>
+          <span className="analytics-card__label" title="Observations">Obs</span>
+          <span className="analytics-card__value">
+            {isLoading ? <span className="analytics-skeleton" role="status" aria-label="Loading observations" /> : String(data?.observationCount ?? 0)}
+          </span>
+          {!isLoading && (
+            <span className="analytics-card__subtitle" title="sessions">
+              / {data ? String(data.sessionCount) : '0'} sess
+            </span>
+          )}
+          <span className="analytics-tooltip" role="tooltip">{TOOLTIPS.obs}</span>
+        </div>
+      </div>
+
+      <div className="analytics-time-range" role="group" aria-label="Time range">
+        {TIME_RANGE_OPTIONS.map(({ label, value }) => (
+          <button
+            key={label}
+            className={`analytics-time-range__btn${timeRange === value ? ' analytics-time-range__btn--active' : ''}`}
+            onClick={() => { setTimeRange(value); }}
+            aria-pressed={timeRange === value}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+});

@@ -78,6 +78,7 @@ export interface ObservationRecord {
   files_modified: string | null;
   prompt_number: number | null;
   discovery_tokens: number;
+  read_tokens: number;
 }
 
 /**

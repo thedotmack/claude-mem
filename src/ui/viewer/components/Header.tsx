@@ -1,5 +1,6 @@
 import React from 'react';
 import { SearchBar } from './SearchBar';
+import { AnalyticsBar } from './AnalyticsBar';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
 
 interface HeaderProps {
@@ -16,6 +17,7 @@ interface HeaderProps {
   filterCount: number;
   onFilterToggle: () => void;
   version?: string;
+  project: string;
 }
 
 export function Header({
@@ -32,6 +34,7 @@ export function Header({
   filterCount,
   onFilterToggle,
   version,
+  project,
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
 
@@ -53,6 +56,7 @@ export function Header({
           <span className="logo-text">magic-claude-mem</span>
           {version && <span className="version-badge">v{version}</span>}
         </h1>
+        <AnalyticsBar project={project} />
         <div className="status">
           <SearchBar
             query={query}
@@ -63,10 +67,11 @@ export function Header({
           <select
             value={currentFilter}
             onChange={e => { onFilterChange(e.target.value); }}
+            aria-label="Filter by project"
           >
             <option value="">All Projects</option>
-            {projects.map(project => (
-              <option key={project} value={project}>{project}</option>
+            {projects.map(proj => (
+              <option key={proj} value={proj}>{proj}</option>
             ))}
           </select>
           <button

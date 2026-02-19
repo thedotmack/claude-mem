@@ -13,5 +13,5 @@
  * - src/services/context/sections/ - Section rendering
  */
 // Re-export everything from the new context module
-export { generateContext } from './context/index.js';
-export type { ContextInput, ContextConfig } from './context/types.js';
+export { generateContext, generateContextWithMeta } from './context/index.js';
+export type { ContextInput, ContextConfig, ContextResult } from './context/index.js';

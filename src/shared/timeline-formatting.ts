@@ -111,6 +111,27 @@ export function estimateTokens(text: string | null): number {
 }
 
 /**
+ * Estimate the total read tokens for an observation-like object.
+ * Sums estimateTokens() across all non-null content fields:
+ * narrative, title, facts, concepts, text.
+ */
+export function estimateReadTokens(observation: {
+  narrative?: string | null;
+  title?: string | null;
+  facts?: string | null;
+  concepts?: string | null;
+  text?: string | null;
+}): number {
+  return (
+    estimateTokens(observation.narrative ?? null) +
+    estimateTokens(observation.title ?? null) +
+    estimateTokens(observation.facts ?? null) +
+    estimateTokens(observation.concepts ?? null) +
+    estimateTokens(observation.text ?? null)
+  );
+}
+
+/**
  * Group items by date
  *
  * Generic function that works with any item type that has a date field.

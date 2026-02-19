@@ -11,12 +11,14 @@
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
+import { InjectionTracker } from '../sqlite/InjectionTracker.js';
 import { logger } from '../../utils/logger.js';
 
 export class DatabaseManager {
   private sessionStore: SessionStore | null = null;
   private sessionSearch: SessionSearch | null = null;
   private chromaSync: ChromaSync | null = null;
+  private injectionTracker: InjectionTracker | null = null;
 
   /**
    * Initialize database connection (once, stays open)
@@ -25,6 +27,9 @@ export class DatabaseManager {
     // Open database connection (ONCE)
     this.sessionStore = new SessionStore();
     this.sessionSearch = new SessionSearch();
+
+    // Initialize InjectionTracker using the shared SessionStore database connection
+    this.injectionTracker = new InjectionTracker(this.sessionStore.db);
 
     // Initialize ChromaSync (lazy - connects on first search, not at startup)
     this.chromaSync = new ChromaSync('magic-claude-mem');
@@ -41,6 +46,8 @@ export class DatabaseManager {
       await this.chromaSync.close();
       this.chromaSync = null;
     }
+
+    this.injectionTracker = null;
 
     if (this.sessionStore) {
       this.sessionStore.close();
@@ -81,6 +88,16 @@ export class DatabaseManager {
       throw new Error('ChromaSync not initialized');
     }
     return this.chromaSync;
+  }
+
+  /**
+   * Get InjectionTracker instance (throws if not initialized)
+   */
+  getInjectionTracker(): InjectionTracker {
+    if (!this.injectionTracker) {
+      throw new Error('Database not initialized');
+    }
+    return this.injectionTracker;
   }
 
   // REMOVED: cleanupOrphanedSessions - violates "EVERYTHING SHOULD SAVE ALWAYS"

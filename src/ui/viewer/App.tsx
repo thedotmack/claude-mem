@@ -261,6 +261,7 @@ export function App() {
         filterCount={activeFilterCount}
         onFilterToggle={toggleFilterPalette}
         version={stats.worker?.version}
+        project={filters.project}
       />
 
       <SearchResultsBadge

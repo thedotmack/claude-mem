@@ -15,7 +15,7 @@ export enum LogLevel {
   SILENT = 4
 }
 
-export type Component = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'FOLDER_INDEX'
+export type Component = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'FOLDER_INDEX' | 'ANALYTICS'
   | 'SEARCH' | 'CHROMA_SYNC' | 'BRANCH' | 'PROCESS' | 'CURSOR' | 'QUEUE' | 'IMPORT' | 'CONSOLE' | 'SECURITY' | 'SETTINGS' | 'ENV' | 'CONFIG' | 'PROJECT_NAME';
 
 interface LogContext {

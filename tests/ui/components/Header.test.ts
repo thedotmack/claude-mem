@@ -9,7 +9,7 @@
  * Visual / interaction behaviour is covered by the Playwright E2E suite.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -23,13 +23,13 @@ const TEMPLATE_SRC = path.resolve(
   '../../../src/ui/viewer-template.html'
 );
 
-function readHeader(): string {
-  return fs.readFileSync(HEADER_SRC, 'utf-8');
-}
+let headerSource: string;
+let templateSource: string;
 
-function readTemplate(): string {
-  return fs.readFileSync(TEMPLATE_SRC, 'utf-8');
-}
+beforeAll(() => {
+  headerSource = fs.readFileSync(HEADER_SRC, 'utf-8');
+  templateSource = fs.readFileSync(TEMPLATE_SRC, 'utf-8');
+});
 
 // ---------------------------------------------------------------------------
 // Removed elements — these must NOT appear in the header
@@ -37,48 +37,39 @@ function readTemplate(): string {
 
 describe('Header does NOT render ThemeToggle', () => {
   it('does not import ThemeToggle', () => {
-    const src = readHeader();
-    expect(src).not.toMatch(/import.*ThemeToggle/);
+    expect(headerSource).not.toMatch(/import.*ThemeToggle/);
   });
 
   it('does not use <ThemeToggle', () => {
-    const src = readHeader();
-    expect(src).not.toMatch(/<ThemeToggle/);
+    expect(headerSource).not.toMatch(/<ThemeToggle/);
   });
 
   it('does not accept themePreference prop', () => {
-    const src = readHeader();
-    expect(src).not.toMatch(/themePreference\s*:/);
+    expect(headerSource).not.toMatch(/themePreference\s*:/);
   });
 
   it('does not accept onThemeChange prop', () => {
-    const src = readHeader();
-    expect(src).not.toMatch(/onThemeChange\s*:/);
+    expect(headerSource).not.toMatch(/onThemeChange\s*:/);
   });
 });
 
 describe('Header does NOT render a docs link', () => {
   it('does not contain a link to docs.magic-claude-mem.ai', () => {
-    const src = readHeader();
-    expect(src).not.toMatch(/docs\.magic-claude-mem\.ai/);
+    expect(headerSource).not.toMatch(/docs\.magic-claude-mem\.ai/);
   });
 
   it('does not render an icon-link anchor tag', () => {
-    const src = readHeader();
-    // The docs link used className="icon-link"
-    expect(src).not.toMatch(/className="icon-link"/);
+    expect(headerSource).not.toMatch(/className="icon-link"/);
   });
 });
 
 describe('Header does NOT render GitHubStarsButton', () => {
   it('does not import GitHubStarsButton', () => {
-    const src = readHeader();
-    expect(src).not.toMatch(/import.*GitHubStarsButton/);
+    expect(headerSource).not.toMatch(/import.*GitHubStarsButton/);
   });
 
   it('does not use <GitHubStarsButton', () => {
-    const src = readHeader();
-    expect(src).not.toMatch(/<GitHubStarsButton/);
+    expect(headerSource).not.toMatch(/<GitHubStarsButton/);
   });
 });
 
@@ -88,93 +79,115 @@ describe('Header does NOT render GitHubStarsButton', () => {
 
 describe('Header renders SearchBar', () => {
   it('imports SearchBar', () => {
-    const src = readHeader();
-    expect(src).toMatch(/import.*SearchBar/);
+    expect(headerSource).toMatch(/import.*SearchBar/);
   });
 
   it('renders <SearchBar', () => {
-    const src = readHeader();
-    expect(src).toMatch(/<SearchBar/);
+    expect(headerSource).toMatch(/<SearchBar/);
   });
 });
 
 describe('Header renders project selector', () => {
   it('renders a <select> for project filtering', () => {
-    const src = readHeader();
-    expect(src).toMatch(/<select/);
+    expect(headerSource).toMatch(/<select/);
   });
 
   it('renders All Projects option', () => {
-    const src = readHeader();
-    expect(src).toMatch(/All Projects/);
+    expect(headerSource).toMatch(/All Projects/);
+  });
+
+  it('has aria-label on project select for accessibility', () => {
+    expect(headerSource).toContain('aria-label="Filter by project"');
   });
 });
 
 describe('Header renders settings button', () => {
   it('renders an element with class settings-btn', () => {
-    const src = readHeader();
-    expect(src).toMatch(/settings-btn/);
+    expect(headerSource).toMatch(/settings-btn/);
   });
 
   it('calls onContextPreviewToggle when settings button is clicked', () => {
-    const src = readHeader();
-    expect(src).toMatch(/onContextPreviewToggle/);
+    expect(headerSource).toMatch(/onContextPreviewToggle/);
   });
 });
 
 describe('Header renders filter toggle button', () => {
   it('renders an element with class filter-toggle-btn', () => {
-    const src = readHeader();
-    expect(src).toMatch(/filter-toggle-btn/);
+    expect(headerSource).toMatch(/filter-toggle-btn/);
   });
 
   it('calls onFilterToggle prop when clicked', () => {
-    const src = readHeader();
-    expect(src).toMatch(/onFilterToggle/);
+    expect(headerSource).toMatch(/onFilterToggle/);
   });
 
   it('does NOT manage filterBarOpen state internally', () => {
-    const src = readHeader();
-    expect(src).not.toMatch(/filterBarOpen/);
+    expect(headerSource).not.toMatch(/filterBarOpen/);
   });
 });
 
 describe('Header does NOT render FilterBar', () => {
   it('does not import FilterBar', () => {
-    const src = readHeader();
-    expect(src).not.toMatch(/import.*FilterBar/);
+    expect(headerSource).not.toMatch(/import.*FilterBar/);
   });
 
   it('does not render <FilterBar', () => {
-    const src = readHeader();
-    expect(src).not.toMatch(/<FilterBar/);
+    expect(headerSource).not.toMatch(/<FilterBar/);
   });
 
   it('does not accept filter-related props (filters, onToggleObsType, etc)', () => {
-    const src = readHeader();
-    // These props were passed through Header to FilterBar - now removed
-    expect(src).not.toMatch(/onToggleObsType\s*[,:]/);
-    expect(src).not.toMatch(/onToggleConcept\s*[,:]/);
-    expect(src).not.toMatch(/onToggleItemKind\s*[,:]/);
-    expect(src).not.toMatch(/onDateRangeChange\s*[,:]/);
-    expect(src).not.toMatch(/onClearAllFilters\s*[,:]/);
+    expect(headerSource).not.toMatch(/onToggleObsType\s*[,:]/);
+    expect(headerSource).not.toMatch(/onToggleConcept\s*[,:]/);
+    expect(headerSource).not.toMatch(/onToggleItemKind\s*[,:]/);
+    expect(headerSource).not.toMatch(/onDateRangeChange\s*[,:]/);
+    expect(headerSource).not.toMatch(/onClearAllFilters\s*[,:]/);
   });
 });
 
 describe('Header renders logo', () => {
   it('renders the logomark image', () => {
-    const src = readHeader();
-    expect(src).toMatch(/logomark/);
+    expect(headerSource).toMatch(/logomark/);
   });
 
   it('renders magic-claude-mem text', () => {
-    const src = readHeader();
-    expect(src).toMatch(/magic-claude-mem/);
+    expect(headerSource).toMatch(/magic-claude-mem/);
   });
 
   it('renders logo-text span', () => {
-    const src = readHeader();
-    expect(src).toMatch(/logo-text/);
+    expect(headerSource).toMatch(/logo-text/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AnalyticsBar integration
+// ---------------------------------------------------------------------------
+
+describe('Header renders AnalyticsBar inline', () => {
+  it('imports AnalyticsBar', () => {
+    expect(headerSource).toMatch(/import.*AnalyticsBar/);
+  });
+
+  it('renders <AnalyticsBar', () => {
+    expect(headerSource).toMatch(/<AnalyticsBar/);
+  });
+
+  it('accepts project prop', () => {
+    expect(headerSource).toMatch(/project\s*:\s*string/);
+  });
+
+  it('places AnalyticsBar between h1 and status div', () => {
+    const h1Close = headerSource.indexOf('</h1>');
+    const analyticsIdx = headerSource.indexOf('<AnalyticsBar');
+    const statusIdx = headerSource.indexOf('className="status"');
+    expect(h1Close).toBeGreaterThanOrEqual(0);
+    expect(analyticsIdx).toBeGreaterThan(h1Close);
+    expect(statusIdx).toBeGreaterThan(analyticsIdx);
+  });
+
+  it('does not shadow project variable in .map() callback', () => {
+    // The .map() callback should NOT use `project` as its parameter name
+    // since it would shadow the component's `project` prop
+    expect(headerSource).not.toMatch(/\.map\(\s*project\s*=>/);
+    expect(headerSource).not.toMatch(/\.map\(\(\s*project\s*\)/);
   });
 });
 
@@ -195,46 +208,33 @@ describe('Header component module', () => {
 
 describe('Header queue-bubble — JSX structure', () => {
   it('renders queue-bubble div when queueDepth > 0', () => {
-    const src = readHeader();
-    // The conditional guard must reference queueDepth > 0
-    expect(src).toMatch(/queueDepth\s*>\s*0/);
+    expect(headerSource).toMatch(/queueDepth\s*>\s*0/);
   });
 
   it('renders queue-bubble div with class "queue-bubble"', () => {
-    const src = readHeader();
-    expect(src).toMatch(/className="queue-bubble"/);
+    expect(headerSource).toMatch(/className="queue-bubble"/);
   });
 
   it('displays the queueDepth value inside the bubble', () => {
-    const src = readHeader();
-    // The JSX expression {queueDepth} must appear inside the bubble
-    expect(src).toMatch(/\{queueDepth\}/);
+    expect(headerSource).toMatch(/\{queueDepth\}/);
   });
 
   it('does NOT render queue-bubble unconditionally', () => {
-    const src = readHeader();
-    // The bubble must be wrapped in a conditional — not rendered without a guard
-    // Verify the conditional wraps the element (queueDepth > 0 present in source)
-    expect(src).toMatch(/queueDepth\s*>\s*0/);
-    // And the className appears only once (no duplicate unconditional render)
-    const matches = src.match(/className="queue-bubble"/g);
+    expect(headerSource).toMatch(/queueDepth\s*>\s*0/);
+    const matches = headerSource.match(/className="queue-bubble"/g);
     expect(matches).not.toBeNull();
     expect(matches!.length).toBe(1);
   });
 
   it('accepts queueDepth as a prop in the interface', () => {
-    const src = readHeader();
-    expect(src).toMatch(/queueDepth\s*:/);
+    expect(headerSource).toMatch(/queueDepth\s*:/);
   });
 
   it('places queue-bubble inside header__logo-wrapper', () => {
-    const src = readHeader();
-    // Both the wrapper and the bubble must be present
-    expect(src).toMatch(/header__logo-wrapper/);
-    expect(src).toMatch(/queue-bubble/);
-    // The wrapper div must precede the bubble in source order
-    const wrapperIdx = src.indexOf('header__logo-wrapper');
-    const bubbleIdx = src.indexOf('queue-bubble');
+    expect(headerSource).toMatch(/header__logo-wrapper/);
+    expect(headerSource).toMatch(/queue-bubble/);
+    const wrapperIdx = headerSource.indexOf('header__logo-wrapper');
+    const bubbleIdx = headerSource.indexOf('queue-bubble');
     expect(wrapperIdx).toBeGreaterThanOrEqual(0);
     expect(bubbleIdx).toBeGreaterThanOrEqual(0);
     expect(bubbleIdx).toBeGreaterThan(wrapperIdx);
@@ -247,22 +247,18 @@ describe('Header queue-bubble — JSX structure', () => {
 
 describe('CSS queue-bubble positioning', () => {
   it('defines .queue-bubble with position: absolute', () => {
-    const css = readTemplate();
-    expect(css).toMatch(/\.queue-bubble\s*\{[^}]*position\s*:\s*absolute/s);
+    expect(templateSource).toMatch(/\.queue-bubble\s*\{[^}]*position\s*:\s*absolute/s);
   });
 
   it('defines .header__logo-wrapper with position: relative', () => {
-    const css = readTemplate();
-    expect(css).toMatch(/\.header__logo-wrapper\s*\{[^}]*position\s*:\s*relative/s);
+    expect(templateSource).toMatch(/\.header__logo-wrapper\s*\{[^}]*position\s*:\s*relative/s);
   });
 
   it('defines .queue-bubble with a z-index', () => {
-    const css = readTemplate();
-    expect(css).toMatch(/\.queue-bubble\s*\{[^}]*z-index\s*:/s);
+    expect(templateSource).toMatch(/\.queue-bubble\s*\{[^}]*z-index\s*:/s);
   });
 
   it('defines .queue-bubble with a background color', () => {
-    const css = readTemplate();
-    expect(css).toMatch(/\.queue-bubble\s*\{[^}]*background/s);
+    expect(templateSource).toMatch(/\.queue-bubble\s*\{[^}]*background/s);
   });
 });

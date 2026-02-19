@@ -7,13 +7,15 @@
 
 import type { Request, Response } from 'express';
 import type express from 'express';
-import { logger } from '../../../../utils/logger.js'; // eslint-disable-line @typescript-eslint/no-unused-vars -- required by logger-usage-standards
+import { logger } from '../../../../utils/logger.js';
 import type { SearchManager } from '../../SearchManager.js';
+import type { DatabaseManager } from '../../DatabaseManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 
 export class SearchRoutes extends BaseRouteHandler {
   constructor(
-    private searchManager: SearchManager
+    private searchManager: SearchManager,
+    private dbManager: DatabaseManager
   ) {
     super();
   }
@@ -224,14 +226,14 @@ export class SearchRoutes extends BaseRouteHandler {
     }
 
     // Import context generator (runs in worker, has access to database)
-    const { generateContext } = await import('../../../context-generator.js');
+    const { generateContextWithMeta } = await import('../../../context-generator.js');
 
     // Use first project name as CWD (for display purposes)
     const primaryProject = projects[projects.length - 1]; // Last is the current/primary project
     const cwd = `/context/${primaryProject}`;
 
-    // Generate context with all projects
-    const contextText = generateContext(
+    // Generate context with analytics metadata
+    const contextResult = generateContextWithMeta(
       {
         session_id: 'context-inject-' + String(Date.now()),
         cwd: cwd,
@@ -240,9 +242,23 @@ export class SearchRoutes extends BaseRouteHandler {
       useColors
     );
 
+    // Track injection fire-and-forget — never breaks the response
+    if (contextResult.observationIds.length > 0) {
+      try {
+        this.dbManager.getInjectionTracker().trackInjection({
+          project: primaryProject,
+          observationIds: contextResult.observationIds,
+          totalReadTokens: contextResult.totalReadTokens,
+          injectionSource: 'session_start',
+        });
+      } catch (trackError) {
+        logger.warn('ANALYTICS', 'Failed to track context injection (non-fatal)', {}, trackError as Error);
+      }
+    }
+
     // Return as plain text
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.send(contextText);
+    res.send(contextResult.text);
   });
 
   /**

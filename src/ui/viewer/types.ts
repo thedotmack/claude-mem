@@ -124,6 +124,16 @@ export interface Settings {
   MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
 }
 
+export interface AnalyticsData {
+  workTokens: number;
+  readTokens: number;
+  savingsTokens: number;
+  observationCount: number;
+  sessionCount: number;
+  timeRange: { days: number | null; cutoffEpoch: number };
+  project: string | null;
+}
+
 export interface FilterState {
   query: string;
   project: string;

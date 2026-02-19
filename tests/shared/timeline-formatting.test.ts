@@ -25,7 +25,7 @@ vi.mock('../../src/utils/logger.js', () => ({
 }));
 
 // Import after mocks
-import { extractFirstFile, groupByDate } from '../../src/shared/timeline-formatting.js';
+import { extractFirstFile, groupByDate, estimateReadTokens } from '../../src/shared/timeline-formatting.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -207,5 +207,93 @@ describe('groupByDate', () => {
     const dayItems = Array.from(result.values())[0];
     // Items should maintain their insertion order
     expect(dayItems.map(i => i.id)).toEqual([3, 1, 2]);
+  });
+});
+
+describe('estimateReadTokens', () => {
+  it('returns 0 when all fields are null or undefined', () => {
+    const result = estimateReadTokens({});
+    expect(result).toBe(0);
+  });
+
+  it('returns 0 when all fields are null', () => {
+    const result = estimateReadTokens({
+      narrative: null,
+      title: null,
+      facts: null,
+      concepts: null,
+      text: null,
+    });
+    expect(result).toBe(0);
+  });
+
+  it('estimates tokens from narrative only', () => {
+    // "1234" is 4 chars → 1 token
+    const result = estimateReadTokens({ narrative: '1234' });
+    expect(result).toBe(1);
+  });
+
+  it('estimates tokens from title only', () => {
+    // 8 chars → ceil(8/4) = 2 tokens
+    const result = estimateReadTokens({ title: '12345678' });
+    expect(result).toBe(2);
+  });
+
+  it('estimates tokens from text only', () => {
+    // 5 chars → ceil(5/4) = 2 tokens
+    const result = estimateReadTokens({ text: 'hello' });
+    expect(result).toBe(2);
+  });
+
+  it('sums tokens from all non-null fields', () => {
+    // title: 4 chars → 1 token
+    // narrative: 8 chars → 2 tokens
+    // facts: 4 chars → 1 token
+    // concepts: 4 chars → 1 token
+    // text: 4 chars → 1 token
+    // total: 6 tokens
+    const result = estimateReadTokens({
+      title: 'abcd',
+      narrative: '12345678',
+      facts: 'wxyz',
+      concepts: 'efgh',
+      text: 'ijkl',
+    });
+    expect(result).toBe(6);
+  });
+
+  it('ignores null fields when other fields have values', () => {
+    // narrative: 4 chars → 1 token; title: null (0)
+    const result = estimateReadTokens({
+      narrative: 'abcd',
+      title: null,
+    });
+    expect(result).toBe(1);
+  });
+
+  it('handles empty string fields as 0 tokens', () => {
+    const result = estimateReadTokens({
+      narrative: '',
+      title: '',
+      facts: '',
+    });
+    expect(result).toBe(0);
+  });
+
+  it('uses ceiling division for non-divisible lengths', () => {
+    // "abc" is 3 chars → ceil(3/4) = 1 token
+    const result = estimateReadTokens({ narrative: 'abc' });
+    expect(result).toBe(1);
+
+    // 9 chars → ceil(9/4) = 3 tokens
+    const result2 = estimateReadTokens({ narrative: 'abcdefghi' });
+    expect(result2).toBe(3);
+  });
+
+  it('handles long text with realistic content', () => {
+    const narrative = 'A'.repeat(400); // 400 chars → 100 tokens
+    const title = 'B'.repeat(40);     // 40 chars  → 10 tokens
+    const result = estimateReadTokens({ narrative, title });
+    expect(result).toBe(110);
   });
 });

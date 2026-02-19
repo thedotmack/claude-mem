@@ -13,6 +13,7 @@ import type {
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
 import { isSummaryContentEmpty } from './summaries/types.js';
+import { estimateReadTokens } from '../../shared/timeline-formatting.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -48,6 +49,8 @@ export class SessionStore {
     this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
     this.addCompositeIndexes();
+    this.ensureReadTokensColumn();
+    this.createContextInjectionsTable();
   }
 
   /**
@@ -657,6 +660,63 @@ export class SessionStore {
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
     logger.debug('DB', 'Added composite indexes for observations and session_summaries');
+  }
+
+  /**
+   * Ensure read_tokens column exists on observations and backfill existing rows.
+   * Uses column-existence check (not version number) because version 21 is already
+   * taken by addCompositeIndexes(). Mirror of MigrationRunner.ensureReadTokensColumn().
+   */
+  private ensureReadTokensColumn(): void {
+    const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasReadTokens = observationsInfo.some(col => col.name === 'read_tokens');
+
+    if (!hasReadTokens) {
+      this.db.run('ALTER TABLE observations ADD COLUMN read_tokens INTEGER DEFAULT 0');
+      this.db.run(`
+        UPDATE observations SET read_tokens = (
+          COALESCE(LENGTH(narrative), 0) +
+          COALESCE(LENGTH(title), 0) +
+          COALESCE(LENGTH(facts), 0) +
+          COALESCE(LENGTH(concepts), 0) +
+          COALESCE(LENGTH(text), 0) + 3
+        ) / 4
+      `);
+      logger.debug('DB', 'Added and backfilled read_tokens column on observations');
+    }
+  }
+
+  /**
+   * Create context_injections table for token analytics (migration 22)
+   */
+  private createContextInjectionsTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(22) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='context_injections'").all() as TableNameRow[];
+    if (tables.length > 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+      return;
+    }
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS context_injections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT,
+        project TEXT NOT NULL,
+        observation_ids TEXT NOT NULL,
+        total_read_tokens INTEGER NOT NULL,
+        injection_source TEXT NOT NULL CHECK(injection_source IN ('session_start', 'prompt_submit', 'mcp_search')),
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_context_injections_project ON context_injections(project);
+      CREATE INDEX IF NOT EXISTS idx_context_injections_created ON context_injections(created_at_epoch DESC);
+      CREATE INDEX IF NOT EXISTS idx_context_injections_source ON context_injections(injection_source);
+    `);
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+    logger.debug('DB', 'context_injections table created');
   }
 
   /**
@@ -1283,11 +1343,19 @@ export class SessionStore {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
+    const readTokens = estimateReadTokens({
+      narrative: observation.narrative,
+      title: observation.title,
+      facts: JSON.stringify(observation.facts),
+      concepts: JSON.stringify(observation.concepts),
+      text: null,
+    });
+
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, read_tokens, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1303,6 +1371,7 @@ export class SessionStore {
       JSON.stringify(observation.files_modified),
       promptNumber || null,
       discoveryTokens,
+      readTokens,
       timestampIso,
       timestampEpoch
     );
@@ -1424,11 +1493,18 @@ export class SessionStore {
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-         files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         files_read, files_modified, prompt_number, discovery_tokens, read_tokens, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
+        const readTokens = estimateReadTokens({
+          narrative: observation.narrative,
+          title: observation.title,
+          facts: JSON.stringify(observation.facts),
+          concepts: JSON.stringify(observation.concepts),
+          text: null,
+        });
         const result = obsStmt.run(
           memorySessionId,
           project,
@@ -1442,6 +1518,7 @@ export class SessionStore {
           JSON.stringify(observation.files_modified),
           promptNumber || null,
           discoveryTokens,
+          readTokens,
           timestampIso,
           timestampEpoch
         );
@@ -1548,11 +1625,18 @@ export class SessionStore {
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-         files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         files_read, files_modified, prompt_number, discovery_tokens, read_tokens, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
+        const readTokens = estimateReadTokens({
+          narrative: observation.narrative,
+          title: observation.title,
+          facts: JSON.stringify(observation.facts),
+          concepts: JSON.stringify(observation.concepts),
+          text: null,
+        });
         const result = obsStmt.run(
           memorySessionId,
           project,
@@ -1566,6 +1650,7 @@ export class SessionStore {
           JSON.stringify(observation.files_modified),
           promptNumber || null,
           discoveryTokens,
+          readTokens,
           timestampIso,
           timestampEpoch
         );

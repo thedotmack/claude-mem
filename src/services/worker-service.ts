@@ -308,7 +308,7 @@ export class WorkerService {
         formattingService,
         timelineService
       );
-      this.searchRoutes = new SearchRoutes(searchManager);
+      this.searchRoutes = new SearchRoutes(searchManager, this.dbManager);
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 

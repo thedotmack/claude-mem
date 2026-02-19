@@ -142,6 +142,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     // Metadata endpoints
     app.get('/api/stats', this.handleGetStats.bind(this));
+    app.get('/api/analytics', this.handleGetAnalytics.bind(this));
     app.get('/api/projects', this.handleGetProjects.bind(this));
 
     // Processing status endpoints
@@ -244,6 +245,23 @@ export class DataRoutes extends BaseRouteHandler {
     const observations = store.getObservationsByIds(validatedIds, { orderBy, limit: clampedLimit, project });
 
     res.json(observations);
+
+    // Track injection fire-and-forget — never breaks the response
+    if (observations.length > 0) {
+      try {
+        const observationIds = observations.map(o => o.id);
+        const derivedProject = observations[0].project;
+        const totalReadTokens = observations.reduce((sum, o) => sum + (o.read_tokens || 0), 0);
+        this.dbManager.getInjectionTracker().trackInjection({
+          project: derivedProject,
+          observationIds,
+          totalReadTokens,
+          injectionSource: 'mcp_search',
+        });
+      } catch (trackError) {
+        logger.warn('ANALYTICS', 'Failed to track batch observation injection (non-fatal)', {}, trackError as Error);
+      }
+    }
   });
 
   /**
@@ -358,6 +376,76 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   /**
+   * Get token analytics aggregates
+   * GET /api/analytics?project=<str>&days=<7|30|90>
+   *
+   * Returns aggregated token usage:
+   * - workTokens: total discovery tokens invested (observations + summaries)
+   * - readTokens: total read cost of stored observations
+   * - savingsTokens: total tokens delivered via context injection
+   * - observationCount: number of observations matching filters
+   * - sessionCount: number of distinct sessions matching filters
+   */
+  private handleGetAnalytics = this.wrapHandler((req: Request, res: Response): void => {
+    const rawProject = req.query.project as string | undefined;
+    const rawDays = req.query.days as string | undefined;
+
+    const maxLen = DataRoutes.MAX_QUERY_PARAM_LENGTH;
+    const project = rawProject && rawProject.length <= maxLen ? rawProject : undefined;
+
+    let days: number | undefined;
+    if (rawDays !== undefined) {
+      const parsed = parseInt(rawDays, 10);
+      if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 3650 || String(parsed) !== rawDays.trim()) {
+        this.badRequest(res, 'days must be a positive integer (max 3650)');
+        return;
+      }
+      days = parsed;
+    }
+
+    const cutoffEpoch = days ? Date.now() - days * 24 * 60 * 60 * 1000 : 0;
+    const db = this.dbManager.getSessionStore().db;
+
+    const projectFilter = project ? ' AND project = ?' : '';
+    const params = project ? [cutoffEpoch, project] : [cutoffEpoch];
+
+    // Wrap all 5 queries in a read transaction for consistent snapshot
+    const result = db.transaction(() => {
+      const obsAgg = db.prepare(
+        `SELECT COUNT(*) as count, COALESCE(SUM(discovery_tokens), 0) as work, COALESCE(SUM(read_tokens), 0) as read FROM observations WHERE created_at_epoch >= ?${projectFilter}`
+      ).get(...params) as { count: number; work: number; read: number };
+
+      const sumWork = db.prepare(
+        `SELECT COALESCE(SUM(discovery_tokens), 0) as tokens FROM session_summaries WHERE created_at_epoch >= ?${projectFilter}`
+      ).get(...params) as { tokens: number };
+
+      const reuse = db.prepare(
+        `SELECT COALESCE(SUM(total_read_tokens), 0) as tokens FROM context_injections WHERE created_at_epoch >= ?${projectFilter}`
+      ).get(...params) as { tokens: number };
+
+      const sessionCount = db.prepare(
+        `SELECT COUNT(DISTINCT sid) as sessions FROM (
+          SELECT memory_session_id AS sid FROM observations WHERE created_at_epoch >= ?${projectFilter}
+          UNION
+          SELECT memory_session_id AS sid FROM session_summaries WHERE created_at_epoch >= ?${projectFilter}
+        )`
+      ).get(...params, ...params) as { sessions: number };
+
+      return { obsAgg, sumWork, reuse, sessionCount };
+    })();
+
+    res.json({
+      workTokens: result.obsAgg.work + result.sumWork.tokens,
+      readTokens: result.obsAgg.read,
+      savingsTokens: result.reuse.tokens,
+      observationCount: result.obsAgg.count,
+      sessionCount: result.sessionCount.sessions,
+      timeRange: { days: days ?? null, cutoffEpoch },
+      project: project ?? null,
+    });
+  });
+
+  /**
    * Get list of distinct projects from observations
    * GET /api/projects
    */
@@ -448,6 +536,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
 
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- T constrains the callback parameter type for callers
     function runImport<T>(items: unknown, importFn: (item: T) => { imported: boolean }): { imported: number; skipped: number } {
       let imported = 0;
       let skipped = 0;
