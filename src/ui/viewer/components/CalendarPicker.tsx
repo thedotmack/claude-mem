@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { ActivityDay } from '../types';
 import { getTodayString } from '../utils/date';
 
@@ -88,26 +88,31 @@ export function CalendarPicker({
   const [viewMonth, setViewMonth] = useState(month - 1); // Convert to 0-based
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const activitySet = new Set(activityDays.filter(d => d.count > 0).map(d => d.date));
+  const activitySet = useMemo(
+    () => new Set(activityDays.filter(d => d.count > 0).map(d => d.date)),
+    [activityDays],
+  );
   const grid = buildMonthGrid(viewYear, viewMonth);
 
   const handlePrevMonth = useCallback(() => {
-    if (viewMonth === 0) {
-      setViewYear(y => y - 1);
-      setViewMonth(11);
-    } else {
-      setViewMonth(m => m - 1);
-    }
-  }, [viewMonth]);
+    setViewMonth(m => {
+      if (m === 0) {
+        setViewYear(y => y - 1);
+        return 11;
+      }
+      return m - 1;
+    });
+  }, []);
 
   const handleNextMonth = useCallback(() => {
-    if (viewMonth === 11) {
-      setViewYear(y => y + 1);
-      setViewMonth(0);
-    } else {
-      setViewMonth(m => m + 1);
-    }
-  }, [viewMonth]);
+    setViewMonth(m => {
+      if (m === 11) {
+        setViewYear(y => y + 1);
+        return 0;
+      }
+      return m + 1;
+    });
+  }, []);
 
   // Close on outside click or Escape
   useEffect(() => {
@@ -121,10 +126,13 @@ export function CalendarPicker({
     };
 
     document.addEventListener('keydown', handleKeyDown);
-    document.addEventListener('mousedown', handleClickOutside);
+    // Use 'click' (not 'mousedown') so the event fires after the parent's
+    // onClick toggle — preventing the calendar from re-opening immediately
+    // when the user clicks the DayNavigator label to dismiss it.
+    document.addEventListener('click', handleClickOutside);
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
-      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('click', handleClickOutside);
     };
   }, [onClose]);
 

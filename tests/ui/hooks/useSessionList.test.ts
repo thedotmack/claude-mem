@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Summary } from '../../../src/ui/viewer/types.js';
 import {
   mapSummaryToSessionListItem,
@@ -97,6 +97,10 @@ describe('groupSessionsByDay', () => {
     vi.setSystemTime(TODAY);
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('labels sessions from today as "Today"', () => {
     const item = mapSummaryToSessionListItem(makeSummary({ id: 1, created_at_epoch: TODAY.getTime() }));
     const groups = groupSessionsByDay([item]);
@@ -180,6 +184,10 @@ describe('buildSessionGroups', () => {
     vi.setSystemTime(TODAY);
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('converts summaries into grouped SessionListItems', () => {
     const summaries: Summary[] = [
       makeSummary({ id: 1, created_at_epoch: TODAY.getTime() }),
@@ -223,6 +231,11 @@ describe('fetchSessionPage (via fetch mock)', () => {
     vi.useFakeTimers();
     vi.setSystemTime(TODAY);
     vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('fetches from /api/summaries with correct query params', async () => {
@@ -309,6 +322,10 @@ describe('prependSession', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(TODAY);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('adds new session to the start of the most recent matching group', async () => {
@@ -434,6 +451,11 @@ describe('fetchSessionsByDate', () => {
     vi.useFakeTimers();
     vi.setSystemTime(TODAY);
     vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('fetches from /api/search with dateStart and next-day dateEnd for full-day coverage', async () => {

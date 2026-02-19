@@ -47,7 +47,13 @@ export function useSSE() {
       };
 
       eventSource.onmessage = (event: MessageEvent<string>) => {
-        const data: StreamEvent = JSON.parse(event.data) as StreamEvent;
+        let data: StreamEvent;
+        try {
+          data = JSON.parse(event.data) as StreamEvent;
+        } catch {
+          logger.warn('SSE', 'Malformed event data, skipping');
+          return;
+        }
 
         switch (data.type) {
           case 'initial_load':

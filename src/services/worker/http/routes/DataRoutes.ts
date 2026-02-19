@@ -378,7 +378,7 @@ export class DataRoutes extends BaseRouteHandler {
    * Parse pagination parameters from request query
    */
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; sessionId?: string; summaryId?: number; unsummarized?: boolean } {
-    const offset = parseInt(req.query.offset as string, 10) || 0;
+    const offset = Math.max(0, parseInt(req.query.offset as string, 10) || 0);
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); // Max 100
     const project = req.query.project as string | undefined;
     const sessionId = req.query.session_id as string | undefined;

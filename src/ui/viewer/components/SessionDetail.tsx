@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { Observation, UserPrompt, SessionDetail as SessionDetailType } from '../types';
 import { SummaryCard } from './SummaryCard';
@@ -130,6 +130,12 @@ export function SessionDetail({ detail, isLoading, hasSelection }: SessionDetail
     setScrollElement(node);
   }, []);
 
+  const timelineItems = useMemo(
+    () => detail ? buildTimeline(detail.observations, detail.prompts) : [],
+    [detail],
+  );
+  const useVirtual = timelineItems.length > VIRTUALIZATION_THRESHOLD;
+
   if (isLoading) {
     return (
       <div className="session-detail" data-testid="session-detail" aria-live="polite">
@@ -152,9 +158,6 @@ export function SessionDetail({ detail, isLoading, hasSelection }: SessionDetail
       </div>
     );
   }
-
-  const timelineItems = buildTimeline(detail.observations, detail.prompts);
-  const useVirtual = timelineItems.length > VIRTUALIZATION_THRESHOLD;
 
   return (
     <div className="session-detail" data-testid="session-detail" ref={scrollRef}>

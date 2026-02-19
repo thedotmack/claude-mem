@@ -74,7 +74,7 @@ export function flattenGroups(
 // SessionRow sub-component
 // ─────────────────────────────────────────────────────────
 
-function SessionRow({ session, isSelected, onSelect }: {
+const SessionRow = React.memo(function SessionRow({ session, isSelected, onSelect }: {
   session: SessionListItem;
   isSelected: boolean;
   onSelect: (id: number) => void;
@@ -103,7 +103,7 @@ function SessionRow({ session, isSelected, onSelect }: {
       </div>
     </div>
   );
-}
+});
 
 export function ActiveSessionRow({ entry, isSelected, onSelect }: {
   entry: ActiveSessionEntry;

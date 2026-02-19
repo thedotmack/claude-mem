@@ -8,7 +8,7 @@
  * runs without a browser environment and @testing-library/react is not installed.
  */
 
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import {
   fetchSessionDetail,
   SessionDetailCache,
@@ -106,6 +106,10 @@ describe('fetchSessionDetail', () => {
   beforeEach(() => {
     fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('returns null when sessionId is null', async () => {

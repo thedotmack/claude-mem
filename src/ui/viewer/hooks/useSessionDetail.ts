@@ -13,8 +13,8 @@ import { logger } from '../utils/logger';
  */
 export class SessionDetailCache {
   private readonly capacity: number;
-  /** Ordered list of cache keys (oldest first) */
-  private readonly order: string[] = [];
+  /** Ordered list of cache keys (oldest first). Mutated internally for LRU reordering. */
+  private order: string[] = [];
   private readonly store = new Map<string, SessionDetail>();
 
   constructor(capacity: number) {
@@ -22,7 +22,7 @@ export class SessionDetailCache {
   }
 
   private buildKey(sessionId: string, project: string, summaryId?: number | null): string {
-    return summaryId ? `${project}::${sessionId}::${summaryId}` : `${project}::${sessionId}`;
+    return summaryId != null ? `${project}::${sessionId}::${summaryId}` : `${project}::${sessionId}`;
   }
 
   get(sessionId: string, project: string, summaryId?: number | null): SessionDetail | undefined {
