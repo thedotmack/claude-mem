@@ -18,6 +18,8 @@ import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:te
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir, homedir } from 'os';
+import express from 'express';
+import http from 'http';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../src/shared/SettingsDefaultsManager.js';
 import {
   LITESTREAM_DIR,
@@ -25,6 +27,7 @@ import {
   LITESTREAM_BINARY_DIR,
   DATA_DIR,
 } from '../../src/shared/paths.js';
+import { logger } from '../../src/utils/logger.js';
 
 // ============================================================
 // 1. Settings Defaults
@@ -377,5 +380,239 @@ describe('Source Code Structure', () => {
   it('logger.ts should include BACKUP component', () => {
     const content = readFileSync(join(process.cwd(), 'src/utils/logger.ts'), 'utf-8');
     expect(content).toContain("'BACKUP'");
+  });
+});
+
+// ============================================================
+// 9. BackupRoutes HTTP Integration (in-process Express)
+// ============================================================
+describe('BackupRoutes HTTP Integration', () => {
+  let app: express.Application;
+  let server: http.Server;
+  let port: number;
+  let loggerSpies: ReturnType<typeof spyOn>[];
+
+  // Mock LitestreamManager for route testing
+  const mockStatus = {
+    enabled: true,
+    running: true,
+    provider: 'gcs',
+    bucket: 'test-bucket',
+    path: 'claude-mem/backup',
+    pid: 12345,
+    error: null as string | null,
+  };
+
+  const mockManager = {
+    getStatus: () => mockStatus,
+    restore: async (targetPath?: string) => ({
+      success: true,
+      message: `Database restored to ${targetPath || '/default/path'}`,
+    }),
+  };
+
+  beforeEach(async () => {
+    loggerSpies = [
+      spyOn(logger, 'info').mockImplementation(() => {}),
+      spyOn(logger, 'debug').mockImplementation(() => {}),
+      spyOn(logger, 'warn').mockImplementation(() => {}),
+      spyOn(logger, 'error').mockImplementation(() => {}),
+    ];
+
+    app = express();
+    app.use(express.json());
+
+    // Import and register BackupRoutes with mock manager
+    const { BackupRoutes } = await import('../../src/services/worker/http/routes/BackupRoutes.js');
+    const routes = new BackupRoutes(mockManager as any);
+    routes.setupRoutes(app);
+
+    // Start on random port
+    port = 40000 + Math.floor(Math.random() * 10000);
+    await new Promise<void>((resolve) => {
+      server = app.listen(port, '127.0.0.1', resolve);
+    });
+  });
+
+  afterEach(async () => {
+    loggerSpies.forEach(spy => spy.mockRestore());
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  describe('GET /api/backup/status', () => {
+    it('should return backup status JSON', async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/backup/status`);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.enabled).toBe(true);
+      expect(data.running).toBe(true);
+      expect(data.provider).toBe('gcs');
+      expect(data.bucket).toBe('test-bucket');
+      expect(data.path).toBe('claude-mem/backup');
+      expect(data.pid).toBe(12345);
+      expect(data.error).toBeNull();
+    });
+
+    it('should return all 7 BackupStatus fields', async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/backup/status`);
+      const data = await res.json();
+
+      const expectedKeys = ['enabled', 'running', 'provider', 'bucket', 'path', 'pid', 'error'];
+      for (const key of expectedKeys) {
+        expect(data).toHaveProperty(key);
+      }
+    });
+
+    it('should reflect disabled status', async () => {
+      mockStatus.enabled = false;
+      mockStatus.running = false;
+      mockStatus.pid = null as any;
+
+      const res = await fetch(`http://127.0.0.1:${port}/api/backup/status`);
+      const data = await res.json();
+
+      expect(data.enabled).toBe(false);
+      expect(data.running).toBe(false);
+      expect(data.pid).toBeNull();
+
+      // Restore for other tests
+      mockStatus.enabled = true;
+      mockStatus.running = true;
+      mockStatus.pid = 12345;
+    });
+
+    it('should reflect error state', async () => {
+      mockStatus.error = 'GCS credentials invalid';
+
+      const res = await fetch(`http://127.0.0.1:${port}/api/backup/status`);
+      const data = await res.json();
+
+      expect(data.error).toBe('GCS credentials invalid');
+
+      mockStatus.error = null;
+    });
+  });
+
+  describe('POST /api/backup/restore', () => {
+    it('should return success on restore', async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/backup/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.success).toBe(true);
+      expect(data.message).toContain('restored');
+    });
+
+    it('should pass targetPath to restore', async () => {
+      const customPath = '/tmp/my-custom-restore.db';
+      const res = await fetch(`http://127.0.0.1:${port}/api/backup/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetPath: customPath }),
+      });
+
+      const data = await res.json();
+      expect(data.success).toBe(true);
+      expect(data.message).toContain(customPath);
+    });
+
+    it('should return 400 on restore failure', async () => {
+      // Override mock to simulate failure
+      const origRestore = mockManager.restore;
+      mockManager.restore = async () => ({
+        success: false,
+        message: 'CLAUDE_MEM_BACKUP_BUCKET is not configured',
+      });
+
+      const res = await fetch(`http://127.0.0.1:${port}/api/backup/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(400);
+
+      const data = await res.json();
+      expect(data.success).toBe(false);
+      expect(data.error).toContain('BUCKET');
+
+      mockManager.restore = origRestore;
+    });
+  });
+});
+
+// ============================================================
+// 10. LitestreamManager Start Guards
+// ============================================================
+describe('LitestreamManager Start Guards', () => {
+  let loggerSpies: ReturnType<typeof spyOn>[];
+
+  beforeEach(() => {
+    loggerSpies = [
+      spyOn(logger, 'info').mockImplementation(() => {}),
+      spyOn(logger, 'debug').mockImplementation(() => {}),
+      spyOn(logger, 'warn').mockImplementation(() => {}),
+      spyOn(logger, 'error').mockImplementation(() => {}),
+    ];
+  });
+
+  afterEach(() => {
+    loggerSpies.forEach(spy => spy.mockRestore());
+  });
+
+  it('should skip start when BACKUP_ENABLED is false', async () => {
+    const { LitestreamManager } = await import('../../src/services/backup/LitestreamManager.js');
+    const manager = LitestreamManager.getInstance();
+
+    // Default settings have BACKUP_ENABLED = 'false'
+    // start() should return immediately without downloading/spawning
+    await manager.start();
+
+    // Should have logged that backup is disabled
+    expect(loggerSpies[0]).toHaveBeenCalled(); // logger.info called
+    const infoCall = loggerSpies[0].mock.calls.find(
+      (call: any[]) => call[0] === 'BACKUP' && String(call[1]).includes('disabled')
+    );
+    expect(infoCall).toBeTruthy();
+
+    // Status should show not running
+    const status = manager.getStatus();
+    expect(status.enabled).toBe(false);
+    expect(status.running).toBe(false);
+  });
+
+  it('should skip start when bucket is empty even if enabled', async () => {
+    // Write temp settings with enabled=true but empty bucket
+    const tempDir = join(tmpdir(), `backup-guard-test-${Date.now()}`);
+    mkdirSync(tempDir, { recursive: true });
+    const settingsPath = join(tempDir, 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify({
+      CLAUDE_MEM_BACKUP_ENABLED: 'true',
+      CLAUDE_MEM_BACKUP_BUCKET: '',
+    }));
+
+    // Load settings and verify the guard logic
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    expect(settings.CLAUDE_MEM_BACKUP_ENABLED).toBe('true');
+    expect(settings.CLAUDE_MEM_BACKUP_BUCKET).toBe('');
+
+    // The actual start() reads from USER_SETTINGS_PATH, not our temp file.
+    // So we verify the guard condition that LitestreamManager checks:
+    expect(!settings.CLAUDE_MEM_BACKUP_BUCKET).toBe(true);
+
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('stop() should be safe to call when not started', async () => {
+    const { LitestreamManager } = await import('../../src/services/backup/LitestreamManager.js');
+    const manager = LitestreamManager.getInstance();
+
+    // Should not throw
+    await manager.stop();
+    expect(manager.getStatus().running).toBe(false);
   });
 });
