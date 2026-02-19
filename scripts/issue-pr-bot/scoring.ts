@@ -290,7 +290,7 @@ function hasTextPattern(text: string, patterns: RegExp[]): boolean {
   return countTextPatternMatches(text, patterns) > 0;
 }
 
-function resolveIntent(
+export function resolveIntent(
   item: NormalizedItem,
   text: string,
   labels: string[]
@@ -322,7 +322,7 @@ function resolveIntent(
   return resolvedIntent;
 }
 
-function resolveSeverityBucket(
+export function resolveSeverityBucket(
   item: NormalizedItem,
   intent: TriageIntent,
   text: string,
@@ -364,7 +364,7 @@ function resolveSeverityBucket(
   return "medium";
 }
 
-function resolvePriorityBucket(
+export function resolvePriorityBucket(
   severityBucket: SeverityBucket,
   intent: TriageIntent,
   text: string,
