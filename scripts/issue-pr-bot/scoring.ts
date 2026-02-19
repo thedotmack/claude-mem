@@ -130,6 +130,7 @@ const HIGH_LABEL_KEYWORDS = [
   "regression",
   "urgent",
   "hotfix",
+  "bug",
 ];
 const LOW_LABEL_KEYWORDS = [
   "low",
@@ -138,12 +139,17 @@ const LOW_LABEL_KEYWORDS = [
   "minor",
   "trivial",
   "good first issue",
+  "enhancement",
+  "feature",
 ];
 
 const CRITICAL_TEXT_PATTERNS = [
+  /\bcrash(?:ing|ed|es)?\b/,
+  /\bsegfault\b/,
+  /\bdata loss\b/,
   /\bsecurity\b/,
   /\bvulnerability\b/,
-  /\bdata loss\b/,
+  /\binjection\b/,
   /\brce\b/,
   /\bremote code execution\b/,
   /\bprivilege escalation\b/,
@@ -154,14 +160,27 @@ const CRITICAL_TEXT_PATTERNS = [
 ];
 const HIGH_TEXT_PATTERNS = [
   /\bregression\b/,
-  /\bcrash(?:ing|ed|es)?\b/,
+  /\bleak(?:ing|s)?\b/,
+  /\bzombie\b/,
+  /\bhang(?:ing|s)?\b/,
+  /\bfreez(?:e|ing|es)?\b/,
+  /\bcorrupt(?:ed|ion|s)?\b/,
+  /\bbreak(?:s|ing)?\b/,
   /\bpanic\b/,
   /\bbroken\b/,
   /\bfail(?:ing|ure)?\b/,
   /\btimeout\b/,
-  /\bhang(?:ing)?\b/,
 ];
-const LOW_TEXT_PATTERNS = [/\btypo\b/, /\bwording\b/, /\bnit\b/, /\bdocs only\b/];
+const LOW_TEXT_PATTERNS = [
+  /\benhancement\b/,
+  /\bfeature request\b/,
+  /\bnice to have\b/,
+  /\bsuggestion\b/,
+  /\btypo\b/,
+  /\bwording\b/,
+  /\bnit\b/,
+  /\bdocs only\b/,
+];
 
 const URGENT_LABEL_KEYWORDS = [
   "urgent",
@@ -243,11 +262,11 @@ function toNowTimestamp(input?: Date | string): number {
   return Number.isNaN(parsed) ? Date.now() : parsed;
 }
 
-function toSearchableText(item: NormalizedItem): string {
+export function toSearchableText(item: NormalizedItem): string {
   return `${item.title}\n${item.body}`.toLowerCase();
 }
 
-function toNormalizedLabels(item: NormalizedItem): string[] {
+export function toNormalizedLabels(item: NormalizedItem): string[] {
   return item.labels.map((label) => label.name.toLowerCase());
 }
 
@@ -365,11 +384,13 @@ export function resolveSeverityBucket(
 }
 
 export function resolvePriorityBucket(
+  item: NormalizedItem,
   severityBucket: SeverityBucket,
   intent: TriageIntent,
   text: string,
   labels: string[],
-  inactivityDays: number
+  inactivityDays: number,
+  developerPriorityOrder: string[] = []
 ): PriorityBucket {
   if (severityBucket === "critical") {
     return "urgent";
@@ -380,6 +401,26 @@ export function resolvePriorityBucket(
     hasTextPattern(text, URGENT_TEXT_PATTERNS)
   ) {
     return "urgent";
+  }
+
+  // Developer-aware priority: first priority dev → urgent, others → high
+  const normalizedDevOrder = developerPriorityOrder
+    .map(toNormalizedLogin)
+    .filter((login) => login.length > 0);
+  const authorLogin = item.author ? toNormalizedLogin(item.author.login) : "";
+  const assigneeLogins = item.assignees.map((assignee) =>
+    toNormalizedLogin(assignee.login)
+  );
+
+  const isAuthorOrAssignee = (developerLogin: string): boolean =>
+    authorLogin === developerLogin || assigneeLogins.includes(developerLogin);
+
+  if (normalizedDevOrder.length > 0 && isAuthorOrAssignee(normalizedDevOrder[0])) {
+    return "urgent";
+  }
+
+  if (normalizedDevOrder.slice(1).some((dev) => isAuthorOrAssignee(dev))) {
+    return "high";
   }
 
   if (
@@ -398,6 +439,11 @@ export function resolvePriorityBucket(
 
   if (severityBucket === "high" || intent === "bug" || intent === "infra") {
     return "high";
+  }
+
+  // No assignee and stale 30+ days → low
+  if (item.assignees.length === 0 && inactivityDays > 30) {
+    return "low";
   }
 
   if (inactivityDays > 180) {
@@ -560,11 +606,13 @@ function rankByType(
       );
       const severityBucket = resolveSeverityBucket(item, intent, text, labels);
       const priorityBucket = resolvePriorityBucket(
+        item,
         severityBucket,
         intent,
         text,
         labels,
-        outdated.inactivityDays
+        outdated.inactivityDays,
+        options.developerPriorityOrder
       );
       const developerPriorityBoost = resolveDeveloperPriorityBoost(
         item,
