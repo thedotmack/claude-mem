@@ -45,6 +45,22 @@ export async function runProviderConfiguration(): Promise<ProviderConfig> {
 
     config.claudeAuthMethod = authMethod;
 
+    const model = await p.select({
+      message: 'Which Claude model for memory observations?',
+      options: [
+        { value: 'claude-sonnet-4-6' as const, label: 'Claude Sonnet 4.6', hint: 'recommended — best balance of quality and speed' },
+        { value: 'claude-sonnet-4-5' as const, label: 'Claude Sonnet 4.5', hint: 'previous generation' },
+        { value: 'claude-haiku-3-5' as const, label: 'Claude Haiku 3.5', hint: 'fastest, lowest cost' },
+      ],
+    });
+
+    if (p.isCancel(model)) {
+      p.cancel('Installation cancelled.');
+      process.exit(0);
+    }
+
+    config.model = model;
+
     if (authMethod === 'api') {
       const apiKey = await p.password({
         message: 'Enter your Anthropic API key:',
