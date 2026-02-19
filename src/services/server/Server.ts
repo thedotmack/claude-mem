@@ -248,8 +248,11 @@ export class Server {
         process.send!({ type: 'restart' });
       } else {
         // Unix or standalone Windows - handle restart ourselves
+        // The spawner (ensureWorkerStarted/restart command) handles spawning the new daemon.
+        // This process just needs to shut down and exit.
         setTimeout(async () => {
           await this.options.onRestart();
+          process.exit(0);
         }, 100);
       }
     });
@@ -269,6 +272,10 @@ export class Server {
         // Unix or standalone Windows - handle shutdown ourselves
         setTimeout(async () => {
           await this.options.onShutdown();
+          // CRITICAL: Exit the process after shutdown completes.
+          // Without this, the daemon stays alive as a zombie — background tasks
+          // (backfill, reconnects) keep running and respawn chroma-mcp subprocesses.
+          process.exit(0);
         }, 100);
       }
     });
