@@ -28,6 +28,7 @@ export function buildSettingsObject(
   // Provider-specific settings
   if (providerConfig.provider === 'claude') {
     settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD = providerConfig.claudeAuthMethod ?? 'cli';
+    if (providerConfig.model) settings.CLAUDE_MEM_MODEL = providerConfig.model;
   }
 
   if (providerConfig.provider === 'gemini') {
