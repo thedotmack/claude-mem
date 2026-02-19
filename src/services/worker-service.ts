@@ -434,11 +434,15 @@ export class WorkerService {
         });
       }
 
-      // Connect to MCP server
-      const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
+      // Connect to MCP server via the unified binary
+      const mcpExecutable = process.execPath.includes('claude-mem') ? process.execPath : 'bun';
+      const mcpArgs = process.execPath.includes('claude-mem') 
+        ? ['mcp'] 
+        : [path.join(__dirname, '..', '..', 'src', 'cli', 'cli.ts'), 'mcp'];
+
       const transport = new StdioClientTransport({
-        command: 'node',
-        args: [mcpServerPath],
+        command: mcpExecutable,
+        args: mcpArgs,
         env: process.env
       });
 
@@ -952,7 +956,10 @@ export async function ensureWorkerStarted(port: number): Promise<boolean> {
   // Spawn new worker daemon
   logger.info('SYSTEM', 'Starting worker daemon');
   markWorkerSpawnAttempted();
-  const pid = spawnDaemon(__filename, port);
+  
+  // Use the current executable as the entry point if it's the compiled binary
+  const entryPoint = process.execPath.includes('claude-mem') ? process.execPath : __filename;
+  const pid = spawnDaemon(entryPoint, port);
   if (pid === undefined) {
     logger.error('SYSTEM', 'Failed to spawn worker daemon');
     return false;

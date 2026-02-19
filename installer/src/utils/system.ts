@@ -3,6 +3,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 
 export type OSType = 'macos' | 'linux' | 'windows';
+export type ArchType = 'arm64' | 'x64';
 
 export function detectOS(): OSType {
   switch (process.platform) {
@@ -10,6 +11,12 @@ export function detectOS(): OSType {
     case 'win32': return 'windows';
     default: return 'linux';
   }
+}
+
+export function detectArch(): ArchType {
+  const arch = process.arch;
+  if (arch === 'arm64') return 'arm64';
+  return 'x64';
 }
 
 export function commandExists(command: string): boolean {

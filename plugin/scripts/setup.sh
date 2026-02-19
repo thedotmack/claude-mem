@@ -15,21 +15,20 @@ else
 fi
 
 BINARY="$ROOT/scripts/claude-mem"
-CLI_CJS="$ROOT/scripts/cli.js"
 DATA_DIR="$HOME/.claude-mem"
 LOCAL_BIN="$HOME/.local/bin"
 
 # Colors (when terminal supports it)
 if [[ -t 2 ]]; then
   GREEN='\033[0;32m'
-  YELLOW='\033[0;33m'
+  RED='\033[0;31m'
   NC='\033[0m'
 else
-  GREEN='' YELLOW='' NC=''
+  GREEN='' RED='' NC=''
 fi
 
 log_ok()   { echo -e "${GREEN}✓${NC} $*" >&2; }
-log_warn() { echo -e "${YELLOW}⚠${NC} $*" >&2; }
+log_err() { echo -e "${RED}✗${NC} $*" >&2; }
 
 # ── Step 1: Create data directory ─────────────────────────────────────
 if [[ ! -d "$DATA_DIR" ]]; then
@@ -39,17 +38,12 @@ if [[ ! -d "$DATA_DIR" ]]; then
 fi
 
 # ── Step 2: Ensure CLI entry point exists ─────────────────────────────
-#    Prefer compiled binary (fast native execution).
-#    Fall back to cli.js (runs via bun, always available since it's committed).
+#    The binary must be present for the plugin to function correctly.
 if [[ -f "$BINARY" ]]; then
   chmod +x "$BINARY"
-  CLI_MODE="binary"
-elif [[ -f "$CLI_CJS" ]]; then
-  chmod +x "$CLI_CJS"
-  CLI_MODE="cjs"
 else
-  log_warn "No CLI entry point found — neither binary nor cli.js exist"
-  exit 0
+  log_err "Fatal: claude-mem binary not found at $BINARY"
+  exit 1
 fi
 
 # ── Step 3: Clean ALL legacy claude-mem from shell profiles ───────────
@@ -69,19 +63,8 @@ done
 
 # ── Step 4: Install CLI at ~/.local/bin/claude-mem ────────────────────
 mkdir -p "$LOCAL_BIN"
-
-if [[ "$CLI_MODE" == "binary" ]]; then
-  ln -sf "$BINARY" "$LOCAL_BIN/claude-mem"
-  log_ok "Symlinked $LOCAL_BIN/claude-mem → $BINARY"
-else
-  # Create a shell wrapper that invokes cli.js via bun
-  cat > "$LOCAL_BIN/claude-mem" <<WRAPPER
-#!/usr/bin/env bash
-exec bun "$CLI_CJS" "\$@"
-WRAPPER
-  chmod +x "$LOCAL_BIN/claude-mem"
-  log_ok "Created CLI wrapper at $LOCAL_BIN/claude-mem (using cli.js via bun)"
-fi
+ln -sf "$BINARY" "$LOCAL_BIN/claude-mem"
+log_ok "Symlinked $LOCAL_BIN/claude-mem → $BINARY"
 
 # ── Step 5: Add ~/.local/bin to PATH in shell profile ─────────────────
 if ! echo "$PATH" | tr ':' '\n' | grep -q '\.local/bin'; then

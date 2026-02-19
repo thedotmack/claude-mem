@@ -12,7 +12,7 @@
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/cli.js hook context",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/claude-mem hook context",
             "timeout": 60
           }
         ]
@@ -23,7 +23,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/cli.js hook session-init",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/claude-mem hook session-init",
             "timeout": 60
           }
         ]
@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/cli.js hook observation",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/claude-mem hook observation",
             "timeout": 120
           }
         ]
@@ -46,12 +46,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/cli.js hook summarize",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/claude-mem hook summarize",
             "timeout": 120
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/cli.js hook session-complete",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/claude-mem hook session-complete",
             "timeout": 30
           }
         ]

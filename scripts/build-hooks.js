@@ -1,39 +1,19 @@
 #!/usr/bin/env node
 
 /**
- * Build script for claude-mem hooks
- * Bundles TypeScript hooks into individual standalone executables using esbuild
+ * Build script for claude-mem unified binary
+ * Compiles the TypeScript CLI into a standalone platform-specific binary using Bun
  */
 
-import { build } from 'esbuild';
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const WORKER_SERVICE = {
-  name: 'worker-service',
-  source: 'src/services/worker-service.ts'
-};
-
-const MCP_SERVER = {
-  name: 'mcp-server',
-  source: 'src/servers/mcp-server.ts'
-};
-
-const CONTEXT_GENERATOR = {
-  name: 'context-generator',
-  source: 'src/services/context-generator.ts'
-};
-
-const CLI = {
-  name: 'cli',
-  source: 'src/cli/cli.ts'
-};
-
 async function buildHooks() {
-  console.log('🔨 Building claude-mem hooks and worker service...\n');
+  console.log('🔨 Building claude-mem unified built artifact...\n');
 
   try {
     // Read version from package.json
@@ -54,16 +34,14 @@ async function buildHooks() {
     }
     console.log('✓ Output directories ready');
 
-    // Generate plugin/package.json for cache directory dependency installation
-    // Note: bun:sqlite is a Bun built-in, no external dependencies needed for SQLite
+    // Generate plugin/package.json (minimal metadata)
     console.log('\n📦 Generating plugin package.json...');
     const pluginPackageJson = {
       name: 'claude-mem-plugin',
       version: version,
       private: true,
-      description: 'Runtime dependencies for claude-mem bundled hooks',
+      description: 'Claude-mem persistent memory system',
       type: 'module',
-      dependencies: {},
       engines: {
         node: '>=18.0.0',
         bun: '>=1.0.0'
@@ -74,7 +52,7 @@ async function buildHooks() {
 
     // Build React viewer
     console.log('\n📋 Building React viewer...');
-    const { spawn, execSync: execSyncChild } = await import('child_process');
+    const { spawn } = await import('child_process');
     const viewerBuild = spawn('node', ['scripts/build-viewer.js'], { stdio: 'inherit' });
     await new Promise((resolve, reject) => {
       viewerBuild.on('exit', (code) => {
@@ -86,110 +64,11 @@ async function buildHooks() {
       });
     });
 
-    // Build worker service
-    console.log(`\n🔧 Building worker service...`);
-    await build({
-      entryPoints: [WORKER_SERVICE.source],
-      bundle: true,
-      platform: 'node',
-      target: 'node18',
-      format: 'cjs',
-      outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
-      minify: true,
-      logLevel: 'error', // Suppress warnings (import.meta warning is benign)
-      external: [
-        'bun:sqlite',
-      ],
-      define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
-      },
-      banner: {
-        js: '#!/usr/bin/env bun'
-      }
-    });
-
-    // Make worker service executable
-    fs.chmodSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
-    const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
-    console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
-
-    // Build MCP server
-    console.log(`\n🔧 Building MCP server...`);
-    await build({
-      entryPoints: [MCP_SERVER.source],
-      bundle: true,
-      platform: 'node',
-      target: 'node18',
-      format: 'cjs',
-      outfile: `${hooksDir}/${MCP_SERVER.name}.cjs`,
-      minify: true,
-      logLevel: 'error',
-      external: ['bun:sqlite'],
-      define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
-      },
-      banner: {
-        js: '#!/usr/bin/env node'
-      }
-    });
-
-    // Make MCP server executable
-    fs.chmodSync(`${hooksDir}/${MCP_SERVER.name}.cjs`, 0o755);
-    const mcpServerStats = fs.statSync(`${hooksDir}/${MCP_SERVER.name}.cjs`);
-    console.log(`✓ mcp-server built (${(mcpServerStats.size / 1024).toFixed(2)} KB)`);
-
-    // Build context generator
-    console.log(`\n🔧 Building context generator...`);
-    await build({
-      entryPoints: [CONTEXT_GENERATOR.source],
-      bundle: true,
-      platform: 'node',
-      target: 'node18',
-      format: 'cjs',
-      outfile: `${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`,
-      minify: true,
-      logLevel: 'error',
-      external: ['bun:sqlite'],
-      define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
-      }
-    });
-
-    const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
-    console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
-
-    // Build CLI (the hook entry point — this ESM bundle is the primary way hooks execute)
-    // Uses ESM format because cli.ts has top-level await (not supported in CJS)
-    console.log(`\n🔧 Building CLI...`);
-    await build({
-      entryPoints: [CLI.source],
-      bundle: true,
-      platform: 'node',
-      target: 'node18',
-      format: 'esm',
-      outfile: `${hooksDir}/${CLI.name}.js`,
-      minify: true,
-      logLevel: 'error',
-      external: ['bun:sqlite'],
-      define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
-      },
-      banner: {
-        js: '#!/usr/bin/env bun'
-      }
-    });
-
-    // Make CLI executable
-    fs.chmodSync(`${hooksDir}/${CLI.name}.js`, 0o755);
-    const cliStats = fs.statSync(`${hooksDir}/${CLI.name}.js`);
-    console.log(`✓ cli built (${(cliStats.size / 1024).toFixed(2)} KB)`);
-
-    // Build compiled Bun binary from CLI entry point (optional optimization)
-    // Non-fatal: the cli.cjs bundle above is the universal fallback.
-    // The binary provides faster startup for local CLI usage.
-    console.log('\n🔧 Building compiled binary...');
+    // Build the unified Bun binary (Primary built artifact)
+    // This binary contains CLI, Daemon, and MCP server logic.
+    console.log('\n🔧 Building compiled binary (claude-mem)...');
     try {
-      execSyncChild(
+      execSync(
         `bun build src/cli/cli.ts --compile --outfile plugin/scripts/claude-mem --define __DEFAULT_PACKAGE_VERSION__='"${version}"'`,
         {
           stdio: 'inherit',
@@ -199,23 +78,16 @@ async function buildHooks() {
       const binaryStats = fs.statSync(`${hooksDir}/claude-mem`);
       console.log(`✓ claude-mem binary built (${(binaryStats.size / 1024 / 1024).toFixed(1)} MB)`);
     } catch (binaryBuildError) {
-      console.warn('⚠️  Binary compilation skipped (bun not available or compile failed)');
-      console.warn(`   ${binaryBuildError.message}`);
+      console.error('\n❌ Fatal: Binary compilation failed. Bun is required to build the unified artifact.');
+      console.error(`   ${binaryBuildError.message}`);
+      process.exit(1);
     }
 
-    console.log('\n✅ All hook scripts built successfully!');
-    console.log(`   Output: ${hooksDir}/`);
-    console.log(`   - Worker: worker-service.cjs`);
-    console.log(`   - MCP Server: mcp-server.cjs`);
-    console.log(`   - Context Generator: context-generator.cjs`);
-    console.log(`   - CLI: cli.js (hook entry point, ESM)`);
+    console.log('\n✅ Unified built artifact created successfully!');
+    console.log(`   Output: ${hooksDir}/claude-mem`);
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);
-    if (error.errors) {
-      console.error('\nBuild errors:');
-      error.errors.forEach(err => console.error(`  - ${err.text}`));
-    }
     process.exit(1);
   }
 }

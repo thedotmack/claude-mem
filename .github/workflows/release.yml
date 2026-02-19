@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Build all release artifacts
+        run: node scripts/build-all-binaries.js
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/release/claude-mem-macos-arm64.tar.gz
+            dist/release/claude-mem-macos-x64.tar.gz
+            dist/release/claude-mem-linux-arm64.tar.gz
+            dist/release/claude-mem-linux-x64.tar.gz
+            dist/release/claude-mem-windows-x64.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

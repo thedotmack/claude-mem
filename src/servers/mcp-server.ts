@@ -341,7 +341,7 @@ process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
 // Start the server
-async function main() {
+export async function startMcpServer() {
   // Start the MCP server
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -363,9 +363,10 @@ async function main() {
   }, 0);
 }
 
-main().catch((error) => {
-  logger.error('SYSTEM', 'Fatal error', undefined, error);
-  // Exit gracefully: Windows Terminal won't keep tab open on exit 0
-  // The wrapper/plugin will handle restart logic if needed
-  process.exit(0);
-});
+// Only run if called directly
+if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('mcp-server.cjs')) {
+  startMcpServer().catch((error) => {
+    logger.error('SYSTEM', 'Fatal error', undefined, error);
+    process.exit(0);
+  });
+}

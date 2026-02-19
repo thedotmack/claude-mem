@@ -695,8 +695,8 @@ export function spawnDaemon(
   // instead of passing scriptPath as an argument to the runtime.
   const isCompiledBinary = scriptPath === process.execPath;
   const spawnArgs = isCompiledBinary
-    ? ['daemon']                   // Commander.js command name
-    : [scriptPath, '--daemon'];    // Legacy: bun/node scriptPath --daemon
+    ? ['daemon']               // Commander.js command name
+    : [scriptPath, 'daemon'];  // Bun/node scriptPath daemon command
 
   if (isWindows) {
     if (isCompiledBinary) {
@@ -728,7 +728,7 @@ export function spawnDaemon(
 
     const escapedRuntimePath = runtimePath.replace(/'/g, "''");
     const escapedScriptPath = scriptPath.replace(/'/g, "''");
-    const psCommand = `Start-Process -FilePath '${escapedRuntimePath}' -ArgumentList '${escapedScriptPath}','--daemon' -WindowStyle Hidden`;
+    const psCommand = `Start-Process -FilePath '${escapedRuntimePath}' -ArgumentList '${escapedScriptPath}','daemon' -WindowStyle Hidden`;
 
     try {
       execSync(`powershell -NoProfile -Command "${psCommand}"`, {
@@ -752,10 +752,10 @@ export function spawnDaemon(
   const setsidPath = '/usr/bin/setsid';
   if (existsSync(setsidPath)) {
     // For compiled binary: setsid ./claude-mem daemon
-    // For legacy: setsid bun scriptPath --daemon
+    // For legacy: setsid bun scriptPath daemon
     const setsidArgs = isCompiledBinary
       ? [scriptPath, 'daemon']
-      : [process.execPath, scriptPath, '--daemon'];
+      : [process.execPath, scriptPath, 'daemon'];
 
     const child = spawn(setsidPath, setsidArgs, {
       detached: true,
@@ -773,7 +773,7 @@ export function spawnDaemon(
 
   // Fallback: standard detached spawn (macOS, systems without setsid)
   // For compiled binary: spawn the binary directly with 'daemon' command
-  // For legacy: spawn the runtime (bun/node) with scriptPath --daemon
+  // For legacy: spawn the runtime (bun/node) with scriptPath daemon
   const spawnExecutable = isCompiledBinary ? scriptPath : process.execPath;
   const child = spawn(spawnExecutable, spawnArgs, {
     detached: true,

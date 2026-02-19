@@ -72,27 +72,25 @@ This prevents showing stale summaries when new work has been captured but not ye
 
 This means Claude "remembers" what happened in previous sessions!
 
-## Manual Commands (Optional)
+## Manual Commands
 
-### Worker Management
-
-v4.0+ auto-starts the worker on first session. Manual commands below are optional.
+v4.0+ auto-starts the worker on first session. Manual commands below are helpful for debugging.
 
 ```bash
-# Start worker service (optional - auto-starts automatically)
-npm run worker:start
+# Start worker service (auto-starts automatically)
+claude-mem start
 
 # Stop worker service
-npm run worker:stop
+claude-mem stop
 
 # Restart worker service
-npm run worker:restart
-
-# View worker logs
-npm run worker:logs
+claude-mem restart
 
 # Check worker status
-npm run worker:status
+claude-mem status
+
+# Start MCP search server (advanced)
+claude-mem mcp
 ```
 
 ### Testing

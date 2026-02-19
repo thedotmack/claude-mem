@@ -2,9 +2,8 @@
   "name": "claude-mem-plugin",
   "version": "10.3.1",
   "private": true,
-  "description": "Runtime dependencies for claude-mem bundled hooks",
+  "description": "Claude-mem persistent memory system",
   "type": "module",
-  "dependencies": {},
   "engines": {
     "node": ">=18.0.0",
     "bun": ">=1.0.0"

@@ -6,30 +6,22 @@
 
 ---
 
-## Phase 0: Documentation (Complete)
+## **Phase 1: Binary is the Way (Non-Optional)**
 
-**Detector:** `scripts/anti-pattern-test/detect-error-handling-antipatterns.ts`
+The compiled binary (`claude-mem`) is now the **sole execution path** for all users. We provide pre-built binaries for all supported platforms, and users no longer need to build from source.
 
-**Override format:** `// [ANTI-PATTERN IGNORED]: <specific technical reason>`
-- Must appear inside the catch block content
-- Requires colon + reason after the tag
-
-**Logger API:** `logger.(debug|info|warn|error)(component, message, context?, data?)`
-- Components: `'HOOK' | 'WORKER' | 'SDK' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'CHROMA_MCP' | 'CHROMA_SYNC' | 'CLAUDE_MD' | 'QUEUE'` etc.
-- Context: `{ sessionId?, correlationId?, [key: string]: any }`
-- Pass full error object as `data` param: `error as Error`
-
-**What counts as "has logging":** `logger.(error|warn|debug|info|failure)`, `console.(error|warn)`, `process.stderr.write`, `throw`
-
-**Critical paths (catch-and-continue banned):** SDKAgent.ts, GeminiAgent.ts, OpenRouterAgent.ts, SessionStore.ts, worker-service.ts
-
-**Large try threshold:** >10 significant lines (excludes comments, empty lines, lone braces)
-
-**12 existing overrides** already in codebase (all include logging except 2 hot-path exceptions).
+**Completed Actions:**
+- [x] Unified binary build (`src/cli/cli.ts` → `plugin/scripts/claude-mem`) is mandatory in `scripts/build-hooks.js`.
+- [x] `plugin/hooks/hooks.json` points exclusively to the binary.
+- [x] `plugin/scripts/setup.sh` requires the binary to exist; no JS fallbacks.
+- [x] **Pre-built Releases:** Added `scripts/build-all-binaries.js` to cross-compile for macOS (arm64/x64), Linux (arm64/x64), and Windows (x64).
+- [x] **CI/CD Pipeline:** Created `.github/workflows/release.yml` to automatically build and attach all platform binaries to GitHub Releases.
+- [x] **Lightweight Installer:** Refactored `installer/` to download pre-built release artifacts. Bun is no longer a mandatory dependency for end users.
+- [x] MCP server and Worker Daemon are subcommands of the single binary (`claude-mem mcp`, `claude-mem daemon`).
 
 ---
 
-## Phase 1: Critical Path — worker-service.ts (5 CATCH_AND_CONTINUE + 1 NO_LOGGING + 1 ERROR_MESSAGE_GUESSING)
+## Phase 2: Critical Path — worker-service.ts (5 CATCH_AND_CONTINUE + 1 NO_LOGGING + 1 ERROR_MESSAGE_GUESSING)
 
 **Why first:** worker-service.ts is the core daemon. 5 catch-and-continue patterns mean errors on the critical path just silently continue. This is the most likely reason the binary setup fails without any visible error.
 
@@ -62,7 +54,7 @@ bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts 2>&1 | g
 
 ---
 
-## Phase 2: Silent Failures — NO_LOGGING_IN_CATCH (23 issues across 15 files)
+## Phase 3: Silent Failures — NO_LOGGING_IN_CATCH (23 issues across 15 files)
 
 **Why second:** These are the visibility killers. Every one of these is a place where an error happens and nobody can see it.
 
@@ -104,7 +96,7 @@ bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts 2>&1 | g
 
 ---
 
-## Phase 3: ProcessManager.ts Deep Clean (19 issues)
+## Phase 4: ProcessManager.ts Deep Clean (19 issues)
 
 **Why third:** ProcessManager is the second-most-affected file and directly controls binary/worker spawning. 10 GENERIC_CATCH, 4 LARGE_TRY_BLOCK, 2 NO_LOGGING (covered in Phase 2).
 
@@ -139,7 +131,7 @@ bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts 2>&1 | g
 
 ---
 
-## Phase 4: GENERIC_CATCH Sweep (remaining ~85 issues across 30+ files)
+## Phase 5: GENERIC_CATCH Sweep (remaining ~85 issues across 30+ files)
 
 **Why fourth:** Highest volume. These all handle every error identically. Less urgent than silent failures but still reduce debugging capability.
 
@@ -176,7 +168,7 @@ bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts 2>&1 | g
 
 ---
 
-## Phase 5: LARGE_TRY_BLOCK Reduction (48 issues)
+## Phase 6: LARGE_TRY_BLOCK Reduction (48 issues)
 
 **Why fifth:** These are structural improvements. Important for long-term maintainability but less urgent than visibility fixes.
 
@@ -210,7 +202,7 @@ bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts 2>&1 | g
 
 ---
 
-## Phase 6: Remaining Patterns (3 issues)
+## Phase 7: Remaining Patterns (3 issues)
 
 | File | Line | Pattern | Action |
 |------|------|---------|--------|
@@ -220,7 +212,7 @@ bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts 2>&1 | g
 
 ---
 
-## Phase 7: Final Verification
+## Phase 8: Final Verification
 
 ```bash
 # Full scan
@@ -231,18 +223,17 @@ bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts
 # APPROVED OVERRIDES: N (justified overrides)
 
 # Build check
-npm run build-and-sync
+npm run build
 
 # Verify worker starts
-curl -s http://localhost:37777/api/health
+claude-mem start
+claude-mem status
 ```
 
 ---
 
 ## Execution Notes
 
-- **Each phase is independent** — can be run in a separate session
-- **Phases 1-2 are the highest impact** for the binary visibility problem
-- **Phase 1 alone** (worker-service.ts critical path) will likely surface the binary failure
-- **Run the detector after each phase** to track progress
-- **Don't batch-approve overrides** — evaluate each catch block individually
+- **The binary is the only path.** Tests and verification steps must use the compiled binary or the exact build scripts that produce it.
+- **Run the detector after each phase** to track progress.
+- **Don't batch-approve overrides** — evaluate each catch block individually.

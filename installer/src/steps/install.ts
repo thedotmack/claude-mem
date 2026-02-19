@@ -1,9 +1,10 @@
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
+import { detectOS, detectArch } from '../utils/system.js';
 import type { IDE } from './ide-selection.js';
 
 const MARKETPLACE_DIR = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
@@ -18,7 +19,11 @@ function ensureDir(directoryPath: string): void {
 
 function readJsonFile(filepath: string): any {
   if (!existsSync(filepath)) return {};
-  return JSON.parse(readFileSync(filepath, 'utf-8'));
+  try {
+    return JSON.parse(readFileSync(filepath, 'utf-8'));
+  } catch {
+    return {};
+  }
 }
 
 function writeJsonFile(filepath: string, data: any): void {
@@ -83,44 +88,43 @@ function enablePluginInClaudeSettings(): void {
   writeJsonFile(CLAUDE_SETTINGS_PATH, settings);
 }
 
-function getPluginVersion(): string {
-  const pluginJsonPath = join(MARKETPLACE_DIR, 'plugin', '.claude-plugin', 'plugin.json');
-  if (existsSync(pluginJsonPath)) {
-    const pluginJson = JSON.parse(readFileSync(pluginJsonPath, 'utf-8'));
-    return pluginJson.version ?? '1.0.0';
+async function getLatestVersion(): Promise<string> {
+  try {
+    const response = await fetch('https://api.github.com/repos/thedotmack/claude-mem/releases/latest');
+    if (!response.ok) throw new Error('Failed to fetch latest version');
+    const data = await response.json() as { tag_name: string };
+    return data.tag_name.replace(/^v/, '');
+  } catch (error) {
+    // Fallback if API fails
+    return '10.3.1'; 
   }
-  return '1.0.0';
 }
 
 export async function runInstallation(selectedIDEs: IDE[]): Promise<void> {
+  const os = detectOS();
+  const arch = detectArch();
+  const version = await getLatestVersion();
   const tempDir = join(tmpdir(), `claude-mem-install-${Date.now()}`);
+  ensureDir(tempDir);
+
+  const artifactName = `claude-mem-${os}-${arch}.tar.gz`;
+  const artifactUrl = `https://github.com/thedotmack/claude-mem/releases/download/v${version}/${artifactName}`;
 
   await p.tasks([
     {
-      title: 'Cloning claude-mem repository',
+      title: `Downloading claude-mem v${version} for ${os}-${arch}`,
       task: async (message) => {
-        message('Downloading latest release...');
-        execSync(
-          `git clone --depth 1 https://github.com/thedotmack/claude-mem.git "${tempDir}"`,
-          { stdio: 'pipe' },
-        );
-        return `Repository cloned ${pc.green('OK')}`;
-      },
-    },
-    {
-      title: 'Installing dependencies',
-      task: async (message) => {
-        message('Running npm install...');
-        execSync('npm install', { cwd: tempDir, stdio: 'pipe' });
-        return `Dependencies installed ${pc.green('OK')}`;
-      },
-    },
-    {
-      title: 'Building plugin',
-      task: async (message) => {
-        message('Compiling TypeScript and bundling...');
-        execSync('npm run build', { cwd: tempDir, stdio: 'pipe' });
-        return `Plugin built ${pc.green('OK')}`;
+        message(`Fetching ${artifactName}...`);
+        const tarPath = join(tempDir, artifactName);
+        
+        // Use curl for download to handle redirects and progress reliably
+        execSync(`curl -fsSL "${artifactUrl}" -o "${tarPath}"`, { stdio: 'pipe' });
+        
+        message('Extracting artifact...');
+        // Artifact contains 'temp-plugin' folder
+        execSync(`tar -xzf "${tarPath}" -C "${tempDir}"`, { stdio: 'pipe' });
+        
+        return `Artifact downloaded and extracted ${pc.green('OK')}`;
       },
     },
     {
@@ -129,35 +133,37 @@ export async function runInstallation(selectedIDEs: IDE[]): Promise<void> {
         message('Copying files to marketplace directory...');
         ensureDir(MARKETPLACE_DIR);
 
-        // Sync from cloned repo to marketplace dir, excluding .git and lock files
-        execSync(
-          `rsync -a --delete --exclude=.git --exclude=package-lock.json --exclude=bun.lock "${tempDir}/" "${MARKETPLACE_DIR}/"`,
-          { stdio: 'pipe' },
-        );
+        const extractedPluginDir = join(tempDir, 'temp-plugin');
+        const targetPluginDir = join(MARKETPLACE_DIR, 'plugin');
+        
+        // Ensure target directory exists and is clean
+        if (existsSync(targetPluginDir)) {
+          rmSync(targetPluginDir, { recursive: true, force: true });
+        }
+        ensureDir(targetPluginDir);
+
+        // Copy from extracted folder to marketplace dir using portable Node.js cpSync
+        cpSync(extractedPluginDir, targetPluginDir, { recursive: true });
 
         message('Registering marketplace...');
         registerMarketplace();
 
-        message('Installing marketplace dependencies...');
-        execSync('npm install', { cwd: MARKETPLACE_DIR, stdio: 'pipe' });
-
         message('Registering plugin in Claude Code...');
-        const version = getPluginVersion();
         registerPlugin(version);
 
         message('Enabling plugin...');
         enablePluginInClaudeSettings();
 
-        return `Plugin registered (v${getPluginVersion()}) ${pc.green('OK')}`;
+        return `Plugin registered (v${version}) ${pc.green('OK')}`;
       },
     },
   ]);
 
-  // Cleanup temp directory (non-critical if it fails)
+  // Cleanup temp directory
   try {
-    execSync(`rm -rf "${tempDir}"`, { stdio: 'pipe' });
+    rmSync(tempDir, { recursive: true, force: true });
   } catch {
-    // Temp dir will be cleaned by OS eventually
+    // Non-critical
   }
 
   if (selectedIDEs.includes('cursor')) {

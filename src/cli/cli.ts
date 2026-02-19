@@ -43,6 +43,11 @@ program
   .description('Show worker daemon status')
   .action(handleStatus);
 
+program
+  .command('mcp')
+  .description('Start the MCP search server')
+  .action(handleMcp);
+
 // ============================================================================
 // Hook Command Group
 // ============================================================================
@@ -277,6 +282,11 @@ async function handleDaemon() {
     // Exit gracefully: Windows Terminal won't keep tab open on exit 0
     process.exit(0);
   });
+}
+
+async function handleMcp() {
+  const { startMcpServer } = await import('../servers/mcp-server.js');
+  await startMcpServer();
 }
 
 async function handleGenerate(options: { dryRun?: boolean }) {
