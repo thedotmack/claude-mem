@@ -1,4 +1,8 @@
 export type TriageItemType = "issue" | "pr";
+export type DiscoveryScope = "open-issues-and-prs";
+export type OutputSection = "issues" | "prs";
+export type SeverityBucket = "critical" | "high" | "medium" | "low";
+export type PriorityBucket = "urgent" | "high" | "normal" | "low";
 
 export interface RepoTarget {
   owner: string;
@@ -7,6 +11,14 @@ export interface RepoTarget {
 
 export interface TriageConfig {
   repository: RepoTarget;
+  discovery: {
+    scope: DiscoveryScope;
+    outdatedThresholdDays: number;
+  };
+  output: {
+    sections: OutputSection[];
+  };
+  developerPriorityOrder: string[];
   generatedAt: string;
 }
 
