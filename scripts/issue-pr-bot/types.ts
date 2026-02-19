@@ -3,6 +3,14 @@ export type DiscoveryScope = "open-issues-and-prs";
 export type OutputSection = "issues" | "prs";
 export type SeverityBucket = "critical" | "high" | "medium" | "low";
 export type PriorityBucket = "urgent" | "high" | "normal" | "low";
+export type TriageIntent =
+  | "bug"
+  | "feature"
+  | "docs"
+  | "maintenance"
+  | "refactor"
+  | "test"
+  | "infra";
 
 export interface RepoTarget {
   owner: string;
@@ -56,6 +64,25 @@ export interface NormalizedItem {
   createdAt: string;
   updatedAt: string;
   pullRequest: NormalizedPullRequestStats | null;
+  mergeableState?: string;
+  reviewDecision?: string;
+  headRefName?: string;
+  baseRefName?: string;
+}
+
+export type CategoryCluster =
+  | "chroma"
+  | "process-lifecycle"
+  | "windows"
+  | "hooks"
+  | "installation"
+  | "security"
+  | "feature-request"
+  | "spam"
+  | "uncategorized";
+
+export interface CategorizedItem extends NormalizedItem {
+  category: CategoryCluster;
 }
 
 export interface IngestionResult {
@@ -64,8 +91,15 @@ export interface IngestionResult {
 }
 
 export interface RankedItem extends NormalizedItem {
+  intent: TriageIntent;
+  severityBucket: SeverityBucket;
+  priorityBucket: PriorityBucket;
   score: number;
   rank: number;
+  inactivityDays: number;
+  outdatedCandidate: boolean;
+  outdatedReasons: string[];
+  developerPriorityBoost: number;
 }
 
 export interface ScoringResult {
