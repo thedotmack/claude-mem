@@ -20,10 +20,7 @@ export function useSSE() {
 
   useEffect(() => {
     const connect = () => {
-      // Clean up existing connection
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
+      eventSourceRef.current?.close();
 
       const eventSource = new EventSource(API_ENDPOINTS.STREAM);
       eventSourceRef.current = eventSource;
@@ -31,13 +28,10 @@ export function useSSE() {
       eventSource.onopen = () => {
         setIsConnected(true);
         reconnectAttemptRef.current = 0;
-        // Clear any pending reconnect
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current);
-        }
+        clearTimeout(reconnectTimeoutRef.current);
       };
 
-      eventSource.onerror = (error) => {
+      eventSource.onerror = () => {
         logger.error('SSE', 'Connection error');
         setIsConnected(false);
         eventSource.close();
@@ -106,14 +100,9 @@ export function useSSE() {
 
     connect();
 
-    // Cleanup on unmount
     return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
+      eventSourceRef.current?.close();
+      clearTimeout(reconnectTimeoutRef.current);
     };
   }, []);
 

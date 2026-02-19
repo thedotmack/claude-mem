@@ -177,6 +177,9 @@ interface UseSessionDetailResult {
   isLoading: boolean;
 }
 
+/** Polling interval for active (unsummarized) sessions in ms. */
+const ACTIVE_SESSION_POLL_INTERVAL = 5_000;
+
 /**
  * Fetch and cache detailed data for the selected session.
  *
@@ -184,9 +187,6 @@ interface UseSessionDetailResult {
  * - Returns cached data immediately while re-fetching in the background.
  * - Caches the last 5 session details to avoid redundant API calls.
  */
-/** Polling interval for active (unsummarized) sessions in ms. */
-const ACTIVE_SESSION_POLL_INTERVAL = 5_000;
-
 export function useSessionDetail(
   sessionId: string | null,
   project: string,
@@ -231,7 +231,7 @@ export function useSessionDetail(
         }
         setDetail(result);
       })
-      .catch((err: unknown) => {
+      .catch(() => {
         if (controller.signal.aborted) return;
         logger.error('sessionDetail', 'Failed to load session detail');
         setDetail(null);

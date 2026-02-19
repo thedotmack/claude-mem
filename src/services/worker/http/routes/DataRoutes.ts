@@ -337,7 +337,7 @@ export class DataRoutes extends BaseRouteHandler {
     const db = this.dbManager.getSessionStore().db;
 
     const rows = db.prepare(`
-      SELECT DISTINCT project
+      SELECT project
       FROM observations
       WHERE project IS NOT NULL
       GROUP BY project
@@ -379,14 +379,15 @@ export class DataRoutes extends BaseRouteHandler {
    */
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; sessionId?: string; summaryId?: number; unsummarized?: boolean } {
     const offset = Math.max(0, parseInt(req.query.offset as string, 10) || 0);
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); // Max 100
+    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100);
     const project = req.query.project as string | undefined;
     const sessionId = req.query.session_id as string | undefined;
-    const summaryIdRaw = req.query.summary_id as string | undefined;
-    const summaryId = summaryIdRaw ? parseInt(summaryIdRaw, 10) : undefined;
     const unsummarized = req.query.unsummarized === 'true';
 
-    return { offset, limit, project, sessionId, summaryId: summaryId && !isNaN(summaryId) ? summaryId : undefined, unsummarized };
+    const parsedSummaryId = parseInt(req.query.summary_id as string, 10);
+    const summaryId = Number.isFinite(parsedSummaryId) ? parsedSummaryId : undefined;
+
+    return { offset, limit, project, sessionId, summaryId, unsummarized };
   }
 
   /**
@@ -398,66 +399,38 @@ export class DataRoutes extends BaseRouteHandler {
     const body = req.body as ImportBody;
     const { sessions, summaries, observations, prompts } = body;
 
-    const stats = {
-      sessionsImported: 0,
-      sessionsSkipped: 0,
-      summariesImported: 0,
-      summariesSkipped: 0,
-      observationsImported: 0,
-      observationsSkipped: 0,
-      promptsImported: 0,
-      promptsSkipped: 0
-    };
-
     const store = this.dbManager.getSessionStore();
 
-    // Import sessions first (dependency for everything else)
-    if (Array.isArray(sessions)) {
-      for (const session of sessions as ImportSdkSession[]) {
-        const result = store.importSdkSession(session);
-        if (result.imported) {
-          stats.sessionsImported++;
-        } else {
-          stats.sessionsSkipped++;
+    function runImport<T>(items: unknown, importFn: (item: T) => { imported: boolean }): { imported: number; skipped: number } {
+      let imported = 0;
+      let skipped = 0;
+      if (Array.isArray(items)) {
+        for (const item of items as T[]) {
+          if (importFn(item).imported) {
+            imported++;
+          } else {
+            skipped++;
+          }
         }
       }
+      return { imported, skipped };
     }
 
-    // Import summaries (depends on sessions)
-    if (Array.isArray(summaries)) {
-      for (const summary of summaries as ImportSessionSummary[]) {
-        const result = store.importSessionSummary(summary);
-        if (result.imported) {
-          stats.summariesImported++;
-        } else {
-          stats.summariesSkipped++;
-        }
-      }
-    }
+    const sessionsResult = runImport<ImportSdkSession>(sessions, s => store.importSdkSession(s));
+    const summariesResult = runImport<ImportSessionSummary>(summaries, s => store.importSessionSummary(s));
+    const observationsResult = runImport<ImportObservation>(observations, o => store.importObservation(o));
+    const promptsResult = runImport<ImportUserPrompt>(prompts, p => store.importUserPrompt(p));
 
-    // Import observations (depends on sessions)
-    if (Array.isArray(observations)) {
-      for (const obs of observations as ImportObservation[]) {
-        const result = store.importObservation(obs);
-        if (result.imported) {
-          stats.observationsImported++;
-        } else {
-          stats.observationsSkipped++;
-        }
-      }
-    }
-
-    // Import prompts (depends on sessions)
-    if (Array.isArray(prompts)) {
-      for (const prompt of prompts as ImportUserPrompt[]) {
-        const result = store.importUserPrompt(prompt);
-        if (result.imported) {
-          stats.promptsImported++;
-        } else {
-          stats.promptsSkipped++;
-        }
-      }
-    }
+    const stats = {
+      sessionsImported: sessionsResult.imported,
+      sessionsSkipped: sessionsResult.skipped,
+      summariesImported: summariesResult.imported,
+      summariesSkipped: summariesResult.skipped,
+      observationsImported: observationsResult.imported,
+      observationsSkipped: observationsResult.skipped,
+      promptsImported: promptsResult.imported,
+      promptsSkipped: promptsResult.skipped,
+    };
 
     res.json({
       success: true,

@@ -1147,10 +1147,6 @@ export class SessionStore {
   }
 
 
-
-
-
-
   /**
    * Get current prompt number by counting user_prompts for this session
    * Replaces the prompt_counter column which is no longer maintained
@@ -1228,9 +1224,6 @@ export class SessionStore {
       .get(contentSessionId) as { id: number };
     return row.id;
   }
-
-
-
 
   /**
    * Save a user prompt
@@ -1630,8 +1623,6 @@ export class SessionStore {
     // Execute the transaction and return results
     return storeAndMarkTx();
   }
-
-
 
   // REMOVED: cleanupOrphanedSessions - violates "EVERYTHING SHOULD SAVE ALWAYS"
   // There's no such thing as an "orphaned" session. Sessions are created by hooks

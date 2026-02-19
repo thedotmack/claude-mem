@@ -29,12 +29,12 @@ export function buildTimeline(
   observations: Observation[],
   prompts: UserPrompt[],
 ): TimelineItem[] {
-  const items: TimelineItem[] = [
-    ...observations.map((o): TimelineItem => ({ ...o, itemType: 'observation' as const })),
-    ...prompts.map((p): TimelineItem => ({ ...p, itemType: 'prompt' as const })),
+  const tagged: TimelineItem[] = [
+    ...observations.map(o => ({ ...o, itemType: 'observation' as const })),
+    ...prompts.map(p => ({ ...p, itemType: 'prompt' as const })),
   ];
 
-  return items.sort((a, b) => b.created_at_epoch - a.created_at_epoch);
+  return tagged.sort((a, b) => b.created_at_epoch - a.created_at_epoch);
 }
 
 // ---------------------------------------------------------------------------

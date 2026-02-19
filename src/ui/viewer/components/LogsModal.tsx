@@ -68,6 +68,16 @@ export function parseLogLine(line: string): ParsedLogLine {
   };
 }
 
+function toggleSetMember<T>(set: Set<T>, member: T): Set<T> {
+  const next = new Set(set);
+  if (next.has(member)) {
+    next.delete(member);
+  } else {
+    next.add(member);
+  }
+  return next;
+}
+
 interface LogsDrawerProps {
   isOpen: boolean;
   onClose: () => void;
@@ -85,12 +95,11 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   const contentRef = useRef<HTMLDivElement>(null);
   const wasAtBottomRef = useRef(true);
 
-  // Filter state
   const [activeLevels, setActiveLevels] = useState<Set<LogLevel>>(
-    new Set(['DEBUG', 'INFO', 'WARN', 'ERROR'])
+    () => new Set(LOG_LEVELS.map(l => l.key))
   );
   const [activeComponents, setActiveComponents] = useState<Set<LogComponent>>(
-    new Set(['HOOK', 'WORKER', 'SDK', 'PARSER', 'DB', 'SYSTEM', 'HTTP', 'SESSION', 'CHROMA'])
+    () => new Set(LOG_COMPONENTS.map(c => c.key))
   );
   const [alignmentOnly, setAlignmentOnly] = useState(false);
 
@@ -218,48 +227,20 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     return () => { clearInterval(interval); };
   }, [isOpen, autoRefresh, fetchLogs]);
 
-  // Toggle level filter
   const toggleLevel = useCallback((level: LogLevel) => {
-    setActiveLevels(prev => {
-      const next = new Set(prev);
-      if (next.has(level)) {
-        next.delete(level);
-      } else {
-        next.add(level);
-      }
-      return next;
-    });
+    setActiveLevels(prev => toggleSetMember(prev, level));
   }, []);
 
-  // Toggle component filter
   const toggleComponent = useCallback((component: LogComponent) => {
-    setActiveComponents(prev => {
-      const next = new Set(prev);
-      if (next.has(component)) {
-        next.delete(component);
-      } else {
-        next.add(component);
-      }
-      return next;
-    });
+    setActiveComponents(prev => toggleSetMember(prev, component));
   }, []);
 
-  // Select all / none for levels
   const setAllLevels = useCallback((enabled: boolean) => {
-    if (enabled) {
-      setActiveLevels(new Set(['DEBUG', 'INFO', 'WARN', 'ERROR']));
-    } else {
-      setActiveLevels(new Set());
-    }
+    setActiveLevels(enabled ? new Set(LOG_LEVELS.map(l => l.key)) : new Set());
   }, []);
 
-  // Select all / none for components
   const setAllComponents = useCallback((enabled: boolean) => {
-    if (enabled) {
-      setActiveComponents(new Set(['HOOK', 'WORKER', 'SDK', 'PARSER', 'DB', 'SYSTEM', 'HTTP', 'SESSION', 'CHROMA']));
-    } else {
-      setActiveComponents(new Set());
-    }
+    setActiveComponents(enabled ? new Set(LOG_COMPONENTS.map(c => c.key)) : new Set());
   }, []);
 
   if (!isOpen) {
@@ -268,10 +249,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
 
   // Get style for a parsed log line
   const getLineStyle = (line: ParsedLogLine): React.CSSProperties => {
-    const levelConfig = LOG_LEVELS.find(l => l.key === line.level);
-
     let color = 'var(--color-text-primary)';
-    const fontWeight = 'normal';
     let backgroundColor = 'transparent';
 
     if (line.level === 'ERROR') {
@@ -286,11 +264,14 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
       color = '#f85149';
     } else if (line.isSpecial === 'happyPath') {
       color = '#d29922';
-    } else if (levelConfig) {
-      color = levelConfig.color;
+    } else {
+      const levelConfig = LOG_LEVELS.find(l => l.key === line.level);
+      if (levelConfig) {
+        color = levelConfig.color;
+      }
     }
 
-    return { color, fontWeight, backgroundColor, padding: '1px 0', borderRadius: '2px' };
+    return { color, backgroundColor, padding: '1px 0', borderRadius: '2px' };
   };
 
   // Render a single log line with syntax highlighting

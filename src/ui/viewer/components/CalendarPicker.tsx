@@ -171,7 +171,6 @@ export function CalendarPicker({
           const hasActivity = activitySet.has(cell.date);
           const isToday = cell.date === today;
           const isSelected = cell.date === selectedDate;
-          const isDisabled = !hasActivity;
 
           const classNames = [
             'calendar-picker__day',
@@ -186,7 +185,7 @@ export function CalendarPicker({
               key={cell.date}
               className={classNames}
               onClick={() => { if (hasActivity) onSelectDate(cell.date); }}
-              disabled={isDisabled}
+              disabled={!hasActivity}
               aria-label={`${cell.date}${hasActivity ? ' — has activity' : ''}`}
               type="button"
             >
