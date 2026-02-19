@@ -9,7 +9,7 @@ import {
 } from "../../../scripts/issue-pr-bot/config.ts";
 import {
   ingestOpenItems,
-  SCAFFOLD_WARNING,
+  MISSING_AUTH_WARNING,
 } from "../../../scripts/issue-pr-bot/ingestion.ts";
 import { renderTriageReport } from "../../../scripts/issue-pr-bot/reporting.ts";
 import {
@@ -45,12 +45,33 @@ describe("issue-pr-bot scaffold", () => {
     expect(PRIORITY_BUCKET_WEIGHTS.normal).toBe(200);
   });
 
-  it("returns scaffold warning when ingestion has no dependency", async () => {
+  it("supports dependency override for ingestion", async () => {
     const config = createTriageConfig({ generatedAt: "2026-02-19T00:00:00.000Z" });
-    const result = await ingestOpenItems(config);
+    const result = await ingestOpenItems(config, {
+      fetchOpenItems: async () => [],
+    });
 
     expect(result.items).toHaveLength(0);
-    expect(result.warnings).toEqual([SCAFFOLD_WARNING]);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("warns when running without GitHub auth token", async () => {
+    const config = createTriageConfig({
+      repository: { owner: "test", repo: "repo" },
+      generatedAt: "2026-02-19T00:00:00.000Z",
+    });
+
+    const result = await ingestOpenItems(config, {
+      githubToken: null,
+      apiFetch: async () => {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+
+    expect(result.warnings).toContain(MISSING_AUTH_WARNING);
   });
 
   it("ranks issues and pull requests in deterministic order", () => {
@@ -61,12 +82,17 @@ describe("issue-pr-bot scaffold", () => {
         type: "issue",
         title: "Older issue",
         body: "",
+        links: {
+          html: "https://example.com/issues/10",
+          api: "https://api.github.com/repos/example/repo/issues/10",
+        },
         htmlUrl: "https://example.com/issues/10",
         author: { login: "alice" },
         labels: [],
         assignees: [],
         createdAt: "2026-02-10T00:00:00.000Z",
         updatedAt: "2026-02-11T00:00:00.000Z",
+        pullRequest: null,
       },
       {
         id: 2,
@@ -74,12 +100,17 @@ describe("issue-pr-bot scaffold", () => {
         type: "issue",
         title: "Newer issue",
         body: "",
+        links: {
+          html: "https://example.com/issues/12",
+          api: "https://api.github.com/repos/example/repo/issues/12",
+        },
         htmlUrl: "https://example.com/issues/12",
         author: { login: "bob" },
         labels: [],
         assignees: [],
         createdAt: "2026-02-10T00:00:00.000Z",
         updatedAt: "2026-02-12T00:00:00.000Z",
+        pullRequest: null,
       },
       {
         id: 3,
@@ -87,12 +118,22 @@ describe("issue-pr-bot scaffold", () => {
         type: "pr",
         title: "Only PR",
         body: "",
+        links: {
+          html: "https://example.com/pull/21",
+          api: "https://api.github.com/repos/example/repo/issues/21",
+        },
         htmlUrl: "https://example.com/pull/21",
         author: { login: "charlie" },
         labels: [],
         assignees: [],
         createdAt: "2026-02-10T00:00:00.000Z",
         updatedAt: "2026-02-12T00:00:00.000Z",
+        pullRequest: {
+          changedFiles: 4,
+          additions: 40,
+          deletions: 12,
+          commits: 2,
+        },
       },
     ];
 

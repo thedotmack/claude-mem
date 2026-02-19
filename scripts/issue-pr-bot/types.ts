@@ -30,18 +30,32 @@ export interface NormalizedLabel {
   name: string;
 }
 
+export interface NormalizedLinkSet {
+  html: string;
+  api: string;
+}
+
+export interface NormalizedPullRequestStats {
+  changedFiles: number | null;
+  additions: number | null;
+  deletions: number | null;
+  commits: number | null;
+}
+
 export interface NormalizedItem {
   id: number;
   number: number;
   type: TriageItemType;
   title: string;
   body: string;
+  links: NormalizedLinkSet;
   htmlUrl: string;
   author: NormalizedUser | null;
   labels: NormalizedLabel[];
   assignees: NormalizedUser[];
   createdAt: string;
   updatedAt: string;
+  pullRequest: NormalizedPullRequestStats | null;
 }
 
 export interface IngestionResult {
