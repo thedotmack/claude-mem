@@ -122,7 +122,7 @@ export class SettingsDefaultsManager {
     // Runtime Configuration
     CLAUDE_MEM_BUN_PATH: '',  // Empty = resolve at install time via smart-install
     // Chroma Vector Database Configuration
-    CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' starts npx chroma run, 'remote' connects to existing server
+    CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' uses persistent chroma-mcp via uvx, 'remote' connects to existing server
     CLAUDE_MEM_CHROMA_HOST: '127.0.0.1',
     CLAUDE_MEM_CHROMA_PORT: '8000',
     CLAUDE_MEM_CHROMA_SSL: 'false',

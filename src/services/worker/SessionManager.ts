@@ -341,6 +341,39 @@ export class SessionManager {
     }
   }
 
+  private static readonly MAX_SESSION_IDLE_MS = 15 * 60 * 1000; // 15 minutes
+
+  /**
+   * Reap sessions with no active generator and no pending work that have been idle too long.
+   * This unblocks the orphan reaper which skips processes for "active" sessions. (Issue #1168)
+   */
+  async reapStaleSessions(): Promise<number> {
+    const now = Date.now();
+    const staleSessionIds: number[] = [];
+
+    for (const [sessionDbId, session] of this.sessions) {
+      // Skip sessions with active generators
+      if (session.generatorPromise) continue;
+
+      // Skip sessions with pending work
+      const pendingCount = this.getPendingStore().getPendingCount(sessionDbId);
+      if (pendingCount > 0) continue;
+
+      // No generator + no pending work + old enough = stale
+      const sessionAge = now - session.startTime;
+      if (sessionAge > SessionManager.MAX_SESSION_IDLE_MS) {
+        staleSessionIds.push(sessionDbId);
+      }
+    }
+
+    for (const sessionDbId of staleSessionIds) {
+      logger.warn('SESSION', `Reaping stale session ${sessionDbId} (no activity for >${Math.round(SessionManager.MAX_SESSION_IDLE_MS / 60000)}m)`, { sessionDbId });
+      await this.deleteSession(sessionDbId);
+    }
+
+    return staleSessionIds.length;
+  }
+
   /**
    * Shutdown all active sessions
    */
