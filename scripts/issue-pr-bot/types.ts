@@ -107,10 +107,70 @@ export interface ScoringResult {
   prs: RankedItem[];
 }
 
+export interface DraftExecutionPlan {
+  nextSteps: string[];
+  risks: string[];
+  validationChecks: string[];
+}
+
+export interface TriageReportItem {
+  number: number;
+  type: TriageItemType;
+  title: string;
+  htmlUrl: string;
+  rank: number;
+  score: number;
+  intent: TriageIntent;
+  severityBucket: SeverityBucket;
+  priorityBucket: PriorityBucket;
+  inactivityDays: number;
+  outdatedCandidate: boolean;
+  outdatedReasons: string[];
+  wikiLink: string;
+  relatedWikiLinks: string[];
+  draftPlan: DraftExecutionPlan | null;
+  authorLogin: string | null;
+  mergeableState?: string;
+  reviewDecision?: string;
+}
+
+export interface TriageSnapshot {
+  runId: string;
+  runWikiLink: string;
+  generatedAt: string;
+  repository: RepoTarget;
+  summary: {
+    totalIssues: number;
+    totalPullRequests: number;
+    outdatedIssueCandidates: number;
+    outdatedPullRequestCandidates: number;
+  };
+  sections: {
+    issues: TriageReportItem[];
+    prs: TriageReportItem[];
+  };
+}
+
+export interface TriageArtifactPaths {
+  rootDir: string;
+  runReportPath: string;
+  snapshotPath: string;
+  issueItemPaths: string[];
+  prItemPaths: string[];
+}
+
 export interface TriageReport {
   markdown: string;
   sections: {
     issues: string;
     prs: string;
   };
+  runId: string;
+  runWikiLink: string;
+  items: {
+    issues: TriageReportItem[];
+    prs: TriageReportItem[];
+  };
+  snapshot: TriageSnapshot;
+  artifacts?: TriageArtifactPaths;
 }
