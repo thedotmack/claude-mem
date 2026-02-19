@@ -13,7 +13,11 @@ export async function runTriagePrototype(
 ) {
   const config = createTriageConfig(options.configOverrides);
   const ingestion = await ingestOpenItems(config, options.ingestionDependencies);
-  const scoring = scoreAndRankItems(ingestion.items);
+  const scoring = scoreAndRankItems(ingestion.items, {
+    now: config.generatedAt,
+    outdatedThresholdDays: config.discovery.outdatedThresholdDays,
+    developerPriorityOrder: config.developerPriorityOrder,
+  });
   const report = renderTriageReport(config, scoring);
 
   return {

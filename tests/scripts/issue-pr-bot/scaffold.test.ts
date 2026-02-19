@@ -137,13 +137,20 @@ describe("issue-pr-bot scaffold", () => {
       },
     ];
 
-    const scoring = scoreAndRankItems(items);
+    const scoring = scoreAndRankItems(items, {
+      now: "2026-02-19T00:00:00.000Z",
+      outdatedThresholdDays: 90,
+      developerPriorityOrder: [...DEFAULT_DEVELOPER_PRIORITY_ORDER],
+    });
 
-    expect(scoring.issues[0].score).toBe(2_200);
+    expect(scoring.issues[0].score).toBeGreaterThan(scoring.issues[1].score);
     expect(scoring.issues.map((item) => item.number)).toEqual([12, 10]);
     expect(scoring.issues.map((item) => item.rank)).toEqual([1, 2]);
+    expect(scoring.issues[0].intent).toBe("bug");
+    expect(scoring.issues[0].outdatedCandidate).toBe(false);
     expect(scoring.prs.map((item) => item.number)).toEqual([21]);
     expect(scoring.prs.map((item) => item.rank)).toEqual([1]);
+    expect(scoring.prs[0].intent).toBe("maintenance");
   });
 
   it("renders separate issue and pull request sections", () => {
