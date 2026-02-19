@@ -122,7 +122,7 @@ related:
 # Issue/PR Prototype Triage Report
 
 Repository: thedotmack/claude-mem
-Generated: 2026-02-19T20:15:22.083Z
+Generated: 2026-02-19T20:20:55.644Z
 Run Link: [[Triage-Run-2026-02-19]]
 
 ## Summary
@@ -131,6 +131,8 @@ Run Link: [[Triage-Run-2026-02-19]]
 - Open pull requests: 28
 - Outdated-close issue candidates: 0
 - Outdated-close PR candidates: 0
+- Categories: Chroma: 42, Process: 45, Windows: 1, Hooks: 2, Installation: 4, Security: 11, Feature Request: 1, Uncategorized: 4
+- Duplicate groups: 9
 
 ## Issues
 
@@ -826,4 +828,189 @@ Run Link: [[Triage-Run-2026-02-19]]
 - #1157 [Security hardening: auth, permissions, sanitization, provenance](https://github.com/thedotmack/claude-mem/pull/1157) — pr, severity: critical
 - #1142 [Skip summary generation for subagent runs](https://github.com/thedotmack/claude-mem/pull/1142) — pr, severity: medium
 - #1083 [Add thoughts timeline: capture, store, search & broadcast Claude thinking blocks](https://github.com/thedotmack/claude-mem/pull/1083) — pr, severity: low
+
+
+## Issues by Category
+
+### Chroma (42)
+
+- #1185 chroma-mcp CPU/memory leak in v10.3.1 (https://github.com/thedotmack/claude-mem/issues/1185)
+- #1183 v10.3.0+: backfill fails with MetadataValue conversion error via chroma-mcp (https://github.com/thedotmack/claude-mem/issues/1183)
+- #1182 v10.3.0+: chroma-mcp SSL default breaks CHROMA_MODE=remote with local HTTP server (https://github.com/thedotmack/claude-mem/issues/1182)
+- #1172 get_observations fails: MCP serializes ids array as string (https://github.com/thedotmack/claude-mem/issues/1172)
+- #1166 v10.2.5: cache directory missing node_modules — semantic search broken on marketplace install (https://github.com/thedotmack/claude-mem/issues/1166)
+- #1162 ChromaDB 1.1.1 Rust panic: range start index 10 out of range for slice of length 9 (https://github.com/thedotmack/claude-mem/issues/1162)
+- #1160 [Architecture] worker-cli.js and worker-service.cjs hardcode marketplace path — should resolve dynamically (https://github.com/thedotmack/claude-mem/issues/1160)
+- #1155 chromadb missing from plugin/package.json - Chroma fails to start from cache (https://github.com/thedotmack/claude-mem/issues/1155)
+- #1149 Chroma server fails to start: chromadb npm package not included in distribution (https://github.com/thedotmack/claude-mem/issues/1149)
+- #1146 Chroma server fails on Windows x64 - npm chromadb only supports ARM64 (https://github.com/thedotmack/claude-mem/issues/1146)
+- #1131 chroma-mcp subprocess leak: ensureConnection() never closes old transport before reconnect (https://github.com/thedotmack/claude-mem/issues/1131)
+- #1128 setup.sh: node_modules not restored after hard reset causes onnxruntime-common ENOENT (https://github.com/thedotmack/claude-mem/issues/1128)
+- #1124 [Bug] Multiple hooks race on version mismatch restart — no cross-session coordination (https://github.com/thedotmack/claude-mem/issues/1124)
+- #1123 [Bug] Chroma server fails to auto-recover after port conflict — permanent 500 errors until worker restart (https://github.com/thedotmack/claude-mem/issues/1123)
+- #1120 [Bug] Worker daemon spawned from cache dir cannot find chroma binary -- npx resolution fails (https://github.com/thedotmack/claude-mem/issues/1120)
+- #1110 [Bug] ChromaDB segfaults on Linux (exit 139) — workaround with external Python server (https://github.com/thedotmack/claude-mem/issues/1110)
+- #1105 [Bug] ONNX model protobuf parsing failed with @huggingface/transformers 3.8.1 (https://github.com/thedotmack/claude-mem/issues/1105)
+- #1104 Search fails on Windows: "ENOENT while resolving package 'onnxruntime-common'" (https://github.com/thedotmack/claude-mem/issues/1104)
+- #1089 Worker daemon spawns Claude SDK subprocesses that never terminate, causing massive memory leak (https://github.com/thedotmack/claude-mem/issues/1089)
+- #1077 chroma-mcp processes are never cleaned up when Claude Code sessions end — causes OOM (https://github.com/thedotmack/claude-mem/issues/1077)
+- #1062 [Windows] Claude Code hangs on startup from Git Bash — PowerShell not in PATH breaks worker hooks (https://github.com/thedotmack/claude-mem/issues/1062)
+- #1046 Race condition: observations stored with empty project string (https://github.com/thedotmack/claude-mem/issues/1046)
+- #1038 claude-mem web-mcp-search not save (https://github.com/thedotmack/claude-mem/issues/1038)
+- #1027 [❌ ERROR] [📦 SDK    ] [session-9] Missing last_assistant_message in session for summary prompt (https://github.com/thedotmack/claude-mem/issues/1027)
+- #1026 ChromaDB vector search unconditionally disabled on Windows with no opt-in (https://github.com/thedotmack/claude-mem/issues/1026)
+- #1024 Orphan reaper fails on Windows: $_ PowerShell syntax error (regression from #517) (https://github.com/thedotmack/claude-mem/issues/1024)
+- #791 [Windows] Keyword search (FTS5) returns 'No results' despite data existing in database (v9.0.6) (https://github.com/thedotmack/claude-mem/issues/791)
+- #730 Vector-db folder grows to 1TB+ when multiple Docker containers share the same .claude-mem mount (https://github.com/thedotmack/claude-mem/issues/730)
+- #707 Feature: SQLite-only backend mode to prevent Chroma memory consumption (35GB RAM fix) (https://github.com/thedotmack/claude-mem/issues/707)
+- #1164 perf(memory): bound conversation history + lower Chroma embed footprint (https://github.com/thedotmack/claude-mem/pull/1164)
+- #1134 feat(chroma): add lazy reconnect when vector search is requested (https://github.com/thedotmack/claude-mem/pull/1134)
+- #1133 fix(chroma): capture stderr and detect port conflicts on startup (https://github.com/thedotmack/claude-mem/pull/1133)
+- #1132 fix(chroma): robust binary resolution for daemon-spawned workers (https://github.com/thedotmack/claude-mem/pull/1132)
+- #1129 feat: add generic session backfill script (https://github.com/thedotmack/claude-mem/pull/1129)
+- #1127 feat: implement 5-stage observation processing pipeline (https://github.com/thedotmack/claude-mem/pull/1127)
+- #1111 Add ChromaDB vector index backfill script (https://github.com/thedotmack/claude-mem/pull/1111)
+- #1102 fix: critical bug fixes, snap sandbox support, and resource monitoring (https://github.com/thedotmack/claude-mem/pull/1102)
+- #1088 fix: use persistent venv instead of uvx to prevent cache bloat (https://github.com/thedotmack/claude-mem/pull/1088)
+- #1085 fix: eliminate unbounded process spawning with 4-layer defense (https://github.com/thedotmack/claude-mem/pull/1085)
+- #1083 Add thoughts timeline: capture, store, search & broadcast Claude thinking blocks (https://github.com/thedotmack/claude-mem/pull/1083)
+- #1078 Título: Add Spanish translations and Windows improvementsAdd Spanish translations and Windows improvements (https://github.com/thedotmack/claude-mem/pull/1078)
+- #1064 feat: sync imported observations to Chroma vector DB (https://github.com/thedotmack/claude-mem/pull/1064)
+
+### Process (45)
+
+- #1163 Claude provider (SDK spawn) fails when used behind API proxy or in nested Claude Code environments (https://github.com/thedotmack/claude-mem/issues/1163)
+- #1161 [Windows] Zombie bun worker blocks Claude Code startup — hangs for 60s+ on SessionStart (https://github.com/thedotmack/claude-mem/issues/1161)
+- #1158 Duplicate observations: each PostToolUse creates 6-10 identical records (https://github.com/thedotmack/claude-mem/issues/1158)
+- #1148 Gemini 3 models fail with 404: API endpoint uses v1 instead of v1beta (https://github.com/thedotmack/claude-mem/issues/1148)
+- #1145 Bug: duplicate worker daemons from version mismatch restart loop + spawn races (https://github.com/thedotmack/claude-mem/issues/1145)
+- #1139 Claude-mem fails to start on Windows 11 (https://github.com/thedotmack/claude-mem/issues/1139)
+- #1137 Plan mode triggers excessive pending message accumulation and stuck processing (https://github.com/thedotmack/claude-mem/issues/1137)
+- #1135 Hhh (https://github.com/thedotmack/claude-mem/issues/1135)
+- #1099 Stale AbortController in ensureGeneratorRunning causes queue stall (https://github.com/thedotmack/claude-mem/issues/1099)
+- #1091 PostToolUse auto-observation: persistent 500 errors on every tool call — feature non-functional (https://github.com/thedotmack/claude-mem/issues/1091)
+- #1090 Worker spawns hundreds of leaked Claude CLI processes, consuming massive API tokens (https://github.com/thedotmack/claude-mem/issues/1090)
+- #1081 Bug: Worktree observations tagged with worktree dir name instead of parent project (https://github.com/thedotmack/claude-mem/issues/1081)
+- #1075 🐛 Infinite notification loop causes token/storage exhaustion when background agents complete (https://github.com/thedotmack/claude-mem/issues/1075)
+- #1068 Worker daemon leaks Claude subagent processes (https://github.com/thedotmack/claude-mem/issues/1068)
+- #1058 [Windows] PostToolUse and Stop hooks fail to generate observations/session summaries (https://github.com/thedotmack/claude-mem/issues/1058)
+- #1052 isProcessing flag stuck true after session deleted during pending summarize (https://github.com/thedotmack/claude-mem/issues/1052)
+- #1048 [Windows] worker-service daemon spawns persistent visible console window (https://github.com/thedotmack/claude-mem/issues/1048)
+- #1045 PostToolUse matcher:* creates uninterruptible cascade during high tool throughput (https://github.com/thedotmack/claude-mem/issues/1045)
+- #1042 ENOENT error in stop hooks: race condition reading package.json during shutdown (https://github.com/thedotmack/claude-mem/issues/1042)
+- #1036 Bug: summarize messages stuck in 'processing' — confirmProcessed() never reached (https://github.com/thedotmack/claude-mem/issues/1036)
+- #1029 CORS error when saving Settings in Claude-mem 9.1.1 (https://github.com/thedotmack/claude-mem/issues/1029)
+- #1023 Zombie TCP socket on Windows blocks worker restart (regression from #415) (https://github.com/thedotmack/claude-mem/issues/1023)
+- #987 Stop hook can cause infinite session loop when summarize output is interpreted as instructions (https://github.com/thedotmack/claude-mem/issues/987)
+- #984 Stop hook fails with "Unknown event type: session-complete" (https://github.com/thedotmack/claude-mem/issues/984)
+- #979 Bug: MigrationRunner.initializeSchema() fails to create observations and session_summaries tables (https://github.com/thedotmack/claude-mem/issues/979)
+- #978 Bug: SessionStart hook doesn't fire for 'Continue' sessions (https://github.com/thedotmack/claude-mem/issues/978)
+- #975 Stop hook error: Zod cyclical schema resolution fails in worker-service.cjs (https://github.com/thedotmack/claude-mem/issues/975)
+- #957 SessionStart hook chain unnecessarily stops worker on every startup (https://github.com/thedotmack/claude-mem/issues/957)
+- #923 Slow Plugin Loading Time on Claude Startup (https://github.com/thedotmack/claude-mem/issues/923)
+- #918 SessionStart hooks block input in terminal on Windows — needs "async": true (https://github.com/thedotmack/claude-mem/issues/918)
+- #838 Bug: `session-init` hook fails with HTTP 400 when invoked from Cursor's `beforeSubmitPrompt` (https://github.com/thedotmack/claude-mem/issues/838)
+- #807 [Windows] ProcessTransport error - Worker fails with "ProcessTransport is not ready for writing" on Bun 1.3.5 (https://github.com/thedotmack/claude-mem/issues/807)
+- #785 fix: Worker fails to spawn on Windows 11 25H2+ (WMIC removed) (https://github.com/thedotmack/claude-mem/issues/785)
+- #784 Internal memory agent output leaks to user on claude --continue (https://github.com/thedotmack/claude-mem/issues/784)
+- #781 Plugin doesn't respect disabled state - requires manual intervention to fully stop (https://github.com/thedotmack/claude-mem/issues/781)
+- #744 sessionInitHandler throws error when prompt is empty (breaks Codex CLI integration) (https://github.com/thedotmack/claude-mem/issues/744)
+- #598 Too many messages, polluting my conversation history (https://github.com/thedotmack/claude-mem/issues/598)
+- #1186 feat: Litestream cloud backup integration for SQLite database (https://github.com/thedotmack/claude-mem/pull/1186)
+- #1180 fix: detect auth errors and prevent infinite retry loops (https://github.com/thedotmack/claude-mem/pull/1180)
+- #1177 feat(provider): add OpenAI Codex OAuth provider for observation extraction (https://github.com/thedotmack/claude-mem/pull/1177)
+- #1169 fix: deduplicate session-init to prevent redundant re-initialization (https://github.com/thedotmack/claude-mem/pull/1169)
+- #1144 fix: prevent duplicate worker daemons (version mismatch loop + spawn races) (https://github.com/thedotmack/claude-mem/pull/1144)
+- #1142 Skip summary generation for subagent runs (https://github.com/thedotmack/claude-mem/pull/1142)
+- #1092 fix: harden OpenClaw integration, auth chain, and SSE stability (https://github.com/thedotmack/claude-mem/pull/1092)
+- #1072 fix: add error handling to prevent Stop hook failures from package.json read errors (https://github.com/thedotmack/claude-mem/pull/1072)
+
+### Windows (1)
+
+- #793 Bug: isProjectRoot() doesn't detect subdirectories within git repos, causing CLAUDE.md files in all subfolders (https://github.com/thedotmack/claude-mem/issues/793)
+
+### Hooks (2)
+
+- #1181 SessionStart hooks show as 'error' in Claude Code UI due to stderr usage (https://github.com/thedotmack/claude-mem/issues/1181)
+- #1096 Startup hook error & claude-mem:mcp-search failed (https://github.com/thedotmack/claude-mem/issues/1096)
+
+### Installation (4)
+
+- #1187 skills/ directory missing after install — skill paths in openclaw.plugin.json don't match installer output (https://github.com/thedotmack/claude-mem/issues/1187)
+- #1165 Bug: CLAUDE.md created inside .git/ directory corrupts git refs (https://github.com/thedotmack/claude-mem/issues/1165)
+- #1041 Plugin marketplace not found — claude-mem fails to load after add (https://github.com/thedotmack/claude-mem/issues/1041)
+- #943 Feature Request: Support custom API endpoint / LiteLLM proxy (https://github.com/thedotmack/claude-mem/issues/943)
+
+### Security (11)
+
+- #1156 np (npm publish tool) should be a devDependency, not a runtime dependency (https://github.com/thedotmack/claude-mem/issues/1156)
+- #1153 Security findings — requesting private disclosure channel (https://github.com/thedotmack/claude-mem/issues/1153)
+- #1079 UserPromptSubmit hook injects security guidance block into every turn (https://github.com/thedotmack/claude-mem/issues/1079)
+- #1073 Obsearvations and session advice (https://github.com/thedotmack/claude-mem/issues/1073)
+- #1060 Stop hook error: Failed with non-blocking status code: 46 (https://github.com/thedotmack/claude-mem/issues/1060)
+- #1049 SessionStart hook not triggering in VSCode extension - context injection and auto-observation broken (https://github.com/thedotmack/claude-mem/issues/1049)
+- #642 ChromaDB search fails with JSON parse error due to initialization timing (https://github.com/thedotmack/claude-mem/issues/642)
+- #1157 Security hardening: auth, permissions, sanitization, provenance (https://github.com/thedotmack/claude-mem/pull/1157)
+- #1143 feat: add terminal output control for SessionStart context (https://github.com/thedotmack/claude-mem/pull/1143)
+- #1101 feat: interactive feed setup wizard and standalone daemon (https://github.com/thedotmack/claude-mem/pull/1101)
+- #474 fix(windows): prevent libuv assertion failure in smart-install.js (https://github.com/thedotmack/claude-mem/pull/474)
+
+### Feature Request (1)
+
+- #1152 fix: remove non-existent columns from getSessionSummaryById query (https://github.com/thedotmack/claude-mem/pull/1152)
+
+### Uncategorized (4)
+
+- #1107 Bug: task-notification system messages recorded as user_prompts (massive duplication) (https://github.com/thedotmack/claude-mem/issues/1107)
+- #1061 [Bug] Duplicate observations persist in v10.0.1 - same user prompt generates 40+ near-identical records (https://github.com/thedotmack/claude-mem/issues/1061)
+- #1151 fix: make privacy tag stripping case-insensitive (https://github.com/thedotmack/claude-mem/pull/1151)
+- #1150 fix: use nullish coalescing for promptNumber to preserve zero values (https://github.com/thedotmack/claude-mem/pull/1150)
+
+
+## Duplicate Groups
+
+### Group 2
+- Canonical: #1110
+- Duplicates: #1111, #1120, #1123, #1160
+- Reason: shared-issue-reference
+
+### Group 3
+- Canonical: #1024
+- Duplicates: #1062, #1085, #1131
+- Reason: shared-issue-reference
+
+### Group 7
+- Canonical: #1036
+- Duplicates: #1052, #1137
+- Reason: shared-issue-reference
+
+### Group 1
+- Canonical: #1182
+- Duplicates: #1183
+- Reason: shared-issue-reference
+
+### Group 4
+- Canonical: #707
+- Duplicates: #730
+- Reason: shared-issue-reference
+
+### Group 5
+- Canonical: #1133
+- Duplicates: #1134
+- Reason: shared-issue-reference
+
+### Group 6
+- Canonical: #1144
+- Duplicates: #1145
+- Reason: title-similarity (0.62)
+
+### Group 8
+- Canonical: #1048
+- Duplicates: #1058
+- Reason: shared-issue-reference
+
+### Group 9
+- Canonical: #1153
+- Duplicates: #1157
+- Reason: shared-issue-reference
 
