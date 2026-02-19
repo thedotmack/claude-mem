@@ -10,7 +10,7 @@
  */
 
 import path from 'path';
-import { existsSync, writeFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, constants as fsConstants } from 'fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, constants as fsConstants } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
@@ -88,23 +88,45 @@ function acquireSpawnLock(): boolean {
     if (existsSync(lockPath)) {
       const age = Date.now() - statSync(lockPath).mtimeMs;
       if (age > SPAWN_LOCK_MAX_AGE_MS) {
-        logger.warn('SYSTEM', 'Removing stale spawn lock', { ageMs: age });
-        unlinkSync(lockPath);
+        // Age threshold exceeded — verify the locking process is actually gone
+        // before removing, in case a slow spawn is still in progress
+        let isStale = true;
+        try {
+          const content = JSON.parse(readFileSync(lockPath, 'utf-8'));
+          if (typeof content.pid === 'number' && isProcessAlive(content.pid)) {
+            isStale = false;
+          }
+        } catch {
+          // Unreadable or malformed lock file — treat as stale
+        }
+        if (isStale) {
+          logger.warn('SYSTEM', 'Removing stale spawn lock', { ageMs: age });
+          unlinkSync(lockPath);
+        }
       }
     }
   } catch {
     // Ignore errors during stale lock cleanup
   }
 
+  // O_CREAT | O_EXCL: atomic create-if-not-exists (fails if file already exists)
+  let fd: number | undefined;
   try {
-    // O_CREAT | O_EXCL: atomic create-if-not-exists (fails if file already exists)
-    const fd = openSync(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY);
+    fd = openSync(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY);
     writeFileSync(fd, JSON.stringify({ pid: process.pid, time: Date.now() }));
     closeSync(fd);
+    fd = undefined;
     return true;
-  } catch {
-    // Lock already held by another process
-    logger.info('SYSTEM', 'Spawn lock held by another process, skipping daemon spawn');
+  } catch (err: unknown) {
+    if (fd !== undefined) {
+      // openSync succeeded but writeFileSync/closeSync failed — clean up the empty lock file
+      try { closeSync(fd); } catch { /* ignore */ }
+      try { unlinkSync(lockPath); } catch { /* ignore */ }
+      logger.warn('SYSTEM', 'Failed to write spawn lock, cleaned up', {}, err as Error);
+    } else {
+      // openSync failed (O_EXCL): lock already held by another process
+      logger.info('SYSTEM', 'Spawn lock held by another process, skipping daemon spawn');
+    }
     return false;
   }
 }
@@ -130,6 +152,7 @@ import {
   getPlatformTimeout,
   cleanupOrphanedProcesses,
   cleanStalePidFile,
+  isProcessAlive,
   spawnDaemon,
   createSignalHandler
 } from './infrastructure/ProcessManager.js';
