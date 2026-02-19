@@ -48,10 +48,11 @@ export async function runProviderConfiguration(): Promise<ProviderConfig> {
     const model = await p.select({
       message: 'Which Claude model for memory observations?',
       options: [
+        { value: 'claude-opus-4-6' as const, label: 'Claude Opus 4.6', hint: 'highest quality, slower' },
         { value: 'claude-sonnet-4-6' as const, label: 'Claude Sonnet 4.6', hint: 'recommended — best balance of quality and speed' },
-        { value: 'claude-sonnet-4-5' as const, label: 'Claude Sonnet 4.5', hint: 'previous generation' },
-        { value: 'claude-haiku-3-5' as const, label: 'Claude Haiku 3.5', hint: 'fastest, lowest cost' },
+        { value: 'claude-haiku-4-5' as const, label: 'Claude Haiku 4.5', hint: 'fastest, lowest cost' },
       ],
+      initialValue: 'claude-sonnet-4-6',
     });
 
     if (p.isCancel(model)) {
