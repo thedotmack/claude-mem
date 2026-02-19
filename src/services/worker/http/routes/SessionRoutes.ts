@@ -14,7 +14,7 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
 import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from '../../GeminiAgent.js';
 import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterAgent.js';
-import { OpenAICodexAgent, isOpenAICodexSelected, isOpenAICodexAvailable } from '../../OpenAICodexAgent.js';
+import { OpenAICodexAgent, isOpenAICodexAvailable } from '../../OpenAICodexAgent.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -60,13 +60,10 @@ export class SessionRoutes extends BaseRouteHandler {
    * Otherwise falls back to the global CLAUDE_MEM_PROVIDER.
    */
   private resolveProviderForSession(contentSessionId?: string): string {
-    if (contentSessionId?.startsWith('openclaw-')) {
-      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-      if (settings.CLAUDE_MEM_OPENCLAW_PROVIDER) {
-        return settings.CLAUDE_MEM_OPENCLAW_PROVIDER;
-      }
-    }
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (contentSessionId?.startsWith('openclaw-') && settings.CLAUDE_MEM_OPENCLAW_PROVIDER) {
+      return settings.CLAUDE_MEM_OPENCLAW_PROVIDER;
+    }
     return settings.CLAUDE_MEM_PROVIDER || 'claude';
   }
 
@@ -191,7 +188,13 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortController = new AbortController();
     }
 
-    const agent = this.getActiveAgent(session.contentSessionId);
+    // Select agent deterministically from the provider arg (already resolved by caller)
+    // to guarantee session.currentProvider matches the actual agent being used.
+    const agent =
+      provider === 'openai-codex' ? this.openAICodexAgent :
+      provider === 'openrouter'   ? this.openRouterAgent  :
+      provider === 'gemini'       ? this.geminiAgent      :
+                                    this.sdkAgent;
     const agentName = agent.constructor.name;
 
     // Use database count for accurate telemetry (in-memory array is always empty due to FK constraint fix)

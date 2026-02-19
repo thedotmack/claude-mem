@@ -992,9 +992,9 @@ mask_api_key() {
   fi
 }
 
-# Ask for API key for a given provider and store in the given variable name.
-# Usage: prompt_api_key <varname> <varname_key>
-# Example: prompt_api_key AI_PROVIDER AI_PROVIDER_API_KEY
+# Ask for API key for a given provider and store in the named variable.
+# Usage: prompt_provider_api_key <provider> <keyvar>
+# Example: prompt_provider_api_key gemini AI_PROVIDER_API_KEY
 prompt_provider_api_key() {
   local provider="$1"
   local keyvar="$2"
