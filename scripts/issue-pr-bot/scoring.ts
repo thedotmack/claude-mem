@@ -442,7 +442,7 @@ export function resolvePriorityBucket(
   }
 
   // No assignee and stale 30+ days → low
-  if (item.assignees.length === 0 && inactivityDays > 30) {
+  if (item.assignees.length === 0 && inactivityDays >= 30) {
     return "low";
   }
 
