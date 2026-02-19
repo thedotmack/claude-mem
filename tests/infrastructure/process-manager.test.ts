@@ -34,7 +34,6 @@ describe('ProcessManager', () => {
   afterEach(() => {
     // Restore original PID file or remove test one
     if (originalPidContent !== null) {
-      const { writeFileSync } = require('fs');
       writeFileSync(PID_FILE, originalPidContent);
       originalPidContent = null;
     } else {
@@ -107,7 +106,6 @@ describe('ProcessManager', () => {
     });
 
     it('should return null for corrupted JSON', () => {
-      const { writeFileSync } = require('fs');
       writeFileSync(PID_FILE, 'not valid json {{{');
 
       const result = readPidFile();
