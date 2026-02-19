@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 // ─────────────────────────────────────────────────────────
 // Types
@@ -117,16 +117,14 @@ export function useKeyboardNavigation(
   options: UseKeyboardNavigationOptions
 ): UseKeyboardNavigationResult {
   const {
-    onNextSession,
-    onPrevSession,
-    onFocusSearch,
-    onTogglePalette,
     isPaletteOpen,
-    onClosePalette,
-    onClearSearch,
     hasSearchContent,
-    onDayNavigate,
   } = options;
+
+  // Store callbacks in a ref so the keydown listener doesn't need to be
+  // re-registered when callback identity changes (avoids listener churn).
+  const callbacksRef = useRef(options);
+  useEffect(() => { callbacksRef.current = options; });
 
   const [showHelp, setShowHelp] = useState(false);
 
@@ -143,42 +141,43 @@ export function useKeyboardNavigation(
         hasSearchContent,
       });
 
+      const cbs = callbacksRef.current;
       switch (action) {
         case 'next':
           event.preventDefault();
-          onNextSession();
+          cbs.onNextSession();
           break;
         case 'prev':
           event.preventDefault();
-          onPrevSession();
+          cbs.onPrevSession();
           break;
         case 'prev-day':
           event.preventDefault();
-          onDayNavigate?.('prev');
+          cbs.onDayNavigate?.('prev');
           break;
         case 'next-day':
           event.preventDefault();
-          onDayNavigate?.('next');
+          cbs.onDayNavigate?.('next');
           break;
         case 'focus-search':
           event.preventDefault();
-          onFocusSearch();
+          cbs.onFocusSearch();
           break;
         case 'toggle-palette':
           event.preventDefault();
-          onTogglePalette();
+          cbs.onTogglePalette();
           break;
         case 'toggle-help':
           setShowHelp(prev => !prev);
           break;
         case 'close-palette':
-          onClosePalette();
+          cbs.onClosePalette();
           break;
         case 'close-help':
           setShowHelp(false);
           break;
         case 'clear-search':
-          onClearSearch();
+          cbs.onClearSearch();
           break;
         case null:
           break;
@@ -189,18 +188,7 @@ export function useKeyboardNavigation(
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [
-    showHelp,
-    isPaletteOpen,
-    hasSearchContent,
-    onNextSession,
-    onPrevSession,
-    onFocusSearch,
-    onTogglePalette,
-    onClosePalette,
-    onClearSearch,
-    onDayNavigate,
-  ]);
+  }, [showHelp, isPaletteOpen, hasSearchContent]);
 
   return { showHelp, setShowHelp };
 }

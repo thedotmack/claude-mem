@@ -17,6 +17,14 @@ export function safeParseJsonArray(value: string | null | undefined): string[] {
   }
 }
 
+// Merge subtitle into narrative — exported for unit testing
+export function mergeNarrative(subtitle: string | null, title: string | null, narrative: string | null): string | null {
+  if (subtitle && subtitle !== title) {
+    return `${narrative ?? ''}\n\n${subtitle}`.trim();
+  }
+  return narrative;
+}
+
 // Helper to strip project root from file paths — exported for unit testing
 export function stripProjectRoot(filePath: string): string {
   // Try to extract relative path by finding common project markers
@@ -51,11 +59,7 @@ export const ObservationCard = React.memo(function ObservationCard({ observation
   const filesRead: string[] = safeParseJsonArray(observation.files_read).map(stripProjectRoot);
   const filesModified: string[] = safeParseJsonArray(observation.files_modified).map(stripProjectRoot);
 
-  // Merge subtitle into narrative if subtitle differs from title
-  const mergedNarrative =
-    observation.subtitle && observation.subtitle !== observation.title
-      ? `${observation.narrative ?? ''}\n\n${observation.subtitle}`.trim()
-      : observation.narrative;
+  const mergedNarrative = mergeNarrative(observation.subtitle, observation.title, observation.narrative);
 
   const hasExpandableContent = facts.length > 0 || mergedNarrative;
 
@@ -93,8 +97,8 @@ export const ObservationCard = React.memo(function ObservationCard({ observation
       {/* Concepts and files — always visible */}
       {(concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (
         <div className="card__concepts">
-          {concepts.map((concept) => (
-            <span key={concept} className="observation-card__concept-chip">
+          {concepts.map((concept, i) => (
+            <span key={`${concept}-${String(i)}`} className="observation-card__concept-chip">
               {concept}
             </span>
           ))}
@@ -116,8 +120,8 @@ export const ObservationCard = React.memo(function ObservationCard({ observation
         <div className="card-facts" data-testid="obs-card-facts">
           {facts.length > 0 && (
             <ul className="facts-list">
-              {facts.map((fact) => (
-                <li key={fact}>{fact}</li>
+              {facts.map((fact, i) => (
+                <li key={`fact-${String(i)}`}>{fact}</li>
               ))}
             </ul>
           )}

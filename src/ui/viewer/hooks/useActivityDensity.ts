@@ -73,7 +73,10 @@ export function useActivityDensity(project: string): UseActivityDensityResult {
     if (project) params.set('project', project);
 
     fetch(`${API_ENDPOINTS.SEARCH}?${params}`, { signal: controller.signal })
-      .then(res => res.json() as Promise<SearchResponse>)
+      .then(res => {
+        if (!res.ok) throw new Error(`Activity fetch failed: ${res.statusText}`);
+        return res.json() as Promise<SearchResponse>;
+      })
       .then(data => {
         setDays(bucketByDay(data));
         cacheKeyRef.current = project;

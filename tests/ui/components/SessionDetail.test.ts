@@ -210,53 +210,9 @@ describe('TimelineItem type narrowing', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Props contract validation
-// ---------------------------------------------------------------------------
-
-describe('SessionDetail props contract', () => {
-  it('SessionDetail type accepts null detail with isLoading false (empty state)', () => {
-    // This validates the TypeScript type contract at compile-time.
-    // The component accepts { detail: null, isLoading: false } as a valid props combination.
-    const props: { detail: SessionDetail | null; isLoading: boolean } = {
-      detail: null,
-      isLoading: false,
-    };
-    expect(props.detail).toBeNull();
-    expect(props.isLoading).toBe(false);
-  });
-
-  it('SessionDetail type accepts null detail with isLoading true (loading state)', () => {
-    const props: { detail: SessionDetail | null; isLoading: boolean } = {
-      detail: null,
-      isLoading: true,
-    };
-    expect(props.detail).toBeNull();
-    expect(props.isLoading).toBe(true);
-  });
-
-  it('SessionDetail type accepts non-null detail with isLoading false (data state)', () => {
-    const detail: SessionDetail = {
-      summary: {
-        id: 1,
-        session_id: SESSION_ID,
-        project: PROJECT,
-        request: 'Fix bug',
-        created_at_epoch: 1000,
-      },
-      observations: [makeObservation(1, 2000)],
-      prompts: [makePrompt(1, 1500)],
-    };
-    const props: { detail: SessionDetail | null; isLoading: boolean } = {
-      detail,
-      isLoading: false,
-    };
-    expect(props.detail).not.toBeNull();
-    expect(props.detail!.summary.session_id).toBe(SESSION_ID);
-    expect(props.detail!.observations).toHaveLength(1);
-    expect(props.detail!.prompts).toHaveLength(1);
-  });
-});
+// Note: Props contract validation removed — TypeScript compiler enforces type contracts
+// at build time. Tautological tests that construct objects and assert their fields
+// provide no behavioral coverage. See Round 7 test quality review (H.2).
 
 // ---------------------------------------------------------------------------
 // Live session rendering (null summary) — source-code structural tests

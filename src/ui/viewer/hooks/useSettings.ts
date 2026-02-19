@@ -10,6 +10,14 @@ interface SaveSettingsResponse {
   error?: string;
 }
 
+/**
+ * Settings hook for the viewer UI.
+ *
+ * SECURITY NOTE: API keys (Gemini, OpenAI-compat) are held in React state
+ * unredacted because the settings form requires full values for editing.
+ * The security boundary is the localhost-only CORS restriction on the worker
+ * API — these values never leave the local machine.
+ */
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [isSaving, setIsSaving] = useState(false);

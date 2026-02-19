@@ -2,6 +2,9 @@ import React, { useState, useRef, useCallback } from "react";
 import type { Summary } from "../types";
 import { formatDate } from "../utils/formatters";
 
+/** Fallback max-height (px) used when the content element has not yet been measured. */
+const UNMEASURED_CONTENT_HEIGHT = 2000;
+
 interface SummaryCardProps {
   summary: Summary;
 }
@@ -149,7 +152,7 @@ export function SummaryCard({ summary }: SummaryCardProps) {
                 ref={(el) => { contentRefs.current[section.key] = el; }}
                 style={{
                   maxHeight: isExpanded
-                    ? `${String(contentRefs.current[section.key]?.scrollHeight ?? 2000)}px`
+                    ? `${String(contentRefs.current[section.key]?.scrollHeight ?? UNMEASURED_CONTENT_HEIGHT)}px`
                     : "0",
                   overflow: "hidden",
                 }}

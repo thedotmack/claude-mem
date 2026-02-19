@@ -21,7 +21,7 @@ const ansiConverter = new AnsiToHtml({
  * ansi-to-html with escapeXML:true already escapes user content, so this is
  * defense-in-depth against any bypass or future library change.
  */
-function sanitizeAnsiHtml(html: string): string {
+export function sanitizeAnsiHtml(html: string): string {
   return html.replace(/<\/?[^>]+>/g, (tag) => {
     if (/^<span(\s+(?:style|class)="[^"]*")+\s*>$/i.test(tag)) return tag;
     if (/^<\/span>$/i.test(tag)) return tag;

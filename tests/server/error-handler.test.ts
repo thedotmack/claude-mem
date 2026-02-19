@@ -198,7 +198,7 @@ describe('ErrorHandler', () => {
       expect(responseBody.details).toEqual(details);
     });
 
-    it('should handle generic Error with 500 status code', () => {
+    it('should handle generic Error with 500 status code and masked message', () => {
       const error = new Error('Something went wrong');
 
       errorHandler(
@@ -212,7 +212,7 @@ describe('ErrorHandler', () => {
 
       const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
       expect(responseBody.error).toBe('Error');
-      expect(responseBody.message).toBe('Something went wrong');
+      expect(responseBody.message).toBe('Internal server error');
       expect(responseBody.code).toBeUndefined();
       expect(responseBody.details).toBeUndefined();
     });
@@ -230,7 +230,7 @@ describe('ErrorHandler', () => {
       expect(mockNext).not.toHaveBeenCalled();
     });
 
-    it('should use error name in response', () => {
+    it('should mask error name for non-AppError exceptions', () => {
       const error = new TypeError('Invalid type');
 
       errorHandler(
@@ -241,7 +241,8 @@ describe('ErrorHandler', () => {
       );
 
       const responseBody = (jsonSpy.mock.calls[0] as [ErrorResponseBody])[0];
-      expect(responseBody.error).toBe('TypeError');
+      expect(responseBody.error).toBe('Error');
+      expect(responseBody.message).toBe('Internal server error');
     });
 
     it('should handle AppError with default 500 status', () => {

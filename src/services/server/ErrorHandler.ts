@@ -68,12 +68,13 @@ export const errorHandler: ErrorRequestHandler = (
     code: err instanceof AppError ? err.code : undefined
   }, err);
 
-  // Build response
+  // Build response — mask raw error messages for non-AppError to prevent leaking internals
+  const isAppError = err instanceof AppError;
   const response = createErrorResponse(
-    err.name || 'Error',
-    err.message,
-    err instanceof AppError ? err.code : undefined,
-    err instanceof AppError ? err.details : undefined
+    isAppError ? (err.name || 'Error') : 'Error',
+    isAppError ? err.message : 'Internal server error',
+    isAppError ? err.code : undefined,
+    isAppError ? err.details : undefined
   );
 
   // Send response (don't call next, as we've handled the error)

@@ -234,9 +234,14 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
+    // Clamp limit to prevent full-table extraction
+    const clampedLimit = typeof limit === 'number' && Number.isFinite(limit) && limit > 0
+      ? Math.min(limit, 500)
+      : undefined;
+
     const validatedIds = ids as number[];
     const store = this.dbManager.getSessionStore();
-    const observations = store.getObservationsByIds(validatedIds, { orderBy, limit, project });
+    const observations = store.getObservationsByIds(validatedIds, { orderBy, limit: clampedLimit, project });
 
     res.json(observations);
   });
@@ -279,9 +284,10 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    // Validate each element is a non-empty string
-    if (!memorySessionIds.every((id: unknown) => typeof id === 'string' && id.length > 0)) {
-      this.badRequest(res, 'All memorySessionIds must be non-empty strings');
+    // Validate each element is a non-empty string with reasonable length
+    const maxIdLength = DataRoutes.MAX_QUERY_PARAM_LENGTH;
+    if (!memorySessionIds.every((id: unknown) => typeof id === 'string' && id.length > 0 && id.length <= maxIdLength)) {
+      this.badRequest(res, `All memorySessionIds must be non-empty strings (max ${String(maxIdLength)} chars)`);
       return;
     }
 
@@ -342,7 +348,7 @@ export class DataRoutes extends BaseRouteHandler {
         port: getWorkerPort()
       },
       database: {
-        path: dbPath,
+        path: '~/.magic-claude-mem/magic-claude-mem.db',
         size: dbSize,
         observations: totalObservations.count,
         sessions: totalSessions.count,
@@ -404,15 +410,20 @@ export class DataRoutes extends BaseRouteHandler {
   /**
    * Parse pagination parameters from request query
    */
+  private static readonly MAX_QUERY_PARAM_LENGTH = 500;
+
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; sessionId?: string; summaryId?: number; unsummarized?: boolean } {
     const offset = Math.max(0, parseInt(req.query.offset as string, 10) || 0);
     const limit = Math.max(1, Math.min(parseInt(req.query.limit as string, 10) || 20, 100));
-    const project = req.query.project as string | undefined;
-    const sessionId = req.query.session_id as string | undefined;
+    const maxLen = DataRoutes.MAX_QUERY_PARAM_LENGTH;
+    const rawProject = req.query.project as string | undefined;
+    const rawSessionId = req.query.session_id as string | undefined;
+    const project = rawProject && rawProject.length <= maxLen ? rawProject : undefined;
+    const sessionId = rawSessionId && rawSessionId.length <= maxLen ? rawSessionId : undefined;
     const unsummarized = req.query.unsummarized === 'true';
 
     const parsedSummaryId = parseInt(req.query.summary_id as string, 10);
-    const summaryId = Number.isFinite(parsedSummaryId) ? parsedSummaryId : undefined;
+    const summaryId = Number.isFinite(parsedSummaryId) && parsedSummaryId > 0 ? parsedSummaryId : undefined;
 
     return { offset, limit, project, sessionId, summaryId, unsummarized };
   }

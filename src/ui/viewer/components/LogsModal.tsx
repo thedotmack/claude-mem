@@ -94,11 +94,13 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   }, [logs]);
 
   const filteredLines = useMemo(() => {
-    return parsedLines.filter(line => {
-      if (alignmentOnly) return line.raw.includes('[ALIGNMENT]');
-      if (!line.level || !line.component) return true;
-      return activeLevels.has(line.level) && activeComponents.has(line.component);
-    });
+    return parsedLines
+      .map((line, originalIndex) => ({ line, originalIndex }))
+      .filter(({ line }) => {
+        if (alignmentOnly) return line.raw.includes('[ALIGNMENT]');
+        if (!line.level || !line.component) return true;
+        return activeLevels.has(line.level) && activeComponents.has(line.component);
+      });
   }, [parsedLines, activeLevels, activeComponents, alignmentOnly]);
 
   // Scroll helpers
@@ -244,8 +246,8 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
           {filteredLines.length === 0 ? (
             <div className="log-line log-line-empty">No logs available</div>
           ) : (
-            filteredLines.map((line, index) => (
-              <LogLine key={index} line={line} />
+            filteredLines.map(({ line, originalIndex }) => (
+              <LogLine key={originalIndex} line={line} />
             ))
           )}
         </div>

@@ -4,6 +4,9 @@ import { API_ENDPOINTS } from '../constants/api';
 import { UI } from '../constants/ui';
 import { logger } from '../utils/logger';
 
+/** Cap accumulated search results — paginated data already handles history; this prevents unbounded growth from loadMore */
+const MAX_SEARCH_RESULTS = 2000;
+
 interface UseSearchResult {
   results: SearchResponse | null;
   isSearching: boolean;
@@ -101,9 +104,9 @@ export function useSearch(filters: FilterState, isFilterMode: boolean): UseSearc
       setResults(prev => {
         if (append && prev) {
           return {
-            observations: [...prev.observations, ...data.observations],
-            sessions: [...prev.sessions, ...data.sessions],
-            prompts: [...prev.prompts, ...data.prompts],
+            observations: [...prev.observations, ...data.observations].slice(0, MAX_SEARCH_RESULTS),
+            sessions: [...prev.sessions, ...data.sessions].slice(0, MAX_SEARCH_RESULTS),
+            prompts: [...prev.prompts, ...data.prompts].slice(0, MAX_SEARCH_RESULTS),
             totalResults: data.totalResults,
             query: data.query,
           };

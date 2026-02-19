@@ -6,6 +6,8 @@ import { logger } from '../utils/logger';
 import { calculateBackoffDelay } from '../utils/backoff';
 
 const MAX_RECONNECT_ATTEMPTS = 20;
+/** Cap SSE arrays — paginated data covers historical items, SSE only needs recent events */
+const MAX_SSE_ITEMS = 500;
 
 export function useSSE() {
   const [observations, setObservations] = useState<Observation[]>([]);
@@ -80,19 +82,19 @@ export function useSSE() {
 
           case 'new_observation': {
             const obs = data.observation;
-            if (obs) setObservations(prev => [obs, ...prev]);
+            if (obs) setObservations(prev => [obs, ...prev].slice(0, MAX_SSE_ITEMS));
             break;
           }
 
           case 'new_summary': {
             const sum = data.summary;
-            if (sum) setSummaries(prev => [sum, ...prev]);
+            if (sum) setSummaries(prev => [sum, ...prev].slice(0, MAX_SSE_ITEMS));
             break;
           }
 
           case 'new_prompt': {
             const prompt = data.prompt;
-            if (prompt) setPrompts(prev => [prompt, ...prev]);
+            if (prompt) setPrompts(prev => [prompt, ...prev].slice(0, MAX_SSE_ITEMS));
             break;
           }
 

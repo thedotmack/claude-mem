@@ -366,6 +366,15 @@ export class PaginationHelper {
     'project', 'memory_session_id', 'content_session_id', 'type',
   ]);
 
+  /** Allowed column names for SELECT clauses in paginate() — defense-in-depth */
+  private static readonly ALLOWED_SELECT_COLUMNS = new Set([
+    'id', 'memory_session_id', 'content_session_id', 'project', 'type', 'title',
+    'subtitle', 'narrative', 'text', 'facts', 'concepts', 'files_read',
+    'files_modified', 'prompt_number', 'created_at', 'created_at_epoch',
+    'request', 'investigated', 'learned', 'completed', 'next_steps',
+    'session_id', 'prompt_text', 'observation_count',
+  ]);
+
   /**
    * Generic pagination implementation (DRY)
    */
@@ -381,9 +390,17 @@ export class PaginationHelper {
       throw new Error(`Invalid table name: ${table}`);
     }
 
+    // Validate all column names against whitelist
+    const columnList = columns.split(',').map(c => c.trim());
+    for (const col of columnList) {
+      if (!PaginationHelper.ALLOWED_SELECT_COLUMNS.has(col)) {
+        throw new Error(`Invalid column name: ${col}`);
+      }
+    }
+
     const db = this.dbManager.getSessionStore().db;
 
-    let query = `SELECT ${columns} FROM ${table}`;
+    let query = `SELECT ${columnList.join(', ')} FROM ${table}`;
     const params: (string | number)[] = [];
     const conditions: string[] = [];
 
