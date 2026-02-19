@@ -23,7 +23,7 @@ const ansiConverter = new AnsiToHtml({
  */
 function sanitizeAnsiHtml(html: string): string {
   return html.replace(/<\/?[^>]+>/g, (tag) => {
-    if (/^<span\s+style="[^"]*"\s*>$/i.test(tag)) return tag;
+    if (/^<span(\s+(?:style|class)="[^"]*")+\s*>$/i.test(tag)) return tag;
     if (/^<\/span>$/i.test(tag)) return tag;
     // Strip any unexpected tag by escaping it
     return tag.replace(/</g, '&lt;').replace(/>/g, '&gt;');

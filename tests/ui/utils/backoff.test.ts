@@ -38,3 +38,27 @@ describe('calculateBackoffDelay', () => {
     expect(calculateBackoffDelay(-1, BASE, MAX, FACTOR, 0)).toBe(1500);
   });
 });
+
+describe('jitter', () => {
+  it('adds positive jitter within expected range', () => {
+    const results = Array.from({ length: 100 }, () =>
+      calculateBackoffDelay(0, 3000, 60000, 2, 0.25)
+    );
+    // All results should be >= base (3000) and <= base + base*jitter (3750)
+    for (const r of results) {
+      expect(r).toBeGreaterThanOrEqual(3000);
+      expect(r).toBeLessThanOrEqual(3750);
+    }
+    // At least some variation should exist
+    const unique = new Set(results);
+    expect(unique.size).toBeGreaterThan(1);
+  });
+
+  it('returns exact delay when jitter is 0', () => {
+    expect(calculateBackoffDelay(0, 3000, 60000, 2, 0)).toBe(3000);
+  });
+
+  it('returns exact delay when jitter is negative', () => {
+    expect(calculateBackoffDelay(0, 3000, 60000, 2, -0.5)).toBe(3000);
+  });
+});

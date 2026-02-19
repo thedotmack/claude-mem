@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Settings } from '../types';
 import { logger } from '../utils/logger';
 
@@ -21,26 +21,35 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
 
   // Fetch projects on mount
   useEffect(() => {
+    const controller = new AbortController();
     async function fetchProjects() {
       try {
-        const response = await fetch('/api/projects');
+        const response = await fetch('/api/projects', { signal: controller.signal });
         const data = await response.json() as { projects?: string[] };
         if (data.projects && data.projects.length > 0) {
           setProjects(data.projects);
-          setSelectedProject(data.projects[0]); // Default to first project
+          setSelectedProject(data.projects[0]);
         }
       } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
         logger.error('contextPreview', 'Failed to fetch projects');
       }
     }
     void fetchProjects();
+    return () => { controller.abort(); };
   }, []);
+
+  const refreshAbortRef = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
     if (!selectedProject) {
       setPreview('No project selected');
       return;
     }
+
+    refreshAbortRef.current?.abort();
+    const controller = new AbortController();
+    refreshAbortRef.current = controller;
 
     setIsLoading(true);
     setError(null);
@@ -50,8 +59,10 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
         project: selectedProject
       });
 
-      const response = await fetch(`/api/context/preview?${params}`);
+      const response = await fetch(`/api/context/preview?${params}`, { signal: controller.signal });
       const text = await response.text();
+
+      if (controller.signal.aborted) return;
 
       if (response.ok) {
         setPreview(text);
@@ -59,10 +70,13 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
         setError('Failed to load preview');
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       logger.error('contextPreview', 'Network error loading preview');
       setError('Unable to load preview. Check that the worker is running.');
     } finally {
-      setIsLoading(false);
+      if (!controller.signal.aborted) {
+        setIsLoading(false);
+      }
     }
   }, [selectedProject]);
 
@@ -71,7 +85,10 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     const timeout = setTimeout(() => {
       void refresh();
     }, 300);
-    return () => { clearTimeout(timeout); };
+    return () => {
+      clearTimeout(timeout);
+      refreshAbortRef.current?.abort();
+    };
   }, [settings, refresh]);
 
   return { preview, isLoading, error, refresh, projects, selectedProject, setSelectedProject };

@@ -105,7 +105,7 @@ const SessionRow = React.memo(function SessionRow({ session, isSelected, onSelec
   );
 });
 
-export function ActiveSessionRow({ entry, isSelected, onSelect }: {
+export const ActiveSessionRow = React.memo(function ActiveSessionRow({ entry, isSelected, onSelect }: {
   entry: ActiveSessionEntry;
   isSelected: boolean;
   onSelect: (id: number) => void;
@@ -134,7 +134,7 @@ export function ActiveSessionRow({ entry, isSelected, onSelect }: {
       </div>
     </div>
   );
-}
+});
 
 // ─────────────────────────────────────────────────────────
 // VirtualContent sub-component (above threshold)

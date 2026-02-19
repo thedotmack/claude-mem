@@ -78,23 +78,23 @@ export function useSSE() {
             }
             break;
 
-          case 'new_observation':
-            if (data.observation) {
-              setObservations(prev => [data.observation, ...prev]);
-            }
+          case 'new_observation': {
+            const obs = data.observation;
+            if (obs) setObservations(prev => [obs, ...prev]);
             break;
+          }
 
-          case 'new_summary':
-            if (data.summary) {
-              setSummaries(prev => [data.summary, ...prev]);
-            }
+          case 'new_summary': {
+            const sum = data.summary;
+            if (sum) setSummaries(prev => [sum, ...prev]);
             break;
+          }
 
-          case 'new_prompt':
-            if (data.prompt) {
-              setPrompts(prev => [data.prompt, ...prev]);
-            }
+          case 'new_prompt': {
+            const prompt = data.prompt;
+            if (prompt) setPrompts(prev => [prompt, ...prev]);
             break;
+          }
 
           case 'processing_status':
             if (typeof data.isProcessing === 'boolean') {

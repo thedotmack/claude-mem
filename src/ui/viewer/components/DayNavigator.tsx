@@ -143,7 +143,7 @@ export function DayNavigator({
   }, []);
 
   return (
-    <div className="day-navigator day-navigator__calendar-wrapper" data-testid="day-navigator">
+    <div className="day-navigator day-navigator__calendar-wrapper" data-testid="day-navigator" role="navigation" aria-label="Day navigation">
       <button
         className="day-navigator__btn"
         onClick={onPrev}
