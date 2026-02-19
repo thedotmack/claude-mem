@@ -126,11 +126,13 @@ export function CalendarPicker({
     };
 
     document.addEventListener('keydown', handleKeyDown);
-    // Use 'click' (not 'mousedown') so the event fires after the parent's
-    // onClick toggle — preventing the calendar from re-opening immediately
-    // when the user clicks the DayNavigator label to dismiss it.
-    document.addEventListener('click', handleClickOutside);
+    // Defer adding the click listener so the opening click (still propagating
+    // up the DOM) doesn't immediately trigger handleClickOutside.
+    const frameId = requestAnimationFrame(() => {
+      document.addEventListener('click', handleClickOutside);
+    });
     return () => {
+      cancelAnimationFrame(frameId);
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('click', handleClickOutside);
     };
