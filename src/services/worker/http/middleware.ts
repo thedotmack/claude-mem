@@ -29,7 +29,8 @@ function isStaticAsset(path: string): boolean {
  * @returns Array of middleware functions
  */
 export function createMiddleware(
-  summarizeRequestBody: (method: string, path: string, body: Record<string, unknown>) => string
+  summarizeRequestBody: (method: string, path: string, body: Record<string, unknown>) => string,
+  port = 37777,
 ): RequestHandler[] {
   const middlewares: RequestHandler[] = [];
 
@@ -37,7 +38,7 @@ export function createMiddleware(
   middlewares.push(express.json({ limit: '50mb' }));
 
   // CORS — restrict to localhost origins only
-  middlewares.push(cors({ origin: ['http://localhost:37777', 'http://127.0.0.1:37777'] }));
+  middlewares.push(cors({ origin: [`http://localhost:${String(port)}`, `http://127.0.0.1:${String(port)}`] }));
 
   // HTTP request/response logging
   middlewares.push((req: Request, res: Response, next: NextFunction) => {

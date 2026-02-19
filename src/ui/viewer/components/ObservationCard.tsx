@@ -41,7 +41,7 @@ export function stripProjectRoot(filePath: string): string {
   return parts.length > 3 ? parts.slice(-3).join('/') : filePath;
 }
 
-export function ObservationCard({ observation }: ObservationCardProps) {
+export const ObservationCard = React.memo(function ObservationCard({ observation }: ObservationCardProps) {
   const [expanded, setExpanded] = useState(false);
   const date = formatDate(observation.created_at_epoch);
 
@@ -137,4 +137,4 @@ export function ObservationCard({ observation }: ObservationCardProps) {
       </div>
     </div>
   );
-}
+});

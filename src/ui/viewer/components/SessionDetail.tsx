@@ -49,13 +49,16 @@ const VIRTUALIZATION_THRESHOLD = 30;
 
 function renderTimelineItem(item: TimelineItem): React.ReactNode {
   const key = `${item.itemType}-${String(item.id)}`;
+  const ariaLabel = item.itemType === 'observation'
+    ? `Observation: ${(item as Observation).title ?? 'Untitled'}`
+    : `Prompt #${String(item.id)}`;
   if (item.itemType === 'observation') {
-    return <ObservationCard key={key} observation={item} />;
+    return <div key={key} aria-label={ariaLabel}><ObservationCard observation={item} /></div>;
   }
   if (isTaskNotification(item)) {
-    return <TaskNotificationCard key={key} prompt={item} />;
+    return <div key={key} aria-label={ariaLabel}><TaskNotificationCard prompt={item} /></div>;
   }
-  return <PromptCard key={key} prompt={item} />;
+  return <div key={key} aria-label={ariaLabel}><PromptCard prompt={item} /></div>;
 }
 
 // ---------------------------------------------------------------------------

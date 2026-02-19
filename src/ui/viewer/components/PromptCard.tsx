@@ -14,9 +14,17 @@ export function PromptCard({ prompt }: PromptCardProps) {
 
   useEffect(() => {
     const el = contentRef.current;
-    if (el) {
+    if (!el) return;
+
+    const checkTruncation = () => {
       setIsTruncated(el.scrollHeight > el.clientHeight);
-    }
+    };
+    checkTruncation();
+
+    // Re-check on resize so truncation state updates when panel width changes
+    const observer = new ResizeObserver(checkTruncation);
+    observer.observe(el);
+    return () => { observer.disconnect(); };
   }, [prompt.prompt_text]);
 
   return (

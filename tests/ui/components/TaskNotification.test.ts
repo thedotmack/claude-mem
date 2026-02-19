@@ -350,7 +350,10 @@ describe('ObservationCard renders type badge with observation type', () => {
     const mod = await import(
       '../../../src/ui/viewer/components/ObservationCard.js'
     );
-    const fnSource = mod.ObservationCard.toString();
+    // React.memo wraps the function; the inner component is on .type
+    const component = mod.ObservationCard;
+    const fn = typeof component === 'function' ? component : component.type ?? component;
+    const fnSource = fn.toString();
     expect(fnSource).toContain('observation-card__type-badge');
   });
 
@@ -358,7 +361,9 @@ describe('ObservationCard renders type badge with observation type', () => {
     const mod = await import(
       '../../../src/ui/viewer/components/ObservationCard.js'
     );
-    const fnSource = mod.ObservationCard.toString();
+    const component = mod.ObservationCard;
+    const fn = typeof component === 'function' ? component : component.type ?? component;
+    const fnSource = fn.toString();
     // The badge should display the observation type
     expect(fnSource).toContain('observation.type');
   });

@@ -373,6 +373,8 @@ describe('ObservationCard module', () => {
 
   it('exports ObservationCard as a named export', async () => {
     const mod = await import('../../../src/ui/viewer/components/ObservationCard');
-    expect(typeof mod.ObservationCard).toBe('function');
+    // React.memo wraps the function as an object with $$typeof
+    expect(mod.ObservationCard).toBeDefined();
+    expect(typeof mod.ObservationCard).toMatch(/function|object/);
   });
 });
