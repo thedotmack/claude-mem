@@ -191,6 +191,28 @@ export interface TriageRecommendationsResult {
   assignmentMap: Record<string, number[]>;
 }
 
+export type EstimatedEffort = "small" | "medium" | "large";
+
+export interface ActionPlan {
+  itemNumber: number;
+  title: string;
+  category: CategoryCluster;
+  severity: SeverityBucket;
+  priority: PriorityBucket;
+  assignedTo: string;
+  summary: string;
+  likelyFiles: string[];
+  nextStep: string;
+  estimatedEffort: EstimatedEffort;
+}
+
+export interface ActionPlanReport {
+  plans: ActionPlan[];
+  byDeveloper: Record<string, ActionPlan[]>;
+  byCategory: Record<string, ActionPlan[]>;
+  bySeverity: Record<string, ActionPlan[]>;
+}
+
 export interface TriageResult {
   config: TriageConfig;
   ingestion: IngestionResult;
@@ -199,6 +221,7 @@ export interface TriageResult {
   categorized: CategorizedItem[];
   duplicateGroups: DuplicateGroup[];
   recommendations: TriageRecommendationsResult;
+  actionPlans?: ActionPlanReport;
 }
 
 export interface TriageReport {
