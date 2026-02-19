@@ -10,7 +10,7 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmSync } from 'fs';
 import { exec, execSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
@@ -424,6 +424,182 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
   }
 
   logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pidsToKill.length });
+}
+
+// Patterns that should be killed immediately at startup (no age gate)
+// These are child processes that should not outlive their parent worker
+const AGGRESSIVE_CLEANUP_PATTERNS = ['worker-service.cjs', 'chroma-mcp'];
+
+// Patterns that keep the age-gated threshold (may be legitimately running)
+const AGE_GATED_CLEANUP_PATTERNS = ['mcp-server.cjs'];
+
+/**
+ * Aggressive startup cleanup for orphaned claude-mem processes.
+ *
+ * Unlike cleanupOrphanedProcesses() which age-gates everything at 30 minutes,
+ * this function kills worker-service.cjs and chroma-mcp processes immediately
+ * (they should not outlive their parent worker). Only mcp-server.cjs keeps
+ * the age threshold since it may be legitimately running.
+ *
+ * Called once at daemon startup.
+ */
+export async function aggressiveStartupCleanup(): Promise<void> {
+  const isWindows = process.platform === 'win32';
+  const currentPid = process.pid;
+  const pidsToKill: number[] = [];
+  const allPatterns = [...AGGRESSIVE_CLEANUP_PATTERNS, ...AGE_GATED_CLEANUP_PATTERNS];
+
+  try {
+    if (isWindows) {
+      const patternConditions = allPatterns
+        .map(p => `$_.CommandLine -like '*${p}*'`)
+        .join(' -or ');
+
+      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { (${patternConditions}) -and $_.ProcessId -ne ${currentPid} } | Select-Object ProcessId, CommandLine, CreationDate | ConvertTo-Json"`;
+      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+
+      if (!stdout.trim() || stdout.trim() === 'null') {
+        logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Windows)');
+        return;
+      }
+
+      const processes = JSON.parse(stdout);
+      const processList = Array.isArray(processes) ? processes : [processes];
+      const now = Date.now();
+
+      for (const proc of processList) {
+        const pid = proc.ProcessId;
+        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+
+        const commandLine = proc.CommandLine || '';
+        const isAggressive = AGGRESSIVE_CLEANUP_PATTERNS.some(p => commandLine.includes(p));
+
+        if (isAggressive) {
+          // Kill immediately — no age check
+          pidsToKill.push(pid);
+          logger.debug('SYSTEM', 'Found orphaned process (aggressive)', { pid, commandLine: commandLine.substring(0, 80) });
+        } else {
+          // Age-gated: only kill if older than threshold
+          const creationMatch = proc.CreationDate?.match(/\/Date\((\d+)\)\//);
+          if (creationMatch) {
+            const creationTime = parseInt(creationMatch[1], 10);
+            const ageMinutes = (now - creationTime) / (1000 * 60);
+            if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+              pidsToKill.push(pid);
+              logger.debug('SYSTEM', 'Found orphaned process (age-gated)', { pid, ageMinutes: Math.round(ageMinutes) });
+            }
+          }
+        }
+      }
+    } else {
+      // Unix: Use ps with elapsed time
+      const patternRegex = allPatterns.join('|');
+      const { stdout } = await execAsync(
+        `ps -eo pid,etime,command | grep -E "${patternRegex}" | grep -v grep || true`
+      );
+
+      if (!stdout.trim()) {
+        logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Unix)');
+        return;
+      }
+
+      const lines = stdout.trim().split('\n');
+      for (const line of lines) {
+        const match = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
+        if (!match) continue;
+
+        const pid = parseInt(match[1], 10);
+        const etime = match[2];
+        const command = match[3];
+
+        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+
+        const isAggressive = AGGRESSIVE_CLEANUP_PATTERNS.some(p => command.includes(p));
+
+        if (isAggressive) {
+          // Kill immediately — no age check
+          pidsToKill.push(pid);
+          logger.debug('SYSTEM', 'Found orphaned process (aggressive)', { pid, command: command.substring(0, 80) });
+        } else {
+          // Age-gated: only kill if older than threshold
+          const ageMinutes = parseElapsedTime(etime);
+          if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+            pidsToKill.push(pid);
+            logger.debug('SYSTEM', 'Found orphaned process (age-gated)', { pid, ageMinutes, command: command.substring(0, 80) });
+          }
+        }
+      }
+    }
+  } catch (error) {
+    logger.error('SYSTEM', 'Failed to enumerate orphaned processes during aggressive cleanup', {}, error as Error);
+    return;
+  }
+
+  if (pidsToKill.length === 0) {
+    return;
+  }
+
+  logger.info('SYSTEM', 'Aggressive startup cleanup: killing orphaned processes', {
+    platform: isWindows ? 'Windows' : 'Unix',
+    count: pidsToKill.length,
+    pids: pidsToKill
+  });
+
+  if (isWindows) {
+    for (const pid of pidsToKill) {
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      try {
+        execSync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, stdio: 'ignore' });
+      } catch (error) {
+        logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, error as Error);
+      }
+    }
+  } else {
+    for (const pid of pidsToKill) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch (error) {
+        logger.debug('SYSTEM', 'Process already exited', { pid }, error as Error);
+      }
+    }
+  }
+
+  logger.info('SYSTEM', 'Aggressive startup cleanup complete', { count: pidsToKill.length });
+}
+
+const CHROMA_MIGRATION_MARKER_FILENAME = '.chroma-cleaned-v10.3';
+
+/**
+ * One-time chroma data wipe for users upgrading from versions with duplicate
+ * worker bugs that could corrupt chroma data. Since chroma is always rebuildable
+ * from SQLite (via backfillAllProjects), this is safe.
+ *
+ * Checks for a marker file. If absent, wipes ~/.claude-mem/chroma/ and writes
+ * the marker. If present, skips. Idempotent.
+ *
+ * @param dataDirectory - Override for DATA_DIR (used in tests)
+ */
+export function runOneTimeChromaMigration(dataDirectory?: string): void {
+  const effectiveDataDir = dataDirectory ?? DATA_DIR;
+  const markerPath = path.join(effectiveDataDir, CHROMA_MIGRATION_MARKER_FILENAME);
+  const chromaDir = path.join(effectiveDataDir, 'chroma');
+
+  if (existsSync(markerPath)) {
+    logger.debug('SYSTEM', 'Chroma migration marker exists, skipping wipe');
+    return;
+  }
+
+  logger.warn('SYSTEM', 'Running one-time chroma data wipe (upgrade from pre-v10.3)', { chromaDir });
+
+  if (existsSync(chromaDir)) {
+    rmSync(chromaDir, { recursive: true, force: true });
+    logger.info('SYSTEM', 'Chroma data directory removed', { chromaDir });
+  }
+
+  // Write marker file to prevent future wipes
+  mkdirSync(effectiveDataDir, { recursive: true });
+  writeFileSync(markerPath, new Date().toISOString());
+  logger.info('SYSTEM', 'Chroma migration marker written', { markerPath });
 }
 
 /**

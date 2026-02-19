@@ -69,8 +69,10 @@ import {
   readPidFile,
   removePidFile,
   getPlatformTimeout,
-  cleanupOrphanedProcesses,
+  aggressiveStartupCleanup,
+  runOneTimeChromaMigration,
   cleanStalePidFile,
+  isProcessAlive,
   spawnDaemon,
   createSignalHandler
 } from './infrastructure/ProcessManager.js';
@@ -367,7 +369,7 @@ export class WorkerService {
    */
   private async initializeBackground(): Promise<void> {
     try {
-      await cleanupOrphanedProcesses();
+      await aggressiveStartupCleanup();
 
       // Load mode configuration
       const { ModeManager } = await import('./domain/ModeManager.js');
@@ -375,6 +377,12 @@ export class WorkerService {
       const { USER_SETTINGS_PATH } = await import('../shared/paths.js');
 
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+
+      // One-time chroma wipe for users upgrading from versions with duplicate worker bugs.
+      // Only runs in local mode (chroma is local-only). Backfill at line ~414 rebuilds from SQLite.
+      if (settings.CLAUDE_MEM_MODE === 'local' || !settings.CLAUDE_MEM_MODE) {
+        runOneTimeChromaMigration();
+      }
 
       // Initialize ChromaMcpManager (lazy - connects on first use via ChromaSync)
       this.chromaMcpManager = ChromaMcpManager.getInstance();
@@ -1097,6 +1105,28 @@ async function main() {
 
     case '--daemon':
     default: {
+      // GUARD 1: Refuse to start if another worker is already alive (PID check).
+      // Instant check (kill -0) — no HTTP dependency.
+      const existingPidInfo = readPidFile();
+      if (existingPidInfo && isProcessAlive(existingPidInfo.pid)) {
+        logger.info('SYSTEM', 'Worker already running (PID alive), refusing to start duplicate', {
+          existingPid: existingPidInfo.pid,
+          existingPort: existingPidInfo.port,
+          startedAt: existingPidInfo.startedAt
+        });
+        process.exit(0);
+      }
+
+      // GUARD 2: Refuse to start if the port is already bound.
+      // Catches the race where two daemons start simultaneously before
+      // either writes a PID file. Must run BEFORE constructing WorkerService
+      // because the constructor registers signal handlers and timers that
+      // prevent the process from exiting even if listen() fails later.
+      if (await isPortInUse(port)) {
+        logger.info('SYSTEM', 'Port already in use, refusing to start duplicate', { port });
+        process.exit(0);
+      }
+
       // Prevent daemon from dying silently on unhandled errors.
       // The HTTP server can continue serving even if a background task throws.
       process.on('unhandledRejection', (reason) => {
