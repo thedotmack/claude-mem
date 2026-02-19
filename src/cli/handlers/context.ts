@@ -39,48 +39,49 @@ export const contextHandler: EventHandler = {
     // Worker service has its own timeouts, so client-side timeout is redundant
     const authToken = ensureAuthToken();
     const authHeaders = { 'Authorization': 'Bearer ' + authToken };
+    const colorUrl = `${url}&colors=true`;
+    const emptyContextResult: HookResult = {
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      exitCode: HOOK_EXIT_CODES.SUCCESS
+    };
+
+    let response: Response;
+    let colorResponse: Response | null;
     try {
       // Fetch both markdown (for Claude context) and colored (for user display) truly in parallel
-      const colorUrl = `${url}&colors=true`;
-      const [response, colorResponse] = await Promise.all([
+      [response, colorResponse] = await Promise.all([
         fetch(url, { headers: authHeaders }),
         fetch(colorUrl, { headers: authHeaders }).catch(() => null)
       ]);
-
-      if (!response.ok) {
-        // Log but don't throw — context fetch failure should not block session start
-        logger.warn('HOOK', 'Context generation failed, returning empty', { status: response.status });
-        return {
-          hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
-          exitCode: HOOK_EXIT_CODES.SUCCESS
-        };
-      }
-
-      const [contextResult, colorResult] = await Promise.all([
-        response.text(),
-        colorResponse?.ok ? colorResponse.text() : Promise.resolve('')
-      ]);
-
-      const additionalContext = contextResult.trim();
-      const coloredTimeline = colorResult.trim();
-      const systemMessage = coloredTimeline
-        ? `${coloredTimeline}\n\nView Observations Live @ http://localhost:${port}`
-        : undefined;
-
-      return {
-        hookSpecificOutput: {
-          hookEventName: 'SessionStart',
-          additionalContext
-        },
-        systemMessage
-      };
     } catch (error) {
       // Worker unreachable — return empty context gracefully
       logger.warn('HOOK', 'Context fetch error, returning empty', { error: error instanceof Error ? error.message : String(error) });
-      return {
-        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
-        exitCode: HOOK_EXIT_CODES.SUCCESS
-      };
+      return emptyContextResult;
     }
+
+    if (!response.ok) {
+      // Log but don't throw — context fetch failure should not block session start
+      logger.warn('HOOK', 'Context generation failed, returning empty', { status: response.status });
+      return emptyContextResult;
+    }
+
+    const [contextResult, colorResult] = await Promise.all([
+      response.text(),
+      colorResponse?.ok ? colorResponse.text() : Promise.resolve('')
+    ]);
+
+    const additionalContext = contextResult.trim();
+    const coloredTimeline = colorResult.trim();
+    const systemMessage = coloredTimeline
+      ? `${coloredTimeline}\n\nView Observations Live @ http://localhost:${port}`
+      : undefined;
+
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext
+      },
+      systemMessage
+    };
   }
 };

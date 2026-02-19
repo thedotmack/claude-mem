@@ -51,33 +51,34 @@ export const observationHandler: EventHandler = {
 
     // Send to worker - worker handles privacy check and database operations
     const authToken = ensureAuthToken();
+    const requestBody = JSON.stringify({
+      contentSessionId: sessionId,
+      tool_name: toolName,
+      tool_input: toolInput,
+      tool_response: toolResponse,
+      cwd
+    });
+
+    let response: Response;
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
+      response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
-        body: JSON.stringify({
-          contentSessionId: sessionId,
-          tool_name: toolName,
-          tool_input: toolInput,
-          tool_response: toolResponse,
-          cwd
-        })
-        // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
+        body: requestBody
       });
-
-      if (!response.ok) {
-        // Log but don't throw — observation storage failure should not block tool use
-        logger.warn('HOOK', 'Observation storage failed, skipping', { status: response.status, toolName });
-        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-      }
-
-      logger.debug('HOOK', 'Observation sent successfully', { toolName });
     } catch (error) {
       // Worker unreachable — skip observation gracefully
       logger.warn('HOOK', 'Observation fetch error, skipping', { error: error instanceof Error ? error.message : String(error) });
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
+    if (!response.ok) {
+      // Log but don't throw — observation storage failure should not block tool use
+      logger.warn('HOOK', 'Observation storage failed, skipping', { status: response.status, toolName });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    logger.debug('HOOK', 'Observation sent successfully', { toolName });
     return { continue: true, suppressOutput: true };
   }
 };

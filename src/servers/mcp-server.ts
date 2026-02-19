@@ -54,18 +54,19 @@ async function callWorkerAPI(
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint, params });
 
-  try {
-    const authToken = ensureAuthToken();
-    const searchParams = new URLSearchParams();
+  const authToken = ensureAuthToken();
+  const searchParams = new URLSearchParams();
 
-    // Convert params to query string
-    for (const [key, value] of Object.entries(params)) {
-      if (value !== undefined && value !== null) {
-        searchParams.append(key, String(value));
-      }
+  // Convert params to query string
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) {
+      searchParams.append(key, String(value));
     }
+  }
 
-    const url = `${WORKER_BASE_URL}${endpoint}?${searchParams}`;
+  const url = `${WORKER_BASE_URL}${endpoint}?${searchParams}`;
+
+  try {
     const response = await fetch(url, {
       headers: { 'Authorization': 'Bearer ' + authToken }
     });
@@ -76,10 +77,7 @@ async function callWorkerAPI(
     }
 
     const data = await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
-
     logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
-
-    // Worker returns { content: [...] } format directly
     return data;
   } catch (error) {
     logger.error('SYSTEM', '← Worker API error', { endpoint }, error as Error);
@@ -102,17 +100,18 @@ async function callWorkerAPIPost(
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('HTTP', 'Worker API request (POST)', undefined, { endpoint });
 
+  const authToken = ensureAuthToken();
+  const url = `${WORKER_BASE_URL}${endpoint}`;
+  const requestBody = JSON.stringify(body);
+
+  const fetchOptions = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+    body: requestBody
+  };
+
   try {
-    const authToken = ensureAuthToken();
-    const url = `${WORKER_BASE_URL}${endpoint}`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + authToken
-      },
-      body: JSON.stringify(body)
-    });
+    const response = await fetch(url, fetchOptions);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -120,23 +119,12 @@ async function callWorkerAPIPost(
     }
 
     const data = await response.json();
-
     logger.debug('HTTP', 'Worker API success (POST)', undefined, { endpoint });
-
-    // Wrap raw data in MCP format
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify(data, null, 2)
-      }]
-    };
+    return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
   } catch (error) {
     logger.error('HTTP', 'Worker API error (POST)', { endpoint }, error as Error);
     return {
-      content: [{
-        type: 'text' as const,
-        text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}`
-      }],
+      content: [{ type: 'text' as const, text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}` }],
       isError: true
     };
   }

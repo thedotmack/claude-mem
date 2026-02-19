@@ -35,32 +35,16 @@ export class SessionQueueProcessor {
 
     while (!signal.aborted) {
       try {
-        // Atomically claim next pending message (marks as 'processing')
-        // Self-heals any stale processing messages before claiming
         const persistentMessage = this.store.claimNextMessage(sessionDbId);
 
         if (persistentMessage) {
-          // Reset activity time when we successfully yield a message
           lastActivityTime = Date.now();
-          // Yield the message for processing (it's marked as 'processing' in DB)
           yield this.toPendingMessageWithId(persistentMessage);
         } else {
-          // Queue empty - wait for wake-up event or timeout
           const receivedMessage = await this.waitForMessage(signal, IDLE_TIMEOUT_MS);
-
           if (!receivedMessage && !signal.aborted) {
-            // Timeout occurred - check if we've been idle too long
-            const idleDuration = Date.now() - lastActivityTime;
-            if (idleDuration >= IDLE_TIMEOUT_MS) {
-              logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', {
-                sessionDbId,
-                idleDurationMs: idleDuration,
-                thresholdMs: IDLE_TIMEOUT_MS
-              });
-              onIdleTimeout?.();
-              return;
-            }
-            // Reset timer on spurious wakeup - queue is empty but duration check failed
+            const shouldExit = this.checkIdleTimeout(lastActivityTime, sessionDbId, onIdleTimeout);
+            if (shouldExit) return;
             lastActivityTime = Date.now();
           }
         }
@@ -73,6 +57,28 @@ export class SessionQueueProcessor {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
+  }
+
+  /**
+   * Check if idle timeout has been reached.
+   * @returns true if the iterator should exit
+   */
+  private checkIdleTimeout(
+    lastActivityTime: number,
+    sessionDbId: number,
+    onIdleTimeout: (() => void) | undefined
+  ): boolean {
+    const idleDuration = Date.now() - lastActivityTime;
+    if (idleDuration >= IDLE_TIMEOUT_MS) {
+      logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', {
+        sessionDbId,
+        idleDurationMs: idleDuration,
+        thresholdMs: IDLE_TIMEOUT_MS
+      });
+      onIdleTimeout?.();
+      return true;
+    }
+    return false;
   }
 
   private toPendingMessageWithId(msg: PersistentPendingMessage): PendingMessageWithId {

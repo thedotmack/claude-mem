@@ -412,39 +412,7 @@ export async function updateFolderClaudeMdFiles(
   // Process each folder
   for (const folderPath of folderPaths) {
     try {
-      // Fetch timeline via existing API
-      const host = getWorkerHost();
-      const response = await fetch(
-        `http://${host}:${port}/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
-      );
-
-      if (!response.ok) {
-        logger.error('FOLDER_INDEX', 'Failed to fetch timeline', { folderPath, status: response.status });
-        continue;
-      }
-
-      const result = await response.json();
-      if (!result.content?.[0]?.text) {
-        logger.debug('FOLDER_INDEX', 'No content for folder', { folderPath });
-        continue;
-      }
-
-      const formatted = formatTimelineForClaudeMd(result.content[0].text);
-
-      // Fix for #794: Don't create new CLAUDE.md files if there's no activity
-      // But update existing ones to show "No recent activity" if they already exist
-      const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
-      const hasNoActivity = formatted.includes('*No recent activity*');
-      const fileExists = existsSync(claudeMdPath);
-
-      if (hasNoActivity && !fileExists) {
-        logger.debug('FOLDER_INDEX', 'Skipping empty CLAUDE.md creation', { folderPath });
-        continue;
-      }
-
-      writeClaudeMdToFolder(folderPath, formatted);
-
-      logger.debug('FOLDER_INDEX', 'Updated CLAUDE.md', { folderPath });
+      await fetchAndWriteFolderClaudeMd(folderPath, project, port, limit);
     } catch (error) {
       // Fire-and-forget: log warning but don't fail
       if (error instanceof Error) {
@@ -456,4 +424,48 @@ export async function updateFolderClaudeMdFiles(
       }
     }
   }
+}
+
+/**
+ * Fetch timeline for a single folder from the worker API,
+ * format it, and write CLAUDE.md if appropriate.
+ * Throws on network/IO errors so the caller can handle per-folder failures.
+ */
+async function fetchAndWriteFolderClaudeMd(
+  folderPath: string,
+  project: string,
+  port: number,
+  limit: number
+): Promise<void> {
+  const host = getWorkerHost();
+  const response = await fetch(
+    `http://${host}:${port}/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
+  );
+
+  if (!response.ok) {
+    logger.error('FOLDER_INDEX', 'Failed to fetch timeline', { folderPath, status: response.status });
+    return;
+  }
+
+  const result = await response.json();
+  if (!result.content?.[0]?.text) {
+    logger.debug('FOLDER_INDEX', 'No content for folder', { folderPath });
+    return;
+  }
+
+  const formatted = formatTimelineForClaudeMd(result.content[0].text);
+
+  // Fix for #794: Don't create new CLAUDE.md files if there's no activity
+  // But update existing ones to show "No recent activity" if they already exist
+  const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
+  const hasNoActivity = formatted.includes('*No recent activity*');
+  const fileExists = existsSync(claudeMdPath);
+
+  if (hasNoActivity && !fileExists) {
+    logger.debug('FOLDER_INDEX', 'Skipping empty CLAUDE.md creation', { folderPath });
+    return;
+  }
+
+  writeClaudeMdToFolder(folderPath, formatted);
+  logger.debug('FOLDER_INDEX', 'Updated CLAUDE.md', { folderPath });
 }

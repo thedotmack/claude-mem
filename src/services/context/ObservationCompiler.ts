@@ -150,31 +150,33 @@ export function extractPriorMessages(transcriptPath: string): PriorMessages {
     let lastAssistantMessage = '';
 
     for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const line = lines[i];
-        if (!line.includes('"type":"assistant"')) {
-          continue;
-        }
+      const line = lines[i];
+      if (!line.includes('"type":"assistant"')) {
+        continue;
+      }
 
-        const entry = JSON.parse(line);
-        if (entry.type === 'assistant' && entry.message?.content && Array.isArray(entry.message.content)) {
-          let text = '';
-          for (const block of entry.message.content) {
-            if (block.type === 'text') {
-              text += block.text;
-            }
-          }
-          text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
-          if (text) {
-            lastAssistantMessage = text;
-            break;
-          }
-        }
+      let entry: any;
+      try {
+        entry = JSON.parse(line);
       } catch (parseError) {
         if (parseError instanceof Error) {
           logger.debug('PARSER', 'Skipping malformed transcript line', { lineIndex: i }, parseError);
         }
         continue;
+      }
+
+      if (entry.type === 'assistant' && entry.message?.content && Array.isArray(entry.message.content)) {
+        let text = '';
+        for (const block of entry.message.content) {
+          if (block.type === 'text') {
+            text += block.text;
+          }
+        }
+        text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
+        if (text) {
+          lastAssistantMessage = text;
+          break;
+        }
       }
     }
 

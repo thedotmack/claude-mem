@@ -73,27 +73,32 @@ function estimateTokens(obs: ObservationRow): number {
  * Get tracked folders using git ls-files.
  * Respects .gitignore and only returns folders within the project.
  */
+function collectFoldersFromGitFiles(output: string, workingDir: string, folders: Set<string>): void {
+  const files = output.trim().split('\n').filter(f => f);
+
+  for (const file of files) {
+    const absPath = path.join(workingDir, file);
+    let dir = path.dirname(absPath);
+
+    while (dir.length > workingDir.length && dir.startsWith(workingDir)) {
+      folders.add(dir);
+      dir = path.dirname(dir);
+    }
+  }
+}
+
 function getTrackedFolders(workingDir: string): Set<string> {
   const folders = new Set<string>();
 
+  const execOptions = {
+    cwd: workingDir,
+    encoding: 'utf-8' as const,
+    maxBuffer: 50 * 1024 * 1024
+  };
+
   try {
-    const output = execSync('git ls-files', {
-      cwd: workingDir,
-      encoding: 'utf-8',
-      maxBuffer: 50 * 1024 * 1024
-    });
-
-    const files = output.trim().split('\n').filter(f => f);
-
-    for (const file of files) {
-      const absPath = path.join(workingDir, file);
-      let dir = path.dirname(absPath);
-
-      while (dir.length > workingDir.length && dir.startsWith(workingDir)) {
-        folders.add(dir);
-        dir = path.dirname(dir);
-      }
-    }
+    const output = execSync('git ls-files', execOptions);
+    collectFoldersFromGitFiles(output, workingDir, folders);
   } catch (error) {
     if (error instanceof Error) {
       logger.warn('CLAUDE_MD', 'git ls-files failed, falling back to directory walk', { error: String(error) });
@@ -325,31 +330,30 @@ function regenerateFolder(
   workingDir: string,
   observationLimit: number
 ): { success: boolean; observationCount: number; error?: string } {
+  if (!existsSync(absoluteFolder)) {
+    return { success: false, observationCount: 0, error: 'Folder no longer exists' };
+  }
+
+  // Validate folder is within project root (prevent path traversal)
+  const resolvedFolder = path.resolve(absoluteFolder);
+  const resolvedWorkingDir = path.resolve(workingDir);
+  if (!resolvedFolder.startsWith(resolvedWorkingDir + path.sep)) {
+    return { success: false, observationCount: 0, error: 'Path escapes project root' };
+  }
+
+  const observations = findObservationsByFolder(db, relativeFolder, project, observationLimit);
+
+  if (observations.length === 0) {
+    return { success: false, observationCount: 0, error: 'No observations for folder' };
+  }
+
+  if (dryRun) {
+    return { success: true, observationCount: observations.length };
+  }
+
   try {
-    if (!existsSync(absoluteFolder)) {
-      return { success: false, observationCount: 0, error: 'Folder no longer exists' };
-    }
-
-    // Validate folder is within project root (prevent path traversal)
-    const resolvedFolder = path.resolve(absoluteFolder);
-    const resolvedWorkingDir = path.resolve(workingDir);
-    if (!resolvedFolder.startsWith(resolvedWorkingDir + path.sep)) {
-      return { success: false, observationCount: 0, error: 'Path escapes project root' };
-    }
-
-    const observations = findObservationsByFolder(db, relativeFolder, project, observationLimit);
-
-    if (observations.length === 0) {
-      return { success: false, observationCount: 0, error: 'No observations for folder' };
-    }
-
-    if (dryRun) {
-      return { success: true, observationCount: observations.length };
-    }
-
     const formatted = formatObservationsForClaudeMd(observations, relativeFolder);
     writeClaudeMdToFolder(absoluteFolder, formatted);
-
     return { success: true, observationCount: observations.length };
   } catch (error) {
     if (error instanceof Error) {
@@ -365,80 +369,81 @@ function regenerateFolder(
  * @param dryRun - If true, only report what would be done without writing files
  * @returns Exit code (0 for success, 1 for error)
  */
+function processAllFolders(
+  db: Database,
+  foldersArray: string[],
+  workingDir: string,
+  project: string,
+  dryRun: boolean,
+  observationLimit: number
+): { successCount: number; skipCount: number; errorCount: number } {
+  let successCount = 0;
+  let skipCount = 0;
+  let errorCount = 0;
+
+  for (const absoluteFolder of foldersArray) {
+    const relativeFolder = path.relative(workingDir, absoluteFolder);
+
+    const result = regenerateFolder(
+      db, absoluteFolder, relativeFolder, project, dryRun, workingDir, observationLimit
+    );
+
+    if (result.success) {
+      logger.debug('CLAUDE_MD', `Processed folder: ${relativeFolder}`, {
+        observationCount: result.observationCount
+      });
+      successCount++;
+    } else if (result.error?.includes('No observations')) {
+      skipCount++;
+    } else {
+      logger.warn('CLAUDE_MD', `Error processing folder: ${relativeFolder}`, {
+        error: result.error
+      });
+      errorCount++;
+    }
+  }
+
+  return { successCount, skipCount, errorCount };
+}
+
 export async function generateClaudeMd(dryRun: boolean): Promise<number> {
+  const workingDir = process.cwd();
+  const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
+  const observationLimit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
+
+  logger.info('CLAUDE_MD', 'Starting CLAUDE.md generation', {
+    workingDir, dryRun, observationLimit
+  });
+
+  const project = path.basename(workingDir);
+  const trackedFolders = getTrackedFolders(workingDir);
+
+  if (trackedFolders.size === 0) {
+    logger.info('CLAUDE_MD', 'No folders found in project');
+    return 0;
+  }
+
+  logger.info('CLAUDE_MD', `Found ${trackedFolders.size} folders in project`);
+
+  if (!existsSync(DB_PATH)) {
+    logger.info('CLAUDE_MD', 'Database not found, no observations to process');
+    return 0;
+  }
+
+  let foldersArray: string[];
+  let successCount: number;
+  let skipCount: number;
+  let errorCount: number;
+
   try {
-    const workingDir = process.cwd();
-    const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
-    const observationLimit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
-
-    logger.info('CLAUDE_MD', 'Starting CLAUDE.md generation', {
-      workingDir,
-      dryRun,
-      observationLimit
-    });
-
-    const project = path.basename(workingDir);
-    const trackedFolders = getTrackedFolders(workingDir);
-
-    if (trackedFolders.size === 0) {
-      logger.info('CLAUDE_MD', 'No folders found in project');
-      return 0;
-    }
-
-    logger.info('CLAUDE_MD', `Found ${trackedFolders.size} folders in project`);
-
-    if (!existsSync(DB_PATH)) {
-      logger.info('CLAUDE_MD', 'Database not found, no observations to process');
-      return 0;
-    }
-
     const db = new Database(DB_PATH, { readonly: true, create: false });
+    foldersArray = Array.from(trackedFolders).sort();
 
-    let successCount = 0;
-    let skipCount = 0;
-    let errorCount = 0;
-
-    const foldersArray = Array.from(trackedFolders).sort();
-
-    for (const absoluteFolder of foldersArray) {
-      const relativeFolder = path.relative(workingDir, absoluteFolder);
-
-      const result = regenerateFolder(
-        db,
-        absoluteFolder,
-        relativeFolder,
-        project,
-        dryRun,
-        workingDir,
-        observationLimit
-      );
-
-      if (result.success) {
-        logger.debug('CLAUDE_MD', `Processed folder: ${relativeFolder}`, {
-          observationCount: result.observationCount
-        });
-        successCount++;
-      } else if (result.error?.includes('No observations')) {
-        skipCount++;
-      } else {
-        logger.warn('CLAUDE_MD', `Error processing folder: ${relativeFolder}`, {
-          error: result.error
-        });
-        errorCount++;
-      }
-    }
+    ({ successCount, skipCount, errorCount } = processAllFolders(
+      db, foldersArray, workingDir, project, dryRun, observationLimit
+    ));
 
     db.close();
-
-    logger.info('CLAUDE_MD', 'CLAUDE.md generation complete', {
-      totalFolders: foldersArray.length,
-      withObservations: successCount,
-      noObservations: skipCount,
-      errors: errorCount,
-      dryRun
-    });
-
-    return 0;
   } catch (error) {
     if (error instanceof Error) {
       logger.error('CLAUDE_MD', 'Fatal error during CLAUDE.md generation', {
@@ -447,6 +452,16 @@ export async function generateClaudeMd(dryRun: boolean): Promise<number> {
     }
     return 1;
   }
+
+  logger.info('CLAUDE_MD', 'CLAUDE.md generation complete', {
+    totalFolders: foldersArray.length,
+    withObservations: successCount,
+    noObservations: skipCount,
+    errors: errorCount,
+    dryRun
+  });
+
+  return 0;
 }
 
 /**
@@ -460,102 +475,94 @@ export async function generateClaudeMd(dryRun: boolean): Promise<number> {
  * @param dryRun - If true, only report what would be done without modifying files
  * @returns Exit code (0 for success, 1 for error)
  */
-export async function cleanClaudeMd(dryRun: boolean): Promise<number> {
+const CLEANUP_IGNORE_PATTERNS = [
+  'node_modules', '.git', '.next', 'dist', 'build', '.cache',
+  '__pycache__', '.venv', 'venv', '.idea', '.vscode', 'coverage',
+  '.claude-mem', '.open-next', '.turbo'
+];
+
+function findClaudeMdFilesWithContext(dir: string, filesToProcess: string[]): void {
   try {
-    const workingDir = process.cwd();
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
 
-    logger.info('CLAUDE_MD', 'Starting CLAUDE.md cleanup', {
-      workingDir,
-      dryRun
-    });
-
-    const filesToProcess: string[] = [];
-
-    function walkForClaudeMd(dir: string): void {
-      const ignorePatterns = [
-        'node_modules', '.git', '.next', 'dist', 'build', '.cache',
-        '__pycache__', '.venv', 'venv', '.idea', '.vscode', 'coverage',
-        '.claude-mem', '.open-next', '.turbo'
-      ];
-
-      try {
-        const entries = readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-
-          if (entry.isDirectory()) {
-            if (!ignorePatterns.includes(entry.name)) {
-              walkForClaudeMd(fullPath);
-            }
-          } else if (entry.name === 'CLAUDE.md') {
-            try {
-              const content = readFileSync(fullPath, 'utf-8');
-              if (content.includes('<claude-mem-context>')) {
-                filesToProcess.push(fullPath);
-              }
-            } catch {
-              // Skip files we can't read
-            }
-          }
+      if (entry.isDirectory()) {
+        if (!CLEANUP_IGNORE_PATTERNS.includes(entry.name)) {
+          findClaudeMdFilesWithContext(fullPath, filesToProcess);
         }
-      } catch {
-        // Ignore permission errors
+      } else if (entry.name === 'CLAUDE.md') {
+        try {
+          const content = readFileSync(fullPath, 'utf-8');
+          if (content.includes('<claude-mem-context>')) {
+            filesToProcess.push(fullPath);
+          }
+        } catch {
+          // Skip files we can't read
+        }
       }
     }
-
-    walkForClaudeMd(workingDir);
-
-    if (filesToProcess.length === 0) {
-      logger.info('CLAUDE_MD', 'No CLAUDE.md files with auto-generated content found');
-      return 0;
-    }
-
-    logger.info('CLAUDE_MD', `Found ${filesToProcess.length} CLAUDE.md files with auto-generated content`);
-
-    let deletedCount = 0;
-    let cleanedCount = 0;
-    let errorCount = 0;
-
-    for (const file of filesToProcess) {
-      const relativePath = path.relative(workingDir, file);
-
-      try {
-        const content = readFileSync(file, 'utf-8');
-        const stripped = content.replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '').trim();
-
-        if (stripped === '') {
-          if (!dryRun) {
-            unlinkSync(file);
-          }
-          logger.debug('CLAUDE_MD', `${dryRun ? '[DRY-RUN] Would delete' : 'Deleted'} (empty): ${relativePath}`);
-          deletedCount++;
-        } else {
-          if (!dryRun) {
-            writeFileSync(file, stripped);
-          }
-          logger.debug('CLAUDE_MD', `${dryRun ? '[DRY-RUN] Would clean' : 'Cleaned'}: ${relativePath}`);
-          cleanedCount++;
-        }
-      } catch (error) {
-        if (error instanceof Error) {
-          logger.warn('CLAUDE_MD', `Error processing ${relativePath}`, { error: String(error) });
-        }
-        errorCount++;
-      }
-    }
-
-    logger.info('CLAUDE_MD', 'CLAUDE.md cleanup complete', {
-      deleted: deletedCount,
-      cleaned: cleanedCount,
-      errors: errorCount,
-      dryRun
-    });
-
-    return 0;
-  } catch (error) {
-    logger.error('CLAUDE_MD', 'Fatal error during CLAUDE.md cleanup', {
-      error: String(error)
-    });
-    return 1;
+  } catch {
+    // Ignore permission errors
   }
+}
+
+function cleanSingleClaudeMdFile(
+  file: string,
+  relativePath: string,
+  dryRun: boolean
+): 'deleted' | 'cleaned' {
+  const content = readFileSync(file, 'utf-8');
+  const stripped = content.replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '').trim();
+
+  if (stripped === '') {
+    if (!dryRun) unlinkSync(file);
+    logger.debug('CLAUDE_MD', `${dryRun ? '[DRY-RUN] Would delete' : 'Deleted'} (empty): ${relativePath}`);
+    return 'deleted';
+  }
+
+  if (!dryRun) writeFileSync(file, stripped);
+  logger.debug('CLAUDE_MD', `${dryRun ? '[DRY-RUN] Would clean' : 'Cleaned'}: ${relativePath}`);
+  return 'cleaned';
+}
+
+export async function cleanClaudeMd(dryRun: boolean): Promise<number> {
+  const workingDir = process.cwd();
+
+  logger.info('CLAUDE_MD', 'Starting CLAUDE.md cleanup', { workingDir, dryRun });
+
+  const filesToProcess: string[] = [];
+  findClaudeMdFilesWithContext(workingDir, filesToProcess);
+
+  if (filesToProcess.length === 0) {
+    logger.info('CLAUDE_MD', 'No CLAUDE.md files with auto-generated content found');
+    return 0;
+  }
+
+  logger.info('CLAUDE_MD', `Found ${filesToProcess.length} CLAUDE.md files with auto-generated content`);
+
+  let deletedCount = 0;
+  let cleanedCount = 0;
+  let errorCount = 0;
+
+  for (const file of filesToProcess) {
+    const relativePath = path.relative(workingDir, file);
+
+    try {
+      const result = cleanSingleClaudeMdFile(file, relativePath, dryRun);
+      if (result === 'deleted') deletedCount++;
+      else cleanedCount++;
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.warn('CLAUDE_MD', `Error processing ${relativePath}`, { error: String(error) });
+      }
+      errorCount++;
+    }
+  }
+
+  logger.info('CLAUDE_MD', 'CLAUDE.md cleanup complete', {
+    deleted: deletedCount, cleaned: cleanedCount, errors: errorCount, dryRun
+  });
+
+  return 0;
 }

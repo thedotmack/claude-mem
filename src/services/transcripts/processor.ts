@@ -356,23 +356,24 @@ export class TranscriptEventProcessor {
     const port = getWorkerPort();
 
     const contextAuthToken = ensureAuthToken();
+    const contextUrl = `http://127.0.0.1:${port}/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
+    const headers = { 'Authorization': 'Bearer ' + contextAuthToken };
+    const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
+
+    let content: string;
     try {
-      const response = await fetch(
-        `http://127.0.0.1:${port}/api/context/inject?projects=${encodeURIComponent(projectsParam)}`,
-        { headers: { 'Authorization': 'Bearer ' + contextAuthToken } }
-      );
+      const response = await fetch(contextUrl, { headers });
       if (!response.ok) return;
-
-      const content = (await response.text()).trim();
-      if (!content) return;
-
-      const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
-      writeAgentsMd(agentsPath, content);
-      logger.debug('TRANSCRIPT', 'Updated AGENTS.md context', { agentsPath, watch: watch.name });
+      content = (await response.text()).trim();
     } catch (error) {
       logger.warn('TRANSCRIPT', 'Failed to update AGENTS.md context', {
         error: error instanceof Error ? error.message : String(error)
       });
+      return;
     }
+
+    if (!content) return;
+    writeAgentsMd(agentsPath, content);
+    logger.debug('TRANSCRIPT', 'Updated AGENTS.md context', { agentsPath, watch: watch.name });
   }
 }

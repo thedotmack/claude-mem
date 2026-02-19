@@ -149,29 +149,31 @@ async function getWorkerVersion(): Promise<string> {
  * Skips comparison when either version is 'unknown' (fix #1042 — avoids restart loops).
  */
 async function checkWorkerVersion(): Promise<void> {
-  try {
-    const pluginVersion = getPluginVersion();
+  let pluginVersion: string;
+  let workerVersion: string;
 
+  try {
+    pluginVersion = getPluginVersion();
     // Skip version check if plugin version couldn't be read (shutdown race)
     if (pluginVersion === 'unknown') return;
 
-    const workerVersion = await getWorkerVersion();
-
+    workerVersion = await getWorkerVersion();
     // Skip version check if worker version is 'unknown' (avoids restart loops)
     if (workerVersion === 'unknown') return;
-
-    if (pluginVersion !== workerVersion) {
-      // Just log debug info - auto-restart handles the mismatch in worker-service.ts
-      logger.debug('SYSTEM', 'Version check', {
-        pluginVersion,
-        workerVersion,
-        note: 'Mismatch will be auto-restarted by worker-service start command'
-      });
-    }
   } catch (error) {
     // Version check is informational — don't fail the hook
     logger.debug('SYSTEM', 'Version check failed', {
       error: error instanceof Error ? error.message : String(error)
+    });
+    return;
+  }
+
+  if (pluginVersion !== workerVersion) {
+    // Just log debug info - auto-restart handles the mismatch in worker-service.ts
+    logger.debug('SYSTEM', 'Version check', {
+      pluginVersion,
+      workerVersion,
+      note: 'Mismatch will be auto-restarted by worker-service start command'
     });
   }
 }

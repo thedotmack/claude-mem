@@ -205,36 +205,35 @@ export class Server {
         return res.status(400).json({ error: 'Invalid topic' });
       }
 
-      try {
-        let content: string;
-
-        if (operation) {
-          // Validate operation
-          if (!ALLOWED_OPERATIONS.includes(operation)) {
-            return res.status(400).json({ error: 'Invalid operation' });
-          }
-          // Path boundary check
-          const OPERATIONS_BASE_DIR = path.resolve(__dirname, '../skills/mem-search/operations');
-          const operationPath = path.resolve(OPERATIONS_BASE_DIR, `${operation}.md`);
-          if (!operationPath.startsWith(OPERATIONS_BASE_DIR + path.sep)) {
-            return res.status(400).json({ error: 'Invalid request' });
-          }
-          content = await fs.promises.readFile(operationPath, 'utf-8');
-        } else {
-          const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
-          const fullContent = await fs.promises.readFile(skillPath, 'utf-8');
-          content = this.extractInstructionSection(fullContent, topic);
+      // Determine which file to read based on operation vs topic
+      let filePath: string;
+      if (operation) {
+        if (!ALLOWED_OPERATIONS.includes(operation)) {
+          return res.status(400).json({ error: 'Invalid operation' });
         }
+        const OPERATIONS_BASE_DIR = path.resolve(__dirname, '../skills/mem-search/operations');
+        filePath = path.resolve(OPERATIONS_BASE_DIR, `${operation}.md`);
+        if (!filePath.startsWith(OPERATIONS_BASE_DIR + path.sep)) {
+          return res.status(400).json({ error: 'Invalid request' });
+        }
+      } else {
+        filePath = path.join(__dirname, '../skills/mem-search/SKILL.md');
+      }
 
-        res.json({
-          content: [{ type: 'text', text: content }]
-        });
+      let content: string;
+      try {
+        const rawContent = await fs.promises.readFile(filePath, 'utf-8');
+        content = operation ? rawContent : this.extractInstructionSection(rawContent, topic);
       } catch (error) {
         if (error instanceof Error) {
           logger.warn('HTTP', 'Failed to load instruction file', {}, error);
         }
-        res.status(404).json({ error: 'Instruction not found' });
+        return res.status(404).json({ error: 'Instruction not found' });
       }
+
+      res.json({
+        content: [{ type: 'text', text: content }]
+      });
     });
 
     // Admin endpoints for process management (localhost-only)

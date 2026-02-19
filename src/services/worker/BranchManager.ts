@@ -118,24 +118,11 @@ export function getBranchInfo(): BranchInfo {
     };
   }
 
+  let branch: string;
+  let status: string;
   try {
-    // Get current branch
-    const branch = execGit(['rev-parse', '--abbrev-ref', 'HEAD']);
-
-    // Check if dirty (has uncommitted changes)
-    const status = execGit(['status', '--porcelain']);
-    const isDirty = status.length > 0;
-
-    // Determine if on beta branch
-    const isBeta = branch.startsWith('beta');
-
-    return {
-      branch,
-      isBeta,
-      isGitRepo: true,
-      isDirty,
-      canSwitch: true // We can always switch (will discard local changes)
-    };
+    branch = execGit(['rev-parse', '--abbrev-ref', 'HEAD']);
+    status = execGit(['status', '--porcelain']);
   } catch (error) {
     if (error instanceof Error) {
       logger.error('BRANCH', 'Failed to get branch info', {}, error);
@@ -149,6 +136,17 @@ export function getBranchInfo(): BranchInfo {
       error: (error as Error).message
     };
   }
+
+  const isDirty = status.length > 0;
+  const isBeta = branch.startsWith('beta');
+
+  return {
+    branch,
+    isBeta,
+    isGitRepo: true,
+    isDirty,
+    canSwitch: true // We can always switch (will discard local changes)
+  };
 }
 
 /**
@@ -270,38 +268,26 @@ export async function pullUpdates(): Promise<SwitchResult> {
     };
   }
 
+  // SECURITY: Validate branch name before use
+  if (!isValidBranchName(info.branch)) {
+    return {
+      success: false,
+      error: `Invalid current branch name: ${info.branch}`
+    };
+  }
+
+  const installMarker = join(INSTALLED_PLUGIN_PATH, '.install-version');
+
   try {
-    // SECURITY: Validate branch name before use
-    if (!isValidBranchName(info.branch)) {
-      return {
-        success: false,
-        error: `Invalid current branch name: ${info.branch}`
-      };
-    }
-
     logger.info('BRANCH', 'Pulling updates', { branch: info.branch });
-
-    // Discard local changes first
     execGit(['checkout', '--', '.']);
-
-    // Fetch and pull
     execGit(['fetch', 'origin']);
     execGit(['pull', 'origin', info.branch]);
 
-    // Clear install marker and reinstall
-    const installMarker = join(INSTALLED_PLUGIN_PATH, '.install-version');
     if (existsSync(installMarker)) {
       unlinkSync(installMarker);
     }
     execNpm(['install'], NPM_INSTALL_TIMEOUT_MS);
-
-    logger.success('BRANCH', 'Updates pulled', { branch: info.branch });
-
-    return {
-      success: true,
-      branch: info.branch,
-      message: `Updated ${info.branch}. Worker will restart automatically.`
-    };
   } catch (error) {
     if (error instanceof Error) {
       logger.error('BRANCH', 'Pull failed', {}, error);
@@ -311,6 +297,14 @@ export async function pullUpdates(): Promise<SwitchResult> {
       error: `Pull failed: ${(error as Error).message}`
     };
   }
+
+  logger.success('BRANCH', 'Updates pulled', { branch: info.branch });
+
+  return {
+    success: true,
+    branch: info.branch,
+    message: `Updated ${info.branch}. Worker will restart automatically.`
+  };
 }
 
 /**

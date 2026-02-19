@@ -65,13 +65,13 @@ export function isWorkerUnavailableError(error: unknown): boolean {
 }
 
 export async function hookCommand(platform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
-  try {
-    const adapter = getPlatformAdapter(platform);
-    const handler = getEventHandler(event);
+  const adapter = getPlatformAdapter(platform);
+  const handler = getEventHandler(event);
 
+  try {
     const rawInput = await readJsonFromStdin();
     const input = adapter.normalizeInput(rawInput);
-    input.platform = platform;  // Inject platform for handler-level decisions
+    input.platform = platform;
     const result = await handler.execute(input);
     const output = adapter.formatOutput(result);
 

@@ -37,25 +37,15 @@ export const sessionCompleteHandler: EventHandler = {
     });
 
     const authToken = ensureAuthToken();
+    const requestBody = JSON.stringify({ contentSessionId: sessionId });
+
+    let response: Response;
     try {
-      // Call the session complete endpoint by contentSessionId
-      const response = await fetch(`http://127.0.0.1:${port}/api/sessions/complete`, {
+      response = await fetch(`http://127.0.0.1:${port}/api/sessions/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
-        body: JSON.stringify({
-          contentSessionId: sessionId
-        })
+        body: requestBody
       });
-
-      if (!response.ok) {
-        const text = await response.text();
-        logger.warn('HOOK', 'session-complete: Failed to complete session', {
-          status: response.status,
-          body: text
-        });
-      } else {
-        logger.info('HOOK', 'Session completed successfully', { contentSessionId: sessionId });
-      }
     } catch (error) {
       // Log but don't fail - session may already be gone
       if (error instanceof Error) {
@@ -63,6 +53,17 @@ export const sessionCompleteHandler: EventHandler = {
           error: error.message
         });
       }
+      return { continue: true, suppressOutput: true };
+    }
+
+    if (!response.ok) {
+      const text = await response.text();
+      logger.warn('HOOK', 'session-complete: Failed to complete session', {
+        status: response.status,
+        body: text
+      });
+    } else {
+      logger.info('HOOK', 'Session completed successfully', { contentSessionId: sessionId });
     }
 
     return { continue: true, suppressOutput: true };

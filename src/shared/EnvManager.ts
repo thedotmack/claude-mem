@@ -128,46 +128,42 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
 }
 
 /**
+ * Merge managed credential keys into an existing env record.
+ * Truthy values are set; falsy values (empty string) delete the key;
+ * undefined values are left untouched.
+ */
+function mergeCredentialKeys(
+  existing: Record<string, string>,
+  env: ClaudeMemEnv
+): Record<string, string> {
+  const updated: Record<string, string> = { ...existing };
+
+  for (const key of MANAGED_CREDENTIAL_KEYS) {
+    const value = env[key as keyof ClaudeMemEnv];
+    if (value !== undefined) {
+      if (value) {
+        updated[key] = value;
+      } else {
+        delete updated[key];
+      }
+    }
+  }
+
+  return updated;
+}
+
+/**
  * Save credentials to ~/.claude-mem/.env
  */
 export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
   try {
-    // Ensure directory exists
     if (!existsSync(DATA_DIR)) {
       mkdirSync(DATA_DIR, { recursive: true });
     }
-
-    // Load existing to preserve any extra keys
     const existing = existsSync(ENV_FILE_PATH)
       ? parseEnvFile(readFileSync(ENV_FILE_PATH, 'utf-8'))
       : {};
-
-    // Update with new values
-    const updated: Record<string, string> = { ...existing };
-
-    // Only update managed keys
-    if (env.ANTHROPIC_API_KEY !== undefined) {
-      if (env.ANTHROPIC_API_KEY) {
-        updated.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
-      } else {
-        delete updated.ANTHROPIC_API_KEY;
-      }
-    }
-    if (env.GEMINI_API_KEY !== undefined) {
-      if (env.GEMINI_API_KEY) {
-        updated.GEMINI_API_KEY = env.GEMINI_API_KEY;
-      } else {
-        delete updated.GEMINI_API_KEY;
-      }
-    }
-    if (env.OPENROUTER_API_KEY !== undefined) {
-      if (env.OPENROUTER_API_KEY) {
-        updated.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
-      } else {
-        delete updated.OPENROUTER_API_KEY;
-      }
-    }
-
+    const updated = mergeCredentialKeys(existing, env);
     writeFileSync(ENV_FILE_PATH, serializeEnvFile(updated), 'utf-8');
   } catch (error) {
     if (error instanceof Error) {
