@@ -114,6 +114,9 @@ export async function fetchSessionDetail(
   }
   if (summaryId) {
     detailParams.set('summary_id', String(summaryId));
+  } else {
+    // No summaryId → active/unsummarized session; scope to observations after the latest summary
+    detailParams.set('unsummarized', 'true');
   }
 
   const fetchOpts = signal ? { signal } : undefined;
@@ -140,16 +143,20 @@ export async function fetchSessionDetail(
     promptsResp.json() as Promise<ApiListResponse<UserPrompt>>,
   ]);
 
-  // When summaryId is provided, find the specific summary; otherwise take the first
+  // When summaryId is provided, find the specific summary.
+  // When null (active/unsummarized session), don't show old summaries —
+  // observations and prompts are already scoped to unsummarized content.
   const summary = summaryId
     ? summariesData.items.find(s => s.id === summaryId) ?? summariesData.items[0]
-    : summariesData.items[0];
-  if (!summary) {
+    : null;
+
+  // Return observations/prompts even without a summary (active/unsummarized sessions)
+  if (!summary && observationsData.items.length === 0 && promptsData.items.length === 0) {
     return null;
   }
 
   return {
-    summary,
+    summary: summary ?? null,
     observations: observationsData.items,
     prompts: promptsData.items,
   };
@@ -177,6 +184,9 @@ interface UseSessionDetailResult {
  * - Returns cached data immediately while re-fetching in the background.
  * - Caches the last 5 session details to avoid redundant API calls.
  */
+/** Polling interval for active (unsummarized) sessions in ms. */
+const ACTIVE_SESSION_POLL_INTERVAL = 5_000;
+
 export function useSessionDetail(
   sessionId: string | null,
   project: string,
@@ -196,12 +206,14 @@ export function useSessionDetail(
     }
 
     // Serve from cache immediately so the UI doesn't flash.
-    // No background revalidation — cached data is used as-is until evicted.
-    const cached = sessionDetailCache.get(sessionId, project, summaryId);
-    if (cached) {
-      setDetail(cached);
-      setIsLoading(false);
-      return;
+    // Skip cache for active/unsummarized sessions (summaryId is null) — their data changes live.
+    if (summaryId) {
+      const cached = sessionDetailCache.get(sessionId, project, summaryId);
+      if (cached) {
+        setDetail(cached);
+        setIsLoading(false);
+        return;
+      }
     }
 
     // No cache hit: show loading state and fetch
@@ -233,6 +245,27 @@ export function useSessionDetail(
     return () => {
       controller.abort();
     };
+  }, [sessionId, project, summaryId]);
+
+  // Poll active (unsummarized) sessions so new observations appear without refresh.
+  // Summarized sessions (summaryId truthy) are static — no polling needed.
+  useEffect(() => {
+    if (!sessionId || summaryId) return;
+
+    const poll = () => {
+      void fetchSessionDetail(sessionId, project, summaryId)
+        .then((result) => {
+          if (result) {
+            setDetail(result);
+          }
+        })
+        .catch(() => {
+          // Swallow errors during polling — don't clear existing detail
+        });
+    };
+
+    const intervalId = setInterval(poll, ACTIVE_SESSION_POLL_INTERVAL);
+    return () => { clearInterval(intervalId); };
   }, [sessionId, project, summaryId]);
 
   return { detail, isLoading };

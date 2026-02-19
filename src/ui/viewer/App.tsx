@@ -21,6 +21,31 @@ import type { Observation, Summary, UserPrompt } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
 import { logger } from './utils/logger';
 
+// ---------------------------------------------------------------------------
+// Pure utility (exported for unit testing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Detects the active (unsummarized) session from SSE observations.
+ *
+ * Scans ALL observations — not just the first — so SSE reconnects and
+ * observation reorders don't break detection.  Uses a Set for O(1) summary
+ * lookups.
+ *
+ * @returns The session_id of the first unsummarized observation, or null.
+ */
+export function detectActiveSessionId(
+  observations: Observation[],
+  summaries: Summary[],
+): string | null {
+  if (observations.length === 0) return null;
+  const summarizedIds = new Set(summaries.map(s => s.session_id));
+  for (const obs of observations) {
+    if (!summarizedIds.has(obs.memory_session_id)) return obs.memory_session_id;
+  }
+  return null;
+}
+
 export function App() {
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [filterPaletteOpen, setFilterPaletteOpen] = useState(false);
@@ -38,7 +63,7 @@ export function App() {
   const search = useSearch(filters, isFilterMode);
   const activityDensity = useActivityDensity(filters.project);
 
-  const { observations, summaries, prompts, projects, isProcessing, queueDepth } = useSSE();
+  const { observations, summaries, prompts, projects, isProcessing, queueDepth, initialActiveSession } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats } = useStats();
   const { preference, setThemePreference } = useTheme();
@@ -185,18 +210,26 @@ export function App() {
     setLatestSSESummary(summaries[0]);
   }, [summaries]);
 
-  // Detect active session: SSE observations without a matching summary
+  // Detect active session: SSE observations without a matching summary,
+  // falling back to the initial_load activeSession info for page refresh persistence
   const activeSessionId = useMemo(() => {
-    if (observations.length === 0) return null;
-    const latestObs = observations[0];
-    const hasMatchingSummary = summaries.some(s => s.session_id === latestObs.memory_session_id);
-    return hasMatchingSummary ? null : latestObs.memory_session_id;
-  }, [observations, summaries]);
+    const fromSSE = detectActiveSessionId(observations, summaries);
+    if (fromSSE) return fromSSE;
+    // Fallback: use active session from initial_load (persists across refresh)
+    return initialActiveSession?.memorySessionId ?? null;
+  }, [observations, summaries, initialActiveSession]);
 
   const activeSessionObsCount = useMemo(() => {
     if (!activeSessionId) return 0;
-    return observations.filter(o => o.memory_session_id === activeSessionId).length;
-  }, [activeSessionId, observations]);
+    // Count from SSE observations first
+    const sseCount = observations.filter(o => o.memory_session_id === activeSessionId).length;
+    if (sseCount > 0) return sseCount;
+    // Fallback: use count from initial_load
+    if (initialActiveSession?.memorySessionId === activeSessionId) {
+      return initialActiveSession.observationCount;
+    }
+    return 0;
+  }, [activeSessionId, observations, initialActiveSession]);
 
   const isLoading = isFilterMode
     ? search.isSearching

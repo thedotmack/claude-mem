@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import type { Observation, Summary, UserPrompt, StreamEvent } from '../types';
+import type { Observation, Summary, UserPrompt, StreamEvent, ActiveSessionInfo } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
 import { logger } from '../utils/logger';
@@ -12,6 +12,7 @@ export function useSSE() {
   const [isConnected, setIsConnected] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [queueDepth, setQueueDepth] = useState(0);
+  const [initialActiveSession, setInitialActiveSession] = useState<ActiveSessionInfo | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
 
@@ -50,8 +51,11 @@ export function useSSE() {
 
         switch (data.type) {
           case 'initial_load':
-            // Only load projects list - data will come via pagination
+            // Load projects list and active session info - data will come via pagination
             setProjects(data.projects || []);
+            if (data.activeSession) {
+              setInitialActiveSession(data.activeSession);
+            }
             break;
 
           case 'new_observation':
@@ -95,5 +99,5 @@ export function useSSE() {
     };
   }, []);
 
-  return { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected };
+  return { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected, initialActiveSession };
 }

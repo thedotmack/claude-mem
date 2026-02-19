@@ -321,6 +321,36 @@ describe('SessionList CSS sticky header verification', () => {
     expect(ruleBody).toMatch(/top\s*:\s*0/);
   });
 
+  it('.session-list__day-header has border-left accent in viewer-template.html', () => {
+    const dayHeaderRuleMatch = cssSource.match(/\.session-list__day-header\s*\{([^}]*)\}/s);
+    expect(dayHeaderRuleMatch).not.toBeNull();
+    const ruleBody = dayHeaderRuleMatch![1];
+    expect(ruleBody).toMatch(/border-left\s*:/);
+    expect(ruleBody).toMatch(/--color-accent-primary/);
+  });
+
+  it('.session-list__day-header has border-bottom separator in viewer-template.html', () => {
+    const dayHeaderRuleMatch = cssSource.match(/\.session-list__day-header\s*\{([^}]*)\}/s);
+    expect(dayHeaderRuleMatch).not.toBeNull();
+    const ruleBody = dayHeaderRuleMatch![1];
+    expect(ruleBody).toMatch(/border-bottom\s*:/);
+    expect(ruleBody).toMatch(/--color-border-secondary/);
+  });
+
+  it('.session-list__day-header has font-weight 700 in viewer-template.html', () => {
+    const dayHeaderRuleMatch = cssSource.match(/\.session-list__day-header\s*\{([^}]*)\}/s);
+    expect(dayHeaderRuleMatch).not.toBeNull();
+    const ruleBody = dayHeaderRuleMatch![1];
+    expect(ruleBody).toMatch(/font-weight\s*:\s*700/);
+  });
+
+  it('.session-list__day-header uses --color-accent-primary for text in viewer-template.html', () => {
+    const dayHeaderRuleMatch = cssSource.match(/\.session-list__day-header\s*\{([^}]*)\}/s);
+    expect(dayHeaderRuleMatch).not.toBeNull();
+    const ruleBody = dayHeaderRuleMatch![1];
+    expect(ruleBody).toMatch(/color\s*:\s*var\(--color-accent-primary\)/);
+  });
+
   it('.session-list container has overflow-y in viewer-template.html', () => {
     // The scroll context must be established on .session-list.
     const sessionListRuleMatch = cssSource.match(/\.session-list\s*\{([^}]*)\}/s);
@@ -400,17 +430,18 @@ describe('SessionList active session rendering', () => {
     expect(source).toMatch(/session-list__row--active/);
   });
 
-  it('shows "Processing..." text for active sessions', () => {
-    expect(source).toMatch(/Processing\.\.\./);
+  it('shows "Current session" text for active sessions', () => {
+    expect(source).toMatch(/Current session/);
   });
 
-  it('shows status badge with "In Progress" for active sessions', () => {
+  it('shows status badge with "Live" for active sessions', () => {
     expect(source).toMatch(/session-list__status-badge/);
-    expect(source).toMatch(/In Progress/);
+    expect(source).toMatch(/Live/);
   });
 
-  it('checks session.status for active state', () => {
-    expect(source).toMatch(/session\.status\s*===\s*['"]active['"]/);
+  it('uses ActiveSessionRow component for active session rendering', () => {
+    expect(source).toMatch(/ActiveSessionRow/);
+    expect(source).toMatch(/ActiveSessionEntry/);
   });
 });
 
@@ -472,9 +503,9 @@ describe('SessionList source-code virtualization checks', () => {
     expect(source).toMatch(/>\s*VIRTUAL_THRESHOLD|totalCount\s*>/);
   });
 
-  it('uses position sticky for virtual day headers', () => {
-    // The source or CSS should reference sticky positioning for headers
-    // In the component source, the virtual header items should apply sticky style
-    expect(source).toMatch(/sticky/);
+  it('uses day-header CSS class for virtual headers (sticky via stylesheet)', () => {
+    // Virtual headers use the same session-list__day-header class as non-virtual
+    // which gets position: sticky from the stylesheet
+    expect(source).toMatch(/session-list__day-header/);
   });
 });

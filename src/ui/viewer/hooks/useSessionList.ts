@@ -100,7 +100,9 @@ export function groupSessionsByDay(items: SessionListItem[]): SessionGroup[] {
     groupMap.get(dateKey)!.sessions.push(item);
   }
 
-  return order.map(key => groupMap.get(key)!);
+  // Sort groups by dateKey descending (newest first) to ensure correct
+  // chronological order even when loadForDate inserts groups out-of-order.
+  return order.map(key => groupMap.get(key)!).sort((a, b) => b.dateKey.localeCompare(a.dateKey));
 }
 
 /**
@@ -187,6 +189,76 @@ export function prependSession(groups: SessionGroup[], summary: Summary, sseObse
   return [newGroup, ...groups];
 }
 
+/**
+ * Computes the day after a given YYYY-MM-DD date string.
+ * Uses local calendar arithmetic to handle month/year rollovers.
+ * Exported for unit testing.
+ */
+export function nextDayString(dateKey: string): string {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  const d = new Date(year, month - 1, day + 1);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+
+/**
+ * Fetches sessions for a specific date by querying the search API.
+ * Returns SessionListItems mapped from the search response summaries.
+ *
+ * Note: The search API's date filter converts YYYY-MM-DD strings to UTC
+ * midnight epoch, so dateEnd must be the *next* day to cover the full 24h
+ * window.  The search API returns `memory_session_id` (from session_summaries
+ * table), so we map it to `session_id` expected by the viewer types.
+ *
+ * Exported for unit testing.
+ */
+export async function fetchSessionsByDate(dateKey: string, project: string): Promise<SessionListItem[]> {
+  const params = new URLSearchParams({
+    dateStart: dateKey,
+    dateEnd: nextDayString(dateKey),
+    format: 'json',
+    type: 'sessions',
+  });
+  if (project) {
+    params.set('project', project);
+  }
+
+  const response = await fetch(`${API_ENDPOINTS.SEARCH}?${params}`);
+  if (!response.ok) {
+    throw new Error(`Failed to load sessions for date ${dateKey}: ${response.statusText}`);
+  }
+
+  interface SearchSessionResult {
+    id: number;
+    memory_session_id: string;
+    session_id?: string;
+    project: string;
+    request: string | null;
+    created_at_epoch: number;
+    observation_count?: number;
+  }
+
+  const data = await response.json() as {
+    sessions: SearchSessionResult[];
+    observations: unknown[];
+    prompts: unknown[];
+    totalResults: number;
+    query: string;
+  };
+
+  return data.sessions.map(s => ({
+    id: s.id,
+    session_id: s.session_id ?? s.memory_session_id,
+    project: s.project,
+    request: s.request ?? undefined,
+    observationCount: s.observation_count ?? 0,
+    created_at_epoch: s.created_at_epoch,
+    status: 'completed' as const,
+  }));
+}
+
 // ─────────────────────────────────────────────────────────
 // Hook
 // ─────────────────────────────────────────────────────────
@@ -203,6 +275,8 @@ interface UseSessionListResult {
   isLoading: boolean;
   hasMore: boolean;
   loadMore: () => Promise<void>;
+  /** Load sessions for a specific date if not already present in groups. Returns true if sessions were found. */
+  loadForDate: (dateKey: string) => Promise<boolean>;
   selectedId: number | null;
   selectSession: (id: number) => void;
   navigateNext: () => void;
@@ -218,6 +292,7 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
   const offsetRef = useRef(0);
   const lastProjectRef = useRef(project);
   const isLoadingRef = useRef(false);
+  const sessionGroupsRef = useRef(sessionGroups);
 
   const loadPage = useCallback(async (reset: boolean): Promise<void> => {
     if (isLoadingRef.current) return;
@@ -238,10 +313,6 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
 
       setHasMore(result.hasMore);
       offsetRef.current = offset + result.items.length;
-
-      if (reset && result.items.length > 0) {
-        setSelectedId(current => current === null ? result.items[0].id : current);
-      }
     } catch (error) {
       logger.error('sessionList', 'Failed to load sessions');
     } finally {
@@ -292,7 +363,8 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
 
   const navigateNext = useCallback((): void => {
     if (flatSessions.length === 0) return;
-    if (selectedId === null) {
+    if (selectedId === null || selectedId === -1) {
+      // From no selection or active session → first real session
       setSelectedId(flatSessions[0].id);
       return;
     }
@@ -308,15 +380,45 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
       return;
     }
     const currentIndex = flatSessions.findIndex(s => s.id === selectedId);
-    if (currentIndex <= 0) return;
+    if (currentIndex <= 0) {
+      // At first real session → go to active session if it exists
+      setSelectedId(-1);
+      return;
+    }
     setSelectedId(flatSessions[currentIndex - 1].id);
   }, [flatSessions, selectedId]);
+
+  // Keep ref in sync so loadForDate avoids stale closure over sessionGroups
+  useEffect(() => { sessionGroupsRef.current = sessionGroups; }, [sessionGroups]);
+
+  const loadForDate = useCallback(async (dateKey: string): Promise<boolean> => {
+    // Use ref to check latest groups without capturing state in deps
+    const exists = sessionGroupsRef.current.some(g => g.dateKey === dateKey);
+    if (exists) return true;
+
+    try {
+      const items = await fetchSessionsByDate(dateKey, project);
+      if (items.length === 0) return false;
+
+      setSessionGroups(prev => {
+        // Double-check after async gap
+        if (prev.some(g => g.dateKey === dateKey)) return prev;
+        const allItems = [...prev.flatMap(g => g.sessions), ...items];
+        return groupSessionsByDay(allItems);
+      });
+      return true;
+    } catch (error) {
+      logger.error('sessionList', `Failed to load sessions for date ${dateKey}`);
+      return false;
+    }
+  }, [project]);
 
   return {
     sessionGroups,
     isLoading,
     hasMore,
     loadMore,
+    loadForDate,
     selectedId,
     selectSession,
     navigateNext,

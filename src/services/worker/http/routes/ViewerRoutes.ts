@@ -66,6 +66,49 @@ export class ViewerRoutes extends BaseRouteHandler {
   });
 
   /**
+   * Detect the most recent session with unsummarized observations.
+   * Returns session info for the SSE initial_load event, or null if none.
+   */
+  private getActiveSessionInfo(): { memorySessionId: string; contentSessionId: string; project: string; observationCount: number } | null {
+    const db = this.dbManager.getSessionStore().db;
+
+    // Find the most recent observation's session, then check if it has unsummarized content
+    const latestObs = db.prepare(`
+      SELECT o.memory_session_id, s.content_session_id, o.project
+      FROM observations o
+      LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+      ORDER BY o.created_at_epoch DESC
+      LIMIT 1
+    `).get() as { memory_session_id: string; content_session_id: string | null; project: string } | undefined;
+
+    if (!latestObs) return null;
+
+    // Find the latest summary epoch for this session
+    const latestSummary = db.prepare(`
+      SELECT MAX(created_at_epoch) as epoch
+      FROM session_summaries
+      WHERE memory_session_id = ?
+    `).get(latestObs.memory_session_id) as { epoch: number | null } | undefined;
+
+    const afterEpoch = latestSummary?.epoch ?? 0;
+
+    // Count unsummarized observations
+    const countResult = db.prepare(`
+      SELECT COUNT(*) as count
+      FROM observations
+      WHERE memory_session_id = ?
+        AND created_at_epoch > ?
+    `).get(latestObs.memory_session_id, afterEpoch) as { count: number };
+
+    return {
+      memorySessionId: latestObs.memory_session_id,
+      contentSessionId: latestObs.content_session_id ?? latestObs.memory_session_id,
+      project: latestObs.project,
+      observationCount: countResult.count,
+    };
+  }
+
+  /**
    * SSE stream endpoint
    */
   private handleSSEStream = this.wrapHandler((req: Request, res: Response): void => {
@@ -77,11 +120,13 @@ export class ViewerRoutes extends BaseRouteHandler {
     // Add client to broadcaster
     this.sseBroadcaster.addClient(res);
 
-    // Send initial_load event with projects list
+    // Send initial_load event with projects list and active session info
     const allProjects = this.dbManager.getSessionStore().getAllProjects();
+    const activeSession = this.getActiveSessionInfo();
     this.sseBroadcaster.broadcast({
       type: 'initial_load',
       projects: allProjects,
+      activeSession,
       timestamp: Date.now()
     });
 

@@ -39,7 +39,7 @@ export interface UserPrompt {
 }
 
 export interface SessionDetail {
-  summary: Summary;
+  summary: Summary | null;
   observations: Observation[];
   prompts: UserPrompt[];
 }
@@ -65,12 +65,20 @@ export type FeedItem =
   | (Summary & { itemType: 'summary' })
   | (UserPrompt & { itemType: 'prompt' });
 
+export interface ActiveSessionInfo {
+  memorySessionId: string;
+  contentSessionId: string;
+  project: string;
+  observationCount: number;
+}
+
 export interface StreamEvent {
   type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status';
   observations?: Observation[];
   summaries?: Summary[];
   prompts?: UserPrompt[];
   projects?: string[];
+  activeSession?: ActiveSessionInfo | null;
   observation?: Observation;
   summary?: Summary;
   prompt?: UserPrompt;

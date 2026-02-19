@@ -92,6 +92,8 @@
       --color-filter-group-border-show: rgba(42, 157, 143, 0.25);
       --color-filter-group-border-date: rgba(0, 0, 0, 0.08);
 
+      --color-bg-day-header: #e8eff8;
+
       --color-skeleton-base: #d0d7de;
       --color-skeleton-highlight: #e8ecef;
 
@@ -167,6 +169,8 @@
       --color-prompt-badge-text: #9e8ccc;
       --color-observation-badge-bg: rgba(121, 184, 255, 0.15);
       --color-observation-badge-text: #79b8ff;
+
+      --color-bg-day-header: #1d2938;
 
       /* Activity bar — colorblind-safe, brighter for dark bg */
       --color-activity-obs: #6aa3e0;
@@ -266,6 +270,8 @@
         --color-filter-group-border-show: rgba(42, 157, 143, 0.25);
         --color-filter-group-border-date: rgba(0, 0, 0, 0.08);
 
+        --color-bg-day-header: #e8eff8;
+
         --color-skeleton-base: #d0d7de;
         --color-skeleton-highlight: #e8ecef;
 
@@ -348,6 +354,8 @@
         --color-filter-group-border-concept: rgba(240, 160, 80, 0.25);
         --color-filter-group-border-show: rgba(80, 196, 176, 0.25);
         --color-filter-group-border-date: rgba(255, 255, 255, 0.08);
+
+        --color-bg-day-header: #1d2938;
 
         --color-skeleton-base: #404040;
         --color-skeleton-highlight: #505050;
@@ -1469,6 +1477,43 @@
     .summary-card {
       position: relative;
       padding: var(--space-4);
+    }
+
+    /* Live Session Card - Active/Unsummarized Session */
+    .live-session-card {
+      border-color: var(--color-accent-primary);
+      background: var(--color-bg-secondary);
+      border-left: 3px solid var(--color-accent-primary);
+      padding: var(--space-4);
+    }
+
+    .live-session-card__header {
+      margin-bottom: var(--space-3);
+    }
+
+    .live-session-card__body {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+    }
+
+    .live-session-card__message {
+      margin: 0;
+      font-size: 0.85rem;
+      color: var(--color-text-secondary);
+      line-height: 1.5;
+    }
+
+    .live-session-card__stats {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      color: var(--color-text-muted);
+    }
+
+    .live-session-card__stats-divider {
+      opacity: 0.5;
     }
 
     .summary-card-header {
@@ -2993,6 +3038,153 @@
       color: var(--color-text-muted);
     }
 
+    /* Calendar Picker (dropdown from DayNavigator) */
+    .day-navigator__calendar-wrapper {
+      position: relative;
+    }
+
+    .calendar-picker {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      box-shadow: var(--shadow-card);
+      padding: 12px;
+      min-width: 260px;
+    }
+
+    .calendar-picker__header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .calendar-picker__month-label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--color-text-primary);
+    }
+
+    .calendar-picker__nav-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--color-text-muted);
+      cursor: pointer;
+      font-size: 14px;
+      transition: background 0.1s ease, color 0.1s ease;
+    }
+
+    .calendar-picker__nav-btn:hover {
+      background: var(--color-bg-card-hover);
+      color: var(--color-text-primary);
+    }
+
+    .calendar-picker__grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 2px;
+    }
+
+    .calendar-picker__weekday {
+      text-align: center;
+      font-size: 0.65rem;
+      font-weight: 600;
+      color: var(--color-text-muted);
+      padding: 2px 0 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .calendar-picker__day {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      margin: 0 auto;
+      padding: 0;
+      border: none;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--color-text-primary);
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: background 0.1s ease, color 0.1s ease;
+    }
+
+    .calendar-picker__day--active:hover {
+      background: var(--color-bg-card-hover);
+    }
+
+    .calendar-picker__day--disabled {
+      color: var(--color-text-muted);
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    .calendar-picker__day--today {
+      box-shadow: inset 0 0 0 1.5px var(--color-accent-primary);
+    }
+
+    .calendar-picker__day--selected {
+      background: var(--color-accent-primary);
+      color: #fff;
+    }
+
+    .calendar-picker__day--selected:hover {
+      background: var(--color-accent-primary);
+    }
+
+    .calendar-picker__day--other-month {
+      opacity: 0.3;
+    }
+
+    .calendar-picker__dot {
+      position: absolute;
+      bottom: 2px;
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: var(--color-accent-primary);
+    }
+
+    .calendar-picker__day--selected .calendar-picker__dot {
+      background: #fff;
+    }
+
+    .calendar-picker__reset {
+      display: block;
+      width: 100%;
+      margin-top: 8px;
+      padding: 6px;
+      border: none;
+      border-top: 1px solid var(--color-border-primary);
+      background: transparent;
+      color: var(--color-text-secondary);
+      font-size: 0.75rem;
+      cursor: pointer;
+      text-align: center;
+      transition: color 0.1s ease;
+    }
+
+    .calendar-picker__reset:hover {
+      color: var(--color-accent-primary);
+    }
+
     @media (max-width: 768px) {
       .two-panel {
         flex-direction: column;
@@ -3014,6 +3206,7 @@
       flex: 1;
       min-height: 0;
       overflow-y: auto;
+      position: relative; /* Anchor for offsetTop calculations in scrollToDate */
       background: var(--color-bg-secondary);
     }
 
@@ -3025,13 +3218,15 @@
       position: sticky;
       top: 0;
       z-index: 1;
-      padding: 10px 12px 6px;
+      padding: 10px 12px 8px;
       font-size: 11px;
-      font-weight: 600;
-      color: var(--color-text-muted);
-      background: var(--color-bg-secondary);
+      font-weight: 700;
+      color: var(--color-accent-primary);
+      background: var(--color-bg-day-header, var(--color-bg-secondary));
       text-transform: uppercase;
       letter-spacing: 0.05em;
+      border-left: 3px solid var(--color-accent-primary);
+      border-bottom: 1px solid var(--color-border-secondary);
     }
 
     .session-list__row {
@@ -3052,6 +3247,9 @@
 
     .session-list__row--active {
       border-left-color: var(--color-accent-primary);
+      background: var(--color-bg-secondary);
+      border-bottom: 1px solid var(--color-border-secondary);
+      flex-shrink: 0;
     }
 
     .session-list__row--active .session-list__request {

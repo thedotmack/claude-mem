@@ -1,4 +1,6 @@
-import React from 'react';
+import React, { useState, useCallback } from 'react';
+import { CalendarPicker } from './CalendarPicker';
+import type { ActivityDay } from '../types';
 import { getTodayString } from '../utils/date';
 
 // ---------------------------------------------------------------------------
@@ -86,16 +88,18 @@ export function formatDayLabel(dateStart: string, dateEnd: string, today: string
 export interface DayNavigatorProps {
   /** Available date keys from session groups, in display order (newest first). */
   availableDateKeys: string[];
-  /** The currently active/visible date key, or null for "All sessions". */
+  /** The currently active/visible date key, or null when not yet initialized. */
   activeDateKey: string | null;
   /** Navigate to the previous (older) day. */
   onPrev: () => void;
   /** Navigate to the next (newer) day. */
   onNext: () => void;
-  /** Reset to show all sessions (scroll to top). */
-  onReset: () => void;
   /** Today's date in YYYY-MM-DD format. Defaults to the current local date. */
   today?: string;
+  /** Activity days for the calendar picker. */
+  activityDays?: ActivityDay[];
+  /** Callback when a date is selected from the calendar. */
+  onSelectDate?: (dateKey: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,27 +109,44 @@ export interface DayNavigatorProps {
 /**
  * DayNavigator renders a compact [←] label [→] row for day-by-day
  * scroll navigation between available session groups.
- * Clicking the label resets to "All sessions" (scroll to top).
+ * Clicking the label opens the calendar picker.
  */
 export function DayNavigator({
   availableDateKeys,
   activeDateKey,
   onPrev,
   onNext,
-  onReset,
   today = getTodayString(),
+  activityDays,
+  onSelectDate,
 }: DayNavigatorProps): React.ReactElement {
+  const [calendarOpen, setCalendarOpen] = useState(false);
+
   const label = activeDateKey
     ? formatDayLabel(activeDateKey, '', today)
-    : 'All sessions';
+    : 'Today';
 
   const hasKeys = availableDateKeys.length > 0;
   const isAtOldest = activeDateKey !== null && activeDateKey === availableDateKeys[availableDateKeys.length - 1];
+  const isAtNewest = !activeDateKey || activeDateKey === availableDateKeys[0];
   const prevDisabled = !hasKeys || isAtOldest;
-  const nextDisabled = !hasKeys || activeDateKey === null;
+  const nextDisabled = !hasKeys || isAtNewest;
+
+  const handleLabelClick = useCallback(() => {
+    setCalendarOpen(prev => !prev);
+  }, []);
+
+  const handleCalendarSelect = useCallback((dateKey: string) => {
+    setCalendarOpen(false);
+    onSelectDate?.(dateKey);
+  }, [onSelectDate]);
+
+  const handleCalendarClose = useCallback(() => {
+    setCalendarOpen(false);
+  }, []);
 
   return (
-    <div className="day-navigator" data-testid="day-navigator">
+    <div className="day-navigator day-navigator__calendar-wrapper" data-testid="day-navigator">
       <button
         className="day-navigator__btn"
         onClick={onPrev}
@@ -138,10 +159,10 @@ export function DayNavigator({
       </button>
 
       <button
-        className={`day-navigator__label${!activeDateKey ? ' day-navigator__label--all' : ''}`}
-        onClick={onReset}
-        title={!activeDateKey ? 'Showing all sessions' : 'Click to show all sessions'}
-        aria-label={!activeDateKey ? 'All sessions — click to clear date filter' : `${label} — click to clear date filter`}
+        className="day-navigator__label"
+        onClick={handleLabelClick}
+        title={`${label} — click to open calendar`}
+        aria-label={`${label} — click to open calendar`}
         type="button"
       >
         {label}
@@ -157,6 +178,15 @@ export function DayNavigator({
       >
         →
       </button>
+
+      {calendarOpen && activityDays && onSelectDate && (
+        <CalendarPicker
+          activityDays={activityDays}
+          selectedDate={activeDateKey}
+          onSelectDate={handleCalendarSelect}
+          onClose={handleCalendarClose}
+        />
+      )}
     </div>
   );
 }

@@ -90,18 +90,25 @@ test.describe('Two-panel layout', () => {
     }
   });
 
-  test('most recent session is selected by default', async ({ page }) => {
+  test('no completed session is auto-selected on load', async ({ page }) => {
+    // Only the active (live) session is auto-selected; completed sessions
+    // require explicit user selection. When no active session exists, the
+    // detail panel shows "Select a session to view details".
     const sessionRows = page.locator('[data-testid="session-row"]');
     const rowCount = await sessionRows.count();
 
     if (rowCount > 0) {
-      // The first session row should be selected by default (aria-selected)
-      const selected = page.locator('[data-testid="session-row"][aria-selected="true"]');
-      await expect(selected).toBeVisible();
+      // Check if an active session row exists (auto-selected)
+      const activeRow = page.locator('[data-testid="active-session-row"]');
+      const hasActive = await activeRow.count();
 
-      // Phase G.7: groups removed; the selected row should be the first session row
-      const firstRow = sessionRows.first();
-      await expect(firstRow).toHaveAttribute('aria-selected', 'true');
+      if (hasActive > 0) {
+        await expect(activeRow).toHaveAttribute('aria-selected', 'true');
+      } else {
+        // No active session → no completed session should be auto-selected
+        const selected = page.locator('[data-testid="session-row"][aria-selected="true"]');
+        await expect(selected).toHaveCount(0);
+      }
     }
   });
 

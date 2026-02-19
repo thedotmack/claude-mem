@@ -22,6 +22,15 @@ export interface SessionListHandle {
   scrollToSession: (id: number) => void;
 }
 
+export interface ActiveSessionEntry {
+  /** Always -1 for the synthetic active session. */
+  id: number;
+  /** The memory_session_id or content_session_id for the active session. */
+  sessionId: string;
+  /** Number of unsummarized observations. */
+  observationCount: number;
+}
+
 interface SessionListProps {
   sessionGroups: SessionGroup[];
   selectedId: number | null;
@@ -29,6 +38,8 @@ interface SessionListProps {
   onLoadMore: () => Promise<void>;
   hasMore: boolean;
   isLoading: boolean;
+  /** Active (unsummarized) session to render at the top. Null when no active session. */
+  activeSession?: ActiveSessionEntry | null;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -68,10 +79,9 @@ function SessionRow({ session, isSelected, onSelect }: {
   isSelected: boolean;
   onSelect: (id: number) => void;
 }) {
-  const isActive = session.status === 'active';
   return (
     <div
-      className={`session-list__row${isSelected ? ' session-list__row--selected' : ''}${isActive ? ' session-list__row--active' : ''}`}
+      className={`session-list__row${isSelected ? ' session-list__row--selected' : ''}`}
       data-testid="session-row"
       data-session-id={session.id}
       aria-selected={isSelected}
@@ -86,11 +96,41 @@ function SessionRow({ session, isSelected, onSelect }: {
       }}
     >
       <div className="session-list__request">
-        {isActive ? 'Processing...' : (session.request ?? '(no description)')}
+        {session.request ?? '(no description)'}
       </div>
       <div className="session-list__meta">
-        {isActive && <span className="session-list__status-badge">In Progress</span>}
         {formatSessionTime(session.created_at_epoch)} &bull; {session.observationCount} obs
+      </div>
+    </div>
+  );
+}
+
+export function ActiveSessionRow({ entry, isSelected, onSelect }: {
+  entry: ActiveSessionEntry;
+  isSelected: boolean;
+  onSelect: (id: number) => void;
+}) {
+  const hasContent = entry.observationCount > 0;
+  return (
+    <div
+      className={`session-list__row session-list__row--active${isSelected ? ' session-list__row--selected' : ''}`}
+      data-testid="active-session-row"
+      data-session-id={entry.id}
+      aria-selected={isSelected}
+      onClick={() => onSelect(entry.id)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect(entry.id);
+        }
+      }}
+    >
+      <div className="session-list__request">Current session</div>
+      <div className="session-list__meta">
+        {hasContent && <span className="session-list__status-badge">Live</span>}
+        {hasContent ? `${entry.observationCount} unsummarized obs` : 'No pending observations'}
       </div>
     </div>
   );
@@ -137,7 +177,7 @@ function VirtualContent({ items, containerRef, onSelectSession, scrollToIndexRef
         if (item.type === 'header') {
           return (
             <div key={`header-${item.dateKey}`} data-index={vItem.index} ref={virtualizer.measureElement} style={style}>
-              <div className="session-list__day-header" data-date-key={item.dateKey} style={{ position: 'sticky', top: 0 }}>
+              <div className="session-list__day-header" data-date-key={item.dateKey}>
                 {item.label}
               </div>
             </div>
@@ -158,7 +198,7 @@ function VirtualContent({ items, containerRef, onSelectSession, scrollToIndexRef
 // ─────────────────────────────────────────────────────────
 
 export const SessionList = forwardRef<SessionListHandle, SessionListProps>(function SessionList(
-  { sessionGroups, selectedId, onSelectSession, onLoadMore, hasMore, isLoading },
+  { sessionGroups, selectedId, onSelectSession, onLoadMore, hasMore, isLoading, activeSession },
   ref,
 ) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
@@ -183,7 +223,13 @@ export const SessionList = forwardRef<SessionListHandle, SessionListProps>(funct
   }, [hasMore, isLoading]);
 
   const totalCount = sessionGroups.reduce((sum, g) => sum + g.sessions.length, 0);
-  const useVirtual = totalCount > VIRTUAL_THRESHOLD;
+  // Lock rendering mode after initial load to prevent scroll-destroying mode
+  // switches when loadMore crosses VIRTUAL_THRESHOLD mid-session.
+  const virtualModeRef = useRef<boolean | null>(null);
+  if (virtualModeRef.current === null && totalCount > 0) {
+    virtualModeRef.current = totalCount > VIRTUAL_THRESHOLD;
+  }
+  const useVirtual = virtualModeRef.current ?? false;
   const hasGroups = sessionGroups.length > 0;
   const flatItems = useMemo(() => flattenGroups(sessionGroups, selectedId), [sessionGroups, selectedId]);
 
@@ -193,9 +239,17 @@ export const SessionList = forwardRef<SessionListHandle, SessionListProps>(funct
       if (index === -1) return;
       if (useVirtual && scrollToIndexRef.current) {
         scrollToIndexRef.current(index, { align: 'start' });
+        requestAnimationFrame(() => {
+          scrollToIndexRef.current?.(index, { align: 'start' });
+        });
       } else if (containerRef.current) {
-        const el = containerRef.current.querySelector(`[data-date-key="${dateKey}"]`);
-        el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        // Query the non-sticky anchor element instead of the sticky header.
+        // Sticky headers report misleading offsetTop/getBoundingClientRect
+        // when stuck at the container top, causing zero-delta scroll failures.
+        const anchor = containerRef.current.querySelector(`[data-date-anchor="${dateKey}"]`) as HTMLElement | null;
+        if (anchor) {
+          containerRef.current.scrollTop = anchor.offsetTop;
+        }
       }
     },
     scrollToSession(id: number) {
@@ -212,7 +266,7 @@ export const SessionList = forwardRef<SessionListHandle, SessionListProps>(funct
 
   return (
     <div className="session-list" data-testid="session-list" ref={containerRef}>
-      {!hasGroups && !isLoading && <div className="session-list__empty" aria-live="polite">No sessions found</div>}
+      {!hasGroups && !isLoading && !activeSession && <div className="session-list__empty" aria-live="polite">No sessions found</div>}
 
       {useVirtual ? (
         <VirtualContent
@@ -225,9 +279,12 @@ export const SessionList = forwardRef<SessionListHandle, SessionListProps>(funct
         flatItems.map((item) => {
           if (item.type === 'header') {
             return (
-              <div key={`header-${item.dateKey}`} className="session-list__day-header" data-date-key={item.dateKey}>
-                {item.label}
-              </div>
+              <React.Fragment key={`header-${item.dateKey}`}>
+                <div data-date-anchor={item.dateKey} style={{ height: 0, overflow: 'hidden' }} />
+                <div className="session-list__day-header" data-date-key={item.dateKey}>
+                  {item.label}
+                </div>
+              </React.Fragment>
             );
           }
           return (

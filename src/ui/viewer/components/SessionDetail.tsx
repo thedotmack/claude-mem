@@ -160,7 +160,25 @@ export function SessionDetail({ detail, isLoading, hasSelection }: SessionDetail
     <div className="session-detail" data-testid="session-detail" ref={scrollRef}>
       <div className="session-detail__content">
         <div className="session-detail__summary">
-          <SummaryCard summary={detail.summary} />
+          {detail.summary ? (
+            <SummaryCard summary={detail.summary} />
+          ) : (
+            <article className="card live-session-card" data-testid="live-session-card">
+              <header className="live-session-card__header">
+                <span className="session-list__status-badge">Live Session</span>
+              </header>
+              <div className="live-session-card__body">
+                <p className="live-session-card__message">
+                  This session is still in progress. A summary will be generated when it ends.
+                </p>
+                <div className="live-session-card__stats">
+                  <span>{detail.observations.length} observation{detail.observations.length !== 1 ? 's' : ''}</span>
+                  <span className="live-session-card__stats-divider">&bull;</span>
+                  <span>{detail.prompts.length} prompt{detail.prompts.length !== 1 ? 's' : ''}</span>
+                </div>
+              </div>
+            </article>
+          )}
         </div>
 
         {useVirtual ? (

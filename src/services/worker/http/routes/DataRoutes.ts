@@ -150,8 +150,8 @@ export class DataRoutes extends BaseRouteHandler {
    * Get paginated observations
    */
   private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project, sessionId, summaryId } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getObservations(offset, limit, project, sessionId, summaryId);
+    const { offset, limit, project, sessionId, summaryId, unsummarized } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getObservations(offset, limit, project, sessionId, summaryId, unsummarized);
     res.json(result);
   });
 
@@ -168,8 +168,8 @@ export class DataRoutes extends BaseRouteHandler {
    * Get paginated user prompts
    */
   private handleGetPrompts = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project, sessionId, summaryId } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getPrompts(offset, limit, project, sessionId, summaryId);
+    const { offset, limit, project, sessionId, summaryId, unsummarized } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getPrompts(offset, limit, project, sessionId, summaryId, unsummarized);
     res.json(result);
   });
 
@@ -377,15 +377,16 @@ export class DataRoutes extends BaseRouteHandler {
   /**
    * Parse pagination parameters from request query
    */
-  private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; sessionId?: string; summaryId?: number } {
+  private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; sessionId?: string; summaryId?: number; unsummarized?: boolean } {
     const offset = parseInt(req.query.offset as string, 10) || 0;
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); // Max 100
     const project = req.query.project as string | undefined;
     const sessionId = req.query.session_id as string | undefined;
     const summaryIdRaw = req.query.summary_id as string | undefined;
     const summaryId = summaryIdRaw ? parseInt(summaryIdRaw, 10) : undefined;
+    const unsummarized = req.query.unsummarized === 'true';
 
-    return { offset, limit, project, sessionId, summaryId: summaryId && !isNaN(summaryId) ? summaryId : undefined };
+    return { offset, limit, project, sessionId, summaryId: summaryId && !isNaN(summaryId) ? summaryId : undefined, unsummarized };
   }
 
   /**

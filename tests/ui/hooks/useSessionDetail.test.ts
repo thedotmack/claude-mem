@@ -153,10 +153,10 @@ describe('fetchSessionDetail', () => {
       return Promise.resolve({ ok: false, statusText: 'Not Found' });
     });
 
-    const result = await fetchSessionDetail(SESSION_ID, PROJECT);
+    const result = await fetchSessionDetail(SESSION_ID, PROJECT, mockSummary.id);
 
     expect(result).not.toBeNull();
-    expect(result!.summary.session_id).toBe(SESSION_ID);
+    expect(result!.summary!.session_id).toBe(SESSION_ID);
     expect(result!.observations).toHaveLength(1);
     expect(result!.observations[0].memory_session_id).toBe(SESSION_ID);
     expect(result!.prompts).toHaveLength(1);
@@ -235,7 +235,7 @@ describe('fetchSessionDetail', () => {
     expect(result!.summary.request).toBe('target summary');
   });
 
-  it('returns null when server returns no summary for the session_id', async () => {
+  it('returns null when server returns no summary AND no observations/prompts', async () => {
     fetchMock.mockImplementation(() => {
       // Server-side filtering returns empty results when session not found
       return Promise.resolve({
@@ -247,6 +247,44 @@ describe('fetchSessionDetail', () => {
     const result = await fetchSessionDetail(SESSION_ID, PROJECT);
 
     expect(result).toBeNull();
+  });
+
+  it('returns observations and prompts with null summary for active/unsummarized sessions', async () => {
+    const sessionObservations = mockObservations.filter(o => o.memory_session_id === SESSION_ID);
+    const sessionPrompts = mockPrompts.filter(p => p.content_session_id === SESSION_ID);
+
+    fetchMock.mockImplementation((url: string) => {
+      const u = new URL(url, 'http://localhost');
+      if (u.pathname === '/api/summaries') {
+        // No summary exists for active session
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(makeApiResponse([])),
+        });
+      }
+      if (u.pathname === '/api/observations') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(makeApiResponse(sessionObservations)),
+        });
+      }
+      if (u.pathname === '/api/prompts') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(makeApiResponse(sessionPrompts)),
+        });
+      }
+      return Promise.resolve({ ok: false, statusText: 'Not Found' });
+    });
+
+    const result = await fetchSessionDetail(SESSION_ID, PROJECT);
+
+    expect(result).not.toBeNull();
+    expect(result!.summary).toBeNull();
+    expect(result!.observations).toHaveLength(1);
+    expect(result!.observations[0].memory_session_id).toBe(SESSION_ID);
+    expect(result!.prompts).toHaveLength(1);
+    expect(result!.prompts[0].content_session_id).toBe(SESSION_ID);
   });
 
   it('throws when observations API returns non-ok response', async () => {
@@ -309,7 +347,7 @@ describe('fetchSessionDetail', () => {
       });
     });
 
-    const result = await fetchSessionDetail(SESSION_ID, PROJECT);
+    const result = await fetchSessionDetail(SESSION_ID, PROJECT, mockSummary.id);
 
     expect(result).not.toBeNull();
     expect(result!.observations).toEqual([]);

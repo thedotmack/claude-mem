@@ -259,6 +259,58 @@ describe('SessionDetail props contract', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Live session rendering (null summary) — source-code structural tests
+// ---------------------------------------------------------------------------
+
+describe('SessionDetail live session rendering', () => {
+  it('renders live-session-card when summary is null', () => {
+    expect(SESSION_DETAIL_SOURCE).toMatch(/live-session-card/);
+    expect(SESSION_DETAIL_SOURCE).toMatch(/data-testid=["']live-session-card["']/);
+  });
+
+  it('shows "Live Session" badge text', () => {
+    expect(SESSION_DETAIL_SOURCE).toMatch(/Live Session/);
+  });
+
+  it('shows in-progress message when summary is null', () => {
+    expect(SESSION_DETAIL_SOURCE).toMatch(/still in progress/);
+    expect(SESSION_DETAIL_SOURCE).toMatch(/summary will be generated/);
+  });
+
+  it('shows observation and prompt counts in live session card', () => {
+    expect(SESSION_DETAIL_SOURCE).toMatch(/detail\.observations\.length/);
+    expect(SESSION_DETAIL_SOURCE).toMatch(/detail\.prompts\.length/);
+  });
+
+  it('conditionally renders SummaryCard only when summary is non-null', () => {
+    // Should have a conditional check for detail.summary before rendering SummaryCard
+    expect(SESSION_DETAIL_SOURCE).toMatch(/detail\.summary\s*\?/);
+  });
+
+  it('renders timeline normally regardless of summary presence', () => {
+    // buildTimeline should be called with detail.observations/prompts outside the summary conditional
+    expect(SESSION_DETAIL_SOURCE).toMatch(/buildTimeline\(detail\.observations/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Props contract: null summary acceptance
+// ---------------------------------------------------------------------------
+
+describe('SessionDetail accepts null summary in SessionDetail type', () => {
+  it('SessionDetail type accepts null summary (active session)', () => {
+    const detail: SessionDetailType = {
+      summary: null,
+      observations: [makeObservation(1, 2000)],
+      prompts: [makePrompt(1, 1500)],
+    };
+    expect(detail.summary).toBeNull();
+    expect(detail.observations).toHaveLength(1);
+    expect(detail.prompts).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Virtualization: source-code structural tests (RED → GREEN via implementation)
 // ---------------------------------------------------------------------------
 

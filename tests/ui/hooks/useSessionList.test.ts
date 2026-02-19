@@ -4,6 +4,7 @@ import {
   mapSummaryToSessionListItem,
   groupSessionsByDay,
   buildSessionGroups,
+  nextDayString,
 } from '../../../src/ui/viewer/hooks/useSessionList.js';
 
 // ─────────────────────────────────────────────────────────
@@ -378,6 +379,174 @@ describe('prependSession', () => {
     const updated = prependSession([], newSummary);
 
     expect(updated[0].sessions[0].observationCount).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// nextDayString
+// ─────────────────────────────────────────────────────────
+
+describe('nextDayString', () => {
+  it('returns the next day for a mid-month date', () => {
+    expect(nextDayString('2026-02-17')).toBe('2026-02-18');
+  });
+
+  it('handles month rollover (Jan 31 → Feb 1)', () => {
+    expect(nextDayString('2026-01-31')).toBe('2026-02-01');
+  });
+
+  it('handles year rollover (Dec 31 → Jan 1)', () => {
+    expect(nextDayString('2025-12-31')).toBe('2026-01-01');
+  });
+
+  it('handles Feb 28 non-leap year (→ Mar 1)', () => {
+    expect(nextDayString('2025-02-28')).toBe('2025-03-01');
+  });
+
+  it('handles Feb 28 leap year (→ Feb 29)', () => {
+    expect(nextDayString('2024-02-28')).toBe('2024-02-29');
+  });
+
+  it('handles Feb 29 leap year (→ Mar 1)', () => {
+    expect(nextDayString('2024-02-29')).toBe('2024-03-01');
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// fetchSessionsByDate
+// ─────────────────────────────────────────────────────────
+
+describe('fetchSessionsByDate', () => {
+  const TODAY = new Date('2026-02-17T10:00:00Z');
+
+  const mockSearchResponse = {
+    sessions: [
+      { id: 1, memory_session_id: 'sess-1', project: 'proj-a', request: 'Task A', created_at_epoch: TODAY.getTime(), observation_count: 5 },
+      { id: 2, memory_session_id: 'sess-2', project: 'proj-a', request: 'Task B', created_at_epoch: TODAY.getTime() - 3600000, observation_count: 3 },
+    ],
+    observations: [],
+    prompts: [],
+    totalResults: 2,
+    query: '',
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(TODAY);
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('fetches from /api/search with dateStart and next-day dateEnd for full-day coverage', async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockSearchResponse,
+    } as Response);
+
+    const { fetchSessionsByDate } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
+    await fetchSessionsByDate('2026-02-17', 'proj-a');
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const url = mockFetch.mock.calls[0][0] as string;
+    expect(url).toContain('/api/search');
+    expect(url).toContain('dateStart=2026-02-17');
+    expect(url).toContain('dateEnd=2026-02-18');
+    expect(url).toContain('project=proj-a');
+  });
+
+  it('omits project param when project is empty', async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockSearchResponse,
+    } as Response);
+
+    const { fetchSessionsByDate } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
+    await fetchSessionsByDate('2026-02-17', '');
+
+    const url = mockFetch.mock.calls[0][0] as string;
+    expect(url).not.toContain('project=');
+  });
+
+  it('maps memory_session_id to session_id from search API response', async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockSearchResponse,
+    } as Response);
+
+    const { fetchSessionsByDate } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
+    const result = await fetchSessionsByDate('2026-02-17', 'proj-a');
+
+    expect(result).toHaveLength(2);
+    expect(result[0].id).toBe(1);
+    expect(result[0].session_id).toBe('sess-1');
+    expect(result[0].status).toBe('completed');
+    expect(result[0].observationCount).toBe(5);
+    expect(result[1].session_id).toBe('sess-2');
+  });
+
+  it('prefers session_id over memory_session_id when both present', async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        sessions: [{ id: 1, session_id: 'content-id', memory_session_id: 'mem-id', project: 'p', request: null, created_at_epoch: TODAY.getTime() }],
+        observations: [],
+        prompts: [],
+        totalResults: 1,
+        query: '',
+      }),
+    } as Response);
+
+    const { fetchSessionsByDate } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
+    const result = await fetchSessionsByDate('2026-02-17', '');
+
+    expect(result[0].session_id).toBe('content-id');
+  });
+
+  it('returns empty array when search returns no sessions', async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ sessions: [], observations: [], prompts: [], totalResults: 0, query: '' }),
+    } as Response);
+
+    const { fetchSessionsByDate } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
+    const result = await fetchSessionsByDate('2026-02-17', 'proj-a');
+
+    expect(result).toHaveLength(0);
+  });
+
+  it('throws on non-ok response', async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      statusText: 'Internal Server Error',
+    } as Response);
+
+    const { fetchSessionsByDate } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
+    await expect(fetchSessionsByDate('2026-02-17', 'proj-a'))
+      .rejects.toThrow('Failed to load sessions for date');
+  });
+
+  it('defaults observationCount to 0 when search result lacks observation_count', async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        sessions: [{ id: 1, memory_session_id: 'sess-1', project: 'p', request: null, created_at_epoch: TODAY.getTime() }],
+        observations: [],
+        prompts: [],
+        totalResults: 1,
+        query: '',
+      }),
+    } as Response);
+
+    const { fetchSessionsByDate } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
+    const result = await fetchSessionsByDate('2026-02-17', '');
+
+    expect(result[0].observationCount).toBe(0);
   });
 });
 

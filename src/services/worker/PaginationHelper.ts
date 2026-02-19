@@ -94,9 +94,25 @@ export class PaginationHelper {
   }
 
   /**
+   * Find the epoch of the latest summary for a session, resolving both
+   * content_session_id and memory_session_id.
+   * Returns 0 if no summaries exist for the session.
+   */
+  private getLatestSummaryEpoch(sessionId: string): number {
+    const db = this.dbManager.getSessionStore().db;
+    const row = db.prepare(`
+      SELECT MAX(ss.created_at_epoch) as epoch
+      FROM session_summaries ss
+      LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
+      WHERE s.content_session_id = ? OR ss.memory_session_id = ?
+    `).get(sessionId, sessionId) as { epoch: number | null } | undefined;
+    return row?.epoch ?? 0;
+  }
+
+  /**
    * Get paginated observations
    */
-  getObservations(offset: number, limit: number, project?: string, sessionId?: string, summaryId?: number): PaginatedResult<Observation> {
+  getObservations(offset: number, limit: number, project?: string, sessionId?: string, summaryId?: number, unsummarized?: boolean): PaginatedResult<Observation> {
     const db = this.dbManager.getSessionStore().db;
 
     // When summaryId is provided, scope to that summary's time window
@@ -136,18 +152,28 @@ export class PaginationHelper {
     }
 
     if (sessionId) {
-      // When filtering by session_id (content_session_id), join through sdk_sessions
-      // since observations use memory_session_id, not content_session_id
+      // Match by content_session_id (via sdk_sessions JOIN) OR by memory_session_id directly.
+      // Active/in-progress sessions pass memory_session_id, while summarized sessions
+      // pass content_session_id — LEFT JOIN + OR handles both cases.
       let query = `
         SELECT o.id, o.memory_session_id, o.project, o.type, o.title, o.subtitle,
                o.narrative, o.text, o.facts, o.concepts, o.files_read, o.files_modified,
                o.prompt_number, o.created_at, o.created_at_epoch
         FROM observations o
-        JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+        LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
       `;
       const params: (string | number)[] = [];
-      const conditions: string[] = ['s.content_session_id = ?'];
-      params.push(sessionId);
+      const conditions: string[] = ['(s.content_session_id = ? OR o.memory_session_id = ?)'];
+      params.push(sessionId, sessionId);
+
+      // When unsummarized=true, scope to observations after the latest summary
+      if (unsummarized) {
+        const afterEpoch = this.getLatestSummaryEpoch(sessionId);
+        if (afterEpoch > 0) {
+          conditions.push('o.created_at_epoch > ?');
+          params.push(afterEpoch);
+        }
+      }
 
       if (project) {
         conditions.push('o.project = ?');
@@ -222,8 +248,11 @@ export class PaginationHelper {
       params.push(project);
     }
     if (sessionId) {
-      conditions.push('s.content_session_id = ?');
-      params.push(sessionId);
+      // Match by content_session_id OR memory_session_id — sessions loaded via
+      // the search API carry memory_session_id, while sessions from the summaries
+      // API carry content_session_id.  This mirrors getObservations/getPrompts.
+      conditions.push('(s.content_session_id = ? OR ss.memory_session_id = ?)');
+      params.push(sessionId, sessionId);
     }
     if (conditions.length > 0) {
       query += ` WHERE ${conditions.join(' AND ')}`;
@@ -246,7 +275,7 @@ export class PaginationHelper {
   /**
    * Get paginated user prompts
    */
-  getPrompts(offset: number, limit: number, project?: string, sessionId?: string, summaryId?: number): PaginatedResult<UserPrompt> {
+  getPrompts(offset: number, limit: number, project?: string, sessionId?: string, summaryId?: number, unsummarized?: boolean): PaginatedResult<UserPrompt> {
     const db = this.dbManager.getSessionStore().db;
 
     // When summaryId is provided, scope prompts to that summary's time window
@@ -284,10 +313,13 @@ export class PaginationHelper {
       };
     }
 
+    // LEFT JOIN so prompts from active sessions (where sdk_sessions may reference
+    // by memory_session_id) are still returned.  The OR handles both
+    // content_session_id and memory_session_id lookups.
     let query = `
       SELECT up.id, up.content_session_id, s.project, up.prompt_number, up.prompt_text, up.created_at, up.created_at_epoch
       FROM user_prompts up
-      JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+      LEFT JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
     `;
     const params: (string | number)[] = [];
     const conditions: string[] = [];
@@ -297,8 +329,17 @@ export class PaginationHelper {
       params.push(project);
     }
     if (sessionId) {
-      conditions.push('up.content_session_id = ?');
-      params.push(sessionId);
+      conditions.push('(up.content_session_id = ? OR s.memory_session_id = ?)');
+      params.push(sessionId, sessionId);
+
+      // When unsummarized=true, scope to prompts after the latest summary
+      if (unsummarized) {
+        const afterEpoch = this.getLatestSummaryEpoch(sessionId);
+        if (afterEpoch > 0) {
+          conditions.push('up.created_at_epoch > ?');
+          params.push(afterEpoch);
+        }
+      }
     }
     if (conditions.length > 0) {
       query += ` WHERE ${conditions.join(' AND ')}`;
