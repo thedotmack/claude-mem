@@ -724,9 +724,10 @@ export class ChromaSync {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
       // Check for connection errors
+      const errorCode = (error as NodeJS.ErrnoException).code;
       const isConnectionError =
-        errorMessage.includes('ECONNREFUSED') ||
-        errorMessage.includes('ENOTFOUND') ||
+        errorCode === 'ECONNREFUSED' ||
+        errorCode === 'ENOTFOUND' ||
         errorMessage.includes('fetch failed') ||
         errorMessage.includes('subprocess closed') ||
         errorMessage.includes('timed out');

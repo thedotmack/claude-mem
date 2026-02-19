@@ -59,89 +59,21 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     const searchSessions = searchType === 'all' || searchType === 'sessions';
     const searchPrompts = searchType === 'all' || searchType === 'prompts';
 
-    let observations: ObservationSearchResult[] = [];
-    let sessions: SessionSummarySearchResult[] = [];
-    let prompts: UserPromptSearchResult[] = [];
+    // Build Chroma where filter before try (non-throwing setup)
+    const whereFilter = this.buildWhereFilter(searchType, project);
+    logger.debug('SEARCH', 'ChromaSearchStrategy: Querying Chroma', { query, searchType });
 
+    let chromaResults: { ids: number[]; distances: number[]; metadatas: any[] };
     try {
-      // Build Chroma where filter for doc_type and project
-      const whereFilter = this.buildWhereFilter(searchType, project);
-
-      // Step 1: Chroma semantic search
-      logger.debug('SEARCH', 'ChromaSearchStrategy: Querying Chroma', { query, searchType });
-      const chromaResults = await this.chromaSync.queryChroma(
+      chromaResults = await this.chromaSync.queryChroma(
         query,
         SEARCH_CONSTANTS.CHROMA_BATCH_SIZE,
         whereFilter
       );
-
-      logger.debug('SEARCH', 'ChromaSearchStrategy: Chroma returned matches', {
-        matchCount: chromaResults.ids.length
-      });
-
-      if (chromaResults.ids.length === 0) {
-        // No matches - this is the correct answer
-        return {
-          results: { observations: [], sessions: [], prompts: [] },
-          usedChroma: true,
-          fellBack: false,
-          strategy: 'chroma'
-        };
-      }
-
-      // Step 2: Filter by recency (90 days)
-      const recentItems = this.filterByRecency(chromaResults);
-      logger.debug('SEARCH', 'ChromaSearchStrategy: Filtered by recency', {
-        count: recentItems.length
-      });
-
-      // Step 3: Categorize by document type
-      const categorized = this.categorizeByDocType(recentItems, {
-        searchObservations,
-        searchSessions,
-        searchPrompts
-      });
-
-      // Step 4: Hydrate from SQLite with additional filters
-      if (categorized.obsIds.length > 0) {
-        const obsOptions = { type: obsType, concepts, files, orderBy, limit, project };
-        observations = this.sessionStore.getObservationsByIds(categorized.obsIds, obsOptions);
-      }
-
-      if (categorized.sessionIds.length > 0) {
-        sessions = this.sessionStore.getSessionSummariesByIds(categorized.sessionIds, {
-          orderBy,
-          limit,
-          project
-        });
-      }
-
-      if (categorized.promptIds.length > 0) {
-        prompts = this.sessionStore.getUserPromptsByIds(categorized.promptIds, {
-          orderBy,
-          limit,
-          project
-        });
-      }
-
-      logger.debug('SEARCH', 'ChromaSearchStrategy: Hydrated results', {
-        observations: observations.length,
-        sessions: sessions.length,
-        prompts: prompts.length
-      });
-
-      return {
-        results: { observations, sessions, prompts },
-        usedChroma: true,
-        fellBack: false,
-        strategy: 'chroma'
-      };
-
     } catch (error) {
       if (error instanceof Error) {
         logger.error('SEARCH', 'ChromaSearchStrategy: Search failed', {}, error);
       }
-      // Return empty result - caller may try fallback strategy
       return {
         results: { observations: [], sessions: [], prompts: [] },
         usedChroma: false,
@@ -149,6 +81,71 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         strategy: 'chroma'
       };
     }
+
+    logger.debug('SEARCH', 'ChromaSearchStrategy: Chroma returned matches', {
+      matchCount: chromaResults.ids.length
+    });
+
+    if (chromaResults.ids.length === 0) {
+      return {
+        results: { observations: [], sessions: [], prompts: [] },
+        usedChroma: true,
+        fellBack: false,
+        strategy: 'chroma'
+      };
+    }
+
+    // Step 2: Filter by recency (90 days)
+    const recentItems = this.filterByRecency(chromaResults);
+    logger.debug('SEARCH', 'ChromaSearchStrategy: Filtered by recency', {
+      count: recentItems.length
+    });
+
+    // Step 3: Categorize by document type
+    const categorized = this.categorizeByDocType(recentItems, {
+      searchObservations,
+      searchSessions,
+      searchPrompts
+    });
+
+    // Step 4: Hydrate from SQLite with additional filters
+    let observations: ObservationSearchResult[] = [];
+    let sessions: SessionSummarySearchResult[] = [];
+    let prompts: UserPromptSearchResult[] = [];
+
+    if (categorized.obsIds.length > 0) {
+      const obsOptions = { type: obsType, concepts, files, orderBy, limit, project };
+      observations = this.sessionStore.getObservationsByIds(categorized.obsIds, obsOptions);
+    }
+
+    if (categorized.sessionIds.length > 0) {
+      sessions = this.sessionStore.getSessionSummariesByIds(categorized.sessionIds, {
+        orderBy,
+        limit,
+        project
+      });
+    }
+
+    if (categorized.promptIds.length > 0) {
+      prompts = this.sessionStore.getUserPromptsByIds(categorized.promptIds, {
+        orderBy,
+        limit,
+        project
+      });
+    }
+
+    logger.debug('SEARCH', 'ChromaSearchStrategy: Hydrated results', {
+      observations: observations.length,
+      sessions: sessions.length,
+      prompts: prompts.length
+    });
+
+    return {
+      results: { observations, sessions, prompts },
+      usedChroma: true,
+      fellBack: false,
+      strategy: 'chroma'
+    };
   }
 
   /**

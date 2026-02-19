@@ -57,6 +57,9 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
     let prompts: UserPromptSearchResult[] = [];
 
     const baseOptions = { limit, offset, orderBy, project, dateRange };
+    const obsOptions = searchObservations
+      ? { ...baseOptions, type: obsType, concepts, files }
+      : null;
 
     logger.debug('SEARCH', 'SQLiteSearchStrategy: Filter-only query', {
       searchType,
@@ -65,43 +68,34 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
     });
 
     try {
-      if (searchObservations) {
-        const obsOptions = {
-          ...baseOptions,
-          type: obsType,
-          concepts,
-          files
-        };
+      if (obsOptions) {
         observations = this.sessionSearch.searchObservations(undefined, obsOptions);
       }
-
       if (searchSessions) {
         sessions = this.sessionSearch.searchSessions(undefined, baseOptions);
       }
-
       if (searchPrompts) {
         prompts = this.sessionSearch.searchUserPrompts(undefined, baseOptions);
       }
-
-      logger.debug('SEARCH', 'SQLiteSearchStrategy: Results', {
-        observations: observations.length,
-        sessions: sessions.length,
-        prompts: prompts.length
-      });
-
-      return {
-        results: { observations, sessions, prompts },
-        usedChroma: false,
-        fellBack: false,
-        strategy: 'sqlite'
-      };
-
     } catch (error) {
       if (error instanceof Error) {
         logger.error('SEARCH', 'SQLiteSearchStrategy: Search failed', {}, error);
       }
       return this.emptyResult('sqlite');
     }
+
+    logger.debug('SEARCH', 'SQLiteSearchStrategy: Results', {
+      observations: observations.length,
+      sessions: sessions.length,
+      prompts: prompts.length
+    });
+
+    return {
+      results: { observations, sessions, prompts },
+      usedChroma: false,
+      fellBack: false,
+      strategy: 'sqlite'
+    };
   }
 
   /**

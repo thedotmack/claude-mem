@@ -68,19 +68,12 @@ export async function hookCommand(platform: string, event: string, options: Hook
   const adapter = getPlatformAdapter(platform);
   const handler = getEventHandler(event);
 
+  let result: Awaited<ReturnType<typeof handler.execute>>;
   try {
     const rawInput = await readJsonFromStdin();
     const input = adapter.normalizeInput(rawInput);
     input.platform = platform;
-    const result = await handler.execute(input);
-    const output = adapter.formatOutput(result);
-
-    console.log(JSON.stringify(output));
-    const exitCode = result.exitCode ?? HOOK_EXIT_CODES.SUCCESS;
-    if (!options.skipExit) {
-      process.exit(exitCode);
-    }
-    return exitCode;
+    result = await handler.execute(input);
   } catch (error) {
     if (isWorkerUnavailableError(error)) {
       // Worker unavailable — degrade gracefully, don't block the user
@@ -98,4 +91,13 @@ export async function hookCommand(platform: string, event: string, options: Hook
     }
     return HOOK_EXIT_CODES.BLOCKING_ERROR;
   }
+
+  // Format output and exit (non-throwing code moved after try-catch)
+  const output = adapter.formatOutput(result);
+  console.log(JSON.stringify(output));
+  const exitCode = result.exitCode ?? HOOK_EXIT_CODES.SUCCESS;
+  if (!options.skipExit) {
+    process.exit(exitCode);
+  }
+  return exitCode;
 }

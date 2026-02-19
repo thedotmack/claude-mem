@@ -9,6 +9,7 @@ import { basename } from 'path';
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { logger } from '../../utils/logger.js';
 
 export const userMessageHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -29,8 +30,11 @@ export const userMessageHandler: EventHandler = {
     let response: Response;
     try {
       response = await fetch(contextUrl, { method: 'GET' });
-    } catch {
+    } catch (error) {
       // Worker unreachable — skip user message gracefully
+      if (error instanceof Error) {
+        logger.warn('HOOK', 'Context fetch failed - worker unreachable', {}, error);
+      }
       return { exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 

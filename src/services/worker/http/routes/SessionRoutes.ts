@@ -211,69 +211,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // Crash recovery: If not aborted and still has work, restart (with limit)
         if (!wasAborted) {
           try {
-            const pendingStore = this.sessionManager.getPendingMessageStore();
-            const pendingCount = pendingStore.getPendingCount(sessionDbId);
-
-            // CRITICAL: Limit consecutive restarts to prevent infinite loops
-            // This prevents runaway API costs when there's a persistent error (e.g., memorySessionId not captured)
-            const MAX_CONSECUTIVE_RESTARTS = 3;
-
-            if (pendingCount > 0) {
-              // GUARD: Prevent duplicate crash recovery spawns
-              if (this.crashRecoveryScheduled.has(sessionDbId)) {
-                logger.debug('SESSION', 'Crash recovery already scheduled', { sessionDbId });
-                return;
-              }
-
-              session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1;
-
-              if (session.consecutiveRestarts > MAX_CONSECUTIVE_RESTARTS) {
-                logger.error('SESSION', `CRITICAL: Generator restart limit exceeded - stopping to prevent runaway costs`, {
-                  sessionId: sessionDbId,
-                  pendingCount,
-                  consecutiveRestarts: session.consecutiveRestarts,
-                  maxRestarts: MAX_CONSECUTIVE_RESTARTS,
-                  action: 'Generator will NOT restart. Check logs for root cause. Messages remain in pending state.'
-                });
-                // Don't restart - abort to prevent further API calls
-                session.abortController.abort();
-                return;
-              }
-
-              logger.info('SESSION', `Restarting generator after crash/exit with pending work`, {
-                sessionId: sessionDbId,
-                pendingCount,
-                consecutiveRestarts: session.consecutiveRestarts,
-                maxRestarts: MAX_CONSECUTIVE_RESTARTS
-              });
-
-              // Abort OLD controller before replacing to prevent child process leaks
-              const oldController = session.abortController;
-              session.abortController = new AbortController();
-              oldController.abort();
-
-              this.crashRecoveryScheduled.add(sessionDbId);
-
-              // Exponential backoff: 1s, 2s, 4s for subsequent restarts
-              const backoffMs = Math.min(1000 * Math.pow(2, session.consecutiveRestarts - 1), 8000);
-
-              // Delay before restart with exponential backoff
-              setTimeout(() => {
-                this.crashRecoveryScheduled.delete(sessionDbId);
-                const stillExists = this.sessionManager.getSession(sessionDbId);
-                if (stillExists && !stillExists.generatorPromise) {
-                  this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
-                }
-              }, backoffMs);
-            } else {
-              // No pending work - abort to kill the child process
-              session.abortController.abort();
-              // Reset restart counter on successful completion
-              session.consecutiveRestarts = 0;
-              logger.debug('SESSION', 'Aborted controller after natural completion', {
-                sessionId: sessionDbId
-              });
-            }
+            this.attemptCrashRecovery(session, sessionDbId);
           } catch (e) {
             // Ignore errors during recovery check, but still abort to prevent leaks
             logger.debug('SESSION', 'Error during recovery check, aborting to prevent leaks', { sessionId: sessionDbId, error: e instanceof Error ? e.message : String(e) });
@@ -284,6 +222,81 @@ export class SessionRoutes extends BaseRouteHandler {
         // The generator waits for events, so if it exited, it's either aborted or crashed.
         // Idle sessions stay in memory (ActiveSession is small) to listen for future events.
       });
+  }
+
+  /**
+   * Attempt crash recovery for a session whose generator exited unexpectedly.
+   * Checks for pending work and schedules a restart with exponential backoff.
+   * Limits consecutive restarts to prevent runaway API costs.
+   */
+  private attemptCrashRecovery(
+    session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
+    sessionDbId: number
+  ): void {
+    const pendingStore = this.sessionManager.getPendingMessageStore();
+    const pendingCount = pendingStore.getPendingCount(sessionDbId);
+
+    // CRITICAL: Limit consecutive restarts to prevent infinite loops
+    // This prevents runaway API costs when there's a persistent error (e.g., memorySessionId not captured)
+    const MAX_CONSECUTIVE_RESTARTS = 3;
+
+    if (pendingCount === 0) {
+      // No pending work - abort to kill the child process
+      session.abortController.abort();
+      // Reset restart counter on successful completion
+      session.consecutiveRestarts = 0;
+      logger.debug('SESSION', 'Aborted controller after natural completion', {
+        sessionId: sessionDbId
+      });
+      return;
+    }
+
+    // GUARD: Prevent duplicate crash recovery spawns
+    if (this.crashRecoveryScheduled.has(sessionDbId)) {
+      logger.debug('SESSION', 'Crash recovery already scheduled', { sessionDbId });
+      return;
+    }
+
+    session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1;
+
+    if (session.consecutiveRestarts > MAX_CONSECUTIVE_RESTARTS) {
+      logger.error('SESSION', `CRITICAL: Generator restart limit exceeded - stopping to prevent runaway costs`, {
+        sessionId: sessionDbId,
+        pendingCount,
+        consecutiveRestarts: session.consecutiveRestarts,
+        maxRestarts: MAX_CONSECUTIVE_RESTARTS,
+        action: 'Generator will NOT restart. Check logs for root cause. Messages remain in pending state.'
+      });
+      // Don't restart - abort to prevent further API calls
+      session.abortController.abort();
+      return;
+    }
+
+    logger.info('SESSION', `Restarting generator after crash/exit with pending work`, {
+      sessionId: sessionDbId,
+      pendingCount,
+      consecutiveRestarts: session.consecutiveRestarts,
+      maxRestarts: MAX_CONSECUTIVE_RESTARTS
+    });
+
+    // Abort OLD controller before replacing to prevent child process leaks
+    const oldController = session.abortController;
+    session.abortController = new AbortController();
+    oldController.abort();
+
+    this.crashRecoveryScheduled.add(sessionDbId);
+
+    // Exponential backoff: 1s, 2s, 4s for subsequent restarts
+    const backoffMs = Math.min(1000 * Math.pow(2, session.consecutiveRestarts - 1), 8000);
+
+    // Delay before restart with exponential backoff
+    setTimeout(() => {
+      this.crashRecoveryScheduled.delete(sessionDbId);
+      const stillExists = this.sessionManager.getSession(sessionDbId);
+      if (stillExists && !stillExists.generatorPromise) {
+        this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
+      }
+    }, backoffMs);
   }
 
   setupRoutes(app: express.Application): void {

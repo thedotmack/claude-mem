@@ -682,18 +682,20 @@ export class SearchManager {
 
     // Search for decision-type observations
     if (this.chromaSync) {
-      try {
-        if (query) {
-          logger.debug('SEARCH', 'Using Chroma semantic search with type=decision filter', {});
-          const chromaResults = await this.queryChroma(query, Math.min((filters.limit || 20) * 2, 100), { type: 'decision' });
-          const obsIds = chromaResults.ids;
+      const chromaLimit = Math.min((filters.limit || 20) * 2, 100);
+      const useSemanticSearch = !!query;
+      logger.debug('SEARCH', useSemanticSearch
+        ? 'Using Chroma semantic search with type=decision filter'
+        : 'Using metadata-first + semantic ranking for decisions', {});
 
-          if (obsIds.length > 0) {
-            results = this.sessionStore.getObservationsByIds(obsIds, { ...filters, type: 'decision' });
-            results.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
+      try {
+        if (useSemanticSearch) {
+          const chromaResults = await this.queryChroma(query, chromaLimit, { type: 'decision' });
+          if (chromaResults.ids.length > 0) {
+            results = this.sessionStore.getObservationsByIds(chromaResults.ids, { ...filters, type: 'decision' });
+            results.sort((a, b) => chromaResults.ids.indexOf(a.id) - chromaResults.ids.indexOf(b.id));
           }
         } else {
-          logger.debug('SEARCH', 'Using metadata-first + semantic ranking for decisions', {});
           results = await this.rankDecisionsByChroma(filters);
         }
       } catch (chromaError) {

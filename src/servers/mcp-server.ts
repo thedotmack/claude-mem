@@ -66,21 +66,20 @@ async function callWorkerAPI(
 
   const url = `${WORKER_BASE_URL}${endpoint}?${searchParams}`;
 
+  let data: { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
   try {
     const response = await fetch(url, {
       headers: { 'Authorization': 'Bearer ' + authToken }
     });
-
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(`Worker API error (${response.status}): ${errorText}`);
     }
-
-    const data = await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
-    logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
-    return data;
+    data = await response.json();
   } catch (error) {
-    logger.error('SYSTEM', '← Worker API error', { endpoint }, error as Error);
+    if (error instanceof Error) {
+      logger.error('SYSTEM', '← Worker API error', { endpoint }, error);
+    }
     return {
       content: [{
         type: 'text' as const,
@@ -89,6 +88,8 @@ async function callWorkerAPI(
       isError: true
     };
   }
+  logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
+  return data;
 }
 
 /**

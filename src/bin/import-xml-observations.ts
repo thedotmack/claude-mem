@@ -319,7 +319,7 @@ function main() {
         }
       } catch (e) {
         if (e instanceof Error) {
-          console.error(`Error storing observation:`, e.message);
+          console.error(`Error storing observation:`, e);
         }
         skipped++;
       }
@@ -353,7 +353,7 @@ function main() {
         }
       } catch (e) {
         if (e instanceof Error) {
-          console.error(`Error storing summary:`, e.message);
+          console.error(`Error storing summary:`, e);
         }
         skipped++;
       }

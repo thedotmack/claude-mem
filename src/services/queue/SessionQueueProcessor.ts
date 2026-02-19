@@ -34,20 +34,9 @@ export class SessionQueueProcessor {
     let lastActivityTime = Date.now();
 
     while (!signal.aborted) {
+      let persistentMessage: PersistentPendingMessage | null = null;
       try {
-        const persistentMessage = this.store.claimNextMessage(sessionDbId);
-
-        if (persistentMessage) {
-          lastActivityTime = Date.now();
-          yield this.toPendingMessageWithId(persistentMessage);
-        } else {
-          const receivedMessage = await this.waitForMessage(signal, IDLE_TIMEOUT_MS);
-          if (!receivedMessage && !signal.aborted) {
-            const shouldExit = this.checkIdleTimeout(lastActivityTime, sessionDbId, onIdleTimeout);
-            if (shouldExit) return;
-            lastActivityTime = Date.now();
-          }
-        }
+        persistentMessage = this.store.claimNextMessage(sessionDbId);
       } catch (error) {
         if (signal.aborted) return;
         if (error instanceof Error) {
@@ -55,6 +44,19 @@ export class SessionQueueProcessor {
         }
         // Small backoff to prevent tight loop on DB error
         await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+
+      if (persistentMessage) {
+        lastActivityTime = Date.now();
+        yield this.toPendingMessageWithId(persistentMessage);
+      } else {
+        const receivedMessage = await this.waitForMessage(signal, IDLE_TIMEOUT_MS);
+        if (!receivedMessage && !signal.aborted) {
+          const shouldExit = this.checkIdleTimeout(lastActivityTime, sessionDbId, onIdleTimeout);
+          if (shouldExit) return;
+          lastActivityTime = Date.now();
+        }
       }
     }
   }

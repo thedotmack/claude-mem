@@ -407,23 +407,25 @@ async function setupProjectContext(targetDir: string, workspaceRoot: string): Pr
   const contextUrl = `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`;
   const headers = { 'Authorization': 'Bearer ' + authToken };
 
+  let context: string | null = null;
   try {
     const healthResponse = await fetch(healthUrl);
     if (healthResponse.ok) {
       const contextResponse = await fetch(contextUrl, { headers });
       if (contextResponse.ok) {
-        const context = await contextResponse.text();
-        if (context && context.trim()) {
-          writeContextFile(workspaceRoot, context);
-          contextGenerated = true;
-          console.log(`  Generated initial context from existing memory`);
-        }
+        context = await contextResponse.text();
       }
     }
   } catch (error) {
     // [ANTI-PATTERN IGNORED]: Fallback behavior - worker not running, use placeholder
     const _ = error instanceof Error;
     logger.debug('CURSOR', 'Worker not running during install', {}, error as Error);
+  }
+
+  if (context && context.trim()) {
+    writeContextFile(workspaceRoot, context);
+    contextGenerated = true;
+    console.log(`  Generated initial context from existing memory`);
   }
 
   if (!contextGenerated) {
@@ -471,26 +473,28 @@ export function uninstallCursorHooks(target: CursorInstallTarget): number {
                      'save-observation.ps1', 'save-file-edit.ps1', 'session-summary.ps1'];
   const allScripts = [...bashScripts, ...psScripts];
 
+  // Build list of files to remove before any filesystem operations
+  const filesToRemove: Array<{ path: string; label: string }> = [];
+  for (const script of allScripts) {
+    const scriptPath = path.join(hooksDir, script);
+    if (existsSync(scriptPath)) {
+      filesToRemove.push({ path: scriptPath, label: `legacy script: ${script}` });
+    }
+  }
+  if (existsSync(hooksJsonPath)) {
+    filesToRemove.push({ path: hooksJsonPath, label: 'hooks.json' });
+  }
+  if (target === 'project') {
+    const contextFile = path.join(targetDir, 'rules', 'claude-mem-context.mdc');
+    if (existsSync(contextFile)) {
+      filesToRemove.push({ path: contextFile, label: 'context file' });
+    }
+  }
+
   try {
-    for (const script of allScripts) {
-      const scriptPath = path.join(hooksDir, script);
-      if (existsSync(scriptPath)) {
-        unlinkSync(scriptPath);
-        console.log(`  Removed legacy script: ${script}`);
-      }
-    }
-
-    if (existsSync(hooksJsonPath)) {
-      unlinkSync(hooksJsonPath);
-      console.log(`  Removed hooks.json`);
-    }
-
-    if (target === 'project') {
-      const contextFile = path.join(targetDir, 'rules', 'claude-mem-context.mdc');
-      if (existsSync(contextFile)) {
-        unlinkSync(contextFile);
-        console.log(`  Removed context file`);
-      }
+    for (const file of filesToRemove) {
+      unlinkSync(file.path);
+      console.log(`  Removed ${file.label}`);
     }
   } catch (error) {
     if (error instanceof Error) {

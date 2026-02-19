@@ -68,61 +68,57 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy } = options;
     const filterOptions = { limit, project, dateRange, orderBy };
 
-    try {
-      logger.debug('SEARCH', 'HybridSearchStrategy: findByConcept', { concept });
+    logger.debug('SEARCH', 'HybridSearchStrategy: findByConcept', { concept });
 
-      // Step 1: SQLite metadata filter
-      const metadataResults = this.sessionSearch.findByConcept(concept, filterOptions);
-      logger.debug('SEARCH', 'HybridSearchStrategy: Found metadata matches', {
-        count: metadataResults.length
-      });
+    // Step 1: SQLite metadata filter (non-throwing)
+    const metadataResults = this.sessionSearch.findByConcept(concept, filterOptions);
+    logger.debug('SEARCH', 'HybridSearchStrategy: Found metadata matches', {
+      count: metadataResults.length
+    });
 
-      if (metadataResults.length === 0) {
-        return this.emptyResult('hybrid');
-      }
-
-      // Step 2: Chroma semantic ranking
-      const ids = metadataResults.map(obs => obs.id);
-      const chromaResults = await this.chromaSync.queryChroma(
-        concept,
-        Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE)
-      );
-
-      // Step 3: Intersect - keep only IDs from metadata, in Chroma rank order
-      const rankedIds = this.intersectWithRanking(ids, chromaResults.ids);
-      logger.debug('SEARCH', 'HybridSearchStrategy: Ranked by semantic relevance', {
-        count: rankedIds.length
-      });
-
-      // Step 4: Hydrate in semantic rank order
-      if (rankedIds.length > 0) {
-        const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
-        // Restore semantic ranking order
-        observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
-
-        return {
-          results: { observations, sessions: [], prompts: [] },
-          usedChroma: true,
-          fellBack: false,
-          strategy: 'hybrid'
-        };
-      }
-
+    if (metadataResults.length === 0) {
       return this.emptyResult('hybrid');
+    }
 
+    // Step 2: Chroma semantic ranking (throwing - needs try)
+    const ids = metadataResults.map(obs => obs.id);
+    const chromaBatchSize = Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE);
+
+    let chromaResults: { ids: number[]; distances: number[]; metadatas: any[] };
+    try {
+      chromaResults = await this.chromaSync.queryChroma(concept, chromaBatchSize);
     } catch (error) {
       if (error instanceof Error) {
         logger.error('SEARCH', 'HybridSearchStrategy: findByConcept failed', {}, error);
       }
-      // Fall back to metadata-only results
-      const results = this.sessionSearch.findByConcept(concept, filterOptions);
       return {
-        results: { observations: results, sessions: [], prompts: [] },
+        results: { observations: metadataResults, sessions: [], prompts: [] },
         usedChroma: false,
         fellBack: true,
         strategy: 'hybrid'
       };
     }
+
+    // Step 3: Intersect - keep only IDs from metadata, in Chroma rank order
+    const rankedIds = this.intersectWithRanking(ids, chromaResults.ids);
+    logger.debug('SEARCH', 'HybridSearchStrategy: Ranked by semantic relevance', {
+      count: rankedIds.length
+    });
+
+    // Step 4: Hydrate in semantic rank order
+    if (rankedIds.length > 0) {
+      const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
+      observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+
+      return {
+        results: { observations, sessions: [], prompts: [] },
+        usedChroma: true,
+        fellBack: false,
+        strategy: 'hybrid'
+      };
+    }
+
+    return this.emptyResult('hybrid');
   }
 
   /**
@@ -136,59 +132,57 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     const filterOptions = { limit, project, dateRange, orderBy };
     const typeStr = Array.isArray(type) ? type.join(', ') : type;
 
-    try {
-      logger.debug('SEARCH', 'HybridSearchStrategy: findByType', { type: typeStr });
+    logger.debug('SEARCH', 'HybridSearchStrategy: findByType', { type: typeStr });
 
-      // Step 1: SQLite metadata filter
-      const metadataResults = this.sessionSearch.findByType(type as any, filterOptions);
-      logger.debug('SEARCH', 'HybridSearchStrategy: Found metadata matches', {
-        count: metadataResults.length
-      });
+    // Step 1: SQLite metadata filter (non-throwing)
+    const metadataResults = this.sessionSearch.findByType(type as any, filterOptions);
+    logger.debug('SEARCH', 'HybridSearchStrategy: Found metadata matches', {
+      count: metadataResults.length
+    });
 
-      if (metadataResults.length === 0) {
-        return this.emptyResult('hybrid');
-      }
-
-      // Step 2: Chroma semantic ranking
-      const ids = metadataResults.map(obs => obs.id);
-      const chromaResults = await this.chromaSync.queryChroma(
-        typeStr,
-        Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE)
-      );
-
-      // Step 3: Intersect with ranking
-      const rankedIds = this.intersectWithRanking(ids, chromaResults.ids);
-      logger.debug('SEARCH', 'HybridSearchStrategy: Ranked by semantic relevance', {
-        count: rankedIds.length
-      });
-
-      // Step 4: Hydrate in rank order
-      if (rankedIds.length > 0) {
-        const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
-        observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
-
-        return {
-          results: { observations, sessions: [], prompts: [] },
-          usedChroma: true,
-          fellBack: false,
-          strategy: 'hybrid'
-        };
-      }
-
+    if (metadataResults.length === 0) {
       return this.emptyResult('hybrid');
+    }
 
+    // Step 2: Chroma semantic ranking (throwing - needs try)
+    const ids = metadataResults.map(obs => obs.id);
+    const chromaBatchSize = Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE);
+
+    let chromaResults: { ids: number[]; distances: number[]; metadatas: any[] };
+    try {
+      chromaResults = await this.chromaSync.queryChroma(typeStr, chromaBatchSize);
     } catch (error) {
       if (error instanceof Error) {
         logger.error('SEARCH', 'HybridSearchStrategy: findByType failed', {}, error);
       }
-      const results = this.sessionSearch.findByType(type as any, filterOptions);
       return {
-        results: { observations: results, sessions: [], prompts: [] },
+        results: { observations: metadataResults, sessions: [], prompts: [] },
         usedChroma: false,
         fellBack: true,
         strategy: 'hybrid'
       };
     }
+
+    // Step 3: Intersect with ranking
+    const rankedIds = this.intersectWithRanking(ids, chromaResults.ids);
+    logger.debug('SEARCH', 'HybridSearchStrategy: Ranked by semantic relevance', {
+      count: rankedIds.length
+    });
+
+    // Step 4: Hydrate in rank order
+    if (rankedIds.length > 0) {
+      const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
+      observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+
+      return {
+        results: { observations, sessions: [], prompts: [] },
+        usedChroma: true,
+        fellBack: false,
+        strategy: 'hybrid'
+      };
+    }
+
+    return this.emptyResult('hybrid');
   }
 
   /**
@@ -205,57 +199,55 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy } = options;
     const filterOptions = { limit, project, dateRange, orderBy };
 
-    try {
-      logger.debug('SEARCH', 'HybridSearchStrategy: findByFile', { filePath });
+    logger.debug('SEARCH', 'HybridSearchStrategy: findByFile', { filePath });
 
-      // Step 1: SQLite metadata filter
-      const metadataResults = this.sessionSearch.findByFile(filePath, filterOptions);
-      logger.debug('SEARCH', 'HybridSearchStrategy: Found file matches', {
-        observations: metadataResults.observations.length,
-        sessions: metadataResults.sessions.length
-      });
+    // Step 1: SQLite metadata filter (non-throwing)
+    const metadataResults = this.sessionSearch.findByFile(filePath, filterOptions);
+    logger.debug('SEARCH', 'HybridSearchStrategy: Found file matches', {
+      observations: metadataResults.observations.length,
+      sessions: metadataResults.sessions.length
+    });
 
-      // Sessions don't need semantic ranking (already summarized)
-      const sessions = metadataResults.sessions;
+    // Sessions don't need semantic ranking (already summarized)
+    const sessions = metadataResults.sessions;
 
-      if (metadataResults.observations.length === 0) {
-        return { observations: [], sessions, usedChroma: false };
-      }
-
-      // Step 2: Chroma semantic ranking for observations
-      const ids = metadataResults.observations.map(obs => obs.id);
-      const chromaResults = await this.chromaSync.queryChroma(
-        filePath,
-        Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE)
-      );
-
-      // Step 3: Intersect with ranking
-      const rankedIds = this.intersectWithRanking(ids, chromaResults.ids);
-      logger.debug('SEARCH', 'HybridSearchStrategy: Ranked observations', {
-        count: rankedIds.length
-      });
-
-      // Step 4: Hydrate in rank order
-      if (rankedIds.length > 0) {
-        const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
-        observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
-
-        return { observations, sessions, usedChroma: true };
-      }
-
+    if (metadataResults.observations.length === 0) {
       return { observations: [], sessions, usedChroma: false };
+    }
 
+    // Step 2: Chroma semantic ranking for observations (throwing - needs try)
+    const ids = metadataResults.observations.map(obs => obs.id);
+    const chromaBatchSize = Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE);
+
+    let chromaResults: { ids: number[]; distances: number[]; metadatas: any[] };
+    try {
+      chromaResults = await this.chromaSync.queryChroma(filePath, chromaBatchSize);
     } catch (error) {
       if (error instanceof Error) {
         logger.error('SEARCH', 'HybridSearchStrategy: findByFile failed', {}, error);
       }
-      const results = this.sessionSearch.findByFile(filePath, filterOptions);
       return {
-        observations: results.observations,
-        sessions: results.sessions,
+        observations: metadataResults.observations,
+        sessions: metadataResults.sessions,
         usedChroma: false
       };
     }
+
+    // Step 3: Intersect with ranking
+    const rankedIds = this.intersectWithRanking(ids, chromaResults.ids);
+    logger.debug('SEARCH', 'HybridSearchStrategy: Ranked observations', {
+      count: rankedIds.length
+    });
+
+    // Step 4: Hydrate in rank order
+    if (rankedIds.length > 0) {
+      const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
+      observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+
+      return { observations, sessions, usedChroma: true };
+    }
+
+    return { observations: [], sessions, usedChroma: false };
   }
 
   /**
