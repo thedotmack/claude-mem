@@ -26,7 +26,8 @@ const PID_FILE = path.join(DATA_DIR, 'worker.pid');
 // These are claude-mem processes that can accumulate if not properly terminated
 const ORPHAN_PROCESS_PATTERNS = [
   'mcp-server.cjs',    // Main MCP server process
-  'worker-service.cjs', // Background worker daemon
+  'worker-service.cjs', // Background worker daemon (esbuild fallback)
+  'claude-mem',         // Compiled binary daemon
   'chroma-mcp'          // ChromaDB MCP subprocess
 ];
 
@@ -429,7 +430,7 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
 
 // Patterns that should be killed immediately at startup (no age gate)
 // These are child processes that should not outlive their parent worker
-const AGGRESSIVE_CLEANUP_PATTERNS = ['worker-service.cjs', 'chroma-mcp'];
+const AGGRESSIVE_CLEANUP_PATTERNS = ['worker-service.cjs', 'claude-mem', 'chroma-mcp'];
 
 // Patterns that keep the age-gated threshold (may be legitimately running)
 const AGE_GATED_CLEANUP_PATTERNS = ['mcp-server.cjs'];

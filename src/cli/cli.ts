@@ -99,6 +99,12 @@ program
   .option('--dry-run', 'Report what would be done without modifying files')
   .action(handleClean);
 
+program
+  .command('statusline')
+  .description('Output observation counts for status line')
+  .argument('[cwd]', 'Working directory (defaults to process.cwd())')
+  .action(handleStatusline);
+
 // ============================================================================
 // Cursor Integration
 // ============================================================================
@@ -283,6 +289,45 @@ async function handleClean(options: { dryRun?: boolean }) {
   const { cleanClaudeMd } = await import('./claude-md-commands.js');
   const result = await cleanClaudeMd(!!options.dryRun);
   process.exit(result);
+}
+
+async function handleStatusline(cwd?: string) {
+  const { Database } = await import('bun:sqlite');
+  const { existsSync, readFileSync } = await import('fs');
+  const { homedir } = await import('os');
+  const { join, basename } = await import('path');
+
+  const workingDir = cwd || process.env.CLAUDE_CWD || process.cwd();
+  const project = basename(workingDir);
+
+  // Resolve data directory: env var -> settings.json -> default
+  let dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+  if (!process.env.CLAUDE_MEM_DATA_DIR) {
+    const settingsPath = join(dataDir, 'settings.json');
+    if (existsSync(settingsPath)) {
+      try {
+        const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        if (settings.CLAUDE_MEM_DATA_DIR) dataDir = settings.CLAUDE_MEM_DATA_DIR;
+      } catch { /* use default — intentionally tolerant of corrupt settings */ }
+    }
+  }
+
+  const dbPath = join(dataDir, 'claude-mem.db');
+  if (!existsSync(dbPath)) {
+    console.log(JSON.stringify({ observations: 0, prompts: 0, project }));
+    process.exit(0);
+  }
+
+  const db = new Database(dbPath, { readonly: true });
+  const obs = db.query('SELECT COUNT(*) as c FROM observations WHERE project = ?').get(project) as { c: number };
+  const prompts = db.query(
+    `SELECT COUNT(*) as c FROM user_prompts up
+     JOIN sdk_sessions s ON s.content_session_id = up.content_session_id
+     WHERE s.project = ?`
+  ).get(project) as { c: number };
+  console.log(JSON.stringify({ observations: obs.c, prompts: prompts.c, project }));
+  db.close();
+  process.exit(0);
 }
 
 async function handleCursor(subcommand: string) {
