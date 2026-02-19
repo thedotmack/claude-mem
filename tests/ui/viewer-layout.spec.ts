@@ -26,7 +26,11 @@ async function setTheme(
   await page.evaluate((t) => {
     document.documentElement.setAttribute('data-theme', t);
   }, theme);
-  await page.waitForTimeout(300);
+  // Wait for the theme attribute to be applied and CSS to settle
+  await page.waitForFunction(
+    (t) => document.documentElement.getAttribute('data-theme') === t,
+    theme,
+  );
 }
 
 test.describe('Two-panel layout', () => {
@@ -149,12 +153,13 @@ test.describe('Search/filter mode uses feed', () => {
     const searchInput = page.locator('input[type="search"], input[placeholder*="earch"]');
     if (await searchInput.isVisible()) {
       await searchInput.fill('test query');
-      // Wait a moment for the mode transition
-      await page.waitForTimeout(500);
 
-      // In filter mode, the feed should be visible (not the two-panel)
+      // Wait for debounce to settle and feed mode to activate
       const feed = page.locator('.feed');
       const twoPanel = page.locator('[data-testid="two-panel"]');
+
+      // Wait for the feed to appear (indicates mode transition after debounce)
+      await expect(feed).toBeVisible({ timeout: 5000 });
 
       // Either feed is visible or two-panel is hidden
       const feedVisible = await feed.isVisible();

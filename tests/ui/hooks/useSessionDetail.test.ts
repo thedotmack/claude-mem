@@ -415,6 +415,41 @@ describe('fetchSessionDetail', () => {
     expect(result!.observations[0].created_at_epoch).toBeLessThan(mockSummary.created_at_epoch);
   });
 
+  it('forwards AbortSignal to all three fetch calls when signal is provided', async () => {
+    const controller = new AbortController();
+
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(makeApiResponse([mockSummary])),
+    });
+
+    await fetchSessionDetail(SESSION_ID, PROJECT, mockSummary.id, controller.signal);
+
+    // All 3 fetch calls (summaries, observations, prompts) should receive the signal
+    for (const call of fetchMock.mock.calls) {
+      const fetchInit = call[1] as RequestInit | undefined;
+      expect(fetchInit?.signal).toBe(controller.signal);
+    }
+  });
+
+  it('rejects when signal is aborted before fetch completes', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+      if (init?.signal?.aborted) {
+        return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'));
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(makeApiResponse([])),
+      });
+    });
+
+    await expect(fetchSessionDetail(SESSION_ID, PROJECT, mockSummary.id, controller.signal))
+      .rejects.toThrow('aborted');
+  });
+
   it('first summary fetches observations from epoch 0 (no lower bound) when no summaryId given', async () => {
     // When summaryId is absent from the request, the server queries all observations for the session.
     // This is the correct behavior for the first summary's detail view:

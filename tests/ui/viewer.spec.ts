@@ -30,8 +30,11 @@ async function setTheme(
     document.documentElement.setAttribute('data-theme', t);
   }, theme);
 
-  // Give CSS transitions a moment to settle before taking screenshots
-  await page.waitForTimeout(300);
+  // Wait for the theme attribute to be applied and CSS to settle
+  await page.waitForFunction(
+    (t) => document.documentElement.getAttribute('data-theme') === t,
+    theme,
+  );
 }
 
 test.describe('Viewer UI — baseline screenshots', () => {

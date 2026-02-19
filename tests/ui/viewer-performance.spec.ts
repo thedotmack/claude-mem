@@ -35,7 +35,8 @@ async function setTheme(
   await page.evaluate((t) => {
     document.documentElement.setAttribute('data-theme', t);
   }, theme);
-  await page.waitForTimeout(300);
+  // Wait for the theme attribute to be reflected on the DOM
+  await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
 }
 
 /**
@@ -49,7 +50,8 @@ async function navigateToFirstSession(page: import('@playwright/test').Page): Pr
     return false;
   }
   await sessionRows.first().click();
-  await page.waitForTimeout(500);
+  // Wait for session detail panel to appear after clicking a session row
+  await expect(page.locator('[data-testid="session-detail"]')).toBeVisible({ timeout: 5000 });
   return true;
 }
 
@@ -96,12 +98,14 @@ async function measureScrollFrameTimes(
   const stepDelta = scrollDeltaY / steps;
   for (let i = 0; i < steps; i++) {
     await page.mouse.wheel(centerX, centerY, { deltaY: stepDelta });
-    // Small pause between scroll steps to allow frame rendering
-    await page.waitForTimeout(20);
+    // Simulate rapid user interaction — small pause between scroll steps to allow frame rendering
+    await page.waitForTimeout(16);
   }
 
-  // Wait for scroll animation to settle
-  await page.waitForTimeout(200);
+  // Wait for scroll animation to settle by flushing two rAF cycles
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
 
   // Stop the rAF loop and retrieve collected frame durations
   const frameTimes = await page.evaluate(() => {
@@ -136,8 +140,15 @@ test.describe('Phase E — performance', () => {
     const detail = page.locator('[data-testid="session-detail"]');
     await expect(detail).toBeVisible({ timeout: 5000 });
 
-    // Allow content to fully render before measuring
-    await page.waitForTimeout(300);
+    // Wait for content to fully render before measuring — ensure at least one child is present
+    await page.waitForFunction(
+      (sel) => {
+        const el = document.querySelector(sel);
+        return el && el.children.length > 0;
+      },
+      '[data-testid="session-detail"]',
+      { timeout: 5000 },
+    );
 
     const frameTimes = await measureScrollFrameTimes(
       page,
@@ -178,7 +189,16 @@ test.describe('Phase E — performance', () => {
 
     const detail = page.locator('[data-testid="session-detail"]');
     await expect(detail).toBeVisible({ timeout: 5000 });
-    await page.waitForTimeout(300);
+
+    // Wait for detail content to render before inspecting timeline
+    await page.waitForFunction(
+      (sel) => {
+        const el = document.querySelector(sel);
+        return el && el.children.length > 0;
+      },
+      '[data-testid="session-detail"]',
+      { timeout: 5000 },
+    );
 
     const timeline = page.locator('[data-testid="session-detail-timeline"]');
     if (await timeline.count() === 0) {
@@ -269,9 +289,16 @@ test.describe('Phase E — performance', () => {
     await page.goto('/');
     await waitForViewerReady(page);
 
-    // Navigate to first session
+    // Navigate to first session and wait for detail content to render
     await navigateToFirstSession(page);
-    await page.waitForTimeout(300);
+    await page.waitForFunction(
+      (sel) => {
+        const el = document.querySelector(sel);
+        return el && el.children.length > 0;
+      },
+      '[data-testid="session-detail"]',
+      { timeout: 5000 },
+    );
 
     // Scroll the session detail panel
     const detail = page.locator('[data-testid="session-detail"]');
@@ -282,7 +309,8 @@ test.describe('Phase E — performance', () => {
         const cy = detailBox.y + detailBox.height / 2;
         for (let i = 0; i < 5; i++) {
           await page.mouse.wheel(cx, cy, { deltaY: 150 });
-          await page.waitForTimeout(30);
+          // Simulate rapid user interaction
+          await page.waitForTimeout(16);
         }
       }
     }
@@ -296,13 +324,16 @@ test.describe('Phase E — performance', () => {
         const cy = listBox.y + listBox.height / 2;
         for (let i = 0; i < 5; i++) {
           await page.mouse.wheel(cx, cy, { deltaY: 150 });
-          await page.waitForTimeout(30);
+          // Simulate rapid user interaction
+          await page.waitForTimeout(16);
         }
       }
     }
 
-    // Allow scroll events to fully process
-    await page.waitForTimeout(300);
+    // Allow scroll events to fully process by flushing rAF cycles
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
 
     // Assert zero console errors during scroll operations
     expect(consoleErrors).toHaveLength(0);
@@ -318,12 +349,21 @@ test.describe('Phase E — performance', () => {
     await setTheme(page, 'light');
 
     await navigateToFirstSession(page);
-    await page.waitForTimeout(300);
 
     const detail = page.locator('[data-testid="session-detail"]');
     const detailVisible = await detail.isVisible();
 
     if (detailVisible) {
+      // Wait for detail content to render before scrolling
+      await page.waitForFunction(
+        (sel) => {
+          const el = document.querySelector(sel);
+          return el && el.children.length > 0;
+        },
+        '[data-testid="session-detail"]',
+        { timeout: 5000 },
+      );
+
       const box = await detail.boundingBox();
       if (box) {
         // Scroll down to show mid-session content
@@ -332,7 +372,10 @@ test.describe('Phase E — performance', () => {
           box.y + box.height / 2,
           { deltaY: 300 },
         );
-        await page.waitForTimeout(400);
+        // Wait for scroll to settle before taking screenshot
+        await page.evaluate(() => new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        }));
       }
     }
 
@@ -350,9 +393,9 @@ test.describe('Phase E — performance', () => {
     await waitForViewerReady(page);
     await setTheme(page, 'dark');
 
-    await page.waitForTimeout(300);
-
     const sessionList = page.locator('[data-testid="session-list"]');
+    // Wait for session list to be visible after theme change
+    await expect(sessionList).toBeVisible({ timeout: 5000 });
     const listVisible = await sessionList.isVisible();
 
     if (listVisible) {
@@ -364,7 +407,10 @@ test.describe('Phase E — performance', () => {
           box.y + box.height / 2,
           { deltaY: 400 },
         );
-        await page.waitForTimeout(400);
+        // Wait for scroll to settle before taking screenshot
+        await page.evaluate(() => new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        }));
       }
     }
 

@@ -47,6 +47,7 @@ export class SessionStore {
     this.renameSessionIdColumns();
     this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
+    this.addCompositeIndexes();
   }
 
   /**
@@ -643,6 +644,19 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(20, new Date().toISOString());
+  }
+
+  private addCompositeIndexes(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(21) as SchemaVersion | undefined;
+    if (applied) return;
+
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_session_epoch ON observations(memory_session_id, created_at_epoch DESC)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_session_project ON observations(memory_session_id, project)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_session_summaries_session_epoch ON session_summaries(memory_session_id, created_at_epoch DESC)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_session_summaries_session_project ON session_summaries(memory_session_id, project)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+    logger.debug('DB', 'Added composite indexes for observations and session_summaries');
   }
 
   /**

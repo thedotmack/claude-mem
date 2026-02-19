@@ -92,12 +92,9 @@ test.describe('Console Drawer', () => {
     const drawer = page.locator('.console-drawer');
     await expect(drawer).toBeVisible({ timeout: 3000 });
 
-    // Wait for log fetch
-    await page.waitForTimeout(1000);
-
-    // Should have either log lines or empty message
+    // Wait for log content to render after fetch completes
     const logContent = drawer.locator('.console-logs');
-    await expect(logContent).toBeVisible();
+    await expect(logContent).toBeVisible({ timeout: 5000 });
   });
 
   test('has filter chips for log levels', async ({ page }) => {
@@ -178,22 +175,20 @@ test.describe('Empty states', () => {
   });
 
   test('session detail shows state indicator after load', async ({ page }) => {
-    // Wait a moment for any auto-selection or empty state to render
-    await page.waitForTimeout(2000);
-
     const detail = page.locator('[data-testid="session-detail"]');
-    // Session detail container should always be present
+    // Session detail container should always be present (auto-retry handles load timing)
     await expect(detail).toBeVisible({ timeout: 5000 });
   });
 
   test('search with non-matching query shows appropriate feedback', async ({ page }) => {
     const searchInput = page.locator('.search-bar-input');
     await searchInput.fill('zzzznonexistentqueryzzz');
-    await page.waitForTimeout(1500); // wait for debounce
 
-    // Check either "No items to display" message or search badge shows 0 results
+    // Wait for debounce to settle by watching for either empty message or search badge
     const emptyMsg = page.locator('.feed__empty-message');
     const badge = page.locator('.search-results-badge');
+    await expect(emptyMsg.or(badge)).toBeVisible({ timeout: 5000 });
+
     const isEmptyVisible = await emptyMsg.isVisible().catch(() => false);
     const isBadgeVisible = await badge.isVisible().catch(() => false);
 
@@ -247,20 +242,19 @@ test.describe('Search and filter', () => {
   test('typing in search switches to feed mode', async ({ page }) => {
     const searchInput = page.locator('.search-bar-input');
     await searchInput.fill('test');
-    await page.waitForTimeout(1500); // wait for debounce
 
-    // Should transition to feed mode (feed appears)
+    // Wait for debounce to settle and feed mode to activate
     const feed = page.locator('.feed');
-    const isFeedVisible = await feed.isVisible().catch(() => false);
-    expect(isFeedVisible).toBe(true);
+    await expect(feed).toBeVisible({ timeout: 5000 });
   });
 
   test('clearing search returns to two-panel mode', async ({ page }) => {
     const searchInput = page.locator('.search-bar-input');
 
-    // Type to enter search mode
+    // Type to enter search mode and wait for feed to appear
     await searchInput.fill('test');
-    await page.waitForTimeout(1500);
+    const feed = page.locator('.feed');
+    await expect(feed).toBeVisible({ timeout: 5000 });
 
     // Clear the search
     const clearBtn = page.locator('.search-bar-clear');
@@ -270,18 +264,19 @@ test.describe('Search and filter', () => {
     } else {
       await searchInput.fill('');
     }
-    await page.waitForTimeout(1500);
 
-    // Should return to two-panel mode
+    // Wait for two-panel mode to return after clearing search
     const twoPanel = page.locator('[data-testid="two-panel"]');
-    const isTwoPanelVisible = await twoPanel.isVisible().catch(() => false);
-    expect(isTwoPanelVisible).toBe(true);
+    await expect(twoPanel).toBeVisible({ timeout: 5000 });
   });
 
   test('search results badge appears with query', async ({ page }) => {
     const searchInput = page.locator('.search-bar-input');
     await searchInput.fill('test');
-    await page.waitForTimeout(2000); // wait for search + debounce
+
+    // Wait for debounce to settle and feed mode to activate
+    const feed = page.locator('.feed');
+    await expect(feed).toBeVisible({ timeout: 5000 });
 
     // Results badge should appear when in search mode
     const badge = page.locator('.search-results-badge');

@@ -28,7 +28,7 @@ async function setTheme(
   await page.evaluate((t) => {
     document.documentElement.setAttribute('data-theme', t);
   }, theme);
-  await page.waitForTimeout(300);
+  await expect(page.locator(`[data-theme="${theme}"]`)).toBeAttached();
 }
 
 /** Navigate to a session that contains observations with concepts. */
@@ -39,7 +39,8 @@ async function navigateToSessionWithObservations(page: import('@playwright/test'
 
   for (let i = 0; i < Math.min(rowCount, 10); i++) {
     await sessionRows.nth(i).click();
-    await page.waitForTimeout(500);
+    // Wait for the detail panel to update after clicking a session row
+    await page.locator('[data-testid="two-panel-right"]').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
 
     const obsCards = page.locator('[data-testid="obs-card"]');
     const obsCount = await obsCards.count();
@@ -142,11 +143,9 @@ test.describe('ObservationCard — click-to-expand facts', () => {
 
     // Click to expand
     await card.click();
-    await page.waitForTimeout(200);
 
-    // Verify expanded state
-    const expanded = await card.getAttribute('aria-expanded');
-    expect(expanded).toBe('true');
+    // Wait for expanded state via auto-retrying assertion
+    await expect(card).toHaveAttribute('aria-expanded', 'true');
 
     // Facts section should now be visible
     const facts = card.locator('[data-testid="obs-card-facts"]');
@@ -168,13 +167,11 @@ test.describe('ObservationCard — click-to-expand facts', () => {
 
     // Expand
     await card.click();
-    await page.waitForTimeout(200);
-    expect(await card.getAttribute('aria-expanded')).toBe('true');
+    await expect(card).toHaveAttribute('aria-expanded', 'true');
 
     // Collapse
     await card.click();
-    await page.waitForTimeout(200);
-    expect(await card.getAttribute('aria-expanded')).toBe('false');
+    await expect(card).toHaveAttribute('aria-expanded', 'false');
 
     // Facts should be gone
     const facts = card.locator('[data-testid="obs-card-facts"]');
@@ -239,7 +236,8 @@ test.describe('SummaryCard — independent section collapse', () => {
     let foundSummary = false;
     for (let i = 0; i < Math.min(rowCount, 10); i++) {
       await sessionRows.nth(i).click();
-      await page.waitForTimeout(500);
+      // Wait for the detail panel to update after clicking a session row
+      await page.locator('[data-testid="two-panel-right"]').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
 
       const summaryCards = page.locator('[data-testid="summary-card"]');
       if (await summaryCards.count() > 0) {
@@ -272,7 +270,8 @@ test.describe('SummaryCard — independent section collapse', () => {
     let foundSummary = false;
     for (let i = 0; i < Math.min(rowCount, 10); i++) {
       await sessionRows.nth(i).click();
-      await page.waitForTimeout(500);
+      // Wait for the detail panel to update after clicking a session row
+      await page.locator('[data-testid="two-panel-right"]').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
 
       if (await page.locator('[data-testid="summary-card"]').count() > 0) {
         foundSummary = true;
@@ -312,7 +311,8 @@ test.describe('SummaryCard — independent section collapse', () => {
     let foundSummary = false;
     for (let i = 0; i < Math.min(rowCount, 10); i++) {
       await sessionRows.nth(i).click();
-      await page.waitForTimeout(500);
+      // Wait for the detail panel to update after clicking a session row
+      await page.locator('[data-testid="two-panel-right"]').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
 
       if (await page.locator('[data-testid="summary-card"]').count() > 0) {
         foundSummary = true;
@@ -337,15 +337,11 @@ test.describe('SummaryCard — independent section collapse', () => {
     // Click the header to collapse
     const header = completedSection.locator('[data-testid="summary-section-header"]');
     await header.click();
-    await page.waitForTimeout(300);
-
-    expect(await completedSection.getAttribute('aria-expanded')).toBe('false');
+    await expect(completedSection).toHaveAttribute('aria-expanded', 'false');
 
     // Click again to re-expand
     await header.click();
-    await page.waitForTimeout(300);
-
-    expect(await completedSection.getAttribute('aria-expanded')).toBe('true');
+    await expect(completedSection).toHaveAttribute('aria-expanded', 'true');
   });
 
   test('sections collapse independently of each other', async ({ page }) => {
@@ -355,7 +351,8 @@ test.describe('SummaryCard — independent section collapse', () => {
     let foundSummary = false;
     for (let i = 0; i < Math.min(rowCount, 10); i++) {
       await sessionRows.nth(i).click();
-      await page.waitForTimeout(500);
+      // Wait for the detail panel to update after clicking a session row
+      await page.locator('[data-testid="two-panel-right"]').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
 
       if (await page.locator('[data-testid="summary-card"]').count() > 0) {
         foundSummary = true;
@@ -384,9 +381,13 @@ test.describe('SummaryCard — independent section collapse', () => {
     }
 
     // Toggle the first section
-    const firstHeader = sections.first().locator('[data-testid="summary-section-header"]');
+    const firstSection = sections.first();
+    const firstHeader = firstSection.locator('[data-testid="summary-section-header"]');
+    const firstInitialState = initialStates[await firstSection.getAttribute('data-section-key') as string];
+    const expectedFirstState = firstInitialState === 'true' ? 'false' : 'true';
     await firstHeader.click();
-    await page.waitForTimeout(300);
+    // Wait for the toggled section to reflect its new state
+    await expect(firstSection).toHaveAttribute('aria-expanded', expectedFirstState);
 
     // All OTHER sections should retain their initial state
     for (let i = 1; i < sectionCount; i++) {
@@ -468,9 +469,8 @@ test.describe('Theme toggle — accessible in settings modal', () => {
     // Click settings button
     const settingsBtn = page.locator('.settings-btn');
     await settingsBtn.click();
-    await page.waitForTimeout(500);
 
-    // The modal should be visible
+    // Wait for the modal to become visible after click
     const modal = page.locator('.context-settings-modal');
     await expect(modal).toBeVisible();
 
@@ -488,40 +488,33 @@ test.describe('Theme toggle — accessible in settings modal', () => {
     // Open settings
     const settingsBtn = page.locator('.settings-btn');
     await settingsBtn.click();
-    await page.waitForTimeout(500);
 
+    // Wait for the modal to become visible after click
     const modal = page.locator('.context-settings-modal');
+    await expect(modal).toBeVisible();
 
     // Find "Light" theme button and click it
     const lightBtn = modal.locator('.theme-option-btn').filter({ hasText: 'Light' });
     if (await lightBtn.count() > 0) {
       await lightBtn.click();
-      await page.waitForTimeout(300);
 
-      // Verify the button is now selected
-      const isPressed = await lightBtn.getAttribute('aria-pressed');
-      expect(isPressed).toBe('true');
+      // Wait for the button to reflect the selected state
+      await expect(lightBtn).toHaveAttribute('aria-pressed', 'true');
 
       // Verify the theme attribute changed
-      const theme = await page.evaluate(() =>
-        document.documentElement.getAttribute('data-theme'),
-      );
-      expect(theme).toBe('light');
+      await expect(page.locator('html[data-theme="light"]')).toBeAttached();
     }
 
     // Switch to Dark
     const darkBtn = modal.locator('.theme-option-btn').filter({ hasText: 'Dark' });
     if (await darkBtn.count() > 0) {
       await darkBtn.click();
-      await page.waitForTimeout(300);
 
-      const isPressed = await darkBtn.getAttribute('aria-pressed');
-      expect(isPressed).toBe('true');
+      // Wait for the button to reflect the selected state
+      await expect(darkBtn).toHaveAttribute('aria-pressed', 'true');
 
-      const theme = await page.evaluate(() =>
-        document.documentElement.getAttribute('data-theme'),
-      );
-      expect(theme).toBe('dark');
+      // Verify the theme attribute changed
+      await expect(page.locator('html[data-theme="dark"]')).toBeAttached();
     }
   });
 });
@@ -580,9 +573,10 @@ test.describe('Phase C — screenshots', () => {
     await setTheme(page, 'light');
     const settingsBtn = page.locator('.settings-btn');
     await settingsBtn.click();
-    await page.waitForTimeout(500);
 
+    // Wait for the modal to become visible before taking screenshot
     const modal = page.locator('.context-settings-modal');
+    await expect(modal).toBeVisible();
     if (await modal.count() > 0) {
       await modal.screenshot({
         path: `${SCREENSHOT_DIR}/settings-modal-theme.png`,

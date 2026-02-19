@@ -310,6 +310,42 @@ describe('fetchSessionPage (via fetch mock)', () => {
     await expect(fetchSessionPage({ offset: 0, limit: 50, project: '' }))
       .rejects.toThrow('Failed to load sessions');
   });
+
+  it('passes AbortSignal to fetch when provided', async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ items: mockSummaries, hasMore: false, offset: 0, limit: 50 }),
+    } as Response);
+
+    const controller = new AbortController();
+    const { fetchSessionPage } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
+    await fetchSessionPage({ offset: 0, limit: 50, project: '' }, controller.signal);
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const fetchInit = mockFetch.mock.calls[0][1] as RequestInit | undefined;
+    expect(fetchInit?.signal).toBe(controller.signal);
+  });
+
+  it('rejects with AbortError when signal is aborted', async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockImplementation((_url, init) => {
+      if (init?.signal?.aborted) {
+        return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'));
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ items: [], hasMore: false, offset: 0, limit: 50 }),
+      } as Response);
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const { fetchSessionPage } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
+    await expect(fetchSessionPage({ offset: 0, limit: 50, project: '' }, controller.signal))
+      .rejects.toThrow('aborted');
+  });
 });
 
 // ─────────────────────────────────────────────────────────
@@ -550,6 +586,41 @@ describe('fetchSessionsByDate', () => {
     const { fetchSessionsByDate } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
     await expect(fetchSessionsByDate('2026-02-17', 'proj-a'))
       .rejects.toThrow('Failed to load sessions for date');
+  });
+
+  it('passes AbortSignal to fetch when provided', async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockSearchResponse,
+    } as Response);
+
+    const controller = new AbortController();
+    const { fetchSessionsByDate } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
+    await fetchSessionsByDate('2026-02-17', 'proj-a', controller.signal);
+
+    const fetchInit = mockFetch.mock.calls[0][1] as RequestInit | undefined;
+    expect(fetchInit?.signal).toBe(controller.signal);
+  });
+
+  it('rejects with AbortError when signal is aborted', async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockImplementation((_url, init) => {
+      if (init?.signal?.aborted) {
+        return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'));
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => mockSearchResponse,
+      } as Response);
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const { fetchSessionsByDate } = await import('../../../src/ui/viewer/hooks/useSessionList.js');
+    await expect(fetchSessionsByDate('2026-02-17', 'proj-a', controller.signal))
+      .rejects.toThrow('aborted');
   });
 
   it('defaults observationCount to 0 when search result lacks observation_count', async () => {

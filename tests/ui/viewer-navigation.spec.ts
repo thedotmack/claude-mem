@@ -52,9 +52,8 @@ test.describe('DayNavigator', () => {
 
     // Click ← should navigate to the previous available day
     await prevBtn.click();
-    await page.waitForTimeout(500);
 
-    // Label should no longer be "Today"
+    // Wait for the label to update after navigation
     await expect(label).not.toHaveText('Today');
     await expect(label).not.toHaveText('All sessions');
   });
@@ -77,7 +76,9 @@ test.describe('DayNavigator', () => {
     const label = dayNav.locator('.day-navigator__label');
 
     await prevBtn.click();
-    await page.waitForTimeout(800);
+
+    // Wait for the label to update after navigation (away from "Today")
+    await expect(label).not.toHaveText('Today');
 
     // Get the label text
     const labelText = await label.textContent();
@@ -205,12 +206,10 @@ test.describe('CalendarPicker', () => {
       await activeDays.first().click();
       await expect(calendar).not.toBeVisible({ timeout: 3000 });
 
-      // Wait for sessions to load and scroll
-      await page.waitForTimeout(1500);
-
-      // The session list should contain a day header for the selected date
+      // Wait for sessions to load after date selection
       const sessionList = page.locator('[data-testid="session-list"]');
       const dayHeaders = sessionList.locator('.session-list__day-header');
+      await expect(dayHeaders.first()).toBeVisible({ timeout: 10000 });
       const headerCount = await dayHeaders.count();
       expect(headerCount).toBeGreaterThan(0);
 
@@ -239,7 +238,7 @@ test.describe('CalendarPicker', () => {
     // First navigate to a specific date via ← button
     const prevBtn = dayNav.locator('button[aria-label="Previous day"]');
     await prevBtn.click();
-    await page.waitForTimeout(500);
+    // Wait for label to update after navigation
     await expect(label).not.toHaveText('Today');
 
     // Open calendar
@@ -270,8 +269,9 @@ test.describe('CalendarPicker', () => {
     // Click previous month
     const prevMonthBtn = calendar.locator('button[aria-label="Previous month"]');
     await prevMonthBtn.click();
-    await page.waitForTimeout(300);
 
+    // Wait for month label to change after navigation
+    await expect(monthLabel).not.toHaveText(initialMonth!);
     const newMonth = await monthLabel.textContent();
     expect(newMonth).not.toBe(initialMonth);
   });
@@ -299,9 +299,8 @@ test.describe('Arrow key day navigation', () => {
 
     // Press left arrow — navigates to the day before Today
     await page.keyboard.press('ArrowLeft');
-    await page.waitForTimeout(500);
 
-    // Should navigate to a specific day (not Today, not All sessions)
+    // Wait for the label to update after keyboard navigation
     await expect(label).not.toHaveText('Today');
     await expect(label).not.toHaveText('All sessions');
   });
@@ -313,12 +312,12 @@ test.describe('Arrow key day navigation', () => {
     // Start at "Today", go ← to previous day
     await expect(label).toHaveText('Today');
     await page.keyboard.press('ArrowLeft');
-    await page.waitForTimeout(500);
+    // Wait for the label to update after left arrow navigation
     await expect(label).not.toHaveText('Today');
 
     // → should return to "Today"
     await page.keyboard.press('ArrowRight');
-    await page.waitForTimeout(500);
+    // Wait for the label to update after right arrow navigation
     await expect(label).toHaveText('Today');
   });
 
@@ -327,11 +326,13 @@ test.describe('Arrow key day navigation', () => {
     const label = dayNav.locator('.day-navigator__label');
 
     await page.keyboard.press('ArrowLeft');
-    await page.waitForTimeout(500);
+    // Wait for the label to update away from "Today" after first press
+    await expect(label).not.toHaveText('Today');
     const firstDate = await label.textContent();
 
     await page.keyboard.press('ArrowLeft');
-    await page.waitForTimeout(500);
+    // Wait for the label to change from the first date after second press
+    await expect(label).not.toHaveText(firstDate!);
     const secondDate = await label.textContent();
 
     // Each press should show a different (older) date
@@ -367,9 +368,8 @@ test.describe('Session list scroll', () => {
     await expect(sessionRow).toBeVisible({ timeout: 10000 });
 
     await sessionRow.click();
-    await page.waitForTimeout(500);
 
-    // The right panel should show session detail (not the empty state)
+    // Wait for the right panel to show session detail after selection
     const rightPanel = page.locator('[data-testid="two-panel-right"]');
     await expect(rightPanel).toBeVisible();
   });
@@ -379,9 +379,8 @@ test.describe('Session list scroll', () => {
     await expect(sessionRow).toBeVisible({ timeout: 10000 });
 
     await sessionRow.click();
-    await page.waitForTimeout(300);
 
-    // At least one row should be aria-selected
+    // Wait for the aria-selected attribute to be applied after click
     const selected = page.locator('[data-testid="session-row"][aria-selected="true"]');
     await expect(selected).toHaveCount(1);
   });
@@ -422,11 +421,11 @@ test.describe('Calendar navigation journey', () => {
     const selectedLabel = await label.textContent();
     expect(selectedLabel).toBeTruthy();
 
-    // Step 5: Wait for sessions to load and scroll
-    await page.waitForTimeout(1500);
+    // Step 5: Wait for sessions to load after date selection
+    const visibleRows = sessionList.locator('[data-testid="session-row"]');
+    await expect(visibleRows.first()).toBeVisible({ timeout: 10000 });
 
     // Step 6: Verify sessions are visible
-    const visibleRows = sessionList.locator('[data-testid="session-row"]');
     const rowCount = await visibleRows.count();
     expect(rowCount).toBeGreaterThan(0);
 

@@ -27,7 +27,11 @@ async function setTheme(
   await page.evaluate((t) => {
     document.documentElement.setAttribute('data-theme', t);
   }, theme);
-  await page.waitForTimeout(300);
+  // Wait for the theme attribute to be applied and CSS to settle
+  await page.waitForFunction(
+    (t) => document.documentElement.getAttribute('data-theme') === t,
+    theme,
+  );
 }
 
 // ─────────────────────────────────────────────────────────
@@ -137,9 +141,12 @@ test.describe('Keyboard navigation', () => {
     });
 
     await page.keyboard.press('j');
-    await page.waitForTimeout(300);
+    // Small delay to simulate realistic key timing between presses
+    await page.waitForTimeout(100);
     await page.keyboard.press('k');
-    await page.waitForTimeout(300);
+
+    // Allow any async error handlers to flush before checking
+    await expect(page.locator('.header')).toBeVisible();
 
     // No JavaScript errors should have occurred
     expect(consoleErrors.filter(e => !e.includes('Failed to load'))).toHaveLength(0);
@@ -204,16 +211,20 @@ test.describe('Phase D screenshots', () => {
   test('command palette open (light)', async ({ page }) => {
     await setTheme(page, 'light');
     await page.click('.filter-toggle-btn');
-    await page.locator('[data-testid="command-palette"]').waitFor({ state: 'visible' });
-    await page.waitForTimeout(500);
+    const palette = page.locator('[data-testid="command-palette"]');
+    await palette.waitFor({ state: 'visible' });
+    // Wait for CSS open animation to complete before screenshot
+    await expect(palette).toHaveCSS('opacity', '1', { timeout: 3000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/phase-d-command-palette-light.png`, fullPage: false });
   });
 
   test('command palette open (dark)', async ({ page }) => {
     await setTheme(page, 'dark');
     await page.click('.filter-toggle-btn');
-    await page.locator('[data-testid="command-palette"]').waitFor({ state: 'visible' });
-    await page.waitForTimeout(500);
+    const palette = page.locator('[data-testid="command-palette"]');
+    await palette.waitFor({ state: 'visible' });
+    // Wait for CSS open animation to complete before screenshot
+    await expect(palette).toHaveCSS('opacity', '1', { timeout: 3000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/phase-d-command-palette-dark.png`, fullPage: false });
   });
 
@@ -221,8 +232,10 @@ test.describe('Phase D screenshots', () => {
     await setTheme(page, 'light');
     await page.click('body');
     await page.keyboard.press('?');
-    await page.locator('[data-testid="keyboard-help"]').waitFor({ state: 'visible' });
-    await page.waitForTimeout(300);
+    const help = page.locator('[data-testid="keyboard-help"]');
+    await help.waitFor({ state: 'visible' });
+    // Wait for CSS open animation to complete before screenshot
+    await expect(help).toHaveCSS('opacity', '1', { timeout: 3000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/phase-d-keyboard-help-light.png`, fullPage: false });
   });
 
@@ -230,8 +243,10 @@ test.describe('Phase D screenshots', () => {
     await setTheme(page, 'dark');
     await page.click('body');
     await page.keyboard.press('?');
-    await page.locator('[data-testid="keyboard-help"]').waitFor({ state: 'visible' });
-    await page.waitForTimeout(300);
+    const help = page.locator('[data-testid="keyboard-help"]');
+    await help.waitFor({ state: 'visible' });
+    // Wait for CSS open animation to complete before screenshot
+    await expect(help).toHaveCSS('opacity', '1', { timeout: 3000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/phase-d-keyboard-help-dark.png`, fullPage: false });
   });
 });

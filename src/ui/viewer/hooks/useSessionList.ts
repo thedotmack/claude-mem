@@ -128,7 +128,7 @@ interface FetchSessionPageResult {
  * Fetches a page of sessions from the summaries API endpoint.
  * Exported for unit testing.
  */
-export async function fetchSessionPage(opts: FetchSessionPageOptions): Promise<FetchSessionPageResult> {
+export async function fetchSessionPage(opts: FetchSessionPageOptions, signal?: AbortSignal): Promise<FetchSessionPageResult> {
   const params = new URLSearchParams({
     offset: opts.offset.toString(),
     limit: opts.limit.toString(),
@@ -138,7 +138,7 @@ export async function fetchSessionPage(opts: FetchSessionPageOptions): Promise<F
     params.set('project', opts.project);
   }
 
-  const response = await fetch(`${API_ENDPOINTS.SUMMARIES}?${params}`);
+  const response = await fetch(`${API_ENDPOINTS.SUMMARIES}?${params}`, signal ? { signal } : undefined);
 
   if (!response.ok) {
     throw new Error(`Failed to load sessions: ${response.statusText}`);
@@ -214,7 +214,7 @@ export function nextDayString(dateKey: string): string {
  *
  * Exported for unit testing.
  */
-export async function fetchSessionsByDate(dateKey: string, project: string): Promise<SessionListItem[]> {
+export async function fetchSessionsByDate(dateKey: string, project: string, signal?: AbortSignal): Promise<SessionListItem[]> {
   const params = new URLSearchParams({
     dateStart: dateKey,
     dateEnd: nextDayString(dateKey),
@@ -225,7 +225,7 @@ export async function fetchSessionsByDate(dateKey: string, project: string): Pro
     params.set('project', project);
   }
 
-  const response = await fetch(`${API_ENDPOINTS.SEARCH}?${params}`);
+  const response = await fetch(`${API_ENDPOINTS.SEARCH}?${params}`, signal ? { signal } : undefined);
   if (!response.ok) {
     throw new Error(`Failed to load sessions for date ${dateKey}: ${response.statusText}`);
   }
@@ -293,16 +293,23 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
   const lastProjectRef = useRef(project);
   const isLoadingRef = useRef(false);
   const sessionGroupsRef = useRef(sessionGroups);
+  const abortRef = useRef<AbortController | null>(null);
 
   const loadPage = useCallback(async (reset: boolean): Promise<void> => {
     if (isLoadingRef.current) return;
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     isLoadingRef.current = true;
     setIsLoading(true);
 
     try {
       const offset = reset ? 0 : offsetRef.current;
-      const result = await fetchSessionPage({ offset, limit: SESSION_LIST_LIMIT, project });
+      const result = await fetchSessionPage({ offset, limit: SESSION_LIST_LIMIT, project }, controller.signal);
+
+      if (controller.signal.aborted) return;
 
       setSessionGroups(prev => {
         const allItems = reset
@@ -314,10 +321,13 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
       setHasMore(result.hasMore);
       offsetRef.current = offset + result.items.length;
     } catch (error) {
+      if (controller.signal.aborted) return;
       logger.error('sessionList', 'Failed to load sessions');
     } finally {
-      isLoadingRef.current = false;
-      setIsLoading(false);
+      if (!controller.signal.aborted) {
+        isLoadingRef.current = false;
+        setIsLoading(false);
+      }
     }
   }, [project]);
 
@@ -332,6 +342,10 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
     }
 
     void loadPage(true);
+
+    return () => {
+      abortRef.current?.abort();
+    };
   }, [project, loadPage]);
 
   // React to new_summary SSE events
@@ -391,13 +405,20 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
   // Keep ref in sync so loadForDate avoids stale closure over sessionGroups
   useEffect(() => { sessionGroupsRef.current = sessionGroups; }, [sessionGroups]);
 
+  const loadForDateAbortRef = useRef<AbortController | null>(null);
+
   const loadForDate = useCallback(async (dateKey: string): Promise<boolean> => {
     // Use ref to check latest groups without capturing state in deps
     const exists = sessionGroupsRef.current.some(g => g.dateKey === dateKey);
     if (exists) return true;
 
+    loadForDateAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadForDateAbortRef.current = controller;
+
     try {
-      const items = await fetchSessionsByDate(dateKey, project);
+      const items = await fetchSessionsByDate(dateKey, project, controller.signal);
+      if (controller.signal.aborted) return false;
       if (items.length === 0) return false;
 
       setSessionGroups(prev => {
@@ -408,6 +429,7 @@ export function useSessionList({ project, newSummary }: UseSessionListOptions): 
       });
       return true;
     } catch (error) {
+      if (controller.signal.aborted) return false;
       logger.error('sessionList', `Failed to load sessions for date ${dateKey}`);
       return false;
     }

@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 type LogComponent = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA';
 
-interface ParsedLogLine {
+export interface ParsedLogLine {
   raw: string;
   timestamp?: string;
   level?: LogLevel;
@@ -35,8 +35,8 @@ const LOG_COMPONENTS: { key: LogComponent; label: string; icon: string; color: s
   { key: 'CHROMA', label: 'Chroma', icon: '🔮', color: '#a855f7' },
 ];
 
-// Parse a single log line into structured data
-function parseLogLine(line: string): ParsedLogLine {
+// Parse a single log line into structured data — exported for testing
+export function parseLogLine(line: string): ParsedLogLine {
   // Pattern: [timestamp] [LEVEL] [COMPONENT] [correlation?] message
   // Example: [2025-01-02 14:30:45.123] [INFO ] [WORKER] [session-123] → message
   const pattern = /^\[([^\]]+)\]\s+\[(\w+)\s*\]\s+\[(\w+)\s*\]\s+(?:\[([^\]]+)\]\s+)?(.*)$/;

@@ -252,9 +252,12 @@ export function useSessionDetail(
   useEffect(() => {
     if (!sessionId || summaryId) return;
 
+    const controller = new AbortController();
+
     const poll = () => {
-      void fetchSessionDetail(sessionId, project, summaryId)
+      void fetchSessionDetail(sessionId, project, summaryId, controller.signal)
         .then((result) => {
+          if (controller.signal.aborted) return;
           if (result) {
             setDetail(result);
           }
@@ -265,7 +268,10 @@ export function useSessionDetail(
     };
 
     const intervalId = setInterval(poll, ACTIVE_SESSION_POLL_INTERVAL);
-    return () => { clearInterval(intervalId); };
+    return () => {
+      controller.abort();
+      clearInterval(intervalId);
+    };
   }, [sessionId, project, summaryId]);
 
   return { detail, isLoading };

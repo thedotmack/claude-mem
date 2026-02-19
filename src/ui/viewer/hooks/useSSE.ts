@@ -3,6 +3,7 @@ import type { Observation, Summary, UserPrompt, StreamEvent, ActiveSessionInfo }
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
 import { logger } from '../utils/logger';
+import { calculateBackoffDelay } from '../utils/backoff';
 
 export function useSSE() {
   const [observations, setObservations] = useState<Observation[]>([]);
@@ -15,6 +16,7 @@ export function useSSE() {
   const [initialActiveSession, setInitialActiveSession] = useState<ActiveSessionInfo | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
+  const reconnectAttemptRef = useRef(0);
 
   useEffect(() => {
     const connect = () => {
@@ -28,6 +30,7 @@ export function useSSE() {
 
       eventSource.onopen = () => {
         setIsConnected(true);
+        reconnectAttemptRef.current = 0;
         // Clear any pending reconnect
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
@@ -39,11 +42,20 @@ export function useSSE() {
         setIsConnected(false);
         eventSource.close();
 
-        // Reconnect after delay
+        // Reconnect with exponential backoff
+        const attempt = reconnectAttemptRef.current;
+        const delay = calculateBackoffDelay(
+          attempt,
+          TIMING.SSE_RECONNECT_DELAY_MS,
+          TIMING.SSE_RECONNECT_MAX_DELAY_MS,
+          TIMING.SSE_RECONNECT_BACKOFF_FACTOR,
+        );
+        reconnectAttemptRef.current = attempt + 1;
+
         reconnectTimeoutRef.current = setTimeout(() => {
-          reconnectTimeoutRef.current = undefined; // Clear before reconnecting
+          reconnectTimeoutRef.current = undefined;
           connect();
-        }, TIMING.SSE_RECONNECT_DELAY_MS);
+        }, delay);
       };
 
       eventSource.onmessage = (event: MessageEvent<string>) => {
