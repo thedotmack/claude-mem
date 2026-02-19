@@ -6,8 +6,11 @@ import type { IDE } from './ide-selection.js';
 
 function getProviderLabel(config: ProviderConfig): string {
   switch (config.provider) {
-    case 'claude':
-      return config.claudeAuthMethod === 'api' ? 'Claude (API Key)' : 'Claude (CLI subscription)';
+    case 'claude': {
+      const auth = config.claudeAuthMethod === 'api' ? 'API Key' : 'CLI subscription';
+      const model = config.model ?? 'claude-sonnet-4-6';
+      return `Claude ${model} (${auth})`;
+    }
     case 'gemini':
       return `Gemini (${config.model ?? 'gemini-2.5-flash-lite'})`;
     case 'openrouter':
