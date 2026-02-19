@@ -35,7 +35,8 @@ function shouldSkipSpawnOnWindows(): boolean {
   try {
     const modifiedTimeMs = statSync(lockPath).mtimeMs;
     return Date.now() - modifiedTimeMs < WINDOWS_SPAWN_COOLDOWN_MS;
-  } catch {
+  } catch (error) {
+    logger.debug('SYSTEM', 'Failed to stat spawn lock file, assuming no cooldown', { lockPath }, error instanceof Error ? error : undefined);
     return false;
   }
 }
@@ -320,11 +321,16 @@ export class WorkerService {
         await Promise.race([this.initializationComplete, timeoutPromise]);
         next();
       } catch (error) {
-        logger.error('HTTP', `Request to ${req.method} ${req.path} rejected — DB not initialized`, {}, error as Error);
+        if (error instanceof Error) {
+          logger.error('HTTP', `Request to ${req.method} ${req.path} rejected — DB not initialized`, {}, error);
+        } else {
+          logger.error('HTTP', `Request to ${req.method} ${req.path} rejected — DB not initialized`, { error: String(error) });
+        }
         res.status(503).json({
           error: 'Service initializing',
           message: 'Database is still initializing, please retry'
         });
+        return;
       }
     });
 
@@ -465,7 +471,12 @@ export class WorkerService {
             logger.info('SYSTEM', `Reaped ${reaped} stale sessions`);
           }
         } catch (e) {
-          logger.error('SYSTEM', 'Stale session reaper error', { error: e instanceof Error ? e.message : String(e) });
+          // [ANTI-PATTERN IGNORED]: setInterval callback cannot re-throw; logging is the only recourse
+          if (e instanceof Error) {
+            logger.error('SYSTEM', 'Stale session reaper error', {}, e);
+          } else {
+            logger.error('SYSTEM', 'Stale session reaper error', { error: String(e) });
+          }
         }
       }, 2 * 60 * 1000);
 
@@ -571,6 +582,7 @@ export class WorkerService {
         }
 
         // Detect stale resume failures - SDK session context was lost
+        // [ANTI-PATTERN IGNORED]: Claude SDK does not export typed errors; string matching on known SDK messages is the only detection method
         if ((errorMessage.includes('aborted by user') || errorMessage.includes('No conversation found'))
             && session.memorySessionId) {
           logger.warn('SDK', 'Detected stale resume failure, clearing memorySessionId for fresh start', {
@@ -697,10 +709,12 @@ export class WorkerService {
         await this.geminiAgent.startSession(session, this);
         return;
       } catch (e) {
-        logger.warn('SDK', 'Fallback Gemini failed, trying OpenRouter', {
-          sessionId: sessionDbId,
-          error: e instanceof Error ? e.message : String(e)
-        });
+        // [ANTI-PATTERN IGNORED]: Cascading fallback pattern — Gemini failure falls through to try OpenRouter, then abandon
+        if (e instanceof Error) {
+          logger.warn('SDK', 'Fallback Gemini failed, trying OpenRouter', { sessionId: sessionDbId }, e);
+        } else {
+          logger.warn('SDK', 'Fallback Gemini failed, trying OpenRouter', { sessionId: sessionDbId, error: String(e) });
+        }
       }
     }
 
@@ -709,10 +723,12 @@ export class WorkerService {
         await this.openRouterAgent.startSession(session, this);
         return;
       } catch (e) {
-        logger.warn('SDK', 'Fallback OpenRouter failed', {
-          sessionId: sessionDbId,
-          error: e instanceof Error ? e.message : String(e)
-        });
+        // [ANTI-PATTERN IGNORED]: Final fallback attempt — failure falls through to message abandonment below
+        if (e instanceof Error) {
+          logger.warn('SDK', 'Fallback OpenRouter failed', { sessionId: sessionDbId }, e);
+        } else {
+          logger.warn('SDK', 'Fallback OpenRouter failed', { sessionId: sessionDbId, error: String(e) });
+        }
       }
     }
 
@@ -730,6 +746,68 @@ export class WorkerService {
   }
 
   /**
+   * Best-effort cleanup of stale 'active' sessions older than 6 hours.
+   * Sessions and their pending messages are marked as failed so they don't block queue processing.
+   */
+  private cleanupStaleActiveSessions(sessionStore: ReturnType<DatabaseManager['getSessionStore']>): void {
+    const STALE_SESSION_THRESHOLD_MS = 6 * 60 * 60 * 1000;
+    const staleThreshold = Date.now() - STALE_SESSION_THRESHOLD_MS;
+
+    let staleIds: number[];
+    try {
+      const rows = sessionStore.db.prepare(`
+        SELECT id FROM sdk_sessions WHERE status = 'active' AND started_at_epoch < ?
+      `).all(staleThreshold) as { id: number }[];
+      staleIds = rows.map(r => r.id);
+    } catch (error) {
+      // [ANTI-PATTERN IGNORED]: Stale session cleanup is best-effort; failure must not block pending queue processing
+      if (error instanceof Error) {
+        logger.error('SYSTEM', 'Failed to query stale sessions', {}, error);
+      } else {
+        logger.error('SYSTEM', 'Failed to query stale sessions', { error: String(error) });
+      }
+      return;
+    }
+
+    if (staleIds.length === 0) return;
+
+    const placeholders = staleIds.map(() => '?').join(',');
+    try {
+      sessionStore.db.prepare(`UPDATE sdk_sessions SET status = 'failed', completed_at_epoch = ? WHERE id IN (${placeholders})`).run(Date.now(), ...staleIds);
+      logger.info('SYSTEM', `Marked ${staleIds.length} stale sessions as failed`);
+      const msgResult = sessionStore.db.prepare(`UPDATE pending_messages SET status = 'failed', failed_at_epoch = ? WHERE status = 'pending' AND session_db_id IN (${placeholders})`).run(Date.now(), ...staleIds);
+      if (msgResult.changes > 0) logger.info('SYSTEM', `Marked ${msgResult.changes} pending messages from stale sessions as failed`);
+    } catch (error) {
+      // [ANTI-PATTERN IGNORED]: Marking stale sessions failed is best-effort; failure must not block pending queue processing
+      if (error instanceof Error) {
+        logger.error('SYSTEM', 'Failed to mark stale sessions as failed', {}, error);
+      } else {
+        logger.error('SYSTEM', 'Failed to mark stale sessions as failed', { error: String(error) });
+      }
+    }
+  }
+
+  /**
+   * Attempt to recover a single orphaned session. Returns true if a processor was started.
+   */
+  private recoverOrphanedSession(
+    sessionDbId: number,
+    pendingStore: { getPendingCount(id: number): number }
+  ): boolean {
+    const existingSession = this.sessionManager.getSession(sessionDbId);
+    if (existingSession?.generatorPromise) return false;
+
+    const session = this.sessionManager.initializeSession(sessionDbId);
+    logger.info('SYSTEM', `Starting processor for session ${sessionDbId}`, {
+      project: session.project,
+      pendingCount: pendingStore.getPendingCount(sessionDbId)
+    });
+
+    this.startSessionProcessor(session, 'startup-recovery');
+    return true;
+  }
+
+  /**
    * Process pending session queues
    */
   async processPendingQueues(sessionLimit: number = 10): Promise<{
@@ -742,43 +820,8 @@ export class WorkerService {
     const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
     const sessionStore = this.dbManager.getSessionStore();
 
-    // Clean up stale 'active' sessions before processing
-    // Sessions older than 6 hours without activity are likely orphaned
-    const STALE_SESSION_THRESHOLD_MS = 6 * 60 * 60 * 1000;
-    const staleThreshold = Date.now() - STALE_SESSION_THRESHOLD_MS;
-
-    try {
-      const staleSessionIds = sessionStore.db.prepare(`
-        SELECT id FROM sdk_sessions
-        WHERE status = 'active' AND started_at_epoch < ?
-      `).all(staleThreshold) as { id: number }[];
-
-      if (staleSessionIds.length > 0) {
-        const ids = staleSessionIds.map(r => r.id);
-        const placeholders = ids.map(() => '?').join(',');
-
-        sessionStore.db.prepare(`
-          UPDATE sdk_sessions
-          SET status = 'failed', completed_at_epoch = ?
-          WHERE id IN (${placeholders})
-        `).run(Date.now(), ...ids);
-
-        logger.info('SYSTEM', `Marked ${ids.length} stale sessions as failed`);
-
-        const msgResult = sessionStore.db.prepare(`
-          UPDATE pending_messages
-          SET status = 'failed', failed_at_epoch = ?
-          WHERE status = 'pending'
-          AND session_db_id IN (${placeholders})
-        `).run(Date.now(), ...ids);
-
-        if (msgResult.changes > 0) {
-          logger.info('SYSTEM', `Marked ${msgResult.changes} pending messages from stale sessions as failed`);
-        }
-      }
-    } catch (error) {
-      logger.error('SYSTEM', 'Failed to clean up stale sessions', {}, error as Error);
-    }
+    // Clean up stale 'active' sessions before processing (best-effort)
+    this.cleanupStaleActiveSessions(sessionStore);
 
     const orphanedSessionIds = pendingStore.getSessionsWithPendingMessages();
 
@@ -797,25 +840,21 @@ export class WorkerService {
       if (result.sessionsStarted >= sessionLimit) break;
 
       try {
-        const existingSession = this.sessionManager.getSession(sessionDbId);
-        if (existingSession?.generatorPromise) {
+        const started = this.recoverOrphanedSession(sessionDbId, pendingStore);
+        if (started) {
+          result.sessionsStarted++;
+          result.startedSessionIds.push(sessionDbId);
+          await new Promise(resolve => setTimeout(resolve, 100));
+        } else {
           result.sessionsSkipped++;
-          continue;
         }
-
-        const session = this.sessionManager.initializeSession(sessionDbId);
-        logger.info('SYSTEM', `Starting processor for session ${sessionDbId}`, {
-          project: session.project,
-          pendingCount: pendingStore.getPendingCount(sessionDbId)
-        });
-
-        this.startSessionProcessor(session, 'startup-recovery');
-        result.sessionsStarted++;
-        result.startedSessionIds.push(sessionDbId);
-
-        await new Promise(resolve => setTimeout(resolve, 100));
       } catch (error) {
-        logger.error('SYSTEM', `Failed to process session ${sessionDbId}`, {}, error as Error);
+        // [ANTI-PATTERN IGNORED]: Per-session error isolation — one session failing must not block recovery of remaining sessions
+        if (error instanceof Error) {
+          logger.error('SYSTEM', `Failed to process session ${sessionDbId}`, {}, error);
+        } else {
+          logger.error('SYSTEM', `Failed to process session ${sessionDbId}`, { error: String(error) });
+        }
         result.sessionsSkipped++;
       }
     }
@@ -1074,7 +1113,11 @@ async function main() {
           startedWorkerInProcess = true;
           // Worker is now running in this process on the port
         } catch (error) {
-          logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
+          if (error instanceof Error) {
+            logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error);
+          } else {
+            logger.failure('SYSTEM', 'Worker failed to start in hook', { error: String(error) });
+          }
           removePidFile();
           process.exit(0);
         }

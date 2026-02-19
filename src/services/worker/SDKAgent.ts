@@ -471,7 +471,11 @@ export class SDKAgent {
       if (claudePath) return claudePath;
     } catch (error) {
       // [ANTI-PATTERN IGNORED]: Fallback behavior - which/where failed, continue to throw clear error
-      logger.debug('SDK', 'Claude executable auto-detection failed', {}, error as Error);
+      if (error instanceof Error) {
+        logger.debug('SDK', 'Claude executable auto-detection failed', {}, error);
+      } else {
+        logger.debug('SDK', 'Claude executable auto-detection failed', { error: String(error) });
+      }
     }
 
     throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json');
