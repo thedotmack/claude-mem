@@ -137,7 +137,9 @@ export function getBranchInfo(): BranchInfo {
       canSwitch: true // We can always switch (will discard local changes)
     };
   } catch (error) {
-    logger.error('BRANCH', 'Failed to get branch info', {}, error as Error);
+    if (error instanceof Error) {
+      logger.error('BRANCH', 'Failed to get branch info', {}, error);
+    }
     return {
       branch: null,
       isBeta: false,
@@ -243,7 +245,9 @@ export async function switchBranch(targetBranch: string): Promise<SwitchResult> 
       }
     } catch (recoveryError) {
       // [POSSIBLY RELEVANT]: Recovery checkout failed, user needs manual intervention - already logging main error above
-      logger.error('BRANCH', 'Recovery checkout also failed', { originalBranch: info.branch }, recoveryError as Error);
+      if (recoveryError instanceof Error) {
+        logger.error('BRANCH', 'Recovery checkout also failed', { originalBranch: info.branch }, recoveryError);
+      }
     }
 
     return {
@@ -299,7 +303,9 @@ export async function pullUpdates(): Promise<SwitchResult> {
       message: `Updated ${info.branch}. Worker will restart automatically.`
     };
   } catch (error) {
-    logger.error('BRANCH', 'Pull failed', {}, error as Error);
+    if (error instanceof Error) {
+      logger.error('BRANCH', 'Pull failed', {}, error);
+    }
     return {
       success: false,
       error: `Pull failed: ${(error as Error).message}`

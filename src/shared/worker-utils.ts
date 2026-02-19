@@ -113,10 +113,12 @@ function getPluginVersion(): string {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     return packageJson.version;
   } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'EBUSY') {
-      logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
-      return 'unknown';
+    if (error instanceof Error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'EBUSY') {
+        logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
+        return 'unknown';
+      }
     }
     throw error;
   }

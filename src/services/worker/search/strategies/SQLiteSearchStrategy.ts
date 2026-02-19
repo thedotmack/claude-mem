@@ -97,7 +97,9 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
       };
 
     } catch (error) {
-      logger.error('SEARCH', 'SQLiteSearchStrategy: Search failed', {}, error as Error);
+      if (error instanceof Error) {
+        logger.error('SEARCH', 'SQLiteSearchStrategy: Search failed', {}, error);
+      }
       return this.emptyResult('sqlite');
     }
   }

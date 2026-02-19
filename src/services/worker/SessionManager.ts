@@ -222,10 +222,12 @@ export class SessionManager {
         sessionId: sessionDbId
       });
     } catch (error) {
-      logger.error('SESSION', 'Failed to persist observation to DB', {
-        sessionId: sessionDbId,
-        tool: data.tool_name
-      }, error);
+      if (error instanceof Error) {
+        logger.error('SESSION', 'Failed to persist observation to DB', {
+          sessionId: sessionDbId,
+          tool: data.tool_name
+        }, error);
+      }
       throw error; // Don't continue if we can't persist
     }
 
@@ -261,9 +263,11 @@ export class SessionManager {
         sessionId: sessionDbId
       });
     } catch (error) {
-      logger.error('SESSION', 'Failed to persist summarize to DB', {
-        sessionId: sessionDbId
-      }, error);
+      if (error instanceof Error) {
+        logger.error('SESSION', 'Failed to persist summarize to DB', {
+          sessionId: sessionDbId
+        }, error);
+      }
       throw error; // Don't continue if we can't persist
     }
 

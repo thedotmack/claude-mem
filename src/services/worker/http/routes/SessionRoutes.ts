@@ -180,9 +180,11 @@ export class SessionRoutes extends BaseRouteHandler {
             });
           }
         } catch (dbError) {
-          logger.error('SESSION', 'Failed to mark messages as failed', {
-            sessionId: session.sessionDbId
-          }, dbError as Error);
+          if (dbError instanceof Error) {
+            logger.error('SESSION', 'Failed to mark messages as failed', {
+              sessionId: session.sessionDbId
+            }, dbError);
+          }
         }
       })
       .finally(async () => {

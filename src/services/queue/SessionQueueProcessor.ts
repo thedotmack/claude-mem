@@ -66,7 +66,9 @@ export class SessionQueueProcessor {
         }
       } catch (error) {
         if (signal.aborted) return;
-        logger.error('SESSION', 'Error in queue processor loop', { sessionDbId }, error as Error);
+        if (error instanceof Error) {
+          logger.error('SESSION', 'Error in queue processor loop', { sessionDbId }, error);
+        }
         // Small backoff to prevent tight loop on DB error
         await new Promise(resolve => setTimeout(resolve, 1000));
       }

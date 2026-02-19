@@ -797,7 +797,9 @@ export class ChromaSync {
         try {
           await sync.ensureBackfilled(project);
         } catch (error) {
-          logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, {}, error as Error);
+          if (error instanceof Error) {
+            logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, {}, error);
+          }
           // Continue to next project — don't let one failure stop others
         }
       }

@@ -447,12 +447,13 @@ export async function updateFolderClaudeMdFiles(
       logger.debug('FOLDER_INDEX', 'Updated CLAUDE.md', { folderPath });
     } catch (error) {
       // Fire-and-forget: log warning but don't fail
-      const err = error as Error;
-      logger.error('FOLDER_INDEX', 'Failed to update CLAUDE.md', {
-        folderPath,
-        errorMessage: err.message,
-        errorStack: err.stack
-      });
+      if (error instanceof Error) {
+        logger.error('FOLDER_INDEX', 'Failed to update CLAUDE.md', {
+          folderPath,
+          errorMessage: error.message,
+          errorStack: error.stack
+        });
+      }
     }
   }
 }

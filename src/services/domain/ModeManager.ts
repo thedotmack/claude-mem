@@ -144,7 +144,9 @@ export class ModeManager {
         });
         return mode;
       } catch (error) {
-        logger.warn('SYSTEM', `Mode file not found: ${modeId}, falling back to 'code'`);
+        if (error instanceof Error) {
+          logger.warn('SYSTEM', `Mode file not found: ${modeId}, falling back to 'code'`);
+        }
         // If we're already trying to load 'code', throw to prevent infinite recursion
         if (modeId === 'code') {
           throw new Error('Critical: code.json mode file missing');
@@ -161,7 +163,9 @@ export class ModeManager {
     try {
       parentMode = this.loadMode(parentId);
     } catch (error) {
-      logger.warn('SYSTEM', `Parent mode '${parentId}' not found for ${modeId}, falling back to 'code'`);
+      if (error instanceof Error) {
+        logger.warn('SYSTEM', `Parent mode '${parentId}' not found for ${modeId}, falling back to 'code'`);
+      }
       parentMode = this.loadMode('code');
     }
 
@@ -171,7 +175,9 @@ export class ModeManager {
       overrideConfig = this.loadModeFile(overrideId);
       logger.debug('SYSTEM', `Loaded override file: ${overrideId} for parent ${parentId}`);
     } catch (error) {
-      logger.warn('SYSTEM', `Override file '${overrideId}' not found, using parent mode '${parentId}' only`);
+      if (error instanceof Error) {
+        logger.warn('SYSTEM', `Override file '${overrideId}' not found, using parent mode '${parentId}' only`);
+      }
       this.activeMode = parentMode;
       return parentMode;
     }

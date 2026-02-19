@@ -421,7 +421,9 @@ export class SearchManager {
             }
           }
         } catch (chromaError) {
-          logger.error('SEARCH', 'Chroma search failed for timeline, continuing without semantic results', {}, chromaError as Error);
+          if (chromaError instanceof Error) {
+            logger.error('SEARCH', 'Chroma search failed for timeline, continuing without semantic results', {}, chromaError);
+          }
         }
       }
 
@@ -689,7 +691,9 @@ export class SearchManager {
           }
         }
       } catch (chromaError) {
-        logger.error('SEARCH', 'Chroma search failed for decisions, falling back to metadata search', {}, chromaError as Error);
+        if (chromaError instanceof Error) {
+          logger.error('SEARCH', 'Chroma search failed for decisions, falling back to metadata search', {}, chromaError);
+        }
       }
     }
 
@@ -757,7 +761,9 @@ export class SearchManager {
           }
         }
       } catch (chromaError) {
-        logger.error('SEARCH', 'Chroma search failed for changes, falling back to metadata search', {}, chromaError as Error);
+        if (chromaError instanceof Error) {
+          logger.error('SEARCH', 'Chroma search failed for changes, falling back to metadata search', {}, chromaError);
+        }
       }
     }
 
@@ -1338,7 +1344,9 @@ export class SearchManager {
                 lines.push(`**Files Read:** ${filesRead.join(', ')}`);
               }
             } catch (error) {
-              logger.debug('WORKER', 'files_read is plain string, using as-is', {}, error as Error);
+              if (error instanceof Error) {
+                logger.debug('WORKER', 'files_read is plain string, using as-is', {}, error);
+              }
               if (summary.files_read.trim()) {
                 lines.push(`**Files Read:** ${summary.files_read}`);
               }
@@ -1353,7 +1361,9 @@ export class SearchManager {
                 lines.push(`**Files Edited:** ${filesEdited.join(', ')}`);
               }
             } catch (error) {
-              logger.debug('WORKER', 'files_edited is plain string, using as-is', {}, error as Error);
+              if (error instanceof Error) {
+                logger.debug('WORKER', 'files_edited is plain string, using as-is', {}, error);
+              }
               if (summary.files_edited.trim()) {
                 lines.push(`**Files Edited:** ${summary.files_edited}`);
               }

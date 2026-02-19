@@ -11,7 +11,9 @@ export function useStats() {
       const data = await response.json();
       setStats(data);
     } catch (error) {
-      console.error('Failed to load stats:', error);
+      if (error instanceof Error) {
+        console.error('Failed to load stats:', error);
+      }
     }
   }, []);
 

@@ -150,7 +150,9 @@ function parseObservation(xml: string): ObservationData | null {
 
     return observation;
   } catch (e) {
-    console.error('Error parsing observation:', e);
+    if (e instanceof Error) {
+      console.error('Error parsing observation:', e.message);
+    }
     return null;
   }
 }
@@ -181,7 +183,9 @@ function parseSummary(xml: string): SummaryData | null {
 
     return summary;
   } catch (e) {
-    console.error('Error parsing summary:', e);
+    if (e instanceof Error) {
+      console.error('Error parsing summary:', e.message);
+    }
     return null;
   }
 }
@@ -327,7 +331,9 @@ function main() {
           console.log(`Imported ${importedObs} observations...`);
         }
       } catch (e) {
-        console.error(`Error storing observation:`, e);
+        if (e instanceof Error) {
+          console.error(`Error storing observation:`, e.message);
+        }
         skipped++;
       }
       continue;
@@ -359,7 +365,9 @@ function main() {
           console.log(`Imported ${importedSum} summaries...`);
         }
       } catch (e) {
-        console.error(`Error storing summary:`, e);
+        if (e instanceof Error) {
+          console.error(`Error storing summary:`, e.message);
+        }
         skipped++;
       }
       continue;

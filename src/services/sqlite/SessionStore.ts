@@ -824,8 +824,10 @@ export class SessionStore {
 
       logger.debug('DB', 'Successfully added ON UPDATE CASCADE to FK constraints');
     } catch (error) {
-      this.db.run('ROLLBACK');
-      this.db.run('PRAGMA foreign_keys = ON');
+      if (error instanceof Error) {
+        this.db.run('ROLLBACK');
+        this.db.run('PRAGMA foreign_keys = ON');
+      }
       throw error;
     }
   }
@@ -1978,7 +1980,9 @@ export class SessionStore {
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
       } catch (err: any) {
-        logger.error('DB', 'Error getting boundary observations', undefined, { error: err, project });
+        if (err instanceof Error) {
+          logger.error('DB', 'Error getting boundary observations', undefined, { error: err, project });
+        }
         return { observations: [], sessions: [], prompts: [] };
       }
     } else {
@@ -2010,7 +2014,9 @@ export class SessionStore {
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
       } catch (err: any) {
-        logger.error('DB', 'Error getting boundary timestamps', undefined, { error: err, project });
+        if (err instanceof Error) {
+          logger.error('DB', 'Error getting boundary timestamps', undefined, { error: err, project });
+        }
         return { observations: [], sessions: [], prompts: [] };
       }
     }

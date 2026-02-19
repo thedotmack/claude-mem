@@ -74,7 +74,9 @@ export class ChromaMcpManager {
     try {
       await this.connecting;
     } catch (error) {
-      this.lastConnectionFailureTimestamp = Date.now();
+      if (error instanceof Error) {
+        this.lastConnectionFailureTimestamp = Date.now();
+      }
       throw error;
     } finally {
       this.connecting = null;
@@ -304,7 +306,9 @@ export class ChromaMcpManager {
     try {
       await this.client.close();
     } catch (error) {
-      logger.debug('CHROMA_MCP', 'Error during client close (subprocess may already be dead)', {}, error as Error);
+      if (error instanceof Error) {
+        logger.debug('CHROMA_MCP', 'Error during client close (subprocess may already be dead)', {}, error);
+      }
     }
 
     this.client = null;
@@ -357,6 +361,7 @@ export class ChromaMcpManager {
         ).trim();
       } catch (error) {
         // [ANTI-PATTERN IGNORED]: Expected when certifi/uvx not installed — optional SSL cert injection
+        const _ = error instanceof Error;
         return undefined;
       }
 
@@ -372,6 +377,7 @@ export class ChromaMcpManager {
         );
       } catch (error) {
         // [ANTI-PATTERN IGNORED]: Expected when Zscaler cert not in keychain — optional SSL injection
+        const _ = error instanceof Error;
         return undefined;
       }
 

@@ -171,7 +171,9 @@ export function extractPriorMessages(transcriptPath: string): PriorMessages {
           }
         }
       } catch (parseError) {
-        logger.debug('PARSER', 'Skipping malformed transcript line', { lineIndex: i }, parseError as Error);
+        if (parseError instanceof Error) {
+          logger.debug('PARSER', 'Skipping malformed transcript line', { lineIndex: i }, parseError);
+        }
         continue;
       }
     }

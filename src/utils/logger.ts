@@ -65,7 +65,9 @@ class Logger {
       chmodSync(this.logFilePath, 0o600);
     } catch (error) {
       // If log file initialization fails, just log to console
-      console.error('[LOGGER] Failed to initialize log file:', error);
+      if (error instanceof Error) {
+        console.error('[LOGGER] Failed to initialize log file:', error);
+      }
       this.logFilePath = null;
     }
   }
@@ -89,6 +91,7 @@ class Logger {
         }
       } catch (_error) {
         // [ANTI-PATTERN IGNORED]: Logger cannot log its own initialization failures
+        const _ = _error instanceof Error;
         this.level = LogLevel.INFO;
       }
     }
@@ -295,7 +298,9 @@ class Logger {
       } catch (error) {
         // Logger can't log its own failures - use stderr as last resort
         // This is expected during disk full / permission errors
-        process.stderr.write(`[LOGGER] Failed to write to log file: ${error}\n`);
+        if (error instanceof Error) {
+          process.stderr.write(`[LOGGER] Failed to write to log file: ${error}\n`);
+        }
       }
     } else {
       // If no log file available, write to stderr as fallback

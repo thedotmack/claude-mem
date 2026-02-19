@@ -120,6 +120,7 @@ export async function updateCursorContextForProject(projectName: string, port: n
     logger.debug('CURSOR', 'Updated context file', { projectName, workspacePath: entry.workspacePath });
   } catch (error) {
     // [ANTI-PATTERN IGNORED]: Background context update - failure is non-critical, user workflow continues
+    const _ = error instanceof Error;
     logger.error('CURSOR', 'Failed to update context file', { projectName }, error as Error);
   }
 }
@@ -266,6 +267,7 @@ export function configureCursorMcp(target: CursorInstallTarget): number {
         }
       } catch (error) {
         // [ANTI-PATTERN IGNORED]: Fallback behavior - corrupt config, continue with empty
+        const _ = error instanceof Error;
         logger.error('SYSTEM', 'Corrupt mcp.json, creating new config', { path: mcpJsonPath }, error as Error);
         config = { mcpServers: {} };
       }
@@ -386,7 +388,9 @@ Context Injection:
 
     return 0;
   } catch (error) {
-    console.error(`\nInstallation failed: ${(error as Error).message}`);
+    if (error instanceof Error) {
+      console.error(`\nInstallation failed: ${error.message}`);
+    }
     if (target === 'enterprise') {
       console.error('   Tip: Enterprise installation may require sudo/admin privileges');
     }
@@ -428,6 +432,7 @@ async function setupProjectContext(targetDir: string, workspaceRoot: string): Pr
     }
   } catch (error) {
     // [ANTI-PATTERN IGNORED]: Fallback behavior - worker not running, use placeholder
+    const _ = error instanceof Error;
     logger.debug('CURSOR', 'Worker not running during install', {}, error as Error);
   }
 
@@ -511,7 +516,9 @@ export function uninstallCursorHooks(target: CursorInstallTarget): number {
 
     return 0;
   } catch (error) {
-    console.error(`\nUninstallation failed: ${(error as Error).message}`);
+    if (error instanceof Error) {
+      console.error(`\nUninstallation failed: ${error.message}`);
+    }
     return 1;
   }
 }
@@ -614,6 +621,7 @@ export async function detectClaudeCode(): Promise<boolean> {
     }
   } catch (error) {
     // [ANTI-PATTERN IGNORED]: Fallback behavior - CLI not found, continue to directory check
+    const _ = error instanceof Error;
     logger.debug('SYSTEM', 'Claude CLI not in PATH', {}, error as Error);
   }
 

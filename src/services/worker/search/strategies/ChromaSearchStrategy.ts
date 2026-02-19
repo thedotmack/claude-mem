@@ -138,7 +138,9 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       };
 
     } catch (error) {
-      logger.error('SEARCH', 'ChromaSearchStrategy: Search failed', {}, error as Error);
+      if (error instanceof Error) {
+        logger.error('SEARCH', 'ChromaSearchStrategy: Search failed', {}, error);
+      }
       // Return empty result - caller may try fallback strategy
       return {
         results: { observations: [], sessions: [], prompts: [] },

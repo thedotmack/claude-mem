@@ -96,18 +96,22 @@ export function buildObservationPrompt(obs: Observation): string {
   try {
     toolInput = typeof obs.tool_input === 'string' ? JSON.parse(obs.tool_input) : obs.tool_input;
   } catch (error) {
-    logger.debug('SDK', 'Tool input is plain string, using as-is', {
-      toolName: obs.tool_name
-    }, error as Error);
+    if (error instanceof Error) {
+      logger.debug('SDK', 'Tool input is plain string, using as-is', {
+        toolName: obs.tool_name
+      }, error);
+    }
     toolInput = obs.tool_input;
   }
 
   try {
     toolOutput = typeof obs.tool_output === 'string' ? JSON.parse(obs.tool_output) : obs.tool_output;
   } catch (error) {
-    logger.debug('SDK', 'Tool output is plain string, using as-is', {
-      toolName: obs.tool_name
-    }, error as Error);
+    if (error instanceof Error) {
+      logger.debug('SDK', 'Tool output is plain string, using as-is', {
+        toolName: obs.tool_name
+      }, error);
+    }
     toolOutput = obs.tool_output;
   }
 

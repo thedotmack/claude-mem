@@ -402,7 +402,9 @@ export function startOrphanReaper(getActiveSessionIds: () => Set<number>, interv
         logger.info('PROCESS', `Reaper cleaned up ${killed} orphaned processes`, { killed });
       }
     } catch (error) {
-      logger.error('PROCESS', 'Reaper error', {}, error as Error);
+      if (error instanceof Error) {
+        logger.error('PROCESS', 'Reaper error', {}, error);
+      }
     }
   }, intervalMs);
 

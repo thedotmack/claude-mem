@@ -74,7 +74,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       try {
         settings = JSON.parse(settingsData);
       } catch (parseError) {
-        logger.error('SETTINGS', 'Failed to parse settings file', { settingsPath }, parseError as Error);
+        if (parseError instanceof Error) {
+          logger.error('SETTINGS', 'Failed to parse settings file', { settingsPath }, parseError);
+        }
         res.status(500).json({
           success: false,
           error: 'Settings file is corrupted. Delete ~/.claude-mem/settings.json to reset.'

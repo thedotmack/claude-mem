@@ -17,9 +17,11 @@ export function parseJsonArray(json: string | null): string[] {
     const parsed = JSON.parse(json);
     return Array.isArray(parsed) ? parsed : [];
   } catch (err) {
-    logger.debug('PARSER', 'Failed to parse JSON array, using empty fallback', {
-      preview: json?.substring(0, 50)
-    }, err as Error);
+    if (err instanceof Error) {
+      logger.debug('PARSER', 'Failed to parse JSON array, using empty fallback', {
+        preview: json?.substring(0, 50)
+      }, err);
+    }
     return [];
   }
 }

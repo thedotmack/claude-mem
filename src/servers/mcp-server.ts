@@ -150,8 +150,10 @@ async function verifyWorkerConnection(): Promise<boolean> {
     const response = await fetch(`${WORKER_BASE_URL}/api/health`);
     return response.ok;
   } catch (error) {
-    // Expected during worker startup or if worker is down
-    logger.debug('SYSTEM', 'Worker health check failed', {}, error as Error);
+    if (error instanceof Error) {
+      // Expected during worker startup or if worker is down
+      logger.debug('SYSTEM', 'Worker health check failed', {}, error);
+    }
     return false;
   }
 }

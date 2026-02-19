@@ -95,7 +95,9 @@ function getTrackedFolders(workingDir: string): Set<string> {
       }
     }
   } catch (error) {
-    logger.warn('CLAUDE_MD', 'git ls-files failed, falling back to directory walk', { error: String(error) });
+    if (error instanceof Error) {
+      logger.warn('CLAUDE_MD', 'git ls-files failed, falling back to directory walk', { error: String(error) });
+    }
     walkDirectoriesWithIgnore(workingDir, folders);
   }
 
@@ -438,9 +440,11 @@ export async function generateClaudeMd(dryRun: boolean): Promise<number> {
 
     return 0;
   } catch (error) {
-    logger.error('CLAUDE_MD', 'Fatal error during CLAUDE.md generation', {
-      error: String(error)
-    });
+    if (error instanceof Error) {
+      logger.error('CLAUDE_MD', 'Fatal error during CLAUDE.md generation', {
+        error: String(error)
+      });
+    }
     return 1;
   }
 }
@@ -533,7 +537,9 @@ export async function cleanClaudeMd(dryRun: boolean): Promise<number> {
           cleanedCount++;
         }
       } catch (error) {
-        logger.warn('CLAUDE_MD', `Error processing ${relativePath}`, { error: String(error) });
+        if (error instanceof Error) {
+          logger.warn('CLAUDE_MD', `Error processing ${relativePath}`, { error: String(error) });
+        }
         errorCount++;
       }
     }

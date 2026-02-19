@@ -30,7 +30,9 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
           setSelectedProject(data.projects[0]); // Default to first project
         }
       } catch (err) {
-        console.error('Failed to fetch projects:', err);
+        if (err instanceof Error) {
+          console.error('Failed to fetch projects:', err);
+        }
       }
     }
     fetchProjects();

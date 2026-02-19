@@ -111,9 +111,11 @@ export function getCurrentProjectName(): string {
     }).trim();
     return basename(gitRoot);
   } catch (error) {
-    logger.debug('SYSTEM', 'Git root detection failed, using cwd basename', {
-      cwd: process.cwd()
-    }, error as Error);
+    if (error instanceof Error) {
+      logger.debug('SYSTEM', 'Git root detection failed, using cwd basename', {
+        cwd: process.cwd()
+      }, error);
+    }
     return basename(process.cwd());
   }
 }

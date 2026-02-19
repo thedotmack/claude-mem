@@ -17,7 +17,9 @@ function getStoredPreference(): ThemePreference {
       return stored;
     }
   } catch (e) {
-    console.warn('Failed to read theme preference from localStorage:', e);
+    if (e instanceof Error) {
+      console.warn('Failed to read theme preference from localStorage:', e);
+    }
   }
   return 'system';
 }
@@ -62,7 +64,9 @@ export function useTheme() {
       localStorage.setItem(STORAGE_KEY, newPreference);
       setPreference(newPreference);
     } catch (e) {
-      console.warn('Failed to save theme preference to localStorage:', e);
+      if (e instanceof Error) {
+        console.warn('Failed to save theme preference to localStorage:', e);
+      }
       // Still update the theme even if localStorage fails
       setPreference(newPreference);
     }

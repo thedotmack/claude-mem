@@ -50,11 +50,13 @@ function initializeDatabase(): SessionStore | null {
   try {
     return new SessionStore();
   } catch (error: any) {
-    if (error.code === 'ERR_DLOPEN_FAILED') {
+    if (error instanceof Error && (error as any).code === 'ERR_DLOPEN_FAILED') {
       try {
         unlinkSync(VERSION_MARKER_PATH);
       } catch (unlinkError) {
-        logger.debug('SYSTEM', 'Marker file cleanup failed (may not exist)', {}, unlinkError as Error);
+        if (unlinkError instanceof Error) {
+          logger.debug('SYSTEM', 'Marker file cleanup failed (may not exist)', {}, unlinkError);
+        }
       }
       logger.error('SYSTEM', 'Native module rebuild needed - restart Claude Code to auto-fix');
       return null;

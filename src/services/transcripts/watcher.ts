@@ -219,10 +219,12 @@ export class TranscriptWatcher {
       const entry = JSON.parse(line);
       await this.processor.processEntry(entry, watch, schema, sessionIdOverride ?? undefined);
     } catch (error) {
-      logger.debug('TRANSCRIPT', 'Failed to parse transcript line', {
-        watch: watch.name,
-        file: basename(filePath)
-      }, error as Error);
+      if (error instanceof Error) {
+        logger.debug('TRANSCRIPT', 'Failed to parse transcript line', {
+          watch: watch.name,
+          file: basename(filePath)
+        }, error);
+      }
     }
   }
 

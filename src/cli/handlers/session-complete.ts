@@ -58,9 +58,11 @@ export const sessionCompleteHandler: EventHandler = {
       }
     } catch (error) {
       // Log but don't fail - session may already be gone
-      logger.warn('HOOK', 'session-complete: Error completing session', {
-        error: (error as Error).message
-      });
+      if (error instanceof Error) {
+        logger.warn('HOOK', 'session-complete: Error completing session', {
+          error: error.message
+        });
+      }
     }
 
     return { continue: true, suppressOutput: true };

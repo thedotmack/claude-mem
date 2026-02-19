@@ -201,7 +201,9 @@ export class SettingsDefaultsManager {
           // Use console instead of logger to avoid circular dependency
           console.log('[SETTINGS] Created settings file with defaults:', settingsPath);
         } catch (error) {
-          console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error);
+          if (error instanceof Error) {
+            console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error);
+          }
         }
         // Still apply env var overrides even when file doesn't exist
         return this.applyEnvOverrides(defaults);
@@ -222,7 +224,9 @@ export class SettingsDefaultsManager {
           chmodSync(settingsPath, 0o600);
           console.log('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
         } catch (error) {
-          console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error);
+          if (error instanceof Error) {
+            console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error);
+          }
           // Continue with in-memory migration even if write fails
         }
       }

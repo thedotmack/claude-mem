@@ -28,6 +28,8 @@ export function writeAgentsMd(agentsPath: string, context: string): void {
     writeFileSync(tempFile, finalContent);
     renameSync(tempFile, agentsPath);
   } catch (error) {
-    logger.error('AGENTS_MD', 'Failed to write AGENTS.md', { agentsPath }, error as Error);
+    if (error instanceof Error) {
+      logger.error('AGENTS_MD', 'Failed to write AGENTS.md', { agentsPath }, error);
+    }
   }
 }

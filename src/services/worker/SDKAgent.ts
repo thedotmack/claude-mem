@@ -478,6 +478,7 @@ export class SDKAgent {
       if (claudePath) return claudePath;
     } catch (error) {
       // [ANTI-PATTERN IGNORED]: Fallback behavior - which/where failed, continue to throw clear error
+      const _ = error instanceof Error;
       logger.debug('SDK', 'Claude executable auto-detection failed', {}, error as Error);
     }
 

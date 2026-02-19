@@ -25,6 +25,7 @@ export async function isPortInUse(port: number): Promise<boolean> {
     return response.ok;
   } catch (error) {
     // [ANTI-PATTERN IGNORED]: Health check polls every 500ms, logging would flood
+    const _ = error instanceof Error;
     return false;
   }
 }
@@ -48,6 +49,7 @@ export async function waitForHealth(port: number, timeoutMs: number = 30000): Pr
       if (response.ok) return true;
     } catch (error) {
       // [ANTI-PATTERN IGNORED]: Retry loop - expected failures during startup, will retry
+      const _ = error instanceof Error;
       logger.debug('SYSTEM', 'Service not ready yet, will retry', { port }, error as Error);
     }
     await new Promise(r => setTimeout(r, 500));

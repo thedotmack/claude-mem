@@ -120,7 +120,9 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
 
     return result;
   } catch (error) {
-    logger.warn('ENV', 'Failed to load .env file', { path: ENV_FILE_PATH }, error as Error);
+    if (error instanceof Error) {
+      logger.warn('ENV', 'Failed to load .env file', { path: ENV_FILE_PATH }, error);
+    }
     return {};
   }
 }
@@ -168,7 +170,9 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
 
     writeFileSync(ENV_FILE_PATH, serializeEnvFile(updated), 'utf-8');
   } catch (error) {
-    logger.error('ENV', 'Failed to save .env file', { path: ENV_FILE_PATH }, error as Error);
+    if (error instanceof Error) {
+      logger.error('ENV', 'Failed to save .env file', { path: ENV_FILE_PATH }, error);
+    }
     throw error;
   }
 }
