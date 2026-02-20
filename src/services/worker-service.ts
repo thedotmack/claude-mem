@@ -213,6 +213,13 @@ export class WorkerService {
     this.openRouterAgent = new OpenRouterAgent(this.dbManager, this.sessionManager);
     this.openAICodexAgent = new OpenAICodexAgent(this.dbManager, this.sessionManager);
 
+    // Configure fallback chain for non-Claude providers.
+    // If provider-specific API calls fail with transient/recoverable errors,
+    // the request can continue via the Claude SDK agent.
+    this.geminiAgent.setFallbackAgent(this.sdkAgent);
+    this.openRouterAgent.setFallbackAgent(this.sdkAgent);
+    this.openAICodexAgent.setFallbackAgent(this.sdkAgent);
+
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
