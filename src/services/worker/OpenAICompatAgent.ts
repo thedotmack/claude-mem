@@ -183,10 +183,10 @@ export class OpenAICompatAgent {
       const initResponse = await this.queryOpenAICompatMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, baseUrl);
 
       if (initResponse.content) {
-        // Track token usage
+        // Track token usage (use actual breakdown when available, fall back to estimate)
         const tokensUsed = initResponse.tokensUsed || 0;
-        session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  // Rough estimate
-        session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+        session.cumulativeInputTokens += initResponse.inputTokens ?? Math.floor(tokensUsed * 0.7);
+        session.cumulativeOutputTokens += initResponse.outputTokens ?? Math.floor(tokensUsed * 0.3);
 
         // Process response using shared ResponseProcessor (no original timestamp for init - not from queue)
         processAgentResponse(
@@ -244,8 +244,8 @@ export class OpenAICompatAgent {
           let tokensUsed = 0;
           if (obsResponse.content) {
             tokensUsed = obsResponse.tokensUsed || 0;
-            session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-            session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+            session.cumulativeInputTokens += obsResponse.inputTokens ?? Math.floor(tokensUsed * 0.7);
+            session.cumulativeOutputTokens += obsResponse.outputTokens ?? Math.floor(tokensUsed * 0.3);
           }
 
           // Process response using shared ResponseProcessor
@@ -280,8 +280,8 @@ export class OpenAICompatAgent {
           let tokensUsed = 0;
           if (summaryResponse.content) {
             tokensUsed = summaryResponse.tokensUsed || 0;
-            session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-            session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+            session.cumulativeInputTokens += summaryResponse.inputTokens ?? Math.floor(tokensUsed * 0.7);
+            session.cumulativeOutputTokens += summaryResponse.outputTokens ?? Math.floor(tokensUsed * 0.3);
           }
 
           // Process response using shared ResponseProcessor
@@ -417,7 +417,7 @@ export class OpenAICompatAgent {
     siteUrl?: string,
     appName?: string,
     baseUrl?: string
-  ): Promise<{ content: string; tokensUsed?: number }> {
+  ): Promise<{ content: string; tokensUsed?: number; inputTokens?: number; outputTokens?: number }> {
     // Truncate history to prevent runaway costs
     const truncatedHistory = this.truncateHistory(history);
     const messages = this.conversationToOpenAIMessages(truncatedHistory);
@@ -493,7 +493,12 @@ export class OpenAICompatAgent {
       }
     }
 
-    return { content, tokensUsed };
+    return {
+      content,
+      tokensUsed,
+      inputTokens: data.usage?.prompt_tokens,
+      outputTokens: data.usage?.completion_tokens,
+    };
   }
 
   /**
