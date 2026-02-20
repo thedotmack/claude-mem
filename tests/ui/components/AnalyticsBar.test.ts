@@ -184,7 +184,7 @@ describe('AnalyticsBar tooltips', () => {
   });
 
   it('has tooltip text for read metric', () => {
-    expect(source).toContain('Tokens spent reading observations back into context');
+    expect(source).toContain('Estimated token size of all stored observations');
   });
 
   it('has tooltip text for work metric', () => {
@@ -192,11 +192,11 @@ describe('AnalyticsBar tooltips', () => {
   });
 
   it('has tooltip text for recalled metric', () => {
-    expect(source).toContain('Tokens recalled from stored memories into sessions');
+    expect(source).toContain('Tokens actually delivered into sessions via context injection');
   });
 
   it('has tooltip text for saved metric', () => {
-    expect(source).toContain('Net tokens saved by reusing compressed context');
+    expect(source).toContain('Net tokens saved by reusing compressed context instead of re-doing the original work. Calculated as Work minus Read minus Recalled.');
   });
 
   it('has tooltip text for obs metric', () => {

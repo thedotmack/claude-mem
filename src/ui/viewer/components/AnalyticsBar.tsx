@@ -14,10 +14,10 @@ const TIME_RANGE_OPTIONS: Array<{ label: string; value: number | null }> = [
 ];
 
 const TOOLTIPS = {
-  read: 'Tokens spent reading observations back into context',
+  read: 'Estimated token size of all stored observations. Represents the compressed knowledge footprint.',
   work: 'AI tokens invested in research, building, and decisions',
-  recalled: 'Tokens recalled from stored memories into sessions. Additional savings include avoided codebase exploration, reduced user re-explanation, and fewer wrong paths.',
-  saved: 'Net tokens saved by reusing compressed context instead of re-doing the original work. Calculated as Work minus Read.',
+  recalled: 'Tokens actually delivered into sessions via context injection (session start, prompt submit, and MCP search).',
+  saved: 'Net tokens saved by reusing compressed context instead of re-doing the original work. Calculated as Work minus Read minus Recalled.',
   obs: 'Observations recorded / distinct Claude sessions (one session can have multiple summaries)',
 } as const;
 
@@ -32,7 +32,7 @@ export const AnalyticsBar = React.memo(function AnalyticsBar({ project }: Analyt
   const hasSavings = (data?.savingsTokens ?? 0) > 0;
   const savingsClass = hasSavings ? 'analytics-card--green' : 'analytics-card--muted';
 
-  const savedTokens = (data?.workTokens ?? 0) - (data?.readTokens ?? 0);
+  const savedTokens = (data?.workTokens ?? 0) - (data?.readTokens ?? 0) - (data?.savingsTokens ?? 0);
   const hasSaved = savedTokens > 0;
   const savedPercent = (data?.workTokens ?? 0) > 0
     ? Math.round((savedTokens / (data?.workTokens ?? 1)) * 100)
