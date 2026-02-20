@@ -91,6 +91,10 @@ describe('AnalyticsBar component source', () => {
     expect(source).toMatch(/>Recalled</);
   });
 
+  it('renders Saved label in JSX', () => {
+    expect(source).toMatch(/>Saved</);
+  });
+
   it('renders Obs label in JSX', () => {
     expect(source).toMatch(/>Obs</);
   });
@@ -146,6 +150,7 @@ describe('AnalyticsBar accessibility', () => {
     expect(source).toContain('title="Read tokens"');
     expect(source).toContain('title="Work tokens"');
     expect(source).toContain('title="Recalled tokens"');
+    expect(source).toContain('title="Saved tokens"');
   });
 
   it('has role="status" on skeleton loading elements', () => {
@@ -156,6 +161,7 @@ describe('AnalyticsBar accessibility', () => {
     expect(source).toContain('aria-label="Loading read tokens"');
     expect(source).toContain('aria-label="Loading work tokens"');
     expect(source).toContain('aria-label="Loading recalled tokens"');
+    expect(source).toContain('aria-label="Loading saved tokens"');
     expect(source).toContain('aria-label="Loading observations"');
   });
 
@@ -189,6 +195,10 @@ describe('AnalyticsBar tooltips', () => {
     expect(source).toContain('Tokens recalled from stored memories into sessions');
   });
 
+  it('has tooltip text for saved metric', () => {
+    expect(source).toContain('Net tokens saved by reusing compressed context');
+  });
+
   it('has tooltip text for obs metric', () => {
     expect(source).toContain('Observations recorded / distinct Claude sessions');
   });
@@ -197,7 +207,7 @@ describe('AnalyticsBar tooltips', () => {
     // Tooltips are always rendered (not conditional on state), CSS :hover/:focus shows them
     const tooltipMatches = source.match(/className="analytics-tooltip"/g);
     expect(tooltipMatches).not.toBeNull();
-    expect(tooltipMatches!.length).toBe(4);
+    expect(tooltipMatches!.length).toBe(5);
   });
 });
 

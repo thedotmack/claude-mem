@@ -17,6 +17,7 @@ const TOOLTIPS = {
   read: 'Tokens spent reading observations back into context',
   work: 'AI tokens invested in research, building, and decisions',
   recalled: 'Tokens recalled from stored memories into sessions. Additional savings include avoided codebase exploration, reduced user re-explanation, and fewer wrong paths.',
+  saved: 'Net tokens saved by reusing compressed context instead of re-doing the original work. Calculated as Work minus Read.',
   obs: 'Observations recorded / distinct Claude sessions (one session can have multiple summaries)',
 } as const;
 
@@ -30,6 +31,13 @@ export const AnalyticsBar = React.memo(function AnalyticsBar({ project }: Analyt
 
   const hasSavings = (data?.savingsTokens ?? 0) > 0;
   const savingsClass = hasSavings ? 'analytics-card--green' : 'analytics-card--muted';
+
+  const savedTokens = (data?.workTokens ?? 0) - (data?.readTokens ?? 0);
+  const hasSaved = savedTokens > 0;
+  const savedPercent = (data?.workTokens ?? 0) > 0
+    ? Math.round((savedTokens / (data?.workTokens ?? 1)) * 100)
+    : 0;
+  const savedClass = hasSaved ? 'analytics-card--green' : 'analytics-card--muted';
 
   return (
     <div className="analytics-bar" role="region" aria-label="Token analytics">
@@ -59,6 +67,15 @@ export const AnalyticsBar = React.memo(function AnalyticsBar({ project }: Analyt
           </span>
           <span className="analytics-card__subtitle">tokens recalled</span>
           <span className="analytics-tooltip" role="tooltip">{TOOLTIPS.recalled}</span>
+        </div>
+
+        <div className={`analytics-card ${savedClass}`} tabIndex={0}>
+          <span className="analytics-card__label" title="Saved tokens">Saved</span>
+          <span className="analytics-card__value">
+            {isLoading ? <span className="analytics-skeleton" role="status" aria-label="Loading saved tokens" /> : (hasSaved ? `${formatTokenCount(savedTokens)} (${savedPercent}%)` : '\u2014')}
+          </span>
+          <span className="analytics-card__subtitle">tokens saved</span>
+          <span className="analytics-tooltip" role="tooltip">{TOOLTIPS.saved}</span>
         </div>
 
         <div className="analytics-card" tabIndex={0}>
