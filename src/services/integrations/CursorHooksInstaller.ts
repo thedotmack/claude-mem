@@ -126,32 +126,6 @@ export async function updateCursorContextForProject(projectName: string, port: n
 // ============================================================================
 
 /**
- * Find cursor-hooks directory
- * Searches in order: marketplace install, source repo
- * Checks for hooks.json (unified CLI mode) or legacy shell scripts
- */
-export function findCursorHooksDir(): string | null {
-  const possiblePaths = [
-    // Marketplace install location
-    path.join(MARKETPLACE_ROOT, 'cursor-hooks'),
-    // Development/source location (relative to built worker-service.cjs in plugin/scripts/)
-    path.join(path.dirname(__filename), '..', '..', 'cursor-hooks'),
-    // Alternative dev location
-    path.join(process.cwd(), 'cursor-hooks'),
-  ];
-
-  for (const p of possiblePaths) {
-    // Check for hooks.json (unified CLI mode) or legacy shell scripts
-    if (existsSync(path.join(p, 'hooks.json')) ||
-        existsSync(path.join(p, 'common.sh')) ||
-        existsSync(path.join(p, 'common.ps1'))) {
-      return p;
-    }
-  }
-  return null;
-}
-
-/**
  * Find MCP server script path
  * Searches in order: marketplace install, source repo
  */
@@ -319,7 +293,7 @@ export function configureCursorMcp(target: CursorInstallTarget): number {
  * Install Cursor hooks using unified CLI
  * No longer copies shell scripts - uses node CLI directly
  */
-export async function installCursorHooks(_sourceDir: string, target: CursorInstallTarget): Promise<number> {
+export async function installCursorHooks(target: CursorInstallTarget): Promise<number> {
   console.log(`\nInstalling Claude-Mem Cursor hooks (${target} level)...\n`);
 
   const targetDir = getTargetDir(target);
@@ -651,15 +625,7 @@ export async function handleCursorCommand(subcommand: string, args: string[]): P
   switch (subcommand) {
     case 'install': {
       const target = (args[0] || 'project') as CursorInstallTarget;
-      const cursorHooksDir = findCursorHooksDir();
-
-      if (!cursorHooksDir) {
-        console.error('Could not find cursor-hooks directory');
-        console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/cursor-hooks/');
-        return 1;
-      }
-
-      return installCursorHooks(cursorHooksDir, target);
+      return installCursorHooks(target);
     }
 
     case 'uninstall': {

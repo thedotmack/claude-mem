@@ -1,0 +1,69 @@
+# Dockerfile.e2e — End-to-end test: install claude-mem plugin on a real OpenClaw instance
+# Simulates the complete plugin installation flow a user would follow.
+#
+# Usage:
+#   docker build -f Dockerfile.e2e -t openclaw-e2e-test . && docker run --rm openclaw-e2e-test
+#
+# Interactive (for human testing):
+#   docker run --rm -it openclaw-e2e-test /bin/bash
+
+FROM ghcr.io/openclaw/openclaw:main
+
+USER root
+
+# Install curl for health checks in e2e-verify.sh, and TypeScript for building
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN npm install -g typescript@5
+
+# Create staging directory for the plugin source
+WORKDIR /tmp/claude-mem-plugin
+
+# Copy plugin source files
+COPY package.json tsconfig.json openclaw.plugin.json ./
+COPY src/ ./src/
+
+# Build the plugin (TypeScript → JavaScript)
+# NODE_ENV=production is set in the base image; override to install devDependencies
+RUN NODE_ENV=development npm install && npx tsc
+
+# Create the installable plugin package:
+# OpenClaw `plugins install` expects package.json with openclaw.extensions field.
+# The package name must match the plugin ID in openclaw.plugin.json (claude-mem).
+# Only include the main plugin entry point, not test/mock files.
+RUN mkdir -p /tmp/claude-mem-installable/dist && \
+    cp dist/index.js /tmp/claude-mem-installable/dist/ && \
+    cp dist/index.d.ts /tmp/claude-mem-installable/dist/ 2>/dev/null || true && \
+    cp openclaw.plugin.json /tmp/claude-mem-installable/ && \
+    node -e " \
+      const pkg = { \
+        name: 'claude-mem', \
+        version: '1.0.0', \
+        type: 'module', \
+        main: 'dist/index.js', \
+        openclaw: { extensions: ['./dist/index.js'] } \
+      }; \
+      require('fs').writeFileSync('/tmp/claude-mem-installable/package.json', JSON.stringify(pkg, null, 2)); \
+    "
+
+# Switch back to app directory and node user for installation
+WORKDIR /app
+USER node
+
+# Create the OpenClaw config directory
+RUN mkdir -p /home/node/.openclaw
+
+# Install the plugin using OpenClaw's official CLI
+RUN node openclaw.mjs plugins install /tmp/claude-mem-installable
+
+# Enable the plugin
+RUN node openclaw.mjs plugins enable claude-mem
+
+# Copy the e2e verification script and mock worker
+COPY --chown=node:node e2e-verify.sh /app/e2e-verify.sh
+USER root
+RUN chmod +x /app/e2e-verify.sh && \
+    cp /tmp/claude-mem-plugin/dist/mock-worker.js /app/mock-worker.js
+USER node
+
+# Default: run the automated verification
+CMD ["/bin/bash", "/app/e2e-verify.sh"]

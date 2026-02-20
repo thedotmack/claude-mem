@@ -168,7 +168,7 @@ describe('GeminiAgent', () => {
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
     const url = (global.fetch as any).mock.calls[0][0];
-    expect(url).toContain('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent');
+    expect(url).toContain('https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash-lite:generateContent');
     expect(url).toContain('key=test-api-key');
   });
 

@@ -13,6 +13,7 @@ import express, { Request, Response, Application } from 'express';
 import http from 'http';
 import * as fs from 'fs';
 import path from 'path';
+import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
 import { createMiddleware, summarizeRequestBody, requireLocalhost } from './Middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
@@ -31,6 +32,19 @@ export interface RouteHandler {
 }
 
 /**
+ * AI provider status for health endpoint
+ */
+export interface AiStatus {
+  provider: string;
+  authMethod: string;
+  lastInteraction: {
+    timestamp: number;
+    success: boolean;
+    error?: string;
+  } | null;
+}
+
+/**
  * Options for initializing the server
  */
 export interface ServerOptions {
@@ -42,6 +56,10 @@ export interface ServerOptions {
   onShutdown: () => Promise<void>;
   /** Restart function for admin endpoints */
   onRestart: () => Promise<void>;
+  /** Filesystem path to the worker entry point */
+  workerPath: string;
+  /** Callback to get current AI provider status */
+  getAiStatus: () => AiStatus;
 }
 
 /**
@@ -140,20 +158,20 @@ export class Server {
    * Setup core system routes (health, readiness, version, admin)
    */
   private setupCoreRoutes(): void {
-    // Test build ID for debugging which build is running
-    const TEST_BUILD_ID = 'TEST-008-wrapper-ipc';
-
     // Health check endpoint - always responds, even during initialization
     this.app.get('/api/health', (_req: Request, res: Response) => {
       res.status(200).json({
         status: 'ok',
-        build: TEST_BUILD_ID,
+        version: BUILT_IN_VERSION,
+        workerPath: this.options.workerPath,
+        uptime: Date.now() - this.startTime,
         managed: process.env.CLAUDE_MEM_MANAGED === 'true',
         hasIpc: typeof process.send === 'function',
         platform: process.platform,
         pid: process.pid,
         initialized: this.options.getInitializationComplete(),
         mcpReady: this.options.getMcpReady(),
+        ai: this.options.getAiStatus(),
       });
     });
 
@@ -182,11 +200,25 @@ export class Server {
       const topic = (req.query.topic as string) || 'all';
       const operation = req.query.operation as string | undefined;
 
+      // Validate topic
+      if (topic && !ALLOWED_TOPICS.includes(topic)) {
+        return res.status(400).json({ error: 'Invalid topic' });
+      }
+
       try {
         let content: string;
 
         if (operation) {
-          const operationPath = path.join(__dirname, '../skills/mem-search/operations', `${operation}.md`);
+          // Validate operation
+          if (!ALLOWED_OPERATIONS.includes(operation)) {
+            return res.status(400).json({ error: 'Invalid operation' });
+          }
+          // Path boundary check
+          const OPERATIONS_BASE_DIR = path.resolve(__dirname, '../skills/mem-search/operations');
+          const operationPath = path.resolve(OPERATIONS_BASE_DIR, `${operation}.md`);
+          if (!operationPath.startsWith(OPERATIONS_BASE_DIR + path.sep)) {
+            return res.status(400).json({ error: 'Invalid request' });
+          }
           content = await fs.promises.readFile(operationPath, 'utf-8');
         } else {
           const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
@@ -216,8 +248,14 @@ export class Server {
         process.send!({ type: 'restart' });
       } else {
         // Unix or standalone Windows - handle restart ourselves
+        // The spawner (ensureWorkerStarted/restart command) handles spawning the new daemon.
+        // This process just needs to shut down and exit.
         setTimeout(async () => {
-          await this.options.onRestart();
+          try {
+            await this.options.onRestart();
+          } finally {
+            process.exit(0);
+          }
         }, 100);
       }
     });
@@ -236,7 +274,14 @@ export class Server {
       } else {
         // Unix or standalone Windows - handle shutdown ourselves
         setTimeout(async () => {
-          await this.options.onShutdown();
+          try {
+            await this.options.onShutdown();
+          } finally {
+            // CRITICAL: Exit the process after shutdown completes (or fails).
+            // Without this, the daemon stays alive as a zombie — background tasks
+            // (backfill, reconnects) keep running and respawn chroma-mcp subprocesses.
+            process.exit(0);
+          }
         }, 100);
       }
     });

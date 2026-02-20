@@ -41,11 +41,13 @@ export function registerProcess(pid: number, sessionDbId: number, process: Child
 }
 
 /**
- * Unregister a process from the registry
+ * Unregister a process from the registry and notify pool waiters
  */
 export function unregisterProcess(pid: number): void {
   processRegistry.delete(pid);
   logger.debug('PROCESS', `Unregistered PID ${pid}`, { pid });
+  // Notify waiters that a pool slot may be available
+  notifySlotAvailable();
 }
 
 /**
@@ -64,6 +66,55 @@ export function getProcessBySession(sessionDbId: number): TrackedProcess | undef
     });
   }
   return matches[0];
+}
+
+/**
+ * Get count of active processes in the registry
+ */
+export function getActiveCount(): number {
+  return processRegistry.size;
+}
+
+// Waiters for pool slots - resolved when a process exits and frees a slot
+const slotWaiters: Array<() => void> = [];
+
+/**
+ * Notify waiters that a slot has freed up
+ */
+function notifySlotAvailable(): void {
+  const waiter = slotWaiters.shift();
+  if (waiter) waiter();
+}
+
+/**
+ * Wait for a pool slot to become available (promise-based, not polling)
+ * @param maxConcurrent Max number of concurrent agents
+ * @param timeoutMs Max time to wait before giving up
+ */
+export async function waitForSlot(maxConcurrent: number, timeoutMs: number = 60_000): Promise<void> {
+  if (processRegistry.size < maxConcurrent) return;
+
+  logger.info('PROCESS', `Pool limit reached (${processRegistry.size}/${maxConcurrent}), waiting for slot...`);
+
+  return new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      const idx = slotWaiters.indexOf(onSlot);
+      if (idx >= 0) slotWaiters.splice(idx, 1);
+      reject(new Error(`Timed out waiting for agent pool slot after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    const onSlot = () => {
+      clearTimeout(timeout);
+      if (processRegistry.size < maxConcurrent) {
+        resolve();
+      } else {
+        // Still full, re-queue
+        slotWaiters.push(onSlot);
+      }
+    };
+
+    slotWaiters.push(onSlot);
+  });
 }
 
 /**
@@ -282,20 +333,41 @@ export function createPidCapturingSpawn(sessionDbId: number) {
     env?: NodeJS.ProcessEnv;
     signal?: AbortSignal;
   }) => {
-    const child = spawn(spawnOptions.command, spawnOptions.args, {
-      cwd: spawnOptions.cwd,
-      env: spawnOptions.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      signal: spawnOptions.signal, // CRITICAL: Pass signal for AbortController integration
-      windowsHide: true
-    });
+    // On Windows, use cmd.exe wrapper for .cmd files to properly handle paths with spaces
+    const useCmdWrapper = process.platform === 'win32' && spawnOptions.command.endsWith('.cmd');
+
+    const child = useCmdWrapper
+      ? spawn('cmd.exe', ['/d', '/c', spawnOptions.command, ...spawnOptions.args], {
+          cwd: spawnOptions.cwd,
+          env: spawnOptions.env,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          signal: spawnOptions.signal,
+          windowsHide: true
+        })
+      : spawn(spawnOptions.command, spawnOptions.args, {
+          cwd: spawnOptions.cwd,
+          env: spawnOptions.env,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          signal: spawnOptions.signal, // CRITICAL: Pass signal for AbortController integration
+          windowsHide: true
+        });
+
+    // Capture stderr for debugging spawn failures
+    if (child.stderr) {
+      child.stderr.on('data', (data: Buffer) => {
+        logger.debug('SDK_SPAWN', `[session-${sessionDbId}] stderr: ${data.toString().trim()}`);
+      });
+    }
 
     // Register PID
     if (child.pid) {
       registerProcess(child.pid, sessionDbId, child);
 
       // Auto-unregister on exit
-      child.on('exit', () => {
+      child.on('exit', (code: number | null, signal: string | null) => {
+        if (code !== 0) {
+          logger.warn('SDK_SPAWN', `[session-${sessionDbId}] Claude process exited`, { code, signal, pid: child.pid });
+        }
         if (child.pid) {
           unregisterProcess(child.pid);
         }
@@ -306,6 +378,7 @@ export function createPidCapturingSpawn(sessionDbId: number) {
     return {
       stdin: child.stdin,
       stdout: child.stdout,
+      stderr: child.stderr,
       get killed() { return child.killed; },
       get exitCode() { return child.exitCode; },
       kill: child.kill.bind(child),

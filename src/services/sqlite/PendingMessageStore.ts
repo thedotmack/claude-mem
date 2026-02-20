@@ -2,6 +2,9 @@ import { Database } from './sqlite-compat.js';
 import type { PendingMessage } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
+/** Messages processing longer than this are considered stale and reset to pending by self-healing */
+const STALE_PROCESSING_THRESHOLD_MS = 60_000;
+
 /**
  * Persistent pending message record from database
  */
@@ -26,12 +29,17 @@ export interface PersistentPendingMessage {
 /**
  * PendingMessageStore - Persistent work queue for SDK messages
  *
- * Messages are persisted before processing using a claim-and-delete pattern.
+ * Messages are persisted before processing using a claim-confirm pattern.
  * This simplifies the lifecycle and eliminates duplicate processing bugs.
  *
  * Lifecycle:
  * 1. enqueue() - Message persisted with status 'pending'
- * 2. claimAndDelete() - Atomically claims and deletes message (process in memory)
+ * 2. claimNextMessage() - Atomically claims next pending message (marks as 'processing')
+ * 3. confirmProcessed() - Deletes message after successful processing
+ *
+ * Self-healing:
+ * - claimNextMessage() resets stale 'processing' messages (>60s) back to 'pending' before claiming
+ * - This eliminates stuck messages from generator crashes without external timers
  *
  * Recovery:
  * - getSessionsWithPendingMessages() - Find sessions that need recovery on startup
@@ -78,13 +86,29 @@ export class PendingMessageStore {
 
   /**
    * Atomically claim the next pending message by marking it as 'processing'.
-   * CRITICAL FIX: Does NOT delete - message stays in DB until confirmProcessed() is called.
-   * This prevents message loss if the generator crashes mid-processing.
+   * Self-healing: resets any stale 'processing' messages (>60s) back to 'pending' first.
+   * Message stays in DB until confirmProcessed() is called.
    * Uses a transaction to prevent race conditions.
    */
-  claimAndDelete(sessionDbId: number): PersistentPendingMessage | null {
-    const now = Date.now();
+  claimNextMessage(sessionDbId: number): PersistentPendingMessage | null {
     const claimTx = this.db.transaction((sessionId: number) => {
+      // Capture time inside transaction so it's fresh if WAL contention causes retry
+      const now = Date.now();
+      // Self-healing: reset stale 'processing' messages back to 'pending'
+      // This recovers from generator crashes without external timers
+      // Note: strict < means messages must be OLDER than threshold to be reset
+      const staleCutoff = now - STALE_PROCESSING_THRESHOLD_MS;
+      const resetStmt = this.db.prepare(`
+        UPDATE pending_messages
+        SET status = 'pending', started_processing_at_epoch = NULL
+        WHERE session_db_id = ? AND status = 'processing'
+          AND started_processing_at_epoch < ?
+      `);
+      const resetResult = resetStmt.run(sessionId, staleCutoff);
+      if (resetResult.changes > 0) {
+        logger.info('QUEUE', `SELF_HEAL | sessionDbId=${sessionId} | recovered ${resetResult.changes} stale processing message(s)`);
+      }
+
       const peekStmt = this.db.prepare(`
         SELECT * FROM pending_messages
         WHERE session_db_id = ? AND status = 'pending'
@@ -133,16 +157,27 @@ export class PendingMessageStore {
    * @param thresholdMs Messages processing longer than this are considered stale (default: 5 minutes)
    * @returns Number of messages reset
    */
-  resetStaleProcessingMessages(thresholdMs: number = 5 * 60 * 1000): number {
+  resetStaleProcessingMessages(thresholdMs: number = 5 * 60 * 1000, sessionDbId?: number): number {
     const cutoff = Date.now() - thresholdMs;
-    const stmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'pending', started_processing_at_epoch = NULL
-      WHERE status = 'processing' AND started_processing_at_epoch < ?
-    `);
-    const result = stmt.run(cutoff);
+    let stmt;
+    let result;
+    if (sessionDbId !== undefined) {
+      stmt = this.db.prepare(`
+        UPDATE pending_messages
+        SET status = 'pending', started_processing_at_epoch = NULL
+        WHERE status = 'processing' AND started_processing_at_epoch < ? AND session_db_id = ?
+      `);
+      result = stmt.run(cutoff, sessionDbId);
+    } else {
+      stmt = this.db.prepare(`
+        UPDATE pending_messages
+        SET status = 'pending', started_processing_at_epoch = NULL
+        WHERE status = 'processing' AND started_processing_at_epoch < ?
+      `);
+      result = stmt.run(cutoff);
+    }
     if (result.changes > 0) {
-      logger.info('QUEUE', `RESET_STALE | count=${result.changes} | thresholdMs=${thresholdMs}`);
+      logger.info('QUEUE', `RESET_STALE | count=${result.changes} | thresholdMs=${thresholdMs}${sessionDbId !== undefined ? ` | sessionDbId=${sessionDbId}` : ''}`);
     }
     return result.changes;
   }

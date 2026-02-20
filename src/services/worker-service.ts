@@ -15,8 +15,12 @@ import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
+import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
+import { ChromaSync } from './sync/ChromaSync.js';
 
 // Windows: avoid repeated spawn popups when startup fails (issue #921)
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
@@ -66,7 +70,10 @@ import {
   readPidFile,
   removePidFile,
   getPlatformTimeout,
-  cleanupOrphanedProcesses,
+  aggressiveStartupCleanup,
+  runOneTimeChromaMigration,
+  cleanStalePidFile,
+  isProcessAlive,
   spawnDaemon,
   createSignalHandler
 } from './infrastructure/ProcessManager.js';
@@ -113,7 +120,7 @@ import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 
 // Process management for zombie cleanup (Issue #737)
-import { startOrphanReaper, reapOrphanedProcesses } from './worker/ProcessRegistry.js';
+import { startOrphanReaper, reapOrphanedProcesses, getProcessBySession, ensureProcessExit } from './worker/ProcessRegistry.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -164,12 +171,26 @@ export class WorkerService {
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
 
+  // Chroma MCP manager (lazy - connects on first use)
+  private chromaMcpManager: ChromaMcpManager | null = null;
+
   // Initialization tracking
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
 
   // Orphan reaper cleanup function (Issue #737)
   private stopOrphanReaper: (() => void) | null = null;
+
+  // Stale session reaper interval (Issue #1168)
+  private staleSessionReaperInterval: ReturnType<typeof setInterval> | null = null;
+
+  // AI interaction tracking for health endpoint
+  private lastAiInteraction: {
+    timestamp: number;
+    success: boolean;
+    provider: string;
+    error?: string;
+  } | null = null;
 
   constructor() {
     // Initialize the promise that will resolve when background initialization completes
@@ -213,7 +234,24 @@ export class WorkerService {
       getInitializationComplete: () => this.initializationCompleteFlag,
       getMcpReady: () => this.mcpReady,
       onShutdown: () => this.shutdown(),
-      onRestart: () => this.shutdown()
+      onRestart: () => this.shutdown(),
+      workerPath: __filename,
+      getAiStatus: () => {
+        let provider = 'claude';
+        if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
+        else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
+        return {
+          provider,
+          authMethod: getAuthMethodDescription(),
+          lastInteraction: this.lastAiInteraction
+            ? {
+                timestamp: this.lastAiInteraction.timestamp,
+                success: this.lastAiInteraction.success,
+                ...(this.lastAiInteraction.error && { error: this.lastAiInteraction.error }),
+              }
+            : null,
+        };
+      },
     });
 
     // Register route handlers
@@ -238,6 +276,22 @@ export class WorkerService {
       this.isShuttingDown = shutdownRef.value;
       handler('SIGINT');
     });
+
+    // SIGHUP: sent by kernel when controlling terminal closes.
+    // Daemon mode: ignore it (survive parent shell exit).
+    // Interactive mode: treat like SIGTERM (graceful shutdown).
+    if (process.platform !== 'win32') {
+      if (process.argv.includes('--daemon')) {
+        process.on('SIGHUP', () => {
+          logger.debug('SYSTEM', 'Ignoring SIGHUP in daemon mode');
+        });
+      } else {
+        process.on('SIGHUP', () => {
+          this.isShuttingDown = shutdownRef.value;
+          handler('SIGHUP');
+        });
+      }
+    }
   }
 
   /**
@@ -324,7 +378,7 @@ export class WorkerService {
    */
   private async initializeBackground(): Promise<void> {
     try {
-      await cleanupOrphanedProcesses();
+      await aggressiveStartupCleanup();
 
       // Load mode configuration
       const { ModeManager } = await import('./domain/ModeManager.js');
@@ -332,6 +386,17 @@ export class WorkerService {
       const { USER_SETTINGS_PATH } = await import('../shared/paths.js');
 
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+
+      // One-time chroma wipe for users upgrading from versions with duplicate worker bugs.
+      // Only runs in local mode (chroma is local-only). Backfill at line ~414 rebuilds from SQLite.
+      if (settings.CLAUDE_MEM_MODE === 'local' || !settings.CLAUDE_MEM_MODE) {
+        runOneTimeChromaMigration();
+      }
+
+      // Initialize ChromaMcpManager (lazy - connects on first use via ChromaSync)
+      this.chromaMcpManager = ChromaMcpManager.getInstance();
+      logger.info('SYSTEM', 'ChromaMcpManager initialized (lazy - connects on first use)');
+
       const modeId = settings.CLAUDE_MEM_MODE;
       ModeManager.getInstance().loadMode(modeId);
       logger.info('SYSTEM', `Mode loaded: ${modeId}`);
@@ -359,6 +424,15 @@ export class WorkerService {
       this.searchRoutes = new SearchRoutes(searchManager);
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
+
+      // Auto-backfill Chroma for all projects if out of sync with SQLite (fire-and-forget)
+      if (this.chromaMcpManager) {
+        ChromaSync.backfillAllProjects().then(() => {
+          logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
+        }).catch(error => {
+          logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
+        });
+      }
 
       // Connect to MCP server
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
@@ -396,6 +470,18 @@ export class WorkerService {
         30 * 60 * 1000         // Fail messages older than 30 minutes
       );
       logger.info('SYSTEM', 'Started orphan reaper (runs every 5 minutes)');
+
+      // Reap stale sessions to unblock orphan process cleanup (Issue #1168)
+      this.staleSessionReaperInterval = setInterval(async () => {
+        try {
+          const reaped = await this.sessionManager.reapStaleSessions();
+          if (reaped > 0) {
+            logger.info('SYSTEM', `Reaped ${reaped} stale sessions`);
+          }
+        } catch (e) {
+          logger.error('SYSTEM', 'Stale session reaper error', { error: e instanceof Error ? e.message : String(e) });
+        }
+      }, 2 * 60 * 1000);
 
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
@@ -455,6 +541,7 @@ export class WorkerService {
 
     // Track whether generator failed with an unrecoverable error to prevent infinite restart loops
     let hadUnrecoverableError = false;
+    let sessionFailed = false;
 
     logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
 
@@ -469,9 +556,16 @@ export class WorkerService {
           'CLAUDE_CODE_PATH',
           'ENOENT',
           'spawn',
+          'Invalid API key',
         ];
         if (unrecoverablePatterns.some(pattern => errorMessage.includes(pattern))) {
           hadUnrecoverableError = true;
+          this.lastAiInteraction = {
+            timestamp: Date.now(),
+            success: false,
+            provider: providerName,
+            error: errorMessage,
+          };
           logger.error('SDK', 'Unrecoverable generator error - will NOT restart', {
             sessionId: session.sessionDbId,
             project: session.project,
@@ -508,10 +602,32 @@ export class WorkerService {
           project: session.project,
           provider: providerName
         }, error as Error);
+        sessionFailed = true;
+        this.lastAiInteraction = {
+          timestamp: Date.now(),
+          success: false,
+          provider: providerName,
+          error: errorMessage,
+        };
         throw error;
       })
-      .finally(() => {
+      .finally(async () => {
+        // CRITICAL: Verify subprocess exit to prevent zombie accumulation (Issue #1168)
+        const trackedProcess = getProcessBySession(session.sessionDbId);
+        if (trackedProcess && !trackedProcess.process.killed && trackedProcess.process.exitCode === null) {
+          await ensureProcessExit(trackedProcess, 5000);
+        }
+
         session.generatorPromise = null;
+
+        // Record successful AI interaction if no error occurred
+        if (!sessionFailed && !hadUnrecoverableError) {
+          this.lastAiInteraction = {
+            timestamp: Date.now(),
+            success: true,
+            provider: providerName,
+          };
+        }
 
         // Do NOT restart after unrecoverable errors - prevents infinite loops
         if (hadUnrecoverableError) {
@@ -522,9 +638,22 @@ export class WorkerService {
           return;
         }
 
-        // Check if there's pending work that needs processing with a fresh AbortController
+        // Store for pending-count check below
         const { PendingMessageStore } = require('./sqlite/PendingMessageStore.js');
         const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+
+        // Idle timeout means no new work arrived for 3 minutes - don't restart
+        // No need to reset stale processing messages here — claimNextMessage() self-heals
+        if (session.idleTimedOut) {
+          logger.info('SYSTEM', 'Generator exited due to idle timeout, not restarting', {
+            sessionId: session.sessionDbId
+          });
+          session.idleTimedOut = false; // Reset flag
+          this.broadcastProcessingStatus();
+          return;
+        }
+
+        // Check if there's pending work that needs processing with a fresh AbortController
         const pendingCount = pendingStore.getPendingCount(session.sessionDbId);
 
         if (pendingCount > 0) {
@@ -740,11 +869,18 @@ export class WorkerService {
       this.stopOrphanReaper = null;
     }
 
+    // Stop stale session reaper (Issue #1168)
+    if (this.staleSessionReaperInterval) {
+      clearInterval(this.staleSessionReaperInterval);
+      this.staleSessionReaperInterval = null;
+    }
+
     await performGracefulShutdown({
       server: this.server.getHttpServer(),
       sessionManager: this.sessionManager,
       mcpClient: this.mcpClient,
-      dbManager: this.dbManager
+      dbManager: this.dbManager,
+      chromaMcpManager: this.chromaMcpManager || undefined
     });
   }
 
@@ -782,6 +918,9 @@ export class WorkerService {
  * @returns true if worker is healthy (existing or newly started), false on failure
  */
 async function ensureWorkerStarted(port: number): Promise<boolean> {
+  // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
+  cleanStalePidFile();
+
   // Check if worker is already running and healthy
   if (await waitForHealth(port, 1000)) {
     const versionCheck = await checkVersionMatch(port);
@@ -792,7 +931,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
       });
 
       await httpShutdown(port);
-      const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+      const freed = await waitForPortFree(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
       if (!freed) {
         logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port });
         return false;
@@ -808,7 +947,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   const portInUse = await isPortInUse(port);
   if (portInUse) {
     logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
-    const healthy = await waitForHealth(port, getPlatformTimeout(15000));
+    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
     if (healthy) {
       logger.info('SYSTEM', 'Worker is now healthy');
       return true;
@@ -835,7 +974,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   // PID file is written by the worker itself after listen() succeeds
   // This is race-free and works correctly on Windows where cmd.exe PID is useless
 
-  const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+  const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
   if (!healthy) {
     removePidFile();
     logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
@@ -907,7 +1046,7 @@ async function main() {
       // PID file is written by the worker itself after listen() succeeds
       // This is race-free and works correctly on Windows where cmd.exe PID is useless
 
-      const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+      const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
       if (!healthy) {
         removePidFile();
         logger.error('SYSTEM', 'Worker failed to restart');
@@ -1002,6 +1141,40 @@ async function main() {
 
     case '--daemon':
     default: {
+      // GUARD 1: Refuse to start if another worker is already alive (PID check).
+      // Instant check (kill -0) — no HTTP dependency.
+      const existingPidInfo = readPidFile();
+      if (existingPidInfo && isProcessAlive(existingPidInfo.pid)) {
+        logger.info('SYSTEM', 'Worker already running (PID alive), refusing to start duplicate', {
+          existingPid: existingPidInfo.pid,
+          existingPort: existingPidInfo.port,
+          startedAt: existingPidInfo.startedAt
+        });
+        process.exit(0);
+      }
+
+      // GUARD 2: Refuse to start if the port is already bound.
+      // Catches the race where two daemons start simultaneously before
+      // either writes a PID file. Must run BEFORE constructing WorkerService
+      // because the constructor registers signal handlers and timers that
+      // prevent the process from exiting even if listen() fails later.
+      if (await isPortInUse(port)) {
+        logger.info('SYSTEM', 'Port already in use, refusing to start duplicate', { port });
+        process.exit(0);
+      }
+
+      // Prevent daemon from dying silently on unhandled errors.
+      // The HTTP server can continue serving even if a background task throws.
+      process.on('unhandledRejection', (reason) => {
+        logger.error('SYSTEM', 'Unhandled rejection in daemon', {
+          reason: reason instanceof Error ? reason.message : String(reason)
+        });
+      });
+      process.on('uncaughtException', (error) => {
+        logger.error('SYSTEM', 'Uncaught exception in daemon', {}, error as Error);
+        // Don't exit — keep the HTTP server running
+      });
+
       const worker = new WorkerService();
       worker.start().catch((error) => {
         logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);

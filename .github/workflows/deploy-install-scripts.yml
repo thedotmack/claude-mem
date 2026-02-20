@@ -1,0 +1,29 @@
+name: Deploy Install Scripts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'openclaw/install.sh'
+      - 'install/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy install scripts to deploy directory
+        run: |
+          mkdir -p install/public
+          cp openclaw/install.sh install/public/openclaw.sh
+
+      - name: Deploy to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          vercel-args: '--prod'
+          working-directory: ./install

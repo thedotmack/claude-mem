@@ -173,6 +173,34 @@ async function getDatabaseInfo(
   }
 }
 
+async function getTableCounts(
+  dataDir: string
+): Promise<{ observations: number; sessions: number; summaries: number } | undefined> {
+  try {
+    const dbPath = path.join(dataDir, "claude-mem.db");
+    await fs.stat(dbPath);
+
+    const query =
+      "SELECT " +
+      "(SELECT COUNT(*) FROM observations) AS observations, " +
+      "(SELECT COUNT(*) FROM sessions) AS sessions, " +
+      "(SELECT COUNT(*) FROM session_summaries) AS summaries;";
+
+    const { stdout } = await execAsync(`sqlite3 "${dbPath}" "${query}"`);
+    const parts = stdout.trim().split("|");
+    if (parts.length === 3) {
+      return {
+        observations: parseInt(parts[0], 10) || 0,
+        sessions: parseInt(parts[1], 10) || 0,
+        summaries: parseInt(parts[2], 10) || 0,
+      };
+    }
+    return undefined;
+  } catch (error) {
+    return undefined;
+  }
+}
+
 export async function collectDiagnostics(
   options: { includeLogs?: boolean } = {}
 ): Promise<SystemDiagnostics> {
@@ -256,12 +284,15 @@ export async function collectDiagnostics(
   };
 
   // Database info
-  const dbInfo = await getDatabaseInfo(dataDir);
+  const [dbInfo, tableCounts] = await Promise.all([
+    getDatabaseInfo(dataDir),
+    getTableCounts(dataDir),
+  ]);
   const database = {
     path: sanitizePath(path.join(dataDir, "claude-mem.db")),
     exists: dbInfo.exists,
     size: dbInfo.size,
-    // TODO: Add table counts if we want to query the database
+    counts: tableCounts,
   };
 
   // Configuration
@@ -322,6 +353,11 @@ export function formatDiagnostics(diagnostics: SystemDiagnostics): string {
   if (diagnostics.database.size) {
     const sizeKB = (diagnostics.database.size / 1024).toFixed(2);
     output += `- **Size**: ${sizeKB} KB\n`;
+  }
+  if (diagnostics.database.counts) {
+    output += `- **Observations**: ${diagnostics.database.counts.observations}\n`;
+    output += `- **Sessions**: ${diagnostics.database.counts.sessions}\n`;
+    output += `- **Summaries**: ${diagnostics.database.counts.summaries}\n`;
   }
   output += "\n";
 

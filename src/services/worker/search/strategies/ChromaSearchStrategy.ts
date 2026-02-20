@@ -64,8 +64,8 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     let prompts: UserPromptSearchResult[] = [];
 
     try {
-      // Build Chroma where filter for doc_type
-      const whereFilter = this.buildWhereFilter(searchType);
+      // Build Chroma where filter for doc_type and project
+      const whereFilter = this.buildWhereFilter(searchType, project);
 
       // Step 1: Chroma semantic search
       logger.debug('SEARCH', 'ChromaSearchStrategy: Querying Chroma', { query, searchType });
@@ -150,19 +150,38 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
   }
 
   /**
-   * Build Chroma where filter for document type
+   * Build Chroma where filter for document type and project
+   *
+   * When a project is specified, includes it in the ChromaDB where clause
+   * so that vector search is scoped to the target project. Without this,
+   * larger projects dominate the top-N results and smaller projects get
+   * crowded out before the post-hoc SQLite project filter can take effect.
    */
-  private buildWhereFilter(searchType: string): Record<string, any> | undefined {
+  private buildWhereFilter(searchType: string, project?: string): Record<string, any> | undefined {
+    let docTypeFilter: Record<string, any> | undefined;
     switch (searchType) {
       case 'observations':
-        return { doc_type: 'observation' };
+        docTypeFilter = { doc_type: 'observation' };
+        break;
       case 'sessions':
-        return { doc_type: 'session_summary' };
+        docTypeFilter = { doc_type: 'session_summary' };
+        break;
       case 'prompts':
-        return { doc_type: 'user_prompt' };
+        docTypeFilter = { doc_type: 'user_prompt' };
+        break;
       default:
-        return undefined;
+        docTypeFilter = undefined;
     }
+
+    if (project) {
+      const projectFilter = { project };
+      if (docTypeFilter) {
+        return { $and: [docTypeFilter, projectFilter] };
+      }
+      return projectFilter;
+    }
+
+    return docTypeFilter;
   }
 
   /**

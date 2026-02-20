@@ -6,7 +6,21 @@ import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT } from "./paths.js";
 
 // Named constants for health checks
-const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
+// Allow env var override for users on slow systems (e.g., CLAUDE_MEM_HEALTH_TIMEOUT_MS=10000)
+const HEALTH_CHECK_TIMEOUT_MS = (() => {
+  const envVal = process.env.CLAUDE_MEM_HEALTH_TIMEOUT_MS;
+  if (envVal) {
+    const parsed = parseInt(envVal, 10);
+    if (Number.isFinite(parsed) && parsed >= 500 && parsed <= 300000) {
+      return parsed;
+    }
+    // Invalid env var — log once and use default
+    logger.warn('SYSTEM', 'Invalid CLAUDE_MEM_HEALTH_TIMEOUT_MS, using default', {
+      value: envVal, min: 500, max: 300000
+    });
+  }
+  return getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
+})();
 
 /**
  * Fetch with a timeout using Promise.race instead of AbortSignal.
@@ -89,12 +103,22 @@ async function isWorkerHealthy(): Promise<boolean> {
 }
 
 /**
- * Get the current plugin version from package.json
+ * Get the current plugin version from package.json.
+ * Returns 'unknown' on ENOENT/EBUSY (shutdown race condition, fix #1042).
  */
 function getPluginVersion(): string {
-  const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-  return packageJson.version;
+  try {
+    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    return packageJson.version;
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'EBUSY') {
+      logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
+      return 'unknown';
+    }
+    throw error;
+  }
 }
 
 /**
@@ -115,18 +139,33 @@ async function getWorkerVersion(): Promise<string> {
 /**
  * Check if worker version matches plugin version
  * Note: Auto-restart on version mismatch is now handled in worker-service.ts start command (issue #484)
- * This function logs for informational purposes only
+ * This function logs for informational purposes only.
+ * Skips comparison when either version is 'unknown' (fix #1042 — avoids restart loops).
  */
 async function checkWorkerVersion(): Promise<void> {
-  const pluginVersion = getPluginVersion();
-  const workerVersion = await getWorkerVersion();
+  try {
+    const pluginVersion = getPluginVersion();
 
-  if (pluginVersion !== workerVersion) {
-    // Just log debug info - auto-restart handles the mismatch in worker-service.ts
-    logger.debug('SYSTEM', 'Version check', {
-      pluginVersion,
-      workerVersion,
-      note: 'Mismatch will be auto-restarted by worker-service start command'
+    // Skip version check if plugin version couldn't be read (shutdown race)
+    if (pluginVersion === 'unknown') return;
+
+    const workerVersion = await getWorkerVersion();
+
+    // Skip version check if worker version is 'unknown' (avoids restart loops)
+    if (workerVersion === 'unknown') return;
+
+    if (pluginVersion !== workerVersion) {
+      // Just log debug info - auto-restart handles the mismatch in worker-service.ts
+      logger.debug('SYSTEM', 'Version check', {
+        pluginVersion,
+        workerVersion,
+        note: 'Mismatch will be auto-restarted by worker-service start command'
+      });
+    }
+  } catch (error) {
+    // Version check is informational — don't fail the hook
+    logger.debug('SYSTEM', 'Version check failed', {
+      error: error instanceof Error ? error.message : String(error)
     });
   }
 }
