@@ -102,8 +102,7 @@ export class ChromaMcpManager {
     const commandArgs = this.buildCommandArgs();
     const spawnEnvironment = this.getSpawnEnv();
 
-    const isWindows = process.platform === 'win32';
-    const uvxCommand = isWindows ? 'uvx.cmd' : 'uvx';
+    const uvxCommand = 'uvx';
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
       command: uvxCommand,
