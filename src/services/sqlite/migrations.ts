@@ -1,4 +1,4 @@
-import { Database } from 'bun:sqlite';
+import { Database } from './sqlite-compat.js';
 import { Migration } from './Database.js';
 
 // Re-export MigrationRunner for SessionStore migration extraction

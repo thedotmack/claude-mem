@@ -10,7 +10,7 @@
  * - cleanClaudeMd: Remove auto-generated content from CLAUDE.md files
  */
 
-import { Database } from 'bun:sqlite';
+import { Database } from '../services/sqlite/sqlite-compat.js';
 import path from 'path';
 import os from 'os';
 import {

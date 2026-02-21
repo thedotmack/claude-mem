@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * Statusline Counts — lightweight project-scoped observation counter
  *
@@ -6,8 +6,8 @@
  * suitable for integration into Claude Code's statusLineCommand.
  *
  * Usage:
- *   bun statusline-counts.js <cwd>
- *   bun statusline-counts.js /home/user/my-project
+ *   node statusline-counts.js <cwd>
+ *   node statusline-counts.js /home/user/my-project
  *
  * Output (JSON, stdout):
  *   {"observations": 42, "prompts": 15, "project": "my-project"}
@@ -18,7 +18,7 @@
  *
  * Performance: ~10ms typical (direct SQLite read, no HTTP, no worker dependency)
  */
-import { Database } from "bun:sqlite";
+import Database from 'better-sqlite3';
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join, basename } from "path";
@@ -47,9 +47,9 @@ try {
 
   const db = new Database(dbPath, { readonly: true });
 
-  const obs = db.query("SELECT COUNT(*) as c FROM observations WHERE project = ?").get(project);
+  const obs = db.prepare("SELECT COUNT(*) as c FROM observations WHERE project = ?").get(project);
   // user_prompts links to projects through sdk_sessions.content_session_id
-  const prompts = db.query(
+  const prompts = db.prepare(
     `SELECT COUNT(*) as c FROM user_prompts up
      JOIN sdk_sessions s ON s.content_session_id = up.content_session_id
      WHERE s.project = ?`

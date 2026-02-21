@@ -2,7 +2,7 @@
  * Bulk import functions for importing data with duplicate checking
  */
 
-import { Database } from 'bun:sqlite';
+import { Database } from '../sqlite-compat.js';
 import { logger } from '../../../utils/logger.js';
 
 export interface ImportResult {

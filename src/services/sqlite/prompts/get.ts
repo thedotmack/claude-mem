@@ -2,7 +2,7 @@
  * User prompt retrieval operations
  */
 
-import type { Database } from 'bun:sqlite';
+import type { Database } from '../sqlite-compat.js';
 import { logger } from '../../../utils/logger.js';
 import type { UserPromptRecord, LatestPromptResult } from '../../../types/database.js';
 import type { RecentUserPromptResult, PromptWithProject, GetPromptsByIdsOptions } from './types.js';

@@ -50,7 +50,6 @@ async function buildHooks() {
     console.log('✓ Output directories ready');
 
     // Generate plugin/package.json for cache directory dependency installation
-    // Note: bun:sqlite is a Bun built-in, no external dependencies needed for SQLite
     console.log('\n📦 Generating plugin package.json...');
     const pluginPackageJson = {
       name: 'claude-mem-plugin',
@@ -59,12 +58,13 @@ async function buildHooks() {
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
       dependencies: {
+        // SQLite driver (native module, can't be bundled)
+        'better-sqlite3': '^12.6.2',
         // Chroma embedding function with native ONNX binaries (can't be bundled)
         '@chroma-core/default-embed': '^0.1.9'
       },
       engines: {
-        node: '>=18.0.0',
-        bun: '>=1.0.0'
+        node: '>=18.0.0'
       }
     };
     fs.writeFileSync('plugin/package.json', JSON.stringify(pluginPackageJson, null, 2) + '\n');
@@ -96,7 +96,7 @@ async function buildHooks() {
       minify: true,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
-        'bun:sqlite',
+        'better-sqlite3',
         // Optional chromadb embedding providers
         'cohere-ai',
         'ollama',
@@ -108,7 +108,7 @@ async function buildHooks() {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
       banner: {
-        js: '#!/usr/bin/env bun'
+        js: '#!/usr/bin/env node'
       }
     });
 
@@ -128,7 +128,7 @@ async function buildHooks() {
       outfile: `${hooksDir}/${MCP_SERVER.name}.cjs`,
       minify: true,
       logLevel: 'error',
-      external: ['bun:sqlite'],
+      external: ['better-sqlite3'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
@@ -153,7 +153,7 @@ async function buildHooks() {
       outfile: `${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`,
       minify: true,
       logLevel: 'error',
-      external: ['bun:sqlite'],
+      external: ['better-sqlite3'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       }
