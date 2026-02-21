@@ -5,7 +5,7 @@
  * grep-friendly: getTimelineAroundTimestamp, getTimelineAroundObservation, getAllProjects
  */
 
-import type { Database } from 'bun:sqlite';
+import type { Database } from '../sqlite-compat.js';
 import type { ObservationRecord, SessionSummaryRecord, UserPromptRecord } from '../../../types/database.js';
 import { logger } from '../../../utils/logger.js';
 

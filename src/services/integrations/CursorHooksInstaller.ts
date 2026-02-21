@@ -171,7 +171,7 @@ export function findWorkerServicePath(): string | null {
 
 /**
  * Find the Bun executable path
- * Required because worker-service.cjs uses bun:sqlite which is Bun-specific
+ * Required for finding the runtime executable to spawn worker-service.cjs
  * Searches common installation locations across platforms
  */
 export function findBunPath(): string {
@@ -319,7 +319,7 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
     // Generate hooks.json with unified CLI commands
     const hooksJsonPath = path.join(targetDir, 'hooks.json');
 
-    // Find bun executable - required because worker-service.cjs uses bun:sqlite
+    // Find bun executable for spawning worker
     const bunPath = findBunPath();
     const escapedBunPath = bunPath.replace(/\\/g, '\\\\');
 

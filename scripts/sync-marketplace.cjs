@@ -80,9 +80,9 @@ try {
     { stdio: 'inherit' }
   );
 
-  console.log('Running bun install in marketplace...');
+  console.log('Running npm install in marketplace...');
   execSync(
-    'cd ~/.claude/plugins/marketplaces/thedotmack/ && bun install',
+    'cd ~/.claude/plugins/marketplaces/thedotmack/ && npm install',
     { stdio: 'inherit' }
   );
 
@@ -100,8 +100,8 @@ try {
   );
 
   // Install dependencies in cache directory so worker can resolve them
-  console.log(`Running bun install in cache folder (version ${version})...`);
-  execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
+  console.log(`Running npm install in cache folder (version ${version})...`);
+  execSync(`npm install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
 
   console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 

@@ -1,4 +1,4 @@
-import { Database } from 'bun:sqlite';
+import { Database } from './sqlite-compat.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { MigrationRunner } from './migrations/runner.js';
@@ -19,7 +19,7 @@ let dbInstance: Database | null = null;
  * ClaudeMemDatabase - New entry point for the sqlite module
  *
  * Replaces SessionStore as the database coordinator.
- * Sets up bun:sqlite with optimized settings and runs all migrations.
+ * Sets up SQLite with optimized settings and runs all migrations.
  *
  * Usage:
  *   const db = new ClaudeMemDatabase();  // uses default DB_PATH
@@ -219,7 +219,7 @@ export async function initializeDatabase(): Promise<Database> {
   return await manager.initialize();
 }
 
-// Re-export bun:sqlite Database type
+// Re-export Database type
 export { Database };
 
 // Re-export MigrationRunner for external use

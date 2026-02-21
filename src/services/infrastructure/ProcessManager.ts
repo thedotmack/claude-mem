@@ -71,8 +71,7 @@ function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): stri
 /**
  * Resolve the runtime executable for spawning the worker daemon.
  *
- * Windows must prefer Bun because worker-service.cjs imports bun:sqlite,
- * which is unavailable in Node.js.
+ * Resolve the runtime executable for the worker daemon.
  */
 export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): string | null {
   const platform = options.platform ?? process.platform;
