@@ -1,6 +1,7 @@
 datasets/
 node_modules/
 dist/
+!installer/dist/
 *.log
 .DS_Store
 .env

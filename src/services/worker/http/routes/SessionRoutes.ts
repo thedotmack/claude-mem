@@ -23,6 +23,7 @@ import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getHybridOrchestrator } from '../../../pipeline/index.js';
+import { getProcessBySession, ensureProcessExit } from '../../ProcessRegistry.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -186,7 +187,13 @@ export class SessionRoutes extends BaseRouteHandler {
           }, dbError as Error);
         }
       })
-      .finally(() => {
+      .finally(async () => {
+        // CRITICAL: Verify subprocess exit to prevent zombie accumulation (Issue #1168)
+        const tracked = getProcessBySession(session.sessionDbId);
+        if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
+          await ensureProcessExit(tracked, 5000);
+        }
+
         const sessionDbId = session.sessionDbId;
         this.spawnInProgress.delete(sessionDbId);
         const wasAborted = session.abortController.signal.aborted;

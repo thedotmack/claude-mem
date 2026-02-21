@@ -29,7 +29,9 @@ export const summarizeHandler: EventHandler = {
 
     // Validate required fields before processing
     if (!transcriptPath) {
-      throw new Error(`Missing transcriptPath in Stop hook input for session ${sessionId}`);
+      // No transcript available - skip summary gracefully (not an error)
+      logger.debug('HOOK', `No transcriptPath in Stop hook input for session ${sessionId} - skipping summary`);
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
     // Extract last assistant message from transcript (the work Claude did)

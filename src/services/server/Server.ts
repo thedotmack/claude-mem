@@ -13,6 +13,7 @@ import express, { Request, Response, Application } from 'express';
 import http from 'http';
 import * as fs from 'fs';
 import path from 'path';
+import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
 import { createMiddleware, summarizeRequestBody, requireLocalhost } from './Middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
@@ -199,11 +200,25 @@ export class Server {
       const topic = (req.query.topic as string) || 'all';
       const operation = req.query.operation as string | undefined;
 
+      // Validate topic
+      if (topic && !ALLOWED_TOPICS.includes(topic)) {
+        return res.status(400).json({ error: 'Invalid topic' });
+      }
+
       try {
         let content: string;
 
         if (operation) {
-          const operationPath = path.join(__dirname, '../skills/mem-search/operations', `${operation}.md`);
+          // Validate operation
+          if (!ALLOWED_OPERATIONS.includes(operation)) {
+            return res.status(400).json({ error: 'Invalid operation' });
+          }
+          // Path boundary check
+          const OPERATIONS_BASE_DIR = path.resolve(__dirname, '../skills/mem-search/operations');
+          const operationPath = path.resolve(OPERATIONS_BASE_DIR, `${operation}.md`);
+          if (!operationPath.startsWith(OPERATIONS_BASE_DIR + path.sep)) {
+            return res.status(400).json({ error: 'Invalid request' });
+          }
           content = await fs.promises.readFile(operationPath, 'utf-8');
         } else {
           const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
@@ -233,8 +248,14 @@ export class Server {
         process.send!({ type: 'restart' });
       } else {
         // Unix or standalone Windows - handle restart ourselves
+        // The spawner (ensureWorkerStarted/restart command) handles spawning the new daemon.
+        // This process just needs to shut down and exit.
         setTimeout(async () => {
-          await this.options.onRestart();
+          try {
+            await this.options.onRestart();
+          } finally {
+            process.exit(0);
+          }
         }, 100);
       }
     });
@@ -253,7 +274,14 @@ export class Server {
       } else {
         // Unix or standalone Windows - handle shutdown ourselves
         setTimeout(async () => {
-          await this.options.onShutdown();
+          try {
+            await this.options.onShutdown();
+          } finally {
+            // CRITICAL: Exit the process after shutdown completes (or fails).
+            // Without this, the daemon stays alive as a zombie — background tasks
+            // (backfill, reconnects) keep running and respawn chroma-mcp subprocesses.
+            process.exit(0);
+          }
         }, 100);
       }
     });

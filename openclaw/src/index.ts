@@ -156,6 +156,14 @@ type ConnectionState = "disconnected" | "connected" | "reconnecting";
 // Plugin Configuration
 // ============================================================================
 
+interface FeedEmojiConfig {
+  primary?: string;
+  claudeCode?: string;
+  claudeCodeLabel?: string;
+  default?: string;
+  agents?: Record<string, string>;
+}
+
 interface ClaudeMemPluginConfig {
   syncMemoryFile?: boolean;
   project?: string;
@@ -165,6 +173,7 @@ interface ClaudeMemPluginConfig {
     channel?: string;
     to?: string;
     botToken?: string;
+    emojis?: FeedEmojiConfig;
   };
 }
 
@@ -175,42 +184,57 @@ interface ClaudeMemPluginConfig {
 const MAX_SSE_BUFFER_SIZE = 1024 * 1024; // 1MB
 const DEFAULT_WORKER_PORT = 37777;
 
-// Agent emoji map for observation feed messages.
-// When creating a new OpenClaw agent, add its agentId and emoji here.
-const AGENT_EMOJI_MAP: Record<string, string> = {
-  "main":          "🦞",
-  "openclaw":      "🦞",
-  "devops":        "🔧",
-  "architect":     "📐",
-  "researcher":    "🔍",
-  "code-reviewer": "🔎",
-  "coder":         "💻",
-  "tester":        "🧪",
-  "debugger":      "🐛",
-  "opsec":         "🛡️",
-  "cloudfarm":     "☁️",
-  "extractor":     "📦",
-};
+// Emoji pool for deterministic auto-assignment to unknown agents.
+// Uses a hash of the agentId to pick a consistent emoji — no persistent state needed.
+const EMOJI_POOL = [
+  "🔧","📐","🔍","💻","🧪","🐛","🛡️","☁️","📦","🎯",
+  "🔮","⚡","🌊","🎨","📊","🚀","🔬","🏗️","📝","🎭",
+];
 
-// Project prefixes that indicate Claude Code sessions (not OpenClaw agents)
-const CLAUDE_CODE_EMOJI = "⌨️";
-const OPENCLAW_DEFAULT_EMOJI = "🦀";
+function poolEmojiForAgent(agentId: string): string {
+  let hash = 0;
+  for (let i = 0; i < agentId.length; i++) {
+    hash = ((hash << 5) - hash + agentId.charCodeAt(i)) | 0;
+  }
+  return EMOJI_POOL[Math.abs(hash) % EMOJI_POOL.length];
+}
 
-function getSourceLabel(project: string | null | undefined): string {
-  if (!project) return OPENCLAW_DEFAULT_EMOJI;
-  // OpenClaw agent projects are formatted as "openclaw-<agentId>"
-  if (project.startsWith("openclaw-")) {
-    const agentId = project.slice("openclaw-".length);
-    const emoji = AGENT_EMOJI_MAP[agentId] || OPENCLAW_DEFAULT_EMOJI;
-    return `${emoji} ${agentId}`;
-  }
-  // OpenClaw project without agent suffix
-  if (project === "openclaw") {
-    return `🦞 openclaw`;
-  }
-  // Everything else is from Claude Code (project = working directory name)
-  const emoji = CLAUDE_CODE_EMOJI;
-  return `${emoji} ${project}`;
+// Default emoji values — overridden by user config via observationFeed.emojis
+const DEFAULT_PRIMARY_EMOJI = "🦞";
+const DEFAULT_CLAUDE_CODE_EMOJI = "⌨️";
+const DEFAULT_CLAUDE_CODE_LABEL = "Claude Code Session";
+const DEFAULT_FALLBACK_EMOJI = "🦀";
+
+function buildGetSourceLabel(
+  emojiConfig: FeedEmojiConfig | undefined
+): (project: string | null | undefined) => string {
+  const primary = emojiConfig?.primary ?? DEFAULT_PRIMARY_EMOJI;
+  const claudeCode = emojiConfig?.claudeCode ?? DEFAULT_CLAUDE_CODE_EMOJI;
+  const claudeCodeLabel = emojiConfig?.claudeCodeLabel ?? DEFAULT_CLAUDE_CODE_LABEL;
+  const fallback = emojiConfig?.default ?? DEFAULT_FALLBACK_EMOJI;
+  const pinnedAgents = emojiConfig?.agents ?? {};
+
+  return function getSourceLabel(project: string | null | undefined): string {
+    if (!project) return fallback;
+    // OpenClaw agent projects are formatted as "openclaw-<agentId>"
+    if (project.startsWith("openclaw-")) {
+      const agentId = project.slice("openclaw-".length);
+      if (!agentId) return `${primary} openclaw`;
+      const emoji = pinnedAgents[agentId] || poolEmojiForAgent(agentId);
+      return `${emoji} ${agentId}`;
+    }
+    // OpenClaw project without agent suffix
+    if (project === "openclaw") {
+      return `${primary} openclaw`;
+    }
+    // Everything else is a Claude Code session. Keep the project identifier
+    // visible so concurrent sessions can be distinguished in the feed.
+    const trimmedLabel = claudeCodeLabel.trim();
+    if (!trimmedLabel) {
+      return `${claudeCode} ${project}`;
+    }
+    return `${claudeCode} ${trimmedLabel} (${project})`;
+  };
 }
 
 // ============================================================================
@@ -280,11 +304,30 @@ async function workerGetText(
   }
 }
 
+async function workerGetJson(
+  port: number,
+  path: string,
+  logger: PluginLogger
+): Promise<Record<string, unknown> | null> {
+  const text = await workerGetText(port, path, logger);
+  if (!text) return null;
+
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    logger.warn(`[claude-mem] Worker GET ${path} returned non-JSON response`);
+    return null;
+  }
+}
+
 // ============================================================================
 // SSE Observation Feed
 // ============================================================================
 
-function formatObservationMessage(observation: ObservationSSEPayload): string {
+function formatObservationMessage(
+  observation: ObservationSSEPayload,
+  getSourceLabel: (project: string | null | undefined) => string,
+): string {
   const title = observation.title || "Untitled";
   const source = getSourceLabel(observation.project);
   let message = `${source}\n**${title}**`;
@@ -380,6 +423,7 @@ async function connectToSSEStream(
   to: string,
   abortController: AbortController,
   setConnectionState: (state: ConnectionState) => void,
+  getSourceLabel: (project: string | null | undefined) => string,
   botToken?: string
 ): Promise<void> {
   let backoffMs = 1000;
@@ -440,7 +484,7 @@ async function connectToSSEStream(
             const parsed = JSON.parse(jsonStr);
             if (parsed.type === "new_observation" && parsed.observation) {
               const event = parsed as SSENewObservationEvent;
-              const message = formatObservationMessage(event.observation);
+              const message = formatObservationMessage(event.observation, getSourceLabel);
               await sendToChannel(api, channel, to, message, botToken);
             }
           } catch (parseError: unknown) {
@@ -475,6 +519,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   const userConfig = (api.pluginConfig || {}) as ClaudeMemPluginConfig;
   const workerPort = userConfig.workerPort || DEFAULT_WORKER_PORT;
   const baseProjectName = userConfig.project || "openclaw";
+  const getSourceLabel = buildGetSourceLabel(userConfig.observationFeed?.emojis);
 
   function getProjectName(ctx: EventContext): string {
     if (ctx.agentId) {
@@ -720,6 +765,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         feedConfig.to,
         sseAbortController,
         (state) => { connectionState = state; },
+        getSourceLabel,
         feedConfig.botToken
       );
     },
@@ -737,65 +783,222 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     },
   });
 
+  function summarizeSearchResults(items: unknown[], limit = 5): string {
+    if (!Array.isArray(items) || items.length === 0) {
+      return "No results found.";
+    }
+
+    return items
+      .slice(0, limit)
+      .map((item, index) => {
+        const row = item as Record<string, unknown>;
+        const title = String(row.title || row.subtitle || row.text || "Untitled");
+        const project = row.project ? ` [${String(row.project)}]` : "";
+        return `${index + 1}. ${title}${project}`;
+      })
+      .join("\n");
+  }
+
+  function parseLimit(arg: string | undefined, fallback = 10): number {
+    const parsed = Number(arg);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(1, Math.min(50, Math.trunc(parsed)));
+  }
+
   // ------------------------------------------------------------------
-  // Command: /claude-mem-feed — status & toggle
+  // Command: /claude_mem_feed — status & toggle
   // ------------------------------------------------------------------
   api.registerCommand({
-    name: "claude-mem-feed",
+    name: "claude_mem_feed",
     description: "Show or toggle Claude-Mem observation feed status",
     acceptsArgs: true,
     handler: async (ctx) => {
       const feedConfig = userConfig.observationFeed;
 
       if (!feedConfig) {
-        return "Observation feed not configured. Add observationFeed to your plugin config.";
+        return { text: "Observation feed not configured. Add observationFeed to your plugin config." };
       }
 
       const arg = ctx.args?.trim();
 
       if (arg === "on") {
         api.logger.info("[claude-mem] Feed enable requested via command");
-        return "Feed enable requested. Update observationFeed.enabled in your plugin config to persist.";
+        return { text: "Feed enable requested. Update observationFeed.enabled in your plugin config to persist." };
       }
 
       if (arg === "off") {
         api.logger.info("[claude-mem] Feed disable requested via command");
-        return "Feed disable requested. Update observationFeed.enabled in your plugin config to persist.";
+        return { text: "Feed disable requested. Update observationFeed.enabled in your plugin config to persist." };
       }
 
-      return [
+      return { text: [
         "Claude-Mem Observation Feed",
         `Enabled: ${feedConfig.enabled ? "yes" : "no"}`,
         `Channel: ${feedConfig.channel || "not set"}`,
         `Target: ${feedConfig.to || "not set"}`,
         `Connection: ${connectionState}`,
+      ].join("\n") };
+    },
+  });
+
+  // ------------------------------------------------------------------
+  // Command: /claude-mem-search — query worker search API
+  // Usage: /claude-mem-search <query> [limit]
+  // ------------------------------------------------------------------
+  api.registerCommand({
+    name: "claude-mem-search",
+    description: "Search Claude-Mem observations by query",
+    acceptsArgs: true,
+    handler: async (ctx) => {
+      const raw = ctx.args?.trim() || "";
+      if (!raw) {
+        return "Usage: /claude-mem-search <query> [limit]";
+      }
+
+      const pieces = raw.split(/\s+/);
+      const maybeLimit = pieces[pieces.length - 1];
+      const hasTrailingLimit = /^\d+$/.test(maybeLimit);
+      const limit = hasTrailingLimit ? parseLimit(maybeLimit, 10) : 10;
+      const query = hasTrailingLimit ? pieces.slice(0, -1).join(" ") : raw;
+
+      const data = await workerGetJson(
+        workerPort,
+        `/api/search/observations?query=${encodeURIComponent(query)}&limit=${limit}`,
+        api.logger,
+      );
+
+      if (!data) {
+        return "Claude-Mem search failed (worker unavailable or invalid response).";
+      }
+
+      const items = Array.isArray(data.items) ? data.items : [];
+      return [
+        `Claude-Mem Search: \"${query}\"`,
+        summarizeSearchResults(items, limit),
       ].join("\n");
     },
   });
 
   // ------------------------------------------------------------------
-  // Command: /claude-mem-status — worker health check
+  // Command: /claude-mem-recent — recent context snapshot
+  // Usage: /claude-mem-recent [project] [limit]
   // ------------------------------------------------------------------
   api.registerCommand({
-    name: "claude-mem-status",
+    name: "claude-mem-recent",
+    description: "Show recent Claude-Mem context for a project",
+    acceptsArgs: true,
+    handler: async (ctx) => {
+      const raw = ctx.args?.trim() || "";
+      const parts = raw ? raw.split(/\s+/) : [];
+      const maybeLimit = parts.length > 0 ? parts[parts.length - 1] : "";
+      const hasTrailingLimit = /^\d+$/.test(maybeLimit);
+      const limit = hasTrailingLimit ? parseLimit(maybeLimit, 3) : 3;
+      const project = hasTrailingLimit ? parts.slice(0, -1).join(" ") : raw;
+
+      const params = new URLSearchParams();
+      params.set("limit", String(limit));
+      if (project) params.set("project", project);
+
+      const data = await workerGetJson(
+        workerPort,
+        `/api/context/recent?${params.toString()}`,
+        api.logger,
+      );
+
+      if (!data) {
+        return "Claude-Mem recent context failed (worker unavailable or invalid response).";
+      }
+
+      const summaries = Array.isArray(data.session_summaries) ? data.session_summaries : [];
+      const observations = Array.isArray(data.recent_observations) ? data.recent_observations : [];
+
+      return [
+        "Claude-Mem Recent Context",
+        `Project: ${project || "(auto)"}`,
+        `Session summaries: ${summaries.length}`,
+        `Recent observations: ${observations.length}`,
+        summarizeSearchResults(observations, Math.min(5, observations.length || 5)),
+      ].join("\n");
+    },
+  });
+
+  // ------------------------------------------------------------------
+  // Command: /claude-mem-timeline — search and timeline around best match
+  // Usage: /claude-mem-timeline <query> [depthBefore] [depthAfter]
+  // ------------------------------------------------------------------
+  api.registerCommand({
+    name: "claude-mem-timeline",
+    description: "Find best memory match and show nearby timeline events",
+    acceptsArgs: true,
+    handler: async (ctx) => {
+      const raw = ctx.args?.trim() || "";
+      if (!raw) {
+        return "Usage: /claude-mem-timeline <query> [depthBefore] [depthAfter]";
+      }
+
+      const parts = raw.split(/\s+/);
+      let depthAfter = 5;
+      let depthBefore = 5;
+
+      if (parts.length >= 2 && /^\d+$/.test(parts[parts.length - 1])) {
+        depthAfter = parseLimit(parts.pop(), 5);
+      }
+      if (parts.length >= 2 && /^\d+$/.test(parts[parts.length - 1])) {
+        depthBefore = parseLimit(parts.pop(), 5);
+      }
+
+      const query = parts.join(" ");
+      const params = new URLSearchParams({
+        query,
+        mode: "auto",
+        depth_before: String(depthBefore),
+        depth_after: String(depthAfter),
+      });
+
+      const data = await workerGetJson(
+        workerPort,
+        `/api/timeline/by-query?${params.toString()}`,
+        api.logger,
+      );
+
+      if (!data) {
+        return "Claude-Mem timeline lookup failed (worker unavailable or invalid response).";
+      }
+
+      const timeline = Array.isArray(data.timeline) ? data.timeline : [];
+      const anchor = data.anchor ? String(data.anchor) : "(none)";
+
+      return [
+        `Claude-Mem Timeline: \"${query}\"`,
+        `Anchor: ${anchor}`,
+        summarizeSearchResults(timeline, 8),
+      ].join("\n");
+    },
+  });
+
+  // ------------------------------------------------------------------
+  // Command: /claude_mem_status — worker health check
+  // ------------------------------------------------------------------
+  api.registerCommand({
+    name: "claude_mem_status",
     description: "Check Claude-Mem worker health and session status",
     handler: async () => {
       const healthText = await workerGetText(workerPort, "/api/health", api.logger);
       if (!healthText) {
-        return `Claude-Mem worker unreachable at port ${workerPort}`;
+        return { text: `Claude-Mem worker unreachable at port ${workerPort}` };
       }
 
       try {
         const health = JSON.parse(healthText);
-        return [
+        return { text: [
           "Claude-Mem Worker Status",
           `Status: ${health.status || "unknown"}`,
           `Port: ${workerPort}`,
           `Active sessions: ${sessionIds.size}`,
           `Observation feed: ${connectionState}`,
-        ].join("\n");
+        ].join("\n") };
       } catch {
-        return `Claude-Mem worker responded but returned unexpected data`;
+        return { text: `Claude-Mem worker responded but returned unexpected data` };
       }
     },
   });

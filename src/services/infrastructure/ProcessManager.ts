@@ -10,7 +10,7 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmSync } from 'fs';
 import { exec, execSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
@@ -32,6 +32,93 @@ const ORPHAN_PROCESS_PATTERNS = [
 
 // Only kill processes older than this to avoid killing the current session
 const ORPHAN_MAX_AGE_MINUTES = 30;
+
+interface RuntimeResolverOptions {
+  platform?: NodeJS.Platform;
+  execPath?: string;
+  env?: NodeJS.ProcessEnv;
+  homeDirectory?: string;
+  pathExists?: (candidatePath: string) => boolean;
+  lookupInPath?: (binaryName: string, platform: NodeJS.Platform) => string | null;
+}
+
+function isBunExecutablePath(executablePath: string | undefined | null): boolean {
+  if (!executablePath) return false;
+
+  return /(^|[\\/])bun(\.exe)?$/i.test(executablePath.trim());
+}
+
+function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): string | null {
+  const command = platform === 'win32' ? `where ${binaryName}` : `which ${binaryName}`;
+
+  try {
+    const output = execSync(command, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf-8'
+    });
+
+    const firstMatch = output
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .find(line => line.length > 0);
+
+    return firstMatch || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the runtime executable for spawning the worker daemon.
+ *
+ * Windows must prefer Bun because worker-service.cjs imports bun:sqlite,
+ * which is unavailable in Node.js.
+ */
+export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): string | null {
+  const platform = options.platform ?? process.platform;
+  const execPath = options.execPath ?? process.execPath;
+
+  // Non-Windows currently relies on the runtime that launched worker-service.
+  if (platform !== 'win32') {
+    return execPath;
+  }
+
+  // If already running under Bun, reuse it directly.
+  if (isBunExecutablePath(execPath)) {
+    return execPath;
+  }
+
+  const env = options.env ?? process.env;
+  const homeDirectory = options.homeDirectory ?? homedir();
+  const pathExists = options.pathExists ?? existsSync;
+  const lookupInPath = options.lookupInPath ?? lookupBinaryInPath;
+
+  const candidatePaths = [
+    env.BUN,
+    env.BUN_PATH,
+    path.join(homeDirectory, '.bun', 'bin', 'bun.exe'),
+    path.join(homeDirectory, '.bun', 'bin', 'bun'),
+    env.USERPROFILE ? path.join(env.USERPROFILE, '.bun', 'bin', 'bun.exe') : undefined,
+    env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bun.exe') : undefined,
+    env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bin', 'bun.exe') : undefined,
+  ];
+
+  for (const candidate of candidatePaths) {
+    const normalized = candidate?.trim();
+    if (!normalized) continue;
+
+    if (isBunExecutablePath(normalized) && pathExists(normalized)) {
+      return normalized;
+    }
+
+    // Allow command-style values from env (e.g. BUN=bun)
+    if (normalized.toLowerCase() === 'bun') {
+      return normalized;
+    }
+  }
+
+  return lookupInPath('bun', platform);
+}
 
 export interface PidInfo {
   pid: number;
@@ -339,6 +426,182 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
   logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pidsToKill.length });
 }
 
+// Patterns that should be killed immediately at startup (no age gate)
+// These are child processes that should not outlive their parent worker
+const AGGRESSIVE_CLEANUP_PATTERNS = ['worker-service.cjs', 'chroma-mcp'];
+
+// Patterns that keep the age-gated threshold (may be legitimately running)
+const AGE_GATED_CLEANUP_PATTERNS = ['mcp-server.cjs'];
+
+/**
+ * Aggressive startup cleanup for orphaned claude-mem processes.
+ *
+ * Unlike cleanupOrphanedProcesses() which age-gates everything at 30 minutes,
+ * this function kills worker-service.cjs and chroma-mcp processes immediately
+ * (they should not outlive their parent worker). Only mcp-server.cjs keeps
+ * the age threshold since it may be legitimately running.
+ *
+ * Called once at daemon startup.
+ */
+export async function aggressiveStartupCleanup(): Promise<void> {
+  const isWindows = process.platform === 'win32';
+  const currentPid = process.pid;
+  const pidsToKill: number[] = [];
+  const allPatterns = [...AGGRESSIVE_CLEANUP_PATTERNS, ...AGE_GATED_CLEANUP_PATTERNS];
+
+  try {
+    if (isWindows) {
+      const patternConditions = allPatterns
+        .map(p => `$_.CommandLine -like '*${p}*'`)
+        .join(' -or ');
+
+      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { (${patternConditions}) -and $_.ProcessId -ne ${currentPid} } | Select-Object ProcessId, CommandLine, CreationDate | ConvertTo-Json"`;
+      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+
+      if (!stdout.trim() || stdout.trim() === 'null') {
+        logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Windows)');
+        return;
+      }
+
+      const processes = JSON.parse(stdout);
+      const processList = Array.isArray(processes) ? processes : [processes];
+      const now = Date.now();
+
+      for (const proc of processList) {
+        const pid = proc.ProcessId;
+        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+
+        const commandLine = proc.CommandLine || '';
+        const isAggressive = AGGRESSIVE_CLEANUP_PATTERNS.some(p => commandLine.includes(p));
+
+        if (isAggressive) {
+          // Kill immediately — no age check
+          pidsToKill.push(pid);
+          logger.debug('SYSTEM', 'Found orphaned process (aggressive)', { pid, commandLine: commandLine.substring(0, 80) });
+        } else {
+          // Age-gated: only kill if older than threshold
+          const creationMatch = proc.CreationDate?.match(/\/Date\((\d+)\)\//);
+          if (creationMatch) {
+            const creationTime = parseInt(creationMatch[1], 10);
+            const ageMinutes = (now - creationTime) / (1000 * 60);
+            if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+              pidsToKill.push(pid);
+              logger.debug('SYSTEM', 'Found orphaned process (age-gated)', { pid, ageMinutes: Math.round(ageMinutes) });
+            }
+          }
+        }
+      }
+    } else {
+      // Unix: Use ps with elapsed time
+      const patternRegex = allPatterns.join('|');
+      const { stdout } = await execAsync(
+        `ps -eo pid,etime,command | grep -E "${patternRegex}" | grep -v grep || true`
+      );
+
+      if (!stdout.trim()) {
+        logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Unix)');
+        return;
+      }
+
+      const lines = stdout.trim().split('\n');
+      for (const line of lines) {
+        const match = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
+        if (!match) continue;
+
+        const pid = parseInt(match[1], 10);
+        const etime = match[2];
+        const command = match[3];
+
+        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+
+        const isAggressive = AGGRESSIVE_CLEANUP_PATTERNS.some(p => command.includes(p));
+
+        if (isAggressive) {
+          // Kill immediately — no age check
+          pidsToKill.push(pid);
+          logger.debug('SYSTEM', 'Found orphaned process (aggressive)', { pid, command: command.substring(0, 80) });
+        } else {
+          // Age-gated: only kill if older than threshold
+          const ageMinutes = parseElapsedTime(etime);
+          if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+            pidsToKill.push(pid);
+            logger.debug('SYSTEM', 'Found orphaned process (age-gated)', { pid, ageMinutes, command: command.substring(0, 80) });
+          }
+        }
+      }
+    }
+  } catch (error) {
+    logger.error('SYSTEM', 'Failed to enumerate orphaned processes during aggressive cleanup', {}, error as Error);
+    return;
+  }
+
+  if (pidsToKill.length === 0) {
+    return;
+  }
+
+  logger.info('SYSTEM', 'Aggressive startup cleanup: killing orphaned processes', {
+    platform: isWindows ? 'Windows' : 'Unix',
+    count: pidsToKill.length,
+    pids: pidsToKill
+  });
+
+  if (isWindows) {
+    for (const pid of pidsToKill) {
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      try {
+        execSync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, stdio: 'ignore' });
+      } catch (error) {
+        logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, error as Error);
+      }
+    }
+  } else {
+    for (const pid of pidsToKill) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch (error) {
+        logger.debug('SYSTEM', 'Process already exited', { pid }, error as Error);
+      }
+    }
+  }
+
+  logger.info('SYSTEM', 'Aggressive startup cleanup complete', { count: pidsToKill.length });
+}
+
+const CHROMA_MIGRATION_MARKER_FILENAME = '.chroma-cleaned-v10.3';
+
+/**
+ * One-time chroma data wipe for users upgrading from versions with duplicate
+ * worker bugs that could corrupt chroma data. Since chroma is always rebuildable
+ * from SQLite (via backfillAllProjects), this is safe.
+ *
+ * Checks for a marker file. If absent, wipes ~/.claude-mem/chroma/ and writes
+ * the marker. If present, skips. Idempotent.
+ *
+ * @param dataDirectory - Override for DATA_DIR (used in tests)
+ */
+export function runOneTimeChromaMigration(dataDirectory?: string): void {
+  const effectiveDataDir = dataDirectory ?? DATA_DIR;
+  const markerPath = path.join(effectiveDataDir, CHROMA_MIGRATION_MARKER_FILENAME);
+  const chromaDir = path.join(effectiveDataDir, 'chroma');
+
+  if (existsSync(markerPath)) {
+    logger.debug('SYSTEM', 'Chroma migration marker exists, skipping wipe');
+    return;
+  }
+
+  logger.warn('SYSTEM', 'Running one-time chroma data wipe (upgrade from pre-v10.3)', { chromaDir });
+
+  if (existsSync(chromaDir)) {
+    rmSync(chromaDir, { recursive: true, force: true });
+    logger.info('SYSTEM', 'Chroma data directory removed', { chromaDir });
+  }
+
+  // Write marker file to prevent future wipes
+  mkdirSync(effectiveDataDir, { recursive: true });
+  writeFileSync(markerPath, new Date().toISOString());
+  logger.info('SYSTEM', 'Chroma migration marker written', { markerPath });
+}
+
 /**
  * Spawn a detached daemon process
  * Returns the child PID or undefined if spawn failed
@@ -368,9 +631,16 @@ export function spawnDaemon(
     // Use PowerShell Start-Process to spawn a hidden, independent process
     // Unlike WMIC, PowerShell inherits environment variables from parent
     // -WindowStyle Hidden prevents console popup
-    const execPath = process.execPath;
-    const script = scriptPath;
-    const psCommand = `Start-Process -FilePath '${execPath}' -ArgumentList '${script}','--daemon' -WindowStyle Hidden`;
+    const runtimePath = resolveWorkerRuntimePath();
+
+    if (!runtimePath) {
+      logger.error('SYSTEM', 'Failed to locate Bun runtime for Windows worker spawn');
+      return undefined;
+    }
+
+    const escapedRuntimePath = runtimePath.replace(/'/g, "''");
+    const escapedScriptPath = scriptPath.replace(/'/g, "''");
+    const psCommand = `Start-Process -FilePath '${escapedRuntimePath}' -ArgumentList '${escapedScriptPath}','--daemon' -WindowStyle Hidden`;
 
     try {
       execSync(`powershell -NoProfile -Command "${psCommand}"`, {
@@ -379,7 +649,8 @@ export function spawnDaemon(
         env
       });
       return 0;
-    } catch {
+    } catch (error) {
+      logger.error('SYSTEM', 'Failed to spawn worker daemon on Windows', { runtimePath }, error as Error);
       return undefined;
     }
   }

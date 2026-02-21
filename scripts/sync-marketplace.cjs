@@ -4,13 +4,6 @@
  *
  * Prevents accidental rsync overwrite when installed plugin is on beta branch.
  * If on beta, the user should use the UI to update instead.
- *
- * Local Settings Preservation:
- * - .mcp.json: MCP server configuration
- * - local/: User customizations directory
- * - *.local.*: Any file with .local. in the name
- *
- * These files are excluded from --delete to preserve user customizations.
  */
 
 const { execSync } = require('child_process');
@@ -20,16 +13,6 @@ const os = require('os');
 
 const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
-
-// Files and directories to preserve during sync (not deleted by --delete)
-const PRESERVE_PATTERNS = [
-  '.git',           // Git repository
-  '/.mcp.json',     // MCP server configuration
-  '/local/',        // User customizations directory
-  '*.local.*',      // Any file with .local. in name (e.g., config.local.json)
-  '/.env.local',    // Local environment variables
-  '/node_modules/', // Dependencies (reinstalled separately)
-];
 
 function getCurrentBranch() {
   try {
@@ -44,6 +27,18 @@ function getCurrentBranch() {
   } catch {
     return null;
   }
+}
+
+function getGitignoreExcludes(basePath) {
+  const gitignorePath = path.join(basePath, '.gitignore');
+  if (!existsSync(gitignorePath)) return '';
+
+  const lines = readFileSync(gitignorePath, 'utf-8').split('\n');
+  return lines
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#') && !line.startsWith('!'))
+    .map(pattern => `--exclude=${JSON.stringify(pattern)}`)
+    .join(' ');
 }
 
 const branch = getCurrentBranch();
@@ -74,35 +69,20 @@ function getPluginVersion() {
   }
 }
 
-// Build rsync exclude arguments from preserve patterns
-function buildExcludeArgs(patterns) {
-  return patterns.map(p => `--exclude='${p}'`).join(' ');
-}
-
-const excludeArgs = buildExcludeArgs(PRESERVE_PATTERNS);
-
 // Normal rsync for main branch or fresh install
 console.log('Syncing to marketplace...');
-console.log('Preserving local settings:', PRESERVE_PATTERNS.filter(p => p !== '.git' && p !== '/node_modules/').join(', '));
 try {
+  const rootDir = path.join(__dirname, '..');
+  const gitignoreExcludes = getGitignoreExcludes(rootDir);
+
   execSync(
-    `rsync -av --delete ${excludeArgs} ./ ~/.claude/plugins/marketplaces/thedotmack/`,
+    `rsync -av --delete --exclude=.git --exclude=/.mcp.json --exclude=bun.lock --exclude=package-lock.json ${gitignoreExcludes} ./ ~/.claude/plugins/marketplaces/thedotmack/`,
     { stdio: 'inherit' }
   );
 
-  // Remove stale lockfiles before install — they pin old native dep versions
-  const { unlinkSync } = require('fs');
-  for (const lockfile of ['package-lock.json', 'bun.lock']) {
-    const lockpath = path.join(INSTALLED_PATH, lockfile);
-    if (existsSync(lockpath)) {
-      unlinkSync(lockpath);
-      console.log(`Removed stale ${lockfile}`);
-    }
-  }
-
-  console.log('Running npm install in marketplace...');
+  console.log('Running bun install in marketplace...');
   execSync(
-    'cd ~/.claude/plugins/marketplaces/thedotmack/ && npm install',
+    'cd ~/.claude/plugins/marketplaces/thedotmack/ && bun install',
     { stdio: 'inherit' }
   );
 
@@ -110,13 +90,18 @@ try {
   const version = getPluginVersion();
   const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
 
-  // For cache, we use fewer exclusions since it should be a clean copy
-  const cacheExcludeArgs = buildExcludeArgs(['.git']);
+  const pluginDir = path.join(rootDir, 'plugin');
+  const pluginGitignoreExcludes = getGitignoreExcludes(pluginDir);
+
   console.log(`Syncing to cache folder (version ${version})...`);
   execSync(
-    `rsync -av --delete ${cacheExcludeArgs} plugin/ "${CACHE_VERSION_PATH}/"`,
+    `rsync -av --delete --exclude=.git ${pluginGitignoreExcludes} plugin/ "${CACHE_VERSION_PATH}/"`,
     { stdio: 'inherit' }
   );
+
+  // Install dependencies in cache directory so worker can resolve them
+  console.log(`Running bun install in cache folder (version ${version})...`);
+  execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
 
   console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 

@@ -17,7 +17,11 @@ export const claudeCodeAdapter: PlatformAdapter = {
   },
   formatOutput(result) {
     if (result.hookSpecificOutput) {
-      return { hookSpecificOutput: result.hookSpecificOutput };
+      const output: Record<string, unknown> = { hookSpecificOutput: result.hookSpecificOutput };
+      if (result.systemMessage) {
+        output.systemMessage = result.systemMessage;
+      }
+      return output;
     }
     return { continue: result.continue ?? true, suppressOutput: result.suppressOutput ?? true };
   }

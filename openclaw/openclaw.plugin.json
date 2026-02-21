@@ -6,6 +6,7 @@
   "version": "1.0.0",
   "author": "thedotmack",
   "homepage": "https://claude-mem.com",
+  "skills": ["skills/make-plan", "skills/do-plan"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -45,6 +46,38 @@
           "botToken": {
             "type": "string",
             "description": "Optional dedicated Telegram bot token for the feed (bypasses gateway channel)"
+          },
+          "emojis": {
+            "type": "object",
+            "description": "Emoji personalization for the observation feed. Each agent gets a unique emoji automatically — customize here to override.",
+            "properties": {
+              "primary": {
+                "type": "string",
+                "default": "🦞",
+                "description": "Emoji for the main OpenClaw gateway (project='openclaw')"
+              },
+              "claudeCode": {
+                "type": "string",
+                "default": "⌨️",
+                "description": "Emoji for Claude Code sessions (non-OpenClaw)"
+              },
+              "claudeCodeLabel": {
+                "type": "string",
+                "default": "Claude Code Session",
+                "description": "Display label prefix for Claude Code sessions in the feed (project identifier is appended automatically)"
+              },
+              "default": {
+                "type": "string",
+                "default": "🦀",
+                "description": "Fallback emoji when no match is found"
+              },
+              "agents": {
+                "type": "object",
+                "default": {},
+                "description": "Pin specific emojis to agent IDs (e.g. {\"devops\": \"🔧\"}). Agents not listed here get auto-assigned emojis.",
+                "additionalProperties": { "type": "string" }
+              }
+            }
           }
         }
       }

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { homedir } from 'os';
+import { tmpdir } from 'os';
 import path from 'path';
 import {
   writePidFile,
@@ -11,6 +12,8 @@ import {
   isProcessAlive,
   cleanStalePidFile,
   spawnDaemon,
+  resolveWorkerRuntimePath,
+  runOneTimeChromaMigration,
   type PidInfo
 } from '../../src/services/infrastructure/index.js';
 
@@ -31,7 +34,6 @@ describe('ProcessManager', () => {
   afterEach(() => {
     // Restore original PID file or remove test one
     if (originalPidContent !== null) {
-      const { writeFileSync } = require('fs');
       writeFileSync(PID_FILE, originalPidContent);
       originalPidContent = null;
     } else {
@@ -104,7 +106,6 @@ describe('ProcessManager', () => {
     });
 
     it('should return null for corrupted JSON', () => {
-      const { writeFileSync } = require('fs');
       writeFileSync(PID_FILE, 'not valid json {{{');
 
       const result = readPidFile();
@@ -222,6 +223,62 @@ describe('ProcessManager', () => {
       const result = getPlatformTimeout(333);
 
       expect(result).toBe(666);
+    });
+  });
+
+  describe('resolveWorkerRuntimePath', () => {
+    it('should return current runtime on non-Windows platforms', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node'
+      });
+
+      expect(resolved).toBe('/usr/bin/node');
+    });
+
+    it('should reuse execPath when already running under Bun on Windows', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'win32',
+        execPath: 'C:\\Users\\alice\\.bun\\bin\\bun.exe'
+      });
+
+      expect(resolved).toBe('C:\\Users\\alice\\.bun\\bin\\bun.exe');
+    });
+
+    it('should prefer configured Bun path from environment when available', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'win32',
+        execPath: 'C:\\Program Files\\nodejs\\node.exe',
+        env: { BUN: 'C:\\tools\\bun.exe' } as NodeJS.ProcessEnv,
+        pathExists: candidatePath => candidatePath === 'C:\\tools\\bun.exe',
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBe('C:\\tools\\bun.exe');
+    });
+
+    it('should fall back to PATH lookup when no Bun candidate exists', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'win32',
+        execPath: 'C:\\Program Files\\nodejs\\node.exe',
+        env: {} as NodeJS.ProcessEnv,
+        pathExists: () => false,
+        lookupInPath: () => 'C:\\Program Files\\Bun\\bun.exe'
+      });
+
+      expect(resolved).toBe('C:\\Program Files\\Bun\\bun.exe');
+    });
+
+    it('should return null when Bun cannot be resolved on Windows', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'win32',
+        execPath: 'C:\\Program Files\\nodejs\\node.exe',
+        env: {} as NodeJS.ProcessEnv,
+        pathExists: () => false,
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBeNull();
     });
   });
 
@@ -356,6 +413,55 @@ describe('ProcessManager', () => {
 
       // Verify the non-daemon path: SIGHUP should trigger shutdown (covered by registerSignalHandlers)
       // This is a logic verification test — actual signal delivery is tested manually
+    });
+  });
+
+  describe('runOneTimeChromaMigration', () => {
+    let testDataDir: string;
+
+    beforeEach(() => {
+      testDataDir = path.join(tmpdir(), `claude-mem-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      mkdirSync(testDataDir, { recursive: true });
+    });
+
+    afterEach(() => {
+      rmSync(testDataDir, { recursive: true, force: true });
+    });
+
+    it('should wipe chroma directory and write marker file', () => {
+      // Create a fake chroma directory with data
+      const chromaDir = path.join(testDataDir, 'chroma');
+      mkdirSync(chromaDir, { recursive: true });
+      writeFileSync(path.join(chromaDir, 'test-data.bin'), 'fake chroma data');
+
+      runOneTimeChromaMigration(testDataDir);
+
+      // Chroma dir should be gone
+      expect(existsSync(chromaDir)).toBe(false);
+      // Marker file should exist
+      expect(existsSync(path.join(testDataDir, '.chroma-cleaned-v10.3'))).toBe(true);
+    });
+
+    it('should skip when marker file already exists (idempotent)', () => {
+      // Write marker file first
+      writeFileSync(path.join(testDataDir, '.chroma-cleaned-v10.3'), 'already done');
+
+      // Create a chroma directory that should NOT be wiped
+      const chromaDir = path.join(testDataDir, 'chroma');
+      mkdirSync(chromaDir, { recursive: true });
+      writeFileSync(path.join(chromaDir, 'important.bin'), 'should survive');
+
+      runOneTimeChromaMigration(testDataDir);
+
+      // Chroma dir should still exist (migration was skipped)
+      expect(existsSync(chromaDir)).toBe(true);
+      expect(existsSync(path.join(chromaDir, 'important.bin'))).toBe(true);
+    });
+
+    it('should handle missing chroma directory gracefully', () => {
+      // No chroma dir exists — should just write marker without error
+      expect(() => runOneTimeChromaMigration(testDataDir)).not.toThrow();
+      expect(existsSync(path.join(testDataDir, '.chroma-cleaned-v10.3'))).toBe(true);
     });
   });
 });

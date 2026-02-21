@@ -192,8 +192,8 @@ describe('Zombie Agent Prevention', () => {
     // hasAnyPendingWork should return true
     expect(pendingStore.hasAnyPendingWork()).toBe(true);
 
-    // CLAIM-CONFIRM pattern: claimAndDelete marks as 'processing' (not deleted)
-    const claimed = pendingStore.claimAndDelete(sessionId);
+    // CLAIM-CONFIRM pattern: claimNextMessage marks as 'processing' (not deleted)
+    const claimed = pendingStore.claimNextMessage(sessionId);
     expect(claimed).not.toBeNull();
     expect(claimed?.id).toBe(msgId1);
 
@@ -206,11 +206,11 @@ describe('Zombie Agent Prevention', () => {
     expect(pendingStore.getPendingCount(sessionId)).toBe(2);
 
     // Claim and confirm remaining messages
-    const msg2 = pendingStore.claimAndDelete(sessionId);
+    const msg2 = pendingStore.claimNextMessage(sessionId);
     pendingStore.confirmProcessed(msg2!.id);
     expect(pendingStore.getPendingCount(sessionId)).toBe(1);
 
-    const msg3 = pendingStore.claimAndDelete(sessionId);
+    const msg3 = pendingStore.claimNextMessage(sessionId);
     pendingStore.confirmProcessed(msg3!.id);
 
     // Should be empty now
@@ -264,6 +264,36 @@ describe('Zombie Agent Prevention', () => {
 
     // New controller should not be aborted
     expect(session.abortController.signal.aborted).toBe(false);
+  });
+
+  // Test: Stuck processing messages are recovered by claimNextMessage self-healing
+  test('should recover stuck processing messages via claimNextMessage self-healing', async () => {
+    const sessionId = createDbSession('content-stuck-recovery');
+
+    // Enqueue and claim a message (transitions to 'processing')
+    const msgId = enqueueTestMessage(sessionId, 'content-stuck-recovery');
+    const claimed = pendingStore.claimNextMessage(sessionId);
+    expect(claimed).not.toBeNull();
+    expect(claimed!.id).toBe(msgId);
+
+    // Simulate crash: message stuck in 'processing' with stale timestamp
+    const staleTimestamp = Date.now() - 120_000; // 2 minutes ago
+    db.run(
+      `UPDATE pending_messages SET started_processing_at_epoch = ? WHERE id = ?`,
+      [staleTimestamp, msgId]
+    );
+
+    // Verify it's stuck
+    expect(pendingStore.getPendingCount(sessionId)).toBe(1); // processing counts as pending work
+
+    // Next claimNextMessage should self-heal: reset stuck message and re-claim it
+    const recovered = pendingStore.claimNextMessage(sessionId);
+    expect(recovered).not.toBeNull();
+    expect(recovered!.id).toBe(msgId);
+
+    // Confirm it can be processed successfully
+    pendingStore.confirmProcessed(msgId);
+    expect(pendingStore.getPendingCount(sessionId)).toBe(0);
   });
 
   // Test: Generator cleanup on session delete

@@ -43,6 +43,7 @@ translate-readme --list-languages
 | `--no-preserve-code` | Translate code blocks too (not recommended) |
 | `-m, --model <model>` | Claude model to use (default: `sonnet`) |
 | `--max-budget <usd>` | Maximum budget in USD |
+| `--use-existing` | Use existing translation file as a reference |
 | `-v, --verbose` | Show detailed progress |
 | `-h, --help` | Show help message |
 | `--list-languages` | List all supported language codes |
@@ -86,6 +87,9 @@ interface TranslationOptions {
 
   /** Maximum budget in USD */
   maxBudgetUsd?: number;
+
+  /** Use existing translation file (if present) as a reference */
+  useExisting?: boolean;
 
   /** Verbose output */
   verbose?: boolean;
