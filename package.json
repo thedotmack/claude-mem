@@ -47,6 +47,7 @@
   },
   "scripts": {
     "dev": "npm run build-and-sync",
+  "dev:local": "npm run build && bash scripts/deploy-local.sh",
     "build": "node scripts/build-hooks.js",
     "build-and-sync": "npm run build && npm run sync-marketplace && sleep 1 && cd ~/.claude/plugins/marketplaces/thedotmack && npm run worker:restart",
     "sync-marketplace": "node scripts/sync-marketplace.cjs",
