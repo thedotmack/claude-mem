@@ -414,7 +414,7 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
+                tooltip="Choose the AI provider used for observation extraction"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
@@ -423,6 +423,7 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="github-copilot">GitHub Copilot</option>
                 </select>
               </FormField>
 
@@ -524,6 +525,33 @@ export function ContextSettingsModal({
                       value={formState.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
                       placeholder="claude-mem"
+                    />
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'github-copilot' && (
+                <>
+                  <FormField
+                    label="Copilot Model"
+                    tooltip="Model identifier to request from GitHub Copilot (default: gpt-4.1)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_COPILOT_MODEL || 'gpt-4.1'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_COPILOT_MODEL', e.target.value)}
+                      placeholder="gpt-4.1"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Copilot Token File"
+                    tooltip="Path to a JSON token file (OpenClaw default: ~/.openclaw/credentials/github-copilot.token.json). Generate/refresh with: openclaw models auth login-github-copilot"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_COPILOT_TOKEN_FILE || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_COPILOT_TOKEN_FILE', e.target.value)}
+                      placeholder="/home/you/.openclaw/credentials/github-copilot.token.json"
                     />
                   </FormField>
                 </>
