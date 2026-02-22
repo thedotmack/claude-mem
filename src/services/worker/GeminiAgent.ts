@@ -254,6 +254,8 @@ export class GeminiAgent {
         throw new Error('Gemini API key not configured. Set MAGIC_CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
       }
 
+      session.currentProvider = 'gemini';
+
       // Ensure memorySessionId is set (Gemini doesn't get session IDs from SDK responses)
       // This must happen before any processAgentResponse() calls which require it for the FK constraint
       // IMPORTANT: Reuse existing DB value to avoid FK violations with existing observations/summaries.

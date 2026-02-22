@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
  * The resume parameter should ONLY be passed when:
  * 1. memorySessionId exists (was captured from a previous SDK response)
  * 2. lastPromptNumber > 1 (this is a continuation within the same SDK session)
+ * 3. Provider has not changed (memorySessionId belongs to the current provider)
  *
  * On worker restart or crash recovery, memorySessionId may exist from a previous
  * SDK session but we must NOT resume because the SDK context was lost.
@@ -124,13 +125,90 @@ describe('SDKAgent Resume Parameter Logic', () => {
     });
   });
 
+  describe('Provider change scenarios', () => {
+    /**
+     * Mirrors the provider-change detection logic in SDKAgent.startSession().
+     * When switching providers (e.g., openai-compat -> claude), the memorySessionId
+     * is KEPT for DB FK integrity but resume is BLOCKED because the SDK session
+     * context belongs to the old provider.
+     */
+    function detectProviderChange(
+      currentProvider: 'claude' | 'gemini' | 'openai-compat' | null,
+      newProvider: 'claude' | 'gemini' | 'openai-compat'
+    ): boolean {
+      return currentProvider !== null && currentProvider !== newProvider;
+    }
+
+    function shouldPassResumeAfterProviderCheck(session: {
+      memorySessionId: string | null;
+      lastPromptNumber: number;
+    }, providerChanged: boolean): boolean {
+      if (providerChanged) return false;
+      return shouldPassResumeParameter(session);
+    }
+
+    it('should NOT resume when switching from openai-compat to claude', () => {
+      const providerChanged = detectProviderChange('openai-compat', 'claude');
+      const session = {
+        memorySessionId: 'openai-compat-session-id', // Kept for DB FK integrity
+        lastPromptNumber: 5,
+      };
+
+      expect(providerChanged).toBe(true);
+      expect(shouldPassResumeAfterProviderCheck(session, providerChanged)).toBe(false);
+      // memorySessionId is preserved (not nulled) for FK integrity
+      expect(session.memorySessionId).toBe('openai-compat-session-id');
+    });
+
+    it('should NOT resume when switching from gemini to claude', () => {
+      const providerChanged = detectProviderChange('gemini', 'claude');
+      const session = {
+        memorySessionId: 'gemini-session-id',
+        lastPromptNumber: 3,
+      };
+
+      expect(providerChanged).toBe(true);
+      expect(shouldPassResumeAfterProviderCheck(session, providerChanged)).toBe(false);
+    });
+
+    it('should allow resume when provider stays the same', () => {
+      const providerChanged = detectProviderChange('claude', 'claude');
+      const session = {
+        memorySessionId: 'valid-claude-session-id',
+        lastPromptNumber: 4,
+      };
+
+      expect(providerChanged).toBe(false);
+      expect(shouldPassResumeAfterProviderCheck(session, providerChanged)).toBe(true);
+    });
+
+    it('should not detect change when currentProvider is null (first time starting)', () => {
+      const providerChanged = detectProviderChange(null, 'claude');
+
+      expect(providerChanged).toBe(false);
+    });
+
+    it('should not resume when currentProvider is null with existing memorySessionId', () => {
+      // Edge case: worker restart with DB memorySessionId but currentProvider reset to null
+      const providerChanged = detectProviderChange(null, 'claude');
+      const session = {
+        memorySessionId: 'stale-from-db',
+        lastPromptNumber: 1, // INIT prompt after restart
+      };
+
+      expect(providerChanged).toBe(false);
+      // The existing lastPromptNumber === 1 guard handles this case
+      expect(shouldPassResumeAfterProviderCheck(session, providerChanged)).toBe(false);
+    });
+  });
+
   describe('Bug reproduction: stale session resume crash', () => {
     it('should NOT resume when worker restarts with stale memorySessionId', () => {
       // This is the exact bug scenario from the logs:
       // [17:30:21.773] Starting SDK query {
       //   hasRealMemorySessionId=true,
       //   resume_parameter=5439891b-...,
-      //   lastPromptNumber=1              ← NEW SDK session!
+      //   lastPromptNumber=1              <- NEW SDK session!
       // }
       // [17:30:24.450] Generator failed {error=Claude Code process exited with code 1}
 

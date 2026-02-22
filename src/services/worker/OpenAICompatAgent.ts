@@ -145,6 +145,8 @@ export class OpenAICompatAgent {
         throw new Error('OpenAI-compatible API key not configured. Set MAGIC_CLAUDE_MEM_OPENAI_COMPAT_API_KEY in settings or OPENAI_COMPAT_API_KEY environment variable.');
       }
 
+      session.currentProvider = 'openai-compat';
+
       // Ensure memorySessionId is set (OpenAI-compatible API doesn't get session IDs from SDK responses)
       // This must happen before any processAgentResponse() calls which require it for the FK constraint
       // IMPORTANT: Reuse existing DB value to avoid FK violations with existing observations/summaries.
