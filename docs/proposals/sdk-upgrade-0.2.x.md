@@ -343,29 +343,42 @@ A subprocess-based test harness using `claude -p` can validate the real SDK wire
 
 ```typescript
 // tests/integration/sdk-harness.test.ts
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { describe, it, expect } from 'vitest';
+
+/** Isolated env: simple mode + no plugin recursion */
+const HARNESS_ENV = {
+  ...process.env,
+  CLAUDE_CODE_SIMPLE: '1',          // Minimal prompt, Bash/Read/Edit only, no MCP/hooks/CLAUDE.md
+  DISABLE_MAGIC_CLAUDE_MEM: '1',    // Prevent recursive plugin invocation
+};
+
+function spawnClaude(args: string[]): ChildProcess {
+  return spawn('claude', [...args, '--output-format', 'stream-json'], { env: HARNESS_ENV });
+}
+
+async function collectMessages(child: ChildProcess): Promise<unknown[]> {
+  const messages: unknown[] = [];
+  for await (const chunk of child.stdout!) {
+    for (const line of chunk.toString().split('\n').filter(Boolean)) {
+      messages.push(JSON.parse(line));
+    }
+  }
+  return messages;
+}
 
 describe('SDK subprocess harness', () => {
   it('spawns claude -p and receives valid JSON stream', async () => {
-    const child = spawn('claude', ['-p', 'Say hello', '--max-turns', '1', '--output-format', 'stream-json'], {
-      env: { ...process.env, DISABLE_MAGIC_CLAUDE_MEM: '1' },
-    });
-    const messages: unknown[] = [];
-    for await (const chunk of child.stdout) {
-      // Each line is a JSON message matching SDKMessage union
-      for (const line of chunk.toString().split('\n').filter(Boolean)) {
-        messages.push(JSON.parse(line));
-      }
-    }
+    const child = spawnClaude(['-p', 'Say hello', '--max-turns', '1']);
+    const messages = await collectMessages(child);
     expect(messages.some(m => (m as any).type === 'assistant')).toBe(true);
     expect(messages.some(m => (m as any).type === 'result')).toBe(true);
   });
 
   it('validates process cleanup after abort', async () => {
-    const child = spawn('claude', ['-p', 'Count to 100', '--max-turns', '1', '--output-format', 'stream-json']);
+    const child = spawnClaude(['-p', 'Count to 100', '--max-turns', '1']);
     // Kill after first message
-    child.stdout.once('data', () => child.kill('SIGTERM'));
+    child.stdout!.once('data', () => child.kill('SIGTERM'));
     const code = await new Promise(resolve => child.on('exit', resolve));
     // Verify no orphan processes remain
     // (child.pid should not appear in process table after exit)
@@ -374,9 +387,9 @@ describe('SDK subprocess harness', () => {
 
   it('validates session resume round-trip', async () => {
     // Phase 1: Create session
-    const create = spawn('claude', ['-p', 'Remember: apple', '--max-turns', '1', '--output-format', 'stream-json']);
+    const create = spawnClaude(['-p', 'Remember: apple', '--max-turns', '1']);
     let sessionId: string | undefined;
-    for await (const chunk of create.stdout) {
+    for await (const chunk of create.stdout!) {
       for (const line of chunk.toString().split('\n').filter(Boolean)) {
         const msg = JSON.parse(line);
         if (msg.session_id) sessionId = msg.session_id;
@@ -385,17 +398,18 @@ describe('SDK subprocess harness', () => {
     expect(sessionId).toBeDefined();
 
     // Phase 2: Resume session
-    const resume = spawn('claude', ['-p', 'What did I ask you to remember?', '--resume', sessionId!, '--max-turns', '1', '--output-format', 'stream-json']);
-    const messages: unknown[] = [];
-    for await (const chunk of resume.stdout) {
-      for (const line of chunk.toString().split('\n').filter(Boolean)) {
-        messages.push(JSON.parse(line));
-      }
-    }
+    const resume = spawnClaude(['-p', 'What did I ask you to remember?', '--resume', sessionId!, '--max-turns', '1']);
+    const messages = await collectMessages(resume);
     expect(messages.some(m => (m as any).type === 'result')).toBe(true);
   });
 });
 ```
+
+**`CLAUDE_CODE_SIMPLE=1`** is the key enabler for reliable testing:
+- Minimal system prompt -- faster startup, cheaper tokens, predictable output
+- Only Bash, Read, and Edit tools enabled -- no MCP, no hooks, no CLAUDE.md loading
+- No attachments or integrations -- eliminates flaky external dependencies
+- Combined with `DISABLE_MAGIC_CLAUDE_MEM=1` -- prevents recursive plugin invocation
 
 **Harness advantages:**
 - Tests the actual Claude Code CLI that the SDK bundles (not mocked)
@@ -403,7 +417,7 @@ describe('SDK subprocess harness', () => {
 - Can assert process cleanup (orphan detection, SIGTERM handling)
 - Works as a pre/post upgrade regression gate
 - `--max-turns 1` keeps tests fast and cheap
-- `DISABLE_MAGIC_CLAUDE_MEM=1` prevents recursive plugin invocation
+- `CLAUDE_CODE_SIMPLE=1` makes tests deterministic (no plugin/hook side effects)
 
 **Harness considerations:**
 - Requires a real Claude API key (CI needs `ANTHROPIC_API_KEY` secret)
