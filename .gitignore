@@ -41,3 +41,6 @@ https*/
 
 # Ignore WebStorm project files (for dinosaur IDE users)
 .idea/
+
+# LoCoMo eval dataset (cloned repo)
+evals/locomo/data/locomo-repo/
