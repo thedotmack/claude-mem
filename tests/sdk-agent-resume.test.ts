@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import type { ProviderType } from '../src/services/worker-types.js';
 
 /**
  * Tests for SDKAgent resume parameter logic
@@ -133,8 +134,8 @@ describe('SDKAgent Resume Parameter Logic', () => {
      * context belongs to the old provider.
      */
     function detectProviderChange(
-      currentProvider: 'claude' | 'gemini' | 'openai-compat' | null,
-      newProvider: 'claude' | 'gemini' | 'openai-compat'
+      currentProvider: ProviderType | null,
+      newProvider: ProviderType
     ): boolean {
       return currentProvider !== null && currentProvider !== newProvider;
     }

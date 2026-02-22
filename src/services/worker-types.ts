@@ -9,6 +9,9 @@ import type { Query } from '@anthropic-ai/claude-agent-sdk';
 // Active Session Types
 // ============================================================================
 
+/** Available AI providers for observation processing */
+export type ProviderType = 'claude' | 'gemini' | 'openai-compat';
+
 /**
  * Provider-agnostic conversation message for shared history
  * Used to maintain context across Claude↔Gemini provider switches
@@ -33,7 +36,7 @@ export interface ActiveSession {
   cumulativeOutputTokens: number;  // Track output tokens for discovery cost
   earliestPendingTimestamp: number | null;  // Original timestamp of earliest pending message (for accurate observation timestamps)
   conversationHistory: ConversationMessage[];  // Shared conversation history for provider switching
-  currentProvider: 'claude' | 'gemini' | 'openai-compat' | null;  // Track which provider is currently running
+  currentProvider: ProviderType | null;  // Track which provider is currently running
   queryRef?: Query;  // SDK Query reference for explicit close() on session cleanup
 }
 
