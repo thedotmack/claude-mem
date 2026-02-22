@@ -37,6 +37,7 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  // Original timestamp of earliest pending message (for accurate observation timestamps)
   conversationHistory: ConversationMessage[];  // Shared conversation history for provider switching
   currentProvider: ProviderType | null;  // Track which provider is currently running
+  memorySessionIdCapturedLive: boolean;  // True only when memorySessionId was captured from a live SDK session in this process
   queryRef?: Query;  // SDK Query reference for explicit close() on session cleanup
 }
 

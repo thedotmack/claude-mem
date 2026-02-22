@@ -88,9 +88,10 @@ export class SDKAgent {
 
     // Detect provider change: if the session was previously using a different provider,
     // the memorySessionId belongs to that provider's session and cannot be resumed with Claude SDK.
-    // Keep memorySessionId for DB FK integrity but mark that we can't resume.
+    // Keep memorySessionId for DB FK integrity but invalidate the live capture flag.
     const providerChanged = session.currentProvider !== null && session.currentProvider !== 'claude';
     if (providerChanged) {
+      session.memorySessionIdCapturedLive = false;  // Old provider's session can't be resumed
       logger.warn('SDK', `Provider changed from ${session.currentProvider} to claude - will not attempt resume`, {
         sessionId: session.sessionDbId,
         previousProvider: session.currentProvider,
@@ -102,31 +103,31 @@ export class SDKAgent {
     // This preserves FK integrity: existing observations reference the DB memory_session_id.
     // If we captured a new SDK session_id instead, the DB UPDATE would fail because
     // child observations still reference the old value (no ON UPDATE CASCADE).
-    let restoredFromDb = false;
+    // NOTE: memorySessionIdCapturedLive stays false — DB-restored IDs cannot be used for resume.
     if (!session.memorySessionId) {
       const dbSession = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
       const existingId = dbSession?.memory_session_id;
       if (existingId) {
         session.memorySessionId = existingId;
-        restoredFromDb = true;
-        logger.info('SDK', 'Restored memorySessionId from database for FK integrity', {
+        logger.info('SDK', 'Restored memorySessionId from database for FK integrity (not for resume)', {
           sessionId: session.sessionDbId,
           memorySessionId: existingId,
         });
       }
     }
 
-    // CRITICAL: Only resume if:
-    // 1. memorySessionId exists AND was captured live from THIS process (not restored from DB)
-    // 2. lastPromptNumber > 1 (this is a continuation within the same SDK session)
-    // 3. Provider has not changed (memorySessionId belongs to the current provider)
+    // CRITICAL: Only resume if memorySessionId was captured from a LIVE Claude SDK
+    // session in THIS process lifetime (memorySessionIdCapturedLive === true).
     //
-    // DB-restored memorySessionId CANNOT be used for resume because:
-    // - After worker restart: SDK context was lost, the session_id is stale
-    // - After provider change: the session_id belongs to a different provider
-    // The DB value is only kept for FK integrity (observations reference it).
+    // This persistent flag prevents stale resume across ALL scenarios:
+    // - Worker restart: flag starts as false, DB-restored IDs don't set it
+    // - Provider change: flag is reset to false
+    // - Second startSession() call with DB-restored ID: flag is still false
+    //
+    // The flag is ONLY set to true when we capture a fresh session_id from
+    // the SDK's async iterator response (see message processing loop below).
     // NEVER use contentSessionId for resume - that would inject messages into the user's transcript!
-    const canResume = !!session.memorySessionId && !providerChanged && !restoredFromDb;
+    const canResume = session.memorySessionIdCapturedLive && session.lastPromptNumber > 1;
     const hasRealMemorySessionId = canResume;
 
     // Build isolated environment from ~/.magic-claude-mem/.env
@@ -198,6 +199,7 @@ export class SDKAgent {
       // This enables resume for subsequent generator starts within the same user session
       if (!session.memorySessionId && message.session_id) {
         session.memorySessionId = message.session_id;
+        session.memorySessionIdCapturedLive = true;  // Mark as live capture — safe to resume
         // Persist to database for cross-restart recovery
         this.dbManager.getSessionStore().updateMemorySessionId(
           session.sessionDbId,

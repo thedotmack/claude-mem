@@ -5,133 +5,88 @@ import type { ProviderType } from '../src/services/worker-types.js';
  * Tests for SDKAgent resume parameter logic
  *
  * The resume parameter should ONLY be passed when:
- * 1. memorySessionId exists (was captured from a previous SDK response)
+ * 1. memorySessionIdCapturedLive === true (captured from a live SDK session in this process)
  * 2. lastPromptNumber > 1 (this is a continuation within the same SDK session)
- * 3. Provider has not changed (memorySessionId belongs to the current provider)
  *
- * On worker restart or crash recovery, memorySessionId may exist from a previous
- * SDK session but we must NOT resume because the SDK context was lost.
+ * The memorySessionIdCapturedLive flag is:
+ * - Initialized to false when the session is created
+ * - Set to true ONLY when a fresh session_id is captured from the SDK response
+ * - Reset to false on provider change
+ *
+ * This prevents stale resume in ALL scenarios:
+ * - Worker restart: flag starts as false
+ * - DB-restored memorySessionId: flag stays false (DB restore doesn't set it)
+ * - Provider change: flag is reset to false
+ * - Second startSession() call with DB-restored ID: flag is still false
  */
 describe('SDKAgent Resume Parameter Logic', () => {
   /**
-   * Helper function that mirrors the logic in SDKAgent.startSession()
-   * This is the exact condition used at SDKAgent.ts line 99
+   * Helper function that mirrors the ACTUAL logic in SDKAgent.startSession()
+   * Uses memorySessionIdCapturedLive as the primary guard
    */
   function shouldPassResumeParameter(session: {
-    memorySessionId: string | null;
+    memorySessionIdCapturedLive: boolean;
     lastPromptNumber: number;
   }): boolean {
-    const hasRealMemorySessionId = !!session.memorySessionId;
-    return hasRealMemorySessionId && session.lastPromptNumber > 1;
+    return session.memorySessionIdCapturedLive && session.lastPromptNumber > 1;
   }
 
   describe('INIT prompt scenarios (lastPromptNumber === 1)', () => {
-    it('should NOT pass resume parameter when lastPromptNumber === 1 even if memorySessionId exists', () => {
-      // Scenario: Worker restart with stale memorySessionId from previous session
+    it('should NOT resume when lastPromptNumber === 1 even if captured live', () => {
+      // Edge case: somehow captured live but still on first prompt
       const session = {
-        memorySessionId: 'stale-session-id-from-previous-run',
-        lastPromptNumber: 1, // INIT prompt
-      };
-
-      const hasRealMemorySessionId = !!session.memorySessionId;
-      const shouldResume = shouldPassResumeParameter(session);
-
-      expect(hasRealMemorySessionId).toBe(true); // memorySessionId exists
-      expect(shouldResume).toBe(false); // but should NOT resume because it's INIT
-    });
-
-    it('should NOT pass resume parameter when memorySessionId is null and lastPromptNumber === 1', () => {
-      // Scenario: Fresh session, first prompt ever
-      const session = {
-        memorySessionId: null,
+        memorySessionIdCapturedLive: true,
         lastPromptNumber: 1,
       };
 
-      const hasRealMemorySessionId = !!session.memorySessionId;
-      const shouldResume = shouldPassResumeParameter(session);
+      expect(shouldPassResumeParameter(session)).toBe(false);
+    });
 
-      expect(hasRealMemorySessionId).toBe(false);
-      expect(shouldResume).toBe(false);
+    it('should NOT resume when lastPromptNumber === 1 and not captured live', () => {
+      const session = {
+        memorySessionIdCapturedLive: false,
+        lastPromptNumber: 1,
+      };
+
+      expect(shouldPassResumeParameter(session)).toBe(false);
     });
   });
 
   describe('CONTINUATION prompt scenarios (lastPromptNumber > 1)', () => {
-    it('should pass resume parameter when lastPromptNumber > 1 AND memorySessionId exists', () => {
-      // Scenario: Normal continuation within same SDK session
+    it('should resume when captured live AND lastPromptNumber > 1', () => {
+      // Normal continuation within same SDK session
       const session = {
-        memorySessionId: 'valid-session-id',
-        lastPromptNumber: 2, // CONTINUATION prompt
-      };
-
-      const hasRealMemorySessionId = !!session.memorySessionId;
-      const shouldResume = shouldPassResumeParameter(session);
-
-      expect(hasRealMemorySessionId).toBe(true);
-      expect(shouldResume).toBe(true);
-    });
-
-    it('should pass resume parameter for higher prompt numbers', () => {
-      // Scenario: Later in a multi-turn conversation
-      const session = {
-        memorySessionId: 'valid-session-id',
-        lastPromptNumber: 5, // 5th prompt in session
-      };
-
-      const shouldResume = shouldPassResumeParameter(session);
-      expect(shouldResume).toBe(true);
-    });
-
-    it('should NOT pass resume parameter when memorySessionId is null even for lastPromptNumber > 1', () => {
-      // Scenario: Bug case - somehow got to prompt 2 without capturing memorySessionId
-      // This shouldn't happen in practice but we should handle it safely
-      const session = {
-        memorySessionId: null,
+        memorySessionIdCapturedLive: true,
         lastPromptNumber: 2,
       };
 
-      const hasRealMemorySessionId = !!session.memorySessionId;
-      const shouldResume = shouldPassResumeParameter(session);
-
-      expect(hasRealMemorySessionId).toBe(false);
-      expect(shouldResume).toBe(false);
+      expect(shouldPassResumeParameter(session)).toBe(true);
     });
-  });
 
-  describe('Edge cases', () => {
-    it('should handle empty string memorySessionId as falsy', () => {
-      // Empty string should be treated as "no session ID"
+    it('should resume for higher prompt numbers', () => {
       const session = {
-        memorySessionId: '' as unknown as null,
+        memorySessionIdCapturedLive: true,
+        lastPromptNumber: 5,
+      };
+
+      expect(shouldPassResumeParameter(session)).toBe(true);
+    });
+
+    it('should NOT resume when not captured live even for lastPromptNumber > 1', () => {
+      // Key scenario: DB-restored memorySessionId, second call to startSession()
+      const session = {
+        memorySessionIdCapturedLive: false,
         lastPromptNumber: 2,
       };
 
-      const hasRealMemorySessionId = !!session.memorySessionId;
-      const shouldResume = shouldPassResumeParameter(session);
-
-      expect(hasRealMemorySessionId).toBe(false);
-      expect(shouldResume).toBe(false);
-    });
-
-    it('should handle undefined memorySessionId as falsy', () => {
-      const session = {
-        memorySessionId: undefined as unknown as null,
-        lastPromptNumber: 2,
-      };
-
-      const hasRealMemorySessionId = !!session.memorySessionId;
-      const shouldResume = shouldPassResumeParameter(session);
-
-      expect(hasRealMemorySessionId).toBe(false);
-      expect(shouldResume).toBe(false);
+      expect(shouldPassResumeParameter(session)).toBe(false);
     });
   });
 
   describe('Provider change scenarios', () => {
     /**
      * Mirrors the provider-change detection logic in SDKAgent.startSession().
-     * When switching providers (e.g., openai-compat -> claude), the memorySessionId
-     * is KEPT for DB FK integrity but resume is BLOCKED because the SDK session
-     * context belongs to the old provider.
+     * When switching providers, memorySessionIdCapturedLive is reset to false.
      */
     function detectProviderChange(
       currentProvider: ProviderType | null,
@@ -140,101 +95,198 @@ describe('SDKAgent Resume Parameter Logic', () => {
       return currentProvider !== null && currentProvider !== newProvider;
     }
 
-    function shouldPassResumeAfterProviderCheck(session: {
-      memorySessionId: string | null;
+    function simulateProviderChangeEffect(session: {
+      memorySessionIdCapturedLive: boolean;
       lastPromptNumber: number;
     }, providerChanged: boolean): boolean {
-      if (providerChanged) return false;
+      if (providerChanged) {
+        session.memorySessionIdCapturedLive = false;  // Reset on provider change
+      }
       return shouldPassResumeParameter(session);
     }
 
     it('should NOT resume when switching from openai-compat to claude', () => {
       const providerChanged = detectProviderChange('openai-compat', 'claude');
       const session = {
-        memorySessionId: 'openai-compat-session-id', // Kept for DB FK integrity
+        memorySessionIdCapturedLive: true,  // Was captured by openai-compat
         lastPromptNumber: 5,
       };
 
       expect(providerChanged).toBe(true);
-      expect(shouldPassResumeAfterProviderCheck(session, providerChanged)).toBe(false);
-      // memorySessionId is preserved (not nulled) for FK integrity
-      expect(session.memorySessionId).toBe('openai-compat-session-id');
+      expect(simulateProviderChangeEffect(session, providerChanged)).toBe(false);
+      // Flag was reset
+      expect(session.memorySessionIdCapturedLive).toBe(false);
     });
 
     it('should NOT resume when switching from gemini to claude', () => {
       const providerChanged = detectProviderChange('gemini', 'claude');
       const session = {
-        memorySessionId: 'gemini-session-id',
+        memorySessionIdCapturedLive: true,
         lastPromptNumber: 3,
       };
 
       expect(providerChanged).toBe(true);
-      expect(shouldPassResumeAfterProviderCheck(session, providerChanged)).toBe(false);
+      expect(simulateProviderChangeEffect(session, providerChanged)).toBe(false);
     });
 
     it('should allow resume when provider stays the same', () => {
       const providerChanged = detectProviderChange('claude', 'claude');
       const session = {
-        memorySessionId: 'valid-claude-session-id',
+        memorySessionIdCapturedLive: true,
         lastPromptNumber: 4,
       };
 
       expect(providerChanged).toBe(false);
-      expect(shouldPassResumeAfterProviderCheck(session, providerChanged)).toBe(true);
+      expect(simulateProviderChangeEffect(session, providerChanged)).toBe(true);
+      // Flag stays true
+      expect(session.memorySessionIdCapturedLive).toBe(true);
     });
 
     it('should not detect change when currentProvider is null (first time starting)', () => {
       const providerChanged = detectProviderChange(null, 'claude');
-
       expect(providerChanged).toBe(false);
     });
 
-    it('should not resume when currentProvider is null with existing memorySessionId', () => {
-      // Edge case: worker restart with DB memorySessionId but currentProvider reset to null
+    it('should not resume when currentProvider is null with DB-restored memorySessionId', () => {
+      // Worker restart: currentProvider is null, memorySessionId restored from DB
       const providerChanged = detectProviderChange(null, 'claude');
       const session = {
-        memorySessionId: 'stale-from-db',
-        lastPromptNumber: 1, // INIT prompt after restart
+        memorySessionIdCapturedLive: false,  // Not captured live — restored from DB
+        lastPromptNumber: 1,
       };
 
       expect(providerChanged).toBe(false);
-      // The existing lastPromptNumber === 1 guard handles this case
-      expect(shouldPassResumeAfterProviderCheck(session, providerChanged)).toBe(false);
+      // Even though provider didn't change, the flag is false → no resume
+      expect(simulateProviderChangeEffect(session, providerChanged)).toBe(false);
     });
   });
 
   describe('Bug reproduction: stale session resume crash', () => {
     it('should NOT resume when worker restarts with stale memorySessionId', () => {
-      // This is the exact bug scenario from the logs:
-      // [17:30:21.773] Starting SDK query {
-      //   hasRealMemorySessionId=true,
-      //   resume_parameter=5439891b-...,
-      //   lastPromptNumber=1              <- NEW SDK session!
-      // }
+      // Original bug from logs:
+      // [17:30:21.773] Starting SDK query { resume_parameter=5439891b-... }
       // [17:30:24.450] Generator failed {error=Claude Code process exited with code 1}
-
       const session = {
-        memorySessionId: '5439891b-7d4b-4ee3-8662-c000f66bc199', // Stale from previous session
-        lastPromptNumber: 1, // But this is a NEW session after restart
+        memorySessionIdCapturedLive: false,  // Worker restarted — not captured live
+        lastPromptNumber: 1,
       };
 
-      const shouldResume = shouldPassResumeParameter(session);
-
-      // The fix: should NOT try to resume, should start fresh
-      expect(shouldResume).toBe(false);
+      expect(shouldPassResumeParameter(session)).toBe(false);
     });
 
     it('should resume correctly for normal continuation (not after restart)', () => {
-      // Normal case: same SDK session, continuing conversation
       const session = {
-        memorySessionId: '5439891b-7d4b-4ee3-8662-c000f66bc199',
-        lastPromptNumber: 2, // Second prompt in SAME session
+        memorySessionIdCapturedLive: true,  // Captured live in this process
+        lastPromptNumber: 2,
       };
 
-      const shouldResume = shouldPassResumeParameter(session);
+      expect(shouldPassResumeParameter(session)).toBe(true);
+    });
+  });
 
-      // Should resume - same session, valid memorySessionId
-      expect(shouldResume).toBe(true);
+  describe('Bug reproduction: second startSession() with DB-restored ID', () => {
+    /**
+     * This is the EXACT bug that memorySessionIdCapturedLive fixes.
+     *
+     * Before the fix, `restoredFromDb` was a local variable in startSession(),
+     * so it reset to false on the second call. The stale openai-compat
+     * memorySessionId passed all guards and was used for resume.
+     */
+    it('should NOT resume on second startSession() when memorySessionId was DB-restored', () => {
+      // Simulate: first call restored from DB, second call with same session
+      const session = {
+        memorySessionIdCapturedLive: false,  // DB-restored, never set to true
+        lastPromptNumber: 3,  // Multiple prompts processed
+      };
+
+      // The old code with local `restoredFromDb` would return true here (the bug!)
+      // The new code with persistent `memorySessionIdCapturedLive` returns false
+      expect(shouldPassResumeParameter(session)).toBe(false);
+    });
+
+    it('should NOT resume even after many startSession() calls with DB-restored ID', () => {
+      // The flag stays false across ALL calls when never captured live
+      const session = {
+        memorySessionIdCapturedLive: false,
+        lastPromptNumber: 10,
+      };
+
+      expect(shouldPassResumeParameter(session)).toBe(false);
+    });
+
+    it('should resume after capturing fresh session_id from SDK', () => {
+      // Simulate: first call started fresh, SDK returned session_id, flag set to true
+      const session = {
+        memorySessionIdCapturedLive: true,  // Captured from live SDK response
+        lastPromptNumber: 2,
+      };
+
+      expect(shouldPassResumeParameter(session)).toBe(true);
+    });
+  });
+
+  describe('Full lifecycle simulation', () => {
+    it('should handle provider switch → fresh start → capture → resume cycle', () => {
+      // Simulates the full lifecycle after a provider switch
+      const session = {
+        memorySessionIdCapturedLive: true,  // Was captured by previous provider
+        lastPromptNumber: 5,
+        currentProvider: 'openai-compat' as ProviderType | null,
+        memorySessionId: 'old-openai-session-id' as string | null,
+      };
+
+      // Step 1: Provider change detected, flag reset
+      const providerChanged = session.currentProvider !== null && session.currentProvider !== 'claude';
+      if (providerChanged) {
+        session.memorySessionIdCapturedLive = false;
+      }
+      session.currentProvider = 'claude';
+
+      // Step 2: First startSession() — can't resume
+      expect(shouldPassResumeParameter(session)).toBe(false);
+
+      // Step 3: SDK returns new session_id, but memorySessionId is already set from DB
+      // So we don't capture it. Flag stays false.
+      const sdkReturnedSessionId = 'new-claude-session-id';
+      if (!session.memorySessionId) {
+        session.memorySessionId = sdkReturnedSessionId;
+        session.memorySessionIdCapturedLive = true;
+      }
+      // memorySessionId was already set, so capture was skipped
+      expect(session.memorySessionIdCapturedLive).toBe(false);
+      expect(session.memorySessionId).toBe('old-openai-session-id');
+
+      // Step 4: Second startSession() — still can't resume (flag still false)
+      session.lastPromptNumber = 6;
+      expect(shouldPassResumeParameter(session)).toBe(false);
+    });
+
+    it('should handle clean start → capture → resume cycle', () => {
+      // Normal lifecycle without provider change
+      const session = {
+        memorySessionIdCapturedLive: false,  // Fresh session
+        lastPromptNumber: 1,
+        memorySessionId: null as string | null,
+      };
+
+      // Step 1: First startSession() — can't resume (fresh)
+      expect(shouldPassResumeParameter(session)).toBe(false);
+
+      // Step 2: SDK returns session_id, we capture it
+      const sdkReturnedSessionId = 'fresh-session-id';
+      if (!session.memorySessionId) {
+        session.memorySessionId = sdkReturnedSessionId;
+        session.memorySessionIdCapturedLive = true;
+      }
+      expect(session.memorySessionIdCapturedLive).toBe(true);
+
+      // Step 3: Second startSession() — CAN resume now
+      session.lastPromptNumber = 2;
+      expect(shouldPassResumeParameter(session)).toBe(true);
+
+      // Step 4: Third startSession() — still can resume
+      session.lastPromptNumber = 3;
+      expect(shouldPassResumeParameter(session)).toBe(true);
     });
   });
 });
