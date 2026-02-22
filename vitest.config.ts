@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { workspaceProjects } from './vitest.workspace.js';
 
 export default defineConfig({
   test: {
@@ -10,5 +11,8 @@ export default defineConfig({
     pool: 'forks',
     // Exclude Playwright spec files — they use @playwright/test and conflict with vitest's expect
     exclude: ['**/node_modules/**', '**/dist/**', '**/*.spec.ts'],
+    // Named projects for --project filtering (unit | integration).
+    // Defined in vitest.workspace.ts.
+    projects: workspaceProjects,
   },
 });
