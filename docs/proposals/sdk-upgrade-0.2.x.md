@@ -159,28 +159,33 @@ type SDKHookResponseMessage = {
 
 ### 3.5 SDKMessage Union Expansion (ADDITIVE)
 
-**0.1.77** SDKMessage union:
+> **Note (2026-02-22)**: The [official TS SDK docs](https://platform.claude.com/docs/en/agent-sdk/typescript) show a simpler union than what the installed `.d.ts` files may contain. The documented types are the public API surface; additional types may exist internally.
+
+**0.1.77** SDKMessage union (from `.d.ts`):
 ```
 SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage |
 SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage |
 SDKStatusMessage | SDKHookResponseMessage | SDKToolProgressMessage | SDKAuthStatusMessage
 ```
 
-**0.2.49** adds:
+**0.2.49** documented SDKMessage union (from official docs):
 ```
-SDKHookStartedMessage | SDKHookProgressMessage | SDKTaskNotificationMessage |
-SDKTaskStartedMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage |
-SDKRateLimitEvent | SDKPromptSuggestionMessage
+SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage |
+SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage
 ```
 
-**Impact on claude-mem**: LOW. Claude-mem only checks for `message.type === 'assistant'` and `message.type === 'result'`. New message types will be silently ignored by the existing `for await` loop. However, this is a good opportunity to handle `SDKRateLimitEvent` for better error reporting.
+The actual `.d.ts` in 0.2.49 may include additional internal types not in the public docs. The key point is that the types claude-mem uses (`assistant`, `result`, `system`) are present in both.
 
-### 3.6 SDKResultMessage Structure Change (POTENTIALLY BREAKING)
+**Impact on claude-mem**: LOW. Claude-mem only checks for `message.type === 'assistant'` and `message.type === 'result'`. Any new message types will be silently ignored by the existing `for await` loop.
 
-**0.1.77**: `SDKResultMessage` is a union of two inline objects.
-**0.2.49**: `SDKResultMessage = SDKResultSuccess | SDKResultError` (named types) with a new `stop_reason: string | null` field on both variants.
+### 3.6 SDKResultMessage Structure Change (MINOR)
 
-**Impact on claude-mem**: LOW. Claude-mem only checks `message.type === 'result' && message.subtype === 'success'` and doesn't destructure further. The `stop_reason` field is additive. But this is a valuable new field to leverage (see Section 4.3).
+> **Note (2026-02-22)**: The [official TS SDK docs](https://platform.claude.com/docs/en/agent-sdk/typescript) show the full `SDKResultMessage` type. The `total_cost_usd` field IS present on the success variant. The `stop_reason` field mentioned in earlier analysis is NOT documented -- needs verification against actual `.d.ts`.
+
+**0.1.77**: `SDKResultMessage` is a union of two inline objects (success/error).
+**0.2.49**: `SDKResultMessage` success variant includes: `result`, `total_cost_usd`, `usage`, `modelUsage`, `structured_output`, `permission_denials`. Error variant adds `subtype: 'error_max_turns' | 'error_during_execution' | 'error_max_budget_usd' | 'error_max_structured_output_retries'` with `errors: string[]`.
+
+**Impact on claude-mem**: LOW. Claude-mem only checks `message.type === 'result' && message.subtype === 'success'` and doesn't destructure further. The new error subtypes are additive and provide better error categorization.
 
 ### 3.7 SDKAssistantMessageError Expansion (ADDITIVE)
 
@@ -218,19 +223,28 @@ SDKRateLimitEvent | SDKPromptSuggestionMessage
 
 ## 4. New Capabilities to Leverage
 
-### 4.1 Query.close() (v0.2.15) -- HIGH VALUE
+### 4.1 Query.close() (v0.2.15) -- NEEDS VERIFICATION
+
+> **Note (2026-02-22)**: The [current TS SDK reference docs](https://platform.claude.com/docs/en/agent-sdk/typescript) do NOT list `close()` on the `Query` interface. The documented methods are: `interrupt()`, `rewindFiles()`, `setPermissionMode()`, `setModel()`, `setMaxThinkingTokens()`, `supportedCommands()`, `supportedModels()`, `mcpServerStatus()`, `accountInfo()`. The Python SDK's `Query.close()` exists but has a known hang bug (PY #378). **This capability needs verification against the actual 0.2.49 type definitions before Phase 2 planning.**
 
 ```typescript
-interface Query {
-  close(): void;
+// Documented Query interface (0.2.49 TS SDK docs):
+interface Query extends AsyncGenerator<SDKMessage, void> {
+  interrupt(): Promise<void>;
+  rewindFiles(userMessageUuid: string): Promise<void>;
+  setPermissionMode(mode: PermissionMode): Promise<void>;
+  setModel(model?: string): Promise<void>;
+  setMaxThinkingTokens(maxThinkingTokens: number | null): Promise<void>;
+  supportedCommands(): Promise<SlashCommand[]>;
+  supportedModels(): Promise<ModelInfo[]>;
+  mcpServerStatus(): Promise<McpServerStatus[]>;
+  accountInfo(): Promise<AccountInfo>;
 }
 ```
 
-This method forcefully terminates the query, cleaning up all resources including pending requests, MCP transports, and the CLI subprocess. This is exactly what claude-mem needs for clean session shutdown.
-
 **Current workaround**: `session.abortController.abort()` + manual subprocess verification via `ProcessRegistry.ensureProcessExit()` with SIGKILL escalation.
 
-**Benefit**: Could simplify `SessionManager.deleteSession()` significantly, potentially making the ProcessRegistry's SIGKILL escalation unnecessary. The SDK would handle cleanup internally.
+**Benefit (if available)**: Could simplify `SessionManager.deleteSession()` significantly. However, if `close()` is not exposed in the TS SDK, the current workaround remains necessary.
 
 ### 4.2 Options.sessionId (v0.2.33) -- HIGH VALUE
 
@@ -346,15 +360,17 @@ A subprocess-based test harness using `claude -p` can validate the real SDK wire
 import { spawn, type ChildProcess } from 'node:child_process';
 import { describe, it, expect } from 'vitest';
 
-/** Isolated env: simple mode + no plugin recursion */
+/** Isolated env: simple mode disables hooks, MCP, CLAUDE.md, attachments */
 const HARNESS_ENV = {
   ...process.env,
   CLAUDE_CODE_SIMPLE: '1',          // Minimal prompt, Bash/Read/Edit only, no MCP/hooks/CLAUDE.md
-  DISABLE_MAGIC_CLAUDE_MEM: '1',    // Prevent recursive plugin invocation
+  // No need for DISABLE_MAGIC_CLAUDE_MEM -- CLAUDE_CODE_SIMPLE=1 disables hooks,
+  // which prevents claude-mem (hook-based plugin) from activating
 };
 
-function spawnClaude(args: string[]): ChildProcess {
-  return spawn('claude', [...args, '--output-format', 'stream-json'], { env: HARNESS_ENV });
+function spawnClaude(args: string[], opts?: { persistSession?: boolean }): ChildProcess {
+  const extraArgs = opts?.persistSession ? [] : ['--no-session-persistence'];
+  return spawn('claude', [...args, ...extraArgs, '--output-format', 'stream-json'], { env: HARNESS_ENV });
 }
 
 async function collectMessages(child: ChildProcess): Promise<unknown[]> {
@@ -386,8 +402,8 @@ describe('SDK subprocess harness', () => {
   });
 
   it('validates session resume round-trip', async () => {
-    // Phase 1: Create session
-    const create = spawnClaude(['-p', 'Remember: apple', '--max-turns', '1']);
+    // Phase 1: Create session (must persist to resume later)
+    const create = spawnClaude(['-p', 'Remember: apple', '--max-turns', '1'], { persistSession: true });
     let sessionId: string | undefined;
     for await (const chunk of create.stdout!) {
       for (const line of chunk.toString().split('\n').filter(Boolean)) {
@@ -398,18 +414,19 @@ describe('SDK subprocess harness', () => {
     expect(sessionId).toBeDefined();
 
     // Phase 2: Resume session
-    const resume = spawnClaude(['-p', 'What did I ask you to remember?', '--resume', sessionId!, '--max-turns', '1']);
+    const resume = spawnClaude(['-p', 'What did I ask you to remember?', '--resume', sessionId!, '--max-turns', '1'], { persistSession: true });
     const messages = await collectMessages(resume);
     expect(messages.some(m => (m as any).type === 'result')).toBe(true);
   });
 });
 ```
 
-**`CLAUDE_CODE_SIMPLE=1`** is the key enabler for reliable testing:
+**`CLAUDE_CODE_SIMPLE=1`** is the key enabler for reliable testing ([docs](https://code.claude.com/docs/en/settings)):
 - Minimal system prompt -- faster startup, cheaper tokens, predictable output
 - Only Bash, Read, and Edit tools enabled -- no MCP, no hooks, no CLAUDE.md loading
 - No attachments or integrations -- eliminates flaky external dependencies
-- Combined with `DISABLE_MAGIC_CLAUDE_MEM=1` -- prevents recursive plugin invocation
+- Hooks disabled means claude-mem plugin (hook-based) cannot activate -- no recursive invocation risk
+- `--no-session-persistence` prevents test sessions from polluting the session store
 
 **Harness advantages:**
 - Tests the actual Claude Code CLI that the SDK bundles (not mocked)
@@ -501,23 +518,20 @@ npm install zod@^4.0.0
 
 No changes required for basic functionality. The `query()` call, `Options` fields, and response iteration all remain compatible.
 
-**Optional enhancements**:
+**Optional enhancements** (verify against actual `.d.ts` after install):
 ```typescript
-// After the for-await loop completes:
-// NEW: Use close() for clean shutdown instead of relying on abort
-// (only if abort was used as cleanup mechanism, not as user-initiated cancel)
-
-// NEW: Handle stop_reason in result messages
+// Enhanced result handling with new error subtypes
 if (message.type === 'result') {
   if (message.subtype === 'success') {
     logger.info('SDK', 'Query completed', {
-      stop_reason: message.stop_reason,  // NEW
+      total_cost_usd: message.total_cost_usd,  // Available in both versions
       result: message.result?.substring(0, 100)
     });
   } else {
+    // 0.2.49 adds: 'error_max_turns', 'error_max_budget_usd',
+    // 'error_max_structured_output_retries' (in addition to 'error_during_execution')
     logger.warn('SDK', 'Query ended with error', {
       subtype: message.subtype,
-      stop_reason: message.stop_reason,  // NEW
       errors: message.errors
     });
   }
@@ -555,7 +569,7 @@ This would eliminate the `memorySessionId` capture logic in `SDKAgent.ts` (lines
 
 #### 6.3.5 Scripts (MINIMAL CHANGES)
 
-`scripts/translate-readme/index.ts` and `scripts/bug-report/index.ts` import `query`, `SDKMessage`, and `SDKResultMessage`. These remain compatible. If accessing `result` on `SDKResultMessage`, the code should handle the new `stop_reason` field gracefully (it's additive, so no breaking change).
+`scripts/translate-readme/index.ts` and `scripts/bug-report/index.ts` import `query`, `SDKMessage`, and `SDKResultMessage`. These remain compatible. The `total_cost_usd` field is confirmed present in 0.2.49 per the official docs. Watch for `stream_event` type usage which maps to `SDKPartialAssistantMessage` (available when `includePartialMessages` is true).
 
 ### 6.4 Post-Migration Verification
 
@@ -603,12 +617,15 @@ npm run build-and-sync
 6. Manual smoke test with `npm run build-and-sync`
 7. Verify observation processing works end-to-end
 
-### Phase 2: Leverage Query.close() (Estimated: 1-2 hours)
+### Phase 2: Leverage Query.close() -- CONTINGENT
 
-1. Store the `Query` object reference on the `ActiveSession`
-2. In `SessionManager.deleteSession()`, call `queryResult.close()` before or instead of `abortController.abort()`
-3. Evaluate whether `ProcessRegistry.ensureProcessExit()` SIGKILL escalation is still needed
-4. Update `shutdownAll()` to use `close()` for cleaner shutdown
+> **Blocked until verified**: `close()` is NOT listed in the [official TS SDK docs](https://platform.claude.com/docs/en/agent-sdk/typescript) as of 2026-02-22. Must verify against actual `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts` after Phase 1 install. If not available, this phase is skipped.
+
+1. Verify `close()` exists on `Query` in the installed 0.2.49 type definitions
+2. If available: store the `Query` object reference on the `ActiveSession`
+3. In `SessionManager.deleteSession()`, call `queryResult.close()` with a defensive timeout wrapper (given PY SDK #378 hang bug)
+4. Evaluate whether `ProcessRegistry.ensureProcessExit()` SIGKILL escalation is still needed
+5. Update `shutdownAll()` to use `close()` for cleaner shutdown
 
 ### Phase 3: Leverage sessionId Option (Estimated: 2-3 hours, requires research)
 
