@@ -52,6 +52,8 @@ export interface SettingsDefaults {
   // Feature Toggles
   MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
+  // SDK Query Configuration
+  MAGIC_CLAUDE_MEM_EFFORT: string;  // 'low' | 'medium' | 'high' | 'max' | '' (empty = SDK default)
 }
 
 // eslint-disable-next-line @typescript-eslint/no-extraneous-class -- static utility class used as namespace across codebase
@@ -99,6 +101,8 @@ export class SettingsDefaultsManager {
     // Feature Toggles
     MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
+    // SDK Query Configuration
+    MAGIC_CLAUDE_MEM_EFFORT: '',  // Empty = don't pass effort option (SDK default: 'high')
   };
 
   /**

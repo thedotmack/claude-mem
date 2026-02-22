@@ -33,6 +33,14 @@ interface SDKStreamMessage {
   type?: string;
   subtype?: string;
   message?: unknown;
+  // Result fields (present when type === 'result')
+  stop_reason?: string | null;
+  total_cost_usd?: number;
+  num_turns?: number;
+  is_error?: boolean;
+  result?: string;
+  // Error fields (present when subtype starts with 'error_')
+  errors?: string[];
 }
 
 export class SDKAgent {
@@ -56,8 +64,9 @@ export class SDKAgent {
     // Find Claude executable
     const claudePath = this.findClaudeExecutable();
 
-    // Get model ID and disallowed tools
-    const modelId = this.getModelId();
+    // Get SDK options (model + effort) and disallowed tools
+    const { modelId, effort } = this.getSDKOptions();
+    const effortOption = effort ? { effort } : {};
     // Memory agent is OBSERVER ONLY - no tools allowed
     const disallowedTools = [
       'Bash',           // Prevent infinite loops
@@ -124,6 +133,7 @@ export class SDKAgent {
       prompt: messageGenerator,
       options: {
         model: modelId,
+        ...effortOption,
         // Isolate observer sessions - they'll appear under project "observer-sessions"
         // instead of polluting user's actual project resume lists
         cwd: OBSERVER_SESSIONS_DIR,
@@ -249,9 +259,22 @@ export class SDKAgent {
         );
       }
 
-      // Log result messages
-      if (message.type === 'result' && message.subtype === 'success') {
-        // Usage telemetry is captured at SDK level
+      // Log result messages with structured telemetry
+      if (message.type === 'result') {
+        if (message.subtype === 'success') {
+          logger.info('SDK', 'Query completed', {
+            sessionId: session.sessionDbId,
+            stopReason: message.stop_reason,
+            totalCostUsd: message.total_cost_usd,
+            numTurns: message.num_turns,
+          });
+        } else {
+          logger.warn('SDK', `Query ended with error: ${message.subtype ?? 'unknown'}`, {
+            sessionId: session.sessionDbId,
+            stopReason: message.stop_reason,
+            errors: message.errors,
+          });
+        }
       }
     }
 
@@ -431,11 +454,16 @@ export class SDKAgent {
   }
 
   /**
-   * Get model ID from settings or environment
+   * Get SDK options (model ID and optional effort level) from settings
    */
-  private getModelId(): string {
+  private getSDKOptions(): { modelId: string; effort?: 'low' | 'medium' | 'high' | 'max' } {
     const settingsPath = path.join(homedir(), '.magic-claude-mem', 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    return settings.MAGIC_CLAUDE_MEM_MODEL;
+    const effort = settings.MAGIC_CLAUDE_MEM_EFFORT;
+    const validEfforts = ['low', 'medium', 'high', 'max'] as const;
+    const validEffort = effort && validEfforts.includes(effort as typeof validEfforts[number])
+      ? (effort as 'low' | 'medium' | 'high' | 'max')
+      : undefined;
+    return { modelId: settings.MAGIC_CLAUDE_MEM_MODEL, effort: validEffort };
   }
 }
