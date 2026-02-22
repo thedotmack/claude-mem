@@ -119,4 +119,66 @@ describe('SessionStore', () => {
     expect(stored).not.toBeNull();
     expect(stored?.created_at_epoch).toBe(pastTimestamp);
   });
+
+  describe('subprocess_pid persistence (crash recovery)', () => {
+    it('should update and retrieve subprocess PID', () => {
+      const sessionDbId = store.createSDKSession('sess-pid-1', 'test-project', 'prompt');
+
+      store.updateSubprocessPid(sessionDbId, 12345);
+
+      const stalePids = store.getStalePids();
+      expect(stalePids).toHaveLength(1);
+      expect(stalePids[0].sessionDbId).toBe(sessionDbId);
+      expect(stalePids[0].pid).toBe(12345);
+    });
+
+    it('should clear subprocess PID after clean shutdown', () => {
+      const sessionDbId = store.createSDKSession('sess-pid-2', 'test-project', 'prompt');
+
+      store.updateSubprocessPid(sessionDbId, 99999);
+      expect(store.getStalePids()).toHaveLength(1);
+
+      store.clearSubprocessPid(sessionDbId);
+      expect(store.getStalePids()).toHaveLength(0);
+    });
+
+    it('should only return PIDs for active sessions', () => {
+      const activeId = store.createSDKSession('sess-active', 'test-project', 'prompt');
+      const completedId = store.createSDKSession('sess-completed', 'test-project', 'prompt');
+
+      store.updateSubprocessPid(activeId, 11111);
+      store.updateSubprocessPid(completedId, 22222);
+
+      // Complete the second session
+      store.updateMemorySessionId(completedId, 'mem-completed');
+      store.completeSession(completedId);
+
+      const stalePids = store.getStalePids();
+      expect(stalePids).toHaveLength(1);
+      expect(stalePids[0].pid).toBe(11111);
+    });
+
+    it('should not return sessions without PIDs', () => {
+      store.createSDKSession('sess-no-pid', 'test-project', 'prompt');
+
+      const stalePids = store.getStalePids();
+      expect(stalePids).toHaveLength(0);
+    });
+
+    it('should handle multiple stale PIDs from multiple sessions', () => {
+      const id1 = store.createSDKSession('sess-multi-1', 'test-project', 'prompt');
+      const id2 = store.createSDKSession('sess-multi-2', 'test-project', 'prompt');
+      const id3 = store.createSDKSession('sess-multi-3', 'test-project', 'prompt');
+
+      store.updateSubprocessPid(id1, 100);
+      store.updateSubprocessPid(id2, 200);
+      store.updateSubprocessPid(id3, 300);
+
+      const stalePids = store.getStalePids();
+      expect(stalePids).toHaveLength(3);
+
+      const pids = stalePids.map(s => s.pid).sort((a, b) => a - b);
+      expect(pids).toEqual([100, 200, 300]);
+    });
+  });
 });

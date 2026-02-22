@@ -51,6 +51,7 @@ export class SessionStore {
     this.addCompositeIndexes();
     this.ensureReadTokensColumn();
     this.createContextInjectionsTable();
+    this.ensureSubprocessPidColumn();
   }
 
   /**
@@ -720,6 +721,55 @@ export class SessionStore {
   }
 
   /**
+   * Ensure subprocess_pid column exists on sdk_sessions (migration 23)
+   * Used for crash-recovery: persists spawned subprocess PIDs so they can be
+   * killed on worker restart if orphaned.
+   */
+  private ensureSubprocessPidColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(23) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'subprocess_pid');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN subprocess_pid INTEGER');
+      logger.debug('DB', 'Added subprocess_pid column to sdk_sessions table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
+  }
+
+  /**
+   * Persist a subprocess PID for crash-recovery
+   * Called after spawning a Claude subprocess so the PID survives worker crashes
+   */
+  updateSubprocessPid(sessionDbId: number, pid: number): void {
+    this.db.prepare('UPDATE sdk_sessions SET subprocess_pid = ? WHERE id = ?').run(pid, sessionDbId);
+  }
+
+  /**
+   * Clear a persisted subprocess PID after clean shutdown
+   * Called after subprocess has been confirmed exited
+   */
+  clearSubprocessPid(sessionDbId: number): void {
+    this.db.prepare('UPDATE sdk_sessions SET subprocess_pid = NULL WHERE id = ?').run(sessionDbId);
+  }
+
+  /**
+   * Get stale PIDs from sessions that still have status='active' and a non-null PID
+   * These are orphaned subprocesses from crashed worker instances
+   */
+  getStalePids(): Array<{ sessionDbId: number; pid: number }> {
+    const stmt = this.db.prepare(`
+      SELECT id as sessionDbId, subprocess_pid as pid
+      FROM sdk_sessions
+      WHERE status = 'active' AND subprocess_pid IS NOT NULL
+    `);
+    return stmt.all() as Array<{ sessionDbId: number; pid: number }>;
+  }
+
+  /**
    * Update the memory session ID for a session
    * Called by SDKAgent when it captures the session ID from the first SDK message
    */
@@ -733,13 +783,14 @@ export class SessionStore {
 
   /**
    * Mark a session as completed (called after summary is stored)
-   * Sets status to 'completed' and records the completion timestamp.
+   * Sets status to 'completed', records the completion timestamp, and clears
+   * any persisted subprocess PID to prevent stale PID leaks on reactivation.
    */
   completeSession(sessionDbId: number): void {
     const now = Date.now();
     this.db.prepare(`
       UPDATE sdk_sessions
-      SET status = 'completed', completed_at = ?, completed_at_epoch = ?
+      SET status = 'completed', completed_at = ?, completed_at_epoch = ?, subprocess_pid = NULL
       WHERE id = ? AND status = 'active'
     `).run(new Date(now).toISOString(), now, sessionDbId);
   }

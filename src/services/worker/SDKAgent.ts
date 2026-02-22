@@ -27,6 +27,14 @@ import { createPidCapturingSpawn } from './ProcessRegistry.js';
 // Import Agent SDK (assumes it's installed)
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
+/** Locally-typed SDK stream message (SDK 0.2.x doesn't ship .d.ts files) */
+interface SDKStreamMessage {
+  session_id?: string;
+  type?: string;
+  subtype?: string;
+  message?: unknown;
+}
+
 export class SDKAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -127,13 +135,20 @@ export class SDKAgent {
         abortController: session.abortController,
         pathToClaudeCodeExecutable: claudePath,
         // Custom spawn function captures PIDs to fix zombie process accumulation
-        spawnClaudeCodeProcess: createPidCapturingSpawn(session.sessionDbId),
+        // onPidCaptured callback persists PID to database for crash recovery
+        spawnClaudeCodeProcess: createPidCapturingSpawn(session.sessionDbId, (pid) => {
+          this.dbManager.getSessionStore().updateSubprocessPid(session.sessionDbId, pid);
+        }),
         env: isolatedEnv  // Use isolated credentials from ~/.magic-claude-mem/.env, not process.env
       }
     });
 
+    // Store Query reference for explicit close() on session cleanup
+    session.queryRef = queryResult;
+
     // Process SDK messages
-    for await (const message of queryResult) {
+    // Cast to local interface since SDK 0.2.x doesn't ship type declarations
+    for await (const message of queryResult as AsyncIterable<SDKStreamMessage>) {
       // Capture memory session ID from first SDK message (any type has session_id)
       // This enables resume for subsequent generator starts within the same user session
       if (!session.memorySessionId && message.session_id) {

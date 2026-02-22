@@ -40,13 +40,15 @@ const HARNESS_ENV: Record<string, string> = Object.fromEntries(
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
   }).filter(
     ([k, v]) =>
+      // Runtime guard: process.env values can be undefined at runtime despite type inference
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       v !== undefined &&
       !k.startsWith('CLAUDECODE') &&
       !(k.startsWith('CLAUDE_') &&
         k !== 'CLAUDE_CODE_SIMPLE' &&
         k !== 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC' &&
         k !== 'CLAUDE_CONFIG_DIR')
-  ) as [string, string][]
+  )
 );
 
 /**
@@ -64,10 +66,17 @@ function spawnClaude(
   opts: { persistSession?: boolean } = {}
 ): ChildProcess {
   const extraArgs = opts.persistSession ? [] : ['--no-session-persistence'];
-  return spawn(CLAUDE_BIN, [...args, '--output-format', 'stream-json', '--verbose', ...extraArgs], {
+  const child = spawn(CLAUDE_BIN, [...args, '--output-format', 'stream-json', '--verbose', ...extraArgs], {
     env: HARNESS_ENV,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+
+  // Drain stderr to prevent pipe buffer blocking (64KB limit on Linux).
+  // The --verbose flag can produce significant stderr output.
+  // stdio: ['ignore', 'pipe', 'pipe'] guarantees stderr is non-null.
+  child.stderr.resume();
+
+  return child;
 }
 
 /**
@@ -113,21 +122,38 @@ function collectMessages(child: ChildProcess): Promise<unknown[]> {
   });
 }
 
-// Track spawned processes so afterEach can clean up any that didn't exit naturally.
-const spawnedProcesses: ChildProcess[] = [];
-
-afterEach(() => {
-  for (const child of spawnedProcesses) {
-    if (child.exitCode === null && !child.killed) {
-      child.kill('SIGTERM');
-    }
+/**
+ * Poll for a condition with retry, avoiding fixed-delay race conditions.
+ * Checks every `intervalMs` up to `timeoutMs` total.
+ */
+async function waitForCondition(
+  check: () => boolean,
+  timeoutMs: number = 2000,
+  intervalMs: number = 100
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return true;
+    await new Promise<void>((resolve) => { setTimeout(() => { resolve(); }, intervalMs); });
   }
-  spawnedProcesses.length = 0;
-});
+  return check(); // Final attempt
+}
 
 // Opt-out guard: set SKIP_SDK_TESTS=1 to skip these tests without failing.
 // The `claude` CLI works with both API keys and subscription login.
 describe.skipIf(process.env.SKIP_SDK_TESTS === '1')('SDK Harness', () => {
+  // Track spawned processes so afterEach can clean up any that didn't exit naturally.
+  const spawnedProcesses: ChildProcess[] = [];
+
+  afterEach(() => {
+    for (const child of spawnedProcesses) {
+      if (child.exitCode === null && !child.killed) {
+        child.kill('SIGTERM');
+      }
+    }
+    spawnedProcesses.length = 0;
+  });
+
   it('spawns claude -p and receives valid JSON stream', async () => {
     const child = spawnClaude(['-p', 'Say hello', '--max-turns', '1']);
     spawnedProcesses.push(child);
@@ -163,9 +189,9 @@ describe.skipIf(process.env.SKIP_SDK_TESTS === '1')('SDK Harness', () => {
 
     // Wait for the first data event before terminating
     await new Promise<void>((resolve) => {
-      child.stdout?.once('data', () => resolve());
+      child.stdout?.once('data', () => { resolve(); });
       // Resolve after a short timeout if no data arrives (process may exit quickly)
-      setTimeout(resolve, 5000);
+      setTimeout(() => { resolve(); }, 5000);
     });
 
     child.kill('SIGTERM');
@@ -176,27 +202,27 @@ describe.skipIf(process.env.SKIP_SDK_TESTS === '1')('SDK Harness', () => {
         resolve(child.exitCode);
         return;
       }
-      child.on('exit', (code) => resolve(code));
+      child.on('exit', (code) => { resolve(code); });
     });
 
     // Process must have exited (exit code is not null after close)
     expect(exitCode).not.toBeNull();
 
-    // Give the OS a moment to clean up, then verify the PID is no longer in the process table
-    await new Promise<void>((resolve) => setTimeout(resolve, 200));
+    // Guard: PID must have been assigned
+    expect(child.pid).toBeDefined();
+    const pid = child.pid as number;
 
-    let pidStillRunning = false;
-    try {
-      // Sending signal 0 checks if the process exists without killing it.
-      // Throws if the process does not exist.
-      process.kill(child.pid!, 0);
-      pidStillRunning = true;
-    } catch {
-      // ESRCH = no such process — expected after SIGTERM
-      pidStillRunning = false;
-    }
+    // Poll for PID cleanup with retry (avoids race condition on slow/loaded systems)
+    const pidExited = await waitForCondition(() => {
+      try {
+        process.kill(pid, 0); // signal 0 = existence check
+        return false; // Still running
+      } catch {
+        return true; // ESRCH = no such process
+      }
+    });
 
-    expect(pidStillRunning).toBe(false);
+    expect(pidExited).toBe(true);
   });
 
   it('validates session resume round-trip', async () => {
@@ -218,8 +244,9 @@ describe.skipIf(process.env.SKIP_SDK_TESTS === '1')('SDK Harness', () => {
     expect(typeof sessionId).toBe('string');
 
     // Phase 2: Resume the session and ask about the word
+    // Note: sessionId is verified as defined by the expect above
     const phase2 = spawnClaude(
-      ['-p', 'What word did I ask you to remember?', '--resume', sessionId!, '--max-turns', '1'],
+      ['-p', 'What word did I ask you to remember?', '--resume', sessionId ?? '', '--max-turns', '1'],
       { persistSession: true }
     );
     spawnedProcesses.push(phase2);
@@ -231,5 +258,10 @@ describe.skipIf(process.env.SKIP_SDK_TESTS === '1')('SDK Harness', () => {
       (m) => (m as Record<string, unknown>).type === 'result'
     );
     expect(hasResult).toBe(true);
+
+    // Note: persisted sessions are an acceptable trade-off for integration tests.
+    // Claude's session store handles its own cleanup. These test sessions are
+    // created with --no-session-persistence by default; only the resume test
+    // persists (2 sessions per run, ~few KB each).
   });
 });

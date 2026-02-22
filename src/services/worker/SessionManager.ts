@@ -281,17 +281,27 @@ export class SessionManager {
 
     const sessionDuration = Date.now() - session.startTime;
 
-    // 1. Abort the SDK agent
+    // 1. Abort the SDK agent (signals generator to stop)
     session.abortController.abort();
 
-    // 2. Wait for generator to finish
+    // 2. Wait for generator to finish (let the for-await loop exit cleanly)
     if (session.generatorPromise) {
       await session.generatorPromise.catch(() => {
         logger.debug('SYSTEM', 'Generator already failed, cleaning up', { sessionId: session.sessionDbId });
       });
     }
 
-    // 3. Verify subprocess exit with 5s timeout (Issue #737 fix)
+    // 3. SDK-native cleanup: close the Query to release subprocess resources
+    // Called AFTER generator settles to avoid racing with the for-await loop
+    if (session.queryRef) {
+      try {
+        session.queryRef.close();
+      } catch {
+        // May throw if already closed or subprocess already exited
+      }
+    }
+
+    // 4. Verify subprocess exit with 5s timeout (Issue #737 fix)
     const tracked = getProcessBySession(sessionDbId);
     if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
       logger.debug('SESSION', `Waiting for subprocess PID ${String(tracked.pid)} to exit`, {
@@ -301,7 +311,10 @@ export class SessionManager {
       await ensureProcessExit(tracked, 5000);
     }
 
-    // 4. Cleanup
+    // 5. Clear persisted PID after subprocess confirmed exited
+    this.dbManager.getSessionStore().clearSubprocessPid(sessionDbId);
+
+    // 6. Cleanup
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
 

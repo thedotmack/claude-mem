@@ -289,6 +289,45 @@ export class WorkerService {
 
       this.dbManager.initialize();
 
+      // Kill stale subprocess PIDs from crashed sessions
+      // SAFETY: Validate PID identity before SIGKILL to avoid killing recycled PIDs
+      // that may now belong to unrelated processes
+      const stalePids = this.dbManager.getSessionStore().getStalePids();
+      let killedCount = 0;
+      if (stalePids.length > 0) {
+        const { execSync } = await import('child_process');
+        const isWindows = process.platform === 'win32';
+        for (const { sessionDbId, pid } of stalePids) {
+          // Defense-in-depth: validate PID is a positive integer before shell interpolation
+          if (!Number.isInteger(pid) || pid <= 0) {
+            logger.warn('SYSTEM', `Invalid stale PID value: ${String(pid)}, skipping`);
+            this.dbManager.getSessionStore().clearSubprocessPid(sessionDbId);
+            continue;
+          }
+          try {
+            if (isWindows) {
+              // Windows: no reliable way to validate PID identity via cmdline.
+              // Skip SIGKILL to avoid recycled-PID risk; clear the stale record only.
+              logger.info('SYSTEM', `Skipping stale PID ${String(pid)} on Windows (no identity validation available)`);
+            } else {
+              // Unix: verify the PID still belongs to a Claude-related process
+              const cmdline = execSync(`ps -p ${String(pid)} -o args= 2>/dev/null`, { encoding: 'utf-8' }).trim();
+              if (cmdline.includes('claude')) {
+                process.kill(pid, 'SIGKILL');
+                killedCount++;
+                logger.info('SYSTEM', `Killed stale subprocess PID ${String(pid)} from session ${String(sessionDbId)}`);
+              } else {
+                logger.info('SYSTEM', `Skipping stale PID ${String(pid)} - recycled to unrelated process: ${cmdline.substring(0, 80)}`);
+              }
+            }
+          } catch {
+            // ESRCH = no such process (already dead) or ps failed - expected after crash
+          }
+          this.dbManager.getSessionStore().clearSubprocessPid(sessionDbId);
+        }
+        logger.info('SYSTEM', `Stale PID cleanup: ${String(killedCount)} killed, ${String(stalePids.length - killedCount)} skipped/dead (from previous crash)`);
+      }
+
       // Recover stuck messages from previous crashes
       const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
       const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);

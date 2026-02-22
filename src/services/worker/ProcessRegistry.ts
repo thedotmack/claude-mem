@@ -92,16 +92,25 @@ export async function ensureProcessExit(tracked: TrackedProcess, timeoutMs: numb
     return;
   }
 
-  // Wait for graceful exit with timeout using event-based approach
+  // Wait for graceful exit with timeout using event-based approach.
+  // Clean up the losing side of the race to avoid listener/timer leaks.
+  let exitListener: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
   const exitPromise = new Promise<void>((resolve) => {
-    proc.once('exit', () => { resolve(); });
+    exitListener = () => { resolve(); };
+    proc.once('exit', exitListener);
   });
 
   const timeoutPromise = new Promise<void>((resolve) => {
-    setTimeout(resolve, timeoutMs);
+    timer = setTimeout(resolve, timeoutMs);
   });
 
   await Promise.race([exitPromise, timeoutPromise]);
+
+  // Clean up: remove whichever side lost the race
+  if (exitListener) { proc.removeListener('exit', exitListener); }
+  if (timer) { clearTimeout(timer); }
 
   // Check if exited gracefully
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- exitCode may change after await
@@ -193,7 +202,7 @@ export async function reapOrphanedProcesses(activeSessionIds: Set<number>): Prom
  * NOTE: Session isolation is handled via the `cwd` option in SDKAgent.ts,
  * NOT via CLAUDE_CONFIG_DIR (which breaks authentication).
  */
-export function createPidCapturingSpawn(sessionDbId: number) {
+export function createPidCapturingSpawn(sessionDbId: number, onPidCaptured?: (pid: number) => void) {
   return (spawnOptions: {
     command: string;
     args: string[];
@@ -209,9 +218,19 @@ export function createPidCapturingSpawn(sessionDbId: number) {
       windowsHide: true
     });
 
+    // Drain stderr to prevent pipe buffer blocking (64KB limit on Linux).
+    // The returned SDK interface does not expose stderr, so it would never be consumed.
+    // stdio: ['pipe', 'pipe', 'pipe'] guarantees stderr is non-null.
+    child.stderr.resume();
+
     // Register PID
     if (child.pid) {
       registerProcess(child.pid, sessionDbId, child);
+
+      // Persist PID for crash recovery
+      if (onPidCaptured) {
+        onPidCaptured(child.pid);
+      }
 
       // Auto-unregister on exit
       child.on('exit', () => {
