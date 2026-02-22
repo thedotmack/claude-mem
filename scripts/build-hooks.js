@@ -93,6 +93,9 @@ async function buildHooks() {
     });
 
     // Build worker service
+    // SDK 0.2.x uses import.meta.url at module scope for createRequire().
+    // CJS bundles don't have import.meta, so we polyfill it in the banner.
+    const importMetaPolyfill = 'var import_meta_url = require("url").pathToFileURL(__filename).href;';
     console.log(`\n🔧 Building worker service...`);
     await build({
       entryPoints: [WORKER_SERVICE.source],
@@ -105,10 +108,11 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: ['better-sqlite3'],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        'import.meta.url': 'import_meta_url'
       },
       banner: {
-        js: '#!/usr/bin/env node'
+        js: `#!/usr/bin/env node\n${importMetaPolyfill}`
       }
     });
 
