@@ -437,7 +437,7 @@ describe('SDK subprocess harness', () => {
 - `CLAUDE_CODE_SIMPLE=1` makes tests deterministic (no plugin/hook side effects)
 
 **Harness considerations:**
-- Requires a real Claude API key (CI needs `ANTHROPIC_API_KEY` secret)
+- Requires an authenticated `claude` CLI (API key OR subscription login). Set `SKIP_SDK_TESTS=1` to opt out in CI
 - Tests are inherently slow (~5-15s each) -- run separately from unit tests
 - Use `vitest --project integration` or a separate test config
 
@@ -605,7 +605,7 @@ npm run build-and-sync
 5. After Phase 1 upgrade, re-run harness to catch regressions
 6. Add `npm run test:sdk` script for targeted execution
 
-**Note**: Requires `ANTHROPIC_API_KEY` in environment. Tests are slow (~5-15s each) and should not run in the default `npm test` suite.
+**Note**: Requires an authenticated `claude` CLI (API key or subscription login). Set `SKIP_SDK_TESTS=1` to opt out. Tests are slow (~5-15s each) and should not run in the default `npm test` suite.
 
 ### Phase 1: Core Upgrade
 

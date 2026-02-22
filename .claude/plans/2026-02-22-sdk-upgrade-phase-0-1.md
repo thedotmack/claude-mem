@@ -93,7 +93,7 @@ Option (a) is cleaner. Update `package.json` scripts in Step 0.4.
 
 - **Why**: These tests validate the core SDK wire protocol that claude-mem depends on. Running them before and after the upgrade creates a regression gate.
 - **Dependencies**: None (can be written independently)
-- **Risk**: Medium (tests require `ANTHROPIC_API_KEY`, are inherently non-deterministic)
+- **Risk**: Medium (tests require an authenticated `claude` CLI, are inherently non-deterministic)
 
 - **Key implementation details**:
   - Use `spawn` from `node:child_process` (not the SDK's `query()`) to test the CLI subprocess directly
@@ -101,7 +101,7 @@ Option (a) is cleaner. Update `package.json` scripts in Step 0.4.
   - Use `--max-turns 1` to keep tests fast and cheap
   - Use `--output-format stream-json` for structured output parsing (per Claude Code docs: returns newline-delimited JSON)
   - Use `--no-session-persistence` on tests that don't need session resume (avoids polluting the session store with test sessions)
-  - Guard the entire describe block with `describe.skipIf(!process.env.ANTHROPIC_API_KEY)` to skip in CI without secrets
+  - Use `describe.skipIf(process.env.SKIP_SDK_TESTS)` for opt-out skipping. The `claude` CLI works with both API keys AND subscription login (OAuth), so checking for `ANTHROPIC_API_KEY` would wrongly skip tests for subscription users
   - Each test should have its own `AbortController` with a safety timeout (60s) to prevent hanging
 
 ```typescript
@@ -137,7 +137,8 @@ async function collectMessages(child: ChildProcess): Promise<unknown[]> {
   return messages;
 }
 
-describe.skipIf(!process.env.ANTHROPIC_API_KEY)('SDK subprocess harness', () => {
+// Opt-out skip: tests run by default, set SKIP_SDK_TESTS=1 to skip (e.g. in CI without auth)
+describe.skipIf(process.env.SKIP_SDK_TESTS === '1')('SDK subprocess harness', () => {
   const processes: ChildProcess[] = [];
 
   afterEach(() => {
@@ -156,8 +157,8 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY)('SDK subprocess harness', () => 
 ```
 
 - **Acceptance criteria**:
-  - All 3 tests pass against current SDK (0.1.77) when `ANTHROPIC_API_KEY` is set
-  - Tests skip gracefully when `ANTHROPIC_API_KEY` is not set
+  - All 3 tests pass against current SDK (0.1.77) with an authenticated `claude` CLI (API key or subscription)
+  - Tests skip gracefully when `SKIP_SDK_TESTS=1` is set
   - No orphan processes left after test suite completes
   - Total test suite runtime < 90 seconds
 
@@ -295,8 +296,8 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY)('SDK subprocess harness', () => 
 - **Risk**: Harness tests are flaky due to LLM non-determinism
   - Mitigation: Use `--max-turns 1` to minimize response variability. Assert on structural properties (message types, field presence) not content. Add retry logic if needed.
 
-- **Risk**: `ANTHROPIC_API_KEY` not available in all environments
-  - Mitigation: `describe.skipIf(!process.env.ANTHROPIC_API_KEY)` gracefully skips tests. CI can be configured separately.
+- **Risk**: Claude CLI not authenticated in all environments
+  - Mitigation: `describe.skipIf(process.env.SKIP_SDK_TESTS === '1')` allows opt-out. The `claude` CLI works with both API keys and subscription login (OAuth).
 
 - **Risk**: SDK 0.2.49 bundles Claude Code v2.1.49 which has different subprocess behavior than v2.0.78
   - Mitigation: The harness tests validate the actual wire protocol, so any breaking changes will be caught. The source code itself doesn't need changes (analysis confirms forward compatibility).
@@ -312,10 +313,38 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY)('SDK subprocess harness', () => 
 - [ ] `vitest.workspace.ts` exists with `unit` and `integration` projects
 - [ ] `tests/integration/sdk-harness.test.ts` exists with 3 test cases
 - [ ] `npm test` runs unit tests only (excludes sdk-harness), all pass
-- [ ] `npm run test:sdk` runs integration tests only, all pass (when API key available)
+- [ ] `npm run test:sdk` runs integration tests only, all pass (when `claude` CLI is authenticated)
 - [ ] `package.json` shows `"@anthropic-ai/claude-agent-sdk": "^0.2.49"`
 - [ ] `npm install` resolves cleanly (no peer dependency conflicts)
 - [ ] `npm run build` compiles with zero TypeScript errors
 - [ ] `npm test` passes after SDK upgrade (unit tests)
 - [ ] `npm run test:sdk` passes after SDK upgrade (harness tests)
 - [ ] `npm run build-and-sync` succeeds (end-to-end deployment)
+
+## Reference Documentation
+
+When encountering unexpected behavior, type errors, or API mismatches during implementation, consult these docs:
+
+### Claude Code CLI
+
+- **CLI reference** (flags, env vars, `CLAUDE_CODE_SIMPLE`): https://code.claude.com/docs/en/cli-reference.md
+- **Headless / `-p` mode**: https://code.claude.com/docs/en/headless.md
+- **Settings & env vars**: https://code.claude.com/docs/en/settings.md
+- **Full docs index**: https://code.claude.com/docs/llms.txt
+
+### Agent SDK (TypeScript)
+
+- **TS SDK reference** (`query()`, `Options`, `SDKMessage` types, `Query` interface): https://platform.claude.com/docs/en/agent-sdk/typescript
+- **SDK overview**: https://platform.claude.com/docs/en/agent-sdk/overview
+- **Streaming output**: https://platform.claude.com/docs/en/agent-sdk/streaming-output
+- **Structured outputs**: https://platform.claude.com/docs/en/agent-sdk/structured-outputs
+
+### Key Facts (verified 2026-02-22)
+
+- `CLAUDE_CODE_SIMPLE=1` disables: hooks, MCP, CLAUDE.md, attachments. Enables only: Bash, Read, Edit
+- `--no-session-persistence` prevents sessions from being saved to disk (print mode only)
+- `--output-format stream-json` returns newline-delimited JSON objects (each line is an `SDKMessage`)
+- `claude` CLI works with both `ANTHROPIC_API_KEY` AND subscription login (OAuth) -- do NOT gate tests on API key presence
+- `Query` interface methods (per docs): `interrupt()`, `rewindFiles()`, `setPermissionMode()`, `setModel()`, `setMaxThinkingTokens()`, `supportedCommands()`, `supportedModels()`, `mcpServerStatus()`, `accountInfo()` -- `close()` is NOT documented
+- `SDKResultMessage` success variant includes `total_cost_usd`, `usage`, `modelUsage`, `structured_output`
+- `SDKPartialAssistantMessage` has `type: "stream_event"` (only when `includePartialMessages` is true)
