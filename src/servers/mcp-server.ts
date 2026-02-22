@@ -363,8 +363,11 @@ export async function startMcpServer() {
   }, 0);
 }
 
-// Only run if called directly
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('mcp-server.cjs')) {
+// Only run if called directly as a standalone CJS script (legacy Node.js invocation).
+// Do NOT match import.meta.url for Bun single-executable builds — the compiled binary
+// sets import.meta.url to the executable path, causing a double-connect crash when
+// cli.ts handleMcp() also calls startMcpServer().
+if (process.argv[1]?.endsWith('mcp-server.cjs')) {
   startMcpServer().catch((error) => {
     logger.error('SYSTEM', 'Fatal error', undefined, error);
     process.exit(0);
