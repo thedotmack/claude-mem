@@ -245,10 +245,27 @@ export class ChromaMcpManager {
         arguments: toolArguments
       });
     } catch (transportError) {
-      // Transport error: chroma-mcp subprocess likely panicked or died (e.g., HNSW index corruption)
-      // Mark connection as dead so the next call triggers reconnect
+      // Transport error: chroma-mcp subprocess likely died (e.g., killed by orphan reaper,
+      // HNSW index corruption). Mark connection dead and retry once after reconnect (#1131).
+      // Without this retry, callers see a one-shot error even though reconnect would succeed.
       this.connected = false;
-      throw new Error(`chroma-mcp transport error during "${toolName}": ${transportError instanceof Error ? transportError.message : String(transportError)}`);
+      this.client = null;
+      this.transport = null;
+
+      logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
+        error: transportError instanceof Error ? transportError.message : String(transportError)
+      });
+
+      try {
+        await this.ensureConnected();
+        result = await this.client!.callTool({
+          name: toolName,
+          arguments: toolArguments
+        });
+      } catch (retryError) {
+        this.connected = false;
+        throw new Error(`chroma-mcp transport error during "${toolName}" (retry failed): ${retryError instanceof Error ? retryError.message : String(retryError)}`);
+      }
     }
 
     // MCP tools signal errors via isError flag on the CallToolResult

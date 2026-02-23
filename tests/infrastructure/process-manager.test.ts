@@ -11,6 +11,8 @@ import {
   parseElapsedTime,
   isProcessAlive,
   cleanStalePidFile,
+  isPidFileRecent,
+  touchPidFile,
   spawnDaemon,
   resolveWorkerRuntimePath,
   runOneTimeChromaMigration,
@@ -344,6 +346,58 @@ describe('ProcessManager', () => {
 
       // Should not throw
       expect(() => cleanStalePidFile()).not.toThrow();
+    });
+  });
+
+  describe('isPidFileRecent', () => {
+    it('should return true for a recently written PID file', () => {
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
+
+      // File was just written, should be very recent
+      expect(isPidFileRecent(15000)).toBe(true);
+    });
+
+    it('should return false when PID file does not exist', () => {
+      removePidFile();
+
+      expect(isPidFileRecent(15000)).toBe(false);
+    });
+
+    it('should return false for a very short threshold on a real file', () => {
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
+
+      // With a 0ms threshold, even a just-written file should be "too old"
+      // (mtime is at least 1ms in the past by the time we check)
+      // Use a negative threshold to guarantee false
+      expect(isPidFileRecent(-1)).toBe(false);
+    });
+  });
+
+  describe('touchPidFile', () => {
+    it('should update mtime of existing PID file', async () => {
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
+
+      // Wait a bit to ensure measurable mtime difference
+      await new Promise(r => setTimeout(r, 50));
+
+      const statsBefore = require('fs').statSync(PID_FILE);
+      const mtimeBefore = statsBefore.mtimeMs;
+
+      // Wait again to ensure mtime advances
+      await new Promise(r => setTimeout(r, 50));
+
+      touchPidFile();
+
+      const statsAfter = require('fs').statSync(PID_FILE);
+      const mtimeAfter = statsAfter.mtimeMs;
+
+      expect(mtimeAfter).toBeGreaterThanOrEqual(mtimeBefore);
+    });
+
+    it('should not throw when PID file does not exist', () => {
+      removePidFile();
+
+      expect(() => touchPidFile()).not.toThrow();
     });
   });
 

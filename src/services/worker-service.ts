@@ -74,7 +74,9 @@ import {
   cleanStalePidFile,
   isProcessAlive,
   spawnDaemon,
-  createSignalHandler
+  createSignalHandler,
+  isPidFileRecent,
+  touchPidFile
 } from './infrastructure/ProcessManager.js';
 import {
   isPortInUse,
@@ -898,6 +900,23 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   if (await waitForHealth(port, 1000)) {
     const versionCheck = await checkVersionMatch(port);
     if (!versionCheck.matches) {
+      // Guard: If PID file was written recently, another session is likely already
+      // restarting the worker. Poll health instead of starting a concurrent restart.
+      // This prevents the "100 sessions all restart simultaneously" storm (#1145).
+      const RESTART_COORDINATION_THRESHOLD_MS = 15000;
+      if (isPidFileRecent(RESTART_COORDINATION_THRESHOLD_MS)) {
+        logger.info('SYSTEM', 'Version mismatch detected but PID file is recent — another restart likely in progress, polling health', {
+          pluginVersion: versionCheck.pluginVersion,
+          workerVersion: versionCheck.workerVersion
+        });
+        const healthy = await waitForHealth(port, RESTART_COORDINATION_THRESHOLD_MS);
+        if (healthy) {
+          logger.info('SYSTEM', 'Worker became healthy after waiting for concurrent restart');
+          return true;
+        }
+        logger.warn('SYSTEM', 'Worker did not become healthy after waiting — proceeding with own restart');
+      }
+
       logger.info('SYSTEM', 'Worker version mismatch detected - auto-restarting', {
         pluginVersion: versionCheck.pluginVersion,
         workerVersion: versionCheck.workerVersion
@@ -962,6 +981,9 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   }
 
   clearWorkerSpawnAttempted();
+  // Touch PID file to signal other sessions that a restart just completed.
+  // Other sessions checking isPidFileRecent() will see this and skip their own restart.
+  touchPidFile();
   logger.info('SYSTEM', 'Worker started successfully');
   return true;
 }

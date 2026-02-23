@@ -10,7 +10,7 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmSync } from 'fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmSync, statSync, utimesSync } from 'fs';
 import { exec, execSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
@@ -717,6 +717,39 @@ export function isProcessAlive(pid: number): boolean {
     if (code === 'EPERM') return true;
     // ESRCH = no such process — it's dead
     return false;
+  }
+}
+
+/**
+ * Check if the PID file was written recently (within thresholdMs).
+ *
+ * Used to coordinate restarts across concurrent sessions: if the PID file
+ * was recently written, another session likely just restarted the worker.
+ * Callers should poll /api/health instead of attempting their own restart.
+ *
+ * @param thresholdMs - Maximum age in ms to consider "recent" (default: 15000)
+ * @returns true if the PID file exists and was modified within thresholdMs
+ */
+export function isPidFileRecent(thresholdMs: number = 15000): boolean {
+  try {
+    const stats = statSync(PID_FILE);
+    return (Date.now() - stats.mtimeMs) < thresholdMs;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Touch the PID file to update its mtime without changing contents.
+ * Used after a restart to signal other sessions that a restart just completed.
+ */
+export function touchPidFile(): void {
+  try {
+    if (!existsSync(PID_FILE)) return;
+    const now = new Date();
+    utimesSync(PID_FILE, now, now);
+  } catch {
+    // Best-effort — failure to touch doesn't affect correctness
   }
 }
 
