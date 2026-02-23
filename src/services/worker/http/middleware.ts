@@ -37,6 +37,8 @@ export function createMiddleware(
         callback(new Error('CORS not allowed'));
       }
     },
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     credentials: false
   }));
 
