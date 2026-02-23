@@ -546,6 +546,9 @@ export class WorkerService {
 
     logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
 
+    // Track generator activity for stale detection (Issue #1099)
+    session.lastGeneratorActivity = Date.now();
+
     session.generatorPromise = agent.startSession(session, this)
       .catch(async (error: unknown) => {
         const errorMessage = (error as Error)?.message || '';

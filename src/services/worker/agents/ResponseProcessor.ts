@@ -56,6 +56,9 @@ export async function processAgentResponse(
   agentName: string,
   projectRoot?: string
 ): Promise<void> {
+  // Track generator activity for stale detection (Issue #1099)
+  session.lastGeneratorActivity = Date.now();
+
   // Add assistant response to shared conversation history for provider interop
   if (text) {
     session.conversationHistory.push({ role: 'assistant', content: text });

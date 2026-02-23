@@ -90,6 +90,8 @@ export class SessionRoutes extends BaseRouteHandler {
    * we let the current generator finish naturally (max 5s linger timeout).
    * The next generator will use the new provider with shared conversationHistory.
    */
+  private static readonly STALE_GENERATOR_THRESHOLD_MS = 30_000; // 30 seconds (#1099)
+
   private ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
@@ -106,6 +108,26 @@ export class SessionRoutes extends BaseRouteHandler {
     if (!session.generatorPromise) {
       this.spawnInProgress.set(sessionDbId, true);
       this.startGeneratorWithProvider(session, selectedProvider, source);
+      return;
+    }
+
+    // Generator is running - check if stale (no activity for 30s) to prevent queue stall (#1099)
+    const timeSinceActivity = Date.now() - session.lastGeneratorActivity;
+    if (timeSinceActivity > SessionRoutes.STALE_GENERATOR_THRESHOLD_MS) {
+      logger.warn('SESSION', 'Stale generator detected, aborting to prevent queue stall (#1099)', {
+        sessionId: sessionDbId,
+        timeSinceActivityMs: timeSinceActivity,
+        thresholdMs: SessionRoutes.STALE_GENERATOR_THRESHOLD_MS,
+        source
+      });
+      // Abort the stale generator and reset state
+      session.abortController.abort();
+      session.generatorPromise = null;
+      session.abortController = new AbortController();
+      session.lastGeneratorActivity = Date.now();
+      // Start a fresh generator
+      this.spawnInProgress.set(sessionDbId, true);
+      this.startGeneratorWithProvider(session, selectedProvider, 'stale-recovery');
       return;
     }
 
@@ -155,8 +177,9 @@ export class SessionRoutes extends BaseRouteHandler {
       historyLength: session.conversationHistory.length
     });
 
-    // Track which provider is running
+    // Track which provider is running and mark activity for stale detection (#1099)
     session.currentProvider = provider;
+    session.lastGeneratorActivity = Date.now();
 
     session.generatorPromise = agent.startSession(session, this.workerService)
       .catch(error => {
