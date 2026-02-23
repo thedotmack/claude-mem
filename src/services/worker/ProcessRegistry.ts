@@ -133,24 +133,41 @@ export async function ensureProcessExit(tracked: TrackedProcess, timeoutMs: numb
 }
 
 /**
- * Kill system-level orphans (ppid=1 on Unix)
- * These are Claude processes whose parent died unexpectedly
+ * Kill system-level orphans.
+ * Unix: finds Claude processes with ppid=1 (reparented to init).
+ * Windows: finds Claude processes whose parent PID is dead.
  */
 async function killSystemOrphans(): Promise<number> {
   if (process.platform === 'win32') {
-    return 0; // Windows doesn't have ppid=1 orphan concept
+    try {
+      const { findOrphanedClaudeProcesses } = await import('../../utils/windows-process.js');
+      const orphanPids = await findOrphanedClaudeProcesses();
+      let killed = 0;
+      for (const orphanPid of orphanPids) {
+        logger.warn('PROCESS', `Killing system orphan PID ${String(orphanPid)} (Windows)`, { pid: orphanPid });
+        try {
+          process.kill(orphanPid, 'SIGKILL');
+          killed++;
+        } catch {
+          // Already dead or permission denied
+        }
+      }
+      return killed;
+    } catch {
+      return 0;
+    }
   }
 
   try {
     const { stdout } = await execAsync(
-      'ps -eo pid,ppid,args 2>/dev/null | grep -E "claude.*haiku|claude.*output-format" | grep -v grep'
+      'ps -eo pid,ppid,args 2>/dev/null | grep -E "claude.*(haiku|output-format|stream-json)" | grep -v grep'
     );
 
     let killed = 0;
     for (const line of stdout.trim().split('\n')) {
       if (!line) continue;
       const match = line.trim().match(/^(\d+)\s+(\d+)/);
-      if (match && parseInt(match[2]) === 1) { // ppid=1 = orphan
+      if (match && parseInt(match[2]) === 1) {
         const orphanPid = parseInt(match[1]);
         logger.warn('PROCESS', `Killing system orphan PID ${String(orphanPid)}`, { pid: orphanPid });
         try {
@@ -163,7 +180,7 @@ async function killSystemOrphans(): Promise<number> {
     }
     return killed;
   } catch {
-    return 0; // No matches or error
+    return 0;
   }
 }
 

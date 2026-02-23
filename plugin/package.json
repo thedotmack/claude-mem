@@ -1,6 +1,6 @@
 {
   "name": "magic-claude-mem-plugin",
-  "version": "9.4.1",
+  "version": "9.4.2",
   "private": true,
   "description": "Runtime dependencies for magic-claude-mem bundled hooks",
   "type": "module",
