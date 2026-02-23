@@ -103,7 +103,7 @@ export class ChromaMcpManager {
     const spawnEnvironment = this.getSpawnEnv();
 
     const isWindows = process.platform === 'win32';
-    const uvxCommand = isWindows ? this.resolveWindowsUvxCommand() : 'uvx';
+    const uvxCommand = isWindows ? 'uvx.cmd' : 'uvx';
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
       command: uvxCommand,
@@ -167,21 +167,6 @@ export class ChromaMcpManager {
       this.transport = null;
       this.lastConnectionFailureTimestamp = Date.now();
     };
-  }
-
-  /**
-   * Resolve the uvx command on Windows.
-   * Native uv installer creates uvx.exe; npm/pipx creates uvx.cmd.
-   * Prefer uvx.exe if found, fall back to uvx.cmd.
-   */
-  private resolveWindowsUvxCommand(): string {
-    const pathDirs = (process.env.PATH || '').split(';');
-    for (const dir of pathDirs) {
-      if (fs.existsSync(path.join(dir, 'uvx.exe'))) {
-        return path.join(dir, 'uvx.exe');
-      }
-    }
-    return 'uvx.cmd';
   }
 
   /**

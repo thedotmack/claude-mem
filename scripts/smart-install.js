@@ -191,35 +191,6 @@ function installBun() {
 }
 
 /**
- * Get the uvx executable path on Windows (.exe or .cmd)
- */
-function getUvxPath() {
-  const UVX_COMMON_PATHS_WIN = [
-    join(homedir(), '.local', 'bin', 'uvx.exe'),
-    join(homedir(), '.cargo', 'bin', 'uvx.exe')
-  ];
-  return UVX_COMMON_PATHS_WIN.find(existsSync) || null;
-}
-
-/**
- * On Windows, the native uv installer creates uvx.exe but some tools expect uvx.cmd.
- * Create a uvx.cmd shim in the same directory as uvx.exe if it doesn't already exist.
- */
-function ensureUvxCmd() {
-  if (!IS_WINDOWS) return;
-
-  const uvxExePath = getUvxPath();
-  if (!uvxExePath) return;
-
-  const uvxCmdPath = uvxExePath.replace(/uvx\.exe$/i, 'uvx.cmd');
-  if (existsSync(uvxCmdPath)) return;
-
-  const cmdContent = `@echo off\r\n"${uvxExePath}" %*\r\n`;
-  writeFileSync(uvxCmdPath, cmdContent, 'utf-8');
-  console.error(`✅ Created uvx.cmd shim at ${uvxCmdPath}`);
-}
-
-/**
  * Install uv automatically based on platform
  */
 function installUv() {
@@ -308,7 +279,6 @@ function installDeps() {
 try {
   if (!isBunInstalled()) installBun();
   if (!isUvInstalled()) installUv();
-  ensureUvxCmd();
   if (needsInstall()) {
     installDeps();
     console.error('✅ Dependencies installed');
