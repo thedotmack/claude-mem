@@ -21,7 +21,12 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js\"",
             "timeout": 300
-          },
+          }
+        ]
+      },
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/bun-runner.js\" \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
