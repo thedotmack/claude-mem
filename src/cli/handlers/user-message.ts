@@ -1,7 +1,7 @@
 /**
  * User Message Handler - SessionStart (parallel)
  *
- * Extracted from user-message-hook.ts - displays context info to user via stderr.
+ * Displays context info to user via stderr.
  * Uses exit code 3 to show user message without injecting into Claude's context.
  */
 
@@ -10,35 +10,36 @@ import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { getProjectName } from '../../utils/project-name.js';
 
+const ICON_MEMO = String.fromCodePoint(0x1F4DD);
+const ICON_INFO = String.fromCodePoint(0x2139, 0xFE0F);
+const ICON_BULB = String.fromCodePoint(0x1F4A1);
+const ICON_CHAT = String.fromCodePoint(0x1F4AC);
+const ICON_TV = String.fromCodePoint(0x1F4FA);
+
 export const userMessageHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
-    // Ensure worker is running
     await ensureWorkerRunning();
 
     const port = getWorkerPort();
     const project = getProjectName(input.cwd);
 
-    // Fetch formatted context directly from worker API
-    // No AbortSignal.timeout — worker service has its own timeouts
     const response = await fetch(
-      `http://127.0.0.1:${String(port)}/api/context/inject?project=${encodeURIComponent(project)}&colors=true`,
-      { method: 'GET' }
+      `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}&colors=true`
     );
 
     if (!response.ok) {
-      throw new Error(`Failed to fetch context: ${String(response.status)}`);
+      throw new Error(`Failed to fetch context: ${response.status}`);
     }
 
     const output = await response.text();
 
-    // Write to stderr for user visibility (Claude Code UI shows stderr)
     console.error(
-      "\n\n" + String.fromCodePoint(0x1F4DD) + " Magic-Claude-Mem Context Loaded\n" +
-      "   " + String.fromCodePoint(0x2139, 0xFE0F) + "  Note: This appears as stderr but is informational only\n\n" +
+      `\n\n${ICON_MEMO} Magic-Claude-Mem Context Loaded\n` +
+      `   ${ICON_INFO}  Note: This appears as stderr but is informational only\n\n` +
       output +
-      "\n\n" + String.fromCodePoint(0x1F4A1) + " New! Wrap all or part of any message with <private> ... </private> to prevent storing sensitive information in your observation history.\n" +
-      "\n" + String.fromCodePoint(0x1F4AC) + " Community https://discord.gg/J4wttp9vDu" +
-      `\n` + String.fromCodePoint(0x1F4FA) + ` Watch live in browser http://localhost:${String(port)}/\n`
+      `\n\n${ICON_BULB} New! Wrap all or part of any message with <private> ... </private> to prevent storing sensitive information in your observation history.\n` +
+      `\n${ICON_CHAT} Community https://discord.gg/J4wttp9vDu` +
+      `\n${ICON_TV} Watch live in browser http://localhost:${port}/\n`
     );
 
     return { exitCode: HOOK_EXIT_CODES.USER_MESSAGE_ONLY };

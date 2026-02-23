@@ -6,19 +6,11 @@
 import type { Database } from '../sqlite-compat.js';
 
 /**
- * Create a new SDK session (idempotent - returns existing session ID if already exists)
+ * Create a new SDK session (idempotent via INSERT OR IGNORE).
+ * Returns the same database ID for all calls with the same contentSessionId.
  *
- * IDEMPOTENCY via INSERT OR IGNORE pattern:
- * - Prompt #1: session_id not in database -> INSERT creates new row
- * - Prompt #2+: session_id exists -> INSERT ignored, fetch existing ID
- * - Result: Same database ID returned for all prompts in conversation
- *
- * WHY THIS MATTERS:
- * - NO "does session exist?" checks needed anywhere
- * - NO risk of creating duplicate sessions
- * - ALL hooks automatically connected via session_id
- * - SAVE hook observations go to correct session (same session_id)
- * - SDKAgent continuation prompt has correct context (same session_id)
+ * On subsequent calls: updates project (last non-empty wins) and
+ * backfills userPrompt (first non-empty wins).
  */
 export function createSDKSession(
   db: Database,
@@ -29,26 +21,31 @@ export function createSDKSession(
   const now = new Date();
   const nowEpoch = now.getTime();
 
-  // INSERT OR IGNORE - first hook to create the session wins
-  // NOTE: memory_session_id starts as NULL. It is captured by SDKAgent from the first SDK
-  // response and stored via updateMemorySessionId(). CRITICAL: memory_session_id must NEVER
-  // equal contentSessionId - that would inject memory messages into the user's transcript!
+  // memory_session_id starts NULL, set later by SDKAgent via updateMemorySessionId().
+  // CRITICAL: memory_session_id must NEVER equal contentSessionId -- that would
+  // inject memory messages into the user's transcript.
   db.prepare(`
     INSERT OR IGNORE INTO sdk_sessions
     (content_session_id, memory_session_id, project, user_prompt, started_at, started_at_epoch, status)
     VALUES (?, NULL, ?, ?, ?, ?, 'active')
   `).run(contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
 
-  // Update project on existing sessions when non-empty
-  // Handles: (1) backfill when created with empty project (race condition)
-  //          (2) project change when session is resumed from a different directory
-  // Guard: empty project (from observation/summarize handlers) does not overwrite
+  // Update project when non-empty (last non-empty wins).
+  // Covers backfill after race condition and project change on resume.
   if (project) {
     db.prepare('UPDATE sdk_sessions SET project = ? WHERE content_session_id = ?')
       .run(project, contentSessionId);
   }
 
-  // Return existing or new ID
+  // Backfill userPrompt only when currently empty (first non-empty wins).
+  // Unlike project (tracks cwd), userPrompt records the session's initial request.
+  if (userPrompt) {
+    db.prepare(`
+      UPDATE sdk_sessions SET user_prompt = ?
+      WHERE content_session_id = ? AND (user_prompt IS NULL OR user_prompt = '')
+    `).run(userPrompt, contentSessionId);
+  }
+
   const row = db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
     .get(contentSessionId) as { id: number };
   return row.id;

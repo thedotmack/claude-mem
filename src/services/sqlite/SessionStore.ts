@@ -1270,55 +1270,39 @@ export class SessionStore {
   }
 
   /**
-   * Create a new SDK session (idempotent - returns existing session ID if already exists)
+   * Create a new SDK session (idempotent via INSERT OR IGNORE).
+   * Returns the same database ID for all calls with the same contentSessionId.
    *
-   * CRITICAL ARCHITECTURE: Session ID Threading
-   * ============================================
-   * This function is the KEY to how magic-claude-mem stays unified across hooks:
+   * All hooks share the same session_id from Claude Code's hook context,
+   * so both NEW and SAVE hooks converge on a single database row.
    *
-   * - NEW hook calls: createSDKSession(session_id, project, prompt)
-   * - SAVE hook calls: createSDKSession(session_id, '', '')
-   * - Both use the SAME session_id from Claude Code's hook context
-   *
-   * IDEMPOTENT BEHAVIOR (INSERT OR IGNORE):
-   * - Prompt #1: session_id not in database → INSERT creates new row
-   * - Prompt #2+: session_id exists → INSERT ignored, fetch existing ID
-   * - Result: Same database ID returned for all prompts in conversation
-   *
-   * WHY THIS MATTERS:
-   * - NO "does session exist?" checks needed anywhere
-   * - NO risk of creating duplicate sessions
-   * - ALL hooks automatically connected via session_id
-   * - SAVE hook observations go to correct session (same session_id)
-   * - SDKAgent continuation prompt has correct context (same session_id)
-   *
-   * This is KISS in action: Trust the database UNIQUE constraint and
-   * INSERT OR IGNORE to handle both creation and lookup elegantly.
+   * On subsequent calls: updates project (last non-empty wins),
+   * backfills userPrompt (first non-empty wins), and reactivates completed sessions.
    */
   createSDKSession(contentSessionId: string, project: string, userPrompt: string): number {
     const now = new Date();
     const nowEpoch = now.getTime();
 
-    // INSERT OR IGNORE - first hook to create the session wins
-    // NOTE: memory_session_id starts as NULL. It is captured by SDKAgent from the first SDK
-    // response and stored via updateMemorySessionId(). CRITICAL: memory_session_id must NEVER
-    // equal contentSessionId - that would inject memory messages into the user's transcript!
+    // memory_session_id starts NULL, set later by SDKAgent via updateMemorySessionId().
+    // CRITICAL: memory_session_id must NEVER equal contentSessionId -- that would
+    // inject memory messages into the user's transcript.
     this.db.prepare(`
       INSERT OR IGNORE INTO sdk_sessions
       (content_session_id, memory_session_id, project, user_prompt, started_at, started_at_epoch, status)
       VALUES (?, NULL, ?, ?, ?, ?, 'active')
     `).run(contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
 
-    // Update project on existing sessions when non-empty
-    // Handles: (1) backfill when created with empty project (race condition)
-    //          (2) project change when session is resumed from a different directory
-    // Guard: empty project (from observation/summarize handlers) does not overwrite
+    // Update project when non-empty (last non-empty wins).
+    // Covers backfill after race condition and project change on resume.
     if (project) {
       this.db.prepare(`
         UPDATE sdk_sessions SET project = ?
         WHERE content_session_id = ?
       `).run(project, contentSessionId);
     }
+
+    // Backfill userPrompt only when currently empty (first non-empty wins).
+    // Unlike project (tracks cwd), userPrompt records the session's initial request.
     if (userPrompt) {
       this.db.prepare(`
         UPDATE sdk_sessions SET user_prompt = ?
@@ -1326,13 +1310,12 @@ export class SessionStore {
       `).run(userPrompt, contentSessionId);
     }
 
-    // Reset status to 'active' for returning sessions (new prompt in existing session)
+    // Reactivate completed sessions on resume
     this.db.prepare(`
       UPDATE sdk_sessions SET status = 'active'
       WHERE content_session_id = ? AND status = 'completed'
     `).run(contentSessionId);
 
-    // Return existing or new ID
     const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
       .get(contentSessionId) as { id: number };
     return row.id;
