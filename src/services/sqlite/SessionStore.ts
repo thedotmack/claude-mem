@@ -13,6 +13,7 @@ import {
   LatestPromptResult
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
+import { computeObservationContentHash, findDuplicateObservation } from './observations/store.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -48,6 +49,7 @@ export class SessionStore {
     this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
     this.addOnUpdateCascadeToForeignKeys();
+    this.addObservationContentHashColumn();
   }
 
   /**
@@ -826,6 +828,26 @@ export class SessionStore {
   }
 
   /**
+   * Add content_hash column to observations for deduplication (migration 22)
+   */
+  private addObservationContentHashColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(22) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'content_hash');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE observations ADD COLUMN content_hash TEXT');
+      this.db.run("UPDATE observations SET content_hash = substr(hex(randomblob(8)), 1, 16) WHERE content_hash IS NULL");
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_content_hash ON observations(content_hash, created_at_epoch)');
+      logger.debug('DB', 'Added content_hash column to observations table with backfill and index');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+  }
+
+  /**
    * Update the memory session ID for a session
    * Called by SDKAgent when it captures the session ID from the first SDK message
    * Also used to RESET to null on stale resume failures (worker-service.ts)
@@ -1441,6 +1463,7 @@ export class SessionStore {
   /**
    * Store an observation (from SDK parsing)
    * Assumes session already exists (created by hook)
+   * Performs content-hash deduplication: skips INSERT if an identical observation exists within 30s
    */
   storeObservation(
     memorySessionId: string,
@@ -1463,11 +1486,18 @@ export class SessionStore {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
+    // Content-hash deduplication
+    const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+    const existing = findDuplicateObservation(this.db, contentHash, timestampEpoch);
+    if (existing) {
+      return { id: existing.id, createdAtEpoch: existing.created_at_epoch };
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1483,6 +1513,7 @@ export class SessionStore {
       JSON.stringify(observation.files_modified),
       promptNumber || null,
       discoveryTokens,
+      contentHash,
       timestampIso,
       timestampEpoch
     );
