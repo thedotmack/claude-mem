@@ -323,7 +323,7 @@ describe('SettingsDefaultsManager', () => {
 
   describe('getBool', () => {
     it('should return true for "true" string', () => {
-      expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS')).toBe(true);
+      expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT')).toBe(true);
     });
 
     it('should return false for non-"true" string', () => {

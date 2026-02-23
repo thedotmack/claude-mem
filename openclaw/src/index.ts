@@ -642,6 +642,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     const toolName = event.toolName;
     if (!toolName) return;
 
+    // Skip memory_ tools to prevent recursive observation loops
+    if (toolName.startsWith("memory_")) return;
+
     const contentSessionId = getContentSessionId(ctx.sessionKey);
 
     // Extract result text from all content blocks
@@ -652,6 +655,12 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         .filter((block) => (block.type === "tool_result" || block.type === "text") && "text" in block)
         .map((block) => String(block.text))
         .join("\n");
+    }
+
+    // Truncate long responses to prevent oversized payloads
+    const MAX_TOOL_RESPONSE_LENGTH = 1000;
+    if (toolResponseText.length > MAX_TOOL_RESPONSE_LENGTH) {
+      toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
     }
 
     // Fire-and-forget: send observation + sync MEMORY.md in parallel
