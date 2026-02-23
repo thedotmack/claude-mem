@@ -229,7 +229,7 @@ export function renderMarkdownFooter(totalDiscoveryTokens: number, totalReadToke
   const workTokensK = Math.round(totalDiscoveryTokens / 1000);
   return [
     '',
-    `Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use MCP search tools to access memories by ID.`
+    `Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use the claude-mem skill to access memories by ID.`
   ];
 }
 

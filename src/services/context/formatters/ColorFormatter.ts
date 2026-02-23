@@ -226,7 +226,7 @@ export function renderColorFooter(totalDiscoveryTokens: number, totalReadTokens:
   const workTokensK = Math.round(totalDiscoveryTokens / 1000);
   return [
     '',
-    `${colors.dim}Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use MCP search tools to access memories by ID.${colors.reset}`
+    `${colors.dim}Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use the claude-mem skill to access memories by ID.${colors.reset}`
   ];
 }
 
