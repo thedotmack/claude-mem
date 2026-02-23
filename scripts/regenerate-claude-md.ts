@@ -279,6 +279,11 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
  * which only writes to existing folders.
  */
 function writeClaudeMdToFolderForRegenerate(folderPath: string, newContent: string): void {
+  const resolvedPath = path.resolve(folderPath);
+
+  // Never write inside .git directories — corrupts refs (#1165)
+  if (resolvedPath.includes('/.git/') || resolvedPath.includes('\\.git\\') || resolvedPath.endsWith('/.git') || resolvedPath.endsWith('\\.git')) return;
+
   const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
   const tempFile = `${claudeMdPath}.tmp`;
 
