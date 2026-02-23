@@ -5,10 +5,10 @@
  * Uses exit code 3 to show user message without injecting into Claude's context.
  */
 
-import { basename } from 'path';
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { getProjectName } from '../../utils/project-name.js';
 
 export const userMessageHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -16,7 +16,7 @@ export const userMessageHandler: EventHandler = {
     await ensureWorkerRunning();
 
     const port = getWorkerPort();
-    const project = basename(input.cwd);
+    const project = getProjectName(input.cwd);
 
     // Fetch formatted context directly from worker API
     // No AbortSignal.timeout — worker service has its own timeouts

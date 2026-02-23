@@ -1309,12 +1309,14 @@ export class SessionStore {
       VALUES (?, NULL, ?, ?, ?, ?, 'active')
     `).run(contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
 
-    // Backfill project/prompt if session was created by another hook with empty values
-    // (PostToolUse and Stop hooks create sessions with project='', UserPromptSubmit has the real values)
+    // Update project on existing sessions when non-empty
+    // Handles: (1) backfill when created with empty project (race condition)
+    //          (2) project change when session is resumed from a different directory
+    // Guard: empty project (from observation/summarize handlers) does not overwrite
     if (project) {
       this.db.prepare(`
         UPDATE sdk_sessions SET project = ?
-        WHERE content_session_id = ? AND (project IS NULL OR project = '')
+        WHERE content_session_id = ?
       `).run(project, contentSessionId);
     }
     if (userPrompt) {

@@ -29,7 +29,7 @@ export function createSDKSession(
   const now = new Date();
   const nowEpoch = now.getTime();
 
-  // Pure INSERT OR IGNORE - no updates, no complexity
+  // INSERT OR IGNORE - first hook to create the session wins
   // NOTE: memory_session_id starts as NULL. It is captured by SDKAgent from the first SDK
   // response and stored via updateMemorySessionId(). CRITICAL: memory_session_id must NEVER
   // equal contentSessionId - that would inject memory messages into the user's transcript!
@@ -38,6 +38,15 @@ export function createSDKSession(
     (content_session_id, memory_session_id, project, user_prompt, started_at, started_at_epoch, status)
     VALUES (?, NULL, ?, ?, ?, ?, 'active')
   `).run(contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
+
+  // Update project on existing sessions when non-empty
+  // Handles: (1) backfill when created with empty project (race condition)
+  //          (2) project change when session is resumed from a different directory
+  // Guard: empty project (from observation/summarize handlers) does not overwrite
+  if (project) {
+    db.prepare('UPDATE sdk_sessions SET project = ? WHERE content_session_id = ?')
+      .run(project, contentSessionId);
+  }
 
   // Return existing or new ID
   const row = db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')

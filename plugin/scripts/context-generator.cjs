@@ -352,7 +352,7 @@ ${String(o.stack)}`:` ${o.message}`:this.getLevel()===0&&typeof o=="object"?u=`
       VALUES (?, NULL, ?, ?, ?, ?, 'active')
     `).run(e,t,s,n.toISOString(),o),t&&this.db.prepare(`
         UPDATE sdk_sessions SET project = ?
-        WHERE content_session_id = ? AND (project IS NULL OR project = '')
+        WHERE content_session_id = ?
       `).run(t,e),s&&this.db.prepare(`
         UPDATE sdk_sessions SET user_prompt = ?
         WHERE content_session_id = ? AND (user_prompt IS NULL OR user_prompt = '')
