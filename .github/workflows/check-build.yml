@@ -1,0 +1,25 @@
+name: Check build artifacts are up to date
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install --ignore-scripts
+      - run: npm run build
+      - name: Verify compiled artifacts match source
+        run: |
+          if ! git diff --exit-code plugin/scripts/worker-service.cjs plugin/scripts/mcp-server.cjs plugin/scripts/context-generator.cjs; then
+            echo ""
+            echo "ERROR: Compiled artifacts are out of sync with source."
+            echo "Run 'npm run build' locally and commit the updated plugin/scripts/*.cjs files."
+            exit 1
+          fi
