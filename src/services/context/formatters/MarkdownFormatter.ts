@@ -72,8 +72,8 @@ export function renderMarkdownContextIndex(): string[] {
     `**Context Index:** This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.`,
     '',
     `When you need implementation details, rationale, or debugging context:`,
-    `- Use MCP tools (search, get_observations) to fetch full observations on-demand`,
-    `- Critical types ( bugfix, decision) often need detailed fetching`,
+    `- Fetch by ID: get_observations([IDs]) for observations visible in this index`,
+    `- Search history: Use the mem-search skill for past decisions, bugs, and deeper research`,
     `- Trust this index over re-reading code for past decisions and learnings`,
     ''
   ];

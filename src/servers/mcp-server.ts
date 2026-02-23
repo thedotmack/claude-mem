@@ -235,8 +235,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     }
   },
   {
-    name: 'save_memory',
-    description: 'Save a manual memory/observation for semantic search. Use this to remember important information.',
+    name: 'save_observation',
+    description: 'Save an observation to the database. Params: text (required), title, project',
     inputSchema: {
       type: 'object',
       properties: {
