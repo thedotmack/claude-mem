@@ -504,57 +504,63 @@ export class SessionRoutes extends BaseRouteHandler {
       }
     }
 
-    const store = this.dbManager.getSessionStore();
+    try {
+      const store = this.dbManager.getSessionStore();
 
-    // Get or create session
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
-    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
+      // Get or create session
+      const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+      const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
-    // Privacy check: skip if user prompt was entirely private
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
-      store,
-      contentSessionId,
-      promptNumber,
-      'observation',
-      sessionDbId,
-      { tool_name }
-    );
-    if (!userPrompt) {
-      res.json({ status: 'skipped', reason: 'private' });
-      return;
+      // Privacy check: skip if user prompt was entirely private
+      const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
+        store,
+        contentSessionId,
+        promptNumber,
+        'observation',
+        sessionDbId,
+        { tool_name }
+      );
+      if (!userPrompt) {
+        res.json({ status: 'skipped', reason: 'private' });
+        return;
+      }
+
+      // Strip memory tags from tool_input and tool_response
+      const cleanedToolInput = tool_input !== undefined
+        ? stripMemoryTagsFromJson(JSON.stringify(tool_input))
+        : '{}';
+
+      const cleanedToolResponse = tool_response !== undefined
+        ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
+        : '{}';
+
+      // Queue observation
+      this.sessionManager.queueObservation(sessionDbId, {
+        tool_name,
+        tool_input: cleanedToolInput,
+        tool_response: cleanedToolResponse,
+        prompt_number: promptNumber,
+        cwd: cwd || (() => {
+          logger.error('SESSION', 'Missing cwd when queueing observation in SessionRoutes', {
+            sessionId: sessionDbId,
+            tool_name
+          });
+          return '';
+        })()
+      });
+
+      // Ensure SDK agent is running
+      this.ensureGeneratorRunning(sessionDbId, 'observation');
+
+      // Broadcast observation queued event
+      this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
+
+      res.json({ status: 'queued' });
+    } catch (error) {
+      // Return 200 on recoverable errors so the hook doesn't break
+      logger.error('SESSION', 'Observation storage failed', { contentSessionId, tool_name }, error as Error);
+      res.json({ stored: false, reason: (error as Error).message });
     }
-
-    // Strip memory tags from tool_input and tool_response
-    const cleanedToolInput = tool_input !== undefined
-      ? stripMemoryTagsFromJson(JSON.stringify(tool_input))
-      : '{}';
-
-    const cleanedToolResponse = tool_response !== undefined
-      ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
-      : '{}';
-
-    // Queue observation
-    this.sessionManager.queueObservation(sessionDbId, {
-      tool_name,
-      tool_input: cleanedToolInput,
-      tool_response: cleanedToolResponse,
-      prompt_number: promptNumber,
-      cwd: cwd || (() => {
-        logger.error('SESSION', 'Missing cwd when queueing observation in SessionRoutes', {
-          sessionId: sessionDbId,
-          tool_name
-        });
-        return '';
-      })()
-    });
-
-    // Ensure SDK agent is running
-    this.ensureGeneratorRunning(sessionDbId, 'observation');
-
-    // Broadcast observation queued event
-    this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
-
-    res.json({ status: 'queued' });
   });
 
   /**
