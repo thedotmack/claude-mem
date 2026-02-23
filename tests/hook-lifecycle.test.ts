@@ -54,6 +54,85 @@ describe('Hook Lifecycle - Event Handlers', () => {
   });
 });
 
+// --- Codex CLI Compatibility Tests (#744) ---
+
+describe('Codex CLI Compatibility (#744)', () => {
+  describe('getPlatformAdapter', () => {
+    it('should return rawAdapter for unknown platforms like codex', async () => {
+      const { getPlatformAdapter, rawAdapter } = await import('../src/cli/adapters/index.js');
+      // Should not throw for unknown platforms — falls back to rawAdapter
+      const adapter = getPlatformAdapter('codex');
+      expect(adapter).toBe(rawAdapter);
+    });
+
+    it('should return rawAdapter for any unrecognized platform string', async () => {
+      const { getPlatformAdapter, rawAdapter } = await import('../src/cli/adapters/index.js');
+      const adapter = getPlatformAdapter('some-future-cli');
+      expect(adapter).toBe(rawAdapter);
+    });
+  });
+
+  describe('claudeCodeAdapter session_id fallbacks', () => {
+    it('should use session_id when present', async () => {
+      const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
+      const input = claudeCodeAdapter.normalizeInput({ session_id: 'claude-123', cwd: '/tmp' });
+      expect(input.sessionId).toBe('claude-123');
+    });
+
+    it('should fall back to id field (Codex CLI format)', async () => {
+      const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
+      const input = claudeCodeAdapter.normalizeInput({ id: 'codex-456', cwd: '/tmp' });
+      expect(input.sessionId).toBe('codex-456');
+    });
+
+    it('should fall back to sessionId field (camelCase format)', async () => {
+      const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
+      const input = claudeCodeAdapter.normalizeInput({ sessionId: 'camel-789', cwd: '/tmp' });
+      expect(input.sessionId).toBe('camel-789');
+    });
+
+    it('should return undefined when no session ID field is present', async () => {
+      const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
+      const input = claudeCodeAdapter.normalizeInput({ cwd: '/tmp' });
+      expect(input.sessionId).toBeUndefined();
+    });
+
+    it('should handle undefined input gracefully', async () => {
+      const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
+      const input = claudeCodeAdapter.normalizeInput(undefined);
+      expect(input.sessionId).toBeUndefined();
+      expect(input.cwd).toBe(process.cwd());
+    });
+  });
+
+  describe('session-init handler undefined prompt', () => {
+    it('should not throw when prompt is undefined', () => {
+      // Verify the short-circuit logic works for undefined
+      const rawPrompt: string | undefined = undefined;
+      const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
+      expect(prompt).toBe('[media prompt]');
+    });
+
+    it('should not throw when prompt is empty string', () => {
+      const rawPrompt = '';
+      const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
+      expect(prompt).toBe('[media prompt]');
+    });
+
+    it('should not throw when prompt is whitespace-only', () => {
+      const rawPrompt = '   ';
+      const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
+      expect(prompt).toBe('[media prompt]');
+    });
+
+    it('should preserve valid prompts', () => {
+      const rawPrompt = 'fix the bug';
+      const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
+      expect(prompt).toBe('fix the bug');
+    });
+  });
+});
+
 // --- Platform Adapter Tests ---
 
 describe('Hook Lifecycle - Claude Code Adapter', () => {

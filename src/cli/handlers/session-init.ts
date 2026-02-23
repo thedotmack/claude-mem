@@ -24,6 +24,12 @@ export const sessionInitHandler: EventHandler = {
 
     const { sessionId, cwd, prompt: rawPrompt } = input;
 
+    // Guard: Codex CLI and other platforms may not provide a session_id (#744)
+    if (!sessionId) {
+      logger.warn('HOOK', 'session-init: No sessionId provided, skipping (Codex CLI or unknown platform)');
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     // Check if project is excluded from tracking
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
