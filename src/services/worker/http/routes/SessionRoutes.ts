@@ -663,7 +663,12 @@ export class SessionRoutes extends BaseRouteHandler {
    * Returns: { sessionDbId, promptNumber, skipped: boolean, reason?: string }
    */
   private handleSessionInitByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, project, prompt } = req.body;
+    const { contentSessionId } = req.body;
+
+    // Only contentSessionId is truly required — Cursor and other platforms
+    // may omit prompt/project in their payload (#838, #1049)
+    const project = req.body.project || 'unknown';
+    const prompt = req.body.prompt || '[media prompt]';
 
     logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {
       contentSessionId,
@@ -672,7 +677,7 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     // Validate required parameters
-    if (!this.validateRequired(req, res, ['contentSessionId', 'project', 'prompt'])) {
+    if (!this.validateRequired(req, res, ['contentSessionId'])) {
       return;
     }
 
