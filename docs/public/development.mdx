@@ -83,17 +83,19 @@ npm run build
 ### 3. Test
 
 ```bash
-# Run all tests
+# Run all unit tests
 npm test
 
-# Test specific file
-node --test tests/session-lifecycle.test.ts
+# Test specific areas
+npm run test:sqlite       # Database layer
+npm run test:agents       # SDK agent processing
+npm run test:search       # Search functionality
+npm run test:context      # Context injection
+npm run test:infra        # Infrastructure utilities
+npm run test:server       # HTTP server endpoints
 
-# Test context injection
-npm run test:context
-
-# Verbose context test
-npm run test:context:verbose
+# SDK integration tests (requires API key)
+npm run test:sdk
 ```
 
 ### 4. Manual Testing
@@ -138,6 +140,7 @@ src/ui/viewer/
 │   ├── FilterChip.tsx     # Reusable multi-select filter chip
 │   ├── ActivityBar.tsx    # 90-day density timeline
 │   ├── ThemeToggle.tsx    # Light/dark/system theme switcher
+│   ├── AnalyticsBar.tsx   # Token analytics dashboard (Read/Work/Recalled/Saved)
 │   ├── cards/             # Card components
 │   │   ├── ObservationCard.tsx
 │   │   ├── PromptCard.tsx
@@ -150,7 +153,8 @@ src/ui/viewer/
 │   ├── useStats.ts        # Database statistics
 │   ├── useFilters.ts      # Filter state management
 │   ├── useSearch.ts       # Search API integration
-│   └── useActivityDensity.ts # 90-day activity data
+│   ├── useActivityDensity.ts # 90-day activity data
+│   └── useAnalytics.ts    # Token analytics API integration
 ├── utils/                 # Utilities
 │   ├── constants.ts       # Constants (API URLs, etc.)
 │   ├── formatters.ts      # Date/time formatting
@@ -387,19 +391,13 @@ npm test
 
 ### Testing Philosophy
 
-Claude-mem relies on **real-world usage and manual testing** rather than traditional unit tests. The project philosophy prioritizes:
+Claude-mem uses **Vitest** for unit and integration testing alongside manual verification:
 
-1. **Manual verification** - Testing features in actual Claude Code sessions
-2. **Integration testing** - Running the full system end-to-end
-3. **Database inspection** - Verifying data correctness via SQLite queries
-4. **CLI tools** - Interactive tools for checking system state
-5. **Observability** - Comprehensive logging and worker health checks
-
-This approach was chosen because:
-- Hook behavior depends heavily on Claude Code's runtime environment
-- SDK interactions require real API calls and responses
-- SQLite and Node.js runtime provide stability guarantees
-- Manual testing catches integration issues that unit tests miss
+1. **Unit tests** - Core logic, utilities, settings, database operations (~1700 tests)
+2. **Integration tests** - SDK agent behavior, search, context generation
+3. **Manual verification** - Testing features in actual Claude Code sessions
+4. **Database inspection** - Verifying data correctness via SQLite queries
+5. **CLI tools** - Interactive tools for checking system state
 
 ### Manual Testing Workflow
 

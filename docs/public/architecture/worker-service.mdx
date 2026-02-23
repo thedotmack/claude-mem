@@ -15,11 +15,11 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 - **Port**: Fixed port 37777 (configurable via `MAGIC_CLAUDE_MEM_WORKER_PORT`)
 - **Location**: `src/services/worker-service.ts`
 - **Built Output**: `plugin/scripts/worker-service.cjs`
-- **Model**: Configurable via `MAGIC_CLAUDE_MEM_MODEL` environment variable (default: sonnet)
+- **Model**: Configurable via `MAGIC_CLAUDE_MEM_MODEL` setting (default: haiku)
 
 ## REST API Endpoints
 
-The worker service exposes 22 HTTP endpoints organized into six categories:
+The worker service exposes 24 HTTP endpoints organized into six categories:
 
 ### Viewer & Health Endpoints
 
@@ -39,7 +39,23 @@ GET /
 - SSE-based live updates
 - Theme toggle (light/dark mode) as of v5.1.2
 
-#### 2. Health Check
+#### 2. Version
+```
+GET /api/version
+```
+
+**Purpose**: Returns the worker's baked-in version (set at build time via esbuild `define`)
+
+**Response**:
+```json
+{
+  "version": "9.4.4"
+}
+```
+
+**Use Case**: Used by hooks to detect version mismatches between the installed plugin and the running worker process. If a mismatch is detected, the worker is automatically restarted.
+
+#### 3. Health Check
 ```
 GET /health
 ```
@@ -344,6 +360,35 @@ GET /api/projects
 }
 ```
 
+#### 14. Token Analytics
+```
+GET /api/analytics?project=my-project&range=7d
+```
+
+**Purpose**: Aggregate token usage statistics for the viewer analytics dashboard
+
+**Query Parameters**:
+- `project` (optional): Filter by project name
+- `range` (optional): Time range — `24h`, `7d`, `30d`, `90d`, `all` (default: `7d`)
+
+**Response**:
+```json
+{
+  "read": 45230,
+  "work": 312500,
+  "recalled": 22100,
+  "saved": 290400,
+  "observations": 156
+}
+```
+
+**Fields**:
+- `read`: Total tokens to read all observations in range
+- `work`: Total tokens spent on research/building that produced those observations
+- `recalled`: Tokens actually recalled (injected into sessions)
+- `saved`: Work tokens minus recalled tokens (savings from reuse)
+- `observations`: Number of observations in the time range
+
 ### Settings Endpoints
 
 #### 14. Get Settings
@@ -627,6 +672,17 @@ npm run worker:status
 
 The worker service auto-starts when the SessionStart hook fires. Manual start is optional.
 
+### Auto-Restart on Version Mismatch
+
+When the plugin is updated (e.g., via `npm run sync-marketplace`), the running worker process may still be executing the old version. Starting with v9.4.4, the `ensureWorkerRunning()` function in hooks detects this automatically:
+
+1. **Health check** — Verifies the worker is responding
+2. **Version check** — Calls `/api/version` and compares with the installed plugin version
+3. **Auto-restart** — If versions differ, triggers `worker-service.cjs restart` and verifies post-restart health
+4. **Port cache clear** — After restart, clears the cached port so health checks re-read from settings (the new version may use a different port)
+
+All fetch calls to the worker include a 5-second timeout (`AbortSignal.timeout`) to prevent indefinite hangs. If restart fails, hooks proceed gracefully without blocking the session.
+
 ### Node.js Requirement
 
 Node.js 18+ is required to run the worker service. Install via your preferred method:
@@ -663,15 +719,17 @@ The SDK agent uses history compaction instead of simple truncation to manage con
 
 ### Model Configuration
 
-Set the AI model used for processing via environment variable:
+Set the AI model used for processing via settings:
 
-```bash
-export MAGIC_CLAUDE_MEM_MODEL=sonnet
+```json
+{
+  "MAGIC_CLAUDE_MEM_MODEL": "haiku"
+}
 ```
 
 Available shorthand models (forward to latest version):
-- `haiku` - Fast, cost-efficient
-- `sonnet` - Balanced (default)
+- `haiku` - Fast, cost-efficient (default)
+- `sonnet` - Balanced
 - `opus` - Most capable
 
 ## Port Allocation

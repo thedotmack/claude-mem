@@ -110,6 +110,36 @@ The viewer supports three appearance modes:
 
 Click the theme toggle button to cycle through modes. The toggle uses **smart skip logic**: when your system preference matches the current explicit theme (for example, you are on Dark and your OS is also set to dark), clicking the toggle skips the redundant "System" option and goes straight to the next distinct appearance.
 
+## Token Analytics Dashboard
+
+The analytics bar sits below the header and provides aggregate token usage metrics for the selected project.
+
+### Metrics
+
+| Metric | Description |
+|--------|-------------|
+| **Read** | Total tokens required to read all observations in the time range |
+| **Work** | Total tokens spent on research, building, and decisions that produced those observations |
+| **Recalled** | Tokens actually injected into sessions (context that was reused) |
+| **Saved** | Work tokens minus recalled tokens — the efficiency gain from memory reuse |
+| **Obs** | Total number of observations in the time range |
+
+Each metric card shows a tooltip with a detailed explanation on hover.
+
+### Time Range
+
+A dropdown selector filters analytics by time window:
+
+- **24h** — Last 24 hours
+- **7d** — Last 7 days (default)
+- **30d** — Last 30 days
+- **90d** — Last 90 days
+- **All** — All time
+
+### Auto-Refresh
+
+The analytics bar polls the `/api/analytics` endpoint periodically and refreshes when the browser tab regains visibility, ensuring metrics stay current during active work sessions.
+
 ## Infinite Scroll Pagination
 
 The viewer loads items incrementally as you scroll:
