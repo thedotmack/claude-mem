@@ -2,6 +2,12 @@
 
 All notable changes to claude-mem.
 
+## [v10.3.3] - 2026-02-23
+
+### Bug Fixes
+
+- Fixed session context footer to reference the claude-mem skill instead of MCP search tools for accessing memories
+
 ## [v10.3.2] - 2026-02-23
 
 ## Bug Fixes
@@ -1432,17 +1438,4 @@ claude-mem cursor install
 ```
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.10...v8.5.0
-
-## [v8.2.10] - 2025-12-30
-
-## Bug Fixes
-
-- **Auto-restart worker on version mismatch** (#484): When the plugin updates but the worker was already running on the old version, the worker now automatically restarts instead of failing with 400 errors.
-
-### Changes
-- `/api/version` endpoint now returns the built-in version (compiled at build time) instead of reading from disk
-- `worker-service start` command checks for version mismatch and auto-restarts if needed
-- Downgraded hook version mismatch warning to debug logging (now handled by auto-restart)
-
-Thanks @yungweng for the detailed bug report!
 
