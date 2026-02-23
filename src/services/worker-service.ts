@@ -59,6 +59,10 @@ function clearWorkerSpawnAttempted(): void {
   }
 }
 
+// Re-export for backward compatibility — canonical implementation in shared/plugin-state.ts
+export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
+import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
+
 // Version injected at build time by esbuild define
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
@@ -994,6 +998,14 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
 
 async function main() {
   const command = process.argv[2];
+
+  // Early exit if plugin is disabled in Claude Code settings (#781).
+  // Only gate hook-initiated commands; CLI management (stop/status) still works.
+  const hookInitiatedCommands = ['start', 'hook', 'restart', '--daemon'];
+  if ((hookInitiatedCommands.includes(command) || command === undefined) && isPluginDisabledInClaudeSettings()) {
+    process.exit(0);
+  }
+
   const port = getWorkerPort();
 
   // Helper for JSON status output in 'start' command
