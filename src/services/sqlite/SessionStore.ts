@@ -50,6 +50,7 @@ export class SessionStore {
     this.addFailedAtEpochColumn();
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
+    this.addSessionCustomTitleColumn();
   }
 
   /**
@@ -855,6 +856,24 @@ export class SessionStore {
   }
 
   /**
+   * Add custom_title column to sdk_sessions for agent attribution (migration 23)
+   */
+  private addSessionCustomTitleColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(23) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'custom_title');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN custom_title TEXT');
+      logger.debug('DB', 'Added custom_title column to sdk_sessions table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
+  }
+
+  /**
    * Update the memory session ID for a session
    * Called by SDKAgent when it captures the session ID from the first SDK message
    * Also used to RESET to null on stale resume failures (worker-service.ts)
@@ -1319,9 +1338,10 @@ export class SessionStore {
     memory_session_id: string | null;
     project: string;
     user_prompt: string;
+    custom_title: string | null;
   } | null {
     const stmt = this.db.prepare(`
-      SELECT id, content_session_id, memory_session_id, project, user_prompt
+      SELECT id, content_session_id, memory_session_id, project, user_prompt, custom_title
       FROM sdk_sessions
       WHERE id = ?
       LIMIT 1
@@ -1340,6 +1360,7 @@ export class SessionStore {
     memory_session_id: string;
     project: string;
     user_prompt: string;
+    custom_title: string | null;
     started_at: string;
     started_at_epoch: number;
     completed_at: string | null;
@@ -1350,7 +1371,7 @@ export class SessionStore {
 
     const placeholders = memorySessionIds.map(() => '?').join(',');
     const stmt = this.db.prepare(`
-      SELECT id, content_session_id, memory_session_id, project, user_prompt,
+      SELECT id, content_session_id, memory_session_id, project, user_prompt, custom_title,
              started_at, started_at_epoch, completed_at, completed_at_epoch, status
       FROM sdk_sessions
       WHERE memory_session_id IN (${placeholders})
@@ -1395,7 +1416,7 @@ export class SessionStore {
    * Pure get-or-create: never modifies memory_session_id.
    * Multi-terminal isolation is handled by ON UPDATE CASCADE at the schema level.
    */
-  createSDKSession(contentSessionId: string, project: string, userPrompt: string): number {
+  createSDKSession(contentSessionId: string, project: string, userPrompt: string, customTitle?: string): number {
     const now = new Date();
     const nowEpoch = now.getTime();
 
@@ -1412,6 +1433,13 @@ export class SessionStore {
           WHERE content_session_id = ? AND (project IS NULL OR project = '')
         `).run(project, contentSessionId);
       }
+      // Backfill custom_title if provided and not yet set
+      if (customTitle) {
+        this.db.prepare(`
+          UPDATE sdk_sessions SET custom_title = ?
+          WHERE content_session_id = ? AND custom_title IS NULL
+        `).run(customTitle, contentSessionId);
+      }
       return existing.id;
     }
 
@@ -1421,9 +1449,9 @@ export class SessionStore {
     // must NEVER equal contentSessionId - that would inject memory messages into the user's transcript!
     this.db.prepare(`
       INSERT INTO sdk_sessions
-      (content_session_id, memory_session_id, project, user_prompt, started_at, started_at_epoch, status)
-      VALUES (?, NULL, ?, ?, ?, ?, 'active')
-    `).run(contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
+      (content_session_id, memory_session_id, project, user_prompt, custom_title, started_at, started_at_epoch, status)
+      VALUES (?, NULL, ?, ?, ?, ?, ?, 'active')
+    `).run(contentSessionId, project, userPrompt, customTitle || null, now.toISOString(), nowEpoch);
 
     // Return new ID
     const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')

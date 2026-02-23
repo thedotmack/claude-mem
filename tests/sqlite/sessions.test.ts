@@ -84,6 +84,52 @@ describe('Sessions Module', () => {
     });
   });
 
+  describe('custom_title', () => {
+    it('should store custom_title when provided at creation', () => {
+      const sessionId = createSDKSession(db, 'session-title-1', 'project', 'prompt', 'My Agent');
+      const session = getSessionById(db, sessionId);
+
+      expect(session?.custom_title).toBe('My Agent');
+    });
+
+    it('should default custom_title to null when not provided', () => {
+      const sessionId = createSDKSession(db, 'session-title-2', 'project', 'prompt');
+      const session = getSessionById(db, sessionId);
+
+      expect(session?.custom_title).toBeNull();
+    });
+
+    it('should backfill custom_title on idempotent call if not already set', () => {
+      const sessionId = createSDKSession(db, 'session-title-3', 'project', 'prompt');
+      let session = getSessionById(db, sessionId);
+      expect(session?.custom_title).toBeNull();
+
+      // Second call with custom_title should backfill
+      createSDKSession(db, 'session-title-3', 'project', 'prompt', 'Backfilled Title');
+      session = getSessionById(db, sessionId);
+      expect(session?.custom_title).toBe('Backfilled Title');
+    });
+
+    it('should not overwrite existing custom_title on idempotent call', () => {
+      const sessionId = createSDKSession(db, 'session-title-4', 'project', 'prompt', 'Original');
+      let session = getSessionById(db, sessionId);
+      expect(session?.custom_title).toBe('Original');
+
+      // Second call should NOT overwrite
+      createSDKSession(db, 'session-title-4', 'project', 'prompt', 'Attempted Override');
+      session = getSessionById(db, sessionId);
+      expect(session?.custom_title).toBe('Original');
+    });
+
+    it('should handle empty string custom_title as no title', () => {
+      const sessionId = createSDKSession(db, 'session-title-5', 'project', 'prompt', '');
+      const session = getSessionById(db, sessionId);
+
+      // Empty string becomes null via the || null conversion
+      expect(session?.custom_title).toBeNull();
+    });
+  });
+
   describe('updateMemorySessionId', () => {
     it('should update memory_session_id for existing session', () => {
       const contentSessionId = 'content-session-update';

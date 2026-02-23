@@ -669,11 +669,13 @@ export class SessionRoutes extends BaseRouteHandler {
     // may omit prompt/project in their payload (#838, #1049)
     const project = req.body.project || 'unknown';
     const prompt = req.body.prompt || '[media prompt]';
+    const customTitle = req.body.customTitle || undefined;
 
     logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {
       contentSessionId,
       project,
-      prompt_length: prompt?.length
+      prompt_length: prompt?.length,
+      customTitle
     });
 
     // Validate required parameters
@@ -684,7 +686,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
 
     // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
-    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt);
+    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle);
 
     // Verify session creation with DB lookup
     const dbSession = store.getSessionById(sessionDbId);

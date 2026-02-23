@@ -17,7 +17,7 @@ import type {
  */
 export function getSessionById(db: Database, id: number): SessionBasic | null {
   const stmt = db.prepare(`
-    SELECT id, content_session_id, memory_session_id, project, user_prompt
+    SELECT id, content_session_id, memory_session_id, project, user_prompt, custom_title
     FROM sdk_sessions
     WHERE id = ?
     LIMIT 1
@@ -38,7 +38,7 @@ export function getSdkSessionsBySessionIds(
 
   const placeholders = memorySessionIds.map(() => '?').join(',');
   const stmt = db.prepare(`
-    SELECT id, content_session_id, memory_session_id, project, user_prompt,
+    SELECT id, content_session_id, memory_session_id, project, user_prompt, custom_title,
            started_at, started_at_epoch, completed_at, completed_at_epoch, status
     FROM sdk_sessions
     WHERE memory_session_id IN (${placeholders})

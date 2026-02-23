@@ -33,6 +33,7 @@ export class MigrationRunner {
     this.addFailedAtEpochColumn();
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
+    this.addSessionCustomTitleColumn();
   }
 
   /**
@@ -838,5 +839,24 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+  }
+
+  /**
+   * Add custom_title column to sdk_sessions for agent attribution (migration 23)
+   * Allows callers (e.g. Maestro agents) to label sessions with a human-readable name.
+   */
+  private addSessionCustomTitleColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(23) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'custom_title');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN custom_title TEXT');
+      logger.debug('DB', 'Added custom_title column to sdk_sessions table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
   }
 }
