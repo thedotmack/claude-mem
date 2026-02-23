@@ -81,7 +81,7 @@ describe('SDKAgent Effort Configuration', () => {
     it('should return modelId from settings', () => {
       // Uses a non-existent path so it falls back to defaults
       const options = getSDKOptions('/tmp/nonexistent-settings-test-effort.json');
-      expect(options.modelId).toBe('claude-sonnet-4-5');
+      expect(options.modelId).toBe('claude-haiku-4-5');
     });
 
     it('should return undefined effort when setting is empty (default)', () => {
