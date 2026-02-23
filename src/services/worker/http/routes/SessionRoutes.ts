@@ -730,16 +730,22 @@ export class SessionRoutes extends BaseRouteHandler {
     // Step 5: Save cleaned user prompt
     store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt);
 
+    // Step 6: Check if SDK agent is already running for this session (#1079)
+    // If contextInjected is true, the hook should skip re-initializing the SDK agent
+    const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
+
     // Debug-level log since CREATED already logged the key info
     logger.debug('SESSION', 'User prompt saved', {
       sessionId: sessionDbId,
-      promptNumber
+      promptNumber,
+      contextInjected
     });
 
     res.json({
       sessionDbId,
       promptNumber,
-      skipped: false
+      skipped: false,
+      contextInjected
     });
   });
 }

@@ -69,11 +69,12 @@ export const sessionInitHandler: EventHandler = {
       promptNumber: number;
       skipped?: boolean;
       reason?: string;
+      contextInjected?: boolean;
     };
     const sessionDbId = initResult.sessionDbId;
     const promptNumber = initResult.promptNumber;
 
-    logger.debug('HOOK', 'session-init: Received from /api/sessions/init', { sessionDbId, promptNumber, skipped: initResult.skipped });
+    logger.debug('HOOK', 'session-init: Received from /api/sessions/init', { sessionDbId, promptNumber, skipped: initResult.skipped, contextInjected: initResult.contextInjected });
 
     // Debug-level alignment log for detailed tracing
     logger.debug('HOOK', `[ALIGNMENT] Hook Entry | contentSessionId=${sessionId} | prompt#=${promptNumber} | sessionDbId=${sessionDbId}`);
@@ -81,6 +82,16 @@ export const sessionInitHandler: EventHandler = {
     // Check if prompt was entirely private (worker performs privacy check)
     if (initResult.skipped && initResult.reason === 'private') {
       logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | skipped=true | reason=private`, {
+        sessionId: sessionDbId
+      });
+      return { continue: true, suppressOutput: true };
+    }
+
+    // Skip SDK agent re-initialization if context was already injected for this session (#1079)
+    // The prompt was already saved to the database by /api/sessions/init above —
+    // no need to re-start the SDK agent on every turn
+    if (initResult.contextInjected) {
+      logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | skipped_agent_init=true | reason=context_already_injected`, {
         sessionId: sessionDbId
       });
       return { continue: true, suppressOutput: true };
