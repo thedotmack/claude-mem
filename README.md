@@ -198,7 +198,7 @@ See [Architecture Overview](https://docs.claude-mem.ai/architecture/overview) fo
 
 ## MCP Search Tools
 
-Claude-Mem provides intelligent memory search through **5 MCP tools** following a token-efficient **3-layer workflow pattern**:
+Claude-Mem provides intelligent memory search through **4 MCP tools** following a token-efficient **3-layer workflow pattern**:
 
 **The 3-Layer Workflow:**
 
@@ -211,7 +211,6 @@ Claude-Mem provides intelligent memory search through **5 MCP tools** following 
 - Start with `search` to get an index of results
 - Use `timeline` to see what was happening around specific observations
 - Use `get_observations` to fetch full details for relevant IDs
-- Use `save_memory` to manually store important information
 - **~10x token savings** by filtering before fetching details
 
 **Available MCP Tools:**
@@ -219,8 +218,6 @@ Claude-Mem provides intelligent memory search through **5 MCP tools** following 
 1. **`search`** - Search memory index with full-text queries, filters by type/date/project
 2. **`timeline`** - Get chronological context around a specific observation or query
 3. **`get_observations`** - Fetch full observation details by IDs (always batch multiple IDs)
-4. **`save_memory`** - Manually save a memory/observation for semantic search
-5. **`__IMPORTANT`** - Workflow documentation (always visible to Claude)
 
 **Example Usage:**
 
@@ -232,9 +229,6 @@ search(query="authentication bug", type="bugfix", limit=10)
 
 // Step 3: Fetch full details
 get_observations(ids=[123, 456])
-
-// Save important information manually
-save_memory(text="API requires auth header X-API-Key", title="API Auth")
 ```
 
 See [Search Tools Guide](https://docs.claude-mem.ai/usage/search-tools) for detailed examples.

@@ -2,6 +2,23 @@
 
 All notable changes to claude-mem.
 
+## [v10.3.3] - 2026-02-23
+
+### Bug Fixes
+
+- Fixed session context footer to reference the claude-mem skill instead of MCP search tools for accessing memories
+
+## [v10.3.2] - 2026-02-23
+
+## Bug Fixes
+
+- **Worker startup readiness**: Worker startup hook now waits for full DB/search readiness before proceeding, fixing the race condition where hooks would fire before the worker was initialized on first start (#1210)
+- **MCP tool naming**: Renamed `save_memory` to `save_observation` for consistency with the observation-based data model (#1210)
+- **MCP search instructions**: Updated MCP server tool descriptions to accurately reflect the 3-layer search workflow (#1210)
+- **Installer hosting**: Serve installer JS from install.cmem.ai instead of GitHub raw URLs for reliability
+- **Installer routing**: Added rewrite rule so install.cmem.ai root path correctly serves the install script
+- **Installer build**: Added compiled installer dist so CLI installation works out of the box
+
 ## [v10.3.1] - 2026-02-19
 
 ## Fix: Prevent Duplicate Worker Daemons and Zombie Processes
@@ -1421,33 +1438,4 @@ claude-mem cursor install
 ```
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.10...v8.5.0
-
-## [v8.2.10] - 2025-12-30
-
-## Bug Fixes
-
-- **Auto-restart worker on version mismatch** (#484): When the plugin updates but the worker was already running on the old version, the worker now automatically restarts instead of failing with 400 errors.
-
-### Changes
-- `/api/version` endpoint now returns the built-in version (compiled at build time) instead of reading from disk
-- `worker-service start` command checks for version mismatch and auto-restarts if needed
-- Downgraded hook version mismatch warning to debug logging (now handled by auto-restart)
-
-Thanks @yungweng for the detailed bug report!
-
-## [v8.2.9] - 2025-12-29
-
-## Bug Fixes
-
-- **Worker Service**: Remove file-based locking and improve Windows stability
-  - Replaced file-based locking with health-check-first approach for cleaner mutual exclusion
-  - Removed AbortSignal.timeout() calls to reduce Bun libuv assertion errors on Windows
-  - Added 500ms shutdown delays on Windows to prevent zombie ports
-  - Reduced hook timeout values for improved responsiveness
-  - Increased worker readiness polling duration from 5s to 15s
-
-## Internal Changes
-
-- Updated worker CLI scripts to reference worker-service.cjs directly
-- Simplified hook command configurations
 
