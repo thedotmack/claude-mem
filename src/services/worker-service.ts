@@ -385,9 +385,14 @@ export class WorkerService {
         runOneTimeChromaMigration();
       }
 
-      // Initialize ChromaMcpManager (lazy - connects on first use via ChromaSync)
-      this.chromaMcpManager = ChromaMcpManager.getInstance();
-      logger.info('SYSTEM', 'ChromaMcpManager initialized (lazy - connects on first use)');
+      // Initialize ChromaMcpManager only if Chroma is enabled
+      const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
+      if (chromaEnabled) {
+        this.chromaMcpManager = ChromaMcpManager.getInstance();
+        logger.info('SYSTEM', 'ChromaMcpManager initialized (lazy - connects on first use)');
+      } else {
+        logger.info('SYSTEM', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, skipping ChromaMcpManager');
+      }
 
       const modeId = settings.CLAUDE_MEM_MODE;
       ModeManager.getInstance().loadMode(modeId);

@@ -177,6 +177,7 @@ export class ChromaMcpManager {
   private buildCommandArgs(): string[] {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const chromaMode = settings.CLAUDE_MEM_CHROMA_MODE || 'local';
+    const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || settings.CLAUDE_MEM_PYTHON_VERSION || '3.13';
 
     if (chromaMode === 'remote') {
       const chromaHost = settings.CLAUDE_MEM_CHROMA_HOST || '127.0.0.1';
@@ -187,6 +188,7 @@ export class ChromaMcpManager {
       const chromaApiKey = settings.CLAUDE_MEM_CHROMA_API_KEY || '';
 
       const args = [
+        '--python', pythonVersion,
         'chroma-mcp',
         '--client-type', 'http',
         '--host', chromaHost,
@@ -214,9 +216,10 @@ export class ChromaMcpManager {
 
     // Local mode: persistent client with data directory
     return [
+      '--python', pythonVersion,
       'chroma-mcp',
       '--client-type', 'persistent',
-      '--data-dir', DEFAULT_CHROMA_DATA_DIR
+      '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
     ];
   }
 
@@ -235,10 +238,18 @@ export class ChromaMcpManager {
       arguments: JSON.stringify(toolArguments).slice(0, 200)
     });
 
-    const result = await this.client!.callTool({
-      name: toolName,
-      arguments: toolArguments
-    });
+    let result;
+    try {
+      result = await this.client!.callTool({
+        name: toolName,
+        arguments: toolArguments
+      });
+    } catch (transportError) {
+      // Transport error: chroma-mcp subprocess likely panicked or died (e.g., HNSW index corruption)
+      // Mark connection as dead so the next call triggers reconnect
+      this.connected = false;
+      throw new Error(`chroma-mcp transport error during "${toolName}": ${transportError instanceof Error ? transportError.message : String(transportError)}`);
+    }
 
     // MCP tools signal errors via isError flag on the CallToolResult
     if (result.isError) {
