@@ -62,7 +62,7 @@ export class SettingsDefaultsManager {
    * Default values for all settings
    */
   private static readonly DEFAULTS: SettingsDefaults = {
-    MAGIC_CLAUDE_MEM_MODEL: 'claude-sonnet-4-5',
+    MAGIC_CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
     MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     MAGIC_CLAUDE_MEM_WORKER_PORT: '37777',
     MAGIC_CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
@@ -228,6 +228,18 @@ export class SettingsDefaultsManager {
           console.log('[SETTINGS] Migrated CLAUDE_MEM_* keys to MAGIC_CLAUDE_MEM_*:', settingsPath);
         } catch (error) {
           console.warn('[SETTINGS] Failed to auto-migrate CLAUDE_MEM_* settings:', settingsPath, error);
+        }
+      }
+
+      // MIGRATION: Default model claude-sonnet-4-5 → claude-haiku-4-5
+      // Auto-generated settings files shipped with sonnet as default; haiku is sufficient for observation processing
+      if (flatSettings.MAGIC_CLAUDE_MEM_MODEL === 'claude-sonnet-4-5') {
+        flatSettings.MAGIC_CLAUDE_MEM_MODEL = 'claude-haiku-4-5';
+        try {
+          writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
+          console.log('[SETTINGS] Migrated default model from claude-sonnet-4-5 to claude-haiku-4-5:', settingsPath);
+        } catch (error) {
+          console.warn('[SETTINGS] Failed to auto-migrate default model:', settingsPath, error);
         }
       }
 

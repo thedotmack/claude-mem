@@ -330,6 +330,39 @@ describe('SettingsDefaultsManager', () => {
       });
     });
 
+    describe('default model migration (sonnet → haiku)', () => {
+      it('should migrate claude-sonnet-4-5 to claude-haiku-4-5 in memory and on disk', () => {
+        const settings = { MAGIC_CLAUDE_MEM_MODEL: 'claude-sonnet-4-5' };
+        writeFileSync(settingsPath, JSON.stringify(settings));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.MAGIC_CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8')) as ParsedSettings;
+        expect(parsed.MAGIC_CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5');
+      });
+
+      it('should not migrate if model is already claude-haiku-4-5', () => {
+        const settings = { MAGIC_CLAUDE_MEM_MODEL: 'claude-haiku-4-5' };
+        writeFileSync(settingsPath, JSON.stringify(settings));
+        const originalContent = readFileSync(settingsPath, 'utf-8');
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.MAGIC_CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5');
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(originalContent);
+      });
+
+      it('should not migrate if user chose a different model', () => {
+        const settings = { MAGIC_CLAUDE_MEM_MODEL: 'claude-opus-4-5' };
+        writeFileSync(settingsPath, JSON.stringify(settings));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.MAGIC_CLAUDE_MEM_MODEL).toBe('claude-opus-4-5');
+      });
+    });
+
     describe('edge cases', () => {
       it('should handle empty object in file', () => {
         writeFileSync(settingsPath, '{}');
@@ -399,7 +432,7 @@ describe('SettingsDefaultsManager', () => {
 
   describe('get', () => {
     it('should return default value for key', () => {
-      expect(SettingsDefaultsManager.get('MAGIC_CLAUDE_MEM_MODEL')).toBe('claude-sonnet-4-5');
+      expect(SettingsDefaultsManager.get('MAGIC_CLAUDE_MEM_MODEL')).toBe('claude-haiku-4-5');
       expect(SettingsDefaultsManager.get('MAGIC_CLAUDE_MEM_WORKER_PORT')).toBe('37777');
     });
   });
