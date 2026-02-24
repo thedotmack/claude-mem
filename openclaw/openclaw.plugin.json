@@ -6,7 +6,7 @@
   "version": "1.0.0",
   "author": "thedotmack",
   "homepage": "https://claude-mem.com",
-  "skills": ["skills/make-plan", "skills/do-plan"],
+  "skills": ["skills/make-plan", "skills/do"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
