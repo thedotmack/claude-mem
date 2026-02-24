@@ -2,6 +2,16 @@
 
 All notable changes to claude-mem.
 
+## [v10.4.1] - 2026-02-24
+
+### Refactor
+- **Skills Conversion**: Converted `/make-plan` and `/do` commands into first-class skills in `plugin/skills/`.
+- **Organization**: Centralized planning and execution instructions alongside `mem-search`.
+- **Compatibility**: Added symlinks for `openclaw/skills/` to ensure seamless integration with OpenClaw.
+
+### Chore
+- **Version Bump**: Aligned all package and plugin manifests to v10.4.1.
+
 ## [v10.4.0] - 2026-02-24
 
 ## v10.4.0 — Stability & Platform Hardening
@@ -1386,29 +1396,4 @@ Fixed a critical memory leak where Claude SDK child processes were never termina
 - Maintains crash recovery functionality with proper resource cleanup
 
 Thanks to @yonnock for the detailed bug report and investigation in #499!
-
-## [v8.5.1] - 2025-12-30
-
-## Bug Fix
-
-**Fixed**: Migration 17 column rename failing for databases in intermediate states (#481)
-
-### Problem
-Migration 17 renamed session ID columns but used a single check to determine if ALL tables were migrated. This caused errors for databases in partial migration states:
-- `no such column: sdk_session_id` (when columns already renamed)
-- `table observations has no column named memory_session_id` (when not renamed)
-
-### Solution
-- Rewrote migration 17 to check **each table individually** before renaming
-- Added `safeRenameColumn()` helper that handles all edge cases gracefully
-- Handles all database states: fresh, old, and partially migrated
-
-### Who was affected
-- Users upgrading from pre-v8.2.6 versions
-- Users whose migration was interrupted (crash, restart, etc.)
-- Users who restored database from backup
-
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
