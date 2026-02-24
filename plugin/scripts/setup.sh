@@ -14,6 +14,14 @@ else
   ROOT="$CLAUDE_PLUGIN_ROOT"
 fi
 
+# Persist the resolved plugin root so Stop hooks can find it without
+# CLAUDE_PLUGIN_ROOT (which Claude Code does not inject in Stop contexts).
+CLAUDE_MEM_DIR="${CLAUDE_MEM_DATA_DIR:-$HOME/.claude-mem}"
+mkdir -p "$CLAUDE_MEM_DIR"
+printf '%s' "$ROOT" > "$CLAUDE_MEM_DIR/.plugin-root"
+cp -f "$ROOT/scripts/stop-hook.sh" "$CLAUDE_MEM_DIR/stop-hook.sh" 2>/dev/null || true
+chmod +x "$CLAUDE_MEM_DIR/stop-hook.sh" 2>/dev/null || true
+
 MARKER="$ROOT/.install-version"
 PKG_JSON="$ROOT/package.json"
 
