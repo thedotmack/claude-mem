@@ -2,6 +2,74 @@
 
 All notable changes to claude-mem.
 
+## [v10.4.0] - 2026-02-24
+
+## v10.4.0 — Stability & Platform Hardening
+
+Massive reliability release: 30+ root-cause bug fixes across 10 triage phases, plus new features for agent attribution, Chroma control, and broader platform support.
+
+### New Features
+
+- **Session custom titles** — Agents can now set `custom_title` on sessions for attribution (migration 23, new endpoint)
+- **Chroma toggle** — `CLAUDE_MEM_CHROMA_ENABLED` setting allows SQLite-only fallback mode (#707)
+- **Plugin disabled state** — Early exit check in all hook entry points when plugin is disabled (#781)
+- **Context re-injection guard** — `contextInjected` session flag prevents re-injecting context on every UserPromptSubmit turn (#1079)
+
+### Bug Fixes
+
+#### Data Integrity
+- SHA-256 content-hash deduplication on observation INSERT (migration 22 with backfill + index)
+- Project name collision fix: `getCurrentProjectName()` now returns `parent/basename`
+- Empty project string guard with cwd-derived fallback
+- Stuck `isProcessing` reset: pending work older than 5 minutes auto-clears
+
+#### ChromaDB
+- Python version pinning in uvx args for both local and remote mode (#1196, #1206, #1208)
+- Windows backslash-to-forward-slash path conversion for `--data-dir` (#1199)
+- Metadata sanitization: filter null/undefined/empty values in `addDocuments()` (#1183, #1188)
+- Transport error auto-reconnect in `callTool()` (#1162)
+- Stale transport retry with transparent reconnect (#1131)
+
+#### Hook Lifecycle
+- Suppress `process.stderr.write` in `hookCommand()` to prevent diagnostic output showing as error UI (#1181)
+- Route all `console.error()` through logger instead of stderr
+- Verified all 7 handlers return `suppressOutput: true` (#598, #784)
+
+#### Worker Lifecycle
+- PID file mtime guard prevents concurrent restart storms (#1145)
+- `getInstalledPluginVersion()` ENOENT/EBUSY handling (#1042)
+
+#### SQLite Migrations
+- Schema initialization always creates core tables via `CREATE TABLE IF NOT EXISTS`
+- Migrations 5-7 check actual DB state instead of version tracking (fixes version collision between old/new migration systems, #979)
+- Crash-safe temp table rebuilds
+
+#### Platform Support
+- **Windows**: `cmd.exe /c` uvx spawn, PowerShell `$_` elimination with WQL filtering, `windowsHide: true`, FTS5 runtime probe with fallback (#1190, #1192, #1199, #1024, #1062, #1048, #791)
+- **Cursor IDE**: Adapter field fallbacks, tolerant session-init validation (#838, #1049)
+- **Codex CLI**: `session_id` fallbacks, unknown platform tolerance, undefined guard (#744)
+
+#### API & Infrastructure
+- `/api/logs` OOM fix: tail-read replaces full-file `readFileSync` (64KB expanding chunks, 10MB cap, #1203)
+- CORS: explicit methods and allowedHeaders (#1029)
+- MCP type coercion for batch endpoints: string-to-array for `ids` and `memorySessionIds`
+- Defensive observation error handling returns 200 on recoverable errors instead of 500
+- `.git/` directory write guard on all 4 CLAUDE.md/AGENTS.md write sites (#1165)
+
+#### Stale AbortController Fix
+- `lastGeneratorActivity` timestamp tracking with 30s timeout (#1099)
+- Stale generator detection + abort + restart in `ensureGeneratorRunning`
+- `AbortSignal.timeout(30000)` in `deleteSession` prevents indefinite hang
+
+### Installation
+- `resolveRoot()` replaces hardcoded marketplace path using `CLAUDE_PLUGIN_ROOT` env var (#1128, #1166)
+- `installCLI()` path correction and `verifyCriticalModules()` post-install check
+- Build-time distribution verification for skills, hooks, and plugin manifest (#1187)
+
+### Testing
+- 50+ new tests across hook lifecycle, context re-injection, plugin distribution, migration runner, data integrity, stale abort controller, logs tail-read, CORS, MCP type coercion, and smart-install
+- 68 files changed, ~4200 insertions, ~900 deletions
+
 ## [v10.3.3] - 2026-02-23
 
 ### Bug Fixes
@@ -1343,99 +1411,4 @@ Migration 17 renamed session ID columns but used a single check to determine if 
 ---
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v8.5.0] - 2025-12-30
-
-# Cursor Support Now Available 🎉
-
-This is a major release introducing **full Cursor IDE support**. Claude-mem now works with Cursor, bringing persistent AI memory to Cursor users with or without a Claude Code subscription.
-
-## Highlights
-
-**Give Cursor persistent memory.** Every Cursor session starts fresh - your AI doesn't remember what it worked on yesterday. Claude-mem changes that. Your agent builds cumulative knowledge about your codebase, decisions, and patterns over time.
-
-### Works Without Claude Code
-
-You can now use claude-mem with Cursor using free AI providers:
-- **Gemini** (recommended): 1,500 free requests/day, no credit card required
-- **OpenRouter**: Access to 100+ models including free options
-- **Claude SDK**: For Claude Code subscribers
-
-### Cross-Platform Support
-
-Full support for all major platforms:
-- **macOS**: Bash scripts with `jq` and `curl`
-- **Linux**: Same toolchain as macOS
-- **Windows**: Native PowerShell scripts, no WSL required
-
-## New Features
-
-### Interactive Setup Wizard (`bun run cursor:setup`)
-A guided installer that:
-- Detects your environment (Claude Code present or not)
-- Helps you choose and configure an AI provider
-- Installs Cursor hooks automatically
-- Starts the worker service
-- Verifies everything is working
-
-### Cursor Lifecycle Hooks
-Complete hook integration with Cursor's native hook system:
-- `session-init.sh/.ps1` - Session start with context injection
-- `user-message.sh/.ps1` - User prompt capture
-- `save-observation.sh/.ps1` - Tool usage logging
-- `save-file-edit.sh/.ps1` - File edit tracking
-- `session-summary.sh/.ps1` - Session end summary
-- `context-inject.sh/.ps1` - Load relevant history
-
-### Context Injection via `.cursor/rules`
-Relevant past context is automatically injected into Cursor sessions via the `.cursor/rules/claude-mem-context.mdc` file, giving your AI immediate awareness of prior work.
-
-### Project Registry
-Multi-project support with automatic project detection:
-- Projects registered in `~/.claude-mem/cursor-projects.json`
-- Context automatically scoped to current project
-- Works across multiple workspaces simultaneously
-
-### MCP Search Tools
-Full MCP server integration for Cursor:
-- `search` - Find observations by query, date, type
-- `timeline` - Get context around specific observations
-- `get_observations` - Fetch full details for filtered IDs
-
-## New Commands
-
-| Command | Description |
-|---------|-------------|
-| `bun run cursor:setup` | Interactive setup wizard |
-| `bun run cursor:install` | Install Cursor hooks |
-| `bun run cursor:uninstall` | Remove Cursor hooks |
-| `bun run cursor:status` | Check hook installation status |
-
-## Documentation
-
-Full documentation available at [docs.claude-mem.ai/cursor](https://docs.claude-mem.ai/cursor):
-- Cursor Integration Overview
-- Gemini Setup Guide (free tier)
-- OpenRouter Setup Guide
-- Troubleshooting
-
-## Getting Started
-
-### For Cursor-Only Users (No Claude Code)
-
-```bash
-git clone https://github.com/thedotmack/claude-mem.git
-cd claude-mem && bun install && bun run build
-bun run cursor:setup
-```
-
-### For Claude Code Users
-
-```bash
-/plugin marketplace add thedotmack/claude-mem
-/plugin install claude-mem
-claude-mem cursor install
-```
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.10...v8.5.0
 

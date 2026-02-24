@@ -155,7 +155,8 @@ export class SessionManager {
       conversationHistory: [],  // Initialize empty - will be populated by agents
       currentProvider: null,  // Will be set when generator starts
       consecutiveRestarts: 0,  // Track consecutive restart attempts to prevent infinite loops
-      processingMessageIds: []  // CLAIM-CONFIRM: Track message IDs for confirmProcessed()
+      processingMessageIds: [],  // CLAIM-CONFIRM: Track message IDs for confirmProcessed()
+      lastGeneratorActivity: Date.now()  // Initialize for stale detection (Issue #1099)
     };
 
     logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
@@ -286,10 +287,16 @@ export class SessionManager {
     // 1. Abort the SDK agent
     session.abortController.abort();
 
-    // 2. Wait for generator to finish
+    // 2. Wait for generator to finish (with 30s timeout to prevent stale stall, Issue #1099)
     if (session.generatorPromise) {
-      await session.generatorPromise.catch(() => {
+      const generatorDone = session.generatorPromise.catch(() => {
         logger.debug('SYSTEM', 'Generator already failed, cleaning up', { sessionId: session.sessionDbId });
+      });
+      const timeoutDone = new Promise<void>(resolve => {
+        AbortSignal.timeout(30_000).addEventListener('abort', () => resolve(), { once: true });
+      });
+      await Promise.race([generatorDone, timeoutDone]).then(() => {}, () => {
+        logger.warn('SESSION', 'Generator did not exit within 30s after abort, forcing cleanup (#1099)', { sessionDbId });
       });
     }
 
@@ -467,6 +474,9 @@ export class SessionManager {
       } else {
         session.earliestPendingTimestamp = Math.min(session.earliestPendingTimestamp, message._originalTimestamp);
       }
+
+      // Update generator activity for stale detection (Issue #1099)
+      session.lastGeneratorActivity = Date.now();
 
       yield message;
     }

@@ -46,6 +46,10 @@ export class SessionSearch {
    * - Tables maintained but search paths removed
    * - Triggers still fire to keep tables synchronized
    *
+   * FTS5 may be unavailable on some platforms (e.g., Bun on Windows #791).
+   * When unavailable, we skip FTS table creation — search falls back to
+   * ChromaDB (vector) and LIKE queries (structured filters) which are unaffected.
+   *
    * TODO: Remove FTS5 infrastructure in future major version (v7.0.0)
    */
   private ensureFTSTables(): void {
@@ -58,91 +62,117 @@ export class SessionSearch {
       return;
     }
 
+    // Runtime check: verify FTS5 is available before attempting to create tables.
+    // bun:sqlite on Windows may not include the FTS5 extension (#791).
+    if (!this.isFts5Available()) {
+      logger.warn('DB', 'FTS5 not available on this platform — skipping FTS table creation (search uses ChromaDB)');
+      return;
+    }
+
     logger.info('DB', 'Creating FTS5 tables');
 
-    // Create observations_fts virtual table
-    this.db.run(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
-        title,
-        subtitle,
-        narrative,
-        text,
-        facts,
-        concepts,
-        content='observations',
-        content_rowid='id'
-      );
-    `);
+    try {
+      // Create observations_fts virtual table
+      this.db.run(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
+          title,
+          subtitle,
+          narrative,
+          text,
+          facts,
+          concepts,
+          content='observations',
+          content_rowid='id'
+        );
+      `);
 
-    // Populate with existing data
-    this.db.run(`
-      INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-      SELECT id, title, subtitle, narrative, text, facts, concepts
-      FROM observations;
-    `);
-
-    // Create triggers for observations
-    this.db.run(`
-      CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
+      // Populate with existing data
+      this.db.run(`
         INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-      END;
+        SELECT id, title, subtitle, narrative, text, facts, concepts
+        FROM observations;
+      `);
 
-      CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
-        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-      END;
+      // Create triggers for observations
+      this.db.run(`
+        CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
+          INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+          VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+        END;
 
-      CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
-        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-      END;
-    `);
+        CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
+          INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+          VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+        END;
 
-    // Create session_summaries_fts virtual table
-    this.db.run(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
-        request,
-        investigated,
-        learned,
-        completed,
-        next_steps,
-        notes,
-        content='session_summaries',
-        content_rowid='id'
-      );
-    `);
+        CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
+          INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+          VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+          INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+          VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+        END;
+      `);
 
-    // Populate with existing data
-    this.db.run(`
-      INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-      SELECT id, request, investigated, learned, completed, next_steps, notes
-      FROM session_summaries;
-    `);
+      // Create session_summaries_fts virtual table
+      this.db.run(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
+          request,
+          investigated,
+          learned,
+          completed,
+          next_steps,
+          notes,
+          content='session_summaries',
+          content_rowid='id'
+        );
+      `);
 
-    // Create triggers for session_summaries
-    this.db.run(`
-      CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
+      // Populate with existing data
+      this.db.run(`
         INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-      END;
+        SELECT id, request, investigated, learned, completed, next_steps, notes
+        FROM session_summaries;
+      `);
 
-      CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
-        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
-      END;
+      // Create triggers for session_summaries
+      this.db.run(`
+        CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
+          INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+          VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+        END;
 
-      CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
-        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
-        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-      END;
-    `);
+        CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
+          INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+          VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+        END;
 
-    logger.info('DB', 'FTS5 tables created successfully');
+        CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
+          INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+          VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+          INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+          VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+        END;
+      `);
+
+      logger.info('DB', 'FTS5 tables created successfully');
+    } catch (error) {
+      // FTS5 creation failed at runtime despite probe succeeding — degrade gracefully
+      logger.warn('DB', 'FTS5 table creation failed — search will use ChromaDB and LIKE queries', {}, error as Error);
+    }
+  }
+
+  /**
+   * Probe whether the FTS5 extension is available in the current SQLite build.
+   * Creates and immediately drops a temporary FTS5 table.
+   */
+  private isFts5Available(): boolean {
+    try {
+      this.db.run('CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)');
+      this.db.run('DROP TABLE _fts5_probe');
+      return true;
+    } catch {
+      return false;
+    }
   }
 
 

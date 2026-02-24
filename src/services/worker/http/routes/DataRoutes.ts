@@ -114,7 +114,12 @@ export class DataRoutes extends BaseRouteHandler {
    * Body: { ids: number[], orderBy?: 'date_desc' | 'date_asc', limit?: number, project?: string }
    */
   private handleGetObservationsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    const { ids, orderBy, limit, project } = req.body;
+    let { ids, orderBy, limit, project } = req.body;
+
+    // Coerce string-encoded arrays from MCP clients (e.g. "[1,2,3]" or "1,2,3")
+    if (typeof ids === 'string') {
+      try { ids = JSON.parse(ids); } catch { ids = ids.split(',').map(Number); }
+    }
 
     if (!ids || !Array.isArray(ids)) {
       this.badRequest(res, 'ids must be an array of numbers');
@@ -163,7 +168,12 @@ export class DataRoutes extends BaseRouteHandler {
    * Body: { memorySessionIds: string[] }
    */
   private handleGetSdkSessionsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    const { memorySessionIds } = req.body;
+    let { memorySessionIds } = req.body;
+
+    // Coerce string-encoded arrays from MCP clients (e.g. '["a","b"]' or "a,b")
+    if (typeof memorySessionIds === 'string') {
+      try { memorySessionIds = JSON.parse(memorySessionIds); } catch { memorySessionIds = memorySessionIds.split(',').map((s: string) => s.trim()); }
+    }
 
     if (!Array.isArray(memorySessionIds)) {
       this.badRequest(res, 'memorySessionIds must be an array');

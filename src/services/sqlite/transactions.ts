@@ -10,6 +10,7 @@ import { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import type { ObservationInput } from './observations/types.js';
 import type { SummaryInput } from './summaries/types.js';
+import { computeObservationContentHash, findDuplicateObservation } from './observations/store.js';
 
 /**
  * Result from storeObservations / storeObservationsAndMarkComplete transaction
@@ -63,15 +64,22 @@ export function storeObservationsAndMarkComplete(
   const storeAndMarkTx = db.transaction(() => {
     const observationIds: number[] = [];
 
-    // 1. Store all observations
+    // 1. Store all observations (with content-hash deduplication)
     const obsStmt = db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const observation of observations) {
+      const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+      const existing = findDuplicateObservation(db, contentHash, timestampEpoch);
+      if (existing) {
+        observationIds.push(existing.id);
+        continue;
+      }
+
       const result = obsStmt.run(
         memorySessionId,
         project,
@@ -85,6 +93,7 @@ export function storeObservationsAndMarkComplete(
         JSON.stringify(observation.files_modified),
         promptNumber || null,
         discoveryTokens,
+        contentHash,
         timestampIso,
         timestampEpoch
       );
@@ -174,15 +183,22 @@ export function storeObservations(
   const storeTx = db.transaction(() => {
     const observationIds: number[] = [];
 
-    // 1. Store all observations
+    // 1. Store all observations (with content-hash deduplication)
     const obsStmt = db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const observation of observations) {
+      const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+      const existing = findDuplicateObservation(db, contentHash, timestampEpoch);
+      if (existing) {
+        observationIds.push(existing.id);
+        continue;
+      }
+
       const result = obsStmt.run(
         memorySessionId,
         project,
@@ -196,6 +212,7 @@ export function storeObservations(
         JSON.stringify(observation.files_modified),
         promptNumber || null,
         discoveryTokens,
+        contentHash,
         timestampIso,
         timestampEpoch
       );

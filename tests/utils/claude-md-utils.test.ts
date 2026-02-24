@@ -222,6 +222,48 @@ describe('writeClaudeMdToFolder', () => {
   });
 });
 
+describe('issue #1165 - prevent CLAUDE.md inside .git directories', () => {
+  it('should not write CLAUDE.md when folder is inside .git/', () => {
+    const gitRefsFolder = join(tempDir, '.git', 'refs');
+    mkdirSync(gitRefsFolder, { recursive: true });
+
+    writeClaudeMdToFolder(gitRefsFolder, 'Should not be written');
+
+    const claudeMdPath = join(gitRefsFolder, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(false);
+  });
+
+  it('should not write CLAUDE.md when folder is .git itself', () => {
+    const gitFolder = join(tempDir, '.git');
+    mkdirSync(gitFolder, { recursive: true });
+
+    writeClaudeMdToFolder(gitFolder, 'Should not be written');
+
+    const claudeMdPath = join(gitFolder, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(false);
+  });
+
+  it('should not write CLAUDE.md to deeply nested .git path', () => {
+    const deepGitPath = join(tempDir, 'project', '.git', 'hooks');
+    mkdirSync(deepGitPath, { recursive: true });
+
+    writeClaudeMdToFolder(deepGitPath, 'Should not be written');
+
+    const claudeMdPath = join(deepGitPath, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(false);
+  });
+
+  it('should still write CLAUDE.md to normal folders', () => {
+    const normalFolder = join(tempDir, 'src', 'git-utils');
+    mkdirSync(normalFolder, { recursive: true });
+
+    writeClaudeMdToFolder(normalFolder, 'Should be written');
+
+    const claudeMdPath = join(normalFolder, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(true);
+  });
+});
+
 describe('updateFolderClaudeMdFiles', () => {
   it('should skip when filePaths is empty', async () => {
     const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));

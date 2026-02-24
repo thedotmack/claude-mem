@@ -12,7 +12,7 @@
  * Fixes #818: Worker fails to start on fresh install
  */
 import { spawnSync, spawn } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -52,6 +52,24 @@ function findBun() {
   }
 
   return null;
+}
+
+// Early exit if plugin is disabled in Claude Code settings (#781).
+// Sync read + JSON parse — fastest possible check before spawning Bun.
+function isPluginDisabledInClaudeSettings() {
+  try {
+    const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+    const settingsPath = join(configDir, 'settings.json');
+    if (!existsSync(settingsPath)) return false;
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    return settings?.enabledPlugins?.['claude-mem@thedotmack'] === false;
+  } catch {
+    return false;
+  }
+}
+
+if (isPluginDisabledInClaudeSettings()) {
+  process.exit(0);
 }
 
 // Get args: node bun-runner.js <script> [args...]

@@ -115,12 +115,22 @@ export async function httpShutdown(port: number): Promise<boolean> {
 
 /**
  * Get the plugin version from the installed marketplace package.json
- * This is the "expected" version that should be running
+ * This is the "expected" version that should be running.
+ * Returns 'unknown' on ENOENT/EBUSY (shutdown race condition, fix #1042).
  */
 export function getInstalledPluginVersion(): string {
-  const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-  return packageJson.version;
+  try {
+    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    return packageJson.version;
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'EBUSY') {
+      logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
+      return 'unknown';
+    }
+    throw error;
+  }
 }
 
 /**
@@ -155,8 +165,8 @@ export async function checkVersionMatch(port: number): Promise<VersionCheckResul
   const pluginVersion = getInstalledPluginVersion();
   const workerVersion = await getRunningWorkerVersion(port);
 
-  // If we can't get worker version, assume it matches (graceful degradation)
-  if (!workerVersion) {
+  // If either version is unknown/null, assume match (graceful degradation, fix #1042)
+  if (!workerVersion || pluginVersion === 'unknown') {
     return { matches: true, pluginVersion, workerVersion };
   }
 

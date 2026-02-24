@@ -64,6 +64,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_MOMENTUM_ENABLED: string;
   CLAUDE_MEM_MOMENTUM_DURATION_MINUTES: string;
   // Chroma Vector Database Configuration
+  CLAUDE_MEM_CHROMA_ENABLED: string;   // 'true' | 'false' - set to 'false' for SQLite-only mode
   CLAUDE_MEM_CHROMA_MODE: string;      // 'local' | 'remote'
   CLAUDE_MEM_CHROMA_HOST: string;
   CLAUDE_MEM_CHROMA_PORT: string;
@@ -130,6 +131,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_MOMENTUM_ENABLED: 'true',
     CLAUDE_MEM_MOMENTUM_DURATION_MINUTES: '5',
     // Chroma Vector Database Configuration
+    CLAUDE_MEM_CHROMA_ENABLED: 'true',         // Set to 'false' to disable Chroma and use SQLite-only search
     CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' uses persistent chroma-mcp via uvx, 'remote' connects to existing server
     CLAUDE_MEM_CHROMA_HOST: '127.0.0.1',
     CLAUDE_MEM_CHROMA_PORT: '8000',

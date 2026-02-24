@@ -398,9 +398,22 @@ export class PendingMessageStore {
   }
 
   /**
-   * Check if any session has pending work
+   * Check if any session has pending work.
+   * Excludes 'processing' messages stuck for >5 minutes (resets them to 'pending' as a side effect).
    */
   hasAnyPendingWork(): boolean {
+    // Reset stuck 'processing' messages older than 5 minutes before checking
+    const stuckCutoff = Date.now() - (5 * 60 * 1000);
+    const resetStmt = this.db.prepare(`
+      UPDATE pending_messages
+      SET status = 'pending', started_processing_at_epoch = NULL
+      WHERE status = 'processing' AND started_processing_at_epoch < ?
+    `);
+    const resetResult = resetStmt.run(stuckCutoff);
+    if (resetResult.changes > 0) {
+      logger.info('QUEUE', `STUCK_RESET | hasAnyPendingWork reset ${resetResult.changes} stuck processing message(s) older than 5 minutes`);
+    }
+
     const stmt = this.db.prepare(`
       SELECT COUNT(*) as count FROM pending_messages
       WHERE status IN ('pending', 'processing')
