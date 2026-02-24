@@ -7,34 +7,40 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
 
 /**
- * Resolve the marketplace root directory.
+ * Resolve the plugin root directory where dependencies should be installed.
  *
- * Claude Code may store plugins under either `~/.claude/plugins/` (legacy) or
- * `~/.config/claude/plugins/` (XDG-compliant, e.g. Nix-managed installs).
- * When `CLAUDE_PLUGIN_ROOT` is set we derive the base from it; otherwise we
- * probe both candidate paths and fall back to the legacy location.
+ * Priority:
+ * 1. CLAUDE_PLUGIN_ROOT env var (set by Claude Code for hooks — works for
+ *    both cache-based and marketplace installs)
+ * 2. Script location (dirname of this file, up one level from scripts/)
+ * 3. XDG path (~/.config/claude/plugins/marketplaces/thedotmack)
+ * 4. Legacy path (~/.claude/plugins/marketplaces/thedotmack)
  */
 function resolveRoot() {
-  const marketplaceRel = join('plugins', 'marketplaces', 'thedotmack');
-
-  // Derive from CLAUDE_PLUGIN_ROOT (e.g. .../plugins/cache/thedotmack/claude-mem/<ver>)
+  // CLAUDE_PLUGIN_ROOT is the authoritative location set by Claude Code
   if (process.env.CLAUDE_PLUGIN_ROOT) {
-    let dir = process.env.CLAUDE_PLUGIN_ROOT;
-    const cacheIndex = dir.indexOf(join('plugins', 'cache'));
-    if (cacheIndex !== -1) {
-      const base = dir.substring(0, cacheIndex);
-      const candidate = join(base, marketplaceRel);
-      if (existsSync(join(candidate, 'package.json'))) return candidate;
-    }
+    const root = process.env.CLAUDE_PLUGIN_ROOT;
+    if (existsSync(join(root, 'package.json'))) return root;
   }
 
-  // Probe XDG path first, then legacy
+  // Derive from script location (this file is in <root>/scripts/)
+  try {
+    const scriptDir = dirname(fileURLToPath(import.meta.url));
+    const candidate = dirname(scriptDir);
+    if (existsSync(join(candidate, 'package.json'))) return candidate;
+  } catch {
+    // import.meta.url not available
+  }
+
+  // Probe XDG path, then legacy
+  const marketplaceRel = join('plugins', 'marketplaces', 'thedotmack');
   const xdg = join(homedir(), '.config', 'claude', marketplaceRel);
   if (existsSync(join(xdg, 'package.json'))) return xdg;
 
@@ -275,12 +281,42 @@ function installDeps() {
   }));
 }
 
+/**
+ * Verify that critical runtime modules are resolvable from the install directory.
+ * Returns true if all critical modules exist, false otherwise.
+ */
+function verifyCriticalModules() {
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+  const dependencies = Object.keys(pkg.dependencies || {});
+
+  const missing = [];
+  for (const dep of dependencies) {
+    const modulePath = join(ROOT, 'node_modules', ...dep.split('/'));
+    if (!existsSync(modulePath)) {
+      missing.push(dep);
+    }
+  }
+
+  if (missing.length > 0) {
+    console.error(`❌ Post-install check failed: missing modules: ${missing.join(', ')}`);
+    return false;
+  }
+
+  return true;
+}
+
 // Main execution
 try {
   if (!isBunInstalled()) installBun();
   if (!isUvInstalled()) installUv();
   if (needsInstall()) {
     installDeps();
+
+    if (!verifyCriticalModules()) {
+      console.error('❌ Dependencies could not be installed. Plugin may not work correctly.');
+      process.exit(1);
+    }
+
     console.error('✅ Dependencies installed');
   }
 } catch (e) {
