@@ -74,6 +74,8 @@ export interface ObservationRecord {
   source_files?: string;
   prompt_number?: number;
   discovery_tokens?: number;
+  read_count?: number;
+  last_read_at?: number | null;
 }
 
 /**

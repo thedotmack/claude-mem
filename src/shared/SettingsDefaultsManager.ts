@@ -193,8 +193,8 @@ export class SettingsDefaultsManager {
             mkdirSync(dir, { recursive: true });
           }
           writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
-          // Use console instead of logger to avoid circular dependency
-          console.log('[SETTINGS] Created settings file with defaults:', settingsPath);
+          // Use console.error instead of logger/stdout to avoid polluting hook JSON output
+          console.error('[SETTINGS] Created settings file with defaults:', settingsPath);
         } catch (error) {
           console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error);
         }
@@ -214,7 +214,7 @@ export class SettingsDefaultsManager {
         // Auto-migrate the file to flat schema
         try {
           writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
-          console.log('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
+          console.error('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
         } catch (error) {
           console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error);
           // Continue with in-memory migration even if write fails

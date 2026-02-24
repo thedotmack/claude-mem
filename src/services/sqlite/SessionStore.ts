@@ -48,6 +48,7 @@ export class SessionStore {
     this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
     this.addOnUpdateCascadeToForeignKeys();
+    this.ensureReadCountColumns();
   }
 
   /**
@@ -823,6 +824,26 @@ export class SessionStore {
       this.db.run('PRAGMA foreign_keys = ON');
       throw error;
     }
+  }
+
+  /**
+   * Add read_count and last_read_at columns to observations (migration 22)
+   * Tracks how frequently each observation is fetched/read by Claude.
+   */
+  private ensureReadCountColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(22) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const cols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    if (!cols.some(c => c.name === 'read_count')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN read_count INTEGER DEFAULT 0');
+    }
+    if (!cols.some(c => c.name === 'last_read_at')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN last_read_at INTEGER');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+    logger.debug('DB', 'Added read_count and last_read_at columns to observations');
   }
 
   /**
