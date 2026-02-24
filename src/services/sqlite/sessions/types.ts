@@ -41,6 +41,18 @@ export interface SessionWithStatus {
 }
 
 /**
+ * Active session row returned by getActiveSessions
+ * Contains the minimal fields needed for stale session detection
+ */
+export interface ActiveSessionRow {
+  id: number;
+  content_session_id: string;
+  project: string;
+  user_prompt: string | null;
+  started_at_epoch: number;
+}
+
+/**
  * Session summary with all detail fields
  */
 export interface SessionSummaryDetail {

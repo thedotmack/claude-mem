@@ -1,6 +1,12 @@
 import { Database } from './sqlite-compat.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import {
+  getActiveSessions as _getActiveSessions,
+  closeSessionById as _closeSessionById,
+  closeStaleSessionsOlderThan as _closeStaleSessionsOlderThan,
+} from './sessions/active.js';
+import type { ActiveSessionRow } from './sessions/types.js';
 import type {
   TableColumnInfo,
   IndexInfo,
@@ -793,6 +799,21 @@ export class SessionStore {
       SET status = 'completed', completed_at = ?, completed_at_epoch = ?, subprocess_pid = NULL
       WHERE id = ? AND status = 'active'
     `).run(new Date(now).toISOString(), now, sessionDbId);
+  }
+
+  /** Get all sessions with status = 'active', ordered newest first. */
+  getActiveSessions(): ActiveSessionRow[] {
+    return _getActiveSessions(this.db);
+  }
+
+  /** Close a single active session by ID. Returns true if closed. */
+  closeActiveSessionById(sessionDbId: number): boolean {
+    return _closeSessionById(this.db, sessionDbId);
+  }
+
+  /** Close all active sessions older than thresholdEpochMs. Returns count closed. */
+  closeStaleSessionsOlderThan(thresholdEpochMs: number): number {
+    return _closeStaleSessionsOlderThan(this.db, thresholdEpochMs);
   }
 
   /**

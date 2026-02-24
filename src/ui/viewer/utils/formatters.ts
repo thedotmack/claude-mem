@@ -35,3 +35,19 @@ export function formatBytes(bytes?: number): string {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
+
+/**
+ * Format epoch timestamp as relative duration from now
+ * @param epochMs - Timestamp in milliseconds since epoch
+ * @returns Compact relative time string like "2m", "3h", "1d"
+ */
+export function formatRelativeTime(epochMs: number): string {
+  const diffMs = Date.now() - epochMs;
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${String(minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${String(hours)}h`;
+  const days = Math.floor(hours / 24);
+  return `${String(days)}d`;
+}

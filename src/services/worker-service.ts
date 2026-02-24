@@ -70,6 +70,7 @@ import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
+import { ActiveSessionRoutes } from './worker/http/routes/ActiveSessionRoutes.js';
 
 // Process management for zombie cleanup (Issue #737)
 import { startOrphanReaper } from './worker/ProcessRegistry.js';
@@ -221,6 +222,7 @@ export class WorkerService {
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
+    this.server.registerRoutes(new ActiveSessionRoutes(this.dbManager));
 
     // Early handler for /api/context/inject to avoid 404 during startup
     this.server.app.get('/api/context/inject', (req, res, next) => {

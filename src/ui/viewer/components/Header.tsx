@@ -1,7 +1,9 @@
 import React from 'react';
 import { SearchBar } from './SearchBar';
 import { AnalyticsBar } from './AnalyticsBar';
+import { ActiveSessionsBadge } from './ActiveSessionsBadge';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
+import { useActiveSessions } from '../hooks/useActiveSessions';
 
 interface HeaderProps {
   projects: string[];
@@ -37,6 +39,7 @@ export function Header({
   project,
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
+  const activeSessions = useActiveSessions();
 
   return (
       <header className="header" role="banner">
@@ -58,6 +61,13 @@ export function Header({
         </h1>
         <AnalyticsBar project={project} />
         <div className="status">
+          <ActiveSessionsBadge
+            sessions={activeSessions.sessions}
+            staleCount={activeSessions.staleCount}
+            totalCount={activeSessions.totalCount}
+            onCloseSession={activeSessions.closeSession}
+            onCloseAllStale={activeSessions.closeAllStale}
+          />
           <SearchBar
             query={query}
             onQueryChange={onQueryChange}
