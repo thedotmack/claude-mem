@@ -32,7 +32,7 @@ export class SessionManager {
 
   /**
    * Get current provider setting (cached for performance)
-   * Returns 'claude', 'gemini', 'gemini-cli', or 'openrouter'
+   * Returns 'claude', 'gemini', or 'openrouter'
    */
   private getCurrentProvider(): string {
     const now = Date.now();
