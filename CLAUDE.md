@@ -85,6 +85,23 @@ Claude-mem is designed with a clean separation between open-source core function
 
 This architecture preserves the open-source nature of the project while enabling sustainable development through optional paid features.
 
+## Local Fork Conventions
+
+### DB Migrations
+Upstream uses sequential migration version numbers (currently ~23).
+**All local/custom migrations MUST use version 10000+** to permanently avoid collisions.
+
+- Local migrations live at the bottom of `SessionStore.ts` under the `// ─── LOCAL FORK MIGRATIONS` comment
+- Next available local version is noted in that comment block — update it when adding one
+- Always check-then-add columns (`PRAGMA table_info`) so migrations are idempotent
+- Never use a version number below 10000 for local additions
+
+### Version Bumping
+The marketplace caches the highest installed version. Local build must be **above** the latest upstream marketplace release to take precedence.
+
+- `package.json` version and `plugin/.claude-plugin/plugin.json` version must match
+- When upstream releases a new version higher than ours, bump both files above it and rebuild
+
 ## Important
 
 No need to edit the changelog ever, it's generated automatically.

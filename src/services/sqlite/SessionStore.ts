@@ -826,13 +826,21 @@ export class SessionStore {
     }
   }
 
+  // ─── LOCAL FORK MIGRATIONS ────────────────────────────────────────────────
+  // Upstream uses sequential integers (currently ~23).
+  // All local/custom migrations use versions 10000+ to permanently avoid
+  // collisions regardless of how many upstream migrations are added.
+  // Next local migration: 10002
+
   /**
-   * Add read_count and last_read_at columns to observations (migration 24)
+   * Add read_count and last_read_at columns to observations (local migration 10001)
    * Tracks how frequently each observation is fetched/read by Claude.
-   * NOTE: Uses version 24 — versions 22 and 23 are reserved by upstream.
    */
   private ensureReadCountColumns(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
+    // Also clean up the accidental version 24 entry if it exists from a prior attempt
+    this.db.prepare('DELETE FROM schema_versions WHERE version = 24').run();
+
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(10001) as SchemaVersion | undefined;
     if (applied) return;
 
     const cols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
@@ -843,8 +851,8 @@ export class SessionStore {
       this.db.run('ALTER TABLE observations ADD COLUMN last_read_at INTEGER');
     }
 
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
-    logger.debug('DB', 'Added read_count and last_read_at columns to observations');
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10001, new Date().toISOString());
+    logger.debug('DB', 'Added read_count and last_read_at columns to observations (local migration 10001)');
   }
 
   /**
