@@ -17,6 +17,18 @@ fi
 MARKER="$ROOT/.install-version"
 PKG_JSON="$ROOT/package.json"
 
+# Write plugin root and deploy hook launcher for non-Setup hooks.
+# Workaround for anthropics/claude-code#24529: ${CLAUDE_PLUGIN_ROOT} is not
+# injected by the hook executor on Linux (all hooks) and macOS (Stop hooks).
+# The launcher reads this file to resolve the plugin root at runtime.
+CLAUDE_MEM_DIR="${CLAUDE_MEM_DATA_DIR:-$HOME/.claude-mem}"
+mkdir -p "$CLAUDE_MEM_DIR"
+echo "$ROOT" > "$CLAUDE_MEM_DIR/.plugin-root"
+if [[ -f "$ROOT/scripts/hook-launcher.sh" ]]; then
+  cp "$ROOT/scripts/hook-launcher.sh" "$CLAUDE_MEM_DIR/hook-launcher.sh"
+  chmod +x "$CLAUDE_MEM_DIR/hook-launcher.sh"
+fi
+
 # Colors (when terminal supports it)
 if [[ -t 2 ]]; then
   RED='\033[0;31m'
