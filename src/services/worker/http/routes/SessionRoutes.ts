@@ -90,6 +90,8 @@ export class SessionRoutes extends BaseRouteHandler {
    * we let the current generator finish naturally (max 5s linger timeout).
    * The next generator will use the new provider with shared conversationHistory.
    */
+  private static readonly STALE_GENERATOR_THRESHOLD_MS = 30_000; // 30 seconds (#1099)
+
   private ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
@@ -106,6 +108,26 @@ export class SessionRoutes extends BaseRouteHandler {
     if (!session.generatorPromise) {
       this.spawnInProgress.set(sessionDbId, true);
       this.startGeneratorWithProvider(session, selectedProvider, source);
+      return;
+    }
+
+    // Generator is running - check if stale (no activity for 30s) to prevent queue stall (#1099)
+    const timeSinceActivity = Date.now() - session.lastGeneratorActivity;
+    if (timeSinceActivity > SessionRoutes.STALE_GENERATOR_THRESHOLD_MS) {
+      logger.warn('SESSION', 'Stale generator detected, aborting to prevent queue stall (#1099)', {
+        sessionId: sessionDbId,
+        timeSinceActivityMs: timeSinceActivity,
+        thresholdMs: SessionRoutes.STALE_GENERATOR_THRESHOLD_MS,
+        source
+      });
+      // Abort the stale generator and reset state
+      session.abortController.abort();
+      session.generatorPromise = null;
+      session.abortController = new AbortController();
+      session.lastGeneratorActivity = Date.now();
+      // Start a fresh generator
+      this.spawnInProgress.set(sessionDbId, true);
+      this.startGeneratorWithProvider(session, selectedProvider, 'stale-recovery');
       return;
     }
 
@@ -155,8 +177,9 @@ export class SessionRoutes extends BaseRouteHandler {
       historyLength: session.conversationHistory.length
     });
 
-    // Track which provider is running
+    // Track which provider is running and mark activity for stale detection (#1099)
     session.currentProvider = provider;
+    session.lastGeneratorActivity = Date.now();
 
     session.generatorPromise = agent.startSession(session, this.workerService)
       .catch(error => {
@@ -669,23 +692,30 @@ export class SessionRoutes extends BaseRouteHandler {
    * Returns: { sessionDbId, promptNumber, skipped: boolean, reason?: string }
    */
   private handleSessionInitByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, project, prompt } = req.body;
+    const { contentSessionId } = req.body;
+
+    // Only contentSessionId is truly required — Cursor and other platforms
+    // may omit prompt/project in their payload (#838, #1049)
+    const project = req.body.project || 'unknown';
+    const prompt = req.body.prompt || '[media prompt]';
+    const customTitle = req.body.customTitle || undefined;
 
     logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {
       contentSessionId,
       project,
-      prompt_length: prompt?.length
+      prompt_length: prompt?.length,
+      customTitle
     });
 
     // Validate required parameters
-    if (!this.validateRequired(req, res, ['contentSessionId', 'project', 'prompt'])) {
+    if (!this.validateRequired(req, res, ['contentSessionId'])) {
       return;
     }
 
     const store = this.dbManager.getSessionStore();
 
     // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
-    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt);
+    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle);
 
     // Verify session creation with DB lookup
     const dbSession = store.getSessionById(sessionDbId);
@@ -729,16 +759,22 @@ export class SessionRoutes extends BaseRouteHandler {
     // Step 5: Save cleaned user prompt
     store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt);
 
+    // Step 6: Check if SDK agent is already running for this session (#1079)
+    // If contextInjected is true, the hook should skip re-initializing the SDK agent
+    const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
+
     // Debug-level log since CREATED already logged the key info
     logger.debug('SESSION', 'User prompt saved', {
       sessionId: sessionDbId,
-      promptNumber
+      promptNumber,
+      contextInjected
     });
 
     res.json({
       sessionDbId,
       promptNumber,
-      skipped: false
+      skipped: false,
+      contextInjected
     });
   });
 }

@@ -13,6 +13,7 @@ import {
   LatestPromptResult
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
+import { computeObservationContentHash, findDuplicateObservation } from './observations/store.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -48,11 +49,17 @@ export class SessionStore {
     this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
     this.addOnUpdateCascadeToForeignKeys();
+    this.addObservationContentHashColumn();
+    this.addSessionCustomTitleColumn();
   }
 
   /**
-   * Initialize database schema using migrations (migration004)
-   * This runs the core SDK tables migration if no tables exist
+   * Initialize database schema (migration004)
+   *
+   * ALWAYS creates core tables using CREATE TABLE IF NOT EXISTS — safe to run
+   * regardless of schema_versions state.  This fixes issue #979 where the old
+   * DatabaseManager migration system (versions 1-7) shared the schema_versions
+   * table, causing maxApplied > 0 and skipping core table creation entirely.
    */
   private initializeSchema(): void {
     // Create schema_versions table if it doesn't exist
@@ -64,90 +71,77 @@ export class SessionStore {
       )
     `);
 
-    // Get applied migrations
-    const appliedVersions = this.db.prepare('SELECT version FROM schema_versions ORDER BY version').all() as SchemaVersion[];
-    const maxApplied = appliedVersions.length > 0 ? Math.max(...appliedVersions.map(v => v.version)) : 0;
+    // Always create core tables — IF NOT EXISTS makes this idempotent
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sdk_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        content_session_id TEXT UNIQUE NOT NULL,
+        memory_session_id TEXT UNIQUE,
+        project TEXT NOT NULL,
+        user_prompt TEXT,
+        started_at TEXT NOT NULL,
+        started_at_epoch INTEGER NOT NULL,
+        completed_at TEXT,
+        completed_at_epoch INTEGER,
+        status TEXT CHECK(status IN ('active', 'completed', 'failed')) NOT NULL DEFAULT 'active'
+      );
 
-    // Only run migration004 if no migrations have been applied
-    // This creates the sdk_sessions, observations, and session_summaries tables
-    if (maxApplied === 0) {
-      logger.info('DB', 'Initializing fresh database with migration004');
+      CREATE INDEX IF NOT EXISTS idx_sdk_sessions_claude_id ON sdk_sessions(content_session_id);
+      CREATE INDEX IF NOT EXISTS idx_sdk_sessions_sdk_id ON sdk_sessions(memory_session_id);
+      CREATE INDEX IF NOT EXISTS idx_sdk_sessions_project ON sdk_sessions(project);
+      CREATE INDEX IF NOT EXISTS idx_sdk_sessions_status ON sdk_sessions(status);
+      CREATE INDEX IF NOT EXISTS idx_sdk_sessions_started ON sdk_sessions(started_at_epoch DESC);
 
-      // Migration004: SDK agent architecture tables
-      this.db.run(`
-        CREATE TABLE IF NOT EXISTS sdk_sessions (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          content_session_id TEXT UNIQUE NOT NULL,
-          memory_session_id TEXT UNIQUE,
-          project TEXT NOT NULL,
-          user_prompt TEXT,
-          started_at TEXT NOT NULL,
-          started_at_epoch INTEGER NOT NULL,
-          completed_at TEXT,
-          completed_at_epoch INTEGER,
-          status TEXT CHECK(status IN ('active', 'completed', 'failed')) NOT NULL DEFAULT 'active'
-        );
+      CREATE TABLE IF NOT EXISTS observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        text TEXT NOT NULL,
+        type TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+      );
 
-        CREATE INDEX IF NOT EXISTS idx_sdk_sessions_claude_id ON sdk_sessions(content_session_id);
-        CREATE INDEX IF NOT EXISTS idx_sdk_sessions_sdk_id ON sdk_sessions(memory_session_id);
-        CREATE INDEX IF NOT EXISTS idx_sdk_sessions_project ON sdk_sessions(project);
-        CREATE INDEX IF NOT EXISTS idx_sdk_sessions_status ON sdk_sessions(status);
-        CREATE INDEX IF NOT EXISTS idx_sdk_sessions_started ON sdk_sessions(started_at_epoch DESC);
+      CREATE INDEX IF NOT EXISTS idx_observations_sdk_session ON observations(memory_session_id);
+      CREATE INDEX IF NOT EXISTS idx_observations_project ON observations(project);
+      CREATE INDEX IF NOT EXISTS idx_observations_type ON observations(type);
+      CREATE INDEX IF NOT EXISTS idx_observations_created ON observations(created_at_epoch DESC);
 
-        CREATE TABLE IF NOT EXISTS observations (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          memory_session_id TEXT NOT NULL,
-          project TEXT NOT NULL,
-          text TEXT NOT NULL,
-          type TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          created_at_epoch INTEGER NOT NULL,
-          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
-        );
+      CREATE TABLE IF NOT EXISTS session_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_session_id TEXT UNIQUE NOT NULL,
+        project TEXT NOT NULL,
+        request TEXT,
+        investigated TEXT,
+        learned TEXT,
+        completed TEXT,
+        next_steps TEXT,
+        files_read TEXT,
+        files_edited TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+      );
 
-        CREATE INDEX IF NOT EXISTS idx_observations_sdk_session ON observations(memory_session_id);
-        CREATE INDEX IF NOT EXISTS idx_observations_project ON observations(project);
-        CREATE INDEX IF NOT EXISTS idx_observations_type ON observations(type);
-        CREATE INDEX IF NOT EXISTS idx_observations_created ON observations(created_at_epoch DESC);
+      CREATE INDEX IF NOT EXISTS idx_session_summaries_sdk_session ON session_summaries(memory_session_id);
+      CREATE INDEX IF NOT EXISTS idx_session_summaries_project ON session_summaries(project);
+      CREATE INDEX IF NOT EXISTS idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
+    `);
 
-        CREATE TABLE IF NOT EXISTS session_summaries (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          memory_session_id TEXT UNIQUE NOT NULL,
-          project TEXT NOT NULL,
-          request TEXT,
-          investigated TEXT,
-          learned TEXT,
-          completed TEXT,
-          next_steps TEXT,
-          files_read TEXT,
-          files_edited TEXT,
-          notes TEXT,
-          created_at TEXT NOT NULL,
-          created_at_epoch INTEGER NOT NULL,
-          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_session_summaries_sdk_session ON session_summaries(memory_session_id);
-        CREATE INDEX IF NOT EXISTS idx_session_summaries_project ON session_summaries(project);
-        CREATE INDEX IF NOT EXISTS idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
-      `);
-
-      // Record migration004 as applied
-      this.db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(4, new Date().toISOString());
-
-      logger.info('DB', 'Migration004 applied successfully');
-    }
+    // Record migration004 as applied (OR IGNORE handles re-runs safely)
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(4, new Date().toISOString());
   }
 
   /**
    * Ensure worker_port column exists (migration 5)
+   *
+   * NOTE: Version 5 conflicts with old DatabaseManager migration005 (which drops orphaned tables).
+   * We check actual column state rather than relying solely on version tracking.
    */
   private ensureWorkerPortColumn(): void {
-    // Check if migration already applied
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(5) as SchemaVersion | undefined;
-    if (applied) return;
-
-    // Check if column exists
+    // Check actual column existence — don't rely on version tracking alone (issue #979)
     const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
     const hasWorkerPort = tableInfo.some(col => col.name === 'worker_port');
 
@@ -162,12 +156,12 @@ export class SessionStore {
 
   /**
    * Ensure prompt tracking columns exist (migration 6)
+   *
+   * NOTE: Version 6 conflicts with old DatabaseManager migration006 (which creates FTS5 tables).
+   * We check actual column state rather than relying solely on version tracking.
    */
   private ensurePromptTrackingColumns(): void {
-    // Check if migration already applied
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(6) as SchemaVersion | undefined;
-    if (applied) return;
-
+    // Check actual column existence — don't rely on version tracking alone (issue #979)
     // Check sdk_sessions for prompt_counter
     const sessionsInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
     const hasPromptCounter = sessionsInfo.some(col => col.name === 'prompt_counter');
@@ -201,13 +195,12 @@ export class SessionStore {
 
   /**
    * Remove UNIQUE constraint from session_summaries.memory_session_id (migration 7)
+   *
+   * NOTE: Version 7 conflicts with old DatabaseManager migration007 (which adds discovery_tokens).
+   * We check actual constraint state rather than relying solely on version tracking.
    */
   private removeSessionSummariesUniqueConstraint(): void {
-    // Check if migration already applied
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(7) as SchemaVersion | undefined;
-    if (applied) return;
-
-    // Check if UNIQUE constraint exists
+    // Check actual constraint state — don't rely on version tracking alone (issue #979)
     const summariesIndexes = this.db.query('PRAGMA index_list(session_summaries)').all() as IndexInfo[];
     const hasUniqueConstraint = summariesIndexes.some(idx => idx.unique === 1);
 
@@ -221,6 +214,9 @@ export class SessionStore {
 
     // Begin transaction
     this.db.run('BEGIN TRANSACTION');
+
+    // Clean up leftover temp table from a previously-crashed run
+    this.db.run('DROP TABLE IF EXISTS session_summaries_new');
 
     // Create new table without UNIQUE constraint
     this.db.run(`
@@ -335,6 +331,9 @@ export class SessionStore {
     // Begin transaction
     this.db.run('BEGIN TRANSACTION');
 
+    // Clean up leftover temp table from a previously-crashed run
+    this.db.run('DROP TABLE IF EXISTS observations_new');
+
     // Create new table with text as nullable
     this.db.run(`
       CREATE TABLE observations_new (
@@ -428,34 +427,39 @@ export class SessionStore {
       CREATE INDEX idx_user_prompts_lookup ON user_prompts(content_session_id, prompt_number);
     `);
 
-    // Create FTS5 virtual table
-    this.db.run(`
-      CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
-        prompt_text,
-        content='user_prompts',
-        content_rowid='id'
-      );
-    `);
+    // Create FTS5 virtual table — skip if FTS5 is unavailable (e.g., Bun on Windows #791).
+    // The user_prompts table itself is still created; only FTS indexing is skipped.
+    try {
+      this.db.run(`
+        CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
+          prompt_text,
+          content='user_prompts',
+          content_rowid='id'
+        );
+      `);
 
-    // Create triggers to sync FTS5
-    this.db.run(`
-      CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN
-        INSERT INTO user_prompts_fts(rowid, prompt_text)
-        VALUES (new.id, new.prompt_text);
-      END;
+      // Create triggers to sync FTS5
+      this.db.run(`
+        CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN
+          INSERT INTO user_prompts_fts(rowid, prompt_text)
+          VALUES (new.id, new.prompt_text);
+        END;
 
-      CREATE TRIGGER user_prompts_ad AFTER DELETE ON user_prompts BEGIN
-        INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
-        VALUES('delete', old.id, old.prompt_text);
-      END;
+        CREATE TRIGGER user_prompts_ad AFTER DELETE ON user_prompts BEGIN
+          INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+          VALUES('delete', old.id, old.prompt_text);
+        END;
 
-      CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN
-        INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
-        VALUES('delete', old.id, old.prompt_text);
-        INSERT INTO user_prompts_fts(rowid, prompt_text)
-        VALUES (new.id, new.prompt_text);
-      END;
-    `);
+        CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN
+          INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+          VALUES('delete', old.id, old.prompt_text);
+          INSERT INTO user_prompts_fts(rowid, prompt_text)
+          VALUES (new.id, new.prompt_text);
+        END;
+      `);
+    } catch (ftsError) {
+      logger.warn('DB', 'FTS5 not available — user_prompts_fts skipped (search uses ChromaDB)', {}, ftsError as Error);
+    }
 
     // Commit transaction
     this.db.run('COMMIT');
@@ -463,7 +467,7 @@ export class SessionStore {
     // Record migration
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
 
-    logger.debug('DB', 'Successfully created user_prompts table with FTS5 support');
+    logger.debug('DB', 'Successfully created user_prompts table');
   }
 
   /**
@@ -675,6 +679,9 @@ export class SessionStore {
       this.db.run('DROP TRIGGER IF EXISTS observations_ad');
       this.db.run('DROP TRIGGER IF EXISTS observations_au');
 
+      // Clean up leftover temp table from a previously-crashed run
+      this.db.run('DROP TABLE IF EXISTS observations_new');
+
       this.db.run(`
         CREATE TABLE observations_new (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -743,6 +750,9 @@ export class SessionStore {
       // ==========================================
       // 2. Recreate session_summaries table
       // ==========================================
+
+      // Clean up leftover temp table from a previously-crashed run
+      this.db.run('DROP TABLE IF EXISTS session_summaries_new');
 
       this.db.run(`
         CREATE TABLE session_summaries_new (
@@ -823,6 +833,44 @@ export class SessionStore {
       this.db.run('PRAGMA foreign_keys = ON');
       throw error;
     }
+  }
+
+  /**
+   * Add content_hash column to observations for deduplication (migration 22)
+   */
+  private addObservationContentHashColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(22) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'content_hash');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE observations ADD COLUMN content_hash TEXT');
+      this.db.run("UPDATE observations SET content_hash = substr(hex(randomblob(8)), 1, 16) WHERE content_hash IS NULL");
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_content_hash ON observations(content_hash, created_at_epoch)');
+      logger.debug('DB', 'Added content_hash column to observations table with backfill and index');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+  }
+
+  /**
+   * Add custom_title column to sdk_sessions for agent attribution (migration 23)
+   */
+  private addSessionCustomTitleColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(23) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'custom_title');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN custom_title TEXT');
+      logger.debug('DB', 'Added custom_title column to sdk_sessions table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
   }
 
   /**
@@ -1290,9 +1338,10 @@ export class SessionStore {
     memory_session_id: string | null;
     project: string;
     user_prompt: string;
+    custom_title: string | null;
   } | null {
     const stmt = this.db.prepare(`
-      SELECT id, content_session_id, memory_session_id, project, user_prompt
+      SELECT id, content_session_id, memory_session_id, project, user_prompt, custom_title
       FROM sdk_sessions
       WHERE id = ?
       LIMIT 1
@@ -1311,6 +1360,7 @@ export class SessionStore {
     memory_session_id: string;
     project: string;
     user_prompt: string;
+    custom_title: string | null;
     started_at: string;
     started_at_epoch: number;
     completed_at: string | null;
@@ -1321,7 +1371,7 @@ export class SessionStore {
 
     const placeholders = memorySessionIds.map(() => '?').join(',');
     const stmt = this.db.prepare(`
-      SELECT id, content_session_id, memory_session_id, project, user_prompt,
+      SELECT id, content_session_id, memory_session_id, project, user_prompt, custom_title,
              started_at, started_at_epoch, completed_at, completed_at_epoch, status
       FROM sdk_sessions
       WHERE memory_session_id IN (${placeholders})
@@ -1366,7 +1416,7 @@ export class SessionStore {
    * Pure get-or-create: never modifies memory_session_id.
    * Multi-terminal isolation is handled by ON UPDATE CASCADE at the schema level.
    */
-  createSDKSession(contentSessionId: string, project: string, userPrompt: string): number {
+  createSDKSession(contentSessionId: string, project: string, userPrompt: string, customTitle?: string): number {
     const now = new Date();
     const nowEpoch = now.getTime();
 
@@ -1383,6 +1433,13 @@ export class SessionStore {
           WHERE content_session_id = ? AND (project IS NULL OR project = '')
         `).run(project, contentSessionId);
       }
+      // Backfill custom_title if provided and not yet set
+      if (customTitle) {
+        this.db.prepare(`
+          UPDATE sdk_sessions SET custom_title = ?
+          WHERE content_session_id = ? AND custom_title IS NULL
+        `).run(customTitle, contentSessionId);
+      }
       return existing.id;
     }
 
@@ -1392,9 +1449,9 @@ export class SessionStore {
     // must NEVER equal contentSessionId - that would inject memory messages into the user's transcript!
     this.db.prepare(`
       INSERT INTO sdk_sessions
-      (content_session_id, memory_session_id, project, user_prompt, started_at, started_at_epoch, status)
-      VALUES (?, NULL, ?, ?, ?, ?, 'active')
-    `).run(contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
+      (content_session_id, memory_session_id, project, user_prompt, custom_title, started_at, started_at_epoch, status)
+      VALUES (?, NULL, ?, ?, ?, ?, ?, 'active')
+    `).run(contentSessionId, project, userPrompt, customTitle || null, now.toISOString(), nowEpoch);
 
     // Return new ID
     const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
@@ -1441,6 +1498,7 @@ export class SessionStore {
   /**
    * Store an observation (from SDK parsing)
    * Assumes session already exists (created by hook)
+   * Performs content-hash deduplication: skips INSERT if an identical observation exists within 30s
    */
   storeObservation(
     memorySessionId: string,
@@ -1463,11 +1521,18 @@ export class SessionStore {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
+    // Content-hash deduplication
+    const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+    const existing = findDuplicateObservation(this.db, contentHash, timestampEpoch);
+    if (existing) {
+      return { id: existing.id, createdAtEpoch: existing.created_at_epoch };
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1483,6 +1548,7 @@ export class SessionStore {
       JSON.stringify(observation.files_modified),
       promptNumber || null,
       discoveryTokens,
+      contentHash,
       timestampIso,
       timestampEpoch
     );

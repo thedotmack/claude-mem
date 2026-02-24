@@ -15,6 +15,22 @@ import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 
+// Early exit if plugin is disabled in Claude Code settings (#781)
+function isPluginDisabledInClaudeSettings() {
+  try {
+    const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+    const settingsPath = join(configDir, 'settings.json');
+    if (!existsSync(settingsPath)) return false;
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    return settings?.enabledPlugins?.['claude-mem@thedotmack'] === false;
+  } catch {
+    return false;
+  }
+}
+
+if (isPluginDisabledInClaudeSettings()) {
+  process.exit(0);
+}
 const IS_WINDOWS = process.platform === 'win32';
 
 /**

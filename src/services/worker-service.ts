@@ -59,6 +59,10 @@ function clearWorkerSpawnAttempted(): void {
   }
 }
 
+// Re-export for backward compatibility — canonical implementation in shared/plugin-state.ts
+export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
+import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
+
 // Version injected at build time by esbuild define
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
@@ -74,7 +78,9 @@ import {
   cleanStalePidFile,
   isProcessAlive,
   spawnDaemon,
-  createSignalHandler
+  createSignalHandler,
+  isPidFileRecent,
+  touchPidFile
 } from './infrastructure/ProcessManager.js';
 import {
   isPortInUse,
@@ -385,9 +391,14 @@ export class WorkerService {
         runOneTimeChromaMigration();
       }
 
-      // Initialize ChromaMcpManager (lazy - connects on first use via ChromaSync)
-      this.chromaMcpManager = ChromaMcpManager.getInstance();
-      logger.info('SYSTEM', 'ChromaMcpManager initialized (lazy - connects on first use)');
+      // Initialize ChromaMcpManager only if Chroma is enabled
+      const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
+      if (chromaEnabled) {
+        this.chromaMcpManager = ChromaMcpManager.getInstance();
+        logger.info('SYSTEM', 'ChromaMcpManager initialized (lazy - connects on first use)');
+      } else {
+        logger.info('SYSTEM', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, skipping ChromaMcpManager');
+      }
 
       const modeId = settings.CLAUDE_MEM_MODE;
       ModeManager.getInstance().loadMode(modeId);
@@ -534,6 +545,9 @@ export class WorkerService {
     let sessionFailed = false;
 
     logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
+
+    // Track generator activity for stale detection (Issue #1099)
+    session.lastGeneratorActivity = Date.now();
 
     session.generatorPromise = agent.startSession(session, this)
       .catch(async (error: unknown) => {
@@ -893,6 +907,23 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   if (await waitForHealth(port, 1000)) {
     const versionCheck = await checkVersionMatch(port);
     if (!versionCheck.matches) {
+      // Guard: If PID file was written recently, another session is likely already
+      // restarting the worker. Poll health instead of starting a concurrent restart.
+      // This prevents the "100 sessions all restart simultaneously" storm (#1145).
+      const RESTART_COORDINATION_THRESHOLD_MS = 15000;
+      if (isPidFileRecent(RESTART_COORDINATION_THRESHOLD_MS)) {
+        logger.info('SYSTEM', 'Version mismatch detected but PID file is recent — another restart likely in progress, polling health', {
+          pluginVersion: versionCheck.pluginVersion,
+          workerVersion: versionCheck.workerVersion
+        });
+        const healthy = await waitForHealth(port, RESTART_COORDINATION_THRESHOLD_MS);
+        if (healthy) {
+          logger.info('SYSTEM', 'Worker became healthy after waiting for concurrent restart');
+          return true;
+        }
+        logger.warn('SYSTEM', 'Worker did not become healthy after waiting — proceeding with own restart');
+      }
+
       logger.info('SYSTEM', 'Worker version mismatch detected - auto-restarting', {
         pluginVersion: versionCheck.pluginVersion,
         workerVersion: versionCheck.workerVersion
@@ -957,6 +988,9 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   }
 
   clearWorkerSpawnAttempted();
+  // Touch PID file to signal other sessions that a restart just completed.
+  // Other sessions checking isPidFileRecent() will see this and skip their own restart.
+  touchPidFile();
   logger.info('SYSTEM', 'Worker started successfully');
   return true;
 }
@@ -967,6 +1001,14 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
 
 async function main() {
   const command = process.argv[2];
+
+  // Early exit if plugin is disabled in Claude Code settings (#781).
+  // Only gate hook-initiated commands; CLI management (stop/status) still works.
+  const hookInitiatedCommands = ['start', 'hook', 'restart', '--daemon'];
+  if ((hookInitiatedCommands.includes(command) || command === undefined) && isPluginDisabledInClaudeSettings()) {
+    process.exit(0);
+  }
+
   const port = getWorkerPort();
 
   // Helper for JSON status output in 'start' command

@@ -32,6 +32,12 @@ describe('Server', () => {
       getMcpReady: () => true,
       onShutdown: mock(() => Promise.resolve()),
       onRestart: mock(() => Promise.resolve()),
+      workerPath: '/test/worker-service.cjs',
+      getAiStatus: () => ({
+        provider: 'claude',
+        authMethod: 'cli',
+        lastInteraction: null,
+      }),
     };
   });
 
@@ -269,6 +275,8 @@ describe('Server', () => {
         getMcpReady: () => true,
         onShutdown: mock(() => Promise.resolve()),
         onRestart: mock(() => Promise.resolve()),
+        workerPath: '/test/worker-service.cjs',
+        getAiStatus: () => ({ provider: 'claude', authMethod: 'cli', lastInteraction: null }),
       };
 
       server = new Server(dynamicOptions);
@@ -326,6 +334,8 @@ describe('Server', () => {
         getMcpReady: () => false,
         onShutdown: mock(() => Promise.resolve()),
         onRestart: mock(() => Promise.resolve()),
+        workerPath: '/test/worker-service.cjs',
+        getAiStatus: () => ({ provider: 'claude', authMethod: 'cli', lastInteraction: null }),
       };
 
       server = new Server(uninitializedOptions);

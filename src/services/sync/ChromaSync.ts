@@ -267,12 +267,28 @@ export class ChromaSync {
     for (let i = 0; i < documents.length; i += this.BATCH_SIZE) {
       const batch = documents.slice(i, i + this.BATCH_SIZE);
 
-      await chromaMcp.callTool('chroma_add_documents', {
-        collection_name: this.collectionName,
-        ids: batch.map(d => d.id),
-        documents: batch.map(d => d.document),
-        metadatas: batch.map(d => d.metadata)
-      });
+      // Sanitize metadata: filter out null, undefined, and empty string values
+      // that chroma-mcp may reject (e.g., null subtitle from raw SQLite rows)
+      const cleanMetadatas = batch.map(d =>
+        Object.fromEntries(
+          Object.entries(d.metadata).filter(([_, v]) => v !== null && v !== undefined && v !== '')
+        )
+      );
+
+      try {
+        await chromaMcp.callTool('chroma_add_documents', {
+          collection_name: this.collectionName,
+          ids: batch.map(d => d.id),
+          documents: batch.map(d => d.document),
+          metadatas: cleanMetadatas
+        });
+      } catch (error) {
+        logger.error('CHROMA_SYNC', 'Batch add failed, continuing with remaining batches', {
+          collection: this.collectionName,
+          batchStart: i,
+          batchSize: batch.length
+        }, error as Error);
+      }
     }
 
     logger.debug('CHROMA_SYNC', 'Documents added', {

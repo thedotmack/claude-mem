@@ -8,7 +8,8 @@ export function getPlatformAdapter(platform: string): PlatformAdapter {
     case 'claude-code': return claudeCodeAdapter;
     case 'cursor': return cursorAdapter;
     case 'raw': return rawAdapter;
-    default: throw new Error(`Unknown platform: ${platform}`);
+    // Codex CLI and other compatible platforms use the raw adapter (accepts both camelCase and snake_case fields)
+    default: return rawAdapter;
   }
 }
 
