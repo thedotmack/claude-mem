@@ -827,11 +827,12 @@ export class SessionStore {
   }
 
   /**
-   * Add read_count and last_read_at columns to observations (migration 22)
+   * Add read_count and last_read_at columns to observations (migration 24)
    * Tracks how frequently each observation is fetched/read by Claude.
+   * NOTE: Uses version 24 — versions 22 and 23 are reserved by upstream.
    */
   private ensureReadCountColumns(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(22) as SchemaVersion | undefined;
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
     if (applied) return;
 
     const cols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
@@ -842,7 +843,7 @@ export class SessionStore {
       this.db.run('ALTER TABLE observations ADD COLUMN last_read_at INTEGER');
     }
 
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
     logger.debug('DB', 'Added read_count and last_read_at columns to observations');
   }
 
