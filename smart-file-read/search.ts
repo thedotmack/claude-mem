@@ -6,11 +6,13 @@
  * 2. Structural: parse files and match against symbol names/signatures
  *
  * Both return folded views, not raw content.
+ *
+ * Uses batch parsing (one CLI call per language) for fast multi-file search.
  */
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { parseFile, formatFoldedView, type FoldedFile } from "./parser.js";
+import { parseFilesBatch, formatFoldedView, type FoldedFile } from "./parser.js";
 
 const CODE_EXTENSIONS = new Set([
   ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
@@ -108,11 +110,9 @@ async function safeReadFile(filePath: string): Promise<string | null> {
 /**
  * Search a codebase for symbols matching a query.
  *
- * The query is matched against:
- * - File paths (fuzzy)
- * - Symbol names (fuzzy)
- * - Signatures (substring)
- * - JSDoc content (substring)
+ * Phase 1: Collect files and read content
+ * Phase 2: Batch parse all files (one CLI call per language)
+ * Phase 3: Match query against parsed symbols
  */
 export async function searchCodebase(
   rootDir: string,
@@ -127,30 +127,37 @@ export async function searchCodebase(
   const queryLower = query.toLowerCase();
   const queryParts = queryLower.split(/[\s_\-./]+/).filter(p => p.length > 0);
 
-  const foldedFiles: FoldedFile[] = [];
-  const matchingSymbols: SymbolMatch[] = [];
-  let totalFilesScanned = 0;
-  let totalSymbolsFound = 0;
+  // Phase 1: Collect files
+  const filesToParse: Array<{ absolutePath: string; relativePath: string; content: string }> = [];
 
   for await (const filePath of walkDir(rootDir, rootDir)) {
-    // Optional file pattern filter
     if (options.filePattern) {
       const relPath = relative(rootDir, filePath);
       if (!relPath.toLowerCase().includes(options.filePattern.toLowerCase())) continue;
     }
 
-    totalFilesScanned++;
     const content = await safeReadFile(filePath);
     if (!content) continue;
 
-    const relPath = relative(rootDir, filePath);
-    const parsed = parseFile(content, relPath);
+    filesToParse.push({
+      absolutePath: filePath,
+      relativePath: relative(rootDir, filePath),
+      content,
+    });
+  }
+
+  // Phase 2: Batch parse (one CLI call per language)
+  const parsedFiles = parseFilesBatch(filesToParse);
+
+  // Phase 3: Match query against symbols
+  const foldedFiles: FoldedFile[] = [];
+  const matchingSymbols: SymbolMatch[] = [];
+  let totalSymbolsFound = 0;
+
+  for (const [relPath, parsed] of parsedFiles) {
     totalSymbolsFound += countSymbols(parsed);
 
-    // Check if file path matches
     const pathMatch = matchScore(relPath.toLowerCase(), queryParts);
-
-    // Check symbols for matches
     let fileHasMatch = pathMatch > 0;
     const fileSymbolMatches: SymbolMatch[] = [];
 
@@ -159,20 +166,17 @@ export async function searchCodebase(
         let score = 0;
         let reason = "";
 
-        // Name match
         const nameScore = matchScore(sym.name.toLowerCase(), queryParts);
         if (nameScore > 0) {
-          score += nameScore * 3; // name matches weighted heavily
+          score += nameScore * 3;
           reason = "name match";
         }
 
-        // Signature match
         if (sym.signature.toLowerCase().includes(queryLower)) {
           score += 2;
           reason = reason ? `${reason} + signature` : "signature match";
         }
 
-        // JSDoc match
         if (sym.jsdoc && sym.jsdoc.toLowerCase().includes(queryLower)) {
           score += 1;
           reason = reason ? `${reason} + jsdoc` : "jsdoc match";
@@ -204,8 +208,6 @@ export async function searchCodebase(
       foldedFiles.push(parsed);
       matchingSymbols.push(...fileSymbolMatches);
     }
-
-    if (matchingSymbols.length >= maxResults * 3) break; // enough matches
   }
 
   // Sort by relevance and trim
@@ -224,7 +226,7 @@ export async function searchCodebase(
   return {
     foldedFiles: trimmedFiles,
     matchingSymbols: trimmedSymbols,
-    totalFilesScanned,
+    totalFilesScanned: filesToParse.length,
     totalSymbolsFound,
     tokenEstimate,
   };

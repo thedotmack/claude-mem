@@ -1,70 +1,20 @@
 /**
- * Code structure parser — uses tree-sitter AST for accurate structural extraction.
+ * Code structure parser — shells out to tree-sitter CLI for AST-based extraction.
  *
- * This is the "folding" engine. It produces a table-of-contents view of any
- * code file: what's defined, what it looks like from the outside, and where
- * it lives in the file — using real AST parsing, not regex.
+ * No native bindings. No WASM. Just the CLI binary + query patterns.
  *
  * Supported: JS, TS, Python, Go, Rust, Ruby, Java, C, C++
  *
  * by Copter Labs
  */
 
-import Parser from "tree-sitter";
-import type { SyntaxNode } from "tree-sitter";
+import { execSync } from "node:child_process";
+import { writeFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-
-// --- Language loading ---
-
-const grammarCache = new Map<string, unknown>();
-
-function loadGrammar(language: string): unknown | null {
-  if (grammarCache.has(language)) return grammarCache.get(language)!;
-
-  try {
-    let grammar: unknown;
-    switch (language) {
-      case "javascript":
-        grammar = require("tree-sitter-javascript");
-        break;
-      case "typescript":
-        grammar = require("tree-sitter-typescript").typescript;
-        break;
-      case "tsx":
-        grammar = require("tree-sitter-typescript").tsx;
-        break;
-      case "python":
-        grammar = require("tree-sitter-python");
-        break;
-      case "go":
-        grammar = require("tree-sitter-go");
-        break;
-      case "rust":
-        grammar = require("tree-sitter-rust");
-        break;
-      case "ruby":
-        grammar = require("tree-sitter-ruby");
-        break;
-      case "java":
-        grammar = require("tree-sitter-java");
-        break;
-      case "c":
-        grammar = require("tree-sitter-c");
-        break;
-      case "cpp":
-        grammar = require("tree-sitter-cpp");
-        break;
-      default:
-        return null;
-    }
-    grammarCache.set(language, grammar);
-    return grammar;
-  } catch {
-    return null;
-  }
-}
 
 // --- Types ---
 
@@ -118,583 +68,487 @@ export function detectLanguage(filePath: string): string {
   return LANG_MAP[ext] || "unknown";
 }
 
-// --- Comment / JSDoc extraction ---
+// --- Grammar path resolution ---
 
-function findPrecedingComment(node: SyntaxNode, _sourceLines: string[]): string | undefined {
-  const prev = node.previousNamedSibling;
-  if (!prev) return undefined;
+const GRAMMAR_PACKAGES: Record<string, string> = {
+  javascript: "tree-sitter-javascript",
+  typescript: "tree-sitter-typescript/typescript",
+  tsx: "tree-sitter-typescript/tsx",
+  python: "tree-sitter-python",
+  go: "tree-sitter-go",
+  rust: "tree-sitter-rust",
+  ruby: "tree-sitter-ruby",
+  java: "tree-sitter-java",
+  c: "tree-sitter-c",
+  cpp: "tree-sitter-cpp",
+};
 
-  if (prev.type === "comment" || prev.type === "line_comment" || prev.type === "block_comment") {
-    const text = prev.text.trim();
-    if (text.startsWith("/**") || text.startsWith("///") || text.startsWith("//!") || text.startsWith("//")) {
-      return text;
-    }
+function resolveGrammarPath(language: string): string | null {
+  const pkg = GRAMMAR_PACKAGES[language];
+  if (!pkg) return null;
+  try {
+    const packageJsonPath = require.resolve(pkg + "/package.json");
+    return dirname(packageJsonPath);
+  } catch {
+    return null;
   }
-  return undefined;
 }
 
-function findPythonDocstring(node: SyntaxNode): string | undefined {
-  const body = node.childForFieldName("body");
-  if (!body) return undefined;
+// --- Query patterns (declarative symbol extraction) ---
 
-  const firstChild = body.firstNamedChild;
-  if (!firstChild || firstChild.type !== "expression_statement") return undefined;
+const QUERIES: Record<string, string> = {
+  jsts: `
+(function_declaration name: (identifier) @name) @func
+(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
+(class_declaration name: (type_identifier) @name) @cls
+(method_definition name: (property_identifier) @name) @method
+(interface_declaration name: (type_identifier) @name) @iface
+(type_alias_declaration name: (type_identifier) @name) @tdef
+(enum_declaration name: (identifier) @name) @enm
+(import_statement) @imp
+(export_statement) @exp
+`,
 
-  const expr = firstChild.firstNamedChild;
-  if (expr && (expr.type === "string" || expr.type === "concatenated_string")) {
-    const text = expr.text.trim();
-    if (text.startsWith('"""') || text.startsWith("'''") || text.startsWith('"') || text.startsWith("'")) {
-      return text;
-    }
+  python: `
+(function_definition name: (identifier) @name) @func
+(class_definition name: (identifier) @name) @cls
+(import_statement) @imp
+(import_from_statement) @imp
+`,
+
+  go: `
+(function_declaration name: (identifier) @name) @func
+(method_declaration name: (field_identifier) @name) @method
+(type_declaration (type_spec name: (type_identifier) @name)) @tdef
+(import_declaration) @imp
+`,
+
+  rust: `
+(function_item name: (identifier) @name) @func
+(struct_item name: (type_identifier) @name) @struct_def
+(enum_item name: (type_identifier) @name) @enm
+(trait_item name: (type_identifier) @name) @trait_def
+(impl_item type: (type_identifier) @name) @impl_def
+(use_declaration) @imp
+`,
+
+  ruby: `
+(method name: (identifier) @name) @func
+(class name: (constant) @name) @cls
+(module name: (constant) @name) @cls
+(call method: (identifier) @name) @imp
+`,
+
+  java: `
+(method_declaration name: (identifier) @name) @method
+(class_declaration name: (identifier) @name) @cls
+(interface_declaration name: (identifier) @name) @iface
+(enum_declaration name: (identifier) @name) @enm
+(import_declaration) @imp
+`,
+
+  generic: `
+(function_declaration name: (identifier) @name) @func
+(function_definition name: (identifier) @name) @func
+(class_declaration name: (identifier) @name) @cls
+(class_definition name: (identifier) @name) @cls
+(import_statement) @imp
+(import_declaration) @imp
+`,
+};
+
+function getQueryKey(language: string): string {
+  switch (language) {
+    case "javascript":
+    case "typescript":
+    case "tsx":
+      return "jsts";
+    case "python": return "python";
+    case "go": return "go";
+    case "rust": return "rust";
+    case "ruby": return "ruby";
+    case "java": return "java";
+    default: return "generic";
   }
-  return undefined;
 }
 
-// --- Signature extraction ---
+// --- Temp file management ---
 
-function extractSignature(node: SyntaxNode, maxLen: number = 200): string {
-  const text = node.text;
-  const firstLine = text.split("\n")[0];
+let queryTmpDir: string | null = null;
+const queryFileCache = new Map<string, string>();
 
+function getQueryFile(queryKey: string): string {
+  if (queryFileCache.has(queryKey)) return queryFileCache.get(queryKey)!;
+
+  if (!queryTmpDir) {
+    queryTmpDir = mkdtempSync(join(tmpdir(), "smart-read-queries-"));
+  }
+
+  const filePath = join(queryTmpDir, `${queryKey}.scm`);
+  writeFileSync(filePath, QUERIES[queryKey]);
+  queryFileCache.set(queryKey, filePath);
+  return filePath;
+}
+
+// --- CLI execution ---
+
+let cachedBinPath: string | null = null;
+
+function getTreeSitterBin(): string {
+  if (cachedBinPath) return cachedBinPath;
+
+  // Try direct binary from tree-sitter-cli package
+  try {
+    const pkgPath = require.resolve("tree-sitter-cli/package.json");
+    const binPath = join(dirname(pkgPath), "tree-sitter");
+    if (existsSync(binPath)) {
+      cachedBinPath = binPath;
+      return binPath;
+    }
+  } catch { /* fall through */ }
+
+  // Fallback: assume it's on PATH
+  cachedBinPath = "tree-sitter";
+  return cachedBinPath;
+}
+
+interface RawCapture {
+  tag: string;
+  startRow: number;
+  startCol: number;
+  endRow: number;
+  endCol: number;
+  text?: string;
+}
+
+interface RawMatch {
+  pattern: number;
+  captures: RawCapture[];
+}
+
+function runQuery(queryFile: string, sourceFile: string, grammarPath: string): RawMatch[] {
+  const result = runBatchQuery(queryFile, [sourceFile], grammarPath);
+  return result.get(sourceFile) || [];
+}
+
+function runBatchQuery(queryFile: string, sourceFiles: string[], grammarPath: string): Map<string, RawMatch[]> {
+  if (sourceFiles.length === 0) return new Map();
+
+  const bin = getTreeSitterBin();
+  const fileArgs = sourceFiles.map(f => `"${f}"`).join(" ");
+  const cmd = `"${bin}" query -p "${grammarPath}" "${queryFile}" ${fileArgs}`;
+
+  let output: string;
+  try {
+    output = execSync(cmd, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
+  } catch {
+    return new Map();
+  }
+
+  return parseMultiFileQueryOutput(output);
+}
+
+function parseMultiFileQueryOutput(output: string): Map<string, RawMatch[]> {
+  const fileMatches = new Map<string, RawMatch[]>();
+  let currentFile: string | null = null;
+  let currentMatch: RawMatch | null = null;
+
+  for (const line of output.split("\n")) {
+    // File header: a line that doesn't start with whitespace and isn't empty
+    if (line.length > 0 && !line.startsWith(" ") && !line.startsWith("\t")) {
+      currentFile = line.trim();
+      if (!fileMatches.has(currentFile)) {
+        fileMatches.set(currentFile, []);
+      }
+      currentMatch = null;
+      continue;
+    }
+
+    if (!currentFile) continue;
+
+    const patternMatch = line.match(/^\s+pattern:\s+(\d+)/);
+    if (patternMatch) {
+      currentMatch = { pattern: parseInt(patternMatch[1]), captures: [] };
+      fileMatches.get(currentFile)!.push(currentMatch);
+      continue;
+    }
+
+    const captureMatch = line.match(
+      /^\s+capture:\s+(?:\d+\s*-\s*)?(\w+),\s*start:\s*\((\d+),\s*(\d+)\),\s*end:\s*\((\d+),\s*(\d+)\)(?:,\s*text:\s*`([^`]*)`)?/
+    );
+    if (captureMatch && currentMatch) {
+      currentMatch.captures.push({
+        tag: captureMatch[1],
+        startRow: parseInt(captureMatch[2]),
+        startCol: parseInt(captureMatch[3]),
+        endRow: parseInt(captureMatch[4]),
+        endCol: parseInt(captureMatch[5]),
+        text: captureMatch[6],
+      });
+    }
+  }
+
+  return fileMatches;
+}
+
+// --- Symbol building ---
+
+const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
+  func: "function",
+  const_func: "function",
+  cls: "class",
+  method: "method",
+  iface: "interface",
+  tdef: "type",
+  enm: "enum",
+  struct_def: "struct",
+  trait_def: "trait",
+  impl_def: "impl",
+};
+
+const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait"]);
+
+function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200): string {
+  const firstLine = lines[startRow] || "";
   let sig = firstLine;
 
   if (!sig.trimEnd().endsWith("{") && !sig.trimEnd().endsWith(":")) {
-    const braceIdx = text.indexOf("{");
-    const colonIdx = text.indexOf(":");
-    const bodyStart = braceIdx !== -1 ? braceIdx : colonIdx;
-
-    if (bodyStart !== -1 && bodyStart < 500) {
-      sig = text.slice(0, bodyStart).replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+    const chunk = lines.slice(startRow, Math.min(startRow + 10, endRow + 1)).join("\n");
+    const braceIdx = chunk.indexOf("{");
+    if (braceIdx !== -1 && braceIdx < 500) {
+      sig = chunk.slice(0, braceIdx).replace(/\n/g, " ").replace(/\s+/g, " ").trim();
     }
   }
 
   sig = sig.replace(/\s*[{:]\s*$/, "").trim();
-
-  if (sig.length > maxLen) {
-    sig = sig.slice(0, maxLen - 3) + "...";
-  }
+  if (sig.length > maxLen) sig = sig.slice(0, maxLen - 3) + "...";
   return sig;
 }
 
-// --- AST extraction per language ---
+function findCommentAbove(lines: string[], startRow: number): string | undefined {
+  const commentLines: string[] = [];
+  let foundComment = false;
 
-interface ExtractContext {
-  sourceLines: string[];
-  language: string;
-}
-
-// ---- JavaScript / TypeScript ----
-
-function extractJSTSSymbols(rootNode: SyntaxNode, ctx: ExtractContext): { symbols: CodeSymbol[]; imports: string[] } {
-  const symbols: CodeSymbol[] = [];
-  const imports: string[] = [];
-
-  for (const node of rootNode.namedChildren) {
-    if (node.type === "import_statement") {
-      imports.push(node.text.split("\n")[0]);
+  for (let i = startRow - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim();
+    if (trimmed === "") {
+      if (foundComment) break;
       continue;
     }
-
-    if (node.type === "export_statement") {
-      const decl = node.childForFieldName("declaration") || node.namedChildren.find(
-        c => c.type !== "export" && c.type !== "default"
-      );
-      if (decl) {
-        const sym = extractJSTSDeclaration(decl, ctx, true);
-        if (sym) symbols.push(sym);
-      }
-      continue;
+    if (trimmed.startsWith("/**") || trimmed.startsWith("*") || trimmed.startsWith("*/") ||
+        trimmed.startsWith("//") || trimmed.startsWith("///") || trimmed.startsWith("//!") ||
+        trimmed.startsWith("#") || trimmed.startsWith("@")) {
+      commentLines.unshift(lines[i]);
+      foundComment = true;
+    } else {
+      break;
     }
-
-    const sym = extractJSTSDeclaration(node, ctx, false);
-    if (sym) symbols.push(sym);
   }
 
-  return { symbols, imports };
+  return commentLines.length > 0 ? commentLines.join("\n").trim() : undefined;
 }
 
-function extractJSTSDeclaration(node: SyntaxNode, ctx: ExtractContext, exported: boolean): CodeSymbol | null {
-  const commentTarget = node.parent?.type === "export_statement" ? node.parent : node;
-  const jsdoc = findPrecedingComment(commentTarget, ctx.sourceLines);
+function findPythonDocstringFromLines(lines: string[], startRow: number, endRow: number): string | undefined {
+  for (let i = startRow + 1; i <= Math.min(startRow + 3, endRow); i++) {
+    const trimmed = lines[i]?.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith('"""') || trimmed.startsWith("'''")) return trimmed;
+    break;
+  }
+  return undefined;
+}
 
-  switch (node.type) {
-    case "function_declaration": {
-      const name = node.childForFieldName("name")?.text || "anonymous";
-      return {
-        name, kind: "function", signature: extractSignature(node), jsdoc,
-        lineStart: node.startPosition.row, lineEnd: node.endPosition.row, exported,
-      };
-    }
-
-    case "class_declaration": {
-      const name = node.childForFieldName("name")?.text || "anonymous";
-      const sym: CodeSymbol = {
-        name, kind: "class", signature: extractSignature(node), jsdoc,
-        lineStart: node.startPosition.row, lineEnd: node.endPosition.row,
-        exported, children: [],
-      };
-      const body = node.childForFieldName("body");
-      if (body) {
-        for (const member of body.namedChildren) {
-          const child = extractJSTSClassMember(member, ctx);
-          if (child) sym.children!.push(child);
-        }
-      }
-      return sym;
-    }
-
-    case "interface_declaration": {
-      const name = node.childForFieldName("name")?.text || "anonymous";
-      return {
-        name, kind: "interface", signature: extractSignature(node), jsdoc,
-        lineStart: node.startPosition.row, lineEnd: node.endPosition.row, exported,
-      };
-    }
-
-    case "type_alias_declaration": {
-      const name = node.childForFieldName("name")?.text || "anonymous";
-      return {
-        name, kind: "type", signature: extractSignature(node), jsdoc,
-        lineStart: node.startPosition.row, lineEnd: node.endPosition.row, exported,
-      };
-    }
-
-    case "enum_declaration": {
-      const name = node.childForFieldName("name")?.text || "anonymous";
-      return {
-        name, kind: "enum", signature: extractSignature(node), jsdoc,
-        lineStart: node.startPosition.row, lineEnd: node.endPosition.row, exported,
-      };
-    }
-
-    case "lexical_declaration": {
-      const declarator = node.namedChildren.find(c => c.type === "variable_declarator");
-      if (!declarator) return null;
-      const name = declarator.childForFieldName("name")?.text || "anonymous";
-      const value = declarator.childForFieldName("value");
-      const isFunc = value && (
-        value.type === "arrow_function" ||
-        value.type === "function_expression" ||
-        value.type === "function"
-      );
-      return {
-        name, kind: isFunc ? "function" : "const",
-        signature: extractSignature(node), jsdoc,
-        lineStart: node.startPosition.row, lineEnd: node.endPosition.row, exported,
-      };
-    }
-
+function isExported(
+  name: string, startRow: number, endRow: number,
+  exportRanges: Array<{ startRow: number; endRow: number }>,
+  lines: string[], language: string
+): boolean {
+  switch (language) {
+    case "javascript":
+    case "typescript":
+    case "tsx":
+      return exportRanges.some(r => startRow >= r.startRow && endRow <= r.endRow);
+    case "python":
+      return !name.startsWith("_");
+    case "go":
+      return name.length > 0 && name[0] === name[0].toUpperCase() && name[0] !== name[0].toLowerCase();
+    case "rust":
+      return lines[startRow]?.trimStart().startsWith("pub") ?? false;
     default:
-      return null;
+      return true;
   }
 }
 
-function extractJSTSClassMember(node: SyntaxNode, ctx: ExtractContext): CodeSymbol | null {
-  if (node.type === "method_definition") {
-    const name = node.childForFieldName("name")?.text || "anonymous";
-    const jsdoc = findPrecedingComment(node, ctx.sourceLines);
-    const isPrivate = node.children.some(c => c.text === "private");
-    const isGetter = node.children.some(c => c.type === "get");
-    const isSetter = node.children.some(c => c.type === "set");
+function buildSymbols(matches: RawMatch[], lines: string[], language: string): { symbols: CodeSymbol[]; imports: string[] } {
+  const symbols: CodeSymbol[] = [];
+  const imports: string[] = [];
+  const exportRanges: Array<{ startRow: number; endRow: number }> = [];
+  const containers: Array<{ sym: CodeSymbol; startRow: number; endRow: number }> = [];
 
-    return {
-      name, kind: isGetter ? "getter" : isSetter ? "setter" : "method",
-      signature: extractSignature(node), jsdoc,
-      lineStart: node.startPosition.row, lineEnd: node.endPosition.row,
-      exported: !isPrivate,
+  // Collect exports and imports
+  for (const match of matches) {
+    for (const cap of match.captures) {
+      if (cap.tag === "exp") {
+        exportRanges.push({ startRow: cap.startRow, endRow: cap.endRow });
+      }
+      if (cap.tag === "imp") {
+        imports.push(cap.text || lines[cap.startRow]?.trim() || "");
+      }
+    }
+  }
+
+  // Build symbols
+  for (const match of matches) {
+    const kindCapture = match.captures.find(c => KIND_MAP[c.tag]);
+    const nameCapture = match.captures.find(c => c.tag === "name");
+    if (!kindCapture) continue;
+
+    const name = nameCapture?.text || "anonymous";
+    const startRow = kindCapture.startRow;
+    const endRow = kindCapture.endRow;
+    const kind = KIND_MAP[kindCapture.tag];
+
+    const comment = findCommentAbove(lines, startRow);
+    const docstring = language === "python" ? findPythonDocstringFromLines(lines, startRow, endRow) : undefined;
+
+    const sym: CodeSymbol = {
+      name,
+      kind,
+      signature: extractSignatureFromLines(lines, startRow, endRow),
+      jsdoc: comment || docstring,
+      lineStart: startRow,
+      lineEnd: endRow,
+      exported: isExported(name, startRow, endRow, exportRanges, lines, language),
     };
+
+    if (CONTAINER_KINDS.has(kind)) {
+      sym.children = [];
+      containers.push({ sym, startRow, endRow });
+    }
+
+    symbols.push(sym);
   }
 
-  if (node.type === "public_field_definition") {
-    const name = node.children.find(c => c.type === "property_identifier")?.text || "unknown";
-    return {
-      name, kind: "property",
-      signature: node.text.split("\n")[0].replace(/;$/, "").trim(),
-      lineStart: node.startPosition.row, lineEnd: node.endPosition.row,
-      exported: !node.children.some(c => c.text === "private"),
-    };
+  // Nest methods inside containers
+  const nested = new Set<CodeSymbol>();
+  for (const container of containers) {
+    for (const sym of symbols) {
+      if (sym === container.sym) continue;
+      if (sym.lineStart > container.startRow && sym.lineEnd <= container.endRow) {
+        if (sym.kind === "function") sym.kind = "method";
+        container.sym.children!.push(sym);
+        nested.add(sym);
+      }
+    }
   }
 
-  return null;
+  return { symbols: symbols.filter(s => !nested.has(s)), imports };
 }
 
-// ---- Python ----
-
-function extractPythonSymbols(rootNode: SyntaxNode, ctx: ExtractContext): { symbols: CodeSymbol[]; imports: string[] } {
-  const symbols: CodeSymbol[] = [];
-  const imports: string[] = [];
-
-  for (const node of rootNode.namedChildren) {
-    if (node.type === "import_statement" || node.type === "import_from_statement") {
-      imports.push(node.text.split("\n")[0]);
-      continue;
-    }
-
-    if (node.type === "class_definition") {
-      symbols.push(extractPythonClass(node, ctx));
-      continue;
-    }
-
-    if (node.type === "function_definition") {
-      const name = node.childForFieldName("name")?.text || "anonymous";
-      const docstring = findPythonDocstring(node);
-      const jsdoc = findPrecedingComment(node, ctx.sourceLines) || docstring;
-      symbols.push({
-        name, kind: "function", signature: extractSignature(node), jsdoc,
-        lineStart: node.startPosition.row, lineEnd: node.endPosition.row,
-        exported: !name.startsWith("_"),
-      });
-      continue;
-    }
-
-    if (node.type === "decorated_definition") {
-      const inner = node.namedChildren.find(c =>
-        c.type === "function_definition" || c.type === "class_definition"
-      );
-      if (inner?.type === "class_definition") {
-        symbols.push(extractPythonClass(inner, ctx, node));
-      } else if (inner?.type === "function_definition") {
-        const name = inner.childForFieldName("name")?.text || "anonymous";
-        const docstring = findPythonDocstring(inner);
-        const jsdoc = findPrecedingComment(node, ctx.sourceLines) || docstring;
-        symbols.push({
-          name, kind: "function", signature: extractSignature(node), jsdoc,
-          lineStart: node.startPosition.row, lineEnd: inner.endPosition.row,
-          exported: !name.startsWith("_"),
-        });
-      }
-      continue;
-    }
-  }
-
-  return { symbols, imports };
-}
-
-function extractPythonClass(node: SyntaxNode, ctx: ExtractContext, decorator?: SyntaxNode): CodeSymbol {
-  const name = node.childForFieldName("name")?.text || "anonymous";
-  const docstring = findPythonDocstring(node);
-  const jsdoc = findPrecedingComment(decorator || node, ctx.sourceLines) || docstring;
-  const sym: CodeSymbol = {
-    name, kind: "class", signature: extractSignature(node), jsdoc,
-    lineStart: (decorator || node).startPosition.row, lineEnd: node.endPosition.row,
-    exported: !name.startsWith("_"), children: [],
-  };
-
-  const body = node.childForFieldName("body");
-  if (body) {
-    for (const member of body.namedChildren) {
-      if (member.type === "function_definition") {
-        const methodName = member.childForFieldName("name")?.text || "anonymous";
-        const methodDoc = findPythonDocstring(member) || findPrecedingComment(member, ctx.sourceLines);
-        sym.children!.push({
-          name: methodName, kind: "method",
-          signature: extractSignature(member), jsdoc: methodDoc,
-          lineStart: member.startPosition.row, lineEnd: member.endPosition.row,
-          exported: !methodName.startsWith("_"),
-        });
-      } else if (member.type === "decorated_definition") {
-        const inner = member.namedChildren.find(c => c.type === "function_definition");
-        if (inner) {
-          const methodName = inner.childForFieldName("name")?.text || "anonymous";
-          const methodDoc = findPythonDocstring(inner) || findPrecedingComment(member, ctx.sourceLines);
-          sym.children!.push({
-            name: methodName, kind: "method",
-            signature: extractSignature(member), jsdoc: methodDoc,
-            lineStart: member.startPosition.row, lineEnd: inner.endPosition.row,
-            exported: !methodName.startsWith("_"),
-          });
-        }
-      }
-    }
-  }
-  return sym;
-}
-
-// ---- Go ----
-
-function extractGoSymbols(rootNode: SyntaxNode, ctx: ExtractContext): { symbols: CodeSymbol[]; imports: string[] } {
-  const symbols: CodeSymbol[] = [];
-  const imports: string[] = [];
-  const typeMap = new Map<string, CodeSymbol>();
-
-  for (const node of rootNode.namedChildren) {
-    if (node.type === "import_declaration") {
-      imports.push(node.text.split("\n")[0]);
-      continue;
-    }
-
-    if (node.type === "function_declaration") {
-      const name = node.childForFieldName("name")?.text || "anonymous";
-      const jsdoc = findPrecedingComment(node, ctx.sourceLines);
-      symbols.push({
-        name, kind: "function", signature: extractSignature(node), jsdoc,
-        lineStart: node.startPosition.row, lineEnd: node.endPosition.row,
-        exported: name[0] === name[0].toUpperCase(),
-      });
-      continue;
-    }
-
-    if (node.type === "method_declaration") {
-      const name = node.childForFieldName("name")?.text || "anonymous";
-      const receiver = node.childForFieldName("receiver");
-      const receiverType = receiver?.text?.replace(/[*()]/g, "").trim().split(/\s+/).pop() || "";
-      const jsdoc = findPrecedingComment(node, ctx.sourceLines);
-
-      const method: CodeSymbol = {
-        name, kind: "method", signature: extractSignature(node), jsdoc,
-        lineStart: node.startPosition.row, lineEnd: node.endPosition.row,
-        exported: name[0] === name[0].toUpperCase(), parent: receiverType,
-      };
-
-      const parentSym = typeMap.get(receiverType);
-      if (parentSym?.children) {
-        parentSym.children.push(method);
-      } else {
-        symbols.push(method);
-      }
-      continue;
-    }
-
-    if (node.type === "type_declaration") {
-      for (const spec of node.namedChildren) {
-        if (spec.type === "type_spec") {
-          const name = spec.childForFieldName("name")?.text || "anonymous";
-          const typeNode = spec.childForFieldName("type");
-          const kind = typeNode?.type === "interface_type" ? "interface" as const : "struct" as const;
-          const jsdoc = findPrecedingComment(node, ctx.sourceLines);
-          const sym: CodeSymbol = {
-            name, kind, signature: extractSignature(node), jsdoc,
-            lineStart: node.startPosition.row, lineEnd: node.endPosition.row,
-            exported: name[0] === name[0].toUpperCase(), children: [],
-          };
-          typeMap.set(name, sym);
-          symbols.push(sym);
-        }
-      }
-      continue;
-    }
-  }
-
-  return { symbols, imports };
-}
-
-// ---- Rust ----
-
-function extractRustSymbols(rootNode: SyntaxNode, ctx: ExtractContext): { symbols: CodeSymbol[]; imports: string[] } {
-  const symbols: CodeSymbol[] = [];
-  const imports: string[] = [];
-
-  for (const node of rootNode.namedChildren) {
-    if (node.type === "use_declaration") {
-      imports.push(node.text.split("\n")[0]);
-      continue;
-    }
-
-    const jsdoc = findPrecedingComment(node, ctx.sourceLines);
-    const isPub = node.text.trimStart().startsWith("pub");
-
-    if (node.type === "function_item") {
-      const name = node.childForFieldName("name")?.text || "anonymous";
-      symbols.push({
-        name, kind: "function", signature: extractSignature(node), jsdoc,
-        lineStart: node.startPosition.row, lineEnd: node.endPosition.row,
-        exported: isPub,
-      });
-      continue;
-    }
-
-    if (node.type === "struct_item") {
-      const name = node.childForFieldName("name")?.text || "anonymous";
-      symbols.push({
-        name, kind: "struct", signature: extractSignature(node), jsdoc,
-        lineStart: node.startPosition.row, lineEnd: node.endPosition.row,
-        exported: isPub,
-      });
-      continue;
-    }
-
-    if (node.type === "enum_item") {
-      const name = node.childForFieldName("name")?.text || "anonymous";
-      symbols.push({
-        name, kind: "enum", signature: extractSignature(node), jsdoc,
-        lineStart: node.startPosition.row, lineEnd: node.endPosition.row,
-        exported: isPub,
-      });
-      continue;
-    }
-
-    if (node.type === "trait_item") {
-      const name = node.childForFieldName("name")?.text || "anonymous";
-      symbols.push({
-        name, kind: "trait", signature: extractSignature(node), jsdoc,
-        lineStart: node.startPosition.row, lineEnd: node.endPosition.row,
-        exported: isPub,
-      });
-      continue;
-    }
-
-    if (node.type === "impl_item") {
-      const typeName = node.childForFieldName("type")?.text || node.childForFieldName("name")?.text || "unknown";
-      const sym: CodeSymbol = {
-        name: typeName, kind: "impl", signature: extractSignature(node), jsdoc,
-        lineStart: node.startPosition.row, lineEnd: node.endPosition.row,
-        exported: false, children: [],
-      };
-
-      const body = node.childForFieldName("body");
-      if (body) {
-        for (const member of body.namedChildren) {
-          if (member.type === "function_item") {
-            const methodName = member.childForFieldName("name")?.text || "anonymous";
-            const methodDoc = findPrecedingComment(member, ctx.sourceLines);
-            sym.children!.push({
-              name: methodName, kind: "method",
-              signature: extractSignature(member), jsdoc: methodDoc,
-              lineStart: member.startPosition.row, lineEnd: member.endPosition.row,
-              exported: member.text.trimStart().startsWith("pub"),
-            });
-          }
-        }
-      }
-      symbols.push(sym);
-      continue;
-    }
-  }
-
-  return { symbols, imports };
-}
-
-// ---- Generic fallback ----
-
-function extractGenericSymbols(rootNode: SyntaxNode, ctx: ExtractContext): { symbols: CodeSymbol[]; imports: string[] } {
-  const symbols: CodeSymbol[] = [];
-  const imports: string[] = [];
-
-  const functionTypes = new Set([
-    "function_declaration", "function_definition", "method_declaration",
-    "method_definition", "function_item",
-  ]);
-  const classTypes = new Set([
-    "class_declaration", "class_definition", "class_specifier",
-  ]);
-  const importTypes = new Set([
-    "import_statement", "import_declaration", "import_from_statement",
-    "use_declaration", "preproc_include",
-  ]);
-
-  function walk(node: SyntaxNode, depth: number = 0): void {
-    if (depth > 5) return;
-
-    for (const child of node.namedChildren) {
-      if (importTypes.has(child.type)) {
-        imports.push(child.text.split("\n")[0]);
-        continue;
-      }
-
-      if (functionTypes.has(child.type)) {
-        const name = child.childForFieldName("name")?.text ||
-                     child.childForFieldName("declarator")?.text?.match(/(\w+)\s*\(/)?.[1] ||
-                     "anonymous";
-        const jsdoc = findPrecedingComment(child, ctx.sourceLines);
-        symbols.push({
-          name, kind: depth > 0 ? "method" : "function",
-          signature: extractSignature(child), jsdoc,
-          lineStart: child.startPosition.row, lineEnd: child.endPosition.row,
-          exported: true,
-        });
-        continue;
-      }
-
-      if (classTypes.has(child.type)) {
-        const name = child.childForFieldName("name")?.text || "anonymous";
-        const jsdoc = findPrecedingComment(child, ctx.sourceLines);
-        const sym: CodeSymbol = {
-          name, kind: "class", signature: extractSignature(child), jsdoc,
-          lineStart: child.startPosition.row, lineEnd: child.endPosition.row,
-          exported: true, children: [],
-        };
-        const body = child.childForFieldName("body");
-        if (body) {
-          for (const member of body.namedChildren) {
-            if (functionTypes.has(member.type)) {
-              const methodName = member.childForFieldName("name")?.text || "anonymous";
-              sym.children!.push({
-                name: methodName, kind: "method",
-                signature: extractSignature(member),
-                lineStart: member.startPosition.row, lineEnd: member.endPosition.row,
-                exported: true,
-              });
-            }
-          }
-        }
-        symbols.push(sym);
-        continue;
-      }
-
-      if (child.namedChildCount > 0 && depth < 3) {
-        walk(child, depth + 1);
-      }
-    }
-  }
-
-  walk(rootNode);
-  return { symbols, imports };
-}
-
-// --- Main parse function ---
+// --- Main parse functions ---
 
 export function parseFile(content: string, filePath: string): FoldedFile {
   const language = detectLanguage(filePath);
-  const grammar = loadGrammar(language);
   const lines = content.split("\n");
 
-  if (!grammar) {
+  const grammarPath = resolveGrammarPath(language);
+  if (!grammarPath) {
     return {
       filePath, language, symbols: [], imports: [],
       totalLines: lines.length, foldedTokenEstimate: 50,
     };
   }
 
-  const parser = new Parser();
-  parser.setLanguage(grammar as Parameters<typeof parser.setLanguage>[0]);
-  const tree = parser.parse(content);
+  const queryKey = getQueryKey(language);
+  const queryFile = getQueryFile(queryKey);
 
-  const ctx: ExtractContext = { sourceLines: lines, language };
+  // Write content to temp file with correct extension for language detection
+  const ext = filePath.slice(filePath.lastIndexOf(".")) || ".txt";
+  const tmpDir = mkdtempSync(join(tmpdir(), "smart-src-"));
+  const tmpFile = join(tmpDir, `source${ext}`);
+  writeFileSync(tmpFile, content);
 
-  let result: { symbols: CodeSymbol[]; imports: string[] };
+  try {
+    const matches = runQuery(queryFile, tmpFile, grammarPath);
+    const result = buildSymbols(matches, lines, language);
 
-  switch (language) {
-    case "javascript":
-    case "typescript":
-    case "tsx":
-      result = extractJSTSSymbols(tree.rootNode, ctx);
-      break;
-    case "python":
-      result = extractPythonSymbols(tree.rootNode, ctx);
-      break;
-    case "go":
-      result = extractGoSymbols(tree.rootNode, ctx);
-      break;
-    case "rust":
-      result = extractRustSymbols(tree.rootNode, ctx);
-      break;
-    default:
-      result = extractGenericSymbols(tree.rootNode, ctx);
-      break;
+    const folded = formatFoldedView({
+      filePath, language,
+      symbols: result.symbols, imports: result.imports,
+      totalLines: lines.length, foldedTokenEstimate: 0,
+    });
+
+    return {
+      filePath, language,
+      symbols: result.symbols, imports: result.imports,
+      totalLines: lines.length,
+      foldedTokenEstimate: Math.ceil(folded.length / 4),
+    };
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Batch parse multiple on-disk files. Groups by language for one CLI call per language.
+ * Much faster than calling parseFile() per file (one process spawn per language vs per file).
+ */
+export function parseFilesBatch(
+  files: Array<{ absolutePath: string; relativePath: string; content: string }>
+): Map<string, FoldedFile> {
+  const results = new Map<string, FoldedFile>();
+
+  // Group files by language (and thus by query + grammar)
+  const languageGroups = new Map<string, typeof files>();
+  for (const file of files) {
+    const language = detectLanguage(file.relativePath);
+    if (!languageGroups.has(language)) languageGroups.set(language, []);
+    languageGroups.get(language)!.push(file);
   }
 
-  const folded = formatFoldedView({
-    filePath, language,
-    symbols: result.symbols, imports: result.imports,
-    totalLines: lines.length, foldedTokenEstimate: 0,
-  });
+  for (const [language, groupFiles] of languageGroups) {
+    const grammarPath = resolveGrammarPath(language);
+    if (!grammarPath) {
+      // No grammar — return empty results for these files
+      for (const file of groupFiles) {
+        const lines = file.content.split("\n");
+        results.set(file.relativePath, {
+          filePath: file.relativePath, language, symbols: [], imports: [],
+          totalLines: lines.length, foldedTokenEstimate: 50,
+        });
+      }
+      continue;
+    }
 
-  return {
-    filePath, language,
-    symbols: result.symbols, imports: result.imports,
-    totalLines: lines.length,
-    foldedTokenEstimate: Math.ceil(folded.length / 4),
-  };
+    const queryKey = getQueryKey(language);
+    const queryFile = getQueryFile(queryKey);
+
+    // Run one batch query for all files of this language
+    const absolutePaths = groupFiles.map(f => f.absolutePath);
+    const batchResults = runBatchQuery(queryFile, absolutePaths, grammarPath);
+
+    // Build FoldedFile for each file using the batch results
+    for (const file of groupFiles) {
+      const lines = file.content.split("\n");
+      const matches = batchResults.get(file.absolutePath) || [];
+      const symbolResult = buildSymbols(matches, lines, language);
+
+      const folded = formatFoldedView({
+        filePath: file.relativePath, language,
+        symbols: symbolResult.symbols, imports: symbolResult.imports,
+        totalLines: lines.length, foldedTokenEstimate: 0,
+      });
+
+      results.set(file.relativePath, {
+        filePath: file.relativePath, language,
+        symbols: symbolResult.symbols, imports: symbolResult.imports,
+        totalLines: lines.length,
+        foldedTokenEstimate: Math.ceil(folded.length / 4),
+      });
+    }
+  }
+
+  return results;
 }
 
 // --- Formatting ---
@@ -736,8 +590,8 @@ function formatSymbol(sym: CodeSymbol, indent: string): string {
   parts.push(`${indent}  ${sym.signature}`);
 
   if (sym.jsdoc) {
-    const lines = sym.jsdoc.split("\n");
-    const firstLine = lines.find(l => {
+    const jsdocLines = sym.jsdoc.split("\n");
+    const firstLine = jsdocLines.find(l => {
       const t = l.replace(/^[\s*/]+/, "").replace(/^['"`]{3}/, "").trim();
       return t.length > 0 && !t.startsWith("/**");
     });

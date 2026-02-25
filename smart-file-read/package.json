@@ -14,8 +14,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "tree-sitter": "file:_tree-sitter",
     "tree-sitter-c": "^0.24.1",
+    "tree-sitter-cli": "^0.26.5",
     "tree-sitter-cpp": "^0.23.4",
     "tree-sitter-go": "^0.25.0",
     "tree-sitter-java": "^0.23.5",
