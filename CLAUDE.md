@@ -14,6 +14,10 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Search Skill** (`plugin/skills/mem-search/SKILL.md`) - HTTP API for searching past work, auto-invoked when users ask about history
 
+**Planning Skill** (`plugin/skills/make-plan/SKILL.md`) - Orchestrator instructions for creating phased implementation plans with documentation discovery
+
+**Execution Skill** (`plugin/skills/do/SKILL.md`) - Orchestrator instructions for executing phased plans using subagents
+
 **Chroma** (`src/services/sync/ChromaSync.ts`) - Vector embeddings for semantic search
 
 **Viewer UI** (`src/ui/viewer/`) - React interface at http://localhost:37777, built to `plugin/ui/viewer.html`

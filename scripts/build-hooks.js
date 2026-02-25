@@ -1,19 +1,34 @@
 #!/usr/bin/env node
 
 /**
- * Build script for claude-mem unified binary
- * Compiles the TypeScript CLI into a standalone platform-specific binary using Bun
+ * Build script for claude-mem hooks
+ * Bundles TypeScript hooks into individual standalone executables using esbuild
  */
 
-import { execSync } from 'child_process';
+import { build } from 'esbuild';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+const WORKER_SERVICE = {
+  name: 'worker-service',
+  source: 'src/services/worker-service.ts'
+};
+
+const MCP_SERVER = {
+  name: 'mcp-server',
+  source: 'src/servers/mcp-server.ts'
+};
+
+const CONTEXT_GENERATOR = {
+  name: 'context-generator',
+  source: 'src/services/context-generator.ts'
+};
+
 async function buildHooks() {
-  console.log('🔨 Building claude-mem unified built artifact...\n');
+  console.log('🔨 Building claude-mem hooks and worker service...\n');
 
   try {
     // Read version from package.json
@@ -34,14 +49,19 @@ async function buildHooks() {
     }
     console.log('✓ Output directories ready');
 
-    // Generate plugin/package.json (minimal metadata)
+    // Generate plugin/package.json for cache directory dependency installation
+    // Note: bun:sqlite is a Bun built-in, no external dependencies needed for SQLite
     console.log('\n📦 Generating plugin package.json...');
     const pluginPackageJson = {
       name: 'claude-mem-plugin',
       version: version,
       private: true,
-      description: 'Claude-mem persistent memory system',
+      description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
+      dependencies: {
+        // Chroma embedding function with native ONNX binaries (can't be bundled)
+        '@chroma-core/default-embed': '^0.1.9'
+      },
       engines: {
         node: '>=18.0.0',
         bun: '>=1.0.0'
@@ -64,30 +84,110 @@ async function buildHooks() {
       });
     });
 
-    // Build the unified Bun binary (Primary built artifact)
-    // This binary contains CLI, Daemon, and MCP server logic.
-    console.log('\n🔧 Building compiled binary (claude-mem)...');
-    try {
-      execSync(
-        `bun build src/cli/cli.ts --compile --outfile plugin/scripts/claude-mem --define __DEFAULT_PACKAGE_VERSION__='"${version}"'`,
-        {
-          stdio: 'inherit',
-          cwd: path.join(__dirname, '..')
-        }
-      );
-      const binaryStats = fs.statSync(`${hooksDir}/claude-mem`);
-      console.log(`✓ claude-mem binary built (${(binaryStats.size / 1024 / 1024).toFixed(1)} MB)`);
-    } catch (binaryBuildError) {
-      console.error('\n❌ Fatal: Binary compilation failed. Bun is required to build the unified artifact.');
-      console.error(`   ${binaryBuildError.message}`);
-      process.exit(1);
-    }
+    // Build worker service
+    console.log(`\n🔧 Building worker service...`);
+    await build({
+      entryPoints: [WORKER_SERVICE.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
+      minify: true,
+      logLevel: 'error', // Suppress warnings (import.meta warning is benign)
+      external: [
+        'bun:sqlite',
+        // Optional chromadb embedding providers
+        'cohere-ai',
+        'ollama',
+        // Default embedding function with native binaries
+        '@chroma-core/default-embed',
+        'onnxruntime-node'
+      ],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      },
+      banner: {
+        js: '#!/usr/bin/env bun'
+      }
+    });
 
-    console.log('\n✅ Unified built artifact created successfully!');
-    console.log(`   Output: ${hooksDir}/claude-mem`);
+    // Make worker service executable
+    fs.chmodSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
+    const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
+    console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
+
+    // Build MCP server
+    console.log(`\n🔧 Building MCP server...`);
+    await build({
+      entryPoints: [MCP_SERVER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${MCP_SERVER.name}.cjs`,
+      minify: true,
+      logLevel: 'error',
+      external: ['bun:sqlite'],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      },
+      banner: {
+        js: '#!/usr/bin/env node'
+      }
+    });
+
+    // Make MCP server executable
+    fs.chmodSync(`${hooksDir}/${MCP_SERVER.name}.cjs`, 0o755);
+    const mcpServerStats = fs.statSync(`${hooksDir}/${MCP_SERVER.name}.cjs`);
+    console.log(`✓ mcp-server built (${(mcpServerStats.size / 1024).toFixed(2)} KB)`);
+
+    // Build context generator
+    console.log(`\n🔧 Building context generator...`);
+    await build({
+      entryPoints: [CONTEXT_GENERATOR.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`,
+      minify: true,
+      logLevel: 'error',
+      external: ['bun:sqlite'],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      }
+    });
+
+    const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
+    console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
+
+    // Verify critical distribution files exist (skills are source files, not build outputs)
+    console.log('\n📋 Verifying distribution files...');
+    const requiredDistributionFiles = [
+      'plugin/skills/mem-search/SKILL.md',
+      'plugin/hooks/hooks.json',
+      'plugin/.claude-plugin/plugin.json',
+    ];
+    for (const filePath of requiredDistributionFiles) {
+      if (!fs.existsSync(filePath)) {
+        throw new Error(`Missing required distribution file: ${filePath}`);
+      }
+    }
+    console.log('✓ All required distribution files present');
+
+    console.log('\n✅ Worker service, MCP server, and context generator built successfully!');
+    console.log(`   Output: ${hooksDir}/`);
+    console.log(`   - Worker: worker-service.cjs`);
+    console.log(`   - MCP Server: mcp-server.cjs`);
+    console.log(`   - Context Generator: context-generator.cjs`);
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);
+    if (error.errors) {
+      console.error('\nBuild errors:');
+      error.errors.forEach(err => console.error(`  - ${err.text}`));
+    }
     process.exit(1);
   }
 }

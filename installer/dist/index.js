@@ -1335,15 +1335,26 @@ function installBun() {
     execSync2("curl -fsSL https://bun.sh/install | bash", { stdio: "inherit" });
   }
 }
+function installUv() {
+  const os = detectOS();
+  if (os === "windows") {
+    execSync2('powershell -c "irm https://astral.sh/uv/install.ps1 | iex"', { stdio: "inherit" });
+  } else {
+    execSync2("curl -fsSL https://astral.sh/uv/install.sh | sh", { stdio: "inherit" });
+  }
+}
 
 // src/steps/dependencies.ts
 var BUN_EXTRA_PATHS = ["~/.bun/bin/bun", "/usr/local/bin/bun", "/opt/homebrew/bin/bun"];
+var UV_EXTRA_PATHS = ["~/.local/bin/uv", "~/.cargo/bin/uv"];
 async function runDependencyChecks() {
   const status = {
     nodeOk: false,
     gitOk: false,
     bunOk: false,
-    bunPath: null
+    uvOk: false,
+    bunPath: null,
+    uvPath: null
   };
   await Ye([
     {
@@ -1381,6 +1392,18 @@ async function runDependencyChecks() {
           return `Bun ${info.version} \u2014 requires >= 1.1.14 ${import_picocolors4.default.yellow("\u26A0")}`;
         }
         return `Bun not found ${import_picocolors4.default.yellow("\u26A0")}`;
+      }
+    },
+    {
+      title: "Checking uv",
+      task: async () => {
+        const info = findBinary("uv", UV_EXTRA_PATHS);
+        if (info.found) {
+          status.uvOk = true;
+          status.uvPath = info.path;
+          return `uv ${info.version ?? ""} ${import_picocolors4.default.green("\u2713")}`;
+        }
+        return `uv not found ${import_picocolors4.default.yellow("\u26A0")}`;
       }
     }
   ]);
@@ -1431,6 +1454,35 @@ async function runDependencyChecks() {
       R2.warn("Bun is required for claude-mem. Install manually: curl -fsSL https://bun.sh/install | bash");
       Ne("Cannot continue without Bun.");
       process.exit(1);
+    }
+  }
+  if (!status.uvOk) {
+    const shouldInstall = await Re({
+      message: "uv (Python package manager) is recommended for Chroma. Install it now?",
+      initialValue: true
+    });
+    if (Ct(shouldInstall)) {
+      Ne("Installation cancelled.");
+      process.exit(0);
+    }
+    if (shouldInstall) {
+      const s = bt2();
+      s.start("Installing uv...");
+      try {
+        installUv();
+        const recheck = findBinary("uv", UV_EXTRA_PATHS);
+        if (recheck.found) {
+          status.uvOk = true;
+          status.uvPath = recheck.path;
+          s.stop(`uv installed ${import_picocolors4.default.green("\u2713")}`);
+        } else {
+          s.stop("uv installed but not found in PATH. You may need to restart your shell.");
+        }
+      } catch {
+        s.stop("uv installation failed. Install manually: curl -fsSL https://astral.sh/uv/install.sh | sh");
+      }
+    } else {
+      R2.warn("Skipping uv \u2014 Chroma vector search will not be available.");
     }
   }
   return status;

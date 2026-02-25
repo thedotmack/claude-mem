@@ -17,7 +17,6 @@ import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { getAuthMethodDescription } from '../shared/EnvManager.js';
-import { ensureAuthToken } from '../shared/AuthTokenManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
@@ -36,10 +35,7 @@ function shouldSkipSpawnOnWindows(): boolean {
   try {
     const modifiedTimeMs = statSync(lockPath).mtimeMs;
     return Date.now() - modifiedTimeMs < WINDOWS_SPAWN_COOLDOWN_MS;
-  } catch (error) {
-    if (error instanceof Error) {
-      logger.debug('SYSTEM', 'Windows lock file stat failed, treating as no lock', {}, error);
-    }
+  } catch {
     return false;
   }
 }
@@ -63,6 +59,10 @@ function clearWorkerSpawnAttempted(): void {
   }
 }
 
+// Re-export for backward compatibility — canonical implementation in shared/plugin-state.ts
+export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
+import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
+
 // Version injected at build time by esbuild define
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
@@ -78,11 +78,14 @@ import {
   cleanStalePidFile,
   isProcessAlive,
   spawnDaemon,
-  createSignalHandler
+  createSignalHandler,
+  isPidFileRecent,
+  touchPidFile
 } from './infrastructure/ProcessManager.js';
 import {
   isPortInUse,
   waitForHealth,
+  waitForReadiness,
   waitForPortFree,
   httpShutdown,
   checkVersionMatch
@@ -91,6 +94,12 @@ import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 
 // Server imports
 import { Server } from './server/Server.js';
+
+// Integration imports
+import {
+  updateCursorContextForProject,
+  handleCursorCommand
+} from './integrations/CursorHooksInstaller.js';
 
 // Service layer imports
 import { DatabaseManager } from './worker/DatabaseManager.js';
@@ -107,7 +116,6 @@ import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 
 // HTTP route handlers
-import { requireBearerToken } from './worker/http/middleware.js';
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
@@ -290,10 +298,6 @@ export class WorkerService {
   private registerRoutes(): void {
     // IMPORTANT: Middleware must be registered BEFORE routes (Express processes in order)
 
-    // Bearer token authentication — protects all routes except health/readiness
-    const authToken = ensureAuthToken();
-    this.server.app.use(requireBearerToken(authToken));
-
     // Early handler for /api/context/inject — fail open if not yet initialized
     this.server.app.get('/api/context/inject', async (req, res, next) => {
       if (!this.initializationCompleteFlag || !this.searchRoutes) {
@@ -323,17 +327,11 @@ export class WorkerService {
         await Promise.race([this.initializationComplete, timeoutPromise]);
         next();
       } catch (error) {
-        const isTimeout = error instanceof Error && error.message.includes('initialization timeout');
-        if (isTimeout) {
-          logger.warn('HTTP', `Request to ${req.method} ${req.path} timed out waiting for DB initialization`, {}, error as Error);
-        } else {
-          logger.error('HTTP', `Request to ${req.method} ${req.path} rejected — initialization failed unexpectedly`, {}, error as Error);
-        }
+        logger.error('HTTP', `Request to ${req.method} ${req.path} rejected — DB not initialized`, {}, error as Error);
         res.status(503).json({
           error: 'Service initializing',
           message: 'Database is still initializing, please retry'
         });
-        return;
       }
     });
 
@@ -393,9 +391,14 @@ export class WorkerService {
         runOneTimeChromaMigration();
       }
 
-      // Initialize ChromaMcpManager (lazy - connects on first use via ChromaSync)
-      this.chromaMcpManager = ChromaMcpManager.getInstance();
-      logger.info('SYSTEM', 'ChromaMcpManager initialized (lazy - connects on first use)');
+      // Initialize ChromaMcpManager only if Chroma is enabled
+      const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
+      if (chromaEnabled) {
+        this.chromaMcpManager = ChromaMcpManager.getInstance();
+        logger.info('SYSTEM', 'ChromaMcpManager initialized (lazy - connects on first use)');
+      } else {
+        logger.info('SYSTEM', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, skipping ChromaMcpManager');
+      }
 
       const modeId = settings.CLAUDE_MEM_MODE;
       ModeManager.getInstance().loadMode(modeId);
@@ -425,6 +428,13 @@ export class WorkerService {
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
+      // DB and search are ready — mark initialization complete so hooks can proceed.
+      // MCP connection is tracked separately via mcpReady and is NOT required for
+      // the worker to serve context/search requests.
+      this.initializationCompleteFlag = true;
+      this.resolveInitialization();
+      logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
+
       // Auto-backfill Chroma for all projects if out of sync with SQLite (fire-and-forget)
       if (this.chromaMcpManager) {
         ChromaSync.backfillAllProjects().then(() => {
@@ -434,15 +444,11 @@ export class WorkerService {
         });
       }
 
-      // Connect to MCP server via the unified binary
-      const mcpExecutable = process.execPath.includes('claude-mem') ? process.execPath : 'bun';
-      const mcpArgs = process.execPath.includes('claude-mem') 
-        ? ['mcp'] 
-        : [path.join(__dirname, '..', '..', 'src', 'cli', 'cli.ts'), 'mcp'];
-
+      // Connect to MCP server
+      const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       const transport = new StdioClientTransport({
-        command: mcpExecutable,
-        args: mcpArgs,
+        command: 'node',
+        args: [mcpServerPath],
         env: process.env
       });
 
@@ -454,11 +460,7 @@ export class WorkerService {
 
       await Promise.race([mcpConnectionPromise, timeoutPromise]);
       this.mcpReady = true;
-      logger.success('WORKER', 'Connected to MCP server');
-
-      this.initializationCompleteFlag = true;
-      this.resolveInitialization();
-      logger.info('SYSTEM', 'Background initialization complete');
+      logger.success('WORKER', 'MCP server connected');
 
       // Start orphan reaper to clean up zombie processes (Issue #737)
       this.stopOrphanReaper = startOrphanReaper(() => {
@@ -478,10 +480,7 @@ export class WorkerService {
             logger.info('SYSTEM', `Reaped ${reaped} stale sessions`);
           }
         } catch (e) {
-          if (e instanceof Error) {
-            logger.error('SYSTEM', 'Stale session reaper failed — will retry on next interval', {}, e);
-          }
-          return;
+          logger.error('SYSTEM', 'Stale session reaper error', { error: e instanceof Error ? e.message : String(e) });
         }
       }, 2 * 60 * 1000);
 
@@ -547,6 +546,9 @@ export class WorkerService {
 
     logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
 
+    // Track generator activity for stale detection (Issue #1099)
+    session.lastGeneratorActivity = Date.now();
+
     session.generatorPromise = agent.startSession(session, this)
       .catch(async (error: unknown) => {
         const errorMessage = (error as Error)?.message || '';
@@ -586,13 +588,9 @@ export class WorkerService {
           return this.runFallbackForTerminatedSession(session, error);
         }
 
-        // Detect stale resume failures - SDK session context was lost.
-        // String matching is required here: the Claude CLI SDK emits plain Error objects
-        // without .code properties for these conditions — no typed error classes exist.
-        const isStaleResumeFailure = error instanceof Error
-          // [ANTI-PATTERN IGNORED]: Claude CLI SDK emits plain Error objects without .code — string matching required
-          && (errorMessage.includes('aborted by user') || errorMessage.includes('No conversation found'));
-        if (isStaleResumeFailure && session.memorySessionId) {
+        // Detect stale resume failures - SDK session context was lost
+        if ((errorMessage.includes('aborted by user') || errorMessage.includes('No conversation found'))
+            && session.memorySessionId) {
           logger.warn('SDK', 'Detected stale resume failure, clearing memorySessionId for fresh start', {
             sessionId: session.sessionDbId,
             memorySessionId: session.memorySessionId,
@@ -717,10 +715,10 @@ export class WorkerService {
         await this.geminiAgent.startSession(session, this);
         return;
       } catch (e) {
-        // [ANTI-PATTERN IGNORED]: Must continue to try next fallback agent (OpenRouter)
-        if (e instanceof Error) {
-          logger.warn('SDK', 'Fallback Gemini failed, trying OpenRouter', { sessionId: sessionDbId }, e);
-        }
+        logger.warn('SDK', 'Fallback Gemini failed, trying OpenRouter', {
+          sessionId: sessionDbId,
+          error: e instanceof Error ? e.message : String(e)
+        });
       }
     }
 
@@ -729,10 +727,10 @@ export class WorkerService {
         await this.openRouterAgent.startSession(session, this);
         return;
       } catch (e) {
-        // [ANTI-PATTERN IGNORED]: Falls through to abandon messages and cleanup below
-        if (e instanceof Error) {
-          logger.warn('SDK', 'Fallback OpenRouter failed — no fallback agents remaining', { sessionId: sessionDbId }, e);
-        }
+        logger.warn('SDK', 'Fallback OpenRouter failed', {
+          sessionId: sessionDbId,
+          error: e instanceof Error ? e.message : String(e)
+        });
       }
     }
 
@@ -767,38 +765,37 @@ export class WorkerService {
     const STALE_SESSION_THRESHOLD_MS = 6 * 60 * 60 * 1000;
     const staleThreshold = Date.now() - STALE_SESSION_THRESHOLD_MS;
 
-    let staleSessionIds: { id: number }[] = [];
     try {
-      staleSessionIds = sessionStore.db.prepare(`
+      const staleSessionIds = sessionStore.db.prepare(`
         SELECT id FROM sdk_sessions
         WHERE status = 'active' AND started_at_epoch < ?
       `).all(staleThreshold) as { id: number }[];
-    } catch (error) {
-      // [ANTI-PATTERN IGNORED]: Stale session cleanup is best-effort — failure shouldn't block orphan processing
-      if (error instanceof Error) {
-        logger.error('SYSTEM', 'Failed to query stale sessions', {}, error);
-      }
-    }
 
-    if (staleSessionIds.length > 0) {
-      const ids = staleSessionIds.map(r => r.id);
-      const placeholders = ids.map(() => '?').join(',');
-      const updateSessionsSql = `UPDATE sdk_sessions SET status = 'failed', completed_at_epoch = ? WHERE id IN (${placeholders})`;
-      const updateMessagesSql = `UPDATE pending_messages SET status = 'failed', failed_at_epoch = ? WHERE status = 'pending' AND session_db_id IN (${placeholders})`;
+      if (staleSessionIds.length > 0) {
+        const ids = staleSessionIds.map(r => r.id);
+        const placeholders = ids.map(() => '?').join(',');
 
-      try {
-        sessionStore.db.prepare(updateSessionsSql).run(Date.now(), ...ids);
+        sessionStore.db.prepare(`
+          UPDATE sdk_sessions
+          SET status = 'failed', completed_at_epoch = ?
+          WHERE id IN (${placeholders})
+        `).run(Date.now(), ...ids);
+
         logger.info('SYSTEM', `Marked ${ids.length} stale sessions as failed`);
-        const msgResult = sessionStore.db.prepare(updateMessagesSql).run(Date.now(), ...ids);
+
+        const msgResult = sessionStore.db.prepare(`
+          UPDATE pending_messages
+          SET status = 'failed', failed_at_epoch = ?
+          WHERE status = 'pending'
+          AND session_db_id IN (${placeholders})
+        `).run(Date.now(), ...ids);
+
         if (msgResult.changes > 0) {
           logger.info('SYSTEM', `Marked ${msgResult.changes} pending messages from stale sessions as failed`);
         }
-      } catch (error) {
-        // [ANTI-PATTERN IGNORED]: Best-effort stale session cleanup — failure shouldn't block orphan processing
-        if (error instanceof Error) {
-          logger.error('SYSTEM', 'Failed to mark stale sessions as failed', { staleSessionIds: ids }, error);
-        }
       }
+    } catch (error) {
+      logger.error('SYSTEM', 'Failed to clean up stale sessions', {}, error as Error);
     }
 
     const orphanedSessionIds = pendingStore.getSessionsWithPendingMessages();
@@ -817,34 +814,28 @@ export class WorkerService {
     for (const sessionDbId of orphanedSessionIds) {
       if (result.sessionsStarted >= sessionLimit) break;
 
-      const existingSession = this.sessionManager.getSession(sessionDbId);
-      if (existingSession?.generatorPromise) {
-        result.sessionsSkipped++;
-        continue;
-      }
-
-      let session: ReturnType<typeof this.sessionManager.initializeSession>;
       try {
-        session = this.sessionManager.initializeSession(sessionDbId);
-      } catch (error) {
-        // [ANTI-PATTERN IGNORED]: Loop iteration — continue to next session after logging
-        if (error instanceof Error) {
-          logger.error('SYSTEM', `Failed to initialize session ${sessionDbId}`, {}, error);
+        const existingSession = this.sessionManager.getSession(sessionDbId);
+        if (existingSession?.generatorPromise) {
+          result.sessionsSkipped++;
+          continue;
         }
+
+        const session = this.sessionManager.initializeSession(sessionDbId);
+        logger.info('SYSTEM', `Starting processor for session ${sessionDbId}`, {
+          project: session.project,
+          pendingCount: pendingStore.getPendingCount(sessionDbId)
+        });
+
+        this.startSessionProcessor(session, 'startup-recovery');
+        result.sessionsStarted++;
+        result.startedSessionIds.push(sessionDbId);
+
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch (error) {
+        logger.error('SYSTEM', `Failed to process session ${sessionDbId}`, {}, error as Error);
         result.sessionsSkipped++;
-        continue;
       }
-
-      logger.info('SYSTEM', `Starting processor for session ${sessionDbId}`, {
-        project: session.project,
-        pendingCount: pendingStore.getPendingCount(sessionDbId)
-      });
-
-      this.startSessionProcessor(session, 'startup-recovery');
-      result.sessionsStarted++;
-      result.startedSessionIds.push(sessionDbId);
-
-      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
     return result;
@@ -908,7 +899,7 @@ export class WorkerService {
  * @param port - The port the worker should run on
  * @returns true if worker is healthy (existing or newly started), false on failure
  */
-export async function ensureWorkerStarted(port: number): Promise<boolean> {
+async function ensureWorkerStarted(port: number): Promise<boolean> {
   // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
   cleanStalePidFile();
 
@@ -916,6 +907,23 @@ export async function ensureWorkerStarted(port: number): Promise<boolean> {
   if (await waitForHealth(port, 1000)) {
     const versionCheck = await checkVersionMatch(port);
     if (!versionCheck.matches) {
+      // Guard: If PID file was written recently, another session is likely already
+      // restarting the worker. Poll health instead of starting a concurrent restart.
+      // This prevents the "100 sessions all restart simultaneously" storm (#1145).
+      const RESTART_COORDINATION_THRESHOLD_MS = 15000;
+      if (isPidFileRecent(RESTART_COORDINATION_THRESHOLD_MS)) {
+        logger.info('SYSTEM', 'Version mismatch detected but PID file is recent — another restart likely in progress, polling health', {
+          pluginVersion: versionCheck.pluginVersion,
+          workerVersion: versionCheck.workerVersion
+        });
+        const healthy = await waitForHealth(port, RESTART_COORDINATION_THRESHOLD_MS);
+        if (healthy) {
+          logger.info('SYSTEM', 'Worker became healthy after waiting for concurrent restart');
+          return true;
+        }
+        logger.warn('SYSTEM', 'Worker did not become healthy after waiting — proceeding with own restart');
+      }
+
       logger.info('SYSTEM', 'Worker version mismatch detected - auto-restarting', {
         pluginVersion: versionCheck.pluginVersion,
         workerVersion: versionCheck.workerVersion
@@ -956,10 +964,7 @@ export async function ensureWorkerStarted(port: number): Promise<boolean> {
   // Spawn new worker daemon
   logger.info('SYSTEM', 'Starting worker daemon');
   markWorkerSpawnAttempted();
-  
-  // Use the current executable as the entry point if it's the compiled binary
-  const entryPoint = process.execPath.includes('claude-mem') ? process.execPath : __filename;
-  const pid = spawnDaemon(entryPoint, port);
+  const pid = spawnDaemon(__filename, port);
   if (pid === undefined) {
     logger.error('SYSTEM', 'Failed to spawn worker daemon');
     return false;
@@ -975,8 +980,245 @@ export async function ensureWorkerStarted(port: number): Promise<boolean> {
     return false;
   }
 
+  // Health passed (HTTP listening). Now wait for DB + search initialization
+  // so hooks that run immediately after can actually use the worker.
+  const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+  if (!ready) {
+    logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
+  }
+
   clearWorkerSpawnAttempted();
+  // Touch PID file to signal other sessions that a restart just completed.
+  // Other sessions checking isPidFileRecent() will see this and skip their own restart.
+  touchPidFile();
   logger.info('SYSTEM', 'Worker started successfully');
   return true;
 }
 
+// ============================================================================
+// CLI Entry Point
+// ============================================================================
+
+async function main() {
+  const command = process.argv[2];
+
+  // Early exit if plugin is disabled in Claude Code settings (#781).
+  // Only gate hook-initiated commands; CLI management (stop/status) still works.
+  const hookInitiatedCommands = ['start', 'hook', 'restart', '--daemon'];
+  if ((hookInitiatedCommands.includes(command) || command === undefined) && isPluginDisabledInClaudeSettings()) {
+    process.exit(0);
+  }
+
+  const port = getWorkerPort();
+
+  // Helper for JSON status output in 'start' command
+  // Exit code 0 ensures Windows Terminal doesn't keep tabs open
+  function exitWithStatus(status: 'ready' | 'error', message?: string): never {
+    const output = buildStatusOutput(status, message);
+    console.log(JSON.stringify(output));
+    process.exit(0);
+  }
+
+  switch (command) {
+    case 'start': {
+      const success = await ensureWorkerStarted(port);
+      if (success) {
+        exitWithStatus('ready');
+      } else {
+        exitWithStatus('error', 'Failed to start worker');
+      }
+      break;
+    }
+
+    case 'stop': {
+      await httpShutdown(port);
+      const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+      if (!freed) {
+        logger.warn('SYSTEM', 'Port did not free up after shutdown', { port });
+      }
+      removePidFile();
+      logger.info('SYSTEM', 'Worker stopped successfully');
+      process.exit(0);
+      break;
+    }
+
+    case 'restart': {
+      logger.info('SYSTEM', 'Restarting worker');
+      await httpShutdown(port);
+      const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+      if (!freed) {
+        logger.error('SYSTEM', 'Port did not free up after shutdown, aborting restart', { port });
+        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+        // The wrapper/plugin will handle restart logic if needed
+        process.exit(0);
+      }
+      removePidFile();
+
+      const pid = spawnDaemon(__filename, port);
+      if (pid === undefined) {
+        logger.error('SYSTEM', 'Failed to spawn worker daemon during restart');
+        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+        // The wrapper/plugin will handle restart logic if needed
+        process.exit(0);
+      }
+
+      // PID file is written by the worker itself after listen() succeeds
+      // This is race-free and works correctly on Windows where cmd.exe PID is useless
+
+      const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
+      if (!healthy) {
+        removePidFile();
+        logger.error('SYSTEM', 'Worker failed to restart');
+        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+        // The wrapper/plugin will handle restart logic if needed
+        process.exit(0);
+      }
+
+      logger.info('SYSTEM', 'Worker restarted successfully');
+      process.exit(0);
+      break;
+    }
+
+    case 'status': {
+      const running = await isPortInUse(port);
+      const pidInfo = readPidFile();
+      if (running && pidInfo) {
+        console.log('Worker is running');
+        console.log(`  PID: ${pidInfo.pid}`);
+        console.log(`  Port: ${pidInfo.port}`);
+        console.log(`  Started: ${pidInfo.startedAt}`);
+      } else {
+        console.log('Worker is not running');
+      }
+      process.exit(0);
+      break;
+    }
+
+    case 'cursor': {
+      const subcommand = process.argv[3];
+      const cursorResult = await handleCursorCommand(subcommand, process.argv.slice(4));
+      process.exit(cursorResult);
+      break;
+    }
+
+    case 'hook': {
+      // Auto-start worker if not running
+      const workerReady = await ensureWorkerStarted(port);
+      if (!workerReady) {
+        logger.warn('SYSTEM', 'Worker failed to start before hook, handler will retry');
+      }
+
+      // Existing logic unchanged
+      const platform = process.argv[3];
+      const event = process.argv[4];
+      if (!platform || !event) {
+        console.error('Usage: claude-mem hook <platform> <event>');
+        console.error('Platforms: claude-code, cursor, raw');
+        console.error('Events: context, session-init, observation, summarize, session-complete');
+        process.exit(1);
+      }
+
+      // Check if worker is already running on port
+      const portInUse = await isPortInUse(port);
+      let startedWorkerInProcess = false;
+
+      if (!portInUse) {
+        // Port free - start worker IN THIS PROCESS (no spawn!)
+        // This process becomes the worker and stays alive
+        try {
+          logger.info('SYSTEM', 'Starting worker in-process for hook', { event });
+          const worker = new WorkerService();
+          await worker.start();
+          startedWorkerInProcess = true;
+          // Worker is now running in this process on the port
+        } catch (error) {
+          logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
+          removePidFile();
+          process.exit(0);
+        }
+      }
+      // If port in use, we'll use HTTP to the existing worker
+
+      const { hookCommand } = await import('../cli/hook-command.js');
+      // If we started the worker in this process, skip process.exit() so we stay alive as the worker
+      await hookCommand(platform, event, { skipExit: startedWorkerInProcess });
+      // Note: if we started worker in-process, this process stays alive as the worker
+      // The break allows the event loop to continue serving requests
+      break;
+    }
+
+    case 'generate': {
+      const dryRun = process.argv.includes('--dry-run');
+      const { generateClaudeMd } = await import('../cli/claude-md-commands.js');
+      const result = await generateClaudeMd(dryRun);
+      process.exit(result);
+      break;
+    }
+
+    case 'clean': {
+      const dryRun = process.argv.includes('--dry-run');
+      const { cleanClaudeMd } = await import('../cli/claude-md-commands.js');
+      const result = await cleanClaudeMd(dryRun);
+      process.exit(result);
+      break;
+    }
+
+    case '--daemon':
+    default: {
+      // GUARD 1: Refuse to start if another worker is already alive (PID check).
+      // Instant check (kill -0) — no HTTP dependency.
+      const existingPidInfo = readPidFile();
+      if (existingPidInfo && isProcessAlive(existingPidInfo.pid)) {
+        logger.info('SYSTEM', 'Worker already running (PID alive), refusing to start duplicate', {
+          existingPid: existingPidInfo.pid,
+          existingPort: existingPidInfo.port,
+          startedAt: existingPidInfo.startedAt
+        });
+        process.exit(0);
+      }
+
+      // GUARD 2: Refuse to start if the port is already bound.
+      // Catches the race where two daemons start simultaneously before
+      // either writes a PID file. Must run BEFORE constructing WorkerService
+      // because the constructor registers signal handlers and timers that
+      // prevent the process from exiting even if listen() fails later.
+      if (await isPortInUse(port)) {
+        logger.info('SYSTEM', 'Port already in use, refusing to start duplicate', { port });
+        process.exit(0);
+      }
+
+      // Prevent daemon from dying silently on unhandled errors.
+      // The HTTP server can continue serving even if a background task throws.
+      process.on('unhandledRejection', (reason) => {
+        logger.error('SYSTEM', 'Unhandled rejection in daemon', {
+          reason: reason instanceof Error ? reason.message : String(reason)
+        });
+      });
+      process.on('uncaughtException', (error) => {
+        logger.error('SYSTEM', 'Uncaught exception in daemon', {}, error as Error);
+        // Don't exit — keep the HTTP server running
+      });
+
+      const worker = new WorkerService();
+      worker.start().catch((error) => {
+        logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
+        removePidFile();
+        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+        // The wrapper/plugin will handle restart logic if needed
+        process.exit(0);
+      });
+    }
+  }
+}
+
+// Check if running as main module in both ESM and CommonJS
+const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefined'
+  ? require.main === module || !module.parent
+  : import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('worker-service');
+
+if (isMainModule) {
+  main().catch((error) => {
+    logger.error('SYSTEM', 'Fatal error in main', {}, error instanceof Error ? error : undefined);
+    process.exit(0);  // Exit 0: don't block Claude Code, don't leave Windows Terminal tabs open
+  });
+}

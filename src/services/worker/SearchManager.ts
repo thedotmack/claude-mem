@@ -39,7 +39,7 @@ export class SearchManager {
   constructor(
     private sessionSearch: SessionSearch,
     private sessionStore: SessionStore,
-    private chromaSync: ChromaSync,
+    private chromaSync: ChromaSync | null,
     private formatter: FormattingService,
     private timelineService: TimelineService
   ) {

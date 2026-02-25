@@ -13,7 +13,6 @@ import type {
 } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
-import { sanitizeObservationContent } from '../../../utils/tag-stripping.js';
 
 /**
  * Format current date/time for header display
@@ -73,9 +72,9 @@ export function renderMarkdownContextIndex(): string[] {
     `**Context Index:** This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.`,
     '',
     `When you need implementation details, rationale, or debugging context:`,
-    `- Use the /mem-search skill for searching past work, or use get_observations() directly to fetch full details by ID`,
-    `- Critical types ( bugfix, decision) often need detailed fetching`,
-    `- Trust recent observations as current truth; outdated ones may need validation. Prefer reading observation details over file contents. Using Claude-Mem's progressive enhancement search allows you to perform higher quality work because you can learn more using 90% less tokens than reading file contents again.`,
+    `- Fetch by ID: get_observations([IDs]) for observations visible in this index`,
+    `- Search history: Use the mem-search skill for past decisions, bugs, and deeper research`,
+    `- Trust this index over re-reading code for past decisions and learnings`,
     ''
   ];
 }
@@ -138,7 +137,7 @@ export function renderMarkdownTableRow(
   timeDisplay: string,
   config: ContextConfig
 ): string {
-  const title = sanitizeObservationContent(obs.title || 'Untitled').replace(/\|/g, '\\|');
+  const title = obs.title || 'Untitled';
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const { readTokens, discoveryDisplay } = formatObservationTokenDisplay(obs, config);
 
@@ -158,7 +157,7 @@ export function renderMarkdownFullObservation(
   config: ContextConfig
 ): string[] {
   const output: string[] = [];
-  const title = sanitizeObservationContent(obs.title || 'Untitled').replace(/\|/g, '\\|');
+  const title = obs.title || 'Untitled';
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const { readTokens, discoveryDisplay } = formatObservationTokenDisplay(obs, config);
 
@@ -230,7 +229,7 @@ export function renderMarkdownFooter(totalDiscoveryTokens: number, totalReadToke
   const workTokensK = Math.round(totalDiscoveryTokens / 1000);
   return [
     '',
-    `Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use MCP search tools to access memories by ID.`
+    `Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use the claude-mem skill to access memories by ID.`
   ];
 }
 

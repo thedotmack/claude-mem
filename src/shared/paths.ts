@@ -68,7 +68,7 @@ export function getWorkerSocketPath(sessionId: number): string {
  * Ensure a directory exists
  */
 export function ensureDir(dirPath: string): void {
-  mkdirSync(dirPath, { recursive: true, mode: 0o700 });
+  mkdirSync(dirPath, { recursive: true });
 }
 
 /**
@@ -99,7 +99,9 @@ export function ensureAllClaudeDirs(): void {
 }
 
 /**
- * Get current project name from git root or cwd
+ * Get current project name from git root or cwd.
+ * Includes parent directory to avoid collisions when repos share a folder name
+ * (e.g., ~/work/monorepo → "work/monorepo" vs ~/personal/monorepo → "personal/monorepo").
  */
 export function getCurrentProjectName(): string {
   try {
@@ -109,14 +111,13 @@ export function getCurrentProjectName(): string {
       stdio: ['pipe', 'pipe', 'ignore'],
       windowsHide: true
     }).trim();
-    return basename(gitRoot);
+    return basename(dirname(gitRoot)) + '/' + basename(gitRoot);
   } catch (error) {
-    if (error instanceof Error) {
-      logger.debug('SYSTEM', 'Git root detection failed, using cwd basename', {
-        cwd: process.cwd()
-      }, error);
-    }
-    return basename(process.cwd());
+    logger.debug('SYSTEM', 'Git root detection failed, using cwd basename', {
+      cwd: process.cwd()
+    }, error as Error);
+    const cwd = process.cwd();
+    return basename(dirname(cwd)) + '/' + basename(cwd);
   }
 }
 

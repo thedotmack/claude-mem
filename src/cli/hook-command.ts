@@ -2,6 +2,7 @@ import { readJsonFromStdin } from './stdin-reader.js';
 import { getPlatformAdapter } from './adapters/index.js';
 import { getEventHandler } from './handlers/index.js';
 import { HOOK_EXIT_CODES } from '../shared/hook-constants.js';
+import { logger } from '../utils/logger.js';
 
 export interface HookCommandOptions {
   /** If true, don't call process.exit() - let caller handle process lifecycle */
@@ -65,39 +66,47 @@ export function isWorkerUnavailableError(error: unknown): boolean {
 }
 
 export async function hookCommand(platform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
-  const adapter = getPlatformAdapter(platform);
-  const handler = getEventHandler(event);
+  // Suppress stderr in hook context — Claude Code shows stderr as error UI (#1181)
+  // Exit 1: stderr shown to user. Exit 2: stderr fed to Claude for processing.
+  // All diagnostics go to log file via logger; stderr must stay clean.
+  const originalStderrWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (() => true) as typeof process.stderr.write;
 
-  let result: Awaited<ReturnType<typeof handler.execute>>;
   try {
+    const adapter = getPlatformAdapter(platform);
+    const handler = getEventHandler(event);
+
     const rawInput = await readJsonFromStdin();
     const input = adapter.normalizeInput(rawInput);
-    input.platform = platform;
-    result = await handler.execute(input);
+    input.platform = platform;  // Inject platform for handler-level decisions
+    const result = await handler.execute(input);
+    const output = adapter.formatOutput(result);
+
+    console.log(JSON.stringify(output));
+    const exitCode = result.exitCode ?? HOOK_EXIT_CODES.SUCCESS;
+    if (!options.skipExit) {
+      process.exit(exitCode);
+    }
+    return exitCode;
   } catch (error) {
     if (isWorkerUnavailableError(error)) {
       // Worker unavailable — degrade gracefully, don't block the user
-      console.error(`[claude-mem] Worker unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
+      // Log to file instead of stderr (#1181)
+      logger.warn('HOOK', `Worker unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
       if (!options.skipExit) {
         process.exit(HOOK_EXIT_CODES.SUCCESS);  // = 0 (graceful)
       }
       return HOOK_EXIT_CODES.SUCCESS;
     }
 
-    // Handler/client bug — show as blocking error so developers see it
-    console.error(`Hook error: ${error}`);
+    // Handler/client bug — log to file instead of stderr (#1181)
+    logger.error('HOOK', `Hook error: ${error instanceof Error ? error.message : error}`, {}, error instanceof Error ? error : undefined);
     if (!options.skipExit) {
       process.exit(HOOK_EXIT_CODES.BLOCKING_ERROR);  // = 2
     }
     return HOOK_EXIT_CODES.BLOCKING_ERROR;
+  } finally {
+    // Restore stderr for non-hook code paths (e.g., when skipExit is true and process continues as worker)
+    process.stderr.write = originalStderrWrite;
   }
-
-  // Format output and exit (non-throwing code moved after try-catch)
-  const output = adapter.formatOutput(result);
-  console.log(JSON.stringify(output));
-  const exitCode = result.exitCode ?? HOOK_EXIT_CODES.SUCCESS;
-  if (!options.skipExit) {
-    process.exit(exitCode);
-  }
-  return exitCode;
 }

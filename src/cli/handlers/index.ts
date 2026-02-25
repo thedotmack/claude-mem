@@ -6,6 +6,7 @@
 
 import type { EventHandler } from '../types.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { logger } from '../../utils/logger.js';
 import { contextHandler } from './context.js';
 import { sessionInitHandler } from './session-init.js';
 import { observationHandler } from './observation.js';
@@ -46,7 +47,7 @@ const handlers: Record<EventType, EventHandler> = {
 export function getEventHandler(eventType: string): EventHandler {
   const handler = handlers[eventType as EventType];
   if (!handler) {
-    console.error(`[claude-mem] Unknown event type: ${eventType}, returning no-op`);
+    logger.warn('HOOK', `Unknown event type: ${eventType}, returning no-op`);
     return {
       async execute() {
         return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };

@@ -2,7 +2,7 @@
  * Chroma Vector Sync Integration Tests
  *
  * Tests ChromaSync vector embedding and semantic search.
- * Skips tests if Chroma server is not reachable (CI-safe).
+ * Skips tests if uvx/chroma not installed (CI-safe).
  *
  * Sources:
  * - ChromaSync implementation from src/services/sync/ChromaSync.ts
@@ -15,23 +15,26 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 
-// Check if Chroma server is reachable
+// Check if uvx/chroma is available
 let chromaAvailable = false;
 let skipReason = '';
 
 async function checkChromaAvailability(): Promise<{ available: boolean; reason: string }> {
   try {
-    const response = await fetch('http://localhost:8100/api/v1/heartbeat', {
-      signal: AbortSignal.timeout(2000),
+    // Check if uvx is available
+    const uvxCheck = Bun.spawn(['uvx', '--version'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
     });
+    await uvxCheck.exited;
 
-    if (!response.ok) {
-      return { available: false, reason: `Chroma server responded with status ${response.status}` };
+    if (uvxCheck.exitCode !== 0) {
+      return { available: false, reason: 'uvx not installed' };
     }
 
     return { available: true, reason: '' };
   } catch (error) {
-    return { available: false, reason: `Chroma server not reachable: ${error}` };
+    return { available: false, reason: `uvx check failed: ${error}` };
   }
 }
 
@@ -78,7 +81,7 @@ describe('ChromaSync Vector Sync Integration', () => {
   });
 
   describe('ChromaSync availability check', () => {
-    it('should detect Chroma server availability status', async () => {
+    it('should detect uvx availability status', async () => {
       const check = await checkChromaAvailability();
       // This test always passes - it just logs the status
       expect(typeof check.available).toBe('boolean');
@@ -313,80 +316,52 @@ describe('ChromaSync Vector Sync Integration', () => {
     /**
      * Regression test for GitHub Issue #761:
      * "Feature Request: Option to disable Chroma (RAM usage / zombie processes)"
-     * 
+     *
      * Root cause: When connection errors occur (MCP error -32000, Connection closed),
      * the code was resetting `connected` and `client` but NOT closing the transport,
      * leaving the chroma-mcp subprocess alive. Each reconnection attempt spawned
      * a NEW process while old ones accumulated as zombies.
-     * 
-     * Fix: Close transport before resetting state in error handlers at:
-     * - ensureCollection() error handling (~line 180)
-     * - queryChroma() error handling (~line 840)
+     *
+     * Fix: Transport lifecycle is now managed by ChromaMcpManager (singleton),
+     * which handles connect/disconnect/cleanup. ChromaSync delegates to it.
      */
-    it('should have transport cleanup in connection error handlers', async () => {
-      // This test verifies the fix exists by checking the source code pattern
-      // The actual runtime behavior depends on chroma server availability
-      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
-      const sync = new ChromaSync(testProject);
-
-      // Verify the class has the expected structure
-      const syncAny = sync as any;
-      
-      // Initial state should be null/false
-      expect(syncAny.client).toBeNull();
-      expect(syncAny.transport).toBeNull();
-      expect(syncAny.connected).toBe(false);
-
-      // The close() method should properly clean up all state
-      // This is the reference implementation that error handlers should mirror
-      await sync.close();
-      
-      expect(syncAny.client).toBeNull();
-      expect(syncAny.transport).toBeNull();
-      expect(syncAny.connected).toBe(false);
-    });
-
-    it('should reset state after close regardless of connection status', async () => {
-      if (!chromaAvailable) {
-        console.log(`Skipping: ${skipReason}`);
-        return;
-      }
-
-      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
-      const sync = new ChromaSync(testProject);
-      const syncAny = sync as any;
-
-      // Try to establish connection (may succeed or fail depending on environment)
-      try {
-        await sync.queryChroma('test', 5);
-      } catch {
-        // Connection or query may fail - that's OK
-      }
-
-      // Regardless of whether connection succeeded, close() must clean up everything
-      await sync.close();
-
-      // After close(), ALL state must be null/false - this prevents zombie processes
-      expect(syncAny.connected).toBe(false);
-      expect(syncAny.client).toBeNull();
-      expect(syncAny.transport).toBeNull();
-    });
-
-    it('should clean up transport in close() method', async () => {
-      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
-      
-      // Read the source to verify transport.close() is called
-      // This is a static analysis test - verifies the fix exists
+    it('should have transport cleanup in ChromaMcpManager error handlers', async () => {
+      // ChromaSync now delegates connection management to ChromaMcpManager.
+      // Verify that ChromaMcpManager source includes transport cleanup.
       const sourceFile = await Bun.file(
-        new URL('../../src/services/sync/ChromaSync.ts', import.meta.url)
+        new URL('../../src/services/sync/ChromaMcpManager.ts', import.meta.url)
       ).text();
 
       // Verify that error handlers include transport cleanup
-      // The fix adds: if (this.transport) { await this.transport.close(); }
       expect(sourceFile).toContain('this.transport.close()');
-      
+
       // Verify transport is set to null after close
       expect(sourceFile).toContain('this.transport = null');
+
+      // Verify connected is set to false after close
+      expect(sourceFile).toContain('this.connected = false');
+    });
+
+    it('should reset state after close regardless of connection status', async () => {
+      // ChromaSync.close() is now a lightweight method that logs and returns.
+      // Connection state is managed by ChromaMcpManager singleton.
+      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+      const sync = new ChromaSync(testProject);
+
+      // close() should complete without error regardless of state
+      await expect(sync.close()).resolves.toBeUndefined();
+    });
+
+    it('should clean up transport in ChromaMcpManager close() method', async () => {
+      // Read the ChromaMcpManager source to verify transport.close() is in the close path
+      const sourceFile = await Bun.file(
+        new URL('../../src/services/sync/ChromaMcpManager.ts', import.meta.url)
+      ).text();
+
+      // Verify the close/disconnect method properly cleans up transport
+      expect(sourceFile).toContain('await this.transport.close()');
+      expect(sourceFile).toContain('this.transport = null');
+      expect(sourceFile).toContain('this.connected = false');
     });
   });
 });

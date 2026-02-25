@@ -21,7 +21,8 @@ export function createSDKSession(
   db: Database,
   contentSessionId: string,
   project: string,
-  userPrompt: string
+  userPrompt: string,
+  customTitle?: string
 ): number {
   const now = new Date();
   const nowEpoch = now.getTime();
@@ -39,6 +40,13 @@ export function createSDKSession(
         WHERE content_session_id = ? AND (project IS NULL OR project = '')
       `).run(project, contentSessionId);
     }
+    // Backfill custom_title if provided and not yet set
+    if (customTitle) {
+      db.prepare(`
+        UPDATE sdk_sessions SET custom_title = ?
+        WHERE content_session_id = ? AND custom_title IS NULL
+      `).run(customTitle, contentSessionId);
+    }
     return existing.id;
   }
 
@@ -48,9 +56,9 @@ export function createSDKSession(
   // must NEVER equal contentSessionId - that would inject memory messages into the user's transcript!
   db.prepare(`
     INSERT INTO sdk_sessions
-    (content_session_id, memory_session_id, project, user_prompt, started_at, started_at_epoch, status)
-    VALUES (?, NULL, ?, ?, ?, ?, 'active')
-  `).run(contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
+    (content_session_id, memory_session_id, project, user_prompt, custom_title, started_at, started_at_epoch, status)
+    VALUES (?, NULL, ?, ?, ?, ?, ?, 'active')
+  `).run(contentSessionId, project, userPrompt, customTitle || null, now.toISOString(), nowEpoch);
 
   // Return new ID
   const row = db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')

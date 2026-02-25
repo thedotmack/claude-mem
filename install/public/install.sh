@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage: curl -fsSL https://install.cmem.ai | bash
 #   or:  curl -fsSL https://install.cmem.ai | bash -s -- --provider=gemini --api-key=YOUR_KEY
 
-INSTALLER_URL="https://raw.githubusercontent.com/thedotmack/claude-mem/main/installer/dist/index.js"
+INSTALLER_URL="https://install.cmem.ai/installer.js"
 
 # Colors
 RED='\033[0;31m'
