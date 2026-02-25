@@ -1,0 +1,1 @@
+You are working on the claude-mem codebase. The user wants you to research and propose an approach for adding a "privacy mode" toggle — when enabled, the observer should skip storing observations entirely (not just strip tags). Research the codebase and write up your proposed approach including which files to modify, what the toggle mechanism should be, and any concerns.
