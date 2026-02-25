@@ -1,0 +1,279 @@
+# Smart File Read Integration Plan
+
+Integrate Smart File Read (tree-sitter AST code search) as 3 new MCP tools in the claude-mem plugin, powered by a SKILL.md.
+
+## Phase 0: Discovery Summary
+
+### Architecture Findings
+
+**MCP Server** (`src/servers/mcp-server.ts`):
+- Tools defined as objects: `{ name, description, inputSchema, handler }`
+- Two handler patterns: `callWorkerAPI()` (GET) and `callWorkerAPIPost()` (POST)
+- Registered via `setRequestHandler` for `ListToolsRequestSchema` / `CallToolRequestSchema`
+- Currently 5 tools: `__IMPORTANT`, `search`, `timeline`, `get_observations`, `save_observation`
+- Built with esbuild to `plugin/scripts/mcp-server.cjs` (342 KB, CJS, node18 target)
+- Only external: `bun:sqlite`
+
+**Skill Structure** (`plugin/skills/<name>/SKILL.md`):
+- YAML frontmatter: `name`, `description`
+- Markdown body: workflow, parameters, examples
+- References MCP tools by name directly in prose
+- No programmatic connection — Claude reads the SKILL.md and recognizes tool names
+
+**Build** (`scripts/build-hooks.js`):
+- esbuild bundles all source into single CJS files
+- Native modules must be externalized (can't be bundled by esbuild)
+- Runtime deps go in `plugin/package.json` and are installed via `smart-install.js`
+- Note: `@chroma-core/default-embed` in `plugin/package.json` is unused (Chroma uses MCP subprocess now) — will be replaced by tree-sitter deps
+
+### Key Architectural Decision: Direct Execution vs HTTP Delegation
+
+Current tools delegate to the Worker HTTP API. Smart File Read is different:
+- Read-only file I/O + AST parsing — no database, no state
+- Sub-second response times — HTTP round-trip adds latency for no benefit
+- No worker dependency — works independently of the memory system
+
+**Decision: Direct execution in MCP server.** The 3 smart_* tool handlers call parser/search functions directly, not via HTTP. This keeps the tools fast and independent of worker availability.
+
+### Key Concern: Tree-Sitter Native Dependencies
+
+Tree-sitter `.node` binaries cannot be bundled by esbuild. Strategy:
+- Mark `tree-sitter` + all 8 grammar packages as `external` in esbuild config
+- Add them to `plugin/package.json` for runtime installation
+- Graceful degradation: if grammars fail to load, return empty results (already implemented in parser.ts)
+
+---
+
+## Phase 1: Source Integration
+
+**Goal**: Port Smart File Read's core logic into the claude-mem source tree.
+
+### Tasks
+
+1. Create `src/services/smart-file-read/` directory
+2. Copy `parser.ts` from `/Users/alexnewman/Downloads/smart-file-read/smart-file-read/src/parser.ts`
+   - Remove standalone MCP imports (not needed — just the parsing logic)
+   - Keep all exports: `parseFile`, `formatFoldedView`, `unfoldSymbol`, `detectLanguage`
+   - Keep all types: `CodeSymbol`, `FoldedFile`
+   - The `createRequire` pattern for loading tree-sitter grammars stays as-is (needed for CJS native modules from ESM)
+3. Copy `search.ts` from `/Users/alexnewman/Downloads/smart-file-read/smart-file-read/src/search.ts`
+   - Keep all exports: `searchCodebase`, `formatSearchResults`, `SearchResult`, `SymbolMatch`
+   - Update import path for parser: `./parser.js` stays (same directory)
+
+### Documentation References
+- Source parser.ts: 809 lines, 4 language-specific extractors + generic walker
+- Source search.ts: 315 lines, directory walker + fuzzy matching + formatting
+
+### Verification
+- [ ] `src/services/smart-file-read/parser.ts` exists with all exports
+- [ ] `src/services/smart-file-read/search.ts` exists with correct import path
+- [ ] No standalone MCP server code in the copied files (that stays in index.ts of the original)
+
+---
+
+## Phase 2: MCP Tool Registration
+
+**Goal**: Register `smart_search`, `smart_unfold`, and `smart_outline` as MCP tools on the existing claude-mem server.
+
+### Tasks
+
+1. Add imports to `src/servers/mcp-server.ts`:
+   ```typescript
+   import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
+   import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
+   ```
+   Also add: `import { readFile } from 'node:fs/promises';` and `import { resolve, relative } from 'node:path';`
+
+2. Add 3 tool definitions to the `tools` array (after existing tools, before server registration):
+
+   **smart_search** — handler calls `searchCodebase()` + `formatSearchResults()` directly
+   - inputSchema: `query` (string, required), `path` (string, default "."), `max_results` (number, default 20), `file_pattern` (string, optional)
+   - Handler resolves `path`, calls `searchCodebase(rootDir, query, options)`, formats results
+
+   **smart_unfold** — handler calls `unfoldSymbol()` directly
+   - inputSchema: `file_path` (string, required), `symbol_name` (string, required), `path` (string, default ".")
+   - Handler reads file, calls `unfoldSymbol(content, filePath, symbolName)`
+   - On miss: calls `parseFile()` and lists available symbols
+
+   **smart_outline** — handler calls `parseFile()` + `formatFoldedView()` directly
+   - inputSchema: `file_path` (string, required), `path` (string, default ".")
+   - Handler reads file, parses, returns folded view
+
+3. All handlers return MCP-format responses: `{ content: [{ type: 'text', text: string }], isError?: boolean }`
+
+### Pattern to Follow
+- Match existing tool definition style in `mcp-server.ts` lines 157-262
+- Use JSON Schema (not Zod) for inputSchema — the existing MCP server uses raw JSON Schema
+- snake_case tool names: `smart_search`, `smart_unfold`, `smart_outline`
+- Add `readOnlyHint: true` annotation metadata (these tools are read-only)
+
+### Anti-Pattern Guards
+- Do NOT add these tools to `TOOL_ENDPOINT_MAP` — they don't use HTTP delegation
+- Do NOT add worker API endpoints — direct execution only
+- Do NOT use Zod for schemas — existing tools use raw JSON Schema objects
+
+### Verification
+- [ ] 3 new tools appear in `ListToolsRequestSchema` response
+- [ ] `smart_search` returns folded views when called
+- [ ] `smart_unfold` returns full source of a specific symbol
+- [ ] `smart_outline` returns structural outline of a file
+- [ ] Tools degrade gracefully when tree-sitter grammars aren't available
+
+---
+
+## Phase 3: Build System Updates
+
+**Goal**: Handle tree-sitter native dependencies in the esbuild pipeline and runtime installation.
+
+### Tasks
+
+1. Add to root `package.json` dependencies:
+   ```json
+   "tree-sitter": "^0.25.0",
+   "tree-sitter-c": "^0.24.1",
+   "tree-sitter-cpp": "^0.23.4",
+   "tree-sitter-go": "^0.25.0",
+   "tree-sitter-java": "^0.23.5",
+   "tree-sitter-javascript": "^0.25.0",
+   "tree-sitter-python": "^0.25.0",
+   "tree-sitter-ruby": "^0.23.1",
+   "tree-sitter-rust": "^0.24.0",
+   "tree-sitter-typescript": "^0.23.2"
+   ```
+
+2. Replace `plugin/package.json` dependencies — `@chroma-core/default-embed` is unused (Chroma uses MCP subprocess now). Remove it and add tree-sitter as the only runtime deps:
+   ```json
+   "tree-sitter": "^0.25.0",
+   "tree-sitter-c": "^0.24.1",
+   "tree-sitter-cpp": "^0.23.4",
+   "tree-sitter-go": "^0.25.0",
+   "tree-sitter-java": "^0.23.5",
+   "tree-sitter-javascript": "^0.25.0",
+   "tree-sitter-python": "^0.25.0",
+   "tree-sitter-ruby": "^0.23.1",
+   "tree-sitter-rust": "^0.24.0",
+   "tree-sitter-typescript": "^0.23.2"
+   ```
+
+3. Update `scripts/build-hooks.js` MCP server build (~line 122) — add tree-sitter to externals:
+   ```javascript
+   external: [
+     'bun:sqlite',
+     'tree-sitter',
+     'tree-sitter-c',
+     'tree-sitter-cpp',
+     'tree-sitter-go',
+     'tree-sitter-java',
+     'tree-sitter-javascript',
+     'tree-sitter-python',
+     'tree-sitter-ruby',
+     'tree-sitter-rust',
+     'tree-sitter-typescript',
+   ],
+   ```
+
+4. Update `scripts/build-hooks.js` plugin package.json generation (the section that writes `plugin/package.json`) to replace `@chroma-core/default-embed` with tree-sitter deps. Also remove the Chroma-related externals from the worker service build (`@chroma-core/default-embed`, `onnxruntime-node`, `cohere-ai`, `ollama`) since they're unused.
+
+5. Run `npm install` to install tree-sitter deps locally for development.
+
+### Verification
+- [ ] `npm run build` succeeds without tree-sitter bundling errors
+- [ ] `plugin/scripts/mcp-server.cjs` contains `require("tree-sitter")` calls (externalized, not bundled)
+- [ ] `plugin/package.json` includes all tree-sitter deps
+- [ ] `bun install` in plugin/ directory installs tree-sitter native binaries
+
+---
+
+## Phase 4: Skill Creation
+
+**Goal**: Create `plugin/skills/smart-file-read/SKILL.md` following the mem-search pattern.
+
+### Tasks
+
+1. Create `plugin/skills/smart-file-read/SKILL.md` with:
+
+   **Frontmatter**:
+   ```yaml
+   ---
+   name: smart-file-read
+   description: Token-optimized structural code search using tree-sitter AST parsing. Use instead of reading full files when you need to understand code structure, find functions, or explore a codebase efficiently.
+   ---
+   ```
+
+   **Content structure** (follow mem-search pattern):
+   - `# Smart File Read` — title
+   - Brief description: folded views, progressive disclosure, 87% token savings
+   - `## When to Use` — triggers:
+     - Looking for a function/class/concept in a codebase
+     - Need to understand file structure before reading implementation
+     - Want to minimize token usage when exploring code
+   - `## Progressive Disclosure Workflow` — the 3-step pattern:
+     1. `smart_search` — find symbols, get folded view (~10% token cost)
+     2. `smart_unfold` — expand specific symbol to full source
+     3. `smart_outline` — structural overview of a known file
+   - `## Tool Parameters` — each tool with params table
+   - `## Supported Languages` — list with notes on dedicated vs generic extractors
+   - `## Examples` — concrete usage examples
+   - `## Why This Workflow?` — token economics (same as mem-search's "Why This Workflow?" section)
+
+### Pattern to Follow
+- `plugin/skills/mem-search/SKILL.md` for structure and tone
+- Reference tools by name: `smart_search`, `smart_unfold`, `smart_outline`
+- Show parameter usage in code blocks
+- Include token savings rationale
+
+### Anti-Pattern Guards
+- Do NOT add operations subdirectory — not needed (mem-search's is legacy)
+- Do NOT reference HTTP endpoints — skill consumers use MCP tools, not HTTP
+
+### Verification
+- [ ] `plugin/skills/smart-file-read/SKILL.md` exists with valid YAML frontmatter
+- [ ] All 3 tools documented with parameters
+- [ ] Progressive disclosure workflow clearly described
+- [ ] Examples show real usage patterns
+
+---
+
+## Phase 5: Plugin Manifest & Registration
+
+**Goal**: Register the new skill in the plugin manifest so Claude Code discovers it.
+
+### Tasks
+
+1. Check `openclaw/openclaw.plugin.json` — if it has a `skills` array, add `"skills/smart-file-read"`
+2. Check `plugin/.claude-plugin/plugin.json` — if skills are declared there, add accordingly
+3. The MCP tools are automatically exposed (they're on the same `mcp-search` MCP server defined in `.mcp.json` — no changes needed there)
+
+### Verification
+- [ ] Skill appears in Claude Code's `/skills` listing (or equivalent discovery mechanism)
+- [ ] MCP tools appear alongside existing claude-mem tools
+
+---
+
+## Phase 6: Build, Test & Verify
+
+**Goal**: End-to-end verification.
+
+### Tasks
+
+1. `npm install` — install tree-sitter deps
+2. `npm run build` — verify clean build
+3. `npm run build-and-sync` — deploy to local plugin directory
+4. Start a new Claude Code session and verify:
+   - `smart_search` tool is available via MCP
+   - `smart_unfold` tool is available via MCP
+   - `smart_outline` tool is available via MCP
+   - Searching returns folded structural views
+   - Unfolding returns full source code
+   - Outline returns file structure
+5. Test graceful degradation: rename a tree-sitter grammar package and verify the tool returns empty results (not crashes)
+
+### Anti-Pattern Guards
+- Do NOT add tests in this phase — happy path first, tests after
+- Do NOT add error handling beyond what's inherited from the MCP server's CallToolRequestSchema handler
+
+### Verification
+- [ ] All 3 tools functional in a live Claude Code session
+- [ ] Folded views show correct structure for TypeScript files
+- [ ] Token savings visible (folded view << full file read)
+- [ ] No crashes when tree-sitter grammar is unavailable
