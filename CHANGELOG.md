@@ -2,6 +2,14 @@
 
 All notable changes to claude-mem.
 
+## [v10.4.2] - 2026-02-25
+
+## Bug Fixes
+
+- **Fix PostToolUse hook crashes and 5-second latency (#1220)**: Added missing `break` statements to all 7 switch cases in `worker-service.ts` preventing fall-through execution, added `.catch()` on `main()` to handle unhandled promise rejections, and removed redundant `start` commands from hook groups that triggered the 5-second `collectStdin()` timeout
+- **Fix CLAUDE_PLUGIN_ROOT fallback for Stop hooks (#1215)**: Added POSIX shell-level `CLAUDE_PLUGIN_ROOT` fallback in `hooks.json` for environments where the variable isn't injected, added script-level self-resolution via `import.meta.url` in `bun-runner.js`, and regression test added in `plugin-distribution.test.ts`
+- **Sync plugin.json version**: Fixed `plugin.json` being stuck at 10.4.0 while other version files were at 10.4.1
+
 ## [v10.4.1] - 2026-02-24
 
 ### Refactor
@@ -1370,30 +1378,4 @@ These files now have strict error propagation (no catch-and-continue):
 ---
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.2...v8.5.3
-
-## [v8.5.2] - 2025-12-31
-
-## Bug Fixes
-
-### Fixed SDK Agent Memory Leak (#499)
-
-Fixed a critical memory leak where Claude SDK child processes were never terminated after sessions completed. Over extended usage, this caused hundreds of orphaned processes consuming 40GB+ of RAM.
-
-**Root Cause:**
-- When the SDK agent generator completed naturally (no more messages to process), the `AbortController` was never aborted
-- Child processes spawned by the Agent SDK remained running indefinitely
-- Sessions stayed in memory (by design for future events) but underlying processes were never cleaned up
-
-**Fix:**
-- Added proper cleanup to SessionRoutes finally block
-- Now calls `abortController.abort()` when generator completes with no pending work
-- Creates new `AbortController` when crash recovery restarts generators
-- Ensures cleanup happens even if recovery logic fails
-
-**Impact:**
-- Prevents orphaned `claude` processes from accumulating
-- Eliminates multi-gigabyte memory leaks during normal usage
-- Maintains crash recovery functionality with proper resource cleanup
-
-Thanks to @yonnock for the detailed bug report and investigation in #499!
 
