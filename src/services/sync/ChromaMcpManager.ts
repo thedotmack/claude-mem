@@ -436,6 +436,17 @@ export class ChromaMcpManager {
       }
     }
 
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const chromaMode = settings.CLAUDE_MEM_CHROMA_MODE || 'local';
+    if (chromaMode === 'local') {
+      delete baseEnv.ALL_PROXY;
+      delete baseEnv.all_proxy;
+      delete baseEnv.HTTP_PROXY;
+      delete baseEnv.http_proxy;
+      delete baseEnv.HTTPS_PROXY;
+      delete baseEnv.https_proxy;
+    }
+
     const combinedCertPath = this.getCombinedCertPath();
     if (!combinedCertPath) {
       return baseEnv;

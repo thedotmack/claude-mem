@@ -55,6 +55,7 @@ export const observationHandler: EventHandler = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contentSessionId: sessionId,
+          platform: input.platform,
           tool_name: toolName,
           tool_input: toolInput,
           tool_response: toolResponse,

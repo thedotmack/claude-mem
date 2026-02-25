@@ -122,6 +122,30 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 
 > **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. To use Claude-Mem as a plugin, always install via the `/plugin` commands above.
 
+### OpenCode Plugin Integration
+
+Claude-Mem can also run as an OpenCode plugin.
+
+Install for the current project:
+
+```bash
+npm run opencode:install
+```
+
+Install globally:
+
+```bash
+npm run opencode:install:global
+```
+
+Check status:
+
+```bash
+npm run opencode:status
+```
+
+This installs a plugin file in `.opencode/plugins/` (or `~/.config/opencode/plugins/` for global mode), configures a `claude-mem` MCP server in `opencode.json`, and wires OpenCode session/tool events to Claude-Mem hook handlers.
+
 ### 🦞 OpenClaw Gateway
 
 Install claude-mem as a persistent memory plugin on [OpenClaw](https://openclaw.ai) gateways with a single command:
