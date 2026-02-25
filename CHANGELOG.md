@@ -2,6 +2,25 @@
 
 All notable changes to claude-mem.
 
+## [v10.4.3] - 2026-02-25
+
+## Bug Fixes
+
+- **Fix PostToolUse hook crashes and 5-second latency (#1220)**: Added missing `break` statements to all 7 switch cases in `worker-service.ts` preventing fall-through execution, added `.catch()` on `main()` to handle unhandled promise rejections, and removed redundant `start` commands from hook groups that triggered the 5-second `collectStdin()` timeout
+- **Fix CLAUDE_PLUGIN_ROOT fallback for Stop hooks (#1215)**: Added POSIX shell-level `CLAUDE_PLUGIN_ROOT` fallback in `hooks.json` for environments where the variable isn't injected, added script-level self-resolution via `import.meta.url` in `bun-runner.js`, and regression test added in `plugin-distribution.test.ts`
+
+## Maintenance
+
+- Synced all version files (plugin.json was stuck at 10.4.0)
+
+## [v10.4.2] - 2026-02-25
+
+## Bug Fixes
+
+- **Fix PostToolUse hook crashes and 5-second latency (#1220)**: Added missing `break` statements to all 7 switch cases in `worker-service.ts` preventing fall-through execution, added `.catch()` on `main()` to handle unhandled promise rejections, and removed redundant `start` commands from hook groups that triggered the 5-second `collectStdin()` timeout
+- **Fix CLAUDE_PLUGIN_ROOT fallback for Stop hooks (#1215)**: Added POSIX shell-level `CLAUDE_PLUGIN_ROOT` fallback in `hooks.json` for environments where the variable isn't injected, added script-level self-resolution via `import.meta.url` in `bun-runner.js`, and regression test added in `plugin-distribution.test.ts`
+- **Sync plugin.json version**: Fixed `plugin.json` being stuck at 10.4.0 while other version files were at 10.4.1
+
 ## [v10.4.1] - 2026-02-24
 
 ### Refactor
@@ -1229,171 +1248,4 @@ Implemented interactive log filtering in the viewer UI:
 - **Special Message Detection** - Recognizes markers like → (dataIn), ← (dataOut), ✓ (success), ✗ (failure), ⏱ (timing), [HAPPY-PATH]
 - **Smart Auto-Scroll** - Maintains scroll position when reviewing older logs
 - **Responsive Design** - Filter bar adapts to smaller screens
-
-## [v8.5.3] - 2026-01-02
-
-# 🛡️ Error Handling Hardening & Developer Tools
-
-Version 8.5.3 introduces comprehensive error handling improvements that prevent silent failures and reduce debugging time from hours to minutes. This release also adds new developer tools for queue management and log monitoring.
-
----
-
-## 🔴 Critical Error Handling Improvements
-
-### The Problem
-A single overly-broad try-catch block caused a **10-hour debugging session** by silently swallowing errors. This pattern was pervasive throughout the codebase, creating invisible failure modes.
-
-### The Solution
-
-**Automated Anti-Pattern Detection** (`scripts/detect-error-handling-antipatterns.ts`)
-- Detects 7 categories of error handling anti-patterns
-- Enforces zero-tolerance policy for empty catch blocks
-- Identifies large try-catch blocks (>10 lines) that mask specific errors
-- Flags missing error logging that causes silent failures
-- Supports approved overrides with justification comments
-- Exit code 1 if critical issues detected (enforceable in CI)
-
-**New Error Handling Standards** (Added to `CLAUDE.md`)
-- **5-Question Pre-Flight Checklist**: Required before writing any try-catch
-  1. What SPECIFIC error am I catching?
-  2. Show documentation proving this error can occur
-  3. Why can't this error be prevented?
-  4. What will the catch block DO?
-  5. Why shouldn't this error propagate?
-- **Forbidden Patterns**: Empty catch, catch without logging, large try blocks, promise catch without handlers
-- **Allowed Patterns**: Specific errors, logged failures, minimal scope, explicit recovery
-- **Meta-Rule**: Uncertainty triggers research, NOT try-catch
-
-### Fixes Applied
-
-**Wave 1: Empty Catch Blocks** (5 files)
-- `import-xml-observations.ts` - Log skipped invalid JSON
-- `bun-path.ts` - Log when bun not in PATH
-- `cursor-utils.ts` - Log failed registry reads & corrupt MCP config
-- `worker-utils.ts` - Log failed health checks
-
-**Wave 2: Promise Catches on Critical Paths** (8 locations)
-- `worker-service.ts` - Background initialization failures
-- `SDKAgent.ts` - Session processor errors (2 locations)
-- `GeminiAgent.ts` - Finalization failures (2 locations)
-- `OpenRouterAgent.ts` - Finalization failures (2 locations)
-- `SessionManager.ts` - Generator promise failures
-
-**Wave 3: Comprehensive Audit** (29 catch blocks)
-- Added logging to 16 catch blocks (UI, servers, worker, routes, services)
-- Documented 13 intentional exceptions with justification comments
-- All patterns now follow error handling guidelines with appropriate log levels
-
-### Approved Override System
-
-For justified exceptions (performance-critical paths, expected failures), use:
-```typescript
-// [APPROVED OVERRIDE]: Brief technical justification
-try {
-  // code
-} catch {
-  // allowed exception
-}
-```
-
-**Progress**: 163 anti-patterns → 26 approved overrides (84% reduction in silent failures)
-
----
-
-## 🗂️ Queue Management Features
-
-**New Commands**
-- `npm run queue:clear` - Interactive removal of failed messages
-- `npm run queue:clear -- --all` - Clear all messages (pending, processing, failed)
-- `npm run queue:clear -- --force` - Non-interactive mode
-
-**HTTP API Endpoints**
-- `DELETE /api/pending-queue/failed` - Remove failed messages
-- `DELETE /api/pending-queue/all` - Complete queue reset
-
-Failed messages exceed max retry count and remain for debugging. These commands provide clean queue maintenance.
-
----
-
-## 🪵 Developer Console (Chrome DevTools Style)
-
-**UI Improvements**
-- Bottom drawer console (slides up from bottom-left corner)
-- Draggable resize handle for height adjustment
-- Auto-refresh toggle (2s interval)
-- Clear logs button with confirmation
-- Monospace font (SF Mono/Monaco/Consolas)
-- Minimum height: 150px, adjustable to window height - 100px
-
-**API Endpoints**
-- `GET /api/logs` - Fetch last 1000 lines of current day's log
-- `DELETE /api/logs` - Clear current log file
-
-Logs viewer accessible via floating console button in UI.
-
----
-
-## 📚 Architecture Documentation
-
-**Session ID Architecture** (`docs/SESSION_ID_ARCHITECTURE.md`)
-- Comprehensive documentation of 1:1 session mapping guarantees
-- 19 validation tests proving UNIQUE constraints and resume consistency
-- Documents single-transition vulnerability (application-level enforcement)
-- Complete reference for session lifecycle management
-
----
-
-## 📊 Impact Summary
-
-- **Debugging Time**: 10 hours → minutes (proper error visibility)
-- **Test Coverage**: +19 critical architecture validation tests
-- **Silent Failures**: 84% reduction (163 → 26 approved exceptions)
-- **Protection**: Automated detection prevents regression
-- **Developer UX**: Console logs, queue management, comprehensive docs
-
----
-
-## 🔧 Technical Details
-
-**Files Changed**: 25+ files across error handling, queue management, UI, and documentation
-
-**Critical Path Protection**
-These files now have strict error propagation (no catch-and-continue):
-- `SDKAgent.ts`
-- `GeminiAgent.ts`
-- `OpenRouterAgent.ts`
-- `SessionStore.ts`
-- `worker-service.ts`
-
-**Build Verification**: All changes tested, build successful
-
----
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.2...v8.5.3
-
-## [v8.5.2] - 2025-12-31
-
-## Bug Fixes
-
-### Fixed SDK Agent Memory Leak (#499)
-
-Fixed a critical memory leak where Claude SDK child processes were never terminated after sessions completed. Over extended usage, this caused hundreds of orphaned processes consuming 40GB+ of RAM.
-
-**Root Cause:**
-- When the SDK agent generator completed naturally (no more messages to process), the `AbortController` was never aborted
-- Child processes spawned by the Agent SDK remained running indefinitely
-- Sessions stayed in memory (by design for future events) but underlying processes were never cleaned up
-
-**Fix:**
-- Added proper cleanup to SessionRoutes finally block
-- Now calls `abortController.abort()` when generator completes with no pending work
-- Creates new `AbortController` when crash recovery restarts generators
-- Ensures cleanup happens even if recovery logic fails
-
-**Impact:**
-- Prevents orphaned `claude` processes from accumulating
-- Eliminates multi-gigabyte memory leaks during normal usage
-- Maintains crash recovery functionality with proper resource cleanup
-
-Thanks to @yonnock for the detailed bug report and investigation in #499!
 
