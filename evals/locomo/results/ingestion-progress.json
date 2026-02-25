@@ -1,0 +1,72 @@
+[
+  {
+    "sample_id": "conv-26",
+    "total_sessions": 19,
+    "sessions_ingested": 19,
+    "observations_queued": 19,
+    "status": "completed"
+  },
+  {
+    "sample_id": "conv-30",
+    "total_sessions": 19,
+    "sessions_ingested": 19,
+    "observations_queued": 19,
+    "status": "completed"
+  },
+  {
+    "sample_id": "conv-41",
+    "total_sessions": 32,
+    "sessions_ingested": 32,
+    "observations_queued": 32,
+    "status": "completed"
+  },
+  {
+    "sample_id": "conv-42",
+    "total_sessions": 29,
+    "sessions_ingested": 10,
+    "observations_queued": 10,
+    "status": "completed"
+  },
+  {
+    "sample_id": "conv-43",
+    "total_sessions": 29,
+    "sessions_ingested": 0,
+    "observations_queued": 0,
+    "status": "failed"
+  },
+  {
+    "sample_id": "conv-44",
+    "total_sessions": 28,
+    "sessions_ingested": 0,
+    "observations_queued": 0,
+    "status": "failed"
+  },
+  {
+    "sample_id": "conv-47",
+    "total_sessions": 31,
+    "sessions_ingested": 0,
+    "observations_queued": 0,
+    "status": "failed"
+  },
+  {
+    "sample_id": "conv-48",
+    "total_sessions": 30,
+    "sessions_ingested": 0,
+    "observations_queued": 0,
+    "status": "failed"
+  },
+  {
+    "sample_id": "conv-49",
+    "total_sessions": 25,
+    "sessions_ingested": 0,
+    "observations_queued": 0,
+    "status": "failed"
+  },
+  {
+    "sample_id": "conv-50",
+    "total_sessions": 30,
+    "sessions_ingested": 0,
+    "observations_queued": 0,
+    "status": "failed"
+  }
+]
