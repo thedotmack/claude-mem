@@ -33,9 +33,13 @@ src/ui/viewer.html
 # Prevent literal tilde directories (path validation bug artifacts)
 ~*/
 
-# Prevent other malformed path directories
-http*/
-https*/
+# Prevent other malformed path directories (at root level only)
+/http*/
+/https*/
 
 # Ignore WebStorm project files (for dinosaur IDE users)
 .idea/
+
+# Archived perf-comparison artifacts (moved to ../CC-sesh-master/legada)
+docs/ui-parallel-performance-playbook.md
+scripts/perf/

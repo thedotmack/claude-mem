@@ -31,6 +31,8 @@ export class ViewerRoutes extends BaseRouteHandler {
 
     app.get('/health', this.handleHealth.bind(this));
     app.get('/', this.handleViewerUI.bind(this));
+    // SPA client-side route: serve viewer for /sessions path
+    app.get('/sessions', this.handleViewerUI.bind(this));
     app.get('/stream', this.handleSSEStream.bind(this));
   }
 

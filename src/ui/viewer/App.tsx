@@ -3,6 +3,7 @@ import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { LogsDrawer } from './components/LogsModal';
+import { SessionRegistryPage } from './components/SessionRegistryPage';
 import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
@@ -11,10 +12,36 @@ import { useTheme } from './hooks/useTheme';
 import { Observation, Summary, UserPrompt } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
 
+type AppPage = 'feed' | 'session-registry';
+
 export function App() {
+  const [currentPage, setCurrentPage] = useState<AppPage>(() => {
+    // Support simple path-based routing
+    if (typeof window !== 'undefined' && window.location.pathname === '/sessions') {
+      return 'session-registry';
+    }
+    return 'feed';
+  });
   const [currentFilter, setCurrentFilter] = useState('');
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
+
+  const navigateTo = useCallback((page: AppPage) => {
+    setCurrentPage(page);
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', page === 'session-registry' ? '/sessions' : '/');
+    }
+  }, []);
+
+  // Handle browser back/forward
+  useEffect(() => {
+    const onPop = () => {
+      const page = window.location.pathname === '/sessions' ? 'session-registry' : 'feed';
+      setCurrentPage(page);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
@@ -92,6 +119,10 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFilter]);
 
+  if (currentPage === 'session-registry') {
+    return <SessionRegistryPage onNavigateHome={() => navigateTo('feed')} />;
+  }
+
   return (
     <>
       <Header
@@ -104,6 +135,7 @@ export function App() {
         themePreference={preference}
         onThemeChange={setThemePreference}
         onContextPreviewToggle={toggleContextPreview}
+        onSessionRegistryOpen={() => navigateTo('session-registry')}
       />
 
       <Feed
