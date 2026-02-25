@@ -97,6 +97,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.76",
+    "@mariozechner/pi-ai": "^0.53.0",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "ansi-to-html": "^0.7.2",
     "dompurify": "^3.3.1",

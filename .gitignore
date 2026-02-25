@@ -29,6 +29,13 @@ src/ui/viewer.html
 .mcp.json
 .cursor/
 
+# Prevent literal tilde directories (path validation bug artifacts)
+~*/
+
+# Prevent other malformed path directories (at root level only)
+/http*/
+/https*/
+
 # Ignore WebStorm project files (for dinosaur IDE users)
 .idea/
 
@@ -36,3 +43,7 @@ src/ui/viewer.html
 .claude/session-intent.md
 .claude/session-plan.md
 .octo/
+
+# Archived perf-comparison artifacts (moved to ../CC-sesh-master/legada)
+docs/ui-parallel-performance-playbook.md
+scripts/perf/
