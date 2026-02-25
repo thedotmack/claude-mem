@@ -102,17 +102,23 @@ export class ChromaMcpManager {
     const commandArgs = this.buildCommandArgs();
     const spawnEnvironment = this.getSpawnEnv();
 
+    // On Windows, .cmd files require shell resolution. Since MCP SDK's
+    // StdioClientTransport doesn't support `shell: true`, route through
+    // cmd.exe which resolves .cmd/.bat extensions and PATH automatically.
+    // This also fixes Git Bash compatibility (#1062) since cmd.exe handles
+    // Windows-native command resolution regardless of the calling shell.
     const isWindows = process.platform === 'win32';
-    const uvxCommand = isWindows ? 'uvx.cmd' : 'uvx';
+    const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'uvx';
+    const uvxSpawnArgs = isWindows ? ['/c', 'uvx', ...commandArgs] : commandArgs;
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
-      command: uvxCommand,
-      args: commandArgs.join(' ')
+      command: uvxSpawnCommand,
+      args: uvxSpawnArgs.join(' ')
     });
 
     this.transport = new StdioClientTransport({
-      command: uvxCommand,
-      args: commandArgs,
+      command: uvxSpawnCommand,
+      args: uvxSpawnArgs,
       env: spawnEnvironment,
       stderr: 'pipe'
     });
@@ -177,6 +183,7 @@ export class ChromaMcpManager {
   private buildCommandArgs(): string[] {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const chromaMode = settings.CLAUDE_MEM_CHROMA_MODE || 'local';
+    const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || settings.CLAUDE_MEM_PYTHON_VERSION || '3.13';
 
     if (chromaMode === 'remote') {
       const chromaHost = settings.CLAUDE_MEM_CHROMA_HOST || '127.0.0.1';
@@ -187,6 +194,7 @@ export class ChromaMcpManager {
       const chromaApiKey = settings.CLAUDE_MEM_CHROMA_API_KEY || '';
 
       const args = [
+        '--python', pythonVersion,
         'chroma-mcp',
         '--client-type', 'http',
         '--host', chromaHost,
@@ -214,9 +222,10 @@ export class ChromaMcpManager {
 
     // Local mode: persistent client with data directory
     return [
+      '--python', pythonVersion,
       'chroma-mcp',
       '--client-type', 'persistent',
-      '--data-dir', DEFAULT_CHROMA_DATA_DIR
+      '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
     ];
   }
 
@@ -235,10 +244,35 @@ export class ChromaMcpManager {
       arguments: JSON.stringify(toolArguments).slice(0, 200)
     });
 
-    const result = await this.client!.callTool({
-      name: toolName,
-      arguments: toolArguments
-    });
+    let result;
+    try {
+      result = await this.client!.callTool({
+        name: toolName,
+        arguments: toolArguments
+      });
+    } catch (transportError) {
+      // Transport error: chroma-mcp subprocess likely died (e.g., killed by orphan reaper,
+      // HNSW index corruption). Mark connection dead and retry once after reconnect (#1131).
+      // Without this retry, callers see a one-shot error even though reconnect would succeed.
+      this.connected = false;
+      this.client = null;
+      this.transport = null;
+
+      logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
+        error: transportError instanceof Error ? transportError.message : String(transportError)
+      });
+
+      try {
+        await this.ensureConnected();
+        result = await this.client!.callTool({
+          name: toolName,
+          arguments: toolArguments
+        });
+      } catch (retryError) {
+        this.connected = false;
+        throw new Error(`chroma-mcp transport error during "${toolName}" (retry failed): ${retryError instanceof Error ? retryError.message : String(retryError)}`);
+      }
+    }
 
     // MCP tools signal errors via isError flag on the CallToolResult
     if (result.isError) {

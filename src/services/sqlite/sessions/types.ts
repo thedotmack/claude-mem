@@ -13,6 +13,7 @@ export interface SessionBasic {
   memory_session_id: string | null;
   project: string;
   user_prompt: string;
+  custom_title: string | null;
 }
 
 /**
@@ -24,6 +25,7 @@ export interface SessionFull {
   memory_session_id: string;
   project: string;
   user_prompt: string;
+  custom_title: string | null;
   started_at: string;
   started_at_epoch: number;
   completed_at: string | null;

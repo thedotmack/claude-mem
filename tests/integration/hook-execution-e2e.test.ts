@@ -45,6 +45,12 @@ describe('Hook Execution E2E', () => {
       getMcpReady: () => true,
       onShutdown: mock(() => Promise.resolve()),
       onRestart: mock(() => Promise.resolve()),
+      workerPath: '/test/worker-service.cjs',
+      getAiStatus: () => ({
+        provider: 'claude',
+        authMethod: 'cli',
+        lastInteraction: null,
+      }),
     };
 
     testPort = 40000 + Math.floor(Math.random() * 10000);
@@ -96,6 +102,8 @@ describe('Hook Execution E2E', () => {
         getMcpReady: () => false,
         onShutdown: mock(() => Promise.resolve()),
         onRestart: mock(() => Promise.resolve()),
+        workerPath: '/test/worker-service.cjs',
+        getAiStatus: () => ({ provider: 'claude', authMethod: 'cli', lastInteraction: null }),
       };
 
       server = new Server(uninitializedOptions);
@@ -157,6 +165,8 @@ describe('Hook Execution E2E', () => {
         getMcpReady: () => true,
         onShutdown: mock(() => Promise.resolve()),
         onRestart: mock(() => Promise.resolve()),
+        workerPath: '/test/worker-service.cjs',
+        getAiStatus: () => ({ provider: 'claude', authMethod: 'cli', lastInteraction: null }),
       };
 
       server = new Server(dynamicOptions);

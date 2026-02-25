@@ -93,20 +93,6 @@ get_observations(ids=[11131, 10942])
 
 **Returns:** Complete observation objects with title, subtitle, narrative, facts, concepts, files (~500-1000 tokens each)
 
-## Saving Memories
-
-Use the `save_memory` MCP tool to store manual observations:
-
-```
-save_memory(text="Important discovery about the auth system", title="Auth Architecture", project="my-project")
-```
-
-**Parameters:**
-
-- `text` (string, required) - Content to remember
-- `title` (string, optional) - Short title, auto-generated if omitted
-- `project` (string, optional) - Project name, defaults to "claude-mem"
-
 ## Examples
 
 **Find recent bug fixes:**

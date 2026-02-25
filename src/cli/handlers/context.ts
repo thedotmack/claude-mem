@@ -10,6 +10,8 @@ import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -30,6 +32,10 @@ export const contextHandler: EventHandler = {
     const context = getProjectContext(cwd);
     const port = getWorkerPort();
 
+    // Check if terminal output should be shown (load settings early)
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const showTerminalOutput = settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true';
+
     // Pass all projects (parent + worktree if applicable) for unified timeline
     const projectsParam = context.allProjects.join(',');
     const url = `http://127.0.0.1:${port}/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
@@ -37,11 +43,11 @@ export const contextHandler: EventHandler = {
     // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
     // Worker service has its own timeouts, so client-side timeout is redundant
     try {
-      // Fetch both markdown (for Claude context) and colored (for user display) truly in parallel
+      // Fetch markdown (for Claude context) and optionally colored (for user display)
       const colorUrl = `${url}&colors=true`;
       const [response, colorResponse] = await Promise.all([
         fetch(url),
-        fetch(colorUrl).catch(() => null)
+        showTerminalOutput ? fetch(colorUrl).catch(() => null) : Promise.resolve(null)
       ]);
 
       if (!response.ok) {
@@ -60,7 +66,8 @@ export const contextHandler: EventHandler = {
 
       const additionalContext = contextResult.trim();
       const coloredTimeline = colorResult.trim();
-      const systemMessage = coloredTimeline
+
+      const systemMessage = showTerminalOutput && coloredTimeline
         ? `${coloredTimeline}\n\nView Observations Live @ http://localhost:${port}`
         : undefined;
 

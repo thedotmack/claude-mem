@@ -56,6 +56,9 @@ export async function processAgentResponse(
   agentName: string,
   projectRoot?: string
 ): Promise<void> {
+  // Track generator activity for stale detection (Issue #1099)
+  session.lastGeneratorActivity = Date.now();
+
   // Add assistant response to shared conversation history for provider interop
   if (text) {
     session.conversationHistory.push({ role: 'assistant', content: text });
@@ -189,8 +192,8 @@ async function syncAndBroadcastObservations(
     const obs = observations[i];
     const chromaStart = Date.now();
 
-    // Sync to Chroma (fire-and-forget)
-    dbManager.getChromaSync().syncObservation(
+    // Sync to Chroma (fire-and-forget, skipped if Chroma is disabled)
+    dbManager.getChromaSync()?.syncObservation(
       obsId,
       session.contentSessionId,
       session.project,
@@ -282,8 +285,8 @@ async function syncAndBroadcastSummary(
 
   const chromaStart = Date.now();
 
-  // Sync to Chroma (fire-and-forget)
-  dbManager.getChromaSync().syncSummary(
+  // Sync to Chroma (fire-and-forget, skipped if Chroma is disabled)
+  dbManager.getChromaSync()?.syncSummary(
     result.summaryId,
     session.contentSessionId,
     session.project,

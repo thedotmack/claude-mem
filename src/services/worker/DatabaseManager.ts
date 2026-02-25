@@ -11,6 +11,8 @@
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { DBSession } from '../worker-types.js';
 
@@ -27,8 +29,14 @@ export class DatabaseManager {
     this.sessionStore = new SessionStore();
     this.sessionSearch = new SessionSearch();
 
-    // Initialize ChromaSync (lazy - connects on first search, not at startup)
-    this.chromaSync = new ChromaSync('claude-mem');
+    // Initialize ChromaSync only if Chroma is enabled (SQLite-only fallback when disabled)
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
+    if (chromaEnabled) {
+      this.chromaSync = new ChromaSync('claude-mem');
+    } else {
+      logger.info('DB', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, using SQLite-only search');
+    }
 
     logger.info('DB', 'Database initialized');
   }
@@ -75,12 +83,9 @@ export class DatabaseManager {
   }
 
   /**
-   * Get ChromaSync instance (throws if not initialized)
+   * Get ChromaSync instance (returns null if Chroma is disabled)
    */
-  getChromaSync(): ChromaSync {
-    if (!this.chromaSync) {
-      throw new Error('ChromaSync not initialized');
-    }
+  getChromaSync(): ChromaSync | null {
     return this.chromaSync;
   }
 

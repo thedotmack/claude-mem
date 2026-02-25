@@ -29,29 +29,47 @@ export async function isPortInUse(port: number): Promise<boolean> {
 }
 
 /**
- * Wait for the worker HTTP server to become responsive (liveness check)
- * Uses /api/health instead of /api/readiness because:
- * - /api/health returns 200 as soon as HTTP server is listening
- * - /api/readiness waits for full initialization (MCP connection can take 5+ minutes)
- * See: https://github.com/thedotmack/claude-mem/issues/811
- * @param port Worker port to check
- * @param timeoutMs Maximum time to wait in milliseconds
- * @returns true if worker became responsive, false if timeout
+ * Poll a localhost endpoint until it returns 200 OK or timeout.
+ * Shared implementation for liveness and readiness checks.
  */
-export async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<boolean> {
+async function pollEndpointUntilOk(
+  port: number,
+  endpointPath: string,
+  timeoutMs: number,
+  retryLogMessage: string
+): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
       // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-      const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${port}${endpointPath}`);
       if (response.ok) return true;
     } catch (error) {
       // [ANTI-PATTERN IGNORED]: Retry loop - expected failures during startup, will retry
-      logger.debug('SYSTEM', 'Service not ready yet, will retry', { port }, error as Error);
+      logger.debug('SYSTEM', retryLogMessage, { port }, error as Error);
     }
     await new Promise(r => setTimeout(r, 500));
   }
   return false;
+}
+
+/**
+ * Wait for the worker HTTP server to become responsive (liveness check).
+ * Uses /api/health which returns 200 as soon as the HTTP server is listening.
+ * For full initialization (DB + search), use waitForReadiness() instead.
+ */
+export function waitForHealth(port: number, timeoutMs: number = 30000): Promise<boolean> {
+  return pollEndpointUntilOk(port, '/api/health', timeoutMs, 'Service not ready yet, will retry');
+}
+
+/**
+ * Wait for the worker to be fully initialized (DB + search ready).
+ * Uses /api/readiness which returns 200 only after core initialization completes.
+ * Now that initializationCompleteFlag is set after DB/search init (not MCP),
+ * this typically completes in a few seconds.
+ */
+export function waitForReadiness(port: number, timeoutMs: number = 30000): Promise<boolean> {
+  return pollEndpointUntilOk(port, '/api/readiness', timeoutMs, 'Worker not ready yet, will retry');
 }
 
 /**
@@ -97,12 +115,22 @@ export async function httpShutdown(port: number): Promise<boolean> {
 
 /**
  * Get the plugin version from the installed marketplace package.json
- * This is the "expected" version that should be running
+ * This is the "expected" version that should be running.
+ * Returns 'unknown' on ENOENT/EBUSY (shutdown race condition, fix #1042).
  */
 export function getInstalledPluginVersion(): string {
-  const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-  return packageJson.version;
+  try {
+    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    return packageJson.version;
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'EBUSY') {
+      logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
+      return 'unknown';
+    }
+    throw error;
+  }
 }
 
 /**
@@ -137,8 +165,8 @@ export async function checkVersionMatch(port: number): Promise<VersionCheckResul
   const pluginVersion = getInstalledPluginVersion();
   const workerVersion = await getRunningWorkerVersion(port);
 
-  // If we can't get worker version, assume it matches (graceful degradation)
-  if (!workerVersion) {
+  // If either version is unknown/null, assume match (graceful degradation, fix #1042)
+  if (!workerVersion || pluginVersion === 'unknown') {
     return { matches: true, pluginVersion, workerVersion };
   }
 
