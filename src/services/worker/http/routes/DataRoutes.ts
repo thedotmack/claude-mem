@@ -446,18 +446,24 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   /**
-   * Get list of distinct projects from observations
+   * Get list of distinct projects across all tables
    * GET /api/projects
    */
   private handleGetProjects = this.wrapHandler((req: Request, res: Response): void => {
     const db = this.dbManager.getSessionStore().db;
 
     const rows = db.prepare(`
-      SELECT project
-      FROM observations
-      WHERE project IS NOT NULL
+      SELECT project FROM (
+        SELECT project, MAX(created_at_epoch) AS latest FROM observations WHERE project IS NOT NULL AND project != '' GROUP BY project
+        UNION ALL
+        SELECT project, MAX(started_at_epoch) AS latest FROM sdk_sessions WHERE project IS NOT NULL AND project != '' GROUP BY project
+        UNION ALL
+        SELECT project, MAX(created_at_epoch) AS latest FROM session_summaries WHERE project IS NOT NULL AND project != '' GROUP BY project
+        UNION ALL
+        SELECT project, MAX(created_at_epoch) AS latest FROM context_injections WHERE project IS NOT NULL AND project != '' GROUP BY project
+      )
       GROUP BY project
-      ORDER BY MAX(created_at_epoch) DESC
+      ORDER BY MAX(latest) DESC
     `).all() as Array<{ project: string }>;
 
     const projects = rows.map(row => row.project);

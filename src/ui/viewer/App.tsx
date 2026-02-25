@@ -20,6 +20,7 @@ import { useActivityDensity } from './hooks/useActivityDensity';
 import type { Observation, Summary, UserPrompt } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
 import { logger } from './utils/logger';
+import { API_ENDPOINTS } from './constants/api';
 
 // ---------------------------------------------------------------------------
 // Pure utility (exported for unit testing)
@@ -69,7 +70,7 @@ export function App() {
   const search = useSearch(filters, isFilterMode);
   const activityDensity = useActivityDensity(filters.project);
 
-  const { observations, summaries, prompts, projects, isProcessing, queueDepth, initialActiveSession } = useSSE();
+  const { observations, summaries, prompts, projects, setProjects, isProcessing, queueDepth, initialActiveSession } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats } = useStats();
   const { preference, setThemePreference } = useTheme();
@@ -124,6 +125,18 @@ export function App() {
   const toggleLogsModal = useCallback(() => {
     setLogsModalOpen(prev => !prev);
   }, []);
+
+  const handleProjectsChanged = useCallback(async () => {
+    try {
+      const res = await fetch(API_ENDPOINTS.PROJECTS_BASE);
+      if (res.ok) {
+        const data = await res.json() as { projects?: string[] };
+        setProjects(data.projects ?? []);
+      }
+    } catch {
+      logger.error('app', 'Failed to refresh projects list');
+    }
+  }, [setProjects]);
 
   const twoPanelRef = useRef<TwoPanelHandle>(null);
 
@@ -251,6 +264,7 @@ export function App() {
         projects={projects}
         currentFilter={filters.project}
         onFilterChange={setProject}
+        onProjectsChanged={() => { void handleProjectsChanged(); }}
         isProcessing={isProcessing}
         queueDepth={queueDepth}
         onContextPreviewToggle={toggleContextPreview}

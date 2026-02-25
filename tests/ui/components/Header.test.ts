@@ -87,17 +87,22 @@ describe('Header renders SearchBar', () => {
   });
 });
 
-describe('Header renders project selector', () => {
-  it('renders a <select> for project filtering', () => {
-    expect(headerSource).toMatch(/<select/);
+describe('Header renders project selector via ProjectDropdown', () => {
+  it('imports ProjectDropdown', () => {
+    expect(headerSource).toMatch(/import.*ProjectDropdown/);
   });
 
-  it('renders All Projects option', () => {
-    expect(headerSource).toMatch(/All Projects/);
+  it('renders <ProjectDropdown instead of <select', () => {
+    expect(headerSource).toMatch(/<ProjectDropdown/);
+    expect(headerSource).not.toMatch(/<select/);
   });
 
-  it('has aria-label on project select for accessibility', () => {
-    expect(headerSource).toContain('aria-label="Filter by project"');
+  it('passes onProjectsChanged prop to ProjectDropdown', () => {
+    expect(headerSource).toContain('onProjectsChanged');
+  });
+
+  it('does not render a native <select> for project filtering', () => {
+    expect(headerSource).not.toMatch(/<select/);
   });
 });
 

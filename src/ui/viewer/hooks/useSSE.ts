@@ -116,5 +116,5 @@ export function useSSE() {
     };
   }, []);
 
-  return { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected, initialActiveSession };
+  return { observations, summaries, prompts, projects, setProjects, isProcessing, queueDepth, isConnected, initialActiveSession };
 }

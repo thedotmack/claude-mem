@@ -15,4 +15,5 @@ export const API_ENDPOINTS = {
   ACTIVE_SESSIONS: '/api/sessions/active',
   SESSIONS_BASE: '/api/sessions',
   CLOSE_STALE_SESSIONS: '/api/sessions/close-stale',
+  PROJECTS_BASE: '/api/projects',
 } as const;

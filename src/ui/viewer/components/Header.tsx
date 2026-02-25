@@ -2,6 +2,7 @@ import React from 'react';
 import { SearchBar } from './SearchBar';
 import { AnalyticsBar } from './AnalyticsBar';
 import { ActiveSessionsBadge } from './ActiveSessionsBadge';
+import { ProjectDropdown } from './ProjectDropdown';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
 import { useActiveSessions } from '../hooks/useActiveSessions';
 
@@ -9,6 +10,7 @@ interface HeaderProps {
   projects: string[];
   currentFilter: string;
   onFilterChange: (filter: string) => void;
+  onProjectsChanged: () => void;
   isProcessing: boolean;
   queueDepth: number;
   onContextPreviewToggle: () => void;
@@ -26,6 +28,7 @@ export function Header({
   projects,
   currentFilter,
   onFilterChange,
+  onProjectsChanged,
   isProcessing,
   queueDepth,
   onContextPreviewToggle,
@@ -74,16 +77,12 @@ export function Header({
             isSearching={isSearching}
             resultCount={resultCount}
           />
-          <select
-            value={currentFilter}
-            onChange={e => { onFilterChange(e.target.value); }}
-            aria-label="Filter by project"
-          >
-            <option value="">All Projects</option>
-            {projects.map(proj => (
-              <option key={proj} value={proj}>{proj}</option>
-            ))}
-          </select>
+          <ProjectDropdown
+            projects={projects}
+            currentFilter={currentFilter}
+            onFilterChange={onFilterChange}
+            onProjectsChanged={onProjectsChanged}
+          />
           <button
             className="filter-toggle-btn"
             onClick={onFilterToggle}
