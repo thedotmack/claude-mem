@@ -1,7 +1,10 @@
 import { spawnSync } from 'node:child_process';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Plugin } from '@opencode-ai/plugin';
 
-const WORKER_SERVICE_PATH = '/home/user/agent-workspace/claude-mem/plugin/scripts/worker-service.cjs';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const WORKER_SERVICE_PATH = resolve(__dirname, '../../plugin/scripts/worker-service.cjs');
 
 function pick(obj: any, keys: string[]): any {
   for (const key of keys) {
