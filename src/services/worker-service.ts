@@ -1027,6 +1027,7 @@ async function main() {
       } else {
         exitWithStatus('error', 'Failed to start worker');
       }
+      break;
     }
 
     case 'stop': {
@@ -1038,6 +1039,7 @@ async function main() {
       removePidFile();
       logger.info('SYSTEM', 'Worker stopped successfully');
       process.exit(0);
+      break;
     }
 
     case 'restart': {
@@ -1074,6 +1076,7 @@ async function main() {
 
       logger.info('SYSTEM', 'Worker restarted successfully');
       process.exit(0);
+      break;
     }
 
     case 'status': {
@@ -1088,12 +1091,14 @@ async function main() {
         console.log('Worker is not running');
       }
       process.exit(0);
+      break;
     }
 
     case 'cursor': {
       const subcommand = process.argv[3];
       const cursorResult = await handleCursorCommand(subcommand, process.argv.slice(4));
       process.exit(cursorResult);
+      break;
     }
 
     case 'hook': {
@@ -1147,6 +1152,7 @@ async function main() {
       const { generateClaudeMd } = await import('../cli/claude-md-commands.js');
       const result = await generateClaudeMd(dryRun);
       process.exit(result);
+      break;
     }
 
     case 'clean': {
@@ -1154,6 +1160,7 @@ async function main() {
       const { cleanClaudeMd } = await import('../cli/claude-md-commands.js');
       const result = await cleanClaudeMd(dryRun);
       process.exit(result);
+      break;
     }
 
     case '--daemon':
@@ -1210,5 +1217,8 @@ const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefi
   : import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('worker-service');
 
 if (isMainModule) {
-  main();
+  main().catch((error) => {
+    logger.error('SYSTEM', 'Fatal error in main', {}, error instanceof Error ? error : undefined);
+    process.exit(0);  // Exit 0: don't block Claude Code, don't leave Windows Terminal tabs open
+  });
 }
