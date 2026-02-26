@@ -2,6 +2,12 @@
 
 All notable changes to claude-mem.
 
+## [v10.4.4] - 2026-02-26
+
+## Fix
+
+- **Remove `save_observation` from MCP tool surface** — This tool was exposed as an MCP tool available to Claude, but it's an internal API-only feature. Removing it from the MCP server prevents unintended tool invocation and keeps the tool surface clean.
+
 ## [v10.4.3] - 2026-02-25
 
 ## Bug Fixes
@@ -1208,44 +1214,4 @@ This patch release enhances error handling and logging across all worker service
 - Added detailed analysis documents for generator failures and observation duplication regressions
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.4...v8.5.5
-
-## [v8.5.4] - 2026-01-02
-
-## Bug Fixes
-
-### Chroma Connection Error Handling
-Fixed a critical bug in ChromaSync where connection-related errors were misinterpreted as missing collections. The `ensureCollection()` method previously caught ALL errors and assumed they meant the collection doesn't exist, which caused connection errors to trigger unnecessary collection creation attempts. Now connection-related errors like "Not connected" are properly distinguished and re-thrown immediately, preventing false error handling paths and inappropriate fallback behavior.
-
-### Removed Dead last_user_message Code
-Cleaned up dead code related to `last_user_message` handling in the summary flow. This field was being extracted from transcripts but never used anywhere - in Claude Code transcripts, "user" type messages are mostly tool_results rather than actual user input, and the user's original request is already stored in the user_prompts table. Removing this unused field eliminates confusing warnings like "Missing last_user_message when queueing summary". Changes span summary-hook, SessionRoutes, SessionManager, interface definitions, and all agent implementations.
-
-## Improvements
-
-### Enhanced Error Handling Across Services
-Comprehensive improvement to error handling across 8 core services:
-- **BranchManager** - Now logs recovery checkout failures
-- **PaginationHelper** - Logs when file paths are plain strings instead of valid JSON
-- **SDKAgent** - Enhanced logging for Claude executable detection failures
-- **SearchManager** - Logs plain string handling for files read and edited
-- **paths.ts** - Improved logging for git root detection failures
-- **timeline-formatting** - Enhanced JSON parsing errors with input previews
-- **transcript-parser** - Logs summary of parse errors after processing
-- **ChromaSync** - Logs full error context before attempting collection creation
-
-### Error Handling Documentation & Tooling
-- Created `error-handling-baseline.txt` establishing baseline error handling practices
-- Documented error handling anti-pattern rules in CLAUDE.md
-- Added `detect-error-handling-antipatterns.ts` script to identify empty catch blocks, improper logging practices, and oversized try-catch blocks
-
-## New Features
-
-### Console Filter Bar with Log Parsing
-Implemented interactive log filtering in the viewer UI:
-- **Structured Log Parsing** - Extracts timestamp, level, component, correlation ID, and message content using regex pattern matching
-- **Level Filtering** - Toggle visibility for DEBUG, INFO, WARN, ERROR log levels
-- **Component Filtering** - Filter by 9 component types: HOOK, WORKER, SDK, PARSER, DB, SYSTEM, HTTP, SESSION, CHROMA
-- **Color-Coded Rendering** - Visual distinction with component-specific icons and log level colors
-- **Special Message Detection** - Recognizes markers like → (dataIn), ← (dataOut), ✓ (success), ✗ (failure), ⏱ (timing), [HAPPY-PATH]
-- **Smart Auto-Scroll** - Maintains scroll position when reviewing older logs
-- **Responsive Design** - Filter bar adapts to smaller screens
 
