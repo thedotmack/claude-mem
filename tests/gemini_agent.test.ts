@@ -275,7 +275,6 @@ describe('GeminiAgent', () => {
     await agent.startSession(session);
 
     // Verify fallback to Claude was triggered
-    // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(fallbackAgent.startSession).toHaveBeenCalledWith(session, undefined);
     // Note: resetStuckMessages is called by worker-service.ts, not by GeminiAgent
   });
@@ -307,7 +306,6 @@ describe('GeminiAgent', () => {
     agent.setFallbackAgent(fallbackAgent);
 
     await expect(agent.startSession(session)).rejects.toThrow('Gemini API error: 400 - Invalid argument');
-    // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(fallbackAgent.startSession).not.toHaveBeenCalled();
   });
 

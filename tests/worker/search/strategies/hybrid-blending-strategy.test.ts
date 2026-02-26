@@ -3,7 +3,8 @@
  *
  * Uses mocked ChromaSearchStrategy and BM25SearchStrategy instances to test:
  * - Parallel execution of both strategies
- * - Score blending (positional weighting: 0.6 vector, 0.4 keyword)
+ * - RRF score fusion (Reciprocal Rank Fusion with k=60)
+ * - Top-rank bonus for cross-ranker agreement
  * - Deduplication of overlapping results by ID
  * - Graceful degradation when one or both strategies fail
  * - Limit application after blending (not per-strategy)
@@ -283,10 +284,10 @@ describe('HybridBlendingStrategy', () => {
       expect(id1Count).toBe(1);
     });
 
-    it('gives overlapping observations a blended score from both sources', async () => {
+    it('gives overlapping observations an RRF-fused score from both sources', async () => {
       const obs1 = makeObs(1);
 
-      // obs1 appears first in Chroma (top vector score) and first in BM25 (top keyword score)
+      // obs1 appears first in Chroma (rank 1) and first in BM25 (rank 1)
       vi.mocked(mockChromaStrategy.search).mockResolvedValue(
         makeChromaResult([obs1])
       );
@@ -298,9 +299,10 @@ describe('HybridBlendingStrategy', () => {
 
       const merged = result.results.observations.find(o => o.id === 1);
       expect(merged).toBeDefined();
-      // Blended score = 0.6 * vectorScore + 0.4 * keywordScore
-      // With 1 result each: vectorScore=1.0, keywordScore=1.0 → blended=1.0
-      expect(merged!.score).toBeCloseTo(1.0, 5);
+      // RRF score = 1/(60+1) + 1/(60+1) = 2/61
+      // Top-rank bonus: rank 1 in both → +0.003
+      const expectedScore = 2 / 61 + 0.003;
+      expect(merged?.score).toBeCloseTo(expectedScore, 5);
     });
   });
 
@@ -327,8 +329,8 @@ describe('HybridBlendingStrategy', () => {
       expect(ids).toContain(20);
     });
 
-    it('assigns partial vector score to Chroma-only observations', async () => {
-      // Chroma has 2 results; obs10 is second (position score = (2-1)/2 = 0.5)
+    it('assigns RRF score to Chroma-only observations', async () => {
+      // Chroma has 2 results; obs10 is second (rank 2)
       const chromaOnly = makeObs(10);
       vi.mocked(mockChromaStrategy.search).mockResolvedValue(
         makeChromaResult([makeObs(99), chromaOnly])
@@ -341,14 +343,12 @@ describe('HybridBlendingStrategy', () => {
 
       const obs10 = result.results.observations.find(o => o.id === 10);
       expect(obs10).toBeDefined();
-      // obs10 is at index 1 of 2 Chroma results: vectorScore = (2-1)/2 = 0.5
-      // BM25 does not include obs10: keywordScore contribution = 0
-      // blended = 0.6 * 0.5 + 0.4 * 0 = 0.3
-      expect(obs10!.score).toBeCloseTo(0.3, 5);
+      // obs10 is rank 2 in Chroma only → RRF = 1/(60+2) = 1/62
+      expect(obs10?.score).toBeCloseTo(1 / 62, 5);
     });
 
-    it('assigns partial keyword score to BM25-only observations', async () => {
-      // BM25 has 2 results; obs20 is second (position score = (2-1)/2 = 0.5)
+    it('assigns RRF score to BM25-only observations', async () => {
+      // BM25 has 2 results; obs20 is second (rank 2)
       const bm25Only = makeObs(20);
       vi.mocked(mockChromaStrategy.search).mockResolvedValue(
         makeChromaResult([makeObs(50)])
@@ -361,10 +361,8 @@ describe('HybridBlendingStrategy', () => {
 
       const obs20 = result.results.observations.find(o => o.id === 20);
       expect(obs20).toBeDefined();
-      // obs20 is at index 1 of 2 BM25 results: keywordScore = (2-1)/2 = 0.5
-      // Chroma does not include obs20: vectorScore contribution = 0
-      // blended = 0.6 * 0 + 0.4 * 0.5 = 0.2
-      expect(obs20!.score).toBeCloseTo(0.2, 5);
+      // obs20 is rank 2 in BM25 only → RRF = 1/(60+2) = 1/62
+      expect(obs20?.score).toBeCloseTo(1 / 62, 5);
     });
   });
 
@@ -373,14 +371,14 @@ describe('HybridBlendingStrategy', () => {
   // -------------------------------------------------------------------------
 
   describe('sort order', () => {
-    it('returns observations sorted by blended score descending', async () => {
-      // Chroma: [obs1(rank 0), obs2(rank 1)] → vectorScores: obs1=1.0, obs2=0.5
-      // BM25: [obs2(rank 0), obs3(rank 1)] → keywordScores: obs2=1.0, obs3=0.5
-      // blended:
-      //   obs1 = 0.6 * 1.0 + 0.4 * 0 = 0.6
-      //   obs2 = 0.6 * 0.5 + 0.4 * 1.0 = 0.3 + 0.4 = 0.7
-      //   obs3 = 0.6 * 0 + 0.4 * 0.5 = 0.2
-      // Expected order: obs2 (0.7), obs1 (0.6), obs3 (0.2)
+    it('returns observations sorted by RRF score descending', async () => {
+      // Chroma: [obs1(rank 1), obs2(rank 2)]
+      // BM25: [obs2(rank 1), obs3(rank 2)]
+      // RRF scores:
+      //   obs1 = 1/(60+1) = 1/61               ≈ 0.01639
+      //   obs2 = 1/(60+2) + 1/(60+1) + bonus   ≈ 0.01613 + 0.01639 + 0.003 = 0.03552
+      //   obs3 = 1/(60+2)                       ≈ 0.01613
+      // Expected order: obs2, obs1, obs3
 
       vi.mocked(mockChromaStrategy.search).mockResolvedValue(
         makeChromaResult([makeObs(1), makeObs(2)])
@@ -392,9 +390,9 @@ describe('HybridBlendingStrategy', () => {
       const result = await strategy.search({ query: 'test' });
 
       const ids = result.results.observations.map(o => o.id);
-      expect(ids[0]).toBe(2); // highest blended score
+      expect(ids[0]).toBe(2); // highest RRF score (in both rankers + bonus)
       expect(ids[1]).toBe(1);
-      expect(ids[2]).toBe(3); // lowest blended score
+      expect(ids[2]).toBe(3); // lowest RRF score
     });
   });
 
@@ -417,10 +415,10 @@ describe('HybridBlendingStrategy', () => {
     });
 
     it('returns the top-scored observations up to the limit', async () => {
-      // Chroma: [obs1, obs2] → obs1 vector=1.0, obs2 vector=0.5
-      // BM25: [obs3, obs4] → obs3 keyword=1.0, obs4 keyword=0.5
-      // blended: obs1=0.6, obs2=0.3, obs3=0.4, obs4=0.2
-      // Top 2: obs1 (0.6), obs3 (0.4)
+      // Chroma: [obs1(rank1), obs2(rank2)] — no overlap with BM25
+      // BM25: [obs3(rank1), obs4(rank2)] — no overlap with Chroma
+      // RRF: obs1=1/61, obs2=1/62, obs3=1/61, obs4=1/62
+      // Top 2: obs1 and obs3 (tied at 1/61, order by insertion)
 
       vi.mocked(mockChromaStrategy.search).mockResolvedValue(
         makeChromaResult([makeObs(1), makeObs(2)])
@@ -432,9 +430,10 @@ describe('HybridBlendingStrategy', () => {
       const result = await strategy.search({ query: 'test', limit: 2 });
 
       expect(result.results.observations).toHaveLength(2);
+      // Both obs1 and obs3 are rank 1 in their respective rankers (same RRF score)
       const ids = result.results.observations.map(o => o.id);
-      expect(ids[0]).toBe(1); // blended=0.6
-      expect(ids[1]).toBe(3); // blended=0.4
+      expect(ids).toContain(1);
+      expect(ids).toContain(3);
     });
   });
 
@@ -616,10 +615,9 @@ describe('HybridBlendingStrategy', () => {
   // -------------------------------------------------------------------------
 
   describe('score calculation precision', () => {
-    it('assigns score 1.0 to a single Chroma result not in BM25', async () => {
-      // 1 chroma result: vectorScore = (1-0)/1 = 1.0
-      // not in bm25: keywordScore = 0
-      // blended = 0.6 * 1.0 + 0 = 0.6
+    it('assigns RRF score to a single Chroma result not in BM25', async () => {
+      // 1 chroma result at rank 1, not in BM25
+      // RRF = 1/(60+1) = 1/61
       vi.mocked(mockChromaStrategy.search).mockResolvedValue(
         makeChromaResult([makeObs(1)])
       );
@@ -631,13 +629,12 @@ describe('HybridBlendingStrategy', () => {
 
       const obs = result.results.observations.find(o => o.id === 1);
       expect(obs).toBeDefined();
-      expect(obs!.score).toBeCloseTo(0.6, 5);
+      expect(obs?.score).toBeCloseTo(1 / 61, 5);
     });
 
-    it('assigns score 1.0 to a single BM25 result not in Chroma', async () => {
-      // 1 bm25 result: keywordScore = (1-0)/1 = 1.0
-      // not in chroma: vectorScore = 0
-      // blended = 0 + 0.4 * 1.0 = 0.4
+    it('assigns RRF score to a single BM25 result not in Chroma', async () => {
+      // 1 bm25 result at rank 1, not in Chroma
+      // RRF = 1/(60+1) = 1/61
       vi.mocked(mockChromaStrategy.search).mockResolvedValue(
         makeChromaResult([]) // empty Chroma result
       );
@@ -649,7 +646,7 @@ describe('HybridBlendingStrategy', () => {
 
       const obs = result.results.observations.find(o => o.id === 2);
       expect(obs).toBeDefined();
-      expect(obs!.score).toBeCloseTo(0.4, 5);
+      expect(obs?.score).toBeCloseTo(1 / 61, 5);
     });
 
     it('handles empty results from both strategies gracefully', async () => {
@@ -665,6 +662,51 @@ describe('HybridBlendingStrategy', () => {
       expect(result.results.observations).toHaveLength(0);
       expect(result.usedChroma).toBe(true);
       expect(result.fellBack).toBe(false);
+    });
+
+    it('items in both rankers score higher than single-ranker items', async () => {
+      // obs1: only in Chroma (rank 1) → RRF = 1/61
+      // obs2: in both (Chroma rank 2, BM25 rank 1) → RRF = 1/62 + 1/61 + bonus
+      // obs3: only in BM25 (rank 2) → RRF = 1/62
+      vi.mocked(mockChromaStrategy.search).mockResolvedValue(
+        makeChromaResult([makeObs(1), makeObs(2)])
+      );
+      vi.mocked(mockBm25Strategy.search).mockResolvedValue(
+        makeBm25Result([makeObs(2), makeObs(3)])
+      );
+
+      const result = await strategy.search({ query: 'test' });
+
+      const obs1 = result.results.observations.find(o => o.id === 1);
+      const obs2 = result.results.observations.find(o => o.id === 2);
+      const obs3 = result.results.observations.find(o => o.id === 3);
+      expect(obs1).toBeDefined();
+      expect(obs2).toBeDefined();
+      expect(obs3).toBeDefined();
+
+      expect(obs2?.score ?? 0).toBeGreaterThan(obs1?.score ?? 0);
+      expect(obs2?.score ?? 0).toBeGreaterThan(obs3?.score ?? 0);
+    });
+
+    it('applies top-rank bonus when item is in top-5 of both rankers', async () => {
+      // obs1 at rank 1 in both → gets top-rank bonus
+      vi.mocked(mockChromaStrategy.search).mockResolvedValue(
+        makeChromaResult([makeObs(1)])
+      );
+      vi.mocked(mockBm25Strategy.search).mockResolvedValue(
+        makeBm25Result([makeObs(1)])
+      );
+
+      const result = await strategy.search({ query: 'test' });
+
+      const obs1 = result.results.observations.find(o => o.id === 1);
+      expect(obs1).toBeDefined();
+      // RRF without bonus = 1/61 + 1/61 = 2/61
+      // With bonus = 2/61 + 0.003
+      const rrfOnly = 2 / 61;
+      const score = obs1?.score ?? 0;
+      expect(score).toBeGreaterThan(rrfOnly);
+      expect(score).toBeCloseTo(rrfOnly + 0.003, 5);
     });
   });
 });

@@ -117,7 +117,6 @@ describe('ChromaSearchStrategy', () => {
 
       await strategy.search(options);
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100, // CHROMA_BATCH_SIZE
@@ -145,7 +144,6 @@ describe('ChromaSearchStrategy', () => {
 
       const result = await strategy.search(options);
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionStore.getObservationsByIds).toHaveBeenCalled();
       expect(result.results.observations).toHaveLength(1);
     });
@@ -158,7 +156,6 @@ describe('ChromaSearchStrategy', () => {
 
       await strategy.search(options);
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionStore.getSessionSummariesByIds).toHaveBeenCalled();
     });
 
@@ -170,7 +167,6 @@ describe('ChromaSearchStrategy', () => {
 
       await strategy.search(options);
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionStore.getUserPromptsByIds).toHaveBeenCalled();
     });
 
@@ -182,7 +178,6 @@ describe('ChromaSearchStrategy', () => {
 
       await strategy.search(options);
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
@@ -198,7 +193,6 @@ describe('ChromaSearchStrategy', () => {
 
       await strategy.search(options);
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
@@ -214,7 +208,6 @@ describe('ChromaSearchStrategy', () => {
 
       await strategy.search(options);
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
@@ -232,7 +225,6 @@ describe('ChromaSearchStrategy', () => {
       expect(result.results.observations).toHaveLength(0);
       expect(result.results.sessions).toHaveLength(0);
       expect(result.results.prompts).toHaveLength(0);
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockChromaSync.queryChroma).not.toHaveBeenCalled();
     });
 
@@ -271,7 +263,6 @@ describe('ChromaSearchStrategy', () => {
       await strategy.search(options);
 
       // Old results should be filtered out
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionStore.getObservationsByIds).not.toHaveBeenCalled();
     });
 
@@ -311,6 +302,82 @@ describe('ChromaSearchStrategy', () => {
   describe('strategy name', () => {
     it('should have name "chroma"', () => {
       expect(strategy.name).toBe('chroma');
+    });
+  });
+
+  describe('dateRange filtering', () => {
+    it('should use user-specified dateRange instead of 90-day default', async () => {
+      // Item created 120 days ago — outside 90-day window but inside user's range
+      const epoch120DaysAgo = Date.now() - 120 * 24 * 60 * 60 * 1000;
+
+      mockChromaSync.queryChroma = vi.fn(() => Promise.resolve({
+        ids: [1],
+        distances: [0.1],
+        metadatas: [
+          { sqlite_id: 1, doc_type: 'observation', created_at_epoch: epoch120DaysAgo }
+        ]
+      }));
+
+      const result = await strategy.search({
+        query: 'test query',
+        searchType: 'observations',
+        dateRange: {
+          start: new Date(Date.now() - 150 * 24 * 60 * 60 * 1000).toISOString(),
+          end: new Date().toISOString()
+        }
+      });
+
+      // Should find the result because dateRange includes it
+      expect(result.usedChroma).toBe(true);
+      expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith([1], expect.any(Object));
+    });
+
+    it('should exclude items outside user-specified dateRange', async () => {
+      // Item created 10 days ago — inside 90-day window but outside user's narrow range
+      const epoch10DaysAgo = Date.now() - 10 * 24 * 60 * 60 * 1000;
+
+      mockChromaSync.queryChroma = vi.fn(() => Promise.resolve({
+        ids: [1],
+        distances: [0.1],
+        metadatas: [
+          { sqlite_id: 1, doc_type: 'observation', created_at_epoch: epoch10DaysAgo }
+        ]
+      }));
+
+      const result = await strategy.search({
+        query: 'test query',
+        searchType: 'observations',
+        dateRange: {
+          start: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
+          end: new Date().toISOString()
+        }
+      });
+
+      // Should not find the result — 10 days ago is outside the 5-day range
+      expect(result.usedChroma).toBe(true);
+      expect(mockSessionStore.getObservationsByIds).not.toHaveBeenCalled();
+    });
+
+    it('should fall back to 90-day window when no dateRange provided', async () => {
+      // Item created 100 days ago — outside 90-day window
+      const epoch100DaysAgo = Date.now() - 100 * 24 * 60 * 60 * 1000;
+
+      mockChromaSync.queryChroma = vi.fn(() => Promise.resolve({
+        ids: [1],
+        distances: [0.1],
+        metadatas: [
+          { sqlite_id: 1, doc_type: 'observation', created_at_epoch: epoch100DaysAgo }
+        ]
+      }));
+
+      const result = await strategy.search({
+        query: 'test query',
+        searchType: 'observations'
+      });
+
+      // Should not find the result — default 90-day window excludes it
+      expect(result.usedChroma).toBe(true);
+      expect(mockSessionStore.getObservationsByIds).not.toHaveBeenCalled();
     });
   });
 });

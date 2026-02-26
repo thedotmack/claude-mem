@@ -165,6 +165,10 @@ export default tseslint.config(
       // No console restriction in tests
       'no-console': 'off',
 
+      // Vitest mock assertions like expect(mock.method).toHaveBeenCalled()
+      // trigger false positives — mocks don't use 'this'
+      '@typescript-eslint/unbound-method': 'off',
+
       // Vitest rules
       'vitest/expect-expect': 'warn',
       'vitest/no-identical-title': 'error',

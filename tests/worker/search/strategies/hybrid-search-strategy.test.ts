@@ -198,9 +198,7 @@ describe('HybridSearchStrategy', () => {
 
       const result = await strategy.findByConcept('test-concept', options);
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.findByConcept).toHaveBeenCalledWith('test-concept', expect.any(Object));
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith('test-concept', expect.any(Number));
       expect(result.usedChroma).toBe(true);
       expect(result.fellBack).toBe(false);
@@ -253,7 +251,6 @@ describe('HybridSearchStrategy', () => {
       const result = await strategy.findByConcept('nonexistent-concept', options);
 
       expect(result.results.observations).toHaveLength(0);
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockChromaSync.queryChroma).not.toHaveBeenCalled(); // Should short-circuit
     });
 
@@ -280,9 +277,7 @@ describe('HybridSearchStrategy', () => {
 
       const result = await strategy.findByType('decision', options);
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.findByType).toHaveBeenCalledWith('decision', expect.any(Object));
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockChromaSync.queryChroma).toHaveBeenCalled();
       expect(result.usedChroma).toBe(true);
     });
@@ -294,10 +289,8 @@ describe('HybridSearchStrategy', () => {
 
       await strategy.findByType(['decision', 'bugfix'], options);
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.findByType).toHaveBeenCalledWith(['decision', 'bugfix'], expect.any(Object));
       // Chroma query should use joined type string
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith('decision, bugfix', expect.any(Number));
     });
 
@@ -352,7 +345,6 @@ describe('HybridSearchStrategy', () => {
 
       const result = await strategy.findByFile('/path/to/file.ts', options);
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/path/to/file.ts', expect.any(Object));
       expect(result.observations.length).toBeGreaterThanOrEqual(0);
       expect(result.sessions).toHaveLength(1);

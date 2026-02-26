@@ -224,109 +224,14 @@ export class SearchManager {
    * Tool handler: search
    */
   async search(args: QueryParams): Promise<MCPToolResponse | SearchJsonResponse> {
-    // Normalize URL-friendly params to internal format
+    // Normalize URL-friendly params to internal format (needed for format/ordering)
     const normalized = this.normalizeParams(args);
-    const { query, type, obs_type, concepts, files, format } = normalized;
+    const { query, format } = normalized;
     const searchOptions = this.toSearchOptions(normalized);
-    let observations: ObservationSearchResult[] = [];
-    let sessions: SessionSummarySearchResult[] = [];
-    let prompts: UserPromptSearchResult[] = [];
-    // Determine which types to query based on type filter
-    const searchObservations = !type || type === 'observations';
-    const searchSessions = !type || type === 'sessions';
-    const searchPrompts = !type || type === 'prompts';
 
-    // PATH 1: FILTER-ONLY (no query text) - Skip Chroma/FTS5, use direct SQLite filtering
-    // This path enables date filtering which Chroma cannot do (requires direct SQLite access)
-    if (!query) {
-      logger.debug('SEARCH', 'Filter-only query (no query text), using direct SQLite filtering', { enablesDateFilters: true });
-      const obsOptions: SearchOptions = { ...searchOptions, type: obs_type as SearchOptions['type'], concepts, files };
-      if (searchObservations) {
-        observations = this.sessionSearch.searchObservations(undefined, obsOptions);
-      }
-      if (searchSessions) {
-        sessions = this.sessionSearch.searchSessions(undefined, searchOptions);
-      }
-      if (searchPrompts) {
-        prompts = this.sessionSearch.searchUserPrompts(undefined, searchOptions);
-      }
-    }
-    // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
-    else {
-      // chromaSucceeded tracking removed - no fallback path currently uses it
-      logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: type || 'all' });
-
-      // Build Chroma where filter for doc_type
-      let whereFilter: Record<string, unknown> | undefined;
-      if (type === 'observations') {
-        whereFilter = { doc_type: 'observation' };
-      } else if (type === 'sessions') {
-        whereFilter = { doc_type: 'session_summary' };
-      } else if (type === 'prompts') {
-        whereFilter = { doc_type: 'user_prompt' };
-      }
-
-      // Step 1: Chroma semantic search with optional type filter
-      const chromaResults = await this.queryChroma(query, 100, whereFilter);
-      logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
-
-      if (chromaResults.ids.length > 0) {
-        // Step 2: Filter by date range (user-specified) or recency (90-day default)
-        const dateRange = searchOptions.dateRange;
-        const rangeStart = dateRange?.start ? new Date(dateRange.start).getTime() : (Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS);
-        const rangeEnd = dateRange?.end ? new Date(dateRange.end).getTime() : Infinity;
-        const recentMetadata = chromaResults.metadatas.map((meta, idx) => ({
-          id: chromaResults.ids[idx],
-          meta,
-          isInRange: (meta.created_at_epoch ?? 0) >= rangeStart && (meta.created_at_epoch ?? 0) <= rangeEnd
-        })).filter(item => item.isInRange);
-
-        logger.debug('SEARCH', 'Results within date window', { count: recentMetadata.length, hasUserDateRange: !!dateRange });
-
-        // Step 3: Categorize IDs by document type
-        const obsIds: number[] = [];
-        const sessionIds: number[] = [];
-        const promptIds: number[] = [];
-
-        for (const item of recentMetadata) {
-          const docType = item.meta.doc_type;
-          if (docType === 'observation' && searchObservations) {
-            obsIds.push(item.id);
-          } else if (docType === 'session_summary' && searchSessions) {
-            sessionIds.push(item.id);
-          } else if (docType === 'user_prompt' && searchPrompts) {
-            promptIds.push(item.id);
-          }
-        }
-
-        logger.debug('SEARCH', 'Categorized results by type', { observations: obsIds.length, sessions: sessionIds.length, prompts: prompts.length });
-
-        // Step 4: Hydrate from SQLite with additional filters
-        if (obsIds.length > 0) {
-          // Apply obs_type, concepts, files filters if provided
-          const obsOptions = {
-            orderBy: searchOptions.orderBy as 'date_desc' | 'date_asc' | undefined,
-            limit: searchOptions.limit,
-            project: searchOptions.project,
-            type: obs_type,
-            concepts,
-            files
-          };
-          observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
-        }
-        if (sessionIds.length > 0) {
-          sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, { orderBy: 'date_desc', limit: searchOptions.limit, project: searchOptions.project });
-        }
-        if (promptIds.length > 0) {
-          prompts = this.sessionStore.getUserPromptsByIds(promptIds, { orderBy: 'date_desc', limit: searchOptions.limit, project: searchOptions.project });
-        }
-
-        logger.debug('SEARCH', 'Hydrated results from SQLite', { observations: observations.length, sessions: sessions.length, prompts: prompts.length });
-      } else {
-        // Chroma returned 0 results - this is the correct answer, don't fall back to FTS5
-        logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
-      }
-    }
+    // Delegate to orchestrator (handles strategy selection: SQLite, HybridBlend, or BM25)
+    const result = await this.orchestrator.search(args as Record<string, unknown>);
+    const { observations, sessions, prompts } = result.results;
 
     const totalResults = observations.length + sessions.length + prompts.length;
 

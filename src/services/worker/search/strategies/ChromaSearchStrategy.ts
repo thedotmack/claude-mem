@@ -16,6 +16,7 @@ import type {
   StrategySearchOptions,
   StrategySearchResult,
   ChromaMetadata,
+  DateRange,
   ObservationSearchResult,
   SessionSummarySearchResult,
   UserPromptSearchResult
@@ -38,7 +39,6 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
   }
 
   canHandle(options: StrategySearchOptions): boolean {
-    // Can handle when query text is provided and Chroma is available
     return !!options.query && !!this.chromaSync;
   }
 
@@ -83,7 +83,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       });
 
       if (chromaResults.ids.length === 0) {
-        // No matches - this is the correct answer
+        // Zero matches is a valid result, not a failure — no fallback needed
         return {
           results: { observations: [], sessions: [], prompts: [] },
           usedChroma: true,
@@ -92,12 +92,12 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         };
       }
 
-      // Step 2: Filter by recency (90 days)
-      const recentItems = this.filterByRecency({
+      // Step 2: Filter by date range (user-specified) or recency (90-day default)
+      const recentItems = this.filterByDateRange({
         ids: chromaResults.ids,
         metadatas: chromaResults.metadatas as unknown as ChromaMetadata[]
-      });
-      logger.debug('SEARCH', 'ChromaSearchStrategy: Filtered by recency', {
+      }, options.dateRange);
+      logger.debug('SEARCH', 'ChromaSearchStrategy: Filtered by date range', {
         count: recentItems.length
       });
 
@@ -157,9 +157,6 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     }
   }
 
-  /**
-   * Build Chroma where filter for document type
-   */
   private buildWhereFilter(searchType: string): Record<string, unknown> | undefined {
     switch (searchType) {
       case 'observations':
@@ -174,25 +171,33 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
   }
 
   /**
-   * Filter results by recency (90-day window)
+   * Filter results by date range (user-specified) or recency (90-day default).
+   *
+   * If dateRange is provided, uses start/end as bounds.
+   * Otherwise falls back to the 90-day recency window.
    */
-  private filterByRecency(chromaResults: {
-    ids: number[];
-    metadatas: ChromaMetadata[];
-  }): Array<{ id: number; meta: ChromaMetadata }> {
-    const cutoff = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+  private filterByDateRange(
+    chromaResults: { ids: number[]; metadatas: ChromaMetadata[] },
+    dateRange?: DateRange
+  ): Array<{ id: number; meta: ChromaMetadata }> {
+    const rangeStart = dateRange?.start
+      ? new Date(dateRange.start).getTime()
+      : (Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS);
+    const rangeEnd = dateRange?.end
+      ? new Date(dateRange.end).getTime()
+      : Infinity;
 
     return chromaResults.metadatas
       .map((meta, idx) => ({
         id: chromaResults.ids[idx],
         meta
       }))
-      .filter(item => item.meta.created_at_epoch > cutoff);
+      .filter(item =>
+        item.meta.created_at_epoch >= rangeStart &&
+        item.meta.created_at_epoch <= rangeEnd
+      );
   }
 
-  /**
-   * Categorize IDs by document type
-   */
   private categorizeByDocType(
     items: Array<{ id: number; meta: ChromaMetadata }>,
     options: {

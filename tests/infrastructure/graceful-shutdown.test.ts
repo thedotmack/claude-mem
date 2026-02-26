@@ -149,7 +149,6 @@ describe('GracefulShutdown', () => {
       await expect(performGracefulShutdown(config)).resolves.toBeUndefined();
 
       // Session manager should still be called
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionManager.shutdownAll).toHaveBeenCalled();
     });
 
@@ -179,7 +178,6 @@ describe('GracefulShutdown', () => {
 
       await performGracefulShutdown(config);
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSessionManager.shutdownAll).toHaveBeenCalledTimes(1);
     });
 

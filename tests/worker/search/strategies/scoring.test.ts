@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeMinMax, blendScores } from '../../../../src/services/worker/search/strategies/scoring.js';
+import { normalizeMinMax, blendScores, rrfScore, topRankBonus } from '../../../../src/services/worker/search/strategies/scoring.js';
 
 describe('normalizeMinMax', () => {
   describe('empty and edge cases', () => {
@@ -293,6 +293,156 @@ describe('blendScores', () => {
     it('returns number values in the map', () => {
       const result = blendScores(new Map([[1, 0.8]]), new Map([[1, 0.6]]), 0.6, 0.4);
       expect(typeof result.get(1)).toBe('number');
+    });
+  });
+});
+
+describe('rrfScore', () => {
+  describe('single ranker', () => {
+    it('returns 1/(k+rank) for each item with default k=60', () => {
+      // Single ranker: A is rank 1, B is rank 2, C is rank 3
+      const ranker = new Map<number, number>([[10, 1], [20, 2], [30, 3]]);
+      const result = rrfScore([ranker]);
+
+      expect(result.get(10)).toBeCloseTo(1 / (60 + 1), 10);
+      expect(result.get(20)).toBeCloseTo(1 / (60 + 2), 10);
+      expect(result.get(30)).toBeCloseTo(1 / (60 + 3), 10);
+    });
+
+    it('returns 1/(k+rank) with custom k parameter', () => {
+      const ranker = new Map<number, number>([[10, 1], [20, 2]]);
+      const result = rrfScore([ranker], 10);
+
+      expect(result.get(10)).toBeCloseTo(1 / (10 + 1), 10);
+      expect(result.get(20)).toBeCloseTo(1 / (10 + 2), 10);
+    });
+  });
+
+  describe('two rankers with shared and disjoint IDs', () => {
+    it('accumulates scores for items in both rankers', () => {
+      // Ranker 1: A=rank1, B=rank2
+      // Ranker 2: B=rank1, C=rank2
+      const ranker1 = new Map<number, number>([[10, 1], [20, 2]]);
+      const ranker2 = new Map<number, number>([[20, 1], [30, 2]]);
+      const result = rrfScore([ranker1, ranker2]);
+
+      // A: only in ranker1 → 1/(60+1)
+      expect(result.get(10)).toBeCloseTo(1 / 61, 10);
+      // B: in both → 1/(60+2) + 1/(60+1)
+      expect(result.get(20)).toBeCloseTo(1 / 62 + 1 / 61, 10);
+      // C: only in ranker2 → 1/(60+2)
+      expect(result.get(30)).toBeCloseTo(1 / 62, 10);
+    });
+
+    it('shared items always score higher than single-ranker items', () => {
+      const ranker1 = new Map<number, number>([[10, 1], [20, 2]]);
+      const ranker2 = new Map<number, number>([[20, 1], [30, 2]]);
+      const result = rrfScore([ranker1, ranker2]);
+
+      // B (shared) should be higher than A or C (single-ranker)
+      const scoreB = result.get(20) ?? 0;
+      const scoreA = result.get(10) ?? 0;
+      const scoreC = result.get(30) ?? 0;
+      expect(scoreB).toBeGreaterThan(scoreA);
+      expect(scoreB).toBeGreaterThan(scoreC);
+    });
+  });
+
+  describe('k parameter effect', () => {
+    it('smaller k amplifies rank differences', () => {
+      const ranker = new Map<number, number>([[10, 1], [20, 5]]);
+
+      const smallK = rrfScore([ranker], 1);
+      const largeK = rrfScore([ranker], 100);
+
+      // With k=1: score ratio = (1+5)/(1+1) = 3.0
+      // With k=100: score ratio = (100+5)/(100+1) ≈ 1.04
+      const smallKRatio = (smallK.get(10) ?? 0) / (smallK.get(20) ?? 1);
+      const largeKRatio = (largeK.get(10) ?? 0) / (largeK.get(20) ?? 1);
+      expect(smallKRatio).toBeGreaterThan(largeKRatio);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('returns empty map for empty rankers array', () => {
+      const result = rrfScore([]);
+      expect(result.size).toBe(0);
+    });
+
+    it('returns empty map for single empty ranker', () => {
+      const result = rrfScore([new Map()]);
+      expect(result.size).toBe(0);
+    });
+
+    it('handles single-item rankers', () => {
+      const ranker = new Map<number, number>([[42, 1]]);
+      const result = rrfScore([ranker]);
+
+      expect(result.size).toBe(1);
+      expect(result.get(42)).toBeCloseTo(1 / 61, 10);
+    });
+  });
+});
+
+describe('topRankBonus', () => {
+  describe('items in top-K of all rankers', () => {
+    it('assigns bonus to items in top-5 of both rankers', () => {
+      // Both rankers have item 10 in top 5
+      const ranker1 = new Map<number, number>([[10, 1], [20, 2], [30, 6]]);
+      const ranker2 = new Map<number, number>([[10, 3], [20, 7], [30, 2]]);
+
+      const result = topRankBonus([ranker1, ranker2]);
+
+      // Item 10: rank 1 in r1, rank 3 in r2 → both ≤ 5 → gets bonus
+      expect(result.get(10)).toBe(0.003);
+      // Item 20: rank 2 in r1, rank 7 in r2 → r2 > 5 → no bonus
+      expect(result.has(20)).toBe(false);
+      // Item 30: rank 6 in r1, rank 2 in r2 → r1 > 5 → no bonus
+      expect(result.has(30)).toBe(false);
+    });
+
+    it('uses custom topK and bonus parameters', () => {
+      const ranker1 = new Map<number, number>([[10, 1], [20, 3]]);
+      const ranker2 = new Map<number, number>([[10, 2], [20, 2]]);
+
+      const result = topRankBonus([ranker1, ranker2], 2, 0.01);
+
+      // Item 10: rank 1, rank 2 → both ≤ 2 → gets bonus
+      expect(result.get(10)).toBe(0.01);
+      // Item 20: rank 3, rank 2 → r1 > 2 → no bonus
+      expect(result.has(20)).toBe(false);
+    });
+  });
+
+  describe('no items qualify', () => {
+    it('returns empty map when no items are in top-K of all rankers', () => {
+      const ranker1 = new Map<number, number>([[10, 1], [20, 6]]);
+      const ranker2 = new Map<number, number>([[30, 1], [20, 6]]);
+
+      const result = topRankBonus([ranker1, ranker2]);
+
+      expect(result.size).toBe(0);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('returns empty map for empty rankers array', () => {
+      const result = topRankBonus([]);
+      expect(result.size).toBe(0);
+    });
+
+    it('returns empty map for single empty ranker', () => {
+      const result = topRankBonus([new Map()]);
+      expect(result.size).toBe(0);
+    });
+
+    it('with single ranker, all items in top-K get bonus', () => {
+      const ranker = new Map<number, number>([[10, 1], [20, 3], [30, 6]]);
+      const result = topRankBonus([ranker]);
+
+      expect(result.get(10)).toBe(0.003);
+      expect(result.get(20)).toBe(0.003);
+      expect(result.has(30)).toBe(false); // rank 6 > 5
     });
   });
 });
