@@ -9,7 +9,8 @@ import { readFileSync } from "fs";
  * This test enforces logging standards by:
  * 1. Detecting console.log/console.error usage in background services (invisible logs)
  * 2. Ensuring high-priority service files import the logger
- * 3. Reporting coverage statistics for observability
+ * 3. Validating logger calls use valid Component string literals
+ * 4. Reporting coverage statistics for observability
  *
  * Note: This is a legitimate coding standard enforcement test, not a coverage metric.
  */
@@ -204,6 +205,48 @@ describe("Logger Usage Standards", () => {
       throw new Error(
         `High-priority files missing logger import (${String(withoutLogger.length)}):\n${report}\n\n` +
         `These files should import and use logger for debugging and observability.`
+      );
+    }
+  });
+
+  // eslint-disable-next-line vitest/expect-expect -- uses throw Error as assertion
+  it("should only use valid Component string literals in logger calls", () => {
+    // Extract valid Component values from the logger source
+    const loggerSource = readFileSync(join(SRC_DIR, "utils", "logger.ts"), "utf-8");
+    const componentMatch = loggerSource.match(/export type Component\s*=\s*([\s\S]*?);/);
+    if (!componentMatch) {
+      throw new Error("Could not find Component type definition in logger.ts");
+    }
+    const validComponents = new Set(
+      componentMatch[1].match(/'([^']+)'/g)?.map(s => s.replace(/'/g, '')) ?? []
+    );
+
+    // Scan all relevant files for logger calls with string literal components
+    const loggerCallPattern = /logger\.(debug|info|warn|error|success|failure|timing|dataIn|dataOut|happyPathError)\(\s*'([^']+)'/g;
+    const violations: string[] = [];
+
+    for (const file of relevantFiles) {
+      const content = readFileSync(file.path, "utf-8");
+      const lines = content.split("\n");
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        let match;
+        loggerCallPattern.lastIndex = 0;
+        while ((match = loggerCallPattern.exec(line)) !== null) {
+          const component = match[2];
+          if (!validComponents.has(component)) {
+            violations.push(`  ${file.relativePath}:${String(i + 1)} — logger.${match[1]}('${component}', ...) — '${component}' is not a valid Component`);
+          }
+        }
+      }
+    }
+
+    if (violations.length > 0) {
+      const validList = [...validComponents].sort().join(', ');
+      throw new Error(
+        `❌ Found ${String(violations.length)} logger call(s) with invalid Component string:\n${violations.join("\n")}\n\n` +
+        `Valid Component values: ${validList}`
       );
     }
   });

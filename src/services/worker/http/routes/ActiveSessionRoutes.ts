@@ -80,7 +80,7 @@ export class ActiveSessionRoutes extends BaseRouteHandler {
     const closedCount = store.closeStaleSessionsOlderThan(threshold);
 
     if (closedCount > 0) {
-      logger.info('SESSIONS', 'Closed stale sessions', { closedCount });
+      logger.info('SESSION', 'Closed stale sessions', { closedCount });
     }
 
     res.json({ closedCount });
