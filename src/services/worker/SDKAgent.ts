@@ -17,7 +17,7 @@ import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../shared/paths.js';
-import { buildIsolatedEnv, getAuthMethodDescription } from '../../shared/EnvManager.js';
+import { buildIsolatedEnv, getAuthMethodDescription, attemptOAuthTokenRefresh, hasAnthropicApiKey } from '../../shared/EnvManager.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
@@ -257,6 +257,41 @@ export class SDKAgent {
           // Throw so it surfaces in health endpoint and prevents silent failures.
           if (typeof textContent === 'string' && textContent.includes('Invalid API key')) {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
+          }
+
+          // Detect authentication errors (e.g., expired OAuth token).
+          // The SDK returns 401 errors as response text, not exceptions.
+          // Without this check, the worker retries infinitely on expired tokens.
+          // Use structured patterns to avoid false positives (e.g., Claude discussing auth errors).
+          if (typeof textContent === 'string' && (
+            textContent.includes('"type":"authentication_error"') ||
+            textContent.includes('Failed to authenticate. API Error: 401')
+          )) {
+            // Only attempt refresh for CLI subscription billing path.
+            // Parent OAuth token (CLAUDE_CODE_OAUTH_TOKEN) can't be refreshed by us —
+            // it's the parent process's responsibility.
+            const usingParentOAuthToken = !!process.env.CLAUDE_CODE_OAUTH_TOKEN;
+            if (!hasAnthropicApiKey() && !usingParentOAuthToken) {
+              logger.warn('SDK', 'Authentication error detected, attempting OAuth token refresh...', {
+                sessionId: session.sessionDbId,
+                authMethod
+              });
+              const refreshed = await attemptOAuthTokenRefresh();
+              if (refreshed) {
+                logger.info('SDK', 'OAuth token refreshed — aborting session for clean retry', {
+                  sessionId: session.sessionDbId
+                });
+                // Abort the current session so the pending-work-restart path fires
+                // immediately with the fresh token, instead of waiting for the 60s
+                // stale message reclaim in PendingMessageStore.
+                session.abortController.abort();
+                return;
+              }
+            }
+            throw new Error(
+              'Authentication failed: OAuth token may be expired. ' +
+              'Run "claude" to refresh the token, or configure an API key in ~/.claude-mem/settings.json'
+            );
           }
 
           // Parse and process response using shared ResponseProcessor

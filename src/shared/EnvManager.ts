@@ -271,3 +271,133 @@ export function getAuthMethodDescription(): string {
   }
   return 'Claude Code CLI (subscription billing)';
 }
+
+// ============================================================================
+// OAuth Token Health & Refresh
+// ============================================================================
+
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
+
+const CLAUDE_CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
+const TOKEN_EXPIRY_WARNING_MS = 60 * 60 * 1000; // 1 hour
+const TOKEN_CACHE_TTL_MS = 60_000; // 1 minute — token expiry changes at most once per hour
+
+export interface OAuthTokenStatus {
+  /** Whether a credentials file exists and contains a valid-looking token */
+  valid: boolean;
+  /** Token expiry timestamp in ms (if available) */
+  expiresAt?: number;
+  /** Whether the token is currently expired */
+  expired?: boolean;
+  /** Whether the token expires within the next hour */
+  expiringSoon?: boolean;
+  /** Auth method description */
+  authMethod?: string;
+}
+
+// Cache to avoid disk I/O on every health check (called frequently by hooks)
+let _tokenStatusCache: { value: OAuthTokenStatus; ts: number } | null = null;
+
+function _checkOAuthTokenStatusUncached(): OAuthTokenStatus {
+  try {
+    if (!existsSync(CLAUDE_CREDENTIALS_PATH)) {
+      return { valid: false, authMethod: getAuthMethodDescription() };
+    }
+
+    const content = readFileSync(CLAUDE_CREDENTIALS_PATH, 'utf-8');
+    const creds = JSON.parse(content);
+    const oauth = creds?.claudeAiOauth;
+
+    if (!oauth?.accessToken) {
+      return { valid: false, authMethod: getAuthMethodDescription() };
+    }
+
+    const expiresAt = oauth.expiresAt;
+    if (!expiresAt || typeof expiresAt !== 'number') {
+      // Token exists but no expiry info — assume valid
+      return { valid: true, authMethod: getAuthMethodDescription() };
+    }
+
+    const now = Date.now();
+    const expired = now >= expiresAt;
+    const expiringSoon = !expired && (expiresAt - now) < TOKEN_EXPIRY_WARNING_MS;
+
+    return {
+      valid: !expired,
+      expiresAt,
+      expired,
+      expiringSoon,
+      authMethod: getAuthMethodDescription(),
+    };
+  } catch {
+    return { valid: false, authMethod: getAuthMethodDescription() };
+  }
+}
+
+/**
+ * Check the status of the Claude Code OAuth token.
+ * Returns token health information for health endpoint reporting.
+ * Results are cached for 1 minute to avoid disk I/O on every health check.
+ */
+export function checkOAuthTokenStatus(): OAuthTokenStatus {
+  const now = Date.now();
+  if (_tokenStatusCache && (now - _tokenStatusCache.ts) < TOKEN_CACHE_TTL_MS) {
+    return _tokenStatusCache.value;
+  }
+  const value = _checkOAuthTokenStatusUncached();
+  _tokenStatusCache = { value, ts: now };
+  return value;
+}
+
+/** Invalidate the token status cache (call after refresh attempts) */
+function invalidateTokenCache(): void {
+  _tokenStatusCache = null;
+}
+
+/**
+ * Attempt to refresh the Claude Code OAuth token by spawning `claude --version`.
+ * Claude Code auto-refreshes its token on startup when it detects expiry.
+ *
+ * NOTE: This is only called AFTER the API returned a 401 — do NOT trust the
+ * credentials file's expiry timestamp (it may be stale, clock-skewed, or the
+ * token may have been revoked). Always attempt the refresh.
+ *
+ * @returns true if refresh succeeded (token is now valid), false otherwise
+ */
+export async function attemptOAuthTokenRefresh(): Promise<boolean> {
+  logger.info('SYSTEM', 'Attempting OAuth token refresh via Claude CLI...');
+
+  // Invalidate cache — we're about to change the credentials file
+  invalidateTokenCache();
+
+  try {
+    // `claude --version` is lightweight and triggers token refresh on startup.
+    // Uses async execFile to avoid blocking the event loop.
+    await execFileAsync('claude', ['--version'], {
+      timeout: 30_000,
+    });
+
+    // Invalidate again to force a fresh read after CLI ran
+    invalidateTokenCache();
+
+    // Verify the token was actually refreshed
+    const after = checkOAuthTokenStatus();
+    if (after.valid) {
+      const expiresIn = after.expiresAt
+        ? `${((after.expiresAt - Date.now()) / 3600_000).toFixed(1)}h`
+        : 'unknown';
+      logger.info('SYSTEM', `OAuth token refreshed successfully (expires in ${expiresIn})`);
+      return true;
+    }
+
+    logger.warn('SYSTEM', 'Token refresh command ran but token is still invalid');
+    return false;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error('SYSTEM', `OAuth token refresh failed: ${message}`);
+    return false;
+  }
+}
