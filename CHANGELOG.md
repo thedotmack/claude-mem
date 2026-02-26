@@ -2,6 +2,41 @@
 
 All notable changes to claude-mem.
 
+## [v10.5.0] - 2026-02-26
+
+## Smart Explore: AST-Powered Code Navigation
+
+This release introduces **Smart Explore**, a token-optimized structural code search system built on tree-sitter AST parsing. It applies the same progressive disclosure pattern used in human-readable code outlines — but programmatically, for AI agents.
+
+### Why This Matters
+
+The standard exploration cycle (Glob → Grep → Read) forces agents to consume entire files to understand code structure. A typical 800-line file costs ~12,000 tokens to read. Smart Explore replaces this with a 3-layer progressive disclosure workflow that delivers the same understanding at **6-12x lower token cost**.
+
+### 3 New MCP Tools
+
+- **`smart_search`** — Walks directories, parses all code files via tree-sitter, and returns ranked symbols with signatures and line numbers. Replaces the Glob → Grep discovery cycle in a single call (~2-6k tokens).
+- **`smart_outline`** — Returns the complete structural skeleton of a file: all functions, classes, methods, properties, imports (~1-2k tokens vs ~12k for a full Read).
+- **`smart_unfold`** — Expands a single symbol to its full source code including JSDoc, decorators, and implementation (~1-7k tokens).
+
+### Token Economics
+
+| Approach | Tokens | Savings |
+|----------|--------|---------|
+| smart_outline + smart_unfold | ~3,100 | 8x vs Read |
+| smart_search (cross-file) | ~2,000-6,000 | 6-12x vs Explore agent |
+| Read (full file) | ~12,000+ | baseline |
+| Explore agent | ~20,000-40,000 | baseline |
+
+### Language Support
+
+10 languages via tree-sitter grammars: TypeScript, JavaScript, Python, Rust, Go, Java, C, C++, Ruby, PHP.
+
+### Other Changes
+
+- Simplified hooks configuration
+- Removed legacy setup.sh script
+- Security fix: replaced `execSync` with `execFileSync` to prevent command injection in file path handling
+
 ## [v10.4.4] - 2026-02-26
 
 ## Fix
@@ -1196,22 +1231,4 @@ Decomposed SessionStore into domain modules (observations, prompts, sessions, su
 Comprehensive test suite in a new PR, targeting **v8.6.0**
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v8.5.5] - 2026-01-03
-
-## Improved Error Handling and Logging
-
-This patch release enhances error handling and logging across all worker services for better debugging and reliability.
-
-### Changes
-- **Enhanced Error Logging**: Improved error context across SessionStore, SearchManager, SDKAgent, GeminiAgent, and OpenRouterAgent
-- **SearchManager**: Restored error handling for Chroma calls with improved logging
-- **SessionStore**: Enhanced error logging throughout database operations
-- **Bug Fix**: Fixed critical bug where `memory_session_id` could incorrectly equal `content_session_id`
-- **Hooks**: Streamlined error handling and loading states for better maintainability
-
-### Investigation Reports
-- Added detailed analysis documents for generator failures and observation duplication regressions
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.4...v8.5.5
 
