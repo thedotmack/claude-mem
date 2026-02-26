@@ -239,31 +239,6 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     }
   },
   {
-    name: 'save_observation',
-    description: 'Save an observation to the database. Params: text (required), title, project',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        text: {
-          type: 'string',
-          description: 'Content to remember (required)'
-        },
-        title: {
-          type: 'string',
-          description: 'Short title (auto-generated from text if omitted)'
-        },
-        project: {
-          type: 'string',
-          description: 'Project name (uses "claude-mem" if omitted)'
-        }
-      },
-      required: ['text']
-    },
-    handler: async (args: any) => {
-      return await callWorkerAPIPost('/api/memory/save', args);
-    }
-  },
-  {
     name: 'smart_search',
     description: 'Search codebase for symbols, functions, classes using tree-sitter AST parsing. Returns folded structural views with token counts. Use path parameter to scope the search.',
     inputSchema: {
