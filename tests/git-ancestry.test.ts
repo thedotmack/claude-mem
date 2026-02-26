@@ -162,6 +162,59 @@ describe('resolveAncestorCommits - shallow clone handling', () => {
   });
 });
 
+describe('resolveAncestorCommits - batching and performance', () => {
+  it('should handle candidates exceeding batch size (>100) via batched merge-base', async () => {
+    const head = await getCurrentHead(REPO_ROOT);
+    expect(head).not.toBeNull();
+
+    // Get a real ancestor commit to use as a valid candidate
+    const oldestCommit = execSync('git log --format="%H" | tail -1', {
+      cwd: REPO_ROOT,
+      encoding: 'utf8'
+    }).trim();
+
+    // Create 150 candidates: 1 valid + 149 fake to trigger batching (>100)
+    const fakeShas = Array.from({ length: 149 }, (_, i) =>
+      i.toString(16).padStart(40, '0')
+    );
+    const candidates = [oldestCommit, ...fakeShas];
+    expect(candidates.length).toBe(150);
+
+    const ancestors = await resolveAncestorCommits(head!, candidates, REPO_ROOT);
+    // Only the real ancestor should survive
+    expect(ancestors).toContain(oldestCommit);
+    expect(ancestors).toHaveLength(1);
+  });
+
+  it('should produce correct results regardless of batch boundaries', async () => {
+    const head = await getCurrentHead(REPO_ROOT);
+    expect(head).not.toBeNull();
+
+    // Get multiple real ancestor commits
+    const realCommits = execSync('git log --format="%H" -5', {
+      cwd: REPO_ROOT,
+      encoding: 'utf8'
+    }).trim().split('\n');
+
+    // Pad with fakes to cross batch boundary, placing real commits at different positions
+    const fakeShas = Array.from({ length: 98 }, (_, i) =>
+      (i + 1000).toString(16).padStart(40, '0')
+    );
+    // Put real commits at positions that span batch boundaries
+    const candidates = [...fakeShas.slice(0, 50), ...realCommits, ...fakeShas.slice(50)];
+    expect(candidates.length).toBeGreaterThan(100);
+
+    const ancestors = await resolveAncestorCommits(head!, candidates, REPO_ROOT);
+    for (const sha of realCommits) {
+      expect(ancestors).toContain(sha);
+    }
+    // No fakes should be in the result
+    for (const sha of fakeShas) {
+      expect(ancestors).not.toContain(sha);
+    }
+  });
+});
+
 describe('resolveVisibleCommitShas', () => {
   it('should return null for a non-git directory', async () => {
     const result = await resolveVisibleCommitShas(['abc'], '/tmp');

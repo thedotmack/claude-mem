@@ -45,7 +45,7 @@ const GIT_LOG_OPTIMIZATION_THRESHOLD = 500;
  * Performance:
  * - <= 100 candidates: all checked concurrently
  * - 101-500 candidates: batched in groups of 100
- * - > 500 candidates: uses `git log --format=%H` to get all ancestors in one call, then intersects
+ * - > 500 candidates: uses `git log --format=%H` to get all ancestors in one call, then intersects (falls back to batched merge-base on failure)
  *
  * Per-SHA errors (e.g. SHA no longer exists after GC, shallow clone truncated history)
  * are handled gracefully — the SHA is excluded rather than failing the batch.
@@ -61,8 +61,12 @@ export async function resolveAncestorCommits(
   if (candidateCommitShas.length > GIT_LOG_OPTIMIZATION_THRESHOLD) {
     logger.debug('DB', `resolveAncestorCommits: using git-log optimization for ${candidateCommitShas.length} candidates`);
     const result = resolveViaGitLog(currentHead, candidateCommitShas, cwd);
-    logger.debug('DB', `resolveAncestorCommits: ${result.length}/${candidateCommitShas.length} candidates visible`);
-    return result;
+    if (result !== null) {
+      logger.debug('DB', `resolveAncestorCommits: ${result.length}/${candidateCommitShas.length} candidates visible`);
+      return result;
+    }
+    // git log failed (e.g. shallow clone) — fall back to batched merge-base
+    logger.debug('DB', `resolveAncestorCommits: git-log failed, falling back to batched merge-base for ${candidateCommitShas.length} candidates`);
   }
 
   // For moderate sets, batch the merge-base checks
@@ -124,7 +128,7 @@ function resolveViaGitLog(
   currentHead: string,
   candidateCommitShas: string[],
   cwd: string
-): string[] {
+): string[] | null {
   try {
     const allAncestors = execSync(`git log --format=%H ${currentHead}`, {
       cwd,
@@ -137,10 +141,9 @@ function resolveViaGitLog(
     const ancestorSet = new Set(allAncestors.split('\n'));
     return candidateCommitShas.filter(sha => ancestorSet.has(sha));
   } catch {
-    // Fallback: if git log fails (e.g. shallow clone), use batched merge-base
-    logger.debug('DB', 'resolveViaGitLog failed, falling back to batched merge-base');
-    // Return empty synchronously — caller should handle fallback
-    return [];
+    // Return null to signal failure — caller falls back to batched merge-base
+    logger.debug('DB', 'resolveViaGitLog failed, signaling caller to use batched merge-base');
+    return null;
   }
 }
 
