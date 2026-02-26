@@ -19,7 +19,7 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 
 ## REST API Endpoints
 
-The worker service exposes 27 HTTP endpoints organized into seven categories:
+The worker service exposes HTTP endpoints organized into eight route modules:
 
 ### Viewer & Health Endpoints
 
@@ -186,7 +186,7 @@ GET /api/observation/:id
 ```json
 {
   "id": 123,
-  "sdk_session_id": "abc123",
+  "memory_session_id": "abc123",
   "project": "my-project",
   "type": "bugfix",
   "title": "Fix authentication bug",
@@ -231,7 +231,7 @@ POST /api/observations/batch
 [
   {
     "id": 789,
-    "sdk_session_id": "abc123",
+    "memory_session_id": "abc123",
     "project": "my-project",
     "type": "feature",
     "title": "Add new feature",
@@ -241,7 +241,7 @@ POST /api/observations/batch
   },
   {
     "id": 456,
-    "sdk_session_id": "abc124",
+    "memory_session_id": "abc124",
     "project": "my-project",
     "type": "bugfix",
     "title": "Fix authentication bug",
@@ -272,7 +272,7 @@ GET /api/session/:id
 ```json
 {
   "id": 456,
-  "sdk_session_id": "abc123",
+  "memory_session_id": "abc123",
   "project": "my-project",
   "request": "User's original request",
   "completed": "Work finished",
@@ -537,7 +537,7 @@ POST /sessions/:sessionDbId/init
 **Request Body**:
 ```json
 {
-  "sdk_session_id": "abc-123",
+  "memory_session_id": "abc-123",
   "project": "my-project"
 }
 ```

@@ -64,11 +64,10 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 **Core Components:**
 1. **5 Lifecycle Hooks** - Setup, SessionStart, UserPromptSubmit, PostToolUse, Stop
 2. **Smart Install** - Cached dependency checker (pre-hook script)
-3. **Worker Service** - HTTP API on port 37777 managed by Node.js
+3. **Worker Service** - HTTP API on port 37777 with SearchOrchestrator (hybrid BM25 keyword search via FTS5 + Chroma vector results merged by RRF scoring)
 4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 + BM25 search
-5. **SearchOrchestrator** - Hybrid search combining BM25 keyword, FTS5, and Chroma vector results via RRF scoring
-6. **MCP Search Tools** - Query historical context with natural language
-7. **Web Viewer UI** - Real-time visualization with search, filters, project management, analytics, and SSE
+5. **MCP Search Tools** - Query historical context with natural language
+6. **Web Viewer UI** - Real-time visualization with search, filters, project management, analytics, and SSE
 
 See [Architecture Overview](architecture/overview) for details.
 
