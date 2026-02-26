@@ -126,3 +126,56 @@ describe('useActiveSessions source structure', () => {
     expect(hookSource).toContain('CLOSE_STALE_SESSIONS');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Summary-queued return type tests (RED → GREEN via implementation)
+// ---------------------------------------------------------------------------
+
+describe('useActiveSessions summaryQueued return types', () => {
+  it('UseActiveSessionsResult interface declares closeSession returning summaryQueued', () => {
+    // The interface return type must include summaryQueued boolean
+    expect(hookSource).toContain('summaryQueued');
+  });
+
+  it('closeSession returns { summaryQueued: boolean } | null (not Promise<void>)', () => {
+    // Signature must declare the new union return type
+    expect(hookSource).toMatch(/closeSession.*Promise<\{.*summaryQueued.*boolean.*\}.*\|.*null>/);
+  });
+
+  it('closeSession reads summaryQueued from response JSON', () => {
+    expect(hookSource).toContain('data.summaryQueued');
+  });
+
+  it('closeSession returns the summaryQueued value on success', () => {
+    // Must return the parsed value, not void
+    expect(hookSource).toContain('return { summaryQueued: data.summaryQueued }');
+  });
+
+  it('closeSession returns null on failure', () => {
+    // Error path must return null
+    expect(hookSource).toMatch(/return null/);
+  });
+
+  it('UseActiveSessionsResult interface declares closeAllStale returning summariesQueued', () => {
+    expect(hookSource).toContain('summariesQueued');
+  });
+
+  it('closeAllStale returns { summariesQueued: number } | null (not Promise<void>)', () => {
+    expect(hookSource).toMatch(/closeAllStale.*Promise<\{.*summariesQueued.*number.*\}.*\|.*null>/);
+  });
+
+  it('closeAllStale reads summariesQueued from response JSON', () => {
+    expect(hookSource).toContain('data.summariesQueued');
+  });
+
+  it('closeAllStale returns the summariesQueued value on success', () => {
+    expect(hookSource).toContain('return { summariesQueued: data.summariesQueued }');
+  });
+
+  it('closeAllStale returns null on failure', () => {
+    // Must have at least two null return paths (one per action)
+    const nullMatches = hookSource.match(/return null/g);
+    expect(nullMatches).not.toBeNull();
+    expect((nullMatches ?? []).length).toBeGreaterThanOrEqual(2);
+  });
+});

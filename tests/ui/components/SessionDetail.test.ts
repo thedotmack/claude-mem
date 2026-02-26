@@ -228,9 +228,13 @@ describe('SessionDetail live session rendering', () => {
     expect(SESSION_DETAIL_SOURCE).toMatch(/Live Session/);
   });
 
-  it('shows in-progress message when summary is null', () => {
-    expect(SESSION_DETAIL_SOURCE).toMatch(/still in progress/);
+  it('shows active session message when summary is null', () => {
+    expect(SESSION_DETAIL_SOURCE).toMatch(/still active/);
     expect(SESSION_DETAIL_SOURCE).toMatch(/summary will be generated/);
+  });
+
+  it('message includes "when it ends or is closed" (updated copy)', () => {
+    expect(SESSION_DETAIL_SOURCE).toContain('when it ends or is closed');
   });
 
   it('shows observation and prompt counts in live session card', () => {

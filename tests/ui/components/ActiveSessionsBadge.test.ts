@@ -141,3 +141,62 @@ describe('ActiveSessionsBadge source structure', () => {
     expect(componentSource).toContain('active-sessions-item__dot--stale');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Summary-queued UI feedback tests (RED → GREEN via implementation)
+// ---------------------------------------------------------------------------
+
+describe('ActiveSessionsBadge summary status feedback', () => {
+  it('props interface declares onCloseSession returning summaryQueued union type', () => {
+    // The prop type must accept the new richer return type
+    expect(componentSource).toContain('summaryQueued');
+  });
+
+  it('props interface declares onCloseAllStale returning summariesQueued union type', () => {
+    expect(componentSource).toContain('summariesQueued');
+  });
+
+  it('uses statusMessage local state for temporary feedback', () => {
+    expect(componentSource).toContain('statusMessage');
+  });
+
+  it('initialises statusMessage to null', () => {
+    expect(componentSource).toMatch(/useState<string \| null>\(null\)/);
+  });
+
+  it('sets statusMessage to "Summary generating..." when summaryQueued is true', () => {
+    expect(componentSource).toContain('Summary generating...');
+  });
+
+  it('clears statusMessage after timeout', () => {
+    expect(componentSource).toContain('setTimeout');
+    expect(componentSource).toContain('setStatusMessage(null)');
+  });
+
+  it('shows summariesQueued count in status message for close-all', () => {
+    // The close-all feedback must include the count from summariesQueued
+    expect(componentSource).toContain('summaries generating...');
+  });
+
+  it('renders active-sessions-status element for feedback', () => {
+    expect(componentSource).toContain('active-sessions-status');
+  });
+
+  it('uses aria-live="polite" on the status message element', () => {
+    expect(componentSource).toContain('aria-live="polite"');
+  });
+
+  it('renders status message conditionally only when statusMessage is set', () => {
+    // Must be a conditional render, e.g. {statusMessage && ...}
+    expect(componentSource).toMatch(/statusMessage\s*&&/);
+  });
+
+  it('awaits onCloseSession result before checking summaryQueued', () => {
+    // Must use await when calling onCloseSession, not void
+    expect(componentSource).toMatch(/await\s+onCloseSession/);
+  });
+
+  it('awaits onCloseAllStale result before checking summariesQueued', () => {
+    expect(componentSource).toMatch(/await\s+onCloseAllStale/);
+  });
+});

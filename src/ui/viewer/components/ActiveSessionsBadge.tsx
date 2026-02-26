@@ -6,8 +6,8 @@ export interface ActiveSessionsBadgeProps {
   sessions: ActiveSession[];
   staleCount: number;
   totalCount: number;
-  onCloseSession: (id: number) => Promise<void>;
-  onCloseAllStale: () => Promise<void>;
+  onCloseSession: (id: number) => Promise<{ summaryQueued: boolean } | null>;
+  onCloseAllStale: () => Promise<{ summariesQueued: number } | null>;
 }
 
 const MAX_PROJECT_NAME_LENGTH = 20;
@@ -28,7 +28,15 @@ export function ActiveSessionsBadge({
   onCloseAllStale,
 }: ActiveSessionsBadgeProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+
+  // Auto-clear status message after 3s with proper cleanup
+  useEffect(() => {
+    if (!statusMessage) return;
+    const timer = setTimeout(() => { setStatusMessage(null); }, 3000);
+    return () => { clearTimeout(timer); };
+  }, [statusMessage]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -75,7 +83,12 @@ export function ActiveSessionsBadge({
               {session.is_stale && (
                 <button
                   className="active-sessions-item__close"
-                  onClick={() => { void onCloseSession(session.id); }}
+                  onClick={async () => {
+                    const result = await onCloseSession(session.id);
+                    if (result?.summaryQueued) {
+                      setStatusMessage('Summary generating...');
+                    }
+                  }}
                   title="Close session"
                   aria-label={`Close session for ${getProjectShortName(session.project)}`}
                 >
@@ -89,10 +102,21 @@ export function ActiveSessionsBadge({
             <div className="active-sessions-footer">
               <button
                 className="active-sessions-close-all-btn"
-                onClick={() => { void onCloseAllStale(); }}
+                onClick={async () => {
+                  const result = await onCloseAllStale();
+                  if (result && result.summariesQueued > 0) {
+                    setStatusMessage(`${result.summariesQueued} summaries generating...`);
+                  }
+                }}
               >
                 Close All Stale
               </button>
+            </div>
+          )}
+
+          {statusMessage && (
+            <div className="active-sessions-status" aria-live="polite">
+              {statusMessage}
             </div>
           )}
         </div>

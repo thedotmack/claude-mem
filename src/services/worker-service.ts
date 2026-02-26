@@ -62,6 +62,7 @@ import { SearchManager } from './worker/SearchManager.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
+import { SummaryQueueService } from './worker/session/SummaryQueueService.js';
 
 // HTTP route handlers
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
@@ -123,6 +124,7 @@ export class WorkerService {
 
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
+  private summaryQueueService: SummaryQueueService;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -148,6 +150,10 @@ export class WorkerService {
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
+    this.summaryQueueService = new SummaryQueueService({
+      sessionManager: this.sessionManager,
+      eventBroadcaster: this.sessionEventBroadcaster,
+    });
 
     // Set callback for when sessions are deleted
     this.sessionManager.setOnSessionDeleted(() => {
@@ -223,7 +229,10 @@ export class WorkerService {
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
-    this.server.registerRoutes(new ActiveSessionRoutes(this.dbManager));
+    this.server.registerRoutes(new ActiveSessionRoutes(
+      this.dbManager,
+      this.summaryQueueService,
+    ));
     this.server.registerRoutes(new ProjectRoutes(this.dbManager));
 
     // Early handler for /api/context/inject to avoid 404 during startup

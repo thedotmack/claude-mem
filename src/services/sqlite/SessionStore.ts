@@ -20,6 +20,7 @@ import type {
 import type { PendingMessageStore } from './PendingMessageStore.js';
 import { isSummaryContentEmpty } from './summaries/types.js';
 import { estimateReadTokens } from '../../shared/timeline-formatting.js';
+import { getLastObservationTextForSession } from './observations/get.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -1182,6 +1183,11 @@ export class SessionStore {
     `);
 
     return stmt.all(memorySessionId) as ReturnType<typeof this.getObservationsForSession>;
+  }
+
+  /** Get the most recent observation text (narrative/title/text) for a session, or null. */
+  getLastObservationTextForSession(memorySessionId: string): string | null {
+    return getLastObservationTextForSession(this.db, memorySessionId);
   }
 
   /**

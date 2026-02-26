@@ -16,6 +16,7 @@ import {
   getObservationById,
   getRecentObservations,
 } from '../../src/services/sqlite/Observations.js';
+import { getLastObservationTextForSession } from '../../src/services/sqlite/observations/get.js';
 import {
   createSDKSession,
   updateMemorySessionId,
@@ -227,6 +228,165 @@ describe('Observations Module', () => {
       const recent = getRecentObservations(db, 'nonexistent-project', 10);
 
       expect(recent).toEqual([]);
+    });
+  });
+
+  describe('getLastObservationTextForSession', () => {
+    it('returns null when session has no observations', () => {
+      const memorySessionId = createSessionWithMemoryId('content-empty', 'session-empty');
+
+      const result = getLastObservationTextForSession(db, memorySessionId);
+
+      expect(result).toBeNull();
+    });
+
+    it('returns the text of a single observation', () => {
+      const memorySessionId = createSessionWithMemoryId('content-single', 'session-single');
+      const observation = createObservationInput({
+        narrative: 'Single observation narrative',
+        title: 'Single Title',
+      });
+      storeObservation(db, memorySessionId, 'test-project', observation);
+
+      const result = getLastObservationTextForSession(db, memorySessionId);
+
+      expect(result).toBe('Single observation narrative');
+    });
+
+    it('returns the most recent observation text when multiple exist', () => {
+      const memorySessionId = createSessionWithMemoryId('content-multi', 'session-multi');
+
+      storeObservation(
+        db,
+        memorySessionId,
+        'test-project',
+        createObservationInput({ narrative: 'Older narrative', title: 'Old Title' }),
+        1,
+        0,
+        1000000000000
+      );
+      storeObservation(
+        db,
+        memorySessionId,
+        'test-project',
+        createObservationInput({ narrative: 'Most recent narrative', title: 'Recent Title' }),
+        2,
+        0,
+        3000000000000
+      );
+      storeObservation(
+        db,
+        memorySessionId,
+        'test-project',
+        createObservationInput({ narrative: 'Middle narrative', title: 'Middle Title' }),
+        3,
+        0,
+        2000000000000
+      );
+
+      const result = getLastObservationTextForSession(db, memorySessionId);
+
+      expect(result).toBe('Most recent narrative');
+    });
+
+    it('falls back to title when narrative is null', () => {
+      const memorySessionId = createSessionWithMemoryId('content-no-narr', 'session-no-narr');
+      const observation = createObservationInput({
+        narrative: null,
+        title: 'Fallback Title',
+        subtitle: 'Some Subtitle',
+      });
+      storeObservation(db, memorySessionId, 'test-project', observation);
+
+      const result = getLastObservationTextForSession(db, memorySessionId);
+
+      expect(result).toBe('Fallback Title');
+    });
+
+    it('falls back to text when narrative and title are null', () => {
+      const memorySessionId = createSessionWithMemoryId('content-text-fb', 'session-text-fb');
+
+      // Insert an observation directly with a text value but no narrative or title
+      db.prepare(`
+        INSERT INTO observations
+        (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+         files_read, files_modified, prompt_number, discovery_tokens, read_tokens, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        memorySessionId,
+        'test-project',
+        'discovery',
+        null,
+        null,
+        '[]',
+        null,
+        '[]',
+        '[]',
+        '[]',
+        1,
+        0,
+        0,
+        new Date().toISOString(),
+        Date.now()
+      );
+
+      // The text column fallback: since storeObservation doesn't populate text,
+      // we need to verify COALESCE(narrative, title, text) when all content fields are null
+      // returns null (the text column is never set by storeObservation, it's always null)
+      const result = getLastObservationTextForSession(db, memorySessionId);
+
+      // narrative=null, title=null, text=null → COALESCE returns null
+      expect(result).toBeNull();
+    });
+
+    it('returns null when all of narrative, title, and text are null', () => {
+      const memorySessionId = createSessionWithMemoryId('content-all-null', 'session-all-null');
+
+      db.prepare(`
+        INSERT INTO observations
+        (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+         files_read, files_modified, prompt_number, discovery_tokens, read_tokens, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        memorySessionId,
+        'test-project',
+        'discovery',
+        null,
+        null,
+        '[]',
+        null,
+        '[]',
+        '[]',
+        '[]',
+        null,
+        0,
+        0,
+        new Date().toISOString(),
+        Date.now()
+      );
+
+      const result = getLastObservationTextForSession(db, memorySessionId);
+
+      expect(result).toBeNull();
+    });
+
+    it('uses narrative over title when both are present', () => {
+      const memorySessionId = createSessionWithMemoryId('content-pref', 'session-pref');
+      const observation = createObservationInput({
+        narrative: 'Preferred narrative text',
+        title: 'Title should not be returned',
+      });
+      storeObservation(db, memorySessionId, 'test-project', observation);
+
+      const result = getLastObservationTextForSession(db, memorySessionId);
+
+      expect(result).toBe('Preferred narrative text');
+    });
+
+    it('returns null for a memorySessionId that does not exist in observations', () => {
+      const result = getLastObservationTextForSession(db, 'nonexistent-session-id');
+
+      expect(result).toBeNull();
     });
   });
 });

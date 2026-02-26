@@ -24,8 +24,8 @@ export interface UseActiveSessionsResult {
   staleCount: number;
   totalCount: number;
   isLoading: boolean;
-  closeSession: (id: number) => Promise<void>;
-  closeAllStale: () => Promise<void>;
+  closeSession: (id: number) => Promise<{ summaryQueued: boolean } | null>;
+  closeAllStale: () => Promise<{ summariesQueued: number } | null>;
   refresh: () => Promise<void>;
 }
 
@@ -76,27 +76,33 @@ export function useActiveSessions(): UseActiveSessionsResult {
     };
   }, [loadActiveSessions]);
 
-  const closeSession = useCallback(async (id: number): Promise<void> => {
+  const closeSession = useCallback(async (id: number): Promise<{ summaryQueued: boolean } | null> => {
     try {
       const response = await fetch(`${API_ENDPOINTS.SESSIONS_BASE}/${String(id)}/close`, {
         method: 'POST',
       });
       if (!response.ok) throw new Error(`Failed to close session ${String(id)}`);
+      const data = await response.json() as { success: boolean; summaryQueued: boolean };
       await loadActiveSessions();
+      return { summaryQueued: data.summaryQueued };
     } catch (_error) {
       logger.error('useActiveSessions', `Failed to close session ${String(id)}`);
+      return null;
     }
   }, [loadActiveSessions]);
 
-  const closeAllStale = useCallback(async (): Promise<void> => {
+  const closeAllStale = useCallback(async (): Promise<{ summariesQueued: number } | null> => {
     try {
       const response = await fetch(API_ENDPOINTS.CLOSE_STALE_SESSIONS, {
         method: 'POST',
       });
       if (!response.ok) throw new Error('Failed to close stale sessions');
+      const data = await response.json() as { closedCount: number; summariesQueued: number };
       await loadActiveSessions();
+      return { summariesQueued: data.summariesQueued };
     } catch (_error) {
       logger.error('useActiveSessions', 'Failed to close stale sessions');
+      return null;
     }
   }, [loadActiveSessions]);
 

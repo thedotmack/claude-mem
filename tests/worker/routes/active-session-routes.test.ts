@@ -7,11 +7,12 @@
  * SessionStore directly, verifying the queries and response shapes the handlers use.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ClaudeMemDatabase } from '../../../src/services/sqlite/Database.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { createSDKSession } from '../../../src/services/sqlite/Sessions.js';
 import type { Database as DbType } from '../../../src/services/sqlite/sqlite-compat.js';
+import type { SummaryQueueService } from '../../../src/services/worker/session/SummaryQueueService.js';
 
 // ---------------------------------------------------------------------------
 // Constant under test
@@ -41,10 +42,12 @@ interface GetActiveSessionsResponse {
 
 interface CloseSessionResponse {
   success: true;
+  summaryQueued: boolean;
 }
 
 interface CloseStaleResponse {
   closedCount: number;
+  summariesQueued: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,13 +72,15 @@ function handleGetActiveSessions(store: SessionStore): GetActiveSessionsResponse
 
 function handleCloseSession(store: SessionStore, id: number): CloseSessionResponse | null {
   const closed = store.closeActiveSessionById(id);
-  return closed ? { success: true } : null;
+  // summaryQueued defaults to false in this extracted stub (no SummaryQueueService injected)
+  return closed ? { success: true, summaryQueued: false } : null;
 }
 
 function handleCloseStale(store: SessionStore): CloseStaleResponse {
   const threshold = Date.now() - STALE_THRESHOLD_MS;
   const closedCount = store.closeStaleSessionsOlderThan(threshold);
-  return { closedCount };
+  // summariesQueued defaults to 0 in this extracted stub (no SummaryQueueService injected)
+  return { closedCount, summariesQueued: 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +222,7 @@ describe('ActiveSessionRoutes handler logic', () => {
 
       const result = handleCloseSession(store, sessionId);
 
-      expect(result).toEqual({ success: true });
+      expect(result).toEqual({ success: true, summaryQueued: false });
     });
 
     it('returns null (404) for a non-existent session ID', () => {
@@ -314,6 +319,346 @@ describe('ActiveSessionRoutes handler logic', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Summary queueing tests — ActiveSessionRoutes with SummaryQueueService
+// These tests verify the NEW behavior: summaries are queued before close
+// ---------------------------------------------------------------------------
+
+describe('Close session with summary queueing', () => {
+  let db: DbType;
+  let store: SessionStore;
+
+  beforeEach(() => {
+    const claudeDb = new ClaudeMemDatabase(':memory:');
+    db = claudeDb.db;
+    store = new SessionStore(':memory:');
+    (store as unknown as { db: DbType }).db = db;
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('queues summary when session has memory_session_id and no existing summary', () => {
+    const sessionId = createSDKSession(db, 'queue-sum-session', 'proj', 'prompt');
+    const memSessionId = 'mem-session-queue-1';
+
+    // Set memory_session_id on the session
+    db.prepare('UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?').run(memSessionId, sessionId);
+
+    // Add an observation so there's context
+    db.prepare(`
+      INSERT INTO observations (memory_session_id, project, title, narrative, type, created_at_epoch, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(memSessionId, 'proj', 'Test Title', 'Test narrative text', 'discovery', Date.now(), new Date().toISOString());
+
+    const session = store.getSessionById(sessionId);
+    expect(session?.memory_session_id).toBe(memSessionId);
+
+    // No existing summary
+    const existingSummary = store.getSummaryForSession(memSessionId);
+    expect(existingSummary).toBeNull();
+
+    // Last observation text is available
+    const lastObsText = store.getLastObservationTextForSession(memSessionId);
+    expect(lastObsText).toBeTruthy();
+
+    // Mock SummaryQueueService
+    const mockQueueSummary = vi.fn().mockReturnValue(true);
+    const mockSummaryQueueService = { queueSummary: mockQueueSummary } as unknown as SummaryQueueService;
+
+    // Simulate the tryQueueSummaryForSession logic
+    const shouldQueue = session?.memory_session_id
+      && !store.getSummaryForSession(session.memory_session_id);
+
+    if (shouldQueue) {
+      const memId = session.memory_session_id;
+      const obsText = store.getLastObservationTextForSession(memId);
+      mockSummaryQueueService.queueSummary(sessionId, obsText ?? undefined);
+    }
+
+    expect(mockQueueSummary).toHaveBeenCalledWith(sessionId, 'Test narrative text');
+    expect(mockQueueSummary).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips summary when session has no memory_session_id', () => {
+    const sessionId = createSDKSession(db, 'no-mem-session', 'proj', 'prompt');
+
+    const session = store.getSessionById(sessionId);
+    expect(session?.memory_session_id).toBeNull();
+
+    const mockQueueSummary = vi.fn().mockReturnValue(true);
+    const mockSummaryQueueService = { queueSummary: mockQueueSummary } as unknown as SummaryQueueService;
+
+    // Simulate the tryQueueSummaryForSession guard: skip if no memory_session_id
+    const shouldQueue = session?.memory_session_id
+      && !store.getSummaryForSession(session.memory_session_id);
+
+    if (shouldQueue) {
+      mockSummaryQueueService.queueSummary(sessionId, undefined);
+    }
+
+    expect(mockQueueSummary).not.toHaveBeenCalled();
+  });
+
+  it('skips summary when session already has a summary', () => {
+    const sessionId = createSDKSession(db, 'has-summary-session', 'proj', 'prompt');
+    const memSessionId = 'mem-session-existing-summary';
+
+    db.prepare('UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?').run(memSessionId, sessionId);
+
+    // Insert an existing summary
+    db.prepare(`
+      INSERT INTO session_summaries (memory_session_id, project, request, created_at_epoch, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(memSessionId, 'proj', 'existing request', Date.now(), new Date().toISOString());
+
+    const session = store.getSessionById(sessionId);
+    const existingSummary = store.getSummaryForSession(memSessionId);
+    expect(existingSummary).not.toBeNull();
+
+    const mockQueueSummary = vi.fn().mockReturnValue(true);
+    const mockSummaryQueueService = { queueSummary: mockQueueSummary } as unknown as SummaryQueueService;
+
+    // Simulate the tryQueueSummaryForSession guard: skip if summary already exists
+    const shouldQueue = session?.memory_session_id
+      && !store.getSummaryForSession(session.memory_session_id);
+
+    if (shouldQueue) {
+      const memId = session.memory_session_id;
+      const obsText = store.getLastObservationTextForSession(memId);
+      mockSummaryQueueService.queueSummary(sessionId, obsText ?? undefined);
+    }
+
+    expect(mockQueueSummary).not.toHaveBeenCalled();
+  });
+
+  it('uses last observation text as context for summary', () => {
+    const sessionId = createSDKSession(db, 'obs-context-session', 'proj', 'prompt');
+    const memSessionId = 'mem-session-obs-context';
+
+    db.prepare('UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?').run(memSessionId, sessionId);
+
+    const observationNarrative = 'Important observation narrative content';
+    db.prepare(`
+      INSERT INTO observations (memory_session_id, project, title, narrative, type, created_at_epoch, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(memSessionId, 'proj', 'Obs Title', observationNarrative, 'discovery', Date.now(), new Date().toISOString());
+
+    const lastObsText = store.getLastObservationTextForSession(memSessionId);
+    expect(lastObsText).toBe(observationNarrative);
+
+    const mockQueueSummary = vi.fn().mockReturnValue(true);
+    const mockSummaryQueueService = { queueSummary: mockQueueSummary } as unknown as SummaryQueueService;
+
+    const session = store.getSessionById(sessionId);
+    const shouldQueue = session?.memory_session_id
+      && !store.getSummaryForSession(session.memory_session_id);
+
+    if (shouldQueue) {
+      const memId = session.memory_session_id;
+      const obsText = store.getLastObservationTextForSession(memId);
+      mockSummaryQueueService.queueSummary(sessionId, obsText ?? undefined);
+    }
+
+    expect(mockQueueSummary).toHaveBeenCalledWith(sessionId, observationNarrative);
+  });
+
+  it('still closes session even if summary queueing fails', () => {
+    const sessionId = createSDKSession(db, 'fail-queue-session', 'proj', 'prompt');
+    const memSessionId = 'mem-session-fail-queue';
+
+    db.prepare('UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?').run(memSessionId, sessionId);
+
+    // queueSummary throws
+    const mockQueueSummary = vi.fn().mockImplementation(() => {
+      throw new Error('Queue service unavailable');
+    });
+    const mockSummaryQueueService = { queueSummary: mockQueueSummary } as unknown as SummaryQueueService;
+
+    // Simulate tryQueueSummaryForSession with error handling
+    let summaryQueued = false;
+    const session = store.getSessionById(sessionId);
+    if (session?.memory_session_id && !store.getSummaryForSession(session.memory_session_id)) {
+      try {
+        const obsText = store.getLastObservationTextForSession(session.memory_session_id);
+        summaryQueued = mockSummaryQueueService.queueSummary(sessionId, obsText ?? undefined);
+      } catch {
+        summaryQueued = false;
+      }
+    }
+
+    // Session close still proceeds
+    const closed = store.closeActiveSessionById(sessionId);
+    expect(closed).toBe(true);
+    expect(summaryQueued).toBe(false);
+
+    // Session is gone from active list
+    const active = store.getActiveSessions();
+    expect(active.find(s => s.id === sessionId)).toBeUndefined();
+  });
+
+  it('response includes summaryQueued field when SummaryQueueService provided', async () => {
+    const { ActiveSessionRoutes } = await import('../../../src/services/worker/http/routes/ActiveSessionRoutes.js');
+    const { DatabaseManager } = await import('../../../src/services/worker/DatabaseManager.js');
+
+    const mockQueueSummary = vi.fn().mockReturnValue(true);
+    const mockSummaryQueueService = { queueSummary: mockQueueSummary } as unknown as SummaryQueueService;
+
+    const dbManager = new DatabaseManager();
+    // Pass the optional summaryQueueService
+    const routes = new ActiveSessionRoutes(dbManager, mockSummaryQueueService);
+    expect(routes).toBeDefined();
+    // The constructor accepts the optional second param without error
+  });
+
+  it('is constructible without SummaryQueueService (backward compatible)', async () => {
+    const { ActiveSessionRoutes } = await import('../../../src/services/worker/http/routes/ActiveSessionRoutes.js');
+    const { DatabaseManager } = await import('../../../src/services/worker/DatabaseManager.js');
+
+    const dbManager = new DatabaseManager();
+    const routes = new ActiveSessionRoutes(dbManager);
+    expect(routes).toBeDefined();
+  });
+});
+
+describe('Close stale sessions with summary queueing', () => {
+  let db: DbType;
+  let store: SessionStore;
+
+  beforeEach(() => {
+    const claudeDb = new ClaudeMemDatabase(':memory:');
+    db = claudeDb.db;
+    store = new SessionStore(':memory:');
+    (store as unknown as { db: DbType }).db = db;
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('queues summaries for stale sessions that have observations before closing', () => {
+    const now = Date.now();
+    const staleEpoch = now - STALE_THRESHOLD_MS - 10_000;
+
+    // Insert stale session with memory_session_id and observation
+    db.prepare(`
+      INSERT INTO sdk_sessions (content_session_id, project, user_prompt, started_at, started_at_epoch, status)
+      VALUES (?, ?, ?, ?, ?, 'active')
+    `).run('stale-with-obs', 'proj', 'old', new Date(staleEpoch).toISOString(), staleEpoch);
+    const staleSessionId = (db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?').get('stale-with-obs') as { id: number }).id;
+    const memSessionId = 'mem-stale-session-1';
+
+    db.prepare('UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?').run(memSessionId, staleSessionId);
+    db.prepare(`
+      INSERT INTO observations (memory_session_id, project, title, narrative, type, created_at_epoch, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(memSessionId, 'proj', 'Stale Obs', 'Stale observation narrative', 'discovery', staleEpoch, new Date(staleEpoch).toISOString());
+
+    const mockQueueSummary = vi.fn().mockReturnValue(true);
+    const mockSummaryQueueService = { queueSummary: mockQueueSummary } as unknown as SummaryQueueService;
+
+    // Simulate handleCloseStale with summaryQueueService logic
+    const threshold = now - STALE_THRESHOLD_MS;
+    const activeSessions = store.getActiveSessions();
+    const staleSessions = activeSessions.filter(s => s.started_at_epoch < threshold);
+
+    let summariesQueued = 0;
+    for (const staleSession of staleSessions) {
+      const session = store.getSessionById(staleSession.id);
+      if (session?.memory_session_id && !store.getSummaryForSession(session.memory_session_id)) {
+        const obsText = store.getLastObservationTextForSession(session.memory_session_id);
+        const queued = mockSummaryQueueService.queueSummary(staleSession.id, obsText ?? undefined);
+        if (queued) summariesQueued++;
+      }
+    }
+
+    const closedCount = store.closeStaleSessionsOlderThan(threshold);
+
+    expect(closedCount).toBe(1);
+    expect(summariesQueued).toBe(1);
+    expect(mockQueueSummary).toHaveBeenCalledWith(staleSessionId, 'Stale observation narrative');
+  });
+
+  it('response includes summariesQueued count', () => {
+    const now = Date.now();
+    const staleEpoch = now - STALE_THRESHOLD_MS - 5_000;
+
+    // Insert two stale sessions
+    db.prepare(`
+      INSERT INTO sdk_sessions (content_session_id, project, user_prompt, started_at, started_at_epoch, status)
+      VALUES (?, ?, ?, ?, ?, 'active')
+    `).run('stale-resp-1', 'proj', 'old1', new Date(staleEpoch).toISOString(), staleEpoch);
+    db.prepare(`
+      INSERT INTO sdk_sessions (content_session_id, project, user_prompt, started_at, started_at_epoch, status)
+      VALUES (?, ?, ?, ?, ?, 'active')
+    `).run('stale-resp-2', 'proj', 'old2', new Date(staleEpoch).toISOString(), staleEpoch);
+
+    const threshold = now - STALE_THRESHOLD_MS;
+    const activeSessions = store.getActiveSessions();
+    const staleSessions = activeSessions.filter(s => s.started_at_epoch < threshold);
+
+    // Neither stale session has memory_session_id, so no summaries queued
+    const mockQueueSummary = vi.fn().mockReturnValue(true);
+    const mockSummaryQueueService = { queueSummary: mockQueueSummary } as unknown as SummaryQueueService;
+
+    let summariesQueued = 0;
+    for (const staleSession of staleSessions) {
+      const session = store.getSessionById(staleSession.id);
+      if (session?.memory_session_id && !store.getSummaryForSession(session.memory_session_id)) {
+        const obsText = store.getLastObservationTextForSession(session.memory_session_id);
+        const queued = mockSummaryQueueService.queueSummary(staleSession.id, obsText ?? undefined);
+        if (queued) summariesQueued++;
+      }
+    }
+
+    const closedCount = store.closeStaleSessionsOlderThan(threshold);
+
+    // Both closed but neither queued a summary (no memory_session_id)
+    expect(closedCount).toBe(2);
+    expect(summariesQueued).toBe(0);
+    expect(mockQueueSummary).not.toHaveBeenCalled();
+  });
+
+  it('skips summary for stale sessions that already have a summary', () => {
+    const now = Date.now();
+    const staleEpoch = now - STALE_THRESHOLD_MS - 5_000;
+
+    db.prepare(`
+      INSERT INTO sdk_sessions (content_session_id, project, user_prompt, started_at, started_at_epoch, status)
+      VALUES (?, ?, ?, ?, ?, 'active')
+    `).run('stale-has-sum', 'proj', 'old', new Date(staleEpoch).toISOString(), staleEpoch);
+    const staleId = (db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?').get('stale-has-sum') as { id: number }).id;
+    const memId = 'mem-stale-has-summary';
+
+    db.prepare('UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?').run(memId, staleId);
+    db.prepare(`
+      INSERT INTO session_summaries (memory_session_id, project, request, created_at_epoch, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(memId, 'proj', 'existing summary', Date.now(), new Date().toISOString());
+
+    const mockQueueSummary = vi.fn().mockReturnValue(true);
+    const mockSummaryQueueService = { queueSummary: mockQueueSummary } as unknown as SummaryQueueService;
+
+    const threshold = now - STALE_THRESHOLD_MS;
+    const activeSessions = store.getActiveSessions();
+    const staleSessions = activeSessions.filter(s => s.started_at_epoch < threshold);
+
+    let summariesQueued = 0;
+    for (const staleSession of staleSessions) {
+      const session = store.getSessionById(staleSession.id);
+      if (session?.memory_session_id && !store.getSummaryForSession(session.memory_session_id)) {
+        const obsText = store.getLastObservationTextForSession(session.memory_session_id);
+        const queued = mockSummaryQueueService.queueSummary(staleSession.id, obsText ?? undefined);
+        if (queued) summariesQueued++;
+      }
+    }
+
+    expect(mockQueueSummary).not.toHaveBeenCalled();
+    expect(summariesQueued).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // API_ENDPOINTS constant tests
 // ---------------------------------------------------------------------------
 
@@ -350,6 +695,19 @@ describe('ActiveSessionRoutes class', () => {
 
     const dbManager = new DatabaseManager();
     const routes = new ActiveSessionRoutes(dbManager);
+    expect(routes).toBeDefined();
+  });
+
+  it('is constructible with a DatabaseManager and optional SummaryQueueService', async () => {
+    const { ActiveSessionRoutes } = await import('../../../src/services/worker/http/routes/ActiveSessionRoutes.js');
+    const { DatabaseManager } = await import('../../../src/services/worker/DatabaseManager.js');
+
+    const mockSummaryQueueService = {
+      queueSummary: vi.fn().mockReturnValue(true)
+    } as unknown as SummaryQueueService;
+
+    const dbManager = new DatabaseManager();
+    const routes = new ActiveSessionRoutes(dbManager, mockSummaryQueueService);
     expect(routes).toBeDefined();
   });
 

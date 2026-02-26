@@ -177,7 +177,7 @@ export function SessionDetail({ detail, isLoading, hasSelection }: SessionDetail
               </header>
               <div className="live-session-card__body">
                 <p className="live-session-card__message">
-                  This session is still in progress. A summary will be generated when it ends.
+                  This session is still active. A summary will be generated when it ends or is closed.
                 </p>
                 <div className="live-session-card__stats">
                   <span>{detail.observations.length} observation{detail.observations.length !== 1 ? 's' : ''}</span>

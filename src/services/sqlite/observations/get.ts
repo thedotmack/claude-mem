@@ -110,3 +110,23 @@ export function getObservationsForSession(
 
   return stmt.all(memorySessionId) as ObservationSessionRow[];
 }
+
+/**
+ * Get the text of the most recent observation for a session.
+ * Returns the first non-null value from: narrative, title, text.
+ * Returns null when the session has no observations or all text fields are null.
+ */
+export function getLastObservationTextForSession(
+  db: Database,
+  memorySessionId: string
+): string | null {
+  const stmt = db.prepare(`
+    SELECT COALESCE(narrative, title, text) as context_text
+    FROM observations
+    WHERE memory_session_id = ?
+    ORDER BY created_at_epoch DESC
+    LIMIT 1
+  `);
+  const row = stmt.get(memorySessionId) as { context_text: string | null } | undefined;
+  return row?.context_text ?? null;
+}
