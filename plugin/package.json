@@ -1,11 +1,20 @@
 {
   "name": "claude-mem-plugin",
-  "version": "10.4.3",
+  "version": "10.5.2",
   "private": true,
   "description": "Runtime dependencies for claude-mem bundled hooks",
   "type": "module",
   "dependencies": {
-    "@chroma-core/default-embed": "^0.1.9"
+    "tree-sitter-cli": "^0.26.5",
+    "tree-sitter-c": "^0.24.1",
+    "tree-sitter-cpp": "^0.23.4",
+    "tree-sitter-go": "^0.25.0",
+    "tree-sitter-java": "^0.23.5",
+    "tree-sitter-javascript": "^0.25.0",
+    "tree-sitter-python": "^0.25.0",
+    "tree-sitter-ruby": "^0.23.1",
+    "tree-sitter-rust": "^0.24.0",
+    "tree-sitter-typescript": "^0.23.2"
   },
   "engines": {
     "node": ">=18.0.0",

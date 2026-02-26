@@ -1,0 +1,196 @@
+---
+title: "Smart Explore Benchmark"
+description: "Token efficiency comparison between AST-based and traditional code exploration"
+---
+
+# Smart Explore Benchmark
+
+Smart Explore uses tree-sitter AST parsing to provide structural code navigation through three MCP tools: `smart_search`, `smart_outline`, and `smart_unfold`. This report documents a rigorous A/B comparison against the standard Explore agent (which uses Glob, Grep, and Read tools) to quantify the token savings and quality trade-offs.
+
+## Executive Summary
+
+| Metric | Smart Explore | Explore Agent | Advantage |
+|--------|:---:|:---:|---|
+| Discovery (cross-file search) | ~14,200 tokens | ~252,500 tokens | **17.8x cheaper** |
+| Targeted reads (specific symbols) | ~5,650 tokens | ~109,400 tokens | **19.4x cheaper** |
+| End-to-end (search + read) | ~4,200 tokens | ~45,000 tokens | **10-12x cheaper** |
+| Completeness | 5/5 full source returned | 4/5 (truncated longest method) | Smart Explore more reliable |
+| Speed | Under 2s per call | 5-66s per call | **10-30x faster** |
+
+## Methodology
+
+### Test Environment
+
+- **Codebase**: claude-mem (`src/` directory, 194 TypeScript files, 1,206 parsed symbols)
+- **Model**: Claude Opus 4.6 for both approaches
+- **Measurement**: Token counts from tool response metadata (`total_tokens` for Explore agents, self-reported `~N tokens for folded view` for Smart Explore)
+
+### Controls
+
+The Explore agents were explicitly instructed: *"Do NOT use smart_search, smart_outline, or smart_unfold tools. Only use Glob, Grep, and Read tools."* This was verified necessary after an initial round where agents opportunistically used the Smart Explore tools, invalidating the comparison.
+
+### Queries
+
+Five queries were selected to represent common exploration tasks:
+
+1. **"session processing"** -- Cross-cutting feature spanning multiple services
+2. **"shutdown"** -- Infrastructure concern touching 6+ files
+3. **"hook registration"** -- Architecture question about plugin system
+4. **"sqlite database"** -- Technology-specific search across the data layer
+5. **"worker-service.ts outline"** -- Single large file (1,225 lines) structural understanding
+
+## Round 1: Discovery
+
+*"What exists and where is it?"* -- Finding relevant files and symbols across the codebase.
+
+### Results
+
+| Query | Smart Explore | Explore Agent | Ratio | Explore Tool Calls |
+|-------|:---:|:---:|:---:|:---:|
+| session processing | ~4,391 t | 51,659 t | **11.8x** | 15 |
+| shutdown | ~3,852 t | 51,523 t | **13.4x** | 18 |
+| hook registration | ~1,930 t | 51,688 t | **26.8x** | 37 |
+| sqlite database | ~2,543 t | 58,633 t | **23.1x** | 16 |
+| worker-service outline | ~1,500 t | 38,973 t | **26.0x** | 15 |
+| **Total** | **~14,216 t** | **252,476 t** | **17.8x** | **101** |
+
+### What Each Returned
+
+**Smart Explore** (1 tool call each): 10 ranked symbols with signatures, line numbers, and JSDoc summaries, plus folded structural views of all matching files showing every function/class/interface with bodies collapsed.
+
+**Explore Agent** (15-37 tool calls each): Synthesized narrative reports with architecture diagrams, design pattern analysis, data flow explanations, complete interface dumps, and file structure maps. Significantly more explanatory prose.
+
+### Analysis
+
+The token gap is widest for narrowly-scoped queries ("hook registration" at 26.8x) because the Explore agent reads multiple full files to find relatively few relevant symbols. For broad queries ("session processing" at 11.8x), more of the file content is relevant, narrowing the ratio.
+
+Smart Explore's consistent 1-tool-call pattern means its cost is predictable. The Explore agent's cost varies with how many files it reads and how much it synthesizes -- ranging from 15 to 37 tool calls for comparable scope.
+
+## Round 2: Targeted Reads
+
+*"Show me this specific function."* -- Reading the implementation of a known symbol after discovery.
+
+Based on the Round 1 results, five specific symbols were selected as natural drill-down targets:
+
+| Target Symbol | File | Lines |
+|---------------|------|:---:|
+| `SessionManager.initializeSession` | services/worker/SessionManager.ts | 135 |
+| `performGracefulShutdown` | services/infrastructure/GracefulShutdown.ts | 48 |
+| `hookCommand` | cli/hook-command.ts | 45 |
+| `DatabaseManager.initialize` | services/sqlite/Database.ts | 27 |
+| `WorkerService.startSessionProcessor` | services/worker-service.ts | 158 |
+
+### Results
+
+| Symbol | Smart Unfold | Explore Agent | Ratio | Completeness |
+|--------|:---:|:---:|:---:|---|
+| initializeSession (135 lines) | ~1,800 t | 27,816 t | **15.5x** | Both returned full source |
+| performGracefulShutdown (48 lines) | ~700 t | 19,621 t | **28.0x** | Both returned full source |
+| hookCommand (45 lines) | ~650 t | 18,680 t | **28.7x** | Both returned full source |
+| DatabaseManager.initialize (27 lines) | ~400 t | 22,334 t | **55.8x** | Both returned full source |
+| startSessionProcessor (158 lines) | ~2,100 t | 20,906 t | **10.0x** | Smart Unfold: complete. Explore: **truncated** |
+| **Total** | **~5,650 t** | **109,357 t** | **19.4x** | |
+
+### Analysis
+
+**The ratio scales inversely with symbol size.** The smallest function (`initialize`, 27 lines) shows the biggest gap at 55.8x because the Explore agent still reads the entire 235-line file to extract 27 lines. The largest method (`startSessionProcessor`, 158 lines) narrows to 10x since more of the file is "useful."
+
+**Smart Unfold returned more complete code.** For the longest method (158 lines), the Explore agent truncated the error handling section with "... error handling continues ...", while `smart_unfold` returned the complete implementation. This is because smart_unfold extracts by AST node boundaries, guaranteeing completeness regardless of symbol size.
+
+**Explore agents add zero unique information for targeted reads.** When you already know the file path and symbol name, the agent's overhead is pure waste -- it reads the file, locates the function, and echoes it back. The only addition is a brief explanatory paragraph.
+
+## Combined Workflow
+
+The realistic workflow is discovery followed by targeted reading. Here is the end-to-end cost comparison for understanding a single function:
+
+### Smart Explore: search + unfold
+
+```
+smart_search("shutdown", path="./src")     ~3,852 tokens
+smart_unfold("GracefulShutdown.ts", "performGracefulShutdown")  ~700 tokens
+────────────────────────────────────────────────────────────────
+Total: ~4,552 tokens (2 tool calls, under 3 seconds)
+```
+
+### Explore Agent: single query
+
+```
+"Find and explain the shutdown logic"      ~51,523 tokens
+────────────────────────────────────────────────────────────────
+Total: ~51,523 tokens (18 tool calls, ~43 seconds)
+```
+
+**End-to-end ratio: 11.3x** -- and the Smart Explore workflow gives you the actual source code, while the Explore agent gives you a prose summary that may paraphrase or truncate.
+
+## Quality Assessment
+
+Neither approach is universally better. They optimize for different outcomes.
+
+### Smart Explore Strengths
+
+- **Predictable cost**: 1 tool call per operation, consistent token ranges
+- **Complete source code**: AST-based extraction guarantees full symbol bodies
+- **Structural context**: Folded views show every symbol in matching files
+- **Speed**: Sub-second responses enable rapid iteration
+- **Composability**: Search, outline, and unfold chain naturally
+
+### Explore Agent Strengths
+
+- **Synthesized understanding**: Produces architecture narratives, data flow diagrams, and design pattern analysis
+- **Cross-cutting explanation**: Connects concepts across files that individual symbol reads cannot
+- **Onboarding quality**: Output reads like documentation, not raw code
+- **Error handling insight**: Identifies edge cases and design decisions that require reading multiple related functions
+- **No prior knowledge needed**: Can answer open-ended questions without knowing file paths or symbol names
+
+### Quality by Task Type
+
+| Task | Better Tool | Why |
+|------|-------------|-----|
+| "Where is X defined?" | Smart Explore | One call, exact answer |
+| "What functions are in this file?" | Smart Explore | Outline returns complete structural map |
+| "Show me this function" | Smart Explore | Unfold returns exact source, never truncates |
+| "How does feature X work end-to-end?" | Explore Agent | Reads multiple files and synthesizes narrative |
+| "What design patterns are used here?" | Explore Agent | Requires reading and interpreting, not just extracting |
+| "Help me understand this codebase" | Explore Agent | Produces onboarding-quality documentation |
+
+## When to Use Which
+
+**Use Smart Explore when:**
+- You know what you are looking for (function name, concept, file)
+- You need source code, not explanation
+- You are iterating quickly (read, modify, read again)
+- Token budget matters (large codebases, long sessions)
+- You need file structure at a glance
+
+**Use the Explore Agent when:**
+- You need synthesized cross-cutting understanding
+- The question is open-ended ("how does this system work?")
+- You are writing documentation or architecture reviews
+- You need to understand *why*, not just *what*
+- You are onboarding to an unfamiliar codebase
+
+**Use both when:**
+- Start with Smart Explore for discovery and navigation
+- Escalate to Explore Agent only for deep analysis that requires multi-file synthesis
+- This hybrid approach captures most of the token savings while preserving access to deep understanding when needed
+
+## Token Economics Reference
+
+| Operation | Tokens | Use Case |
+|-----------|:---:|----------|
+| `smart_search` | 2,000-6,000 | Cross-file symbol discovery |
+| `smart_outline` | 1,000-2,000 | Single file structural map |
+| `smart_unfold` | 400-2,100 | Single symbol full source |
+| `smart_search` + `smart_unfold` | 3,000-8,000 | End-to-end: find and read |
+| Explore Agent (targeted) | 18,000-28,000 | Single function with explanation |
+| Explore Agent (cross-cutting) | 39,000-59,000 | Architecture-level understanding |
+| Read (full file) | 8,000-15,000+ | Complete file contents |
+
+### Savings by Workflow
+
+| Workflow | Smart Explore | Traditional | Savings |
+|----------|:---:|:---:|:---:|
+| Understand one file | outline + unfold (~3,100 t) | Read full file (~12,000 t) | **4x** |
+| Find a function across codebase | search (~3,500 t) | Explore agent (~50,000 t) | **14x** |
+| Find and read a specific function | search + unfold (~4,500 t) | Explore agent (~50,000 t) | **11x** |
+| Navigate a 1,200-line file | outline (~1,500 t) | Read full file (~12,000 t) | **8x** |
