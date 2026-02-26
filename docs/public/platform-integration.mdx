@@ -5,7 +5,7 @@ icon: plug
 ---
 
 <Note>
-**Version:** 9.1.1 (February 2026)
+**Version:** 9.8.3 (February 2026)
 **Target Audience:** Developers building magic-claude-mem integrations (VSCode extensions, IDE plugins, CLI tools)
 </Note>
 
@@ -26,15 +26,30 @@ GET /api/health
 
 // Create/get session and queue observation
 POST /api/sessions/observations
-Body: { claudeSessionId, tool_name, tool_input, tool_response, cwd }
+Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
 
 // Queue summary
 POST /api/sessions/summarize
-Body: { claudeSessionId, last_user_message, last_assistant_message }
+Body: { contentSessionId, last_assistant_message }
 
 // Complete session
 POST /api/sessions/complete
-Body: { claudeSessionId }
+Body: { contentSessionId }
+
+// List active sessions (with stale detection)
+GET /api/sessions/active
+
+// Close a single active session (queues summary)
+POST /api/sessions/:id/close
+
+// Close all stale sessions (older than 1 hour)
+POST /api/sessions/close-stale
+
+// Project management
+GET /api/projects/:name/counts
+POST /api/projects/:name/rename   Body: { newName }
+POST /api/projects/:name/merge    Body: { targetProject }
+DELETE /api/projects/:name
 
 // Search observations
 GET /api/search?query=authentication&type=observations&format=index&limit=20
@@ -120,6 +135,17 @@ Platform Hook/Extension
     - Privacy checks and tag stripping
     - Auto-start SDK agent generators
   </Accordion>
+  <Accordion title="ActiveSessionRoutes" icon="clock">
+    - List active sessions with stale detection
+    - Close individual sessions (with summary queuing)
+    - Bulk close stale sessions (older than 1 hour)
+  </Accordion>
+  <Accordion title="ProjectRoutes" icon="folder">
+    - Row count preview per project
+    - Rename projects across all tables
+    - Merge projects (move rows from source to target)
+    - Delete projects and all associated data
+  </Accordion>
   <Accordion title="DataRoutes" icon="database">
     - Data retrieval (observations, summaries, prompts, stats)
     - Pagination support
@@ -150,7 +176,7 @@ POST /api/sessions/observations
 Content-Type: application/json
 
 {
-  "claudeSessionId": "abc123",      // Claude session identifier (string)
+  "contentSessionId": "abc123",      // Claude session identifier (string)
   "tool_name": "Bash",
   "tool_input": { "command": "ls" },
   "tool_response": { "stdout": "..." },
@@ -179,8 +205,7 @@ POST /api/sessions/summarize
 Content-Type: application/json
 
 {
-  "claudeSessionId": "abc123",
-  "last_user_message": "User's message",
+  "contentSessionId": "abc123",
   "last_assistant_message": "Assistant's response"
 }
 ```
@@ -200,7 +225,7 @@ POST /api/sessions/complete
 Content-Type: application/json
 
 {
-  "claudeSessionId": "abc123"
+  "contentSessionId": "abc123"
 }
 ```
 
@@ -213,6 +238,188 @@ Content-Type: application/json
 
 <Warning>
 **Effect:** Stops SDK agent, marks session complete, broadcasts status change.
+</Warning>
+
+### Active Session Management (ActiveSessionRoutes)
+
+#### List Active Sessions
+
+<CodeGroup>
+```http GET /api/sessions/active
+GET /api/sessions/active
+```
+
+```json Response
+{
+  "sessions": [
+    {
+      "id": 123,
+      "content_session_id": "abc123",
+      "project": "my-project",
+      "user_prompt": "Fix the login bug",
+      "started_at_epoch": 1708900000000,
+      "is_stale": false,
+      "duration_ms": 120000
+    }
+  ],
+  "staleCount": 0,
+  "totalCount": 1
+}
+```
+</CodeGroup>
+
+<Info>
+**Stale Detection:** Sessions older than 1 hour are marked with `is_stale: true`. The `duration_ms` field shows how long the session has been active.
+</Info>
+
+#### Close a Single Session
+
+<CodeGroup>
+```http POST /api/sessions/:id/close
+POST /api/sessions/:id/close
+```
+
+```json Response
+{ "success": true, "summaryQueued": true }
+// or (if session already has a summary)
+{ "success": true, "summaryQueued": false }
+// or (if session not found or not active)
+{ "error": "Session not found or not active" }  // 404
+```
+</CodeGroup>
+
+<Info>
+**Summary Queuing:** Before closing, the endpoint attempts to queue a session summary if one does not already exist. The `summaryQueued` field indicates whether a summary was queued. Summary failure does not block session closure.
+</Info>
+
+#### Close All Stale Sessions
+
+<CodeGroup>
+```http POST /api/sessions/close-stale
+POST /api/sessions/close-stale
+```
+
+```json Response
+{
+  "closedCount": 3,
+  "summariesQueued": 2
+}
+```
+</CodeGroup>
+
+<Info>
+**Threshold:** Closes all active sessions that started more than 1 hour ago. Summaries are queued for each stale session before closing. The `summariesQueued` count may be less than `closedCount` if some sessions already had summaries.
+</Info>
+
+### Project Management (ProjectRoutes)
+
+<Note>
+These endpoints operate across all 4 database tables (`sdk_sessions`, `observations`, `session_summaries`, `context_injections`). Project names in URLs must be URL-encoded. Chroma vector embeddings are not updated by these operations; a manual re-sync may be needed after rename/merge/delete.
+</Note>
+
+#### Get Project Row Counts
+
+<CodeGroup>
+```http GET /api/projects/:name/counts
+GET /api/projects/:name/counts
+```
+
+```json Response
+{
+  "counts": {
+    "sdk_sessions": 15,
+    "observations": 230,
+    "session_summaries": 12,
+    "context_injections": 45
+  }
+}
+```
+</CodeGroup>
+
+#### Rename Project
+
+<CodeGroup>
+```http POST /api/projects/:name/rename
+POST /api/projects/:name/rename
+Content-Type: application/json
+
+{
+  "newName": "new-project-name"
+}
+```
+
+```json Response
+{
+  "success": true,
+  "counts": {
+    "sdk_sessions": 15,
+    "observations": 230,
+    "session_summaries": 12,
+    "context_injections": 45
+  }
+}
+// or
+{ "error": "Target project already exists: new-project-name" }  // 409
+{ "error": "Source project not found: old-name" }                // 404
+```
+</CodeGroup>
+
+#### Merge Projects
+
+<CodeGroup>
+```http POST /api/projects/:name/merge
+POST /api/projects/:name/merge
+Content-Type: application/json
+
+{
+  "targetProject": "target-project-name"
+}
+```
+
+```json Response
+{
+  "success": true,
+  "counts": {
+    "sdk_sessions": 5,
+    "observations": 80,
+    "session_summaries": 4,
+    "context_injections": 10
+  }
+}
+// or
+{ "error": "Target project not found: target-name" }  // 404
+{ "error": "Cannot merge a project into itself" }      // 400
+```
+</CodeGroup>
+
+<Info>
+**Merge Direction:** Rows from the source project (`:name`) are moved into the target project. The source project ceases to exist after a successful merge. The `counts` in the response represent the number of rows moved from the source.
+</Info>
+
+#### Delete Project
+
+<CodeGroup>
+```http DELETE /api/projects/:name
+DELETE /api/projects/:name
+```
+
+```json Response
+{
+  "success": true,
+  "counts": {
+    "sdk_sessions": 15,
+    "observations": 230,
+    "session_summaries": 12,
+    "context_injections": 45
+  }
+}
+// or
+{ "error": "Project not found: project-name" }  // 404
+```
+</CodeGroup>
+
+<Warning>
+**Destructive Operation:** Deleting a project removes all sessions, observations, summaries, and context injections. This also triggers FK cascades that delete associated `user_prompts` and `pending_messages` rows. This cannot be undone.
 </Warning>
 
 #### Legacy Endpoints (Still Supported)
@@ -233,7 +440,7 @@ Content-Type: application/json
   <Tab title="Queue Summary">
     ```http
     POST /sessions/:sessionDbId/summarize
-    Body: { last_user_message, last_assistant_message }
+    Body: { last_assistant_message }
     ```
   </Tab>
   <Tab title="Complete Session">
@@ -244,7 +451,7 @@ Content-Type: application/json
 </Tabs>
 
 <Note>
-New integrations should use `/api/sessions/*` endpoints with `claudeSessionId`.
+New integrations should use `/api/sessions/*` endpoints with `contentSessionId`.
 </Note>
 
 ### Data Retrieval (DataRoutes)
@@ -307,7 +514,7 @@ GET /api/stats
 ```json Response
 {
   "worker": {
-    "version": "9.1.1",
+    "version": "9.8.3",
     "uptime": 12345,
     "activeSessions": 2,
     "sseClients": 1,
@@ -627,6 +834,7 @@ GET /stream
 Event Types:
 - `processing_status`: { type, isProcessing, queueDepth }
 - `session_started`: { type, sessionDbId, project }
+- `session_completed`: { type, sessionDbId }
 - `observation_queued`: { type, sessionDbId }
 - `summarize_queued`: { type }
 - `observation_created`: { type, observation }
@@ -639,30 +847,39 @@ Event Types:
 ### Active Session (In-Memory)
 
 ```typescript
+type ProviderType = 'claude' | 'gemini' | 'openai-compat';
+
+interface ConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 interface ActiveSession {
-  sessionDbId: number;                  // Database ID (numeric)
-  contentSessionId: string;              // Content session identifier (string)
-  memorySessionId: string | null;       // Memory session ID for FK constraint
-  sdkSessionId: string | null;          // SDK session ID
-  project: string;                      // Project name
-  userPrompt: string;                   // Current user prompt text
-  pendingMessages: PendingMessage[];    // Queue of pending operations
-  abortController: AbortController;     // For cancellation
-  generatorPromise: Promise<void> | null; // SDK agent promise
-  lastPromptNumber: number;             // Last processed prompt number
-  startTime: number;                    // Session start timestamp
-  cumulativeInputTokens: number;        // Total input tokens
-  cumulativeOutputTokens: number;       // Total output tokens
+  sessionDbId: number;                    // Database ID (numeric)
+  contentSessionId: string;               // Content session identifier (string)
+  memorySessionId: string | null;         // Memory session ID for FK constraint
+  project: string;                        // Project name
+  userPrompt: string;                     // Current user prompt text
+  pendingMessages: PendingMessage[];      // Deprecated: now using persistent store
+  abortController: AbortController;       // For cancellation
+  generatorPromise: Promise<void> | null; // Agent processing promise
+  lastPromptNumber: number;               // Last processed prompt number
+  startTime: number;                      // Session start timestamp
+  cumulativeInputTokens: number;          // Total input tokens
+  cumulativeOutputTokens: number;         // Total output tokens
+  earliestPendingTimestamp: number | null; // Original timestamp of earliest pending message
+  conversationHistory: ConversationMessage[]; // Shared history for provider switching
+  currentProvider: ProviderType | null;   // Currently active AI provider
+  memorySessionIdCapturedLive: boolean;   // True when captured from live SDK session
 }
 
 interface PendingMessage {
   type: 'observation' | 'summarize';
   tool_name?: string;
-  tool_input?: any;
-  tool_response?: any;
+  tool_input?: unknown;
+  tool_response?: unknown;
   prompt_number?: number;
   cwd?: string;
-  last_user_message?: string;
   last_assistant_message?: string;
 }
 ```
@@ -672,32 +889,36 @@ interface PendingMessage {
 <Tabs>
   <Tab title="SDK Session">
     ```typescript
-    interface SDKSessionRow {
+    interface DBSession {
       id: number;
       content_session_id: string;
-      sdk_session_id: string;
+      memory_session_id: string | null;
       project: string;
-      status: 'active' | 'completed';
       user_prompt: string;
-      created_at_epoch: number;
-      completed_at_epoch?: number;
+      status: 'active' | 'completed' | 'failed';
+      started_at: string;
+      started_at_epoch: number;
+      completed_at: string | null;
+      completed_at_epoch: number | null;
     }
     ```
   </Tab>
   <Tab title="Observation">
     ```typescript
-    interface ObservationRow {
+    interface Observation {
       id: number;
-      sdk_session_id: string;
+      memory_session_id: string;
       title: string;
-      subtitle?: string;
-      narrative: string;
-      facts: string;           // JSON array of fact strings
-      concepts: string;        // JSON array of concept strings
-      files_read: string;      // JSON array of files read
-      files_modified: string;  // JSON array of files modified
-      obs_type: string;        // discovery, decision, bugfix, feature, refactor
+      subtitle: string | null;
+      narrative: string | null;
+      text: string | null;
+      facts: string | null;           // JSON array of fact strings
+      concepts: string | null;        // JSON array of concept strings
+      files_read: string | null;      // JSON array of files read
+      files_modified: string | null;  // JSON array of files modified
+      type: string;                   // discovery, decision, bugfix, feature, refactor
       project: string;
+      created_at: string;
       created_at_epoch: number;
       prompt_number: number;
     }
@@ -705,30 +926,61 @@ interface PendingMessage {
   </Tab>
   <Tab title="Session Summary">
     ```typescript
-    interface SessionSummaryRow {
+    interface Summary {
       id: number;
-      sdk_session_id: string;
-      request: string;
-      investigated: string;
-      learned: string;
-      completed: string;
-      next_steps: string;
-      notes: string | null;
+      session_id: string;           // content_session_id (from JOIN)
       project: string;
+      request: string | null;
+      investigated: string | null;
+      learned: string | null;
+      completed: string | null;
+      next_steps: string | null;
+      notes: string | null;
+      created_at: string;
       created_at_epoch: number;
+      observation_count?: number;
     }
     ```
   </Tab>
   <Tab title="User Prompt">
     ```typescript
-    interface UserPromptRow {
+    interface UserPrompt {
       id: number;
-      claude_session_id: string;
-      sdk_session_id: string;
-      project: string;
+      content_session_id: string;
+      project: string;                  // From JOIN with sdk_sessions
       prompt_number: number;
       prompt_text: string;
+      created_at: string;
       created_at_epoch: number;
+    }
+    ```
+  </Tab>
+  <Tab title="Active Session Row">
+    ```typescript
+    /** Returned by GET /api/sessions/active (before enrichment) */
+    interface ActiveSessionRow {
+      id: number;
+      content_session_id: string;
+      project: string;
+      user_prompt: string | null;
+      started_at_epoch: number;
+    }
+
+    /** Enriched response from GET /api/sessions/active */
+    interface ActiveSessionResponse extends ActiveSessionRow {
+      is_stale: boolean;       // true if older than 1 hour
+      duration_ms: number;     // elapsed time since session start
+    }
+    ```
+  </Tab>
+  <Tab title="Project Row Counts">
+    ```typescript
+    /** Returned by project management endpoints */
+    interface ProjectRowCounts {
+      sdk_sessions: number;
+      observations: number;
+      session_summaries: number;
+      context_injections: number;
     }
     ```
   </Tab>
@@ -768,7 +1020,7 @@ interface SessionSummarySearchResult {
 
 interface UserPromptSearchResult {
   id: number;
-  claude_session_id: string;
+  content_session_id: string;
   project: string;
   prompt_number: number;
   prompt_text: string;
@@ -808,7 +1060,7 @@ interface TimelineItem {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          claudeSessionId: session_id,
+          contentSessionId: session_id,
           tool_name,
           tool_input,
           tool_response: tool_result,
@@ -824,14 +1076,13 @@ interface TimelineItem {
   <Step title="Summary Hook">
     ```typescript
     async function onSummary(context: HookContext) {
-      const { session_id, last_user_message, last_assistant_message } = context;
+      const { session_id, last_assistant_message } = context;
 
       await fetch('http://localhost:37777/api/sessions/summarize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          claudeSessionId: session_id,
-          last_user_message,
+          contentSessionId: session_id,
           last_assistant_message
         })
       });
@@ -847,7 +1098,7 @@ interface TimelineItem {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          claudeSessionId: session_id
+          contentSessionId: session_id
         })
       });
     }
@@ -904,7 +1155,7 @@ vscode.lm.registerTool('magic-claude-mem-search', searchTool);
 
 ```typescript
 const participant = vscode.chat.createChatParticipant('magic-claude-mem', async (request, context, stream, token) => {
-  const claudeSessionId = context.session.id;
+  const contentSessionId = context.session.id;
 
   // First message in conversation - no initialization needed
   // Session is auto-created on first observation
@@ -1195,7 +1446,7 @@ describe('WorkerClient', () => {
   it('should queue observation', async () => {
     const client = new WorkerClient();
     const result = await client.queueObservation({
-      claudeSessionId: 'test-123',
+      contentSessionId: 'test-123',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
       tool_response: { stdout: 'file1.txt' },
@@ -1258,6 +1509,18 @@ describe('Worker Integration', () => {
     - [ ] Private prompts are skipped
     - [ ] Queue summary creates summary
     - [ ] Complete session stops processing
+    - [ ] List active sessions shows running sessions
+    - [ ] Close session returns summaryQueued status
+    - [ ] Close stale sessions cleans up old sessions
+  </Accordion>
+
+  <Accordion title="Phase 2b: Project Management">
+    - [ ] Get project row counts returns correct numbers
+    - [ ] Rename project updates all tables
+    - [ ] Rename fails with 409 if target exists
+    - [ ] Merge project moves rows to target
+    - [ ] Delete project removes all associated data
+    - [ ] Delete fails with 404 if project not found
   </Accordion>
 
   <Accordion title="Phase 3: Search & Retrieval">
@@ -1308,7 +1571,7 @@ export class WorkerClient {
   }
 
   async queueObservation(data: {
-    claudeSessionId: string;
+    contentSessionId: string;
     tool_name: string;
     tool_input: any;
     tool_response: any;
@@ -1329,8 +1592,7 @@ export class WorkerClient {
   }
 
   async queueSummarize(data: {
-    claudeSessionId: string;
-    last_user_message?: string;
+    contentSessionId: string;
     last_assistant_message?: string;
   }): Promise<{ status: string; reason?: string }> {
     const response = await fetch(`${this.baseUrl}/api/sessions/summarize`, {
@@ -1347,17 +1609,69 @@ export class WorkerClient {
     return await response.json();
   }
 
-  async completeSession(claudeSessionId: string): Promise<void> {
+  async completeSession(contentSessionId: string): Promise<{ success: boolean; message?: string }> {
     const response = await fetch(`${this.baseUrl}/api/sessions/complete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ claudeSessionId }),
+      body: JSON.stringify({ contentSessionId }),
       signal: AbortSignal.timeout(5000)
     });
 
     if (!response.ok) {
       throw new Error(`Failed to complete session: ${response.statusText}`);
     }
+
+    return await response.json();
+  }
+
+  async getActiveSessions(): Promise<{
+    sessions: Array<{
+      id: number;
+      content_session_id: string;
+      project: string;
+      user_prompt: string | null;
+      started_at_epoch: number;
+      is_stale: boolean;
+      duration_ms: number;
+    }>;
+    staleCount: number;
+    totalCount: number;
+  }> {
+    const response = await fetch(`${this.baseUrl}/api/sessions/active`, {
+      signal: AbortSignal.timeout(5000)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to get active sessions: ${response.statusText}`);
+    }
+
+    return await response.json();
+  }
+
+  async closeSession(sessionDbId: number): Promise<{ success: boolean; summaryQueued: boolean }> {
+    const response = await fetch(`${this.baseUrl}/api/sessions/${sessionDbId}/close`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(5000)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to close session: ${response.statusText}`);
+    }
+
+    return await response.json();
+  }
+
+  async closeStaleSessions(): Promise<{ closedCount: number; summariesQueued: number }> {
+    const response = await fetch(`${this.baseUrl}/api/sessions/close-stale`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(10000)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to close stale sessions: ${response.statusText}`);
+    }
+
+    return await response.json();
   }
 
   async search(params: {
@@ -1482,12 +1796,13 @@ export function registerSearchTool(context: vscode.ExtensionContext) {
 ## Critical Implementation Notes
 
 <Warning>
-### sessionDbId vs claudeSessionId
+### sessionDbId vs contentSessionId
 
-**IMPORTANT:** Use `claudeSessionId` (string) for new API endpoints, not `sessionDbId` (number).
+**IMPORTANT:** Use `contentSessionId` (string) for new API endpoints, not `sessionDbId` (number).
 
-- `sessionDbId` - Numeric database ID (legacy endpoints only)
-- `claudeSessionId` - String identifier from Claude platform (new endpoints)
+- `sessionDbId` - Numeric database ID (legacy endpoints and ActiveSessionRoutes use this for `:id` params)
+- `contentSessionId` - String identifier from Claude platform (used by `/api/sessions/observations`, `/api/sessions/summarize`, `/api/sessions/init`, `/api/sessions/complete`)
+- `memorySessionId` - Internal memory agent session ID (replaces the old `sdk_session_id` field)
 </Warning>
 
 <Warning>

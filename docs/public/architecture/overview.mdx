@@ -7,7 +7,7 @@ description: "System components and data flow in Magic-Claude-Mem"
 
 ## System Components
 
-Magic-Claude-Mem operates as a Claude Code plugin with five core components:
+Magic-Claude-Mem operates as a Claude Code plugin with six core components:
 
 1. **Plugin Hooks** - Capture lifecycle events (6 hook files)
 2. **Smart Install** - Cached dependency checker (pre-hook script, runs before context-hook)
@@ -27,7 +27,7 @@ Magic-Claude-Mem operates as a Claude Code plugin with five core components:
 | **HTTP Server**        | Express.js 4.18                           |
 | **Real-time**          | Server-Sent Events (SSE)                  |
 | **UI Framework**       | React + TypeScript                        |
-| **AI SDK**             | @anthropic-ai/claude-agent-sdk            |
+| **AI SDK**             | @anthropic-ai/claude-agent-sdk 0.2.50     |
 | **Build Tool**         | esbuild (bundles TypeScript)              |
 | **Process Manager**    | Node.js                                   |
 | **Testing**            | Vitest                                    |
@@ -47,15 +47,21 @@ Hook (stdin) → Database → Worker Service → SDK Processor → Database → 
 
 ### Search Pipeline
 ```
-User Query → MCP Tools Invoked → HTTP API → SessionSearch Service → FTS5 Database → Search Results → Claude
+User Query → MCP Tools → HTTP API → SearchOrchestrator → Strategy Selection → Ranked Results → Claude
 ```
 
 1. **User Query**: User asks naturally: "What bugs did we fix?"
 2. **MCP Tools Invoked**: Claude recognizes intent and invokes MCP search tools
 3. **HTTP API**: MCP tools call HTTP endpoint (e.g., `/api/search/observations`)
-4. **SessionSearch**: Worker service queries FTS5 virtual tables
-5. **Format**: Results formatted and returned via MCP
-6. **Return**: Claude presents formatted results to user
+4. **SearchOrchestrator**: Selects the optimal search strategy based on query and available backends:
+   - **BM25SearchStrategy** - FTS5 full-text search with BM25 ranking (default)
+   - **ChromaSearchStrategy** - Vector semantic search via ChromaDB (when available)
+   - **HybridBlendingStrategy** - Combines BM25 + Chroma results using Reciprocal Rank Fusion (RRF) scoring with top-rank bonus
+   - **SQLiteSearchStrategy** - Direct SQLite queries for structured filters
+   - **HybridSearchStrategy** - Legacy FTS5 + Chroma blending
+5. **Scoring & Ranking**: RRF scoring merges results from multiple strategies, with configurable blending and deduplication
+6. **Format**: ResultFormatter shapes output for MCP consumption
+7. **Return**: Claude presents formatted results to user
 
 Uses 3-layer progressive disclosure: search → timeline → get_observations
 
@@ -99,7 +105,24 @@ Uses 3-layer progressive disclosure: search → timeline → get_observations
 │    Status changes from 'active' to 'completed'. If new prompt    │
 │    arrives in same session, status resets to 'active'            │
 └─────────────────────────────────────────────────────────────────┘
+
+              ── Alternative Path: UI-Initiated Close ──
+
+┌─────────────────────────────────────────────────────────────────┐
+│ 6a. User Closes Session via Viewer UI                             │
+│     ActiveSessionRoutes receives close request, triggers          │
+│     SummaryQueueService → generates summary → marks complete     │
+│     Same summary quality as hook-driven path                     │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+<Note>
+Sessions can be closed through two paths: the normal hook lifecycle (steps 5-6 above) or
+manually via the Viewer UI. Both paths produce identical summaries through the
+SummaryQueueService, ensuring no data loss regardless of how a session ends. This is
+particularly useful for closing stale sessions that were interrupted before the
+SessionEnd hook could fire.
+</Note>
 
 ## Directory Structure
 
@@ -122,11 +145,36 @@ magic-claude-mem/
 │   │
 │   ├── services/
 │   │   ├── worker-service.ts   # Express HTTP + SSE service
-│   │   └── sqlite/             # Database layer
-│   │       ├── SessionStore.ts # CRUD operations
-│   │       ├── SessionSearch.ts # FTS5 search service
-│   │       ├── migrations.ts
-│   │       └── types.ts
+│   │   ├── sqlite/             # Database layer
+│   │   │   ├── SessionStore.ts # CRUD operations
+│   │   │   ├── SessionSearch.ts # FTS5 search service
+│   │   │   ├── migrations.ts
+│   │   │   └── types.ts
+│   │   └── worker/             # Worker subsystems
+│   │       ├── search/         # Search orchestration (v9.5+)
+│   │       │   ├── SearchOrchestrator.ts   # Strategy selection + RRF scoring
+│   │       │   ├── ResultFormatter.ts      # Output formatting
+│   │       │   ├── TimelineBuilder.ts      # Timeline construction
+│   │       │   ├── strategies/             # Pluggable search strategies
+│   │       │   │   ├── SearchStrategy.ts   # Interface + BaseSearchStrategy
+│   │       │   │   ├── BM25SearchStrategy.ts
+│   │       │   │   ├── ChromaSearchStrategy.ts
+│   │       │   │   ├── HybridBlendingStrategy.ts  # RRF fusion
+│   │       │   │   ├── HybridSearchStrategy.ts     # Legacy blending
+│   │       │   │   ├── SQLiteSearchStrategy.ts
+│   │       │   │   └── scoring.ts          # RRF, blending, normalization
+│   │       │   ├── filters/                # Query filters
+│   │       │   └── types.ts
+│   │       ├── session/        # Session lifecycle (v9.8+)
+│   │       │   ├── SummaryQueueService.ts      # Queue-based summary generation
+│   │       │   └── SessionCompletionHandler.ts # SDK abort + completion flow
+│   │       ├── http/routes/    # HTTP route handlers (8 route files)
+│   │       │   ├── ActiveSessionRoutes.ts  # Stale session management
+│   │       │   ├── ProjectRoutes.ts        # Project rename/merge/delete
+│   │       │   └── ...                     # Search, Session, Data, etc.
+│   │       ├── SearchManager.ts    # Delegates to SearchOrchestrator
+│   │       ├── SessionManager.ts   # Session lifecycle coordination
+│   │       └── SSEBroadcaster.ts   # Real-time event broadcasting
 │   │
 │   ├── ui/                     # Viewer UI
 │   │   └── viewer/             # React + TypeScript web interface
@@ -198,16 +246,46 @@ See [Plugin Hooks](/architecture/hooks) for detailed hook documentation.
 Express.js HTTP server on port 37777 (configurable) with:
 - 10 search HTTP API endpoints (v5.4.0+)
 - 8 viewer UI HTTP/SSE endpoints
-- Async observation processing via Claude Agent SDK
+- Active session management endpoints (list, close, close-stale)
+- Project management endpoints (rename, merge, delete, counts)
+- Async observation processing via Claude Agent SDK 0.2.50
 - Real-time updates via Server-Sent Events
 - Auto-managed by Node.js
 
 See [Worker Service](/architecture/worker-service) for HTTP API and endpoints.
 
+### 2a. Search Orchestration (v9.5+)
+
+The search subsystem uses a strategy pattern coordinated by `SearchOrchestrator`:
+
+```
+SearchManager → SearchOrchestrator → [Strategy Selection] → Ranked Results
+                                          │
+                    ┌─────────────────────┼─────────────────────┐
+                    │                     │                     │
+              BM25Strategy        ChromaStrategy      HybridBlendingStrategy
+             (FTS5 default)      (vector search)        (RRF fusion)
+```
+
+- **SearchOrchestrator** - Central coordinator that selects strategies based on query type and backend availability, with automatic fallback
+- **BM25SearchStrategy** - FTS5 full-text search with BM25 ranking (primary strategy)
+- **ChromaSearchStrategy** - Vector semantic search via ChromaDB embeddings
+- **HybridBlendingStrategy** - Merges BM25 + Chroma results using Reciprocal Rank Fusion (RRF) scoring with top-rank bonus and deduplication
+- **scoring.ts** - Shared scoring functions: `rrfScore`, `topRankBonus`, `blendScores`, `normalizeMinMax`
+
+### 2b. Session Lifecycle Services (v9.8+)
+
+Two new services support closing sessions outside the normal hook lifecycle:
+
+- **SummaryQueueService** - Queues summary generation for sessions closed via the Viewer UI. Ensures summaries are generated asynchronously without blocking the HTTP response.
+- **SessionCompletionHandler** - Handles the completion flow: aborts any running SDK agent for the session, triggers SSE broadcast, and marks the session as completed in the database.
+
+See [Worker Service](/architecture/worker-service) for HTTP API and endpoints.
+
 ### 3. Database Layer
 SQLite3 with better-sqlite3 driver featuring:
-- FTS5 virtual tables for full-text search
-- SessionStore for CRUD operations
+- FTS5 virtual tables with BM25 ranking for full-text search
+- SessionStore for CRUD operations (including active session tracking)
 - SessionSearch for FTS5 queries
 - Location: `~/.magic-claude-mem/magic-claude-mem.db`
 
@@ -235,6 +313,9 @@ React + TypeScript web interface at http://localhost:37777 featuring:
 - Search bar with debounced text search and result count
 - Filter bar with observation type, concept, item kind, and date range chips
 - Activity bar: 90-day density timeline with click-to-select and drag-to-range
+- Token analytics dashboard showing compression stats and token usage
+- Active sessions badge with UI-driven session close (triggers summary generation)
+- Project management: rename, merge, and delete projects via ProjectActionDialog
 - Infinite scroll pagination with automatic deduplication
 - Project filtering and settings persistence
 - Theme toggle (light/dark/system with smart skip)

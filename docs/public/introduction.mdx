@@ -27,11 +27,14 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - 🌐 **Multilingual Modes** - Supports 28 languages (Spanish, Chinese, French, Japanese, etc.)
 - 🎭 **Mode System** - Switch between workflows (Code, Email Investigation, Chill)
 - 🔍 **MCP Search Tools** - Query your project history with natural language
+- 🔀 **Hybrid Search with RRF** - BM25 keyword + Chroma vector search blended via Reciprocal Rank Fusion
 - 🌐 **Web Viewer UI** - Real-time memory stream with search, filtering, and activity timeline at http://localhost:37777
+- 📂 **Project Management** - Rename, merge, and delete projects directly from the viewer UI
+- 🕰️ **Stale Session Management** - Detect and resolve stale sessions with UI badges and cleanup tools
+- 📊 **Token Analytics Dashboard** - Aggregate token usage metrics with time range filtering
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
-- 📊 **FTS5 Search** - Fast full-text search across observations
 - 🔗 **Citations** - Reference past observations with IDs
 
 ## How It Works
@@ -59,12 +62,13 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 ```
 
 **Core Components:**
-1. **4 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop
+1. **5 Lifecycle Hooks** - Setup, SessionStart, UserPromptSubmit, PostToolUse, Stop
 2. **Smart Install** - Cached dependency checker (pre-hook script)
 3. **Worker Service** - HTTP API on port 37777 managed by Node.js
-4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 search
-5. **MCP Search Tools** - Query historical context with natural language
-6. **Web Viewer UI** - Real-time visualization with search, filters, activity timeline, and SSE
+4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 + BM25 search
+5. **SearchOrchestrator** - Hybrid search combining BM25 keyword, FTS5, and Chroma vector results via RRF scoring
+6. **MCP Search Tools** - Query historical context with natural language
+7. **Web Viewer UI** - Real-time visualization with search, filters, project management, analytics, and SSE
 
 See [Architecture Overview](architecture/overview) for details.
 
@@ -75,6 +79,25 @@ See [Architecture Overview](architecture/overview) for details.
 - **SQLite 3**: For persistent storage (bundled)
 
 ## What's New
+
+**v9.8.0 - Hybrid Search with RRF:**
+- **SearchOrchestrator**: New orchestration layer that selects the optimal search strategy per query
+- **BM25 Keyword Search**: Added BM25 ranking strategy via SQLite FTS5 for precise keyword matching
+- **Reciprocal Rank Fusion (RRF)**: Blends BM25 keyword and Chroma vector results with top-rank bonus scoring for best-of-both-worlds retrieval
+- **HybridBlendingStrategy**: Graceful degradation when either search backend is unavailable
+- **Session Close Summaries** (v9.8.3): Closing a session from the viewer UI now automatically generates a summary via SummaryQueueService
+
+**v9.6.0 - Project Management UI:**
+- **Rename Projects**: Rename projects directly from the viewer sidebar
+- **Merge Projects**: Consolidate duplicate or related projects into one
+- **Delete Projects**: Remove projects and their associated data
+- **Inline Operations**: All project actions available via inline UI controls in the viewer
+
+**v9.5.0 - Stale Session Management:**
+- **Stale Detection**: Identifies sessions that are no longer actively connected
+- **UI Badge**: Visual indicators in the viewer for stale sessions
+- **Cleanup API**: New API endpoints for resolving and cleaning up stale sessions
+- **Database Layer**: Session status tracking with active/stale/completed lifecycle
 
 **v9.4.0 - Reliability & Cost Optimization:**
 - **Default Model → Haiku**: Changed default AI model from Sonnet to Haiku for cost efficiency (automatic migration for existing users)

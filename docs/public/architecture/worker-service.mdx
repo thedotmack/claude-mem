@@ -19,7 +19,7 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 
 ## REST API Endpoints
 
-The worker service exposes 24 HTTP endpoints organized into six categories:
+The worker service exposes 27 HTTP endpoints organized into seven categories:
 
 ### Viewer & Health Endpoints
 
@@ -49,7 +49,7 @@ GET /api/version
 **Response**:
 ```json
 {
-  "version": "9.4.4"
+  "version": "9.8.3"
 }
 ```
 
@@ -622,6 +622,169 @@ DELETE /sessions/:sessionDbId
 
 **Note**: As of v4.1.0, the cleanup hook no longer calls this endpoint. Sessions are marked complete instead of deleted to allow graceful worker shutdown.
 
+### Active Session Management Endpoints
+
+These endpoints were introduced in v9.5.0 to manage stale sessions that accumulate when Claude Code sessions end without proper cleanup (e.g., terminal closes, crashes). They are served by `ActiveSessionRoutes` and integrated with `SummaryQueueService` for queue-first, close-second session teardown.
+
+#### 24. Get Active Sessions
+```
+GET /api/sessions/active
+```
+
+**Purpose**: List all active sessions with stale detection metadata (v9.5.0+)
+
+**Response**:
+```json
+{
+  "sessions": [
+    {
+      "id": 45,
+      "content_session_id": "abc-123",
+      "project": "my-project",
+      "user_prompt": "Fix the login bug",
+      "started_at_epoch": 1730886600000,
+      "is_stale": false,
+      "duration_ms": 1200000
+    },
+    {
+      "id": 38,
+      "content_session_id": "xyz-789",
+      "project": "other-project",
+      "user_prompt": "Add unit tests",
+      "started_at_epoch": 1730879400000,
+      "is_stale": true,
+      "duration_ms": 8400000
+    }
+  ],
+  "staleCount": 1,
+  "totalCount": 2
+}
+```
+
+**Fields**:
+- `is_stale`: `true` if the session has been active for longer than 1 hour (the stale threshold)
+- `duration_ms`: Milliseconds since the session started
+- `staleCount`: Number of sessions exceeding the stale threshold
+- `totalCount`: Total active sessions
+
+**Use Case**: The viewer UI uses this to display active session status and offer manual close actions for orphaned sessions.
+
+#### 25. Close Session
+```
+POST /api/sessions/:id/close
+```
+
+**Purpose**: Close a single active session by its database row ID (v9.5.0+). Queues a summary before closing if `SummaryQueueService` is available (v9.8.3+).
+
+**Path Parameters**:
+- `id` (required): Session database ID
+
+**Response**:
+```json
+{
+  "success": true,
+  "summaryQueued": true
+}
+```
+
+**Response Fields**:
+- `success`: Whether the session was closed (status set to `completed`)
+- `summaryQueued`: Whether a summary was queued before closing (requires `SummaryQueueService`)
+
+**Error Response** (404):
+```json
+{
+  "error": "Session not found or not active"
+}
+```
+
+**Behavior** (queue-first, close-second):
+1. If `SummaryQueueService` is available, attempts to queue a summary for the session
+2. Summary queueing checks: does the session have a `memory_session_id`? Does it already have a summary?
+3. If the session has unsummarized observations, `queueSummarize()` is called with the last observation text as context
+4. The session is then closed (status set to `completed`) regardless of whether summary queueing succeeded
+5. Summary failure is best-effort and never blocks the close operation
+
+#### 26. Close Stale Sessions
+```
+POST /api/sessions/close-stale
+```
+
+**Purpose**: Close all active sessions that have been running longer than 1 hour (v9.5.0+). Queues summaries for each stale session before closing (v9.8.3+).
+
+**Response**:
+```json
+{
+  "closedCount": 3,
+  "summariesQueued": 2
+}
+```
+
+**Response Fields**:
+- `closedCount`: Number of sessions closed
+- `summariesQueued`: Number of summaries successfully queued before closing
+
+**Behavior**:
+1. Queries all active sessions older than the stale threshold (1 hour)
+2. For each stale session, attempts to queue a summary (same logic as single-session close)
+3. Closes all stale sessions in a single database update
+4. Summary failures for individual sessions are logged but do not prevent other sessions from being processed
+
+**Use Case**: Periodic cleanup of orphaned sessions, callable from the viewer UI or automation scripts.
+
+## SummaryQueueService
+
+Introduced in v9.8.3, the `SummaryQueueService` ensures that sessions closed via the API (rather than through the normal hook lifecycle) still get summaries generated. It implements the **queue-first, close-second** pattern.
+
+### Architecture
+
+```
+┌──────────────────────┐     ┌─────────────────────┐     ┌──────────────────┐
+│  ActiveSessionRoutes │────▶│  SummaryQueueService │────▶│  SessionManager  │
+│  (HTTP handlers)     │     │  (orchestrator)      │     │  (queueSummarize)│
+└──────────────────────┘     └──────┬──────────────┘     └──────────────────┘
+                                    │
+                                    ▼
+                             ┌─────────────────────────┐
+                             │  SessionEventBroadcaster │
+                             │  (SSE notification)      │
+                             └─────────────────────────┘
+```
+
+### Wiring
+
+`SummaryQueueService` is instantiated in `WorkerService` and injected into `ActiveSessionRoutes`:
+
+```typescript
+this.summaryQueueService = new SummaryQueueService({
+  sessionManager: this.sessionManager,
+  eventBroadcaster: this.sessionEventBroadcaster,
+});
+
+this.server.registerRoutes(new ActiveSessionRoutes(
+  this.dbManager,
+  this.summaryQueueService,
+));
+```
+
+### Queue-First, Close-Second Pattern
+
+When a session is closed via the API:
+
+1. **Queue**: `SummaryQueueService.queueSummary()` calls `SessionManager.queueSummarize()`, which persists a `summarize` message to the pending queue database **before** adding it to the in-memory queue. This ensures the request survives worker crashes.
+2. **Broadcast**: `SessionEventBroadcaster.broadcastSummarizeQueued()` notifies connected viewer clients that processing status changed.
+3. **Close**: The session status is set to `completed` in the database.
+4. **Process**: The SDK agent picks up the queued summarize message asynchronously and generates the summary.
+
+Summary queueing is skipped when:
+- The session has no `memory_session_id` (never initialized with the SDK)
+- The session already has a summary
+- `SummaryQueueService` is not available (graceful degradation)
+
+### Error Handling
+
+Summary queueing failures are best-effort. If `queueSummary()` fails, the error is logged and the session is still closed. This prevents a summary generation failure from leaving sessions permanently stuck in `active` status.
+
 ## Session Completion Lifecycle
 
 Sessions track their processing status through a lifecycle:
@@ -631,23 +794,42 @@ active → completed → active (on new prompt)
 ```
 
 - **`active`**: Session is receiving observations/summaries
-- **`completed`**: Summary has been stored (`completeSession` called from `ResponseProcessor` after atomic transaction)
+- **`completed`**: All processing finished. Reached via one of two paths:
+  - **Normal flow**: `completeSession` called from `ResponseProcessor` after the atomic transaction stores observations and summary
+  - **API close** (v9.5.0+): `POST /api/sessions/:id/close` or `POST /api/sessions/close-stale` sets status to `completed`. As of v9.8.3, a summary is queued before closing (queue-first, close-second pattern).
 - **Back to `active`**: When a new prompt arrives for a completed session, `createSDKSession` resets status to `active`
 
 This lifecycle enables:
 - Distinguishing between sessions still being processed and those that are done
 - Proper session reuse when the same Claude session sends multiple prompts
 - Recovery tools can differentiate stuck sessions from completed ones
+- Manual cleanup of orphaned sessions via the API without losing summary data
 
 ## Node.js Process Management
 
 ### Overview
 
-The worker is managed by the native `ProcessManager` class which handles:
-- Process spawning with Node.js runtime
-- PID file tracking at `~/.magic-claude-mem/worker.pid`
+The worker is managed by the `ProcessManager` module (`src/services/infrastructure/ProcessManager.ts`) which handles:
+- Process spawning with Node.js runtime (detached daemon)
+- Structured PID file at `~/.magic-claude-mem/worker.pid` with process metadata
 - Health checks with automatic retry
 - Graceful shutdown with SIGTERM/SIGKILL fallback
+- Orphaned child process cleanup (chroma-mcp processes from previous sessions)
+
+### PID File Format
+
+The PID file (`~/.magic-claude-mem/worker.pid`) stores structured JSON with process metadata for crash recovery and diagnostics:
+
+```json
+{
+  "pid": 12345,
+  "port": 37777,
+  "startedAt": "2026-02-26T10:30:00.000Z",
+  "nodeVersion": "v22.14.0"
+}
+```
+
+The `readPidFile()` function handles corrupted or missing PID files gracefully, returning `null` so the worker can be restarted cleanly. The `nodeVersion` field (added for diagnostics) tracks which Node.js runtime the worker was spawned with.
 
 ### Commands
 
@@ -674,14 +856,14 @@ The worker service auto-starts when the SessionStart hook fires. Manual start is
 
 ### Auto-Restart on Version Mismatch
 
-When the plugin is updated (e.g., via `npm run sync-marketplace`), the running worker process may still be executing the old version. Starting with v9.4.4, the `ensureWorkerRunning()` function in hooks detects this automatically:
+When the plugin is updated (e.g., via `npm run sync-marketplace`), the running worker process may still be executing the old version. Starting with v9.4.4, the `ensureWorkerRunning()` function (`src/shared/worker-utils.ts`) called by every hook detects this automatically:
 
-1. **Health check** — Verifies the worker is responding
-2. **Version check** — Calls `/api/version` and compares with the installed plugin version
-3. **Auto-restart** — If versions differ, triggers `worker-service.cjs restart` and verifies post-restart health
-4. **Port cache clear** — After restart, clears the cached port so health checks re-read from settings (the new version may use a different port)
+1. **Health check** — Verifies the worker is responding via `isWorkerHealthy()`
+2. **Version check** — `checkWorkerVersion()` calls `GET /api/version` and compares with the installed plugin version (read from `package.json`). If the version cannot be determined, it assumes a match to avoid unnecessary restarts.
+3. **Auto-restart** — If versions differ, `restartWorker()` executes `node worker-service.cjs restart` with a 45-second timeout and verifies post-restart health
+4. **Port cache clear** — After restart, `clearPortCache()` is called so subsequent health checks re-read the port from settings (the new version may use a different port)
 
-All fetch calls to the worker include a 5-second timeout (`AbortSignal.timeout`) to prevent indefinite hangs. If restart fails, hooks proceed gracefully without blocking the session.
+All fetch calls to the worker include a 5-second timeout (`AbortSignal.timeout`) to prevent indefinite hangs. If restart fails, hooks proceed gracefully without blocking the session — the worker will be retried on the next hook invocation.
 
 ### Node.js Requirement
 
@@ -749,7 +931,7 @@ The worker service stores data in the user data directory:
 ```
 ~/.magic-claude-mem/
 ├── magic-claude-mem.db           # SQLite database (better-sqlite3)
-├── worker.pid              # PID file for process tracking
+├── worker.pid              # Structured JSON PID file (pid, port, startedAt, nodeVersion)
 ├── settings.json           # User settings
 └── logs/
     └── worker-YYYY-MM-DD.log  # Daily rotating logs

@@ -27,7 +27,7 @@ When you first open the viewer, it connects via **Server-Sent Events (SSE)** and
 
 ### Project Filter
 
-Click any project name in the sidebar to filter the feed to that project only. The viewer stays in SSE mode, so new items for the selected project still appear live as they arrive.
+Click any project name in the project dropdown to filter the feed to that project only. The viewer stays in SSE mode, so new items for the selected project still appear live as they arrive. The same dropdown provides [project management actions](#project-management) (rename, merge, delete) via a kebab menu on each entry.
 
 ### Search/Filter Mode
 
@@ -110,6 +110,65 @@ The viewer supports three appearance modes:
 
 Click the theme toggle button to cycle through modes. The toggle uses **smart skip logic**: when your system preference matches the current explicit theme (for example, you are on Dark and your OS is also set to dark), clicking the toggle skips the redundant "System" option and goes straight to the next distinct appearance.
 
+## Stale Session Management
+
+The **ActiveSessionsBadge** in the header tracks all open Claude Code sessions and highlights those that have gone stale (no recent activity).
+
+### Sessions Badge
+
+A badge labeled **"Sessions: N"** appears in the header bar, where N is the total number of active sessions. When one or more sessions are stale, the badge switches to a warning style to draw attention.
+
+Click the badge to open a dropdown listing every active session. Each entry shows:
+
+- A **color dot** -- green for fresh sessions, amber for stale sessions.
+- The **project name** (truncated for long paths).
+- A **relative timestamp** showing when the session started ("2h ago", "3d ago", etc.).
+
+### Closing Individual Sessions
+
+Stale sessions display a **[Close]** button inline. Clicking it closes the session and, if the session produced observations, queues a summary generation. A status message appears at the bottom of the dropdown:
+
+> "Summary generating..."
+
+The message auto-clears after 3 seconds.
+
+### Close All Stale
+
+When stale sessions exist, a **"Close All Stale"** button appears at the bottom of the dropdown. It closes every stale session in one action and reports how many summaries were queued:
+
+> "3 summaries generating..."
+
+After closing, the badge refreshes automatically. The active sessions list polls the server periodically to stay current even when sessions end outside the viewer.
+
+## Project Management
+
+The project dropdown in the header now includes management actions for each project. Hover over any project in the dropdown to reveal a **kebab menu** (three-dot button) with three actions:
+
+### Rename
+
+Changes the project name across all associated records (observations, summaries, sessions, context injections, and prompts). Enter the new name in the dialog and click **Confirm**. If the renamed project was your active filter, the filter follows the new name automatically.
+
+### Merge
+
+Moves all data from one project into another. Select the target project from a dropdown of existing projects and click **Confirm**. The source project ceases to exist; all its observations, summaries, and prompts transfer to the target. If you were filtering by the source project, the filter switches to the target.
+
+### Delete
+
+Permanently removes all data for a project, including observations, summaries, sessions, context injections, and associated user prompts. To prevent accidental deletion, you must type the exact project name to confirm. The button is styled as a destructive action.
+
+### Confirmation Dialog
+
+All three actions open a confirmation dialog that shows a **row count summary** before you proceed:
+
+| Row | Description |
+|-----|-------------|
+| Sessions | Number of SDK sessions |
+| Observations | Number of stored observations |
+| Summaries | Number of session summaries |
+| Context Injections | Number of context injection records |
+
+Errors during the action are displayed inline in the dialog without closing it, so you can retry or cancel.
+
 ## Token Analytics Dashboard
 
 The analytics bar sits below the header and provides aggregate token usage metrics for the selected project.
@@ -118,19 +177,18 @@ The analytics bar sits below the header and provides aggregate token usage metri
 
 | Metric | Description |
 |--------|-------------|
-| **Read** | Total tokens required to read all observations in the time range |
-| **Work** | Total tokens spent on research, building, and decisions that produced those observations |
-| **Recalled** | Tokens actually injected into sessions (context that was reused) |
-| **Saved** | Work tokens minus recalled tokens — the efficiency gain from memory reuse |
-| **Obs** | Total number of observations in the time range |
+| **Read** | Estimated token size of all stored observations -- the compressed knowledge footprint |
+| **Work** | AI tokens invested in research, building, and decisions |
+| **Recalled** | Tokens actually delivered into sessions via context injection (session start, prompt submit, and MCP search) |
+| **Saved** | Net tokens saved by reusing compressed context instead of re-doing the original work. Calculated as Work minus Read minus Recalled. Shown as an absolute count and percentage |
+| **Obs** | Observations recorded and distinct Claude sessions in the time range |
 
-Each metric card shows a tooltip with a detailed explanation on hover.
+Each metric card shows a tooltip with a detailed explanation on hover or keyboard focus. Cards with positive savings highlight in green; cards with no data show a muted dash.
 
 ### Time Range
 
-A dropdown selector filters analytics by time window:
+Button group filters analytics by time window:
 
-- **24h** — Last 24 hours
 - **7d** — Last 7 days (default)
 - **30d** — Last 30 days
 - **90d** — Last 90 days
@@ -138,7 +196,7 @@ A dropdown selector filters analytics by time window:
 
 ### Auto-Refresh
 
-The analytics bar polls the `/api/analytics` endpoint periodically and refreshes when the browser tab regains visibility, ensuring metrics stay current during active work sessions.
+The analytics bar polls the `/api/analytics` endpoint every 60 seconds. Polling pauses automatically when the browser tab is hidden and resumes with an immediate refresh when the tab regains visibility, keeping metrics current without wasting resources in the background.
 
 ## Infinite Scroll Pagination
 

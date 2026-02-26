@@ -16,6 +16,7 @@ Settings are managed in `~/.magic-claude-mem/settings.json`. The file is auto-cr
 | `MAGIC_CLAUDE_MEM_MODEL`            | `haiku`                         | AI model for processing observations (when using Claude) |
 | `MAGIC_CLAUDE_MEM_EFFORT`           | _(empty)_                       | SDK effort level: `low`, `medium`, `high`, `max`, or empty (SDK default) |
 | `MAGIC_CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, or `openai-compat` |
+| `MAGIC_CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `cli`                         | Claude auth method: `cli` (subscription billing) or `api` (API key) |
 | `MAGIC_CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `MAGIC_CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `MAGIC_CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
@@ -28,6 +29,7 @@ Settings are managed in `~/.magic-claude-mem/settings.json`. The file is auto-cr
 |-------------------------------|---------------------------------|---------------------------------------|
 | `MAGIC_CLAUDE_MEM_GEMINI_API_KEY`   | —                               | Gemini API key ([get free key](https://aistudio.google.com/app/apikey)) |
 | `MAGIC_CLAUDE_MEM_GEMINI_MODEL`     | `gemini-2.5-flash-lite`          | Gemini model: `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-3-flash` |
+| `MAGIC_CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED` | `true`              | Enable rate limiting for Gemini free tier (10--30 RPM). Disable if you have billing set up |
 
 See [Gemini Provider](usage/gemini-provider) for detailed configuration and free tier information.
 
@@ -293,6 +295,7 @@ The most recent N observations (set by Count) show their full narrative or facts
 | **Read cost** | true | Show tokens to read each observation |
 | **Work investment** | true | Show tokens spent creating the observation |
 | **Savings** | true | Show total tokens saved by reusing context |
+| **Savings %** | true | Show percentage of tokens saved |
 
 Token economics help you understand the value of cached observations vs. re-reading files.
 
@@ -303,7 +306,7 @@ Token economics help you understand the value of cached observations vs. re-read
 | **Model** | haiku | AI model for generating observations |
 | **Worker Port** | 37777 | Port for background worker service |
 | **MCP search server** | true | Enable Model Context Protocol search tools |
-| **Include last summary** | false | Add previous session's summary to context |
+| **Include last summary** | true | Add previous session's summary to context |
 | **Include last message** | false | Add previous session's final message |
 
 ### Manual Configuration
@@ -321,7 +324,8 @@ Settings are stored in `~/.magic-claude-mem/settings.json`:
   "MAGIC_CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS": "true",
   "MAGIC_CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS": "true",
   "MAGIC_CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT": "true",
-  "MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY": "false",
+  "MAGIC_CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT": "true",
+  "MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY": "true",
   "MAGIC_CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE": "false"
 }
 ```

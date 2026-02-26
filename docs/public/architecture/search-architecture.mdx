@@ -1,25 +1,116 @@
 ---
 title: "Search Architecture"
-description: "MCP tools with 3-layer workflow for token-efficient memory retrieval"
+description: "Hybrid search with Reciprocal Rank Fusion, BM25 keyword scoring, and semantic vectors"
 ---
 
 # Search Architecture
 
-Claude-mem uses an **MCP-based search architecture** that provides intelligent memory retrieval through 4 streamlined tools following a 3-layer workflow pattern.
+Claude-mem uses a **hybrid search architecture** that combines FTS5 keyword scoring (BM25) with Chroma vector embeddings, merged via **Reciprocal Rank Fusion (RRF)**. Results are exposed through 4 streamlined MCP tools following a 3-layer workflow pattern.
 
 ## Overview
 
-**Architecture**: MCP Tools → MCP Protocol → HTTP API → Worker Service
+**Architecture**: MCP Tools → MCP Protocol → HTTP API → SearchOrchestrator → Strategy Pipeline
 
 **Key Components**:
 1. **MCP Tools** (4 tools) - `search`, `timeline`, `get_observations`, `__IMPORTANT`
 2. **MCP Server** (`plugin/scripts/mcp-server.cjs`) - Thin wrapper over HTTP API
 3. **HTTP API Endpoints** - Fast search operations on Worker Service (port 37777)
-4. **Worker Service** - Express.js server with FTS5 full-text search
-5. **SQLite Database** - Persistent storage with FTS5 virtual tables
-6. **Chroma Vector DB** - Semantic search with hybrid retrieval
+4. **SearchOrchestrator** - Entry point that selects and executes the right search strategy
+5. **Search Strategies** - `BM25SearchStrategy`, `ChromaSearchStrategy`, `HybridBlendingStrategy`, `SQLiteSearchStrategy`
+6. **Scoring utilities** - `rrfScore()` and `topRankBonus()` for rank fusion
+7. **SQLite Database** - Persistent storage with FTS5 virtual tables
+8. **Chroma Vector DB** - Semantic search with embedding similarity
 
 **Token Efficiency**: ~10x savings through 3-layer workflow pattern
+
+## Hybrid Search Pipeline
+
+<Note>
+  Since v9.7.0 (BM25 keyword search) and v9.8.0 (RRF score fusion), every text query runs through the hybrid pipeline by default. No configuration is required.
+</Note>
+
+### SearchOrchestrator
+
+`SearchOrchestrator` is the single entry point for all search operations. It normalizes parameters, selects a strategy, and handles fallbacks.
+
+```mermaid
+flowchart TD
+    Q[search request] --> O[SearchOrchestrator]
+    O --> D{Has query text?}
+    D -- No --> SQLite[SQLiteSearchStrategy<br/>filter-only]
+    D -- Yes --> C{Chroma available?}
+    C -- Yes --> HB[HybridBlendingStrategy]
+    C -- No --> BM[BM25SearchStrategy<br/>keyword-only fallback]
+    HB --> P["Run in parallel<br/>(Promise.allSettled)"]
+    P --> Chroma[ChromaSearchStrategy<br/>vector embeddings]
+    P --> BM25[BM25SearchStrategy<br/>FTS5 keyword scoring]
+    Chroma --> RRF[Reciprocal Rank Fusion<br/>+ top-rank bonus]
+    BM25 --> RRF
+    RRF --> R[Merged results]
+    SQLite --> R
+    BM --> R
+```
+
+The orchestrator follows a three-path decision tree:
+
+| Path | Condition | Strategy | Latency |
+|------|-----------|----------|---------|
+| **Filter-only** | No query text | `SQLiteSearchStrategy` | &lt;5 ms |
+| **Hybrid blend** | Query + Chroma available | `HybridBlendingStrategy` (Chroma + BM25 in parallel) | ~55-210 ms |
+| **Keyword fallback** | Query + Chroma unavailable | `BM25SearchStrategy` | 1-5 ms |
+
+### BM25 Keyword Path
+
+`BM25SearchStrategy` queries the existing FTS5 virtual tables in SQLite. It searches observations and session summaries using the `unicode61` tokenizer with per-column BM25 weighting (title weighted highest, then narrative, facts, concepts).
+
+```sql
+SELECT o.*, bm25(observations_fts, 10.0, 5.0, 3.0, 2.0, 1.0, 1.0) AS bm25_score
+FROM observations_fts
+JOIN observations o ON o.id = observations_fts.rowid
+WHERE observations_fts MATCH ?
+ORDER BY bm25_score ASC
+LIMIT ?
+```
+
+BM25 is always available as a fallback -- it requires only SQLite, no external services.
+
+### Chroma Vector Path
+
+`ChromaSearchStrategy` converts the query into a vector embedding via Chroma and performs approximate nearest-neighbor search. This captures semantic similarity that keyword matching misses (e.g., "auth token expiry" matching an observation titled "JWT refresh logic").
+
+### Reciprocal Rank Fusion (RRF)
+
+When both paths succeed, `HybridBlendingStrategy` merges results using **Reciprocal Rank Fusion**, a parameter-free rank fusion algorithm:
+
+```
+score(d) = Σ  1 / (k + rank_i(d))    for each ranker i
+```
+
+Where `k = 60` (the standard RRF smoothing constant) and `rank_i(d)` is the 1-indexed position of document `d` in ranker `i`.
+
+Documents appearing in both result sets accumulate contributions from both rankers, naturally surfacing items that are relevant by keyword **and** semantics. A **top-rank bonus** (default +0.003) is added when an item appears in the top 5 of every ranker, rewarding strong cross-ranker agreement.
+
+The scoring utilities live in `scoring.ts`:
+
+| Function | Purpose |
+|----------|---------|
+| `rrfScore(rankers, k)` | Computes RRF scores across an array of rank maps |
+| `topRankBonus(rankers, topK, bonus)` | Flat bonus for items in top-K of all rankers |
+
+### Graceful Degradation
+
+`HybridBlendingStrategy` uses `Promise.allSettled` so a failure in one path does not block the other:
+
+| Chroma | BM25 | Outcome |
+|--------|------|---------|
+| OK | OK | Full RRF blend (`strategy: 'hybrid-blend'`) |
+| Fail | OK | BM25-only results (`strategy: 'bm25'`, `fellBack: true`) |
+| OK | Fail | Chroma-only results (`strategy: 'chroma'`, `fellBack: true`) |
+| Fail | Fail | Empty results (`fellBack: true`) |
+
+The `StrategySearchResult` type carries `strategy` and `fellBack` fields so callers always know which path produced the results.
+
+---
 
 ## How It Works
 
@@ -60,17 +151,18 @@ const url = `http://localhost:37777/api/search?query=authentication%20bug&type=b
 const response = await fetch(url);
 ```
 
-### 4. Worker Processing
+### 4. SearchOrchestrator Processing
 
-Worker service executes FTS5 query:
+The Worker Service delegates to `SearchOrchestrator`, which selects a strategy based on the query:
 
-```sql
-SELECT * FROM observations_fts
-WHERE observations_fts MATCH ?
-AND type = 'bugfix'
-ORDER BY rank
-LIMIT 10
+```typescript
+// SearchOrchestrator.executeWithFallback()
+if (!options.query)            → SQLiteSearchStrategy   // filter-only
+if (hybridBlendingStrategy)    → HybridBlendingStrategy // Chroma + BM25
+else                           → BM25SearchStrategy     // keyword fallback
 ```
+
+For text queries with Chroma available, the hybrid blend runs both paths in parallel and merges with RRF (see [Hybrid Search Pipeline](#hybrid-search-pipeline) above).
 
 ### 5. Results Returned
 
@@ -243,9 +335,9 @@ GET  /api/health           # Health check
 ```
 
 **Database Access:**
-- Uses `SessionSearch` service for FTS5 queries
-- Uses `SessionStore` for structured queries
-- Hybrid search with ChromaDB for semantic similarity
+- Uses `SearchOrchestrator` for all search operations (strategy selection, RRF merging)
+- `SessionSearch` and `SessionStore` are injected into strategies for FTS5 and structured queries
+- `ChromaSync` provides vector embeddings when available
 
 ## Viewer UI Search Integration
 
@@ -253,21 +345,18 @@ The web viewer at http://localhost:37777 is a consumer of the same search API us
 
 - **Text search**: Debounced queries sent to `GET /api/search` with `format=json`
 - **Filters**: Observation type (`obs_type`), concepts, item kind (`type`), date range (`dateStart`/`dateEnd`)
-- **Chroma semantic search**: When a text query is provided, the search API triggers Chroma vector similarity search alongside FTS5, respecting the user's date range filters (not a hardcoded 90-day window)
+- **Hybrid search**: When a text query is provided, the `SearchOrchestrator` runs BM25 keyword scoring and Chroma vector search in parallel, merging results with RRF. Date range filters are passed to both strategies.
 - **Pagination**: `offset`/`limit` parameters for infinite scroll
 - **Activity density**: Client-side bucketing of observation timestamps for the 90-day activity bar
 
 This means the viewer and MCP tools share the same search logic — improvements to one benefit both.
 
-**FTS5 Full-Text Search:**
-```typescript
-// search tool → HTTP GET → FTS5 query
-SELECT * FROM observations_fts
-WHERE observations_fts MATCH ?
-AND type = ?
-AND date >= ? AND date <= ?
-ORDER BY rank
-LIMIT ? OFFSET ?
+**Search Pipeline:**
+```
+search tool → HTTP GET → SearchOrchestrator → HybridBlendingStrategy
+  ├─ BM25SearchStrategy  → FTS5 query (SQLite)
+  └─ ChromaSearchStrategy → vector similarity (Chroma)
+  → RRF merge → sorted results
 ```
 
 ### Concept Vocabulary
@@ -424,7 +513,11 @@ function escapeFTS5Query(query: string): string {
 
 ## Performance
 
-**FTS5 Full-Text Search:** Sub-10ms for typical queries
+**Hybrid Blend (BM25 + Chroma):** ~55-210 ms — both paths run in parallel, so total latency equals the slower path
+
+**BM25 Keyword-Only:** 1-5 ms — pure SQLite FTS5, no network calls
+
+**Filter-Only (SQLite):** Sub-5 ms — direct structured queries
 
 **MCP Overhead:** Minimal - simple protocol translation
 

@@ -17,6 +17,19 @@ Instead of fetching all historical data upfront (expensive), magic-claude-mem us
 
 This achieves **~10x token savings** compared to traditional RAG approaches.
 
+### Hybrid Search (v9.7+)
+
+Search uses a **hybrid architecture** that combines two retrieval methods for better relevance:
+
+- **BM25 keyword search** — SQLite FTS5 full-text search with weighted column scoring. Excels at exact term matches, boolean queries, and phrase searches.
+- **Chroma vector search** — Semantic embedding similarity. Excels at finding conceptually related results even when exact terms differ.
+
+Results from both sources are merged using **Reciprocal Rank Fusion (RRF)**, an industry-standard technique that combines ranked lists without requiring score normalization. Items that both rankers agree are relevant receive a cross-ranker bonus, surfacing the most consistently relevant results.
+
+<Info>
+Hybrid search is automatic — no configuration needed. When Chroma is available, every text query runs both BM25 and vector search in parallel and fuses the results. If Chroma is unavailable, search gracefully falls back to BM25 keyword search only.
+</Info>
+
 <Tip>
 Search is also available through the **Viewer UI** at http://localhost:37777 with a visual search bar, filter chips, and activity timeline. See [Viewer UI](/usage/viewer) for details.
 </Tip>
@@ -236,6 +249,53 @@ Step 3: get_observations(ids=[<critical_observations>])
   → Refresh memory on key decisions
 ```
 
+## How Search Scoring Works
+
+When you issue a search with a `query` parameter, the SearchOrchestrator selects the best strategy automatically:
+
+| Condition | Strategy | Description |
+|-----------|----------|-------------|
+| No query text (filter-only) | **SQLite** | Direct database filtering by type, date, project, etc. |
+| Query + Chroma available | **Hybrid Blend** | BM25 + vector search merged with RRF |
+| Query + Chroma unavailable | **BM25** | FTS5 keyword search only |
+
+### BM25 Keyword Scoring
+
+BM25 search runs against an FTS5 index with **weighted columns** — not all fields contribute equally to relevance:
+
+| Column | Weight | Why |
+|--------|--------|-----|
+| Title | 10.0 | Highest signal — a title match is strongly relevant |
+| Subtitle | 5.0 | Important context summary |
+| Narrative | 3.0 | Detailed story of what happened |
+| Text | 2.0 | Raw observation content |
+| Facts | 1.0 | Key factual points |
+| Concepts | 1.0 | Tagged themes |
+
+This means a query matching in the title carries 10x more weight than a match in concepts.
+
+### Reciprocal Rank Fusion (RRF)
+
+When both BM25 and vector search return results, they are merged using RRF:
+
+1. Each ranker (BM25 and vector) produces a ranked list of results
+2. For each result, RRF computes: `score(d) = sum(1 / (k + rank))` across all rankers (k=60)
+3. Results appearing in the top 5 of **both** rankers receive a cross-ranker agreement bonus
+4. The fused list is sorted by combined score and trimmed to the requested limit
+
+**Why RRF?** Unlike score-based blending, RRF is parameter-free and works even when scores from different sources are on incomparable scales. A result ranked #2 in both keyword and vector search will consistently outrank a result that is #1 in one but absent from the other.
+
+### Graceful Degradation
+
+The hybrid strategy handles failures automatically:
+
+- **Both succeed** → Full RRF fusion (best results)
+- **Chroma fails** → BM25 keyword results only
+- **BM25 fails** → Chroma vector results only
+- **Both fail** → Empty results with fallback flag
+
+No user action is needed — degradation is transparent and logged.
+
 ## Search Query Syntax
 
 The `query` parameter supports SQLite FTS5 full-text search syntax:
@@ -423,10 +483,11 @@ get_observations(ids=[<5-most-relevant>])  # ~2,500-5,000 tokens
 ### Search Performance
 
 If searches seem slow:
-1. Be more specific in queries (helps FTS5 index)
+1. Be more specific in queries (helps FTS5 index and vector similarity)
 2. Use date range filters to narrow scope
 3. Specify project filter when possible
 4. Use smaller limit values
+5. Hybrid search runs BM25 and vector queries in parallel, so latency is determined by the slower of the two (typically Chroma). If Chroma is the bottleneck, the system falls back to BM25 only, which is faster.
 
 ## Best Practices
 
@@ -440,15 +501,24 @@ If searches seem slow:
 
 ## Technical Details
 
-**Architecture:** MCP tools are a thin wrapper over the Worker HTTP API (localhost:37777). The MCP server translates tool calls into HTTP requests to the worker service, which handles all business logic, database queries, and Chroma vector search.
+**Architecture:** MCP tools are a thin wrapper over the Worker HTTP API (localhost:37777). The MCP server translates tool calls into HTTP requests to the worker service. The `SearchOrchestrator` coordinates strategy selection, parallel execution, and result fusion.
+
+**Search Pipeline:**
+1. MCP tool call → Worker HTTP API
+2. `SearchOrchestrator.search()` normalizes parameters and selects strategy
+3. `HybridBlendingStrategy` runs BM25 and Chroma searches in parallel via `Promise.allSettled`
+4. `mergeWithRRF()` fuses ranked lists using Reciprocal Rank Fusion
+5. Results are formatted and returned through MCP
 
 **MCP Server:** Located at `~/.claude/plugins/marketplaces/doublefx/plugin/scripts/mcp-server.cjs`
 
 **Worker Service:** Express API on port 37777, managed by Node.js
 
-**Database:** SQLite FTS5 full-text search on `~/.magic-claude-mem/magic-claude-mem.db`
+**Database:** SQLite FTS5 full-text search with BM25 weighted scoring on `~/.magic-claude-mem/magic-claude-mem.db`
 
-**Vector Search:** Chroma embeddings for semantic search (underlying implementation)
+**Vector Search:** Chroma embeddings for semantic similarity search
+
+**Scoring Utilities:** Pure functions in `scoring.ts` — `rrfScore()` for rank fusion, `topRankBonus()` for cross-ranker agreement, `normalizeMinMax()` and `blendScores()` for weighted combination
 
 ## Next Steps
 
