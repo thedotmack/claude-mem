@@ -225,9 +225,10 @@ export class SearchRoutes extends BaseRouteHandler {
     // Import context generator (runs in worker, has access to database)
     const { generateContext } = await import('../../../context-generator.js');
 
-    // Use first project name as CWD (for display purposes)
+    // Use real cwd from hook if provided, otherwise fall back to synthetic path
     const primaryProject = projects[projects.length - 1]; // Last is the current/primary project
-    const cwd = `/context/${primaryProject}`;
+    const cwdParam = req.query.cwd as string | undefined;
+    const cwd = cwdParam || `/context/${primaryProject}`;
 
     // Generate context with all projects
     const contextText = await generateContext(

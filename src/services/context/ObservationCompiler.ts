@@ -20,17 +20,39 @@ import type {
 import { SUMMARY_LOOKAHEAD } from './types.js';
 
 /**
+ * Build SQL clause and params for commit SHA visibility filtering.
+ * - null: no filtering (not a git repo, backward compatible)
+ * - empty array: only pre-migration observations (commit_sha IS NULL)
+ * - populated: ancestors + pre-migration observations
+ */
+function buildCommitShaFilter(visibleCommitShas: string[] | null | undefined): { clause: string; params: any[] } {
+  if (visibleCommitShas === null || visibleCommitShas === undefined) {
+    return { clause: '', params: [] };
+  }
+  if (visibleCommitShas.length === 0) {
+    return { clause: 'AND commit_sha IS NULL', params: [] };
+  }
+  const placeholders = visibleCommitShas.map(() => '?').join(',');
+  return {
+    clause: `AND (commit_sha IS NULL OR commit_sha IN (${placeholders}))`,
+    params: [...visibleCommitShas]
+  };
+}
+
+/**
  * Query observations from database with type and concept filtering
  */
 export function queryObservations(
   db: SessionStore,
   project: string,
-  config: ContextConfig
+  config: ContextConfig,
+  visibleCommitShas?: string[] | null
 ): Observation[] {
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+  const shaFilter = buildCommitShaFilter(visibleCommitShas);
 
   return db.db.prepare(`
     SELECT
@@ -44,9 +66,10 @@ export function queryObservations(
         SELECT 1 FROM json_each(concepts)
         WHERE value IN (${conceptPlaceholders})
       )
+      ${shaFilter.clause}
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(project, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
+  `).all(project, ...typeArray, ...conceptArray, ...shaFilter.params, config.totalObservationCount) as Observation[];
 }
 
 /**
@@ -75,12 +98,14 @@ export function querySummaries(
 export function queryObservationsMulti(
   db: SessionStore,
   projects: string[],
-  config: ContextConfig
+  config: ContextConfig,
+  visibleCommitShas?: string[] | null
 ): Observation[] {
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+  const shaFilter = buildCommitShaFilter(visibleCommitShas);
 
   // Build IN clause for projects
   const projectPlaceholders = projects.map(() => '?').join(',');
@@ -97,9 +122,10 @@ export function queryObservationsMulti(
         SELECT 1 FROM json_each(concepts)
         WHERE value IN (${conceptPlaceholders})
       )
+      ${shaFilter.clause}
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(...projects, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
+  `).all(...projects, ...typeArray, ...conceptArray, ...shaFilter.params, config.totalObservationCount) as Observation[];
 }
 
 /**

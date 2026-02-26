@@ -11,6 +11,8 @@ import { unlinkSync } from 'fs';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectName } from '../../utils/project-name.js';
+import { getUniqueCommitShasForProject } from '../sqlite/observations/get.js';
+import { resolveVisibleCommitShas } from '../integrations/git-ancestry.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
@@ -141,10 +143,31 @@ export async function generateContext(
   }
 
   try {
+    // Resolve branch visibility: get all commit SHAs for the project(s),
+    // then filter to only those that are ancestors of the current HEAD.
+    // Returns null if not in a git repo (show everything), empty array if
+    // no ancestors found, or populated array of visible SHAs.
+    let visibleCommitShas: string[] | null = null;
+    try {
+      const allCandidateShas = new Set<string>();
+      for (const p of projects) {
+        const shas = getUniqueCommitShasForProject(db.db, p);
+        for (const sha of shas) allCandidateShas.add(sha);
+      }
+      visibleCommitShas = await resolveVisibleCommitShas(
+        Array.from(allCandidateShas),
+        cwd
+      );
+    } catch (error) {
+      // Branch resolution failure should not break context generation
+      logger.debug('CONTEXT', 'Branch visibility resolution failed, showing all observations', {}, error as Error);
+      visibleCommitShas = null;
+    }
+
     // Query data for all projects (supports worktree: parent + worktree combined)
     const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config)
-      : queryObservations(db, project, config);
+      ? queryObservationsMulti(db, projects, config, visibleCommitShas)
+      : queryObservations(db, project, config, visibleCommitShas);
     const summaries = projects.length > 1
       ? querySummariesMulti(db, projects, config)
       : querySummaries(db, project, config);
