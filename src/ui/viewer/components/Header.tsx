@@ -14,6 +14,7 @@ interface HeaderProps {
   themePreference: ThemePreference;
   onThemeChange: (theme: ThemePreference) => void;
   onContextPreviewToggle: () => void;
+  onSessionRegistryOpen?: () => void;
 }
 
 export function Header({
@@ -25,7 +26,8 @@ export function Header({
   queueDepth,
   themePreference,
   onThemeChange,
-  onContextPreviewToggle
+  onContextPreviewToggle,
+  onSessionRegistryOpen
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
 
@@ -78,6 +80,23 @@ export function Header({
           </svg>
         </a>
         <GitHubStarsButton username="thedotmack" repo="claude-mem" />
+        {onSessionRegistryOpen && (
+          <button
+            className="settings-btn"
+            onClick={onSessionRegistryOpen}
+            title="Session Registry"
+            style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 500, padding: '6px 16px', whiteSpace: 'nowrap', minWidth: 'fit-content', overflow: 'visible' }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+              <polyline points="10 9 9 9 8 9"></polyline>
+            </svg>
+            Sessions
+          </button>
+        )}
         <select
           value={currentFilter}
           onChange={e => onFilterChange(e.target.value)}

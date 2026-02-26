@@ -91,9 +91,13 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORKER_HOST',
       // AI Provider Configuration
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_OPENCLAW_PROVIDER',
       'CLAUDE_MEM_GEMINI_API_KEY',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
+      // OpenAI Codex Configuration
+      'CLAUDE_MEM_OPENAI_CODEX_MODEL',
+      'CLAUDE_MEM_OPENAI_CODEX_AGENT_DIR',
       // OpenRouter Configuration
       'CLAUDE_MEM_OPENROUTER_API_KEY',
       'CLAUDE_MEM_OPENROUTER_MODEL',
@@ -232,12 +236,30 @@ export class SettingsRoutes extends BaseRouteHandler {
    * Validate all settings from request body (single source of truth)
    */
   private validateSettings(settings: any): { valid: boolean; error?: string } {
+    const validProviders = ['claude', 'gemini', 'openrouter', 'openai-codex'];
+
     // Validate CLAUDE_MEM_PROVIDER
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter'];
-    if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
+        return {
+          valid: false,
+          error:
+            'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", or "openai-codex"',
+        };
       }
+    }
+
+    // Validate CLAUDE_MEM_OPENCLAW_PROVIDER (empty string is allowed)
+    if (
+      settings.CLAUDE_MEM_OPENCLAW_PROVIDER !== undefined &&
+      settings.CLAUDE_MEM_OPENCLAW_PROVIDER !== '' &&
+      !validProviders.includes(settings.CLAUDE_MEM_OPENCLAW_PROVIDER)
+    ) {
+      return {
+        valid: false,
+        error:
+          'CLAUDE_MEM_OPENCLAW_PROVIDER must be empty or one of: "claude", "gemini", "openrouter", "openai-codex"',
+      };
     }
 
     // Validate CLAUDE_MEM_GEMINI_MODEL
