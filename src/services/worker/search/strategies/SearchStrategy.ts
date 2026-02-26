@@ -5,9 +5,10 @@
  * - ChromaSearchStrategy: Vector-based semantic search via Chroma
  * - SQLiteSearchStrategy: Direct SQLite queries for filter-only searches
  * - HybridSearchStrategy: Metadata filtering + semantic ranking
+ * - BM25SearchStrategy: FTS5 BM25 keyword search via SQLite
  */
 
-import type { StrategySearchOptions, StrategySearchResult } from '../types.js';
+import type { StrategySearchOptions, StrategySearchResult, SearchStrategyHint } from '../types.js';
 
 /**
  * Base interface for all search strategies
@@ -45,14 +46,14 @@ export abstract class BaseSearchStrategy implements SearchStrategy {
   /**
    * Create an empty search result
    */
-  protected emptyResult(strategy: 'chroma' | 'sqlite' | 'hybrid'): StrategySearchResult {
+  protected emptyResult(strategy: SearchStrategyHint): StrategySearchResult {
     return {
       results: {
         observations: [],
         sessions: [],
         prompts: []
       },
-      usedChroma: strategy === 'chroma' || strategy === 'hybrid',
+      usedChroma: strategy === 'chroma' || strategy === 'hybrid' || strategy === 'hybrid-blend',
       fellBack: false,
       strategy
     };

@@ -51,6 +51,7 @@ const EXCLUDED_PATTERNS = [
   /ResultFormatter\.ts$/,      // Pure data transformation with no error paths
   /TimelineBuilder\.ts$/,      // Pure data transformation with no error paths
   /context-generator\.ts$/,    // Pure data assembly with no error paths
+  /search\/strategies\/scoring\.ts$/, // Pure math utility — min-max normalization and score blending, no error paths
 ];
 
 // Files that should always use logger (core business logic)

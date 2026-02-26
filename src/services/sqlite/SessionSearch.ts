@@ -21,31 +21,39 @@ import type {
 export class SessionSearch {
   private db: Database;
 
-  constructor(dbPath?: string) {
-    if (!dbPath) {
-      ensureDir(DATA_DIR);
-      dbPath = DB_PATH;
+  constructor(dbPathOrDb?: string | Database) {
+    if (dbPathOrDb instanceof Database) {
+      this.db = dbPathOrDb;
+    } else {
+      const dbPath = dbPathOrDb ?? (() => { ensureDir(DATA_DIR); return DB_PATH; })();
+      this.db = new Database(dbPath);
+      this.db.run('PRAGMA journal_mode = WAL');
     }
-    this.db = new Database(dbPath);
-    this.db.run('PRAGMA journal_mode = WAL');
 
     // Ensure FTS tables exist
     this.ensureFTSTables();
   }
 
   /**
-   * Ensure FTS5 tables exist (backward compatibility only - no longer used for search)
+   * Return the underlying Database instance.
+   * Used by BM25SearchStrategy to execute raw FTS5 BM25 queries directly.
+   */
+  getDb(): Database {
+    return this.db;
+  }
+
+  /**
+   * Ensure FTS5 tables exist for keyword search (BM25).
    *
-   * FTS5 tables are maintained for backward compatibility but not used for search.
-   * Vector search (Chroma) is now the primary search mechanism.
+   * FTS5 tables power BM25 keyword search alongside Chroma vector search.
+   * Migration 24 recreates these tables with unicode61 tokenizer and optimized
+   * column order for weighted BM25 scoring.
    *
-   * Retention Rationale:
-   * - Prevents breaking existing installations with FTS5 tables
-   * - Allows graceful migration path for users
-   * - Tables maintained but search paths removed
-   * - Triggers still fire to keep tables synchronized
+   * This method creates tables only if they don't exist (fallback for fresh installs
+   * where migration hasn't run yet). Migration 24 handles the unicode61 upgrade.
    *
-   * TODO: Remove FTS5 infrastructure in future major version (v7.0.0)
+   * Column order for observations_fts matches bm25() weight order:
+   * title(10.0), narrative(5.0), facts(3.0), concepts(2.0), subtitle(1.0), text(1.0)
    */
   private ensureFTSTables(): void {
     // Check if FTS tables already exist
@@ -60,43 +68,45 @@ export class SessionSearch {
     logger.info('DB', 'Creating FTS5 tables');
 
     // Create observations_fts virtual table
+    // Column order matches bm25() weight arguments: title=10, narrative=5, facts=3, concepts=2, subtitle=1, text=1
     this.db.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
         title,
-        subtitle,
         narrative,
-        text,
         facts,
         concepts,
+        subtitle,
+        text,
         content='observations',
-        content_rowid='id'
+        content_rowid='id',
+        tokenize='unicode61'
       );
     `);
 
     // Populate with existing data
     this.db.run(`
-      INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-      SELECT id, title, subtitle, narrative, text, facts, concepts
+      INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text)
+      SELECT id, COALESCE(title,''), COALESCE(narrative,''), COALESCE(facts,''), COALESCE(concepts,''), COALESCE(subtitle,''), COALESCE(text,'')
       FROM observations;
     `);
 
     // Create triggers for observations
     this.db.run(`
       CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
-        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+        INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text)
+        VALUES (new.id, new.title, new.narrative, new.facts, new.concepts, new.subtitle, new.text);
       END;
 
       CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
-        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+        INSERT INTO observations_fts(observations_fts, rowid, title, narrative, facts, concepts, subtitle, text)
+        VALUES('delete', old.id, old.title, old.narrative, old.facts, old.concepts, old.subtitle, old.text);
       END;
 
       CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
-        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+        INSERT INTO observations_fts(observations_fts, rowid, title, narrative, facts, concepts, subtitle, text)
+        VALUES('delete', old.id, old.title, old.narrative, old.facts, old.concepts, old.subtitle, old.text);
+        INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text)
+        VALUES (new.id, new.title, new.narrative, new.facts, new.concepts, new.subtitle, new.text);
       END;
     `);
 
@@ -110,14 +120,15 @@ export class SessionSearch {
         next_steps,
         notes,
         content='session_summaries',
-        content_rowid='id'
+        content_rowid='id',
+        tokenize='unicode61'
       );
     `);
 
     // Populate with existing data
     this.db.run(`
       INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-      SELECT id, request, investigated, learned, completed, next_steps, notes
+      SELECT id, COALESCE(request,''), COALESCE(investigated,''), COALESCE(learned,''), COALESCE(completed,''), COALESCE(next_steps,''), COALESCE(notes,'')
       FROM session_summaries;
     `);
 

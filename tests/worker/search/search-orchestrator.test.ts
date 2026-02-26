@@ -104,13 +104,18 @@ describe('SearchOrchestrator', () => {
   let mockChromaSync: ChromaSync;
 
   beforeEach(() => {
+    const mockPrepare = vi.fn(() => ({
+      all: vi.fn(() => [mockObservation])
+    }));
+
     mockSessionSearch = {
       searchObservations: vi.fn(() => [mockObservation]),
       searchSessions: vi.fn(() => [mockSession]),
       searchUserPrompts: vi.fn(() => [mockPrompt]),
       findByConcept: vi.fn(() => [mockObservation]),
       findByType: vi.fn(() => [mockObservation]),
-      findByFile: vi.fn(() => ({ observations: [mockObservation], sessions: [mockSession] }))
+      findByFile: vi.fn(() => ({ observations: [mockObservation], sessions: [mockSession] })),
+      getDb: vi.fn(() => ({ prepare: mockPrepare }))
     } as unknown as SessionSearch;
 
     mockSessionStore = {
@@ -148,27 +153,47 @@ describe('SearchOrchestrator', () => {
         expect(mockChromaSync.queryChroma).not.toHaveBeenCalled();
       });
 
-      it('should select Chroma strategy for query-only', async () => {
+      it('should select HybridBlendingStrategy for query-only (PATH 2)', async () => {
         const result = await orchestrator.search({
           query: 'semantic search query'
         });
 
-        expect(result.strategy).toBe('chroma');
+        expect(result.strategy).toBe('hybrid-blend');
         expect(result.usedChroma).toBe(true);
         // eslint-disable-next-line @typescript-eslint/unbound-method
         expect(mockChromaSync.queryChroma).toHaveBeenCalled();
       });
 
-      it('should fall back to SQLite when Chroma fails', async () => {
+      it('should fall back to BM25 when Chroma fails inside HybridBlendingStrategy', async () => {
         mockChromaSync.queryChroma = vi.fn(() => Promise.reject(new Error('Chroma unavailable')));
 
         const result = await orchestrator.search({
           query: 'test query'
         });
 
-        // Chroma failed, should have fallen back
+        // Chroma failed inside hybrid blend, BM25 still ran
         expect(result.fellBack).toBe(true);
         expect(result.usedChroma).toBe(false);
+        // BM25 produced results
+        expect(result.strategy).toBe('bm25');
+      });
+
+      it('should return hybrid-blend result even when fellBack is true (partial failure)', async () => {
+        // Simulate BM25 failing but Chroma succeeds inside HybridBlendingStrategy
+        // Chroma succeeds, BM25 fails → strategy: 'chroma', fellBack: true
+        mockChromaSync.queryChroma = vi.fn(() => Promise.resolve({
+          ids: [1],
+          distances: [0.1],
+          metadatas: [{ sqlite_id: 1, doc_type: 'observation', created_at_epoch: Date.now() - 1000 }]
+        }));
+
+        const result = await orchestrator.search({
+          query: 'partial failure query'
+        });
+
+        // Result should still be returned (not swallowed)
+        expect(result.results).toBeDefined();
+        expect(result.strategy).toBeDefined();
       });
 
       it('should normalize comma-separated concepts', async () => {
@@ -333,14 +358,15 @@ describe('SearchOrchestrator', () => {
     });
 
     describe('search', () => {
-      it('should return empty results for query search without Chroma', async () => {
+      it('should use BM25SearchStrategy for query search without Chroma (PATH 3)', async () => {
         const result = await orchestrator.search({
           query: 'semantic query'
         });
 
-        // No Chroma available, can't do semantic search
-        expect(result.results.observations).toHaveLength(0);
+        // No Chroma available — BM25 keyword search is used instead of empty results
+        expect(result.strategy).toBe('bm25');
         expect(result.usedChroma).toBe(false);
+        expect(result.fellBack).toBe(false);
       });
 
       it('should still work for filter-only queries', async () => {

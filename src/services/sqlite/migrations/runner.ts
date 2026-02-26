@@ -33,6 +33,7 @@ export class MigrationRunner {
     this.addFailedAtEpochColumn();
     this.ensureReadTokensColumn();
     this.createContextInjectionsTable();
+    this.recreateFTSTablesWithUnicode61();
   }
 
   /**
@@ -703,5 +704,121 @@ export class MigrationRunner {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
 
     logger.debug('DB', 'context_injections table created successfully');
+  }
+
+  /**
+   * Recreate FTS5 tables with unicode61 tokenizer and BM25-optimised column order (migration 24)
+   *
+   * The original FTS5 tables were created without an explicit tokenizer.
+   * This migration drops and recreates them with `tokenize='unicode61'` so that
+   * accented characters and Unicode text are handled correctly.
+   *
+   * observations_fts column order (matches bm25 weight vector 10/5/3/2/1/1):
+   *   title, narrative, facts, concepts, subtitle, text
+   */
+  private recreateFTSTablesWithUnicode61(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // --- observations_fts ---
+    this.db.run('DROP TRIGGER IF EXISTS observations_ai');
+    this.db.run('DROP TRIGGER IF EXISTS observations_ad');
+    this.db.run('DROP TRIGGER IF EXISTS observations_au');
+    this.db.run('DROP TABLE IF EXISTS observations_fts');
+
+    this.db.run(`
+      CREATE VIRTUAL TABLE observations_fts USING fts5(
+        title,
+        narrative,
+        facts,
+        concepts,
+        subtitle,
+        text,
+        content='observations',
+        content_rowid='id',
+        tokenize='unicode61'
+      )
+    `);
+
+    this.db.run(`
+      INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text)
+      SELECT id, COALESCE(title,''), COALESCE(narrative,''), COALESCE(facts,''), COALESCE(concepts,''), COALESCE(subtitle,''), COALESCE(text,'')
+      FROM observations
+    `);
+
+    this.db.run(`
+      CREATE TRIGGER observations_ai AFTER INSERT ON observations BEGIN
+        INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text)
+        VALUES (new.id, COALESCE(new.title,''), COALESCE(new.narrative,''), COALESCE(new.facts,''), COALESCE(new.concepts,''), COALESCE(new.subtitle,''), COALESCE(new.text,''));
+      END
+    `);
+
+    this.db.run(`
+      CREATE TRIGGER observations_ad AFTER DELETE ON observations BEGIN
+        INSERT INTO observations_fts(observations_fts, rowid, title, narrative, facts, concepts, subtitle, text)
+        VALUES('delete', old.id, COALESCE(old.title,''), COALESCE(old.narrative,''), COALESCE(old.facts,''), COALESCE(old.concepts,''), COALESCE(old.subtitle,''), COALESCE(old.text,''));
+      END
+    `);
+
+    this.db.run(`
+      CREATE TRIGGER observations_au AFTER UPDATE ON observations BEGIN
+        INSERT INTO observations_fts(observations_fts, rowid, title, narrative, facts, concepts, subtitle, text)
+        VALUES('delete', old.id, COALESCE(old.title,''), COALESCE(old.narrative,''), COALESCE(old.facts,''), COALESCE(old.concepts,''), COALESCE(old.subtitle,''), COALESCE(old.text,''));
+        INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text)
+        VALUES (new.id, COALESCE(new.title,''), COALESCE(new.narrative,''), COALESCE(new.facts,''), COALESCE(new.concepts,''), COALESCE(new.subtitle,''), COALESCE(new.text,''));
+      END
+    `);
+
+    // --- session_summaries_fts ---
+    this.db.run('DROP TRIGGER IF EXISTS session_summaries_ai');
+    this.db.run('DROP TRIGGER IF EXISTS session_summaries_ad');
+    this.db.run('DROP TRIGGER IF EXISTS session_summaries_au');
+    this.db.run('DROP TABLE IF EXISTS session_summaries_fts');
+
+    this.db.run(`
+      CREATE VIRTUAL TABLE session_summaries_fts USING fts5(
+        request,
+        investigated,
+        learned,
+        completed,
+        next_steps,
+        notes,
+        content='session_summaries',
+        content_rowid='id',
+        tokenize='unicode61'
+      )
+    `);
+
+    this.db.run(`
+      INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+      SELECT id, COALESCE(request,''), COALESCE(investigated,''), COALESCE(learned,''), COALESCE(completed,''), COALESCE(next_steps,''), COALESCE(notes,'')
+      FROM session_summaries
+    `);
+
+    this.db.run(`
+      CREATE TRIGGER session_summaries_ai AFTER INSERT ON session_summaries BEGIN
+        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+        VALUES (new.id, COALESCE(new.request,''), COALESCE(new.investigated,''), COALESCE(new.learned,''), COALESCE(new.completed,''), COALESCE(new.next_steps,''), COALESCE(new.notes,''));
+      END
+    `);
+
+    this.db.run(`
+      CREATE TRIGGER session_summaries_ad AFTER DELETE ON session_summaries BEGIN
+        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+        VALUES('delete', old.id, COALESCE(old.request,''), COALESCE(old.investigated,''), COALESCE(old.learned,''), COALESCE(old.completed,''), COALESCE(old.next_steps,''), COALESCE(old.notes,''));
+      END
+    `);
+
+    this.db.run(`
+      CREATE TRIGGER session_summaries_au AFTER UPDATE ON session_summaries BEGIN
+        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+        VALUES('delete', old.id, COALESCE(old.request,''), COALESCE(old.investigated,''), COALESCE(old.learned,''), COALESCE(old.completed,''), COALESCE(old.next_steps,''), COALESCE(old.notes,''));
+        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+        VALUES (new.id, COALESCE(new.request,''), COALESCE(new.investigated,''), COALESCE(new.learned,''), COALESCE(new.completed,''), COALESCE(new.next_steps,''), COALESCE(new.notes,''));
+      END
+    `);
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
+    logger.debug('DB', 'FTS5 tables recreated with unicode61 tokenizer (migration 24)');
   }
 }

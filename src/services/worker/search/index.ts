@@ -18,6 +18,9 @@ export { BaseSearchStrategy } from './strategies/SearchStrategy.js';
 export { ChromaSearchStrategy } from './strategies/ChromaSearchStrategy.js';
 export { SQLiteSearchStrategy } from './strategies/SQLiteSearchStrategy.js';
 export { HybridSearchStrategy } from './strategies/HybridSearchStrategy.js';
+export { BM25SearchStrategy } from './strategies/BM25SearchStrategy.js';
+export { HybridBlendingStrategy } from './strategies/HybridBlendingStrategy.js';
+export { normalizeMinMax, blendScores } from './strategies/scoring.js';
 
 // Filters
 export * from './filters/DateFilter.js';

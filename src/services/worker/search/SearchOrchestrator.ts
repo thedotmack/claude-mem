@@ -16,6 +16,8 @@ import type { ChromaSync } from '../../sync/ChromaSync.js';
 import { ChromaSearchStrategy } from './strategies/ChromaSearchStrategy.js';
 import { SQLiteSearchStrategy } from './strategies/SQLiteSearchStrategy.js';
 import { HybridSearchStrategy } from './strategies/HybridSearchStrategy.js';
+import { BM25SearchStrategy } from './strategies/BM25SearchStrategy.js';
+import { HybridBlendingStrategy } from './strategies/HybridBlendingStrategy.js';
 
 import { ResultFormatter } from './ResultFormatter.js';
 import { TimelineBuilder } from './TimelineBuilder.js';
@@ -43,6 +45,8 @@ export class SearchOrchestrator {
   private chromaStrategy: ChromaSearchStrategy | null = null;
   private sqliteStrategy: SQLiteSearchStrategy;
   private hybridStrategy: HybridSearchStrategy | null = null;
+  private bm25Strategy: BM25SearchStrategy;
+  private hybridBlendingStrategy: HybridBlendingStrategy | null = null;
   private resultFormatter: ResultFormatter;
   private timelineBuilder: TimelineBuilder;
 
@@ -53,10 +57,14 @@ export class SearchOrchestrator {
   ) {
     // Initialize strategies
     this.sqliteStrategy = new SQLiteSearchStrategy(sessionSearch);
+    this.bm25Strategy = new BM25SearchStrategy(sessionSearch, sessionStore);
 
     if (chromaSync) {
       this.chromaStrategy = new ChromaSearchStrategy(chromaSync, sessionStore);
       this.hybridStrategy = new HybridSearchStrategy(chromaSync, sessionStore, sessionSearch);
+      this.hybridBlendingStrategy = new HybridBlendingStrategy(
+        this.chromaStrategy, this.bm25Strategy
+      );
     }
 
     this.resultFormatter = new ResultFormatter();
@@ -85,37 +93,15 @@ export class SearchOrchestrator {
       return await this.sqliteStrategy.search(options);
     }
 
-    // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
-    if (this.chromaStrategy) {
-      logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
-      const result = await this.chromaStrategy.search(options);
-
-      // If Chroma succeeded (even with 0 results), return
-      if (result.usedChroma) {
-        return result;
-      }
-
-      // Chroma failed - fall back to SQLite for filter-only
-      logger.debug('SEARCH', 'Orchestrator: Chroma failed, falling back to SQLite', {});
-      const fallbackResult = await this.sqliteStrategy.search({
-        ...options,
-        query: undefined // Remove query for SQLite fallback
-      });
-
-      return {
-        ...fallbackResult,
-        fellBack: true
-      };
+    // PATH 2: HYBRID BLEND (query text + Chroma available)
+    if (this.hybridBlendingStrategy) {
+      logger.debug('SEARCH', 'Orchestrator: Using hybrid blend (Chroma + BM25)', {});
+      return await this.hybridBlendingStrategy.search(options);
     }
 
-    // PATH 3: No Chroma available
-    logger.debug('SEARCH', 'Orchestrator: Chroma not available', {});
-    return {
-      results: { observations: [], sessions: [], prompts: [] },
-      usedChroma: false,
-      fellBack: false,
-      strategy: 'sqlite'
-    };
+    // PATH 3: BM25 KEYWORD SEARCH (query text, no Chroma)
+    logger.debug('SEARCH', 'Orchestrator: Chroma not available, using BM25 keyword search', {});
+    return await this.bm25Strategy.search(options);
   }
 
   /**

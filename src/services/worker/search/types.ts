@@ -84,7 +84,26 @@ export interface ExtendedSearchOptions extends SearchOptions {
 /**
  * Search strategy selection hint
  */
-export type SearchStrategyHint = 'chroma' | 'sqlite' | 'hybrid' | 'auto';
+export type SearchStrategyHint = 'chroma' | 'sqlite' | 'hybrid' | 'bm25' | 'hybrid-blend' | 'auto';
+
+/**
+ * Score source metadata for transparency in hybrid search results
+ */
+export interface ScoreMetadata {
+  vectorScore?: number;
+  keywordScore?: number;
+  blendedScore?: number;
+}
+
+/**
+ * Internal scored result used during the blending pipeline
+ */
+export interface ScoredResult {
+  id: number;
+  type: 'observation' | 'session' | 'prompt';
+  score: number;
+  metadata?: ScoreMetadata;
+}
 
 /**
  * Options passed to search strategies
