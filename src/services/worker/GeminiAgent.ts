@@ -197,6 +197,11 @@ export class GeminiAgent {
         if (message.cwd) {
           lastCwd = message.cwd;
         }
+
+        // Capture branch metadata for branch memory
+        session.lastBranch = message.branch;
+        session.lastCommitSha = message.commit_sha;
+
         // Capture earliest timestamp BEFORE processing (will be cleared after)
         // This ensures backlog messages get their original timestamps, not current time
         const originalTimestamp = session.earliestPendingTimestamp;

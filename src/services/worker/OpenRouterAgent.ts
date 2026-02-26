@@ -153,6 +153,11 @@ export class OpenRouterAgent {
         if (message.cwd) {
           lastCwd = message.cwd;
         }
+
+        // Capture branch metadata for branch memory
+        session.lastBranch = message.branch;
+        session.lastCommitSha = message.commit_sha;
+
         // Capture earliest timestamp BEFORE processing (will be cleared after)
         const originalTimestamp = session.earliestPendingTimestamp;
 

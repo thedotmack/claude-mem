@@ -54,7 +54,9 @@ export function storeObservationsAndMarkComplete(
   messageId: number,
   promptNumber?: number,
   discoveryTokens: number = 0,
-  overrideTimestampEpoch?: number
+  overrideTimestampEpoch?: number,
+  branch?: string | null,
+  commitSha?: string | null
 ): StoreAndMarkCompleteResult {
   // Use override timestamp if provided
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -68,12 +70,13 @@ export function storeObservationsAndMarkComplete(
     const obsStmt = db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+       branch, commit_sha)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const observation of observations) {
-      const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+      const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative, branch);
       const existing = findDuplicateObservation(db, contentHash, timestampEpoch);
       if (existing) {
         observationIds.push(existing.id);
@@ -95,7 +98,9 @@ export function storeObservationsAndMarkComplete(
         discoveryTokens,
         contentHash,
         timestampIso,
-        timestampEpoch
+        timestampEpoch,
+        branch ?? null,
+        commitSha ?? null
       );
       observationIds.push(Number(result.lastInsertRowid));
     }
@@ -173,7 +178,9 @@ export function storeObservations(
   summary: SummaryInput | null,
   promptNumber?: number,
   discoveryTokens: number = 0,
-  overrideTimestampEpoch?: number
+  overrideTimestampEpoch?: number,
+  branch?: string | null,
+  commitSha?: string | null
 ): StoreObservationsResult {
   // Use override timestamp if provided
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -187,12 +194,13 @@ export function storeObservations(
     const obsStmt = db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+       branch, commit_sha)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const observation of observations) {
-      const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+      const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative, branch);
       const existing = findDuplicateObservation(db, contentHash, timestampEpoch);
       if (existing) {
         observationIds.push(existing.id);
@@ -214,7 +222,9 @@ export function storeObservations(
         discoveryTokens,
         contentHash,
         timestampIso,
-        timestampEpoch
+        timestampEpoch,
+        branch ?? null,
+        commitSha ?? null
       );
       observationIds.push(Number(result.lastInsertRowid));
     }

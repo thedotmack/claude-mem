@@ -40,6 +40,9 @@ export interface ActiveSession {
   // CLAIM-CONFIRM FIX: Track IDs of messages currently being processed
   // These IDs will be confirmed (deleted) after successful storage
   processingMessageIds: number[];
+  // Branch memory: latest branch/commit from the message being processed
+  lastBranch?: string | null;
+  lastCommitSha?: string | null;
 }
 
 export interface PendingMessage {
@@ -50,6 +53,8 @@ export interface PendingMessage {
   prompt_number?: number;
   cwd?: string;
   last_assistant_message?: string;
+  branch?: string | null;
+  commit_sha?: string | null;
 }
 
 /**
@@ -68,6 +73,8 @@ export interface ObservationData {
   tool_response: any;
   prompt_number: number;
   cwd?: string;
+  branch?: string | null;
+  commit_sha?: string | null;
 }
 
 // ============================================================================

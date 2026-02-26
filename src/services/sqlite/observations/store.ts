@@ -14,15 +14,18 @@ const DEDUP_WINDOW_MS = 30_000;
 
 /**
  * Compute a short content hash for deduplication.
- * Uses (memory_session_id, title, narrative) as the semantic identity of an observation.
+ * Uses (memory_session_id, branch, title, narrative) as the semantic identity of an observation.
+ * Including branch prevents cross-branch deduplication where identical observations
+ * on different branches would be silently dropped within the 30-second dedup window.
  */
 export function computeObservationContentHash(
   memorySessionId: string,
   title: string | null,
-  narrative: string | null
+  narrative: string | null,
+  branch?: string | null
 ): string {
   return createHash('sha256')
-    .update((memorySessionId || '') + (title || '') + (narrative || ''))
+    .update((memorySessionId || '') + (branch || '') + (title || '') + (narrative || ''))
     .digest('hex')
     .slice(0, 16);
 }
@@ -55,7 +58,9 @@ export function storeObservation(
   observation: ObservationInput,
   promptNumber?: number,
   discoveryTokens: number = 0,
-  overrideTimestampEpoch?: number
+  overrideTimestampEpoch?: number,
+  branch?: string,
+  commitSha?: string
 ): StoreObservationResult {
   // Use override timestamp if provided (for processing backlog messages with original timestamps)
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -64,8 +69,8 @@ export function storeObservation(
   // Guard against empty project string (race condition where project isn't set yet)
   const resolvedProject = project || getCurrentProjectName();
 
-  // Content-hash deduplication
-  const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+  // Content-hash deduplication (includes branch to prevent cross-branch dedup)
+  const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative, branch);
   const existing = findDuplicateObservation(db, contentHash, timestampEpoch);
   if (existing) {
     logger.debug('DEDUP', `Skipped duplicate observation | contentHash=${contentHash} | existingId=${existing.id}`);
@@ -75,8 +80,9 @@ export function storeObservation(
   const stmt = db.prepare(`
     INSERT INTO observations
     (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-     files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+     branch, commit_sha)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const result = stmt.run(
@@ -94,7 +100,9 @@ export function storeObservation(
     discoveryTokens,
     contentHash,
     timestampIso,
-    timestampEpoch
+    timestampEpoch,
+    branch ?? null,
+    commitSha ?? null
   );
 
   return {
