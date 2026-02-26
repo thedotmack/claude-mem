@@ -81,6 +81,22 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
       }
     }
   });
+
+  it('should include CLAUDE_PLUGIN_ROOT fallback in all hook commands (#1215)', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+    const expectedFallbackPath = '$HOME/.claude/plugins/marketplaces/thedotmack/plugin';
+
+    for (const [eventName, matchers] of Object.entries(parsed.hooks)) {
+      for (const matcher of matchers as any[]) {
+        for (const hook of matcher.hooks) {
+          if (hook.type === 'command') {
+            expect(hook.command).toContain(expectedFallbackPath);
+          }
+        }
+      }
+    }
+  });
 });
 
 describe('Plugin Distribution - package.json Files Field', () => {
