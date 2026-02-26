@@ -123,6 +123,8 @@ import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { BackupRoutes } from './worker/http/routes/BackupRoutes.js';
+import { LitestreamManager } from './backup/LitestreamManager.js';
 
 // Process management for zombie cleanup (Issue #737)
 import { startOrphanReaper, reapOrphanedProcesses, getProcessBySession, ensureProcessExit } from './worker/ProcessRegistry.js';
@@ -177,6 +179,9 @@ export class WorkerService {
 
   // Chroma MCP manager (lazy - connects on first use)
   private chromaMcpManager: ChromaMcpManager | null = null;
+
+  // Litestream cloud backup manager
+  private litestreamManager: LitestreamManager | null = null;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -443,6 +448,15 @@ export class WorkerService {
           logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
         });
       }
+
+      // Start Litestream cloud backup (fire-and-forget)
+      this.litestreamManager = LitestreamManager.getInstance();
+      this.litestreamManager.start().catch(error => {
+        logger.error('BACKUP', 'Litestream start failed (non-blocking)', {}, error as Error);
+      });
+
+      // Register backup routes now that LitestreamManager is available
+      this.server.registerRoutes(new BackupRoutes(this.litestreamManager));
 
       // Connect to MCP server
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
@@ -855,6 +869,12 @@ export class WorkerService {
     if (this.staleSessionReaperInterval) {
       clearInterval(this.staleSessionReaperInterval);
       this.staleSessionReaperInterval = null;
+    }
+
+    // Stop Litestream replication before closing DB
+    if (this.litestreamManager) {
+      await this.litestreamManager.stop();
+      this.litestreamManager = null;
     }
 
     await performGracefulShutdown({
