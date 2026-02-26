@@ -98,6 +98,25 @@ export function getObservationsByIds(
 /**
  * Get observations for a specific session
  */
+/**
+ * Get all unique commit SHAs for a given project.
+ * Used by context builder and search manager to get candidate SHAs
+ * before ancestry resolution.
+ */
+export function getUniqueCommitShasForProject(db: Database, project: string): string[] {
+  const stmt = db.prepare(`
+    SELECT DISTINCT commit_sha
+    FROM observations
+    WHERE project = ? AND commit_sha IS NOT NULL
+  `);
+
+  const rows = stmt.all(project) as { commit_sha: string }[];
+  return rows.map(row => row.commit_sha);
+}
+
+/**
+ * Get observations for a specific session
+ */
 export function getObservationsForSession(
   db: Database,
   memorySessionId: string
