@@ -3,6 +3,7 @@ import { getPlatformAdapter } from './adapters/index.js';
 import { getEventHandler } from './handlers/index.js';
 import { HOOK_EXIT_CODES } from '../shared/hook-constants.js';
 import { logger } from '../utils/logger.js';
+import { detectCurrentBranch } from '../services/integrations/git-branch.js';
 
 export interface HookCommandOptions {
   /** If true, don't call process.exit() - let caller handle process lifecycle */
@@ -79,6 +80,14 @@ export async function hookCommand(platform: string, event: string, options: Hook
     const rawInput = await readJsonFromStdin();
     const input = adapter.normalizeInput(rawInput);
     input.platform = platform;  // Inject platform for handler-level decisions
+
+    // Detect git branch for branch memory
+    if (input.cwd) {
+      const branchInfo = await detectCurrentBranch(input.cwd);
+      input.branch = branchInfo.branch ?? undefined;
+      input.commitSha = branchInfo.commitSha ?? undefined;
+    }
+
     const result = await handler.execute(input);
     const output = adapter.formatOutput(result);
 

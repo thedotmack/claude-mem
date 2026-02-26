@@ -16,6 +16,8 @@ export interface ObservationInput {
   concepts: string[];
   files_read: string[];
   files_modified: string[];
+  branch?: string;
+  commit_sha?: string;
 }
 
 /**
@@ -36,6 +38,8 @@ export interface GetObservationsByIdsOptions {
   type?: string | string[];
   concepts?: string | string[];
   files?: string | string[];
+  branch?: string | string[];
+  commit_sha?: string | string[];
 }
 
 /**
@@ -79,4 +83,6 @@ export interface AllRecentObservationRow {
   prompt_number: number | null;
   created_at: string;
   created_at_epoch: number;
+  branch?: string | null;
+  commit_sha?: string | null;
 }

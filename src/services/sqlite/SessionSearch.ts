@@ -248,6 +248,19 @@ export class SessionSearch {
       }
     }
 
+    // Commit SHA filter (branch ancestry filtering)
+    // OR commit_sha IS NULL ensures backward compatibility with pre-migration observations
+    if (filters.commit_sha) {
+      if (Array.isArray(filters.commit_sha)) {
+        const shaPlaceholders = filters.commit_sha.map(() => '?').join(',');
+        conditions.push(`(${tableAlias}.commit_sha IS NULL OR ${tableAlias}.commit_sha IN (${shaPlaceholders}))`);
+        params.push(...filters.commit_sha);
+      } else {
+        conditions.push(`(${tableAlias}.commit_sha IS NULL OR ${tableAlias}.commit_sha = ?)`);
+        params.push(filters.commit_sha);
+      }
+    }
+
     return conditions.length > 0 ? conditions.join(' AND ') : '';
   }
 

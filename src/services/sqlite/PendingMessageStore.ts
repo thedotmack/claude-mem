@@ -24,6 +24,8 @@ export interface PersistentPendingMessage {
   created_at_epoch: number;
   started_processing_at_epoch: number | null;
   completed_at_epoch: number | null;
+  branch: string | null;
+  commit_sha: string | null;
 }
 
 /**
@@ -64,8 +66,9 @@ export class PendingMessageStore {
         session_db_id, content_session_id, message_type,
         tool_name, tool_input, tool_response, cwd,
         last_assistant_message,
-        prompt_number, status, retry_count, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)
+        prompt_number, branch, commit_sha,
+        status, retry_count, created_at_epoch
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)
     `);
 
     const result = stmt.run(
@@ -78,6 +81,8 @@ export class PendingMessageStore {
       message.cwd || null,
       message.last_assistant_message || null,
       message.prompt_number || null,
+      message.branch ?? null,
+      message.commit_sha ?? null,
       now
     );
 
@@ -483,7 +488,9 @@ export class PendingMessageStore {
       tool_response: persistent.tool_response ? JSON.parse(persistent.tool_response) : undefined,
       prompt_number: persistent.prompt_number || undefined,
       cwd: persistent.cwd || undefined,
-      last_assistant_message: persistent.last_assistant_message || undefined
+      last_assistant_message: persistent.last_assistant_message || undefined,
+      branch: persistent.branch,
+      commit_sha: persistent.commit_sha
     };
   }
 }

@@ -10,6 +10,9 @@ export interface NormalizedHookInput {
   // Cursor-specific fields
   filePath?: string;   // afterFileEdit
   edits?: unknown[];   // afterFileEdit
+  // Branch memory fields
+  branch?: string;
+  commitSha?: string;
 }
 
 export interface HookResult {

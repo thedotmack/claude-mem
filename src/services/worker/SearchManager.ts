@@ -24,6 +24,8 @@ import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSea
 import { logger } from '../../utils/logger.js';
 import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 import { ModeManager } from '../domain/ModeManager.js';
+import { getUniqueCommitShasForProject } from '../sqlite/observations/get.js';
+import { resolveVisibleCommitShas } from '../../services/integrations/git-ancestry.js';
 
 import {
   SearchOrchestrator,
@@ -50,6 +52,48 @@ export class SearchManager {
       chromaSync
     );
     this.timelineBuilder = new TimelineBuilder();
+  }
+
+  /**
+   * Resolve commit SHAs for branch filtering.
+   * When commit_sha is provided directly, normalize it to an array.
+   * When only cwd is provided, auto-detect via git ancestry resolution.
+   * Returns undefined when no branch filtering should be applied.
+   */
+  private async resolveBranchFilter(
+    commit_sha: string | string[] | undefined,
+    cwd: string | undefined,
+    project: string | undefined
+  ): Promise<string[] | undefined> {
+    // Direct commit_sha takes precedence
+    if (commit_sha) {
+      return Array.isArray(commit_sha) ? commit_sha : [commit_sha];
+    }
+
+    // Auto-resolve from cwd using git ancestry
+    if (cwd && project) {
+      try {
+        const candidateShas = getUniqueCommitShasForProject(this.sessionStore.db, project);
+        if (candidateShas.length === 0) return undefined;
+
+        const visibleShas = await resolveVisibleCommitShas(candidateShas, cwd);
+        // null means not in a git repo — don't filter
+        if (visibleShas === null) return undefined;
+
+        logger.debug('SEARCH', 'Resolved branch ancestry filter', {
+          candidateCount: candidateShas.length,
+          visibleCount: visibleShas.length,
+          cwd
+        });
+
+        return visibleShas;
+      } catch (error) {
+        logger.error('SEARCH', 'Branch ancestry resolution failed, proceeding without filter', {}, error as Error);
+        return undefined;
+      }
+    }
+
+    return undefined;
   }
 
   /**
@@ -107,6 +151,11 @@ export class SearchManager {
       delete normalized.dateEnd;
     }
 
+    // Parse comma-separated commit_sha into array
+    if (normalized.commit_sha && typeof normalized.commit_sha === 'string' && normalized.commit_sha.includes(',')) {
+      normalized.commit_sha = normalized.commit_sha.split(',').map((s: string) => s.trim()).filter(Boolean);
+    }
+
     // Parse isFolder boolean from string
     if (normalized.isFolder === 'true') {
       normalized.isFolder = true;
@@ -123,11 +172,17 @@ export class SearchManager {
   async search(args: any): Promise<any> {
     // Normalize URL-friendly params to internal format
     const normalized = this.normalizeParams(args);
-    const { query, type, obs_type, concepts, files, format, ...options } = normalized;
+    const { query, type, obs_type, concepts, files, format, commit_sha: rawCommitSha, cwd, ...options } = normalized;
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
     let chromaFailed = false;
+
+    // Resolve branch filter from commit_sha or cwd
+    const resolvedCommitShas = await this.resolveBranchFilter(rawCommitSha, cwd, options.project);
+    if (resolvedCommitShas) {
+      options.commit_sha = resolvedCommitShas;
+    }
 
     // Determine which types to query based on type filter
     const searchObservations = !type || type === 'observations';
@@ -307,7 +362,7 @@ export class SearchManager {
     const limitedResults = allResults.slice(0, options.limit || 20);
 
     // Group by date, then by file within each day
-    const cwd = process.cwd();
+    const processCwd = process.cwd();
     const resultsByDate = groupByDate(limitedResults, item => item.created_at);
 
     // Build output with date/file grouping
@@ -324,7 +379,7 @@ export class SearchManager {
       for (const result of dayResults) {
         let file = 'General';
         if (result.type === 'observation') {
-          file = extractFirstFile(result.data.files_modified, cwd, result.data.files_read);
+          file = extractFirstFile(result.data.files_modified, processCwd, result.data.files_read);
         }
         if (!resultsByFile.has(file)) {
           resultsByFile.set(file, []);
@@ -370,8 +425,11 @@ export class SearchManager {
    * Tool handler: timeline
    */
   async timeline(args: any): Promise<any> {
-    const { anchor, query, depth_before = 10, depth_after = 10, project } = args;
-    const cwd = process.cwd();
+    const { anchor, query, depth_before = 10, depth_after = 10, project, commit_sha: rawCommitSha, cwd: cwdParam } = args;
+    const cwd = cwdParam || process.cwd();
+
+    // Resolve branch filter from commit_sha or cwd
+    const resolvedCommitShas = await this.resolveBranchFilter(rawCommitSha, cwd, project);
 
     // Validate: must provide either anchor or query, not both
     if (!anchor && !query) {
@@ -417,7 +475,9 @@ export class SearchManager {
             });
 
             if (recentIds.length > 0) {
-              results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: 1 });
+              const hydrationOptions: any = { orderBy: 'date_desc', limit: 1 };
+              if (resolvedCommitShas) hydrationOptions.commit_sha = resolvedCommitShas;
+              results = this.sessionStore.getObservationsByIds(recentIds, hydrationOptions);
             }
           }
         } catch (chromaError) {
@@ -501,9 +561,18 @@ export class SearchManager {
       };
     }
 
+    // Apply branch filtering to timeline observations
+    // Filter out observations from non-ancestor branches while preserving pre-migration observations (null commit_sha)
+    let filteredObservations = timelineData.observations || [];
+    if (resolvedCommitShas && resolvedCommitShas.length > 0) {
+      filteredObservations = filteredObservations.filter((obs: any) =>
+        obs.commit_sha === null || obs.commit_sha === undefined || resolvedCommitShas.includes(obs.commit_sha)
+      );
+    }
+
     // Combine, sort, and filter timeline items
     const items: TimelineItem[] = [
-      ...(timelineData.observations || []).map((obs: any) => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
+      ...filteredObservations.map((obs: any) => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
       ...(timelineData.sessions || []).map((sess: any) => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
       ...(timelineData.prompts || []).map((prompt: any) => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
     ];

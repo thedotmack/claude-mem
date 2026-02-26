@@ -31,7 +31,7 @@ export function getObservationsByIds(
 ): ObservationRecord[] {
   if (ids.length === 0) return [];
 
-  const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
+  const { orderBy = 'date_desc', limit, project, type, concepts, files, commit_sha } = options;
   const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
   const limitClause = limit ? `LIMIT ${limit}` : '';
 
@@ -80,6 +80,19 @@ export function getObservationsByIds(
     additionalConditions.push(`(${fileConditions.join(' OR ')})`);
   }
 
+  // Apply commit_sha filter (branch ancestry filtering)
+  // OR commit_sha IS NULL ensures backward compatibility with pre-migration observations
+  if (commit_sha) {
+    if (Array.isArray(commit_sha)) {
+      const shaPlaceholders = commit_sha.map(() => '?').join(',');
+      additionalConditions.push(`(commit_sha IS NULL OR commit_sha IN (${shaPlaceholders}))`);
+      params.push(...commit_sha);
+    } else {
+      additionalConditions.push('(commit_sha IS NULL OR commit_sha = ?)');
+      params.push(commit_sha);
+    }
+  }
+
   const whereClause = additionalConditions.length > 0
     ? `WHERE id IN (${placeholders}) AND ${additionalConditions.join(' AND ')}`
     : `WHERE id IN (${placeholders})`;
@@ -93,6 +106,25 @@ export function getObservationsByIds(
   `);
 
   return stmt.all(...params) as ObservationRecord[];
+}
+
+/**
+ * Get observations for a specific session
+ */
+/**
+ * Get all unique commit SHAs for a given project.
+ * Used by context builder and search manager to get candidate SHAs
+ * before ancestry resolution.
+ */
+export function getUniqueCommitShasForProject(db: Database, project: string): string[] {
+  const stmt = db.prepare(`
+    SELECT DISTINCT commit_sha
+    FROM observations
+    WHERE project = ? AND commit_sha IS NOT NULL
+  `);
+
+  const rows = stmt.all(project) as { commit_sha: string }[];
+  return rows.map(row => row.commit_sha);
 }
 
 /**

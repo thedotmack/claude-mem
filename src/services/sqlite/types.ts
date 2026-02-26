@@ -261,6 +261,7 @@ export interface SearchFilters {
   concepts?: string | string[];
   files?: string | string[];
   dateRange?: DateRange;
+  commit_sha?: string | string[];
 }
 
 export interface SearchOptions extends SearchFilters {

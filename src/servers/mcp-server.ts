@@ -198,7 +198,16 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        commit_sha: {
+          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
+          description: 'Filter by commit SHA ancestry (single or array). Only shows observations from these commits.'
+        },
+        cwd: {
+          type: 'string',
+          description: 'Working directory for auto-detecting branch ancestry. When provided, resolves visible commit SHAs automatically.'
+        }
+      },
       additionalProperties: true
     },
     handler: async (args: any) => {
@@ -211,7 +220,16 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        commit_sha: {
+          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
+          description: 'Filter by commit SHA ancestry (single or array). Only shows observations from these commits.'
+        },
+        cwd: {
+          type: 'string',
+          description: 'Working directory for auto-detecting branch ancestry. When provided, resolves visible commit SHAs automatically.'
+        }
+      },
       additionalProperties: true
     },
     handler: async (args: any) => {
@@ -229,6 +247,10 @@ NEVER fetch full details without filtering first. 10x token savings.`,
           type: 'array',
           items: { type: 'number' },
           description: 'Array of observation IDs to fetch (required)'
+        },
+        commit_sha: {
+          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
+          description: 'Filter by commit SHA ancestry (single or array). Only shows observations from these commits.'
         }
       },
       required: ['ids'],
