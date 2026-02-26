@@ -3,9 +3,13 @@
  *
  * Validates getCurrentHead, resolveAncestorCommits, and resolveVisibleCommitShas
  * using this repo's actual git history for integration-level correctness.
+ * Also validates edge cases: shallow clones, non-existent SHAs, non-git dirs.
  */
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { execSync } from 'child_process';
+import { mkdtempSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import {
   getCurrentHead,
   resolveAncestorCommits,
@@ -81,6 +85,80 @@ describe('resolveAncestorCommits', () => {
 
     const ancestors = await resolveAncestorCommits(head!, [], REPO_ROOT);
     expect(ancestors).toHaveLength(0);
+  });
+
+  it('should gracefully handle partially-valid SHAs (simulates shallow clone truncation)', async () => {
+    const head = await getCurrentHead(REPO_ROOT);
+    expect(head).not.toBeNull();
+
+    // Truncated SHAs (too short to be valid git objects) should be excluded, not throw
+    const truncatedSha = 'abcdef1234567890';
+    const ancestors = await resolveAncestorCommits(head!, [truncatedSha], REPO_ROOT);
+    expect(ancestors).not.toContain(truncatedSha);
+    expect(ancestors).toHaveLength(0);
+  });
+
+  it('should work correctly in a non-git directory (returns empty)', async () => {
+    // When called with a non-git cwd, execSync will fail for each candidate
+    const ancestors = await resolveAncestorCommits(
+      '0000000000000000000000000000000000000000',
+      ['0000000000000000000000000000000000000001'],
+      '/tmp'
+    );
+    expect(ancestors).toHaveLength(0);
+  });
+});
+
+describe('resolveAncestorCommits - shallow clone handling', () => {
+  let originDir: string;
+  let shallowDir: string;
+  let oldestCommit: string;
+  let createdShallowClone = false;
+
+  beforeAll(() => {
+    try {
+      // Create a small origin repo with multiple commits
+      originDir = mkdtempSync(join(tmpdir(), 'git-origin-test-'));
+      execSync('git init', { cwd: originDir, stdio: 'pipe' });
+      execSync('git config user.email "test@test.com"', { cwd: originDir, stdio: 'pipe' });
+      execSync('git config user.name "Test"', { cwd: originDir, stdio: 'pipe' });
+      execSync('echo "v1" > file.txt', { cwd: originDir, stdio: 'pipe' });
+      execSync('git add .', { cwd: originDir, stdio: 'pipe' });
+      execSync('git commit -m "first"', { cwd: originDir, stdio: 'pipe' });
+      oldestCommit = execSync('git rev-parse HEAD', { cwd: originDir, encoding: 'utf8' }).trim();
+      execSync('echo "v2" >> file.txt', { cwd: originDir, stdio: 'pipe' });
+      execSync('git add .', { cwd: originDir, stdio: 'pipe' });
+      execSync('git commit -m "second"', { cwd: originDir, stdio: 'pipe' });
+      execSync('echo "v3" >> file.txt', { cwd: originDir, stdio: 'pipe' });
+      execSync('git add .', { cwd: originDir, stdio: 'pipe' });
+      execSync('git commit -m "third"', { cwd: originDir, stdio: 'pipe' });
+
+      // Create a shallow clone with depth=1
+      shallowDir = mkdtempSync(join(tmpdir(), 'git-shallow-test-'));
+      execSync(`git clone --depth 1 "file://${originDir}" "${shallowDir}"`, { stdio: 'pipe' });
+      createdShallowClone = true;
+    } catch {
+      createdShallowClone = false;
+    }
+  });
+
+  afterAll(() => {
+    if (originDir) rmSync(originDir, { recursive: true, force: true });
+    if (shallowDir) rmSync(shallowDir, { recursive: true, force: true });
+  });
+
+  it('should gracefully handle ancestry checks in a shallow clone', async () => {
+    if (!createdShallowClone) return;
+
+    const head = await getCurrentHead(shallowDir);
+    expect(head).not.toBeNull();
+
+    // The oldest commit from the origin won't have ancestry data in the shallow clone
+    // This should NOT throw — it should gracefully treat as "not an ancestor"
+    const ancestors = await resolveAncestorCommits(head!, [oldestCommit], shallowDir);
+    expect(Array.isArray(ancestors)).toBe(true);
+    // The oldest commit is NOT reachable in a depth-1 clone
+    expect(ancestors).not.toContain(oldestCommit);
   });
 });
 

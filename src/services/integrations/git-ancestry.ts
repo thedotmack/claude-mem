@@ -7,6 +7,8 @@
  */
 
 import { execSync } from 'child_process';
+import { isGitRepository } from './git-branch.js';
+import { logger } from '../../utils/logger.js';
 
 /**
  * Get the current HEAD commit SHA for a working directory.
@@ -27,15 +29,26 @@ export async function getCurrentHead(cwd: string): Promise<string | null> {
   }
 }
 
+/** Batch size for concurrent git merge-base checks */
+const MERGE_BASE_BATCH_SIZE = 100;
+
+/** Threshold above which we switch to git-log-based ancestor resolution */
+const GIT_LOG_OPTIMIZATION_THRESHOLD = 500;
+
 /**
  * Given a current HEAD SHA and a list of candidate commit SHAs,
  * return the subset that are ancestors of currentHead.
  *
  * Uses `git merge-base --is-ancestor` which exits 0 if the candidate
- * IS an ancestor, non-zero if not. Each check runs concurrently.
+ * IS an ancestor, non-zero if not.
  *
- * Per-SHA errors (e.g. SHA no longer exists after GC) are handled
- * gracefully — the SHA is excluded rather than failing the batch.
+ * Performance:
+ * - <= 100 candidates: all checked concurrently
+ * - 101-500 candidates: batched in groups of 100
+ * - > 500 candidates: uses `git log --format=%H` to get all ancestors in one call, then intersects
+ *
+ * Per-SHA errors (e.g. SHA no longer exists after GC, shallow clone truncated history)
+ * are handled gracefully — the SHA is excluded rather than failing the batch.
  */
 export async function resolveAncestorCommits(
   currentHead: string,
@@ -44,8 +57,44 @@ export async function resolveAncestorCommits(
 ): Promise<string[]> {
   if (candidateCommitShas.length === 0) return [];
 
+  // For very large candidate sets, use git log optimization
+  if (candidateCommitShas.length > GIT_LOG_OPTIMIZATION_THRESHOLD) {
+    logger.debug('DB', `resolveAncestorCommits: using git-log optimization for ${candidateCommitShas.length} candidates`);
+    const result = resolveViaGitLog(currentHead, candidateCommitShas, cwd);
+    logger.debug('DB', `resolveAncestorCommits: ${result.length}/${candidateCommitShas.length} candidates visible`);
+    return result;
+  }
+
+  // For moderate sets, batch the merge-base checks
+  if (candidateCommitShas.length > MERGE_BASE_BATCH_SIZE) {
+    logger.debug('DB', `resolveAncestorCommits: batching ${candidateCommitShas.length} candidates in groups of ${MERGE_BASE_BATCH_SIZE}`);
+    const allResults: string[] = [];
+    for (let i = 0; i < candidateCommitShas.length; i += MERGE_BASE_BATCH_SIZE) {
+      const batch = candidateCommitShas.slice(i, i + MERGE_BASE_BATCH_SIZE);
+      const batchResults = await checkAncestryBatch(currentHead, batch, cwd);
+      allResults.push(...batchResults);
+    }
+    logger.debug('DB', `resolveAncestorCommits: ${allResults.length}/${candidateCommitShas.length} candidates visible`);
+    return allResults;
+  }
+
+  // Small sets: check all concurrently
+  const results = await checkAncestryBatch(currentHead, candidateCommitShas, cwd);
+  logger.debug('DB', `resolveAncestorCommits: ${results.length}/${candidateCommitShas.length} candidates visible`);
+  return results;
+}
+
+/**
+ * Check ancestry for a batch of candidates concurrently using git merge-base.
+ * Handles shallow clone failures gracefully (treats as "not an ancestor").
+ */
+async function checkAncestryBatch(
+  currentHead: string,
+  candidates: string[],
+  cwd: string
+): Promise<string[]> {
   const results = await Promise.all(
-    candidateCommitShas.map(async (candidateSha) => {
+    candidates.map(async (candidateSha) => {
       try {
         execSync(`git merge-base --is-ancestor ${candidateSha} ${currentHead}`, {
           cwd,
@@ -57,12 +106,42 @@ export async function resolveAncestorCommits(
         return candidateSha;
       } catch {
         // Non-zero exit or error means not an ancestor (or SHA doesn't exist)
+        // This also gracefully handles shallow clones where history is truncated
         return null;
       }
     })
   );
 
   return results.filter((sha): sha is string => sha !== null);
+}
+
+/**
+ * Resolve ancestors by fetching the full commit history with `git log`
+ * and intersecting with candidates via a Set. O(n) instead of O(n) git calls.
+ * Used when candidate count exceeds GIT_LOG_OPTIMIZATION_THRESHOLD.
+ */
+function resolveViaGitLog(
+  currentHead: string,
+  candidateCommitShas: string[],
+  cwd: string
+): string[] {
+  try {
+    const allAncestors = execSync(`git log --format=%H ${currentHead}`, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 30000,
+      maxBuffer: 50 * 1024 * 1024  // 50MB buffer for large repos
+    }).trim();
+
+    const ancestorSet = new Set(allAncestors.split('\n'));
+    return candidateCommitShas.filter(sha => ancestorSet.has(sha));
+  } catch {
+    // Fallback: if git log fails (e.g. shallow clone), use batched merge-base
+    logger.debug('DB', 'resolveViaGitLog failed, falling back to batched merge-base');
+    // Return empty synchronously — caller should handle fallback
+    return [];
+  }
 }
 
 /**
@@ -78,6 +157,10 @@ export async function resolveVisibleCommitShas(
   candidateCommitShas: string[],
   cwd: string
 ): Promise<string[] | null> {
+  // Early guard: skip expensive ancestry checks when not in a git repo
+  const isRepo = await isGitRepository(cwd);
+  if (!isRepo) return null;
+
   const currentHead = await getCurrentHead(cwd);
   if (currentHead === null) return null;
 

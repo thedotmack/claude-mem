@@ -14,6 +14,24 @@ export interface BranchInfo {
 }
 
 /**
+ * Check whether the given directory is inside a git work tree.
+ * Returns false for non-git directories, bare repos, and when git is not installed.
+ */
+export async function isGitRepository(cwd: string): Promise<boolean> {
+  try {
+    const result = execSync('git rev-parse --is-inside-work-tree', {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 5000
+    }).trim();
+    return result === 'true';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Detect the current git branch and commit SHA for a working directory.
  *
  * Returns { branch: null, commitSha: null } on any failure (no git repo,
