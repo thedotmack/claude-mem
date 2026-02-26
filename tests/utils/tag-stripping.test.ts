@@ -51,6 +51,28 @@ describe('Tag Stripping Utilities', () => {
       });
     });
 
+    describe('case-insensitive tag matching', () => {
+      it('should strip uppercase <PRIVATE> tags', () => {
+        const input = 'public <PRIVATE>secret</PRIVATE> end';
+        expect(stripMemoryTagsFromPrompt(input)).toBe('public  end');
+      });
+
+      it('should strip mixed-case <Private> tags', () => {
+        const input = 'public <Private>secret</Private> end';
+        expect(stripMemoryTagsFromPrompt(input)).toBe('public  end');
+      });
+
+      it('should strip uppercase <CLAUDE-MEM-CONTEXT> tags', () => {
+        const input = 'public <CLAUDE-MEM-CONTEXT>context</CLAUDE-MEM-CONTEXT> end';
+        expect(stripMemoryTagsFromPrompt(input)).toBe('public  end');
+      });
+
+      it('should strip mixed case and lowercase tags together', () => {
+        const input = '<PRIVATE>secret1</PRIVATE> middle <private>secret2</private> end';
+        expect(stripMemoryTagsFromPrompt(input)).toBe('middle  end');
+      });
+    });
+
     describe('multiple tags handling', () => {
       it('should strip multiple <private> blocks', () => {
         const input = '<private>first secret</private> middle <private>second secret</private> end';
