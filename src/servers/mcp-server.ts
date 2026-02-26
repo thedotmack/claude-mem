@@ -233,31 +233,6 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       return await callWorkerAPIPost('/api/observations/batch', args);
     }
-  },
-  {
-    name: 'save_observation',
-    description: 'Save an observation to the database. Params: text (required), title, project',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        text: {
-          type: 'string',
-          description: 'Content to remember (required)'
-        },
-        title: {
-          type: 'string',
-          description: 'Short title (auto-generated from text if omitted)'
-        },
-        project: {
-          type: 'string',
-          description: 'Project name (uses "claude-mem" if omitted)'
-        }
-      },
-      required: ['text']
-    },
-    handler: async (args: any) => {
-      return await callWorkerAPIPost('/api/memory/save', args);
-    }
   }
 ];
 
