@@ -227,13 +227,13 @@ describe('HybridBlendingStrategy', () => {
     it('runs both strategies in parallel', async () => {
       const callOrder: string[] = [];
 
-      vi.mocked(mockChromaStrategy.search).mockImplementation(async () => {
+      vi.mocked(mockChromaStrategy.search).mockImplementation(() => {
         callOrder.push('chroma');
-        return makeChromaResult([makeObs(1)]);
+        return Promise.resolve(makeChromaResult([makeObs(1)]));
       });
-      vi.mocked(mockBm25Strategy.search).mockImplementation(async () => {
+      vi.mocked(mockBm25Strategy.search).mockImplementation(() => {
         callOrder.push('bm25');
-        return makeBm25Result([makeObs(2)]);
+        return Promise.resolve(makeBm25Result([makeObs(2)]));
       });
 
       await strategy.search({ query: 'test' });
