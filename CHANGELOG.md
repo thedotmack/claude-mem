@@ -2,6 +2,12 @@
 
 All notable changes to claude-mem.
 
+## [v10.5.1] - 2026-02-26
+
+### Bug Fix
+
+- Restored hooks.json to pre-smart-explore configuration (re-adds Setup hook, separate worker start command, PostToolUse matcher)
+
 ## [v10.5.0] - 2026-02-26
 
 ## Smart Explore: AST-Powered Code Navigation
@@ -1200,35 +1206,4 @@ This release refactors the monolithic service architecture into focused, single-
 - Removed `bun.lock` from version control
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.6...v8.5.7
-
-## [v8.5.6] - 2026-01-04
-
-## Major Architectural Refactoring
-
-Decomposes monolithic services into modular, maintainable components:
-
-### Worker Service
-Extracted infrastructure (GracefulShutdown, HealthMonitor, ProcessManager), server layer (ErrorHandler, Middleware, Server), and integrations (CursorHooksInstaller)
-
-### Context Generator
-Split into ContextBuilder, ContextConfigLoader, ObservationCompiler, TokenCalculator, formatters (Color/Markdown), and section renderers (Header/Footer/Summary/Timeline)
-
-### Search System
-Extracted SearchOrchestrator, ResultFormatter, TimelineBuilder, and strategy pattern (Chroma/SQLite/Hybrid search strategies) with dedicated filters (Date/Project/Type)
-
-### Agent System
-Extracted shared logic into ResponseProcessor, ObservationBroadcaster, FallbackErrorHandler, and SessionCleanupHelper
-
-### SQLite Layer
-Decomposed SessionStore into domain modules (observations, prompts, sessions, summaries, timeline) with proper type exports
-
-## Bug Fixes
-- Fixed duplicate observation storage bug (observations stored multiple times when messages were batched)
-- Added duplicate observation cleanup script for production database remediation
-- Fixed FOREIGN KEY constraint and missing `failed_at_epoch` column issues
-
-## Coming Next
-Comprehensive test suite in a new PR, targeting **v8.6.0**
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
