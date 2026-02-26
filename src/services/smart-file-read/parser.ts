@@ -8,7 +8,7 @@
  * by Copter Labs
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { writeFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
@@ -240,12 +240,11 @@ function runBatchQuery(queryFile: string, sourceFiles: string[], grammarPath: st
   if (sourceFiles.length === 0) return new Map();
 
   const bin = getTreeSitterBin();
-  const fileArgs = sourceFiles.map(f => `"${f}"`).join(" ");
-  const cmd = `"${bin}" query -p "${grammarPath}" "${queryFile}" ${fileArgs}`;
+  const execArgs = ["query", "-p", grammarPath, queryFile, ...sourceFiles];
 
   let output: string;
   try {
-    output = execSync(cmd, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
+    output = execFileSync(bin, execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
   } catch {
     return new Map();
   }

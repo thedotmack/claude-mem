@@ -258,7 +258,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         },
         file_pattern: {
           type: 'string',
-          description: 'Glob pattern to filter files (e.g. "*.ts", "src/**/*.py")'
+          description: 'Substring filter for file paths (e.g. ".ts", "src/services")'
         }
       },
       required: ['query']
