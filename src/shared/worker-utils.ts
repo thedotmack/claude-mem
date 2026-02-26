@@ -8,7 +8,20 @@ import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 
 const execFileAsync = promisify(execFile);
 
-const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem');
+/**
+ * Resolve the plugin root directory from the running bundle's location.
+ * In CJS bundles __dirname points to the scripts/ directory, so one level up
+ * is the plugin root (contains package.json, scripts/, ui/, etc.).
+ * Falls back to the legacy marketplace path for backward compatibility.
+ */
+function resolvePluginRoot(): string {
+  if (typeof __dirname !== 'undefined') {
+    return path.resolve(__dirname, '..');
+  }
+  return path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem');
+}
+
+export const PLUGIN_ROOT = resolvePluginRoot();
 const WORKER_FETCH_TIMEOUT_MS = 5000;
 
 function toErrorMessage(e: unknown): string {
@@ -80,7 +93,7 @@ async function isWorkerHealthy(): Promise<boolean> {
  * Get the current plugin version from package.json
  */
 function getPluginVersion(): string {
-  const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
+  const packageJsonPath = path.join(PLUGIN_ROOT, 'package.json');
   const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version: string };
   return packageJson.version;
 }
@@ -130,7 +143,7 @@ async function checkWorkerVersion(): Promise<boolean> {
  * Returns true when the worker is healthy after restart, false otherwise.
  */
 async function restartWorker(): Promise<boolean> {
-  const workerServicePath = path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs');
+  const workerServicePath = path.join(PLUGIN_ROOT, 'scripts', 'worker-service.cjs');
   try {
     logger.info('SYSTEM', 'Restarting worker due to version mismatch');
     await execFileAsync('node', [workerServicePath, 'restart'], { timeout: 45000 });

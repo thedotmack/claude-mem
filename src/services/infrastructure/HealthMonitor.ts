@@ -10,8 +10,8 @@
  */
 
 import path from 'path';
-import { homedir } from 'os';
 import { readFileSync } from 'fs';
+import { PLUGIN_ROOT } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 
 /**
@@ -100,8 +100,7 @@ export async function httpShutdown(port: number): Promise<boolean> {
  * This is the "expected" version that should be running
  */
 export function getInstalledPluginVersion(): string {
-  const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem');
-  const packageJsonPath = path.join(marketplaceRoot, 'package.json');
+  const packageJsonPath = path.join(PLUGIN_ROOT, 'package.json');
   const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version: string };
   return packageJson.version;
 }

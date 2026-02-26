@@ -15,6 +15,7 @@ import { exec, execSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
+import { PLUGIN_ROOT } from '../../shared/worker-utils.js';
 
 const execAsync = promisify(exec);
 
@@ -72,8 +73,7 @@ export function removePidFile(): void {
  * Falls back to process.execPath if marker is missing or binary was deleted.
  */
 export function getWorkerNodeBinary(): string {
-  const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem');
-  const MARKER = path.join(MARKETPLACE_ROOT, '.install-version');
+  const MARKER = path.join(PLUGIN_ROOT, '.install-version');
 
   try {
     const marker = JSON.parse(readFileSync(MARKER, 'utf-8'));
@@ -94,27 +94,9 @@ export function getWorkerNodeBinary(): string {
  */
 export function verifyNativeModules(): boolean {
   const nodeBinary = getWorkerNodeBinary();
-  const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem');
 
-  // Check the cache directory first (where the daemon actually loads from),
-  // then fall back to marketplace
-  const cacheBase = path.join(homedir(), '.claude', 'plugins', 'cache', 'magic-claude-mem', 'magic-claude-mem');
-  let modulePath: string | undefined;
-
-  try {
-    const marker = JSON.parse(readFileSync(path.join(MARKETPLACE_ROOT, '.install-version'), 'utf-8'));
-    const cacheDir = path.join(cacheBase, marker.version);
-    const cacheModule = path.join(cacheDir, 'node_modules', 'better-sqlite3');
-    if (existsSync(cacheModule)) {
-      modulePath = cacheModule;
-    }
-  } catch {
-    // Fall through
-  }
-
-  if (!modulePath) {
-    modulePath = path.join(MARKETPLACE_ROOT, 'node_modules', 'better-sqlite3');
-  }
+  // PLUGIN_ROOT already points to the correct directory (cache or marketplace)
+  const modulePath = path.join(PLUGIN_ROOT, 'node_modules', 'better-sqlite3');
 
   if (!existsSync(modulePath)) {
     logger.warn('SYSTEM', 'better-sqlite3 not found for verification', { modulePath });
