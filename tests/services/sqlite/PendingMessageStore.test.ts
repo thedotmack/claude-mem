@@ -144,3 +144,99 @@ describe('PendingMessageStore - Self-Healing claimNextMessage', () => {
     expect(session1Msg.status).toBe('processing');
   });
 });
+
+describe('PendingMessageStore - Branch Memory Persistence', () => {
+  let db: Database;
+  let store: PendingMessageStore;
+  let sessionDbId: number;
+  const CONTENT_SESSION_ID = 'test-branch-memory';
+
+  beforeEach(() => {
+    db = new ClaudeMemDatabase(':memory:').db;
+    store = new PendingMessageStore(db, 3);
+    sessionDbId = createSDKSession(db, CONTENT_SESSION_ID, 'test-project', 'Test prompt');
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function enqueueMessage(overrides: Partial<PendingMessage> = {}): number {
+    const message: PendingMessage = {
+      type: 'observation',
+      tool_name: 'TestTool',
+      tool_input: { test: 'input' },
+      tool_response: { test: 'response' },
+      prompt_number: 1,
+      ...overrides,
+    };
+    return store.enqueue(sessionDbId, CONTENT_SESSION_ID, message);
+  }
+
+  function makeMessageStaleProcessing(messageId: number): void {
+    const staleTimestamp = Date.now() - 120_000; // 2 minutes ago (well past 60s threshold)
+    db.run(
+      `UPDATE pending_messages SET status = 'processing', started_processing_at_epoch = ? WHERE id = ?`,
+      [staleTimestamp, messageId]
+    );
+  }
+
+  test('enqueue with branch metadata preserves branch and commit_sha through claim', () => {
+    const msgId = enqueueMessage({
+      branch: 'feature/test',
+      commit_sha: 'abc123def456',
+    });
+
+    const claimed = store.claimNextMessage(sessionDbId);
+
+    expect(claimed).not.toBeNull();
+    expect(claimed!.id).toBe(msgId);
+    expect(claimed!.branch).toBe('feature/test');
+    expect(claimed!.commit_sha).toBe('abc123def456');
+  });
+
+  test('enqueue without branch metadata stores NULL values', () => {
+    enqueueMessage();
+
+    const claimed = store.claimNextMessage(sessionDbId);
+
+    expect(claimed).not.toBeNull();
+    expect(claimed!.branch).toBeNull();
+    expect(claimed!.commit_sha).toBeNull();
+  });
+
+  test('toPendingMessage converts branch fields correctly', () => {
+    enqueueMessage({
+      branch: 'main',
+      commit_sha: 'deadbeef1234',
+    });
+
+    const claimed = store.claimNextMessage(sessionDbId);
+    expect(claimed).not.toBeNull();
+
+    const pendingMessage = store.toPendingMessage(claimed!);
+
+    expect(pendingMessage.branch).toBe('main');
+    expect(pendingMessage.commit_sha).toBe('deadbeef1234');
+    expect(pendingMessage.type).toBe('observation');
+    expect(pendingMessage.tool_name).toBe('TestTool');
+  });
+
+  test('stale recovery preserves branch data', () => {
+    const msgId = enqueueMessage({
+      branch: 'feature/recovery',
+      commit_sha: 'stale789abc',
+    });
+
+    // Make the message stale so self-healing will reset it to pending
+    makeMessageStaleProcessing(msgId);
+
+    // claimNextMessage should self-heal the stale message and re-claim it
+    const claimed = store.claimNextMessage(sessionDbId);
+
+    expect(claimed).not.toBeNull();
+    expect(claimed!.id).toBe(msgId);
+    expect(claimed!.branch).toBe('feature/recovery');
+    expect(claimed!.commit_sha).toBe('stale789abc');
+  });
+});
