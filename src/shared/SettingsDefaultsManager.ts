@@ -19,13 +19,17 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORKER_HOST: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
   // AI Provider Configuration
-  CLAUDE_MEM_PROVIDER: string;  // 'claude' | 'gemini' | 'openrouter'
+  CLAUDE_MEM_PROVIDER: string;          // 'claude' | 'gemini' | 'openrouter' | 'openai-codex'
+  CLAUDE_MEM_OPENCLAW_PROVIDER: string; // Override provider for OpenClaw sessions (empty = use CLAUDE_MEM_PROVIDER)
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  // 'cli' | 'api' - how Claude provider authenticates
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  // 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-3-flash-preview'
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;  // 'true' | 'false' - enable rate limiting for free tier
   CLAUDE_MEM_OPENROUTER_API_KEY: string;
   CLAUDE_MEM_OPENROUTER_MODEL: string;
+  // OpenAI Codex OAuth provider
+  CLAUDE_MEM_OPENAI_CODEX_MODEL: string;        // Model to use (default: gpt-4o)
+  CLAUDE_MEM_OPENAI_CODEX_AGENT_DIR: string;    // Override path to auth-profiles.json dir
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
   CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
@@ -81,13 +85,16 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
     // AI Provider Configuration
-    CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
+    CLAUDE_MEM_PROVIDER: 'claude',          // Default to Claude
+    CLAUDE_MEM_OPENCLAW_PROVIDER: '',       // Empty = use CLAUDE_MEM_PROVIDER for all sessions
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'cli',  // Default to CLI subscription billing (not API key)
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',  // Default Gemini model (highest free tier RPM)
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default OpenRouter model (free tier)
+    CLAUDE_MEM_OPENAI_CODEX_MODEL: 'gpt-4o',   // Default Codex model (conservative)
+    CLAUDE_MEM_OPENAI_CODEX_AGENT_DIR: '',      // Empty = auto-detect from OPENCLAW_AGENT_DIR or ~/.openclaw
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window

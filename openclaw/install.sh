@@ -25,6 +25,8 @@ readonly INSTALLER_VERSION="1.0.0"
 NON_INTERACTIVE=""
 CLI_PROVIDER=""
 CLI_API_KEY=""
+CLI_OPENCLAW_PROVIDER=""
+CLI_OPENCLAW_API_KEY=""
 UPGRADE_MODE=""
 CLI_BRANCH=""
 
@@ -54,12 +56,28 @@ while [[ $# -gt 0 ]]; do
       CLI_PROVIDER="${2:-}"
       shift 2
       ;;
+    --openclaw-provider=*)
+      CLI_OPENCLAW_PROVIDER="${1#--openclaw-provider=}"
+      shift
+      ;;
+    --openclaw-provider)
+      CLI_OPENCLAW_PROVIDER="${2:-}"
+      shift 2
+      ;;
     --api-key=*)
       CLI_API_KEY="${1#--api-key=}"
       shift
       ;;
     --api-key)
       CLI_API_KEY="${2:-}"
+      shift 2
+      ;;
+    --openclaw-api-key=*)
+      CLI_OPENCLAW_API_KEY="${1#--openclaw-api-key=}"
+      shift
+      ;;
+    --openclaw-api-key)
+      CLI_OPENCLAW_API_KEY="${2:-}"
       shift 2
       ;;
     *)
@@ -954,8 +972,10 @@ configure_memory_slot() {
 # Reads defaults from SettingsDefaultsManager.ts (single source of truth)
 ###############################################################################
 
-AI_PROVIDER=""
+AI_PROVIDER=""           # Global provider (Claude Code sessions)
 AI_PROVIDER_API_KEY=""
+AI_OPENCLAW_PROVIDER="" # OpenClaw-specific provider (empty = use AI_PROVIDER)
+AI_OPENCLAW_API_KEY=""
 
 mask_api_key() {
   local key="$1"
@@ -972,107 +992,194 @@ mask_api_key() {
   fi
 }
 
-setup_ai_provider() {
+# Ask for API key for a given provider and store in the named variable.
+# Usage: prompt_provider_api_key <provider> <keyvar>
+# Example: prompt_provider_api_key gemini AI_PROVIDER_API_KEY
+prompt_provider_api_key() {
+  local provider="$1"
+  local keyvar="$2"
+  local url hint
+  case "$provider" in
+    gemini)    url="https://ai.google.dev";   hint="Gemini API key" ;;
+    openrouter) url="https://openrouter.ai"; hint="OpenRouter API key" ;;
+    *)         return 0 ;;  # no API key needed
+  esac
   echo ""
-  info "AI Provider Configuration"
+  prompt_user "Enter your ${hint} (from ${url}):"
+  local key=""
+  read_tty -rs key
   echo ""
+  printf -v "$keyvar" '%s' "$key"
+  if [[ -z "$key" ]]; then
+    warn "No API key provided — add it later in ~/.claude-mem/settings.json"
+  else
+    success "${hint} set ($(mask_api_key "$key"))"
+  fi
+}
 
-  # Handle --provider flag (pre-selected via CLI)
-  if [[ -n "$CLI_PROVIDER" ]]; then
-    case "$CLI_PROVIDER" in
-      claude)
-        AI_PROVIDER="claude"
-        success "Selected via --provider: Claude Max Plan (CLI authentication)"
-        ;;
-      gemini)
-        AI_PROVIDER="gemini"
-        AI_PROVIDER_API_KEY="${CLI_API_KEY}"
-        if [[ -n "$AI_PROVIDER_API_KEY" ]]; then
-          success "Selected via --provider: Gemini (API key set via --api-key)"
-        else
-          warn "Selected via --provider: Gemini (no API key — add later in ~/.claude-mem/settings.json)"
-        fi
-        ;;
-      openrouter)
-        AI_PROVIDER="openrouter"
-        AI_PROVIDER_API_KEY="${CLI_API_KEY}"
-        if [[ -n "$AI_PROVIDER_API_KEY" ]]; then
-          success "Selected via --provider: OpenRouter (API key set via --api-key)"
-        else
-          warn "Selected via --provider: OpenRouter (no API key — add later in ~/.claude-mem/settings.json)"
-        fi
-        ;;
-      *)
-        error "Unknown provider: ${CLI_PROVIDER}"
-        error "Valid providers: claude, gemini, openrouter"
-        exit 1
-        ;;
-    esac
-    return 0
+# Prompt for a provider from a numbered menu.
+# Usage: prompt_provider_menu <result_var> <key_var> <default_num> <skip_claude_warn>
+# Prints menu, reads choice, sets result_var to provider name and key_var to API key.
+prompt_provider_menu() {
+  local result_var="$1"
+  local key_var="$2"
+  local default_num="${3:-1}"
+  local warn_claude="${4:-false}"  # if true, show ToS warning next to Claude option
+
+  local claude_hint="uses your Claude subscription"
+  if [[ "$warn_claude" == "true" ]]; then
+    claude_hint="${COLOR_RED}⚠️  not recommended — Anthropic ToS prohibits Claude OAuth in third-party apps${COLOR_RESET}"
   fi
 
-  # Handle non-interactive mode (no --provider flag)
-  if [[ "$NON_INTERACTIVE" == "true" ]]; then
-    info "Non-interactive mode: defaulting to Claude Max Plan (no API key needed)"
-    AI_PROVIDER="claude"
-    return 0
-  fi
-
-  echo -e "  Choose your AI provider for claude-mem:"
-  echo ""
-  echo -e "  ${COLOR_BOLD}1)${COLOR_RESET} Claude Max Plan ${COLOR_GREEN}(recommended)${COLOR_RESET}"
-  echo -e "     Uses your existing subscription, no API key needed"
+  echo -e "  ${COLOR_BOLD}1)${COLOR_RESET} OpenAI Codex ${COLOR_GREEN}(recommended)${COLOR_RESET}"
+  echo -e "     Uses your ChatGPT Plus/Pro subscription via OAuth — no extra API key"
   echo ""
   echo -e "  ${COLOR_BOLD}2)${COLOR_RESET} Gemini"
   echo -e "     Free tier available — requires API key from ai.google.dev"
   echo ""
   echo -e "  ${COLOR_BOLD}3)${COLOR_RESET} OpenRouter"
-  echo -e "     Pay-per-use — requires API key from openrouter.ai"
+  echo -e "     Access to 100+ models, free options available — requires API key"
+  echo ""
+  echo -e "  ${COLOR_BOLD}4)${COLOR_RESET} Claude — ${claude_hint}"
+  echo -e "     Uses your Anthropic subscription"
   echo ""
 
-  local choice
+  local choice provider=""
   while true; do
-    prompt_user "Enter choice [1/2/3] (default: 1):"
+    prompt_user "Enter choice [1/2/3/4] (default: ${default_num}):"
     read_tty -r choice
-    choice="${choice:-1}"
-
+    choice="${choice:-${default_num}}"
     case "$choice" in
-      1)
-        AI_PROVIDER="claude"
-        success "Selected: Claude Max Plan (CLI authentication)"
-        break
-        ;;
-      2)
-        AI_PROVIDER="gemini"
-        echo ""
-        prompt_user "Enter your Gemini API key (from https://ai.google.dev):"
-        read_tty -rs AI_PROVIDER_API_KEY
-        echo ""
-        if [[ -z "$AI_PROVIDER_API_KEY" ]]; then
-          warn "No API key provided — you can add it later in ~/.claude-mem/settings.json"
-        else
-          success "Gemini API key set ($(mask_api_key "$AI_PROVIDER_API_KEY"))"
-        fi
-        break
-        ;;
-      3)
-        AI_PROVIDER="openrouter"
-        echo ""
-        prompt_user "Enter your OpenRouter API key (from https://openrouter.ai):"
-        read_tty -rs AI_PROVIDER_API_KEY
-        echo ""
-        if [[ -z "$AI_PROVIDER_API_KEY" ]]; then
-          warn "No API key provided — you can add it later in ~/.claude-mem/settings.json"
-        else
-          success "OpenRouter API key set ($(mask_api_key "$AI_PROVIDER_API_KEY"))"
-        fi
-        break
-        ;;
-      *)
-        warn "Invalid choice. Please enter 1, 2, or 3."
-        ;;
+      1) provider="openai-codex" ;;
+      2) provider="gemini"       ;;
+      3) provider="openrouter"   ;;
+      4) provider="claude"       ;;
+      *) warn "Invalid choice. Please enter 1, 2, 3, or 4." ; continue ;;
     esac
+    break
   done
+
+  printf -v "$result_var" '%s' "$provider"
+  local key=""
+  prompt_provider_api_key "$provider" key
+  printf -v "$key_var" '%s' "$key"
+}
+
+setup_ai_provider() {
+  echo ""
+  info "AI Provider Configuration"
+  echo ""
+
+  # ── CLI flags (non-interactive path) ────────────────────────────────────────
+  if [[ -n "$CLI_PROVIDER" || -n "$CLI_OPENCLAW_PROVIDER" ]]; then
+    # Global provider (Claude Code sessions)
+    local global_provider="${CLI_PROVIDER:-claude}"
+    case "$global_provider" in
+      claude|gemini|openrouter|openai-codex) ;;
+      *) error "Unknown --provider: ${global_provider}"; error "Valid: claude, gemini, openrouter, openai-codex"; exit 1 ;;
+    esac
+    AI_PROVIDER="$global_provider"
+    AI_PROVIDER_API_KEY="${CLI_API_KEY:-}"
+    success "Claude Code sessions provider: ${AI_PROVIDER}"
+
+    # OpenClaw-specific provider
+    if [[ -n "$CLI_OPENCLAW_PROVIDER" ]]; then
+      case "$CLI_OPENCLAW_PROVIDER" in
+        claude|gemini|openrouter|openai-codex) ;;
+        *) error "Unknown --openclaw-provider: ${CLI_OPENCLAW_PROVIDER}"; exit 1 ;;
+      esac
+      AI_OPENCLAW_PROVIDER="$CLI_OPENCLAW_PROVIDER"
+      AI_OPENCLAW_API_KEY="${CLI_OPENCLAW_API_KEY:-}"
+    else
+      # Default OpenClaw provider: openai-codex (avoids Anthropic ToS violation)
+      AI_OPENCLAW_PROVIDER="openai-codex"
+    fi
+    if [[ "$AI_OPENCLAW_PROVIDER" != "$AI_PROVIDER" ]]; then
+      success "OpenClaw sessions provider: ${AI_OPENCLAW_PROVIDER}"
+      if [[ "$AI_OPENCLAW_PROVIDER" == "claude" ]]; then
+        warn "⚠️  Using Claude OAuth for OpenClaw sessions may violate Anthropic's ToS (Feb 2026)"
+      fi
+    fi
+    return 0
+  fi
+
+  # ── Non-interactive defaults ─────────────────────────────────────────────────
+  if [[ "$NON_INTERACTIVE" == "true" ]]; then
+    info "Non-interactive mode: Claude Code → claude | OpenClaw → openai-codex"
+    AI_PROVIDER="claude"
+    AI_OPENCLAW_PROVIDER="openai-codex"
+    return 0
+  fi
+
+  # ── Interactive flow ─────────────────────────────────────────────────────────
+  echo -e "  ${COLOR_BOLD}This is an OpenClaw installation.${COLOR_RESET}"
+  echo ""
+  echo -e "  claude-mem can record sessions from two sources simultaneously:"
+  echo -e "  • ${COLOR_BOLD}Claude Code${COLOR_RESET} — as a plugin (standard)"
+  echo -e "  • ${COLOR_BOLD}OpenClaw${COLOR_RESET}     — via this gateway"
+  echo ""
+  echo -e "  ${COLOR_YELLOW}⚠️  Anthropic's ToS (Feb 2026) prohibits using Claude OAuth tokens"
+  echo -e "  in third-party apps like OpenClaw. OpenClaw sessions must use"
+  echo -e "  a different AI provider for observation extraction.${COLOR_RESET}"
+  echo ""
+
+  # Step A: Do you also use Claude Code?
+  local use_claude_code
+  prompt_user "Do you also use Claude Code (in addition to OpenClaw)? [y/N]:"
+  read_tty -r use_claude_code
+  use_claude_code="${use_claude_code:-n}"
+
+  if [[ "$use_claude_code" =~ ^[Yy] ]]; then
+    # Step B: Provider for Claude Code sessions
+    echo ""
+    echo -e "  ${COLOR_BOLD}Provider for Claude Code sessions:${COLOR_RESET}"
+    echo ""
+    echo -e "  ${COLOR_BOLD}1)${COLOR_RESET} Claude Max Plan ${COLOR_GREEN}(recommended)${COLOR_RESET}"
+    echo -e "     Uses your Anthropic subscription — permitted inside Claude Code"
+    echo ""
+    echo -e "  ${COLOR_BOLD}2)${COLOR_RESET} Gemini  — free tier available"
+    echo -e "  ${COLOR_BOLD}3)${COLOR_RESET} OpenRouter — free models available"
+    echo ""
+
+    local cc_choice
+    while true; do
+      prompt_user "Enter choice [1/2/3] (default: 1):"
+      read_tty -r cc_choice
+      cc_choice="${cc_choice:-1}"
+      case "$cc_choice" in
+        1) AI_PROVIDER="claude"      ; break ;;
+        2) AI_PROVIDER="gemini"      ; break ;;
+        3) AI_PROVIDER="openrouter"  ; break ;;
+        *) warn "Invalid choice." ;;
+      esac
+    done
+    prompt_provider_api_key "$AI_PROVIDER" AI_PROVIDER_API_KEY
+    success "Claude Code sessions → ${AI_PROVIDER}"
+  else
+    # Not using Claude Code — global provider will equal OpenClaw provider (set below)
+    AI_PROVIDER=""
+  fi
+
+  # Step C: Provider for OpenClaw sessions
+  echo ""
+  echo -e "  ${COLOR_BOLD}Provider for OpenClaw sessions:${COLOR_RESET}"
+  echo -e "  (must NOT be Claude OAuth — choose one of the alternatives below)"
+  echo ""
+
+  prompt_provider_menu AI_OPENCLAW_PROVIDER AI_OPENCLAW_API_KEY "1" "true"
+  success "OpenClaw sessions → ${AI_OPENCLAW_PROVIDER}"
+
+  # If not using Claude Code, mirror global provider to OpenClaw choice
+  if [[ -z "$AI_PROVIDER" ]]; then
+    AI_PROVIDER="$AI_OPENCLAW_PROVIDER"
+    AI_PROVIDER_API_KEY="$AI_OPENCLAW_API_KEY"
+  fi
+
+  # Warn if user explicitly chose Claude for OpenClaw
+  if [[ "$AI_OPENCLAW_PROVIDER" == "claude" ]]; then
+    warn "⚠️  Claude OAuth for OpenClaw sessions may violate Anthropic's ToS (Feb 2026)."
+    warn "   Consider switching to openai-codex, gemini, or openrouter."
+  fi
 }
 
 ###############################################################################
@@ -1090,6 +1197,8 @@ write_settings() {
   # Pass provider and API key via environment variables to avoid shell-to-JS injection
   INSTALLER_AI_PROVIDER="$AI_PROVIDER" \
   INSTALLER_AI_API_KEY="$AI_PROVIDER_API_KEY" \
+  INSTALLER_AI_OPENCLAW_PROVIDER="$AI_OPENCLAW_PROVIDER" \
+  INSTALLER_AI_OPENCLAW_API_KEY="$AI_OPENCLAW_API_KEY" \
   INSTALLER_SETTINGS_FILE="$settings_file" \
   node -e "
     const fs = require('fs');
@@ -1097,6 +1206,8 @@ write_settings() {
     const homedir = require('os').homedir();
     const provider = process.env.INSTALLER_AI_PROVIDER;
     const apiKey = process.env.INSTALLER_AI_API_KEY || '';
+    const openclawProvider = process.env.INSTALLER_AI_OPENCLAW_PROVIDER || '';
+    const openclawApiKey = process.env.INSTALLER_AI_OPENCLAW_API_KEY || '';
     const settingsPath = process.env.INSTALLER_SETTINGS_FILE;
 
     // All defaults from SettingsDefaultsManager.ts
@@ -1107,6 +1218,7 @@ write_settings() {
       CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
       CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
       CLAUDE_MEM_PROVIDER: 'claude',
+      CLAUDE_MEM_OPENCLAW_PROVIDER: '',
       CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'cli',
       CLAUDE_MEM_GEMINI_API_KEY: '',
       CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
@@ -1117,6 +1229,8 @@ write_settings() {
       CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
       CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',
       CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',
+      CLAUDE_MEM_OPENAI_CODEX_MODEL: 'gpt-4o',
+      CLAUDE_MEM_OPENAI_CODEX_AGENT_DIR: '',
       CLAUDE_MEM_DATA_DIR: path.join(homedir, '.claude-mem'),
       CLAUDE_MEM_LOG_LEVEL: 'INFO',
       CLAUDE_MEM_PYTHON_VERSION: '3.13',
@@ -1140,6 +1254,8 @@ write_settings() {
 
     // Build provider-specific overrides safely from environment variables
     const overrides = { CLAUDE_MEM_PROVIDER: provider };
+
+    // Global provider settings
     if (provider === 'claude') {
       overrides.CLAUDE_MEM_CLAUDE_AUTH_METHOD = 'cli';
     } else if (provider === 'gemini') {
@@ -1148,6 +1264,18 @@ write_settings() {
     } else if (provider === 'openrouter') {
       overrides.CLAUDE_MEM_OPENROUTER_API_KEY = apiKey;
       overrides.CLAUDE_MEM_OPENROUTER_MODEL = 'xiaomi/mimo-v2-flash:free';
+    }
+
+    // OpenClaw-specific provider (only write if different from global)
+    if (openclawProvider && openclawProvider !== provider) {
+      overrides.CLAUDE_MEM_OPENCLAW_PROVIDER = openclawProvider;
+      if (openclawProvider === 'gemini' && openclawApiKey) {
+        // Note: shares CLAUDE_MEM_GEMINI_API_KEY if not already set by global
+        if (!overrides.CLAUDE_MEM_GEMINI_API_KEY) overrides.CLAUDE_MEM_GEMINI_API_KEY = openclawApiKey;
+      } else if (openclawProvider === 'openrouter' && openclawApiKey) {
+        if (!overrides.CLAUDE_MEM_OPENROUTER_API_KEY) overrides.CLAUDE_MEM_OPENROUTER_API_KEY = openclawApiKey;
+      }
+      // openai-codex uses OAuth — no API key to store
     }
 
     const settings = Object.assign(defaults, overrides);
