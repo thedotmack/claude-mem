@@ -1211,11 +1211,11 @@ export class SessionStore {
    */
   getObservationsByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string; type?: string | string[]; concepts?: string | string[]; files?: string | string[] } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string; type?: string | string[]; concepts?: string | string[]; files?: string | string[]; commit_sha?: string | string[] } = {}
   ): ObservationRecord[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
+    const { orderBy = 'date_desc', limit, project, type, concepts, files, commit_sha } = options;
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
     const limitClause = limit ? `LIMIT ${limit}` : '';
 
@@ -1262,6 +1262,18 @@ export class SessionStore {
         params.push(`%${file}%`, `%${file}%`);
       });
       additionalConditions.push(`(${fileConditions.join(' OR ')})`);
+    }
+
+    // Apply commit_sha filter (branch ancestry filtering)
+    if (commit_sha) {
+      if (Array.isArray(commit_sha)) {
+        const shaPlaceholders = commit_sha.map(() => '?').join(',');
+        additionalConditions.push(`(commit_sha IS NULL OR commit_sha IN (${shaPlaceholders}))`);
+        params.push(...commit_sha);
+      } else {
+        additionalConditions.push('(commit_sha IS NULL OR commit_sha = ?)');
+        params.push(commit_sha);
+      }
     }
 
     const whereClause = additionalConditions.length > 0

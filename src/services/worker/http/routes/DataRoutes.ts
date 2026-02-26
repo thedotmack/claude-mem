@@ -114,7 +114,7 @@ export class DataRoutes extends BaseRouteHandler {
    * Body: { ids: number[], orderBy?: 'date_desc' | 'date_asc', limit?: number, project?: string }
    */
   private handleGetObservationsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    let { ids, orderBy, limit, project } = req.body;
+    let { ids, orderBy, limit, project, commit_sha } = req.body;
 
     // Coerce string-encoded arrays from MCP clients (e.g. "[1,2,3]" or "1,2,3")
     if (typeof ids === 'string') {
@@ -137,8 +137,13 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
+    // Coerce string-encoded commit_sha arrays from MCP clients
+    if (typeof commit_sha === 'string') {
+      try { commit_sha = JSON.parse(commit_sha); } catch { /* keep as single string */ }
+    }
+
     const store = this.dbManager.getSessionStore();
-    const observations = store.getObservationsByIds(ids, { orderBy, limit, project });
+    const observations = store.getObservationsByIds(ids, { orderBy, limit, project, commit_sha });
 
     res.json(observations);
   });

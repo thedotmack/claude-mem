@@ -31,7 +31,7 @@ export function getObservationsByIds(
 ): ObservationRecord[] {
   if (ids.length === 0) return [];
 
-  const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
+  const { orderBy = 'date_desc', limit, project, type, concepts, files, commit_sha } = options;
   const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
   const limitClause = limit ? `LIMIT ${limit}` : '';
 
@@ -78,6 +78,19 @@ export function getObservationsByIds(
       params.push(`%${file}%`, `%${file}%`);
     });
     additionalConditions.push(`(${fileConditions.join(' OR ')})`);
+  }
+
+  // Apply commit_sha filter (branch ancestry filtering)
+  // OR commit_sha IS NULL ensures backward compatibility with pre-migration observations
+  if (commit_sha) {
+    if (Array.isArray(commit_sha)) {
+      const shaPlaceholders = commit_sha.map(() => '?').join(',');
+      additionalConditions.push(`(commit_sha IS NULL OR commit_sha IN (${shaPlaceholders}))`);
+      params.push(...commit_sha);
+    } else {
+      additionalConditions.push('(commit_sha IS NULL OR commit_sha = ?)');
+      params.push(commit_sha);
+    }
   }
 
   const whereClause = additionalConditions.length > 0
