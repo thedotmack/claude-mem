@@ -40,13 +40,38 @@ export class SettingsRoutes extends BaseRouteHandler {
     app.post('/api/branch/update', this.handleUpdateBranch.bind(this));
   }
 
+  // Keys containing secrets that should be redacted in GET responses
+  private static readonly REDACTED_KEYS = [
+    'CLAUDE_MEM_GEMINI_API_KEY',
+    'CLAUDE_MEM_OPENROUTER_API_KEY',
+    'CLAUDE_MEM_FEED_BOT_TOKEN',
+  ];
+
+  /**
+   * Redact secret values: show first 8 + last 4 chars, or empty if not set
+   */
+  private static redactSecret(value: string): string {
+    if (!value) return '';
+    if (value.length <= 12) return '***';
+    return value.slice(0, 8) + '...' + value.slice(-4);
+  }
+
   /**
    * Get environment settings (from ~/.claude-mem/settings.json)
+   * Secrets (API keys, bot tokens) are redacted in the response.
    */
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
     this.ensureSettingsFile(settingsPath);
-    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath) as Record<string, string>;
+
+    // Redact secrets before sending
+    for (const key of SettingsRoutes.REDACTED_KEYS) {
+      if (settings[key]) {
+        settings[key] = SettingsRoutes.redactSecret(settings[key]);
+      }
+    }
+
     res.json(settings);
   });
 
