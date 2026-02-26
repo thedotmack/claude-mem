@@ -6,8 +6,8 @@
  */
 
 import path from 'path';
-import { homedir } from 'os';
 import { unlinkSync } from 'fs';
+import { PLUGIN_ROOT } from '../../shared/worker-utils.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectName } from '../../utils/project-name.js';
@@ -33,15 +33,7 @@ import { renderMarkdownEmptyState } from './formatters/MarkdownFormatter.js';
 import { renderColorEmptyState } from './formatters/ColorFormatter.js';
 
 // Version marker path for native module error handling
-const VERSION_MARKER_PATH = path.join(
-  homedir(),
-  '.claude',
-  'plugins',
-  'marketplaces',
-  'magic-claude-mem',
-  'plugin',
-  '.install-version'
-);
+const VERSION_MARKER_PATH = path.join(PLUGIN_ROOT, '.install-version');
 
 /**
  * Initialize database connection with error handling

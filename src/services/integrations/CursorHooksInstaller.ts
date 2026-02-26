@@ -130,15 +130,15 @@ export async function updateCursorContextForProject(projectName: string, port: n
 
 /**
  * Find cursor-hooks directory
- * Searches in order: marketplace install, source repo
+ * Searches in order: bundle-relative, marketplace install, cwd
  * Checks for both bash (common.sh) and PowerShell (common.ps1) scripts
  */
 export function findCursorHooksDir(): string | null {
   const possiblePaths = [
-    // Marketplace install location
-    path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem', 'cursor-hooks'),
-    // Development/source location (relative to built worker-service.cjs in plugin/scripts/)
+    // Bundle-relative location (relative to built worker-service.cjs in plugin/scripts/)
     path.join(path.dirname(__filename), '..', '..', 'cursor-hooks'),
+    // Marketplace install location (fallback)
+    path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem', 'cursor-hooks'),
     // Alternative dev location
     path.join(process.cwd(), 'cursor-hooks'),
   ];
@@ -154,14 +154,14 @@ export function findCursorHooksDir(): string | null {
 
 /**
  * Find MCP server script path
- * Searches in order: marketplace install, source repo
+ * Searches in order: bundle-relative, marketplace install, cwd
  */
 export function findMcpServerPath(): string | null {
   const possiblePaths = [
-    // Marketplace install location
-    path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem', 'plugin', 'scripts', 'mcp-server.cjs'),
-    // Development/source location (relative to built worker-service.cjs in plugin/scripts/)
+    // Bundle-relative location (relative to built worker-service.cjs in plugin/scripts/)
     path.join(path.dirname(__filename), 'mcp-server.cjs'),
+    // Marketplace install location (fallback)
+    path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem', 'plugin', 'scripts', 'mcp-server.cjs'),
     // Alternative dev location
     path.join(process.cwd(), 'plugin', 'scripts', 'mcp-server.cjs'),
   ];
@@ -176,14 +176,14 @@ export function findMcpServerPath(): string | null {
 
 /**
  * Find worker-service.cjs path for unified CLI
- * Searches in order: marketplace install, source repo
+ * Searches in order: bundle-relative, marketplace install, cwd
  */
 export function findWorkerServicePath(): string | null {
   const possiblePaths = [
-    // Marketplace install location
-    path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem', 'plugin', 'scripts', 'worker-service.cjs'),
-    // Development/source location (relative to built worker-service.cjs in plugin/scripts/)
+    // Bundle-relative location (relative to built worker-service.cjs in plugin/scripts/)
     path.join(path.dirname(__filename), 'worker-service.cjs'),
+    // Marketplace install location (fallback)
+    path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'magic-claude-mem', 'plugin', 'scripts', 'worker-service.cjs'),
     // Alternative dev location
     path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
   ];
