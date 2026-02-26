@@ -2,6 +2,22 @@
 
 All notable changes to claude-mem.
 
+## [v10.5.2] - 2026-02-26
+
+## Smart Explore Benchmark Docs & Skill Update
+
+### Documentation
+- Published smart-explore benchmark report to public docs — full A/B comparison with methodology, raw data tables, quality assessment, and decision framework
+- Added benchmark report to docs.json navigation under Best Practices
+
+### Smart Explore Skill
+- Updated token economics with benchmark-accurate data (11-18x savings on exploration, 4-8x on file understanding)
+- Added "map first" core principle as decision heuristic for tool selection
+- Added AST completeness guarantee to smart_unfold documentation (never truncates, unlike Explore agents)
+- Added Explore agent escalation guidance for multi-file synthesis tasks
+- Updated smart_unfold token range from ~1-7k to ~400-2,100 based on measurements
+- Updated Explore agent token range from ~20-40k to ~39-59k based on measurements
+
 ## [v10.5.1] - 2026-02-26
 
 ### Bug Fix
@@ -1172,38 +1188,4 @@ This appears in both terminal (colored) output and markdown format, including em
 ## Documentation
 
 - Added detailed analysis reports for GitHub issues #511, #514, #517, #520, #527, #531, #532
-
-## [v8.5.7] - 2026-01-04
-
-## Modular Architecture Refactor
-
-This release refactors the monolithic service architecture into focused, single-responsibility modules with comprehensive test coverage.
-
-### Architecture Improvements
-
-- **SQLite Repositories** (`src/services/sqlite/`) - Modular repositories for sessions, observations, prompts, summaries, and timeline
-- **Worker Agents** (`src/services/worker/agents/`) - Extracted response processing, error handling, and session cleanup
-- **Search Strategies** (`src/services/worker/search/`) - Modular search with Chroma, SQLite, and Hybrid strategies plus orchestrator
-- **Context Generation** (`src/services/context/`) - Separated context building, token calculation, formatters, and renderers
-- **Infrastructure** (`src/services/infrastructure/`) - Graceful shutdown, health monitoring, and process management
-- **Server** (`src/services/server/`) - Express server setup, middleware, and error handling
-
-### Test Coverage
-
-- **595 tests** across 36 test files
-- **1,120 expect() assertions**
-- Coverage for SQLite repos, worker agents, search, context, infrastructure, and server modules
-
-### Session ID Refactor
-
-- Aligned tests with NULL-based memory session initialization pattern
-- Updated `SESSION_ID_ARCHITECTURE.md` documentation
-
-### Other Improvements
-
-- Added missing logger imports to 34 files for better observability
-- Updated esbuild and MCP SDK to latest versions
-- Removed `bun.lock` from version control
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.6...v8.5.7
 
