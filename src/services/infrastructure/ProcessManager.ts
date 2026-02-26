@@ -76,7 +76,7 @@ export function getWorkerNodeBinary(): string {
   const MARKER = path.join(PLUGIN_ROOT, '.install-version');
 
   try {
-    const marker = JSON.parse(readFileSync(MARKER, 'utf-8'));
+    const marker = JSON.parse(readFileSync(MARKER, 'utf-8')) as { execPath?: string };
     if (marker.execPath && existsSync(marker.execPath)) {
       return marker.execPath;
     }
@@ -106,7 +106,7 @@ export function verifyNativeModules(): boolean {
   try {
     // Spawn the pinned binary with a quick load test that constructs a Database
     // (require alone doesn't load the .node binary — Database constructor does)
-    const result = execSync(
+    execSync(
       `"${nodeBinary}" -e "const b=require('${modulePath.replace(/\\/g, '\\\\')}');const d=new b(':memory:');d.close()"`,
       { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
     );
