@@ -59,8 +59,16 @@ async function buildHooks() {
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
       dependencies: {
-        // Chroma embedding function with native ONNX binaries (can't be bundled)
-        '@chroma-core/default-embed': '^0.1.9'
+        'tree-sitter-cli': '^0.26.5',
+        'tree-sitter-c': '^0.24.1',
+        'tree-sitter-cpp': '^0.23.4',
+        'tree-sitter-go': '^0.25.0',
+        'tree-sitter-java': '^0.23.5',
+        'tree-sitter-javascript': '^0.25.0',
+        'tree-sitter-python': '^0.25.0',
+        'tree-sitter-ruby': '^0.23.1',
+        'tree-sitter-rust': '^0.24.0',
+        'tree-sitter-typescript': '^0.23.2',
       },
       engines: {
         node: '>=18.0.0',
@@ -128,7 +136,19 @@ async function buildHooks() {
       outfile: `${hooksDir}/${MCP_SERVER.name}.cjs`,
       minify: true,
       logLevel: 'error',
-      external: ['bun:sqlite'],
+      external: [
+        'bun:sqlite',
+        'tree-sitter-cli',
+        'tree-sitter-javascript',
+        'tree-sitter-typescript',
+        'tree-sitter-python',
+        'tree-sitter-go',
+        'tree-sitter-rust',
+        'tree-sitter-ruby',
+        'tree-sitter-java',
+        'tree-sitter-c',
+        'tree-sitter-cpp',
+      ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
@@ -166,6 +186,7 @@ async function buildHooks() {
     console.log('\n📋 Verifying distribution files...');
     const requiredDistributionFiles = [
       'plugin/skills/mem-search/SKILL.md',
+      'plugin/skills/smart-explore/SKILL.md',
       'plugin/hooks/hooks.json',
       'plugin/.claude-plugin/plugin.json',
     ];
