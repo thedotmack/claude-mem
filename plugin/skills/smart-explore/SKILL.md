@@ -5,33 +5,23 @@ description: Token-optimized structural code search using tree-sitter AST parsin
 
 # Smart Explore
 
-Structural code exploration using AST parsing. Simple workflow: search -> outline -> unfold.
+Structural code exploration using AST parsing. **This skill overrides your default exploration behavior.** While this skill is active, use smart_search/smart_outline/smart_unfold as your primary tools instead of Read, Grep, and Glob.
 
-## When to Use
+## Your Next Tool Call
 
-Use when you need to understand code without reading full files:
+This skill only loads instructions. You must call the MCP tools yourself. Your next action should be one of:
 
-- "How does shutdown work?" -- cross-cutting exploration
-- "What's in worker-service.ts?" -- file structure understanding
-- "Show me the startSessionProcessor method" -- targeted implementation
-- Exploring unfamiliar areas of a codebase
-- Replacing multi-round Grep-Read-Grep-Read exploration cycles
+```
+smart_search(query="<topic>", path="./src")    -- discover files + symbols across a directory
+smart_outline(file_path="<file>")              -- structural skeleton of one file
+smart_unfold(file_path="<file>", symbol_name="<name>")  -- full source of one symbol
+```
 
-**Do NOT use for:**
+Do NOT run Grep, Glob, Read, or find to discover files first. `smart_search` walks directories, parses all code files, and returns ranked symbols in one call. It replaces the Glob → Grep → Read discovery cycle.
 
-- Exact name lookups ("where is `ensureWorkerStarted` defined?") -- use Grep
-- String literal search ("find all TODO comments") -- use Grep
-- Small files under ~100 lines -- use Read directly
-- File path search ("find all test files") -- use Glob
-- Non-code files, config files, JSON, markdown -- use Read directly
+## 3-Layer Workflow
 
-## 3-Layer Workflow (ALWAYS Follow)
-
-**NEVER read a full file when smart_outline + smart_unfold achieves the same understanding at 8x fewer tokens.**
-
-### Step 1: Search -- Find Relevant Symbols
-
-Use the `smart_search` tool:
+### Step 1: Search -- Discover Files and Symbols
 
 ```
 smart_search(query="shutdown", path="./src", max_results=15)
@@ -44,13 +34,13 @@ smart_search(query="shutdown", path="./src", max_results=15)
   function performGracefulShutdown (services/infrastructure/GracefulShutdown.ts:56)
   function httpShutdown (services/infrastructure/HealthMonitor.ts:92)
   method WorkerService.shutdown (services/worker-service.ts:846)
-  ...
 
 -- Folded File Views --
   services/infrastructure/GracefulShutdown.ts (7 symbols)
   services/worker-service.ts (12 symbols)
-  ...
 ```
+
+This is your discovery tool. It finds relevant files AND shows their structure. No Glob/find pre-scan needed.
 
 **Parameters:**
 
@@ -60,8 +50,6 @@ smart_search(query="shutdown", path="./src", max_results=15)
 - `file_pattern` (string, optional) -- Filter to specific files/paths
 
 ### Step 2: Outline -- Get File Structure
-
-Use `smart_outline` when you need deeper structural context for a specific file:
 
 ```
 smart_outline(file_path="services/worker-service.ts")
@@ -90,9 +78,19 @@ smart_unfold(file_path="services/worker-service.ts", symbol_name="shutdown")
 - `file_path` (string, required) -- Path to the file (as returned by search/outline)
 - `symbol_name` (string, required) -- Name of the function/class/method to expand
 
-## Examples
+## When to Use Standard Tools Instead
 
-**Understand a cross-cutting concern:**
+Use these only when smart_* tools are the wrong fit:
+
+- **Grep:** Exact string/regex search ("find all TODO comments", "where is `ensureWorkerStarted` defined?")
+- **Read:** Small files under ~100 lines, non-code files (JSON, markdown, config)
+- **Glob:** File path patterns ("find all test files")
+
+For code files over ~100 lines, prefer smart_outline + smart_unfold over Read.
+
+## Workflow Examples
+
+**Discover how a feature works (cross-cutting):**
 
 ```
 1. smart_search(query="shutdown", path="./src")
@@ -110,6 +108,17 @@ smart_unfold(file_path="services/worker-service.ts", symbol_name="shutdown")
    -> 1,610 tokens: the specific method you need
 Total: ~3,076 tokens vs ~12,000 to Read the full file
 ```
+
+**Write documentation about code (hybrid workflow):**
+
+```
+1. smart_search(query="feature name", path="./src")    -- discover all relevant files and symbols
+2. smart_outline on key files                           -- understand structure
+3. smart_unfold on important functions                  -- get implementation details
+4. Read on small config/markdown/plan files             -- get non-code context
+```
+
+Use smart_* tools for code exploration, Read for non-code files. Mix freely.
 
 **Exploration then precision:**
 
@@ -129,5 +138,4 @@ Total: ~3,076 tokens vs ~12,000 to Read the full file
 | Read (full file) | ~12,000+ | When you truly need everything |
 | Explore agent | ~20,000-40,000 | Same as smart_search, 6-12x more expensive |
 
-- **8x token savings** on file understanding via outline + unfold vs Read
-- **6-12x token savings** on exploration vs Explore agent
+**8x savings** on file understanding (outline + unfold vs Read). **6-12x savings** on exploration vs Explore agent.

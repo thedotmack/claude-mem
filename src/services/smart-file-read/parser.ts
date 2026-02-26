@@ -14,7 +14,12 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 
-const require = createRequire(import.meta.url);
+// CJS-safe require for resolving external packages at runtime.
+// In ESM: import.meta.url works. In CJS bundle (esbuild): __filename works.
+// typeof check avoids ReferenceError in ESM where __filename doesn't exist.
+const _require = typeof __filename !== 'undefined'
+  ? createRequire(__filename)
+  : createRequire(import.meta.url);
 
 // --- Types ---
 
@@ -87,7 +92,7 @@ function resolveGrammarPath(language: string): string | null {
   const pkg = GRAMMAR_PACKAGES[language];
   if (!pkg) return null;
   try {
-    const packageJsonPath = require.resolve(pkg + "/package.json");
+    const packageJsonPath = _require.resolve(pkg + "/package.json");
     return dirname(packageJsonPath);
   } catch {
     return null;
@@ -199,7 +204,7 @@ function getTreeSitterBin(): string {
 
   // Try direct binary from tree-sitter-cli package
   try {
-    const pkgPath = require.resolve("tree-sitter-cli/package.json");
+    const pkgPath = _require.resolve("tree-sitter-cli/package.json");
     const binPath = join(dirname(pkgPath), "tree-sitter");
     if (existsSync(binPath)) {
       cachedBinPath = binPath;
