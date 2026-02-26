@@ -183,6 +183,10 @@ interface ClaudeMemPluginConfig {
 
 const MAX_SSE_BUFFER_SIZE = 1024 * 1024; // 1MB
 const DEFAULT_WORKER_PORT = 37777;
+const MAX_TOOL_RESPONSE_CHARS = 1000;
+const SESSION_TRACK_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+const MAX_TRACKED_SESSION_SCOPES = 500;
+const GLOBAL_SESSION_SCOPE_KEY = "scope:global";
 
 // Emoji pool for deterministic auto-assignment to unknown agents.
 // Uses a hash of the agentId to pick a consistent emoji — no persistent state needed.
@@ -197,6 +201,50 @@ function poolEmojiForAgent(agentId: string): string {
     hash = ((hash << 5) - hash + agentId.charCodeAt(i)) | 0;
   }
   return EMOJI_POOL[Math.abs(hash) % EMOJI_POOL.length];
+}
+
+function normalizeScopePart(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function buildSessionScopeKey(params: {
+  sessionKey?: string;
+  conversationId?: string;
+  channelId?: string;
+  agentId?: string;
+  sessionId?: string;
+  accountId?: string;
+  workspaceDir?: string;
+}): string {
+  const sessionKey = normalizeScopePart(params.sessionKey);
+  if (sessionKey) return `session:${sessionKey}`;
+
+  const conversationId = normalizeScopePart(params.conversationId);
+  if (conversationId) return `conversation:${conversationId}`;
+
+  const channelId = normalizeScopePart(params.channelId);
+  if (channelId) return `channel:${channelId}`;
+
+  const sessionId = normalizeScopePart(params.sessionId);
+  if (sessionId) return `session-id:${sessionId}`;
+
+  const agentId = normalizeScopePart(params.agentId);
+  if (agentId) return `agent:${agentId}`;
+
+  const accountId = normalizeScopePart(params.accountId);
+  if (accountId) return `account:${accountId}`;
+
+  const workspaceDir = normalizeScopePart(params.workspaceDir);
+  if (workspaceDir) return `workspace:${workspaceDir}`;
+
+  return GLOBAL_SESSION_SCOPE_KEY;
+}
+
+function buildContentSessionId(scopeKey: string): string {
+  const safeScope = scopeKey.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80) || "scope";
+  return `openclaw-${safeScope}-${Date.now()}`;
 }
 
 // Default emoji values — overridden by user config via observationFeed.emojis
@@ -533,14 +581,114 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // ------------------------------------------------------------------
   const sessionIds = new Map<string, string>();
   const workspaceDirsBySessionKey = new Map<string, string>();
+  const sessionLastTouchedAt = new Map<string, number>();
+  const sessionTouchOrder = new Map<string, number>();
+  let nextSessionTouchOrder = 0;
+  const runtimeSessionIdToScopeKey = new Map<string, string>();
+  let hasLoggedGlobalScopeFallback = false;
   const syncMemoryFile = userConfig.syncMemoryFile !== false; // default true
 
-  function getContentSessionId(sessionKey?: string): string {
-    const key = sessionKey || "default";
-    if (!sessionIds.has(key)) {
-      sessionIds.set(key, `openclaw-${key}-${Date.now()}`);
+  function clearSessionScope(scopeKey: string): void {
+    sessionIds.delete(scopeKey);
+    workspaceDirsBySessionKey.delete(scopeKey);
+    sessionLastTouchedAt.delete(scopeKey);
+    sessionTouchOrder.delete(scopeKey);
+    for (const [runtimeSessionId, mappedScopeKey] of runtimeSessionIdToScopeKey) {
+      if (mappedScopeKey === scopeKey) {
+        runtimeSessionIdToScopeKey.delete(runtimeSessionId);
+      }
     }
-    return sessionIds.get(key)!;
+  }
+
+  function pruneSessionTracking(now: number = Date.now()): void {
+    for (const [scopeKey, lastTouched] of sessionLastTouchedAt) {
+      if (now - lastTouched > SESSION_TRACK_TTL_MS) {
+        clearSessionScope(scopeKey);
+      }
+    }
+
+    if (sessionLastTouchedAt.size > MAX_TRACKED_SESSION_SCOPES) {
+      const oldestScopes = [...sessionLastTouchedAt.keys()]
+        .sort((a, b) => {
+          const aTouched = sessionLastTouchedAt.get(a) ?? 0;
+          const bTouched = sessionLastTouchedAt.get(b) ?? 0;
+          if (aTouched !== bTouched) {
+            return aTouched - bTouched;
+          }
+          const aOrder = sessionTouchOrder.get(a) ?? 0;
+          const bOrder = sessionTouchOrder.get(b) ?? 0;
+          return aOrder - bOrder;
+        })
+        .slice(0, sessionLastTouchedAt.size - MAX_TRACKED_SESSION_SCOPES);
+
+      for (const scopeKey of oldestScopes) {
+        clearSessionScope(scopeKey);
+      }
+    }
+  }
+
+  function touchSessionScope(scopeKey: string, now: number = Date.now()): void {
+    sessionLastTouchedAt.set(scopeKey, now);
+    nextSessionTouchOrder += 1;
+    sessionTouchOrder.set(scopeKey, nextSessionTouchOrder);
+  }
+
+  function rememberRuntimeSessionScope(sessionId: string | undefined, scopeKey: string): void {
+    const normalizedSessionId = normalizeScopePart(sessionId);
+    if (!normalizedSessionId) return;
+    runtimeSessionIdToScopeKey.set(normalizedSessionId, scopeKey);
+  }
+
+  function resolveSessionEndScopeKeys(event: SessionEndEvent, ctx: EventContext): string[] {
+    const scopeKeys = new Set<string>();
+    scopeKeys.add(resolveEventScopeKey(ctx, event.sessionId));
+
+    const normalizedSessionId = normalizeScopePart(event.sessionId);
+    if (normalizedSessionId) {
+      const mappedScopeKey = runtimeSessionIdToScopeKey.get(normalizedSessionId);
+      if (mappedScopeKey) {
+        scopeKeys.add(mappedScopeKey);
+      }
+    }
+
+    return [...scopeKeys];
+  }
+
+  function resolveEventScopeKey(ctx: EventContext, eventSessionId?: string): string {
+    return buildSessionScopeKey({
+      sessionKey: ctx.sessionKey,
+      agentId: ctx.agentId,
+      sessionId: eventSessionId,
+      workspaceDir: ctx.workspaceDir,
+    });
+  }
+
+  function resolveMessageScopeKey(ctx: MessageContext): string {
+    return buildSessionScopeKey({
+      conversationId: ctx.conversationId,
+      channelId: ctx.channelId,
+      accountId: ctx.accountId,
+    });
+  }
+
+  function getContentSessionId(scopeKey: string, sourceEvent: string): string {
+    const now = Date.now();
+    pruneSessionTracking(now);
+    touchSessionScope(scopeKey, now);
+
+    if (scopeKey === GLOBAL_SESSION_SCOPE_KEY && !hasLoggedGlobalScopeFallback) {
+      hasLoggedGlobalScopeFallback = true;
+      api.logger.warn(`[claude-mem] Session scope fallback to "${GLOBAL_SESSION_SCOPE_KEY}" during ${sourceEvent}; missing identifiers may cause unrelated events to share memory context`);
+    }
+
+    if (!sessionIds.has(scopeKey)) {
+      sessionIds.set(scopeKey, buildContentSessionId(scopeKey));
+    }
+
+    // Enforce hard cap after touching/creating this scope.
+    pruneSessionTracking(now);
+
+    return sessionIds.get(scopeKey)!;
   }
 
   async function syncMemoryToWorkspace(workspaceDir: string, ctx?: EventContext): Promise<void> {
@@ -569,8 +717,10 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // ------------------------------------------------------------------
   // Event: session_start — init claude-mem session (fires on /new, /reset)
   // ------------------------------------------------------------------
-  api.on("session_start", async (_event, ctx) => {
-    const contentSessionId = getContentSessionId(ctx.sessionKey);
+  api.on("session_start", async (event, ctx) => {
+    const sessionScopeKey = resolveEventScopeKey(ctx, event.sessionId);
+    rememberRuntimeSessionScope(event.sessionId, sessionScopeKey);
+    const contentSessionId = getContentSessionId(sessionScopeKey, "session_start");
 
     await workerPost(workerPort, "/api/sessions/init", {
       contentSessionId,
@@ -585,8 +735,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // Event: message_received — capture inbound user prompts from channels
   // ------------------------------------------------------------------
   api.on("message_received", async (event, ctx) => {
-    const sessionKey = ctx.conversationId || ctx.channelId || "default";
-    const contentSessionId = getContentSessionId(sessionKey);
+    const sessionScopeKey = resolveMessageScopeKey(ctx);
+    const contentSessionId = getContentSessionId(sessionScopeKey, "message_received");
 
     await workerPost(workerPort, "/api/sessions/init", {
       contentSessionId,
@@ -599,7 +749,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // Event: after_compaction — re-init session after context compaction
   // ------------------------------------------------------------------
   api.on("after_compaction", async (_event, ctx) => {
-    const contentSessionId = getContentSessionId(ctx.sessionKey);
+    const sessionScopeKey = resolveEventScopeKey(ctx);
+    const contentSessionId = getContentSessionId(sessionScopeKey, "after_compaction");
 
     await workerPost(workerPort, "/api/sessions/init", {
       contentSessionId,
@@ -614,14 +765,17 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // Event: before_agent_start — init session + sync MEMORY.md + track workspace
   // ------------------------------------------------------------------
   api.on("before_agent_start", async (event, ctx) => {
+    const sessionScopeKey = resolveEventScopeKey(ctx);
+
     // Track workspace dir so tool_result_persist can sync MEMORY.md later
     if (ctx.workspaceDir) {
-      workspaceDirsBySessionKey.set(ctx.sessionKey || "default", ctx.workspaceDir);
+      workspaceDirsBySessionKey.set(sessionScopeKey, ctx.workspaceDir);
+      touchSessionScope(sessionScopeKey);
     }
 
     // Initialize session in the worker so observations are not skipped
     // (the privacy check requires a stored user prompt to exist)
-    const contentSessionId = getContentSessionId(ctx.sessionKey);
+    const contentSessionId = getContentSessionId(sessionScopeKey, "before_agent_start");
     await workerPost(workerPort, "/api/sessions/init", {
       contentSessionId,
       project: getProjectName(ctx),
@@ -641,11 +795,10 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     api.logger.info(`[claude-mem] tool_result_persist fired: tool=${event.toolName ?? "unknown"} agent=${ctx.agentId ?? "none"} session=${ctx.sessionKey ?? "none"}`);
     const toolName = event.toolName;
     if (!toolName) return;
-
-    // Skip memory_ tools to prevent recursive observation loops
     if (toolName.startsWith("memory_")) return;
 
-    const contentSessionId = getContentSessionId(ctx.sessionKey);
+    const sessionScopeKey = resolveEventScopeKey(ctx);
+    const contentSessionId = getContentSessionId(sessionScopeKey, "tool_result_persist");
 
     // Extract result text from all content blocks
     let toolResponseText = "";
@@ -655,6 +808,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         .filter((block) => (block.type === "tool_result" || block.type === "text") && "text" in block)
         .map((block) => String(block.text))
         .join("\n");
+    }
+    if (toolResponseText.length > MAX_TOOL_RESPONSE_CHARS) {
+      toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_CHARS);
     }
 
     // Truncate long responses to prevent oversized payloads
@@ -672,7 +828,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       cwd: "",
     }, api.logger);
 
-    const workspaceDir = ctx.workspaceDir || workspaceDirsBySessionKey.get(ctx.sessionKey || "default");
+    const workspaceDir = ctx.workspaceDir || workspaceDirsBySessionKey.get(sessionScopeKey);
     if (syncMemoryFile && workspaceDir) {
       syncMemoryToWorkspace(workspaceDir, ctx);
     }
@@ -682,7 +838,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // Event: agent_end — summarize and complete session
   // ------------------------------------------------------------------
   api.on("agent_end", async (event, ctx) => {
-    const contentSessionId = getContentSessionId(ctx.sessionKey);
+    const sessionScopeKey = resolveEventScopeKey(ctx);
+    const contentSessionId = getContentSessionId(sessionScopeKey, "agent_end");
 
     // Extract last assistant message for summarization
     let lastAssistantMessage = "";
@@ -719,10 +876,11 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // ------------------------------------------------------------------
   // Event: session_end — clean up session tracking to prevent unbounded growth
   // ------------------------------------------------------------------
-  api.on("session_end", async (_event, ctx) => {
-    const key = ctx.sessionKey || "default";
-    sessionIds.delete(key);
-    workspaceDirsBySessionKey.delete(key);
+  api.on("session_end", async (event, ctx) => {
+    const scopeKeys = resolveSessionEndScopeKeys(event, ctx);
+    for (const scopeKey of scopeKeys) {
+      clearSessionScope(scopeKey);
+    }
   });
 
   // ------------------------------------------------------------------
@@ -731,6 +889,11 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   api.on("gateway_start", async () => {
     workspaceDirsBySessionKey.clear();
     sessionIds.clear();
+    sessionLastTouchedAt.clear();
+    sessionTouchOrder.clear();
+    nextSessionTouchOrder = 0;
+    runtimeSessionIdToScopeKey.clear();
+    hasLoggedGlobalScopeFallback = false;
     api.logger.info("[claude-mem] Gateway started — session tracking reset");
   });
 
