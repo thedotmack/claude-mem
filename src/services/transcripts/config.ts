@@ -8,7 +8,7 @@ export const DEFAULT_STATE_PATH = join(homedir(), '.claude-mem', 'transcript-wat
 
 const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
   name: 'codex',
-  version: '0.2',
+  version: '0.3',
   description: 'Schema for Codex session JSONL files under ~/.codex/sessions.',
   events: [
     {
@@ -46,13 +46,14 @@ const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
     },
     {
       name: 'tool-use',
-      match: { path: 'payload.type', in: ['function_call', 'custom_tool_call', 'web_search_call'] },
+      match: { path: 'payload.type', in: ['function_call', 'custom_tool_call', 'web_search_call', 'exec_command'] },
       action: 'tool_use',
       fields: {
         toolId: 'payload.call_id',
         toolName: {
           coalesce: [
             'payload.name',
+            'payload.type',
             { value: 'web_search' }
           ]
         },
@@ -60,6 +61,7 @@ const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
           coalesce: [
             'payload.arguments',
             'payload.input',
+            'payload.command',
             'payload.action'
           ]
         }
@@ -67,7 +69,7 @@ const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
     },
     {
       name: 'tool-result',
-      match: { path: 'payload.type', in: ['function_call_output', 'custom_tool_call_output'] },
+      match: { path: 'payload.type', in: ['function_call_output', 'custom_tool_call_output', 'exec_command_output'] },
       action: 'tool_result',
       fields: {
         toolId: 'payload.call_id',
@@ -76,7 +78,7 @@ const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
     },
     {
       name: 'session-end',
-      match: { path: 'payload.type', equals: 'turn_aborted' },
+      match: { path: 'payload.type', in: ['turn_aborted', 'turn_completed'] },
       action: 'session_end'
     }
   ]
