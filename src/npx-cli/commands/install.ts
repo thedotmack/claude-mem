@@ -85,7 +85,7 @@ function enablePluginInClaudeSettings(): void {
 // IDE setup dispatcher
 // ---------------------------------------------------------------------------
 
-function setupIDEs(selectedIDEs: string[]): void {
+async function setupIDEs(selectedIDEs: string[]): Promise<void> {
   for (const ideId of selectedIDEs) {
     switch (ideId) {
       case 'claude-code':
@@ -98,6 +98,39 @@ function setupIDEs(selectedIDEs: string[]): void {
         p.log.info('Cursor: hook configuration available after first launch.');
         p.log.info(`  Run: npx claude-mem cursor-setup (coming soon)`);
         break;
+
+      case 'gemini-cli': {
+        const { installGeminiCliHooks } = await import('../../services/integrations/GeminiCliHooksInstaller.js');
+        const geminiResult = await installGeminiCliHooks();
+        if (geminiResult === 0) {
+          p.log.success('Gemini CLI: hooks installed.');
+        } else {
+          p.log.error('Gemini CLI: hook installation failed.');
+        }
+        break;
+      }
+
+      case 'opencode': {
+        const { installOpenCodeIntegration } = await import('../../services/integrations/OpenCodeInstaller.js');
+        const openCodeResult = await installOpenCodeIntegration();
+        if (openCodeResult === 0) {
+          p.log.success('OpenCode: plugin installed.');
+        } else {
+          p.log.error('OpenCode: plugin installation failed.');
+        }
+        break;
+      }
+
+      case 'windsurf': {
+        const { installWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
+        const windsurfResult = await installWindsurfHooks();
+        if (windsurfResult === 0) {
+          p.log.success('Windsurf: hooks installed.');
+        } else {
+          p.log.error('Windsurf: hook installation failed.');
+        }
+        break;
+      }
 
       default: {
         const allIDEs = detectInstalledIDEs();
@@ -350,7 +383,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   ]);
 
   // IDE-specific setup
-  setupIDEs(selectedIDEs);
+  await setupIDEs(selectedIDEs);
 
   // Summary
   const summaryLines = [
