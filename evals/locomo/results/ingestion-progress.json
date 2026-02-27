@@ -30,43 +30,43 @@
   {
     "sample_id": "conv-43",
     "total_sessions": 29,
-    "sessions_ingested": 0,
-    "observations_queued": 0,
-    "status": "failed"
+    "sessions_ingested": 29,
+    "observations_queued": 29,
+    "status": "completed"
   },
   {
     "sample_id": "conv-44",
     "total_sessions": 28,
-    "sessions_ingested": 0,
-    "observations_queued": 0,
-    "status": "failed"
+    "sessions_ingested": 28,
+    "observations_queued": 28,
+    "status": "completed"
   },
   {
     "sample_id": "conv-47",
     "total_sessions": 31,
-    "sessions_ingested": 0,
-    "observations_queued": 0,
-    "status": "failed"
+    "sessions_ingested": 31,
+    "observations_queued": 31,
+    "status": "completed"
   },
   {
     "sample_id": "conv-48",
     "total_sessions": 30,
-    "sessions_ingested": 0,
-    "observations_queued": 0,
-    "status": "failed"
+    "sessions_ingested": 30,
+    "observations_queued": 30,
+    "status": "completed"
   },
   {
     "sample_id": "conv-49",
     "total_sessions": 25,
-    "sessions_ingested": 0,
-    "observations_queued": 0,
-    "status": "failed"
+    "sessions_ingested": 25,
+    "observations_queued": 25,
+    "status": "completed"
   },
   {
     "sample_id": "conv-50",
     "total_sessions": 30,
-    "sessions_ingested": 0,
-    "observations_queued": 0,
-    "status": "failed"
+    "sessions_ingested": 30,
+    "observations_queued": 30,
+    "status": "completed"
   }
 ]
