@@ -34,6 +34,7 @@ export class MigrationRunner {
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
+    this.addTemporalScoringColumns();
   }
 
   /**
@@ -612,6 +613,28 @@ export class MigrationRunner {
     // Migration 17 now handles all column rename cases idempotently.
     // Just record this migration as applied.
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(19, new Date().toISOString());
+  }
+
+  /**
+   * Add temporal scoring and staleness tracking columns to observations (migration 22)
+   */
+  private addTemporalScoringColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'last_accessed_at');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE observations ADD COLUMN last_accessed_at INTEGER');
+      this.db.run('ALTER TABLE observations ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0');
+      this.db.run('ALTER TABLE observations ADD COLUMN importance INTEGER NOT NULL DEFAULT 5');
+      this.db.run('ALTER TABLE observations ADD COLUMN is_stale INTEGER NOT NULL DEFAULT 0');
+      this.db.run('ALTER TABLE observations ADD COLUMN corrected_by_id INTEGER');
+      logger.debug('DB', 'Added temporal scoring columns to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
   }
 
   /**

@@ -349,6 +349,50 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         }]
       };
     }
+  },
+  {
+    name: 'contradict',
+    description: 'Mark an existing memory as stale/outdated and record a correction. Use when you discover that a previously stored memory is no longer accurate.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        stale_id: { type: 'number', description: 'ID of the memory to mark as stale' },
+        correction: { type: 'string', description: 'The corrected or updated information to store' },
+        title: { type: 'string', description: 'Optional title for the correction memory' }
+      },
+      required: ['stale_id', 'correction']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/memory/contradict', args);
+    }
+  },
+  {
+    name: 'set_importance',
+    description: 'Set the importance score (1-10) for a memory. Higher importance = slower decay. Use 8-10 for critical architectural decisions, 1-3 for ephemeral notes. Default is 5 (90-day half-life).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'ID of the memory to update' },
+        importance: { type: 'number', description: 'Importance score 1-10 (5=default/90d half-life, 10=180d, 1=18d)' }
+      },
+      required: ['id', 'importance']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/memory/importance', args);
+    }
+  },
+  {
+    name: 'drift_check',
+    description: 'Analyze memory clusters for semantic drift — detects concept areas where old memories have gone stale or been superseded by recent work. Run when architecture or tech decisions change.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Limit check to a specific project (optional, checks all projects if omitted)' }
+      }
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/memory/drift-check', args);
+    }
   }
 ];
 
