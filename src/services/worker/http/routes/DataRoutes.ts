@@ -165,6 +165,15 @@ export class DataRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
     const observations = store.getObservationsByIds(ids, { orderBy, limit, project });
 
+    // fire-and-forget — don't block response
+    setTimeout(() => {
+      try {
+        this.dbManager.getSessionSearch().updateAccessTracking(ids.map(Number));
+      } catch {
+        // ignore tracking failures
+      }
+    }, 0);
+
     res.json(observations);
   });
 
