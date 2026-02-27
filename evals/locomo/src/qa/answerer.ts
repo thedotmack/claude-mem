@@ -33,6 +33,24 @@ function getClient(): Anthropic {
 }
 
 // ---------------------------------------------------------------------------
+// Model configuration
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MODEL = "claude-opus-4-6";
+
+/**
+ * Resolve the model name. When using OpenRouter (detected via ANTHROPIC_BASE_URL),
+ * prefix with `anthropic/` if not already prefixed.
+ */
+function resolveModelName(model: string): string {
+  const baseUrl = process.env.ANTHROPIC_BASE_URL ?? "";
+  if (baseUrl.includes("openrouter.ai") && !model.includes("/")) {
+    return `anthropic/${model}`;
+  }
+  return model;
+}
+
+// ---------------------------------------------------------------------------
 // Answer generation
 // ---------------------------------------------------------------------------
 
@@ -56,7 +74,7 @@ export async function answerQuestion(
   const startMs = performance.now();
 
   const response = await api.messages.create({
-    model: "claude-opus-4-6",
+    model: resolveModelName(DEFAULT_MODEL),
     max_tokens: 256,
     temperature: 0,
     system: QA_SYSTEM_PROMPT,

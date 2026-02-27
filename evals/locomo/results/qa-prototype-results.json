@@ -1,0 +1,222 @@
+[
+  {
+    "question": "When did Caroline go to the LGBTQ support group?",
+    "category": "temporal",
+    "predicted_answer": "The previous day (May 7, 2023), since the conversation takes place on May 8, 2023, and Caroline mentions attending the group \"the previous day.\"",
+    "ground_truth": "7 May 2023",
+    "search_results_count": 1,
+    "search_latency_ms": 5116,
+    "answer_latency_ms": 2441,
+    "answer_input_tokens": 440,
+    "answer_output_tokens": 40
+  },
+  {
+    "question": "When did Melanie paint a sunrise?",
+    "category": "temporal",
+    "predicted_answer": "Unanswerable\n\nThe context states that Melanie shares a lake sunrise painting she created, but no specific date for when she painted it is provided.",
+    "ground_truth": "2022",
+    "search_results_count": 1,
+    "search_latency_ms": 2718,
+    "answer_latency_ms": 3101,
+    "answer_input_tokens": 436,
+    "answer_output_tokens": 36
+  },
+  {
+    "question": "What fields would Caroline be likely to pursue in her educaton?",
+    "category": "multi-hop",
+    "predicted_answer": "Based on the context, Caroline expresses interest in pursuing **counseling or mental health** careers to support others with similar experiences.",
+    "ground_truth": "Psychology, counseling certification",
+    "search_results_count": 1,
+    "search_latency_ms": 541,
+    "answer_latency_ms": 1829,
+    "answer_input_tokens": 438,
+    "answer_output_tokens": 29
+  },
+  {
+    "question": "What did Caroline research?",
+    "category": "single-hop",
+    "predicted_answer": "unanswerable",
+    "ground_truth": "Adoption agencies",
+    "search_results_count": 1,
+    "search_latency_ms": 565,
+    "answer_latency_ms": 1702,
+    "answer_input_tokens": 431,
+    "answer_output_tokens": 7
+  },
+  {
+    "question": "What is Caroline's identity?",
+    "category": "single-hop",
+    "predicted_answer": "Based on the context, Caroline attended an **LGBTQ support group** where she found **transgender stories inspiring** and gained **acceptance and personal courage to embrace her identity**. This suggests Caroline identifies as part of the LGBTQ community, with the specific mention of transgender stories being inspiring pointing toward a **transgender** identity.",
+    "ground_truth": "Transgender woman",
+    "search_results_count": 1,
+    "search_latency_ms": 571,
+    "answer_latency_ms": 3109,
+    "answer_input_tokens": 432,
+    "answer_output_tokens": 71
+  },
+  {
+    "question": "When did Melanie run a charity race?",
+    "category": "temporal",
+    "predicted_answer": "unanswerable",
+    "ground_truth": "The sunday before 25 May 2023",
+    "search_results_count": 1,
+    "search_latency_ms": 564,
+    "answer_latency_ms": 1561,
+    "answer_input_tokens": 437,
+    "answer_output_tokens": 7
+  },
+  {
+    "question": "When is Melanie planning on going camping?",
+    "category": "temporal",
+    "predicted_answer": "unanswerable",
+    "ground_truth": "June 2023",
+    "search_results_count": 1,
+    "search_latency_ms": 560,
+    "answer_latency_ms": 2167,
+    "answer_input_tokens": 437,
+    "answer_output_tokens": 7
+  },
+  {
+    "question": "What is Caroline's relationship status?",
+    "category": "single-hop",
+    "predicted_answer": "unanswerable",
+    "ground_truth": "Single",
+    "search_results_count": 1,
+    "search_latency_ms": 577,
+    "answer_latency_ms": 1976,
+    "answer_input_tokens": 433,
+    "answer_output_tokens": 7
+  },
+  {
+    "question": "When did Caroline give a speech at a school?",
+    "category": "temporal",
+    "predicted_answer": "unanswerable",
+    "ground_truth": "The week before 9 June 2023",
+    "search_results_count": 1,
+    "search_latency_ms": 562,
+    "answer_latency_ms": 1938,
+    "answer_input_tokens": 437,
+    "answer_output_tokens": 7
+  },
+  {
+    "question": "When did Caroline meet up with her friends, family, and mentors?",
+    "category": "temporal",
+    "predicted_answer": "unanswerable",
+    "ground_truth": "The week before 9 June 2023",
+    "search_results_count": 1,
+    "search_latency_ms": 566,
+    "answer_latency_ms": 2087,
+    "answer_input_tokens": 442,
+    "answer_output_tokens": 7
+  },
+  {
+    "question": "How long has Caroline had her current group of friends for?",
+    "category": "temporal",
+    "predicted_answer": "unanswerable",
+    "ground_truth": "4 years",
+    "search_results_count": 1,
+    "search_latency_ms": 561,
+    "answer_latency_ms": 1692,
+    "answer_input_tokens": 439,
+    "answer_output_tokens": 7
+  },
+  {
+    "question": "Where did Caroline move from 4 years ago?",
+    "category": "single-hop",
+    "predicted_answer": "unanswerable",
+    "ground_truth": "Sweden",
+    "search_results_count": 1,
+    "search_latency_ms": 2010,
+    "answer_latency_ms": 1864,
+    "answer_input_tokens": 437,
+    "answer_output_tokens": 7
+  },
+  {
+    "question": "How long ago was Caroline's 18th birthday?",
+    "category": "temporal",
+    "predicted_answer": "unanswerable",
+    "ground_truth": "10 years ago",
+    "search_results_count": 1,
+    "search_latency_ms": 793,
+    "answer_latency_ms": 1519,
+    "answer_input_tokens": 438,
+    "answer_output_tokens": 7
+  },
+  {
+    "question": "What career path has Caroline decided to persue?",
+    "category": "single-hop",
+    "predicted_answer": "Based on the context, Caroline expresses interest in pursuing **counseling or mental health** careers to support others with similar experiences.",
+    "ground_truth": "counseling or mental health for Transgender people",
+    "search_results_count": 1,
+    "search_latency_ms": 3943,
+    "answer_latency_ms": 2223,
+    "answer_input_tokens": 436,
+    "answer_output_tokens": 29
+  },
+  {
+    "question": "Would Caroline still want to pursue counseling as a career if she hadn't received support growing up?",
+    "category": "multi-hop",
+    "predicted_answer": "unanswerable",
+    "ground_truth": "Likely no",
+    "search_results_count": 1,
+    "search_latency_ms": 793,
+    "answer_latency_ms": 1696,
+    "answer_input_tokens": 445,
+    "answer_output_tokens": 7
+  },
+  {
+    "question": "What activities does Melanie partake in?",
+    "category": "single-hop",
+    "predicted_answer": "Based on the context, Melanie partakes in **painting** (she shares a lake sunrise painting and discusses it as a creative and emotional outlet) and **swimming with her kids** (she leaves at the end of the conversation to go swimming with them).",
+    "ground_truth": "pottery, camping, painting, swimming",
+    "search_results_count": 1,
+    "search_latency_ms": 609,
+    "answer_latency_ms": 2505,
+    "answer_input_tokens": 436,
+    "answer_output_tokens": 56
+  },
+  {
+    "question": "When did Melanie sign up for a pottery class?",
+    "category": "temporal",
+    "predicted_answer": "unanswerable",
+    "ground_truth": "2 July 2023",
+    "search_results_count": 1,
+    "search_latency_ms": 563,
+    "answer_latency_ms": 1835,
+    "answer_input_tokens": 439,
+    "answer_output_tokens": 7
+  },
+  {
+    "question": "When is Caroline going to the transgender conference?",
+    "category": "temporal",
+    "predicted_answer": "unanswerable",
+    "ground_truth": "July 2023",
+    "search_results_count": 1,
+    "search_latency_ms": 563,
+    "answer_latency_ms": 1860,
+    "answer_input_tokens": 436,
+    "answer_output_tokens": 7
+  },
+  {
+    "question": "Where has Melanie camped?",
+    "category": "single-hop",
+    "predicted_answer": "unanswerable",
+    "ground_truth": "beach, mountains, forest",
+    "search_results_count": 1,
+    "search_latency_ms": 576,
+    "answer_latency_ms": 1857,
+    "answer_input_tokens": 434,
+    "answer_output_tokens": 7
+  },
+  {
+    "question": "What do Melanie's kids like?",
+    "category": "single-hop",
+    "predicted_answer": "unanswerable",
+    "ground_truth": "dinosaurs, nature",
+    "search_results_count": 1,
+    "search_latency_ms": 557,
+    "answer_latency_ms": 1685,
+    "answer_input_tokens": 435,
+    "answer_output_tokens": 7
+  }
+]
