@@ -7,24 +7,35 @@ description: "Install Claude-Mem plugin for persistent memory across sessions"
 
 ## Quick Start
 
-Install Claude-Mem directly from the plugin marketplace:
+### Option 1: npx (Recommended)
+
+Install and configure Claude-Mem with a single command:
+
+```bash
+npx claude-mem install
+```
+
+The interactive installer will:
+- Detect your installed IDEs (Claude Code, Cursor, Gemini CLI, Windsurf, etc.)
+- Copy plugin files to the correct locations
+- Register the plugin with Claude Code
+- Install all dependencies (including Bun and uv)
+- Auto-start the worker service
+
+### Option 2: Plugin Marketplace
+
+Install Claude-Mem directly from the plugin marketplace inside Claude Code:
 
 ```bash
 /plugin marketplace add thedotmack/claude-mem
 /plugin install claude-mem
 ```
 
-That's it! The plugin will automatically:
-- Download prebuilt binaries (no compilation needed)
-- Install all dependencies (including SQLite binaries)
-- Configure hooks for session lifecycle management
-- Auto-start the worker service on first session
-
-Start a new Claude Code session and you'll see context from previous sessions automatically loaded.
+Both methods will automatically configure hooks and start the worker service. Start a new Claude Code session and you'll see context from previous sessions automatically loaded.
 
 > **Important:** Claude-Mem is published on npm, but running `npm install -g claude-mem` installs the
 > **SDK/library only**. It does **not** register plugin hooks or start the worker service.
-> To use Claude-Mem as a persistent memory plugin, always install via the `/plugin` commands above.
+> Always install via `npx claude-mem install` or the `/plugin` commands above.
 
 ## System Requirements
 
