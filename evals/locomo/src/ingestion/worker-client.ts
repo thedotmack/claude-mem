@@ -306,4 +306,41 @@ export class WorkerClient {
 
     return { ...data, search_latency_ms: searchLatencyMs };
   }
+
+  // ---- listing ------------------------------------------------------------
+
+  /**
+   * List all observations for a project via GET /api/observations.
+   * Uses filter-only SQLite path (no semantic search query needed).
+   * Paginates automatically to collect all observations.
+   */
+  async listObservationsByProject(
+    project: string,
+    pageSize = 100
+  ): Promise<{ observations: SearchObservationResult[]; total: number }> {
+    const allObservations: SearchObservationResult[] = [];
+    let offset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const params = new URLSearchParams({
+        project,
+        limit: String(pageSize),
+        offset: String(offset),
+      });
+
+      const data = await this.fetchWithConnectionCheck<{
+        items: SearchObservationResult[];
+        hasMore: boolean;
+      }>(`${this.baseUrl}/api/observations?${params.toString()}`, {
+        headers: this.headers(),
+      });
+
+      allObservations.push(...data.items);
+      hasMore = data.hasMore && data.items.length > 0;
+      offset += pageSize;
+    }
+
+    return { observations: allObservations, total: allObservations.length };
+  }
 }
