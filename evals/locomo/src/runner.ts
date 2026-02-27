@@ -32,6 +32,7 @@ import {
   computeLatencyStats,
 } from "./scoring/reporter.js";
 import { WorkerClient } from "./ingestion/worker-client.js";
+import { generateProjectName } from "./ingestion/adapter.js";
 import { LOCOMO_CATEGORY_MAP } from "./types.js";
 import type {
   LoCoMoSample,
@@ -152,7 +153,7 @@ export async function runEvalForConversation(
     ? questions.slice(0, options.maxQuestionsPerConversation)
     : questions;
 
-  const projectName = `locomo-${conversation.sample_id}`;
+  const projectName = generateProjectName(conversation.sample_id);
   const client = workerClient ?? new WorkerClient();
   const results: QAResult[] = [];
 
@@ -270,7 +271,7 @@ export async function runFullEval(
   // Verify all conversations are ingested
   console.log("Verifying ingestion for all conversations...");
   for (const sample of dataset) {
-    const projectName = `locomo-${sample.sample_id}`;
+    const projectName = generateProjectName(sample.sample_id);
     const { total } = await client.listObservationsByProject(projectName, 1);
     if (total === 0) {
       throw new Error(
@@ -307,7 +308,7 @@ export async function runFullEval(
       : questions.length;
 
     const convResults: QAResult[] = [];
-    const projectName = `locomo-${sample.sample_id}`;
+    const projectName = generateProjectName(sample.sample_id);
 
     for (let qIdx = 0; qIdx < totalQuestions; qIdx++) {
       const qa = questions[qIdx];
