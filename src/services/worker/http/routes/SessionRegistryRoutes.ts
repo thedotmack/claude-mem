@@ -29,6 +29,7 @@ const HOME_DIR = os.homedir();
 const PROJECTS_DIR = path.join(HOME_DIR, '.claude', 'projects');
 const OPENCLAW_DIR = path.join(HOME_DIR, '.openclaw', 'agents');
 const CODEX_DIR = path.join(HOME_DIR, '.codex', 'sessions');
+const KIMI_DIR = path.join(HOME_DIR, '.kimi', 'sessions');
 
 const MAX_TOOL_RESULT_LEN = 2048;
 const MAX_TOOL_INPUT_LEN = 1024;
@@ -58,7 +59,7 @@ const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 export interface RegistrySession {
   sessionId: string;
   project: string;
-  source: 'claude' | 'openclaw' | 'codex';
+  source: 'claude' | 'openclaw' | 'codex' | 'kimi';
   slug: string;
   status: 'active' | 'completed';
   model: string;
@@ -245,6 +246,11 @@ class SessionIndex {
       // ── ~/.codex/sessions/ ──────────────────────────────────────
       if (fs.existsSync(CODEX_DIR)) {
         this.scanCodexSessions(CODEX_DIR, sessions, projects);
+      }
+
+      // ── ~/.kimi/sessions/ ───────────────────────────────────────
+      if (fs.existsSync(KIMI_DIR)) {
+        this.scanKimiSessions(KIMI_DIR, sessions, projects);
       }
 
       this.sessions = sessions;
@@ -603,6 +609,157 @@ class SessionIndex {
     return result;
   }
 
+  // ── Kimi CLI scanner ────────────────────────────────────────────────────────
+
+  private scanKimiSessions(
+    baseDir: string,
+    sessions: Map<string, RegistrySession & { _path: string }>,
+    projects: Set<string>,
+  ): void {
+    let hashEntries: string[];
+    try { hashEntries = fs.readdirSync(baseDir); } catch { return; }
+
+    for (const hashDir of hashEntries) {
+      const hashPath = path.join(baseDir, hashDir);
+      let hashStat: fs.Stats;
+      try { hashStat = fs.statSync(hashPath); } catch { continue; }
+      if (!hashStat.isDirectory()) continue;
+
+      let uuidEntries: string[];
+      try { uuidEntries = fs.readdirSync(hashPath); } catch { continue; }
+
+      for (const uuidDir of uuidEntries) {
+        const sessionPath = path.join(hashPath, uuidDir);
+        let sessionStat: fs.Stats;
+        try { sessionStat = fs.statSync(sessionPath); } catch { continue; }
+        if (!sessionStat.isDirectory()) continue;
+
+        // Look for context.jsonl or wire.jsonl
+        const contextPath = path.join(sessionPath, 'context.jsonl');
+        const wirePath = path.join(sessionPath, 'wire.jsonl');
+        const statePath = path.join(sessionPath, 'state.json');
+
+        const filePath = fs.existsSync(contextPath) ? contextPath : (fs.existsSync(wirePath) ? wirePath : null);
+        if (!filePath) continue;
+
+        let stat: fs.Stats;
+        try { stat = fs.statSync(filePath); } catch { continue; }
+        if (stat.size === 0) continue;
+
+        const meta = this.extractKimiMetadata(filePath, stat.size, statePath, hashDir);
+        if (!meta) continue;
+
+        const sid = 'kimi-' + uuidDir;
+        // Use cwd basename, or hashDir as fallback, or 'unknown' as last resort
+        const projectName = meta.cwd ? path.basename(meta.cwd) : (hashDir ? hashDir.slice(0, 8) : 'unknown');
+        const display = 'kimi/' + projectName;
+        projects.add(display);
+
+        const ageSec = (Date.now() - stat.mtimeMs) / 1000;
+        const active = ageSec < 120;
+
+        // Calculate duration only if we have a valid firstTs
+        const duration = meta.firstTs && meta.firstTs > 0
+          ? Math.max(0, Math.round(stat.mtimeMs / 1000 - meta.firstTs))
+          : 0;
+
+        sessions.set(sid, {
+          sessionId: sid,
+          project: display,
+          source: 'kimi',
+          slug: meta.slug,
+          status: active ? 'active' : 'completed',
+          model: meta.model,
+          version: meta.version,
+          mtime: stat.mtimeMs / 1000,
+          size: stat.size,
+          eventCount: meta.eventCount,
+          cwd: meta.cwd,
+          gitBranch: '',
+          subagentCount: 0,
+          duration,
+          contextPct: getContextPct(meta.model, meta.lastInputTokens),
+          _path: filePath,
+        });
+      }
+    }
+  }
+
+  private extractKimiMetadata(filePath: string, size: number, statePath: string, hashDir?: string): {
+    slug: string; model: string; version: string; cwd: string;
+    eventCount: number; firstTs: number; lastInputTokens: number;
+  } | null {
+    const result = {
+      slug: '', model: '', version: '', cwd: hashDir ? `kimi-${hashDir.slice(0, 8)}` : '',
+      eventCount: Math.max(1, Math.floor(size / 500)),
+      firstTs: 0, lastInputTokens: 0,
+    };
+
+    try {
+      // Try to read state.json for cwd and model info
+      if (fs.existsSync(statePath)) {
+        try {
+          const stateContent = fs.readFileSync(statePath, 'utf-8');
+          const state = JSON.parse(stateContent);
+          result.cwd = state.cwd || state.project_path || result.cwd;
+          result.model = state.model || '';
+          result.version = state.version || state.cli_version || '';
+        } catch (parseErr) {
+          // Log debug info for troubleshooting
+          logger.debug('SESSION', 'Failed to parse Kimi state.json', {
+            statePath,
+            error: parseErr instanceof Error ? parseErr.message : String(parseErr)
+          });
+        }
+      }
+
+      // Head scan: read first HEAD_READ_BYTES
+      const headLines = readHeadLines(filePath, size).filter(l => l.trim());
+
+      for (let i = 0; i < Math.min(20, headLines.length); i++) {
+        try {
+          const obj = JSON.parse(headLines[i]);
+          if (!result.firstTs) {
+            const ts = parseTimestampSec(obj.timestamp);
+            if (ts) result.firstTs = ts;
+          }
+          // Try to extract user message for slug
+          if (!result.slug && obj.role === 'user' && obj.content) {
+            const content = typeof obj.content === 'string' ? obj.content : JSON.stringify(obj.content);
+            result.slug = content.slice(0, 80).replace(/\n/g, ' ').trim();
+          }
+          if (!result.slug && obj.type === 'user_message' && obj.content) {
+            const content = typeof obj.content === 'string' ? obj.content : JSON.stringify(obj.content);
+            result.slug = content.slice(0, 80).replace(/\n/g, ' ').trim();
+          }
+          // Extract model from metadata
+          if (!result.model && obj.model) result.model = obj.model;
+          if (!result.model && obj.metadata?.model) result.model = obj.metadata.model;
+        } catch { /* skip invalid JSON */ }
+      }
+
+      // Tail scan for recent token usage
+      const tailAllLines = size > HEAD_READ_BYTES
+        ? readTailLines(filePath, TAIL_READ_BYTES)
+        : headLines;
+      const tailLines = tailAllLines.filter(l => l.trim());
+      for (let i = tailLines.length - 1; i >= Math.max(0, tailLines.length - 10); i--) {
+        try {
+          const obj = JSON.parse(tailLines[i]);
+          if (!result.lastInputTokens) {
+            const usage = obj.usage || obj.token_usage || obj.metadata?.usage;
+            const inputTokens = extractContextInputTokens(usage);
+            if (inputTokens > 0) result.lastInputTokens = inputTokens;
+          }
+          if (!result.model && obj.model) result.model = obj.model;
+          if (result.lastInputTokens && result.model) break;
+        } catch { /* skip */ }
+      }
+    } catch { return null; }
+
+    return result;
+  }
+
   // ── Query interface ─────────────────────────────────────────────────────────
 
   getSessions(opts: {
@@ -674,6 +831,7 @@ class SessionIndex {
 const SKIP_TYPES = new Set([
   'file-history-snapshot', 'queue-operation',
   'session', 'thinking_level_change', 'custom',
+  'progress',
 ]);
 
 function isCodexPath(p: string): boolean {
