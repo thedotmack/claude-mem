@@ -23,8 +23,8 @@
   {
     "sample_id": "conv-42",
     "total_sessions": 29,
-    "sessions_ingested": 10,
-    "observations_queued": 10,
+    "sessions_ingested": 29,
+    "observations_queued": 29,
     "status": "completed"
   },
   {

@@ -4,6 +4,10 @@
  * Wraps the worker client's search API to retrieve observations relevant
  * to a given question, then formats them into a context string suitable
  * for prompting an LLM answerer.
+ *
+ * Includes a keyword-based fallback for when Chroma vector search is
+ * unavailable (e.g., observations inserted directly into SQLite without
+ * Chroma sync).
  */
 
 import {
@@ -31,12 +35,111 @@ export interface SearchContextResult {
 const OBSERVATION_SEPARATOR = "\n---\n";
 
 // ---------------------------------------------------------------------------
+// Keyword search scoring
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract search terms from a question, filtering out common stop words.
+ */
+function extractSearchTerms(question: string): string[] {
+  const stopWords = new Set([
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "shall",
+    "should", "may", "might", "can", "could", "must", "about", "above",
+    "after", "again", "against", "all", "am", "and", "any", "as", "at",
+    "because", "before", "between", "both", "but", "by", "for", "from",
+    "further", "get", "got", "here", "how", "if", "in", "into", "it",
+    "its", "just", "me", "more", "most", "my", "no", "nor", "not", "of",
+    "off", "on", "once", "only", "or", "other", "our", "out", "over",
+    "own", "same", "she", "he", "so", "some", "such", "than", "that",
+    "their", "them", "then", "there", "these", "they", "this", "those",
+    "through", "to", "too", "under", "until", "up", "very", "we", "what",
+    "when", "where", "which", "while", "who", "whom", "why", "with",
+    "you", "your",
+  ]);
+
+  return question
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 1 && !stopWords.has(w));
+}
+
+/**
+ * Score an observation against search terms using term frequency overlap.
+ * Returns a score >= 0 (higher = more relevant).
+ */
+function scoreObservation(
+  obs: SearchObservationResult,
+  searchTerms: string[],
+): number {
+  if (searchTerms.length === 0) return 0;
+
+  const searchableText = [
+    obs.title ?? "",
+    obs.subtitle ?? "",
+    obs.narrative ?? "",
+    obs.text ?? "",
+    obs.facts ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  let matchedTerms = 0;
+  let totalHits = 0;
+
+  for (const term of searchTerms) {
+    const regex = new RegExp(term, "gi");
+    const matches = searchableText.match(regex);
+    if (matches) {
+      matchedTerms++;
+      totalHits += matches.length;
+    }
+  }
+
+  // Score: proportion of terms matched + small bonus for multiple hits
+  const termCoverage = matchedTerms / searchTerms.length;
+  const hitBonus = Math.min(totalHits / 20, 0.5); // cap bonus at 0.5
+  return termCoverage + hitBonus;
+}
+
+/**
+ * Rank observations by keyword relevance and return the top N.
+ */
+function rankByKeywords(
+  observations: SearchObservationResult[],
+  question: string,
+  limit: number,
+): SearchObservationResult[] {
+  const searchTerms = extractSearchTerms(question);
+
+  const scored = observations.map((obs) => ({
+    obs,
+    score: scoreObservation(obs, searchTerms),
+  }));
+
+  scored.sort((a, b) => b.score - a.score);
+
+  return scored
+    .filter((s) => s.score > 0)
+    .slice(0, limit)
+    .map((s) => ({ ...s.obs, score: s.score }));
+}
+
+// ---------------------------------------------------------------------------
 // Search
 // ---------------------------------------------------------------------------
+
+/** Cache of all observations per project to avoid repeated API calls. */
+const observationCache = new Map<string, SearchObservationResult[]>();
 
 /**
  * Search claude-mem observations for context relevant to a question.
  * Scoped to a conversation's project name.
+ *
+ * Tries the Chroma-based vector search first. If no results are returned
+ * (e.g., observations not synced to Chroma), falls back to keyword-based
+ * search over all observations in the project.
  */
 export async function searchForContext(
   question: string,
@@ -45,7 +148,32 @@ export async function searchForContext(
   client?: WorkerClient
 ): Promise<SearchResponse> {
   const workerClient = client ?? new WorkerClient();
-  return workerClient.search(question, project, limit);
+  const startMs = Date.now();
+
+  // Try Chroma-based search first
+  const chromaResult = await workerClient.search(question, project, limit);
+  if (chromaResult.observations.length > 0) {
+    return chromaResult;
+  }
+
+  // Fallback: keyword-based search over all project observations
+  if (!observationCache.has(project)) {
+    const { observations } = await workerClient.listObservationsByProject(project);
+    observationCache.set(project, observations);
+  }
+
+  const allObs = observationCache.get(project)!;
+  const ranked = rankByKeywords(allObs, question, limit);
+  const searchLatencyMs = Date.now() - startMs;
+
+  return {
+    observations: ranked,
+    sessions: [],
+    prompts: [],
+    totalResults: ranked.length,
+    query: question,
+    search_latency_ms: searchLatencyMs,
+  };
 }
 
 // ---------------------------------------------------------------------------
