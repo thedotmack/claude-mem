@@ -30,7 +30,7 @@ import {
 import { detectInstalledIDEs } from './ide-detection.js';
 
 // ---------------------------------------------------------------------------
-// Registration helpers (mirror installer/src/steps/install.ts)
+// Registration helpers
 // ---------------------------------------------------------------------------
 
 function registerMarketplace(): void {

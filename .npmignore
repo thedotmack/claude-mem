@@ -5,7 +5,6 @@ tests/
 docs/
 datasets/
 private/
-installer/
 antipattern-czar/
 
 # Heavy binaries installed at runtime via smart-install.js
