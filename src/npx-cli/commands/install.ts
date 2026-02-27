@@ -132,6 +132,50 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
         break;
       }
 
+      case 'openclaw': {
+        const { installOpenClawIntegration } = await import('../../services/integrations/OpenClawInstaller.js');
+        const openClawResult = await installOpenClawIntegration();
+        if (openClawResult === 0) {
+          p.log.success('OpenClaw: plugin installed.');
+        } else {
+          p.log.error('OpenClaw: plugin installation failed.');
+        }
+        break;
+      }
+
+      case 'codex-cli': {
+        const { installCodexCli } = await import('../../services/integrations/CodexCliInstaller.js');
+        const codexResult = await installCodexCli();
+        if (codexResult === 0) {
+          p.log.success('Codex CLI: transcript watching configured.');
+        } else {
+          p.log.error('Codex CLI: integration setup failed.');
+        }
+        break;
+      }
+
+      case 'copilot-cli':
+      case 'antigravity':
+      case 'goose':
+      case 'crush':
+      case 'roo-code':
+      case 'warp': {
+        const { MCP_IDE_INSTALLERS } = await import('../../services/integrations/McpIntegrations.js');
+        const mcpInstaller = MCP_IDE_INSTALLERS[ideId];
+        if (mcpInstaller) {
+          const mcpResult = await mcpInstaller();
+          const allIDEs = detectInstalledIDEs();
+          const ideInfo = allIDEs.find((i) => i.id === ideId);
+          const ideLabel = ideInfo?.label ?? ideId;
+          if (mcpResult === 0) {
+            p.log.success(`${ideLabel}: MCP integration installed.`);
+          } else {
+            p.log.error(`${ideLabel}: MCP integration failed.`);
+          }
+        }
+        break;
+      }
+
       default: {
         const allIDEs = detectInstalledIDEs();
         const ide = allIDEs.find((i) => i.id === ideId);
