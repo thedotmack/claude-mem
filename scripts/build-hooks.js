@@ -182,6 +182,62 @@ async function buildHooks() {
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
 
+    // Build NPX CLI (pure Node.js — no Bun dependency)
+    console.log(`\n🔧 Building NPX CLI...`);
+    const npxCliOutDir = 'dist/npx-cli';
+    if (!fs.existsSync(npxCliOutDir)) {
+      fs.mkdirSync(npxCliOutDir, { recursive: true });
+    }
+    await build({
+      entryPoints: ['src/npx-cli/index.ts'],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'esm',
+      outfile: `${npxCliOutDir}/index.js`,
+      minify: true,
+      logLevel: 'error',
+      external: [
+        'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
+        'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
+        'buffer', 'querystring', 'readline', 'tty', 'assert',
+      ],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      },
+    });
+
+    // Make NPX CLI executable
+    fs.chmodSync(`${npxCliOutDir}/index.js`, 0o755);
+    const npxCliStats = fs.statSync(`${npxCliOutDir}/index.js`);
+    console.log(`✓ npx-cli built (${(npxCliStats.size / 1024).toFixed(2)} KB)`);
+
+    // Build OpenClaw plugin (self-contained, only Node builtins external)
+    if (fs.existsSync('openclaw/src/index.ts')) {
+      console.log(`\n🔧 Building OpenClaw plugin...`);
+      const openclawOutDir = 'openclaw/dist';
+      if (!fs.existsSync(openclawOutDir)) {
+        fs.mkdirSync(openclawOutDir, { recursive: true });
+      }
+      await build({
+        entryPoints: ['openclaw/src/index.ts'],
+        bundle: true,
+        platform: 'node',
+        target: 'node18',
+        format: 'esm',
+        outfile: `${openclawOutDir}/index.js`,
+        minify: true,
+        logLevel: 'error',
+        external: [
+          'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
+          'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
+        ],
+      });
+
+      const openclawStats = fs.statSync(`${openclawOutDir}/index.js`);
+      console.log(`✓ openclaw plugin built (${(openclawStats.size / 1024).toFixed(2)} KB)`);
+    }
+
     // Verify critical distribution files exist (skills are source files, not build outputs)
     console.log('\n📋 Verifying distribution files...');
     const requiredDistributionFiles = [
@@ -197,11 +253,17 @@ async function buildHooks() {
     }
     console.log('✓ All required distribution files present');
 
-    console.log('\n✅ Worker service, MCP server, and context generator built successfully!');
+    console.log('\n✅ All build targets compiled successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Context Generator: context-generator.cjs`);
+    console.log(`   Output: ${npxCliOutDir}/`);
+    console.log(`   - NPX CLI: index.js`);
+    if (fs.existsSync('openclaw/dist/index.js')) {
+      console.log(`   Output: openclaw/dist/`);
+      console.log(`   - OpenClaw Plugin: index.js`);
+    }
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);
