@@ -42,7 +42,17 @@
   },
   "files": [
     "dist",
-    "plugin"
+    "plugin/.claude-plugin",
+    "plugin/CLAUDE.md",
+    "plugin/package.json",
+    "plugin/hooks",
+    "plugin/modes",
+    "plugin/scripts/*.js",
+    "plugin/scripts/*.cjs",
+    "plugin/scripts/CLAUDE.md",
+    "plugin/skills",
+    "plugin/ui",
+    "openclaw"
   ],
   "engines": {
     "node": ">=18.0.0",

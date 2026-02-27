@@ -66,14 +66,14 @@ export function claudeMemDataDirectory(): string {
 /**
  * Resolve the root of the installed npm package.
  *
- * The CLI entry point lives at `<pkg>/dist/cli/index.js`. Walking up
- * from `import.meta.url` (or `__dirname` equivalent) we reach the
- * package root where `plugin/` can be found.
+ * After bundling, the CLI entry point lives at `<pkg>/dist/npx-cli/index.js`.
+ * Walking up 2 levels from `import.meta.url` reaches the package root
+ * where `plugin/` and `package.json` can be found.
  */
 export function npmPackageRootDirectory(): string {
   const currentFilePath = fileURLToPath(import.meta.url);
-  // <pkg>/dist/npx-cli/utils/paths.js  ->  up 3 levels  ->  <pkg>
-  return join(dirname(currentFilePath), '..', '..', '..');
+  // <pkg>/dist/npx-cli/index.js  ->  up 2 levels  ->  <pkg>
+  return join(dirname(currentFilePath), '..', '..');
 }
 
 /**
