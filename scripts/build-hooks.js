@@ -238,6 +238,32 @@ async function buildHooks() {
       console.log(`✓ openclaw plugin built (${(openclawStats.size / 1024).toFixed(2)} KB)`);
     }
 
+    // Build OpenCode plugin (self-contained, runs in Bun)
+    if (fs.existsSync('src/integrations/opencode-plugin/index.ts')) {
+      console.log(`\n🔧 Building OpenCode plugin...`);
+      const opencodeOutDir = 'dist/opencode-plugin';
+      if (!fs.existsSync(opencodeOutDir)) {
+        fs.mkdirSync(opencodeOutDir, { recursive: true });
+      }
+      await build({
+        entryPoints: ['src/integrations/opencode-plugin/index.ts'],
+        bundle: true,
+        platform: 'node',
+        target: 'node18',
+        format: 'esm',
+        outfile: `${opencodeOutDir}/index.js`,
+        minify: true,
+        logLevel: 'error',
+        external: [
+          'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
+          'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
+        ],
+      });
+
+      const opencodeStats = fs.statSync(`${opencodeOutDir}/index.js`);
+      console.log(`✓ opencode plugin built (${(opencodeStats.size / 1024).toFixed(2)} KB)`);
+    }
+
     // Verify critical distribution files exist (skills are source files, not build outputs)
     console.log('\n📋 Verifying distribution files...');
     const requiredDistributionFiles = [
@@ -263,6 +289,10 @@ async function buildHooks() {
     if (fs.existsSync('openclaw/dist/index.js')) {
       console.log(`   Output: openclaw/dist/`);
       console.log(`   - OpenClaw Plugin: index.js`);
+    }
+    if (fs.existsSync('dist/opencode-plugin/index.js')) {
+      console.log(`   Output: dist/opencode-plugin/`);
+      console.log(`   - OpenCode Plugin: index.js`);
     }
 
   } catch (error) {

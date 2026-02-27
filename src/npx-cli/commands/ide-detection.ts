@@ -82,16 +82,15 @@ export function detectInstalledIDEs(): IDEInfo[] {
       id: 'gemini-cli',
       label: 'Gemini CLI',
       detected: existsSync(join(home, '.gemini')),
-      supported: false,
-      hint: 'coming soon',
+      supported: true,
     },
     {
       id: 'opencode',
       label: 'OpenCode',
       detected:
         existsSync(join(home, '.config', 'opencode')) || isCommandInPath('opencode'),
-      supported: false,
-      hint: 'coming soon',
+      supported: true,
+      hint: 'plugin-based integration',
     },
     {
       id: 'openclaw',
@@ -104,8 +103,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
       id: 'windsurf',
       label: 'Windsurf',
       detected: existsSync(join(home, '.codeium', 'windsurf')),
-      supported: false,
-      hint: 'coming soon',
+      supported: true,
     },
     {
       id: 'codex-cli',
