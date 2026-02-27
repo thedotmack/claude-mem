@@ -303,7 +303,7 @@ export class SessionSearch {
 
     const params: any[] = [ftsQuery];
     let sql = `
-      SELECT o.*, o.discovery_tokens
+      SELECT o.*
       FROM observations o
       JOIN observations_fts fts ON o.id = fts.rowid
       WHERE fts.observations_fts MATCH ?

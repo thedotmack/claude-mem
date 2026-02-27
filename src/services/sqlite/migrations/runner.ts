@@ -623,16 +623,24 @@ export class MigrationRunner {
     if (applied) return;
 
     const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    const hasColumn = tableInfo.some(col => col.name === 'last_accessed_at');
+    const existingColumns = new Set(tableInfo.map(col => col.name));
 
-    if (!hasColumn) {
+    if (!existingColumns.has('last_accessed_at')) {
       this.db.run('ALTER TABLE observations ADD COLUMN last_accessed_at INTEGER');
-      this.db.run('ALTER TABLE observations ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0');
-      this.db.run('ALTER TABLE observations ADD COLUMN importance INTEGER NOT NULL DEFAULT 5');
-      this.db.run('ALTER TABLE observations ADD COLUMN is_stale INTEGER NOT NULL DEFAULT 0');
-      this.db.run('ALTER TABLE observations ADD COLUMN corrected_by_id INTEGER');
-      logger.debug('DB', 'Added temporal scoring columns to observations table');
     }
+    if (!existingColumns.has('access_count')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!existingColumns.has('importance')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN importance INTEGER NOT NULL DEFAULT 5');
+    }
+    if (!existingColumns.has('is_stale')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN is_stale INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!existingColumns.has('corrected_by_id')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN corrected_by_id INTEGER');
+    }
+    logger.debug('DB', 'Ensured temporal scoring columns on observations table');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
   }
