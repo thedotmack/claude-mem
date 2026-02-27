@@ -171,6 +171,44 @@ function useSessionRegistryLiveTick(): number {
   return tick;
 }
 
+// ─── Provider color helpers ──────────────────────────────────────────────────
+
+const PROVIDER_PALETTE: Record<string, { color: string; bg: string; border: string }> = {
+  claude:    { color: '#d4a27a', bg: 'rgba(212,162,122,0.12)', border: 'rgba(212,162,122,0.25)' },
+  anthropic: { color: '#d4a27a', bg: 'rgba(212,162,122,0.12)', border: 'rgba(212,162,122,0.25)' },
+  openai:    { color: '#74aa9c', bg: 'rgba(116,170,156,0.12)', border: 'rgba(116,170,156,0.25)' },
+  codex:     { color: '#74aa9c', bg: 'rgba(116,170,156,0.12)', border: 'rgba(116,170,156,0.25)' },
+  gpt:       { color: '#74aa9c', bg: 'rgba(116,170,156,0.12)', border: 'rgba(116,170,156,0.25)' },
+  gemini:    { color: '#8ab4f8', bg: 'rgba(138,180,248,0.12)', border: 'rgba(138,180,248,0.25)' },
+  google:    { color: '#8ab4f8', bg: 'rgba(138,180,248,0.12)', border: 'rgba(138,180,248,0.25)' },
+  moonshot:  { color: '#c4b5fd', bg: 'rgba(196,181,253,0.12)', border: 'rgba(196,181,253,0.25)' },
+  kimi:      { color: '#c4b5fd', bg: 'rgba(196,181,253,0.12)', border: 'rgba(196,181,253,0.25)' },
+  openclaw:  { color: '#f87171', bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.25)' },
+  sonnet:    { color: '#d4a27a', bg: 'rgba(212,162,122,0.12)', border: 'rgba(212,162,122,0.25)' },
+  opus:      { color: '#d4a27a', bg: 'rgba(212,162,122,0.12)', border: 'rgba(212,162,122,0.25)' },
+  haiku:     { color: '#d4a27a', bg: 'rgba(212,162,122,0.12)', border: 'rgba(212,162,122,0.25)' },
+};
+
+const DEFAULT_BADGE = { color: 'var(--color-text-secondary)', bg: 'var(--color-bg-tertiary)', border: 'var(--color-border-primary)' };
+
+function getProviderBadge(name: string): { color: string; bg: string; border: string } {
+  const lower = name.toLowerCase();
+  for (const [key, val] of Object.entries(PROVIDER_PALETTE)) {
+    if (lower.includes(key)) return val;
+  }
+  return DEFAULT_BADGE;
+}
+
+function badgeStyle(name: string, extra?: React.CSSProperties): React.CSSProperties {
+  const p = getProviderBadge(name);
+  return {
+    fontSize: '10px', fontWeight: 600, padding: '1px 6px', borderRadius: '4px',
+    color: p.color, background: p.bg, border: `1px solid ${p.border}`,
+    fontFamily: 'var(--font-terminal)',
+    ...extra,
+  };
+}
+
 // ─── Formatting helpers ───────────────────────────────────────────────────────
 
 function formatRelTime(epochSec: number): string {
@@ -431,7 +469,7 @@ function SessionEventList({ sessionId, liveTick }: { sessionId: string; liveTick
 
   return (
     <div>
-      {events.map((ev, i) => (
+      {[...events].reverse().map((ev, i) => (
         <EventBlock key={ev.uuid || i} event={ev} />
       ))}
       {hasMore && (
@@ -550,42 +588,42 @@ function SubagentList({ sessionId, onSelect }: { sessionId: string; onSelect: (i
   if (!subagents.length) return <div style={{ color: 'var(--color-text-muted)' }}>No subagents found.</div>;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
       {subagents.map(sa => (
         <div
           key={sa.id}
+          onClick={() => !sa.ephemeral && onSelect(sa.id)}
           style={{
             background: 'var(--color-bg-stat)', border: '1px solid var(--color-border-primary)',
-            borderRadius: '8px', padding: '8px 12px', fontSize: '12px',
+            borderRadius: '6px', padding: '6px 10px', fontSize: '12px',
+            cursor: sa.ephemeral ? 'default' : 'pointer',
+            transition: 'border-color 0.15s',
           }}
+          onMouseEnter={e => { if (!sa.ephemeral) e.currentTarget.style.borderColor = 'var(--color-border-hover)'; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--color-border-primary)'; }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-            <span style={{ fontWeight: 600, color: 'var(--color-text-primary)' }}>{sa.agentType}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={badgeStyle(sa.agentType, { fontSize: '11px', fontWeight: 700 })}>{sa.agentType}</span>
             <span style={{
-              fontSize: '10px', padding: '1px 6px', borderRadius: '10px',
+              fontSize: '10px', fontWeight: 600, padding: '1px 6px', borderRadius: '10px',
               background: sa.status === 'active' ? 'rgba(22,198,12,0.15)' : 'var(--color-bg-tertiary)',
               color: sa.status === 'active' ? 'var(--color-accent-success)' : 'var(--color-text-muted)',
             }}>{sa.status}</span>
-            {sa.ephemeral && <span style={{ fontSize: '10px', color: 'var(--color-text-muted)' }}>ephemeral</span>}
-            {sa.mtime > 0 && <span style={{ marginLeft: 'auto', color: 'var(--color-text-muted)', fontSize: '11px' }}>{formatRelTime(sa.mtime)}</span>}
+            {sa.ephemeral && <span style={{
+              fontSize: '10px', padding: '1px 5px', borderRadius: '4px',
+              background: 'rgba(200,200,200,0.1)', color: 'var(--color-text-muted)', fontStyle: 'italic',
+            }}>ephemeral</span>}
+            {sa.model && <span style={badgeStyle(sa.model)}>{sa.model}</span>}
           </div>
-          {sa.slug && <div style={{ color: 'var(--color-text-secondary)', marginBottom: '4px', fontStyle: 'italic' }}>{sa.slug}</div>}
-          {sa.model && <div style={{ color: 'var(--color-text-muted)', fontSize: '11px' }}>Model: {sa.model}</div>}
-          {sa.childSessionKey && (
-            <div style={{ color: 'var(--color-text-muted)', fontSize: '11px', fontFamily: 'var(--font-terminal)' }}>{sa.childSessionKey}</div>
-          )}
-          {!sa.ephemeral && (
-            <button
-              onClick={() => onSelect(sa.id)}
-              style={{
-                marginTop: '6px', padding: '3px 10px', fontSize: '11px',
-                background: 'var(--color-bg-button)', color: 'var(--color-text-button)',
-                border: 'none', borderRadius: '4px', cursor: 'pointer',
-              }}
-            >
-              View Events
-            </button>
-          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '3px' }}>
+            {sa.mtime > 0 && <span style={{ fontSize: '10px', color: 'var(--color-text-muted)' }}>{formatRelTime(sa.mtime)}</span>}
+            {sa.slug && sa.mtime > 0 && <span style={{ fontSize: '10px', color: 'var(--color-text-muted)' }}>·</span>}
+            {sa.slug && (
+              <span style={{ fontSize: '11px', color: 'var(--color-text-secondary)', fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {sa.slug}
+              </span>
+            )}
+          </div>
         </div>
       ))}
     </div>
@@ -875,7 +913,7 @@ function SessionList({ onSelect, liveTick }: { onSelect: (s: RegistrySession) =>
                 <div style={{ display: 'flex', gap: '8px', marginTop: '3px', flexWrap: 'wrap' }}>
                   <span style={{ fontSize: '11px', color: sourceColors[s.source] || 'var(--color-text-muted)', fontWeight: 600 }}>{s.source}</span>
                   <span style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>{s.project}</span>
-                  {s.model && <span style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>{s.model}</span>}
+                  {s.model && <span style={badgeStyle(s.model)}>{s.model}</span>}
                   {s.gitBranch && <span style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>🌿 {s.gitBranch}</span>}
                 </div>
               </div>
@@ -887,8 +925,12 @@ function SessionList({ onSelect, liveTick }: { onSelect: (s: RegistrySession) =>
                 }}>{s.status}</span>
                 <span style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>{formatRelTime(s.mtime)}</span>
                 {s.duration > 0 && <span style={{ fontSize: '10px', color: 'var(--color-text-muted)' }}>{formatDurationCompact(s.duration)}</span>}
-                {s.contextPct > 0 && <span style={{ fontSize: '10px', color: 'var(--color-accent-summary)', fontWeight: 600 }}>{s.contextPct}% ctx</span>}
-                {s.subagentCount > 0 && <span style={{ fontSize: '10px', color: 'var(--color-accent-prompt)' }}>🤖 {s.subagentCount}</span>}
+                {(s.contextPct > 0 || s.subagentCount > 0) && (
+                  <span style={{ fontSize: '10px', display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    {s.contextPct > 0 && <span style={{ color: 'var(--color-accent-summary)', fontWeight: 600 }}>{s.contextPct}% ctx</span>}
+                    {s.subagentCount > 0 && <span style={{ color: 'var(--color-accent-prompt)' }}>🤖 {s.subagentCount}</span>}
+                  </span>
+                )}
               </div>
             </div>
           </div>
