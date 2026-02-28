@@ -333,7 +333,8 @@ export class SessionSearch {
 
     try {
       return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
-    } catch {
+    } catch (err) {
+      logger.error('DB', 'FTS5 search failed', { query: ftsQuery }, err as Error);
       return [];
     }
   }
@@ -645,14 +646,14 @@ export class SessionSearch {
 
     return observations
       .map(obs => {
-        const importance = Math.min(10, Math.max(1, (obs as any).importance ?? 5));
+        const importance = Math.min(10, Math.max(1, obs.importance ?? 5));
         const halfLifeDays = 90 * (importance / 5); // 18d at imp=1, 90d at imp=5, 180d at imp=10
         const lambda = Math.log(2) / halfLifeDays;
         const createdEpoch = obs.created_at_epoch / 1000; // created_at_epoch is ms
         const daysSince = Math.max(0, (now - createdEpoch) / 86400);
         const decayFactor = Math.exp(-lambda * daysSince);
-        const accessBoost = Math.log1p((obs as any).access_count ?? 0) * 0.1;
-        const stalenessPenalty = (obs as any).is_stale ? 0.1 : 1.0;
+        const accessBoost = Math.log1p(obs.access_count ?? 0) * 0.1;
+        const stalenessPenalty = obs.is_stale ? 0.1 : 1.0;
         const score = decayFactor * (1 + accessBoost) * stalenessPenalty;
 
         return { obs, score };
@@ -742,8 +743,9 @@ export class SessionSearch {
     let rows: any[] = [];
     try {
       rows = this.db.prepare(sql).all(...params) as any[];
-    } catch {
-      return { driftedConcepts: [], summary: 'Drift check unavailable (concepts column may be empty).' };
+    } catch (err) {
+      logger.error('DB', 'Drift check query failed', { project: project ?? 'all' }, err as Error);
+      return { driftedConcepts: [], summary: 'Drift check unavailable (query failed — see worker logs).' };
     }
 
     const driftedConcepts = rows.map(r => ({

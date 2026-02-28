@@ -80,7 +80,7 @@ export class SearchOrchestrator {
     // Filter stale observations by default unless caller explicitly opts in
     if (args.include_stale !== true && args.include_stale !== 'true' && result.results.observations) {
       result.results.observations = result.results.observations.filter(
-        obs => !(obs as any).is_stale
+        obs => !obs.is_stale
       );
     }
 
