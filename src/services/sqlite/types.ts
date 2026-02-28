@@ -218,6 +218,12 @@ export interface ObservationRow {
   discovery_tokens: number; // ROI metrics: tokens spent discovering this observation
   created_at: string;
   created_at_epoch: number;
+  // Temporal scoring fields (added by migration v24, may be absent on pre-migration rows)
+  last_accessed_at?: number | null;
+  access_count?: number;
+  importance?: number;
+  is_stale?: number;
+  corrected_by_id?: number | null;
 }
 
 export interface SessionSummaryRow {
