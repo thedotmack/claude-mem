@@ -79,8 +79,8 @@ describe('AnalyticsBar component source', () => {
     expect(source).toContain('formatTokenCount');
   });
 
-  it('renders Read label in JSX', () => {
-    expect(source).toMatch(/>Read</);
+  it('renders Stored label in JSX', () => {
+    expect(source).toMatch(/>Stored</);
   });
 
   it('renders Work label in JSX', () => {
@@ -147,7 +147,7 @@ describe('AnalyticsBar accessibility', () => {
   it('has title attributes on abbreviated labels', () => {
     expect(source).toContain('title="Observations"');
     expect(source).toContain('title="sessions"');
-    expect(source).toContain('title="Read tokens"');
+    expect(source).toContain('title="Stored tokens"');
     expect(source).toContain('title="Work tokens"');
     expect(source).toContain('title="Recalled tokens"');
     expect(source).toContain('title="Saved tokens"');
@@ -158,7 +158,7 @@ describe('AnalyticsBar accessibility', () => {
   });
 
   it('has differentiated aria-labels on skeleton elements', () => {
-    expect(source).toContain('aria-label="Loading read tokens"');
+    expect(source).toContain('aria-label="Loading stored tokens"');
     expect(source).toContain('aria-label="Loading work tokens"');
     expect(source).toContain('aria-label="Loading recalled tokens"');
     expect(source).toContain('aria-label="Loading saved tokens"');
@@ -183,7 +183,7 @@ describe('AnalyticsBar tooltips', () => {
     expect(source).toContain('role="tooltip"');
   });
 
-  it('has tooltip text for read metric', () => {
+  it('has tooltip text for stored metric', () => {
     expect(source).toContain('Estimated token size of all stored observations');
   });
 
@@ -196,7 +196,7 @@ describe('AnalyticsBar tooltips', () => {
   });
 
   it('has tooltip text for saved metric', () => {
-    expect(source).toContain('Net tokens saved by reusing compressed context instead of re-doing the original work. Calculated as Work minus Read minus Recalled.');
+    expect(source).toContain('Net tokens saved by reusing compressed context instead of re-doing the original work. Calculated as Work minus Stored minus Recalled.');
   });
 
   it('has tooltip text for obs metric', () => {
