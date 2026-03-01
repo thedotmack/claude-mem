@@ -14,10 +14,10 @@ const TIME_RANGE_OPTIONS: Array<{ label: string; value: number | null }> = [
 ];
 
 const TOOLTIPS = {
-  read: 'Estimated token size of all stored observations. Represents the compressed knowledge footprint.',
+  stored: 'Estimated token size of all stored observations. Represents the compressed knowledge footprint.',
   work: 'AI tokens invested in research, building, and decisions',
   recalled: 'Tokens actually delivered into sessions via context injection (session start, prompt submit, and MCP search).',
-  saved: 'Net tokens saved by reusing compressed context instead of re-doing the original work. Calculated as Work minus Read minus Recalled.',
+  saved: 'Net tokens saved by reusing compressed context instead of re-doing the original work. Calculated as Work minus Stored minus Recalled.',
   obs: 'Observations recorded / distinct Claude sessions (one session can have multiple summaries)',
 } as const;
 
@@ -42,15 +42,6 @@ export const AnalyticsBar = React.memo(function AnalyticsBar({ project }: Analyt
   return (
     <div className="analytics-bar" role="region" aria-label="Token analytics">
       <div className="analytics-bar__cards" aria-busy={isLoading}>
-        <div className="analytics-card analytics-card--accent" tabIndex={0}>
-          <span className="analytics-card__label" title="Read tokens">Read</span>
-          <span className="analytics-card__value">
-            {isLoading ? <span className="analytics-skeleton" role="status" aria-label="Loading read tokens" /> : formatTokenCount(data?.readTokens ?? 0)}
-          </span>
-          <span className="analytics-card__subtitle">tokens</span>
-          <span className="analytics-tooltip" role="tooltip">{TOOLTIPS.read}</span>
-        </div>
-
         <div className="analytics-card analytics-card--purple" tabIndex={0}>
           <span className="analytics-card__label" title="Work tokens">Work</span>
           <span className="analytics-card__value">
@@ -58,6 +49,15 @@ export const AnalyticsBar = React.memo(function AnalyticsBar({ project }: Analyt
           </span>
           <span className="analytics-card__subtitle">tokens</span>
           <span className="analytics-tooltip" role="tooltip">{TOOLTIPS.work}</span>
+        </div>
+
+        <div className="analytics-card analytics-card--accent" tabIndex={0}>
+          <span className="analytics-card__label" title="Stored tokens">Stored</span>
+          <span className="analytics-card__value">
+            {isLoading ? <span className="analytics-skeleton" role="status" aria-label="Loading stored tokens" /> : formatTokenCount(data?.readTokens ?? 0)}
+          </span>
+          <span className="analytics-card__subtitle">tokens</span>
+          <span className="analytics-tooltip" role="tooltip">{TOOLTIPS.stored}</span>
         </div>
 
         <div className={`analytics-card ${savingsClass}`} tabIndex={0}>

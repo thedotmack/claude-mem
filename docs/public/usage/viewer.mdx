@@ -189,10 +189,10 @@ The analytics bar sits below the header and provides aggregate token usage metri
 
 | Metric | Description |
 |--------|-------------|
-| **Read** | Estimated token size of all stored observations -- the compressed knowledge footprint |
 | **Work** | AI tokens invested in research, building, and decisions |
+| **Stored** | Estimated token size of all stored observations -- the compressed knowledge footprint |
 | **Recalled** | Tokens actually delivered into sessions via context injection (session start, prompt submit, and MCP search) |
-| **Saved** | Net tokens saved by reusing compressed context instead of re-doing the original work. Calculated as Work minus Read minus Recalled. Shown as an absolute count and percentage |
+| **Saved** | Net tokens saved by reusing compressed context instead of re-doing the original work. Calculated as Work minus Stored minus Recalled. Shown as an absolute count and percentage |
 | **Obs** | Observations recorded and distinct Claude sessions in the time range |
 
 Each metric card shows a tooltip with a detailed explanation on hover or keyboard focus. Cards with positive savings highlight in green; cards with no data show a muted dash.
