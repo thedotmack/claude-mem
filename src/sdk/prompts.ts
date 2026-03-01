@@ -79,6 +79,14 @@ ${mode.prompts.output_format_header}
     <file>${mode.prompts.xml_file_placeholder}</file>
     <file>${mode.prompts.xml_file_placeholder}</file>
   </files_modified>
+  <topics>
+    <topic>[semantic category: auth, migration, deployment, etc.]</topic>
+    <topic>[2-5 topic tags per observation]</topic>
+  </topics>
+  <entities>
+    <entity type="person|system|team|technology|component">[entity name]</entity>
+  </entities>
+  <event_date>[YYYY-MM-DD if the observation references a specific date, otherwise omit]</event_date>
 </observation>
 \`\`\`
 ${mode.prompts.format_examples}
@@ -229,6 +237,14 @@ ${mode.prompts.output_format_header}
     <file>${mode.prompts.xml_file_placeholder}</file>
     <file>${mode.prompts.xml_file_placeholder}</file>
   </files_modified>
+  <topics>
+    <topic>[semantic category: auth, migration, deployment, etc.]</topic>
+    <topic>[2-5 topic tags per observation]</topic>
+  </topics>
+  <entities>
+    <entity type="person|system|team|technology|component">[entity name]</entity>
+  </entities>
+  <event_date>[YYYY-MM-DD if the observation references a specific date, otherwise omit]</event_date>
 </observation>
 \`\`\`
 ${mode.prompts.format_examples}

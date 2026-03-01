@@ -55,6 +55,9 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
     const concepts = extractArrayElements(obsContent, 'concepts', 'concept');
     const files_read = extractArrayElements(obsContent, 'files_read', 'file');
     const files_modified = extractArrayElements(obsContent, 'files_modified', 'file');
+    const topics = extractArrayElements(obsContent, 'topics', 'topic');
+    const entities = extractEntities(obsContent);
+    const event_date = validateEventDate(extractField(obsContent, 'event_date'));
 
     // NOTE FROM THEDOTMACK: ALWAYS save observations - never skip. 10/24/2025
     // All fields except type are nullable in schema
@@ -96,7 +99,10 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
       narrative,
       concepts: validatedConcepts,
       files_read,
-      files_modified
+      files_modified,
+      topics,
+      entities,
+      event_date,
     });
   }
 
@@ -285,4 +291,47 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
   }
 
   return elements;
+}
+
+/**
+ * Extract entities with type attributes from XML content
+ * Parses: <entity type="person">Alice</entity>
+ * Returns array of { name, type } with validated types
+ */
+function extractEntities(content: string): Array<{ name: string; type: string }> {
+  const VALID_ENTITY_TYPES = ['person', 'system', 'team', 'technology', 'component'];
+
+  // First extract the <entities>...</entities> wrapper block
+  const wrapperRegex = /<entities>([\s\S]*?)<\/entities>/;
+  const wrapperMatch = wrapperRegex.exec(content);
+  if (!wrapperMatch) return [];
+
+  const entitiesContent = wrapperMatch[1];
+  const entities: Array<{ name: string; type: string }> = [];
+
+  // Parse individual entity elements with type attribute
+  const entityRegex = /<entity\s+type="([^"]*)">\s*([^<]+)\s*<\/entity>/g;
+  let entityMatch;
+  while ((entityMatch = entityRegex.exec(entitiesContent)) !== null) {
+    const rawType = entityMatch[1].trim().toLowerCase();
+    const name = entityMatch[2].trim();
+    const type = VALID_ENTITY_TYPES.includes(rawType) ? rawType : 'component';
+    entities.push({ name, type });
+  }
+
+  return entities;
+}
+
+/**
+ * Validate an ISO8601 date string (YYYY-MM-DD format)
+ * Returns the date string if valid, null otherwise
+ */
+function validateEventDate(dateStr: string | null): string | null {
+  if (!dateStr) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  if (!match) return null;
+  const month = parseInt(match[2], 10);
+  const day = parseInt(match[3], 10);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return dateStr;
 }
