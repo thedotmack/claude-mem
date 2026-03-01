@@ -35,6 +35,7 @@ export class MigrationRunner {
     this.createContextInjectionsTable();
     this.recreateFTSTablesWithUnicode61();
     this.ensurePriorityColumn();
+    this.ensureEnrichmentColumns();
   }
 
   /**
@@ -838,5 +839,45 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
+  }
+
+  /**
+   * Ensure enrichment columns exist on observations (migration 26)
+   * Adds topics, entities, event_date, pinned, access_count, supersedes_id
+   * for observation enrichment metadata.
+   */
+  private ensureEnrichmentColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(26) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const existingColumns = new Set(observationsInfo.map(col => col.name));
+
+    if (!existingColumns.has('topics')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN topics TEXT DEFAULT NULL');
+    }
+    if (!existingColumns.has('entities')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN entities TEXT DEFAULT NULL');
+    }
+    if (!existingColumns.has('event_date')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN event_date TEXT DEFAULT NULL');
+    }
+    if (!existingColumns.has('pinned')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN pinned INTEGER DEFAULT 0');
+    }
+    if (!existingColumns.has('access_count')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN access_count INTEGER DEFAULT 0');
+    }
+    if (!existingColumns.has('supersedes_id')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN supersedes_id TEXT DEFAULT NULL');
+    }
+
+    // Partial indexes for efficient filtering
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_event_date ON observations(event_date) WHERE event_date IS NOT NULL');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_pinned ON observations(pinned) WHERE pinned = 1');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_supersedes ON observations(supersedes_id) WHERE supersedes_id IS NOT NULL');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
+    logger.debug('DB', 'Added enrichment columns to observations table (migration 26)');
   }
 }
