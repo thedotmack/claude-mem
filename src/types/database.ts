@@ -79,6 +79,13 @@ export interface ObservationRecord {
   prompt_number: number | null;
   discovery_tokens: number;
   read_tokens: number;
+  priority: 'critical' | 'important' | 'informational' | null;
+  topics: string | null;
+  entities: string | null;
+  event_date: string | null;
+  pinned: number;
+  access_count: number;
+  supersedes_id: string | null;
 }
 
 /**
