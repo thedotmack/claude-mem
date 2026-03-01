@@ -83,6 +83,8 @@ export function useFilters() {
       filters.dateEnd !== '';
   }, [filters]);
 
+  // isFilterMode is the same as hasActiveFilters but excludes the project filter
+  // (project alone does not constitute an active "filter mode" in the UI)
   const isFilterMode = useMemo(() => {
     return filters.query !== '' ||
       filters.obsTypes.length > 0 ||

@@ -35,6 +35,9 @@ export interface ParsedSummary {
  * Parse observation XML blocks from SDK response
  * Returns all observations found in the response
  */
+const VALID_PRIORITIES = ['critical', 'important', 'informational'] as const;
+type Priority = typeof VALID_PRIORITIES[number];
+
 export function parseObservations(text: string, correlationId?: string): ParsedObservation[] {
   const observations: ParsedObservation[] = [];
 
@@ -84,8 +87,6 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
     const validatedConcepts = validateConcepts(concepts, finalType, mode, correlationId);
 
     // Validate priority — must be one of the three valid values, default to 'informational'
-    const VALID_PRIORITIES = ['critical', 'important', 'informational'] as const;
-    type Priority = typeof VALID_PRIORITIES[number];
     const priority: Priority = rawPriority && VALID_PRIORITIES.includes(rawPriority as Priority)
       ? (rawPriority as Priority)
       : 'informational';

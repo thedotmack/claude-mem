@@ -422,39 +422,34 @@ export class SessionSearch {
   }
 
   /**
+   * Check whether a JSON-serialized file list contains any file that is a direct child of folderPath.
+   * Returns false for null, invalid JSON, or non-array values.
+   */
+  private hasDirectChildInJson(filesJson: string | null, folderPath: string): boolean {
+    if (!filesJson) return false;
+    try {
+      const files: unknown = JSON.parse(filesJson);
+      if (Array.isArray(files)) {
+        return files.some((f: string) => isDirectChild(f, folderPath));
+      }
+    } catch { /* intentionally empty - invalid JSON treated as no files */ }
+    return false;
+  }
+
+  /**
    * Check if an observation has any files that are direct children of the folder
    */
   private hasDirectChildFile(obs: ObservationSearchResult, folderPath: string): boolean {
-    const checkFiles = (filesJson: string | null): boolean => {
-      if (!filesJson) return false;
-      try {
-        const files: unknown = JSON.parse(filesJson);
-        if (Array.isArray(files)) {
-          return files.some((f: string) => isDirectChild(f, folderPath));
-        }
-      } catch { /* intentionally empty - invalid JSON treated as no files */ }
-      return false;
-    };
-
-    return checkFiles(obs.files_modified) || checkFiles(obs.files_read);
+    return this.hasDirectChildInJson(obs.files_modified, folderPath)
+      || this.hasDirectChildInJson(obs.files_read, folderPath);
   }
 
   /**
    * Check if a session has any files that are direct children of the folder
    */
   private hasDirectChildFileSession(session: SessionSummarySearchResult, folderPath: string): boolean {
-    const checkFiles = (filesJson: string | null): boolean => {
-      if (!filesJson) return false;
-      try {
-        const files: unknown = JSON.parse(filesJson);
-        if (Array.isArray(files)) {
-          return files.some((f: string) => isDirectChild(f, folderPath));
-        }
-      } catch { /* intentionally empty - invalid JSON treated as no files */ }
-      return false;
-    };
-
-    return checkFiles(session.files_read) || checkFiles(session.files_edited);
+    return this.hasDirectChildInJson(session.files_read, folderPath)
+      || this.hasDirectChildInJson(session.files_edited, folderPath);
   }
 
   /**

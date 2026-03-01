@@ -20,6 +20,21 @@ import type {
 import { SUMMARY_LOOKAHEAD } from './types.js';
 
 /**
+ * Fire-and-forget access_count increment for a list of observation IDs.
+ * Non-blocking: errors are logged at debug level and do not surface to callers.
+ */
+function incrementAccessCount(db: SessionStore, ids: number[]): void {
+  const idPlaceholders = ids.map(() => '?').join(',');
+  setImmediate(() => {
+    try {
+      db.db.prepare(`UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`).run(...ids);
+    } catch (err) {
+      logger.debug('DB', `access_count increment failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+}
+
+/**
  * Query observations from database with type and concept filtering
  */
 export function queryObservations(
@@ -50,17 +65,8 @@ export function queryObservations(
     LIMIT ?
   `).all(project, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
 
-  // Fire-and-forget access_count increment (non-blocking)
   if (observations.length > 0) {
-    const ids = observations.map(o => o.id);
-    const idPlaceholders = ids.map(() => '?').join(',');
-    setImmediate(() => {
-      try {
-        db.db.prepare(`UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`).run(...ids);
-      } catch (err) {
-        logger.debug('DB', `access_count increment failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    });
+    incrementAccessCount(db, observations.map(o => o.id));
   }
 
   return observations;
@@ -120,17 +126,8 @@ export function queryObservationsMulti(
     LIMIT ?
   `).all(...projects, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
 
-  // Fire-and-forget access_count increment (non-blocking)
   if (observations.length > 0) {
-    const ids = observations.map(o => o.id);
-    const idPlaceholders = ids.map(() => '?').join(',');
-    setImmediate(() => {
-      try {
-        db.db.prepare(`UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`).run(...ids);
-      } catch (err) {
-        logger.debug('DB', `access_count increment failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    });
+    incrementAccessCount(db, observations.map(o => o.id));
   }
 
   return observations;

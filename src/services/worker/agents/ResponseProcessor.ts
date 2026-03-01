@@ -135,8 +135,7 @@ export function processAgentResponse(
     dbManager,
     worker,
     discoveryTokens,
-    agentName,
-    projectRoot
+    agentName
   );
 
   // Sync and broadcast summary if present
@@ -193,8 +192,7 @@ function syncAndBroadcastObservations(
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
   discoveryTokens: number,
-  agentName: string,
-  _projectRoot?: string
+  agentName: string
 ): void {
   for (let i = 0; i < observations.length; i++) {
     const obsId = result.observationIds[i];
@@ -253,7 +251,6 @@ function syncAndBroadcastObservations(
       created_at_epoch: result.createdAtEpoch
     });
   }
-
 }
 
 /**
