@@ -61,6 +61,7 @@ export class SessionStore {
     this.ensureSubprocessPidColumn();
     this.recreateFTSTablesWithUnicode61();
     this.ensurePriorityColumn();
+    this.ensureEnrichmentColumns();
   }
 
   /**
@@ -886,6 +887,35 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
+  }
+
+  /**
+   * Ensure enrichment columns exist on observations (migration 26)
+   * Adds topics, entities, event_date, pinned, access_count, supersedes_id
+   */
+  private ensureEnrichmentColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(26) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const existingCols = new Set(observationsInfo.map(col => col.name));
+
+    const columnsToAdd: Array<[string, string]> = [
+      ['topics', 'TEXT'],
+      ['entities', 'TEXT'],
+      ['event_date', 'TEXT'],
+      ['pinned', 'INTEGER DEFAULT 0'],
+      ['access_count', 'INTEGER DEFAULT 0'],
+      ['supersedes_id', 'TEXT'],
+    ];
+
+    for (const [name, type] of columnsToAdd) {
+      if (!existingCols.has(name)) {
+        this.db.run(`ALTER TABLE observations ADD COLUMN ${name} ${type}`);
+      }
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
   }
 
   /**

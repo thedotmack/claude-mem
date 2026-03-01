@@ -32,21 +32,38 @@ export function queryObservations(
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
 
-  return db.db.prepare(`
+  const observations = db.db.prepare(`
     SELECT
       id, memory_session_id, type, priority, title, subtitle, narrative,
       facts, concepts, files_read, files_modified, discovery_tokens,
+      topics, entities, event_date, pinned, access_count, supersedes_id,
       created_at, created_at_epoch
     FROM observations
     WHERE project = ?
       AND type IN (${typePlaceholders})
+      AND supersedes_id IS NULL
       AND EXISTS (
         SELECT 1 FROM json_each(concepts)
         WHERE value IN (${conceptPlaceholders})
       )
-    ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'important' THEN 1 ELSE 2 END ASC, created_at_epoch DESC
+    ORDER BY pinned DESC, CASE priority WHEN 'critical' THEN 0 WHEN 'important' THEN 1 ELSE 2 END ASC, created_at_epoch DESC
     LIMIT ?
   `).all(project, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
+
+  // Fire-and-forget access_count increment (non-blocking)
+  if (observations.length > 0) {
+    const ids = observations.map(o => o.id);
+    const idPlaceholders = ids.map(() => '?').join(',');
+    setImmediate(() => {
+      try {
+        db.db.prepare(`UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`).run(...ids);
+      } catch {
+        // Non-critical: don't block context injection on access_count failure
+      }
+    });
+  }
+
+  return observations;
 }
 
 /**
@@ -85,21 +102,38 @@ export function queryObservationsMulti(
   // Build IN clause for projects
   const projectPlaceholders = projects.map(() => '?').join(',');
 
-  return db.db.prepare(`
+  const observations = db.db.prepare(`
     SELECT
       id, memory_session_id, type, priority, title, subtitle, narrative,
       facts, concepts, files_read, files_modified, discovery_tokens,
+      topics, entities, event_date, pinned, access_count, supersedes_id,
       created_at, created_at_epoch, project
     FROM observations
     WHERE project IN (${projectPlaceholders})
       AND type IN (${typePlaceholders})
+      AND supersedes_id IS NULL
       AND EXISTS (
         SELECT 1 FROM json_each(concepts)
         WHERE value IN (${conceptPlaceholders})
       )
-    ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'important' THEN 1 ELSE 2 END ASC, created_at_epoch DESC
+    ORDER BY pinned DESC, CASE priority WHEN 'critical' THEN 0 WHEN 'important' THEN 1 ELSE 2 END ASC, created_at_epoch DESC
     LIMIT ?
   `).all(...projects, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
+
+  // Fire-and-forget access_count increment (non-blocking)
+  if (observations.length > 0) {
+    const ids = observations.map(o => o.id);
+    const idPlaceholders = ids.map(() => '?').join(',');
+    setImmediate(() => {
+      try {
+        db.db.prepare(`UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`).run(...ids);
+      } catch {
+        // Non-critical: don't block context injection on access_count failure
+      }
+    });
+  }
+
+  return observations;
 }
 
 /**
