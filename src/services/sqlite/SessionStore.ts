@@ -758,6 +758,10 @@ export class SessionStore {
    *
    * observations_fts column order (matches bm25 weight vector 10/5/3/2/1/1):
    *   title, narrative, facts, concepts, subtitle, text
+   *
+   * NOTE: Migration 26 (ensureEnrichmentColumns) upgrades this to 8 columns
+   * by adding topics + entities. This method must stay at 6 columns because
+   * it runs before migration 26 adds the enrichment columns to the table.
    */
   private recreateFTSTablesWithUnicode61(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;

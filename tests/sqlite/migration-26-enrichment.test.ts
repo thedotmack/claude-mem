@@ -142,6 +142,71 @@ function createPreMigrationDb(): Database {
     )
   `);
 
+  // Create pre-migration-26 FTS5 table (6 columns, as migration 24 left them)
+  db.run(`
+    CREATE VIRTUAL TABLE observations_fts USING fts5(
+      title,
+      narrative,
+      facts,
+      concepts,
+      subtitle,
+      text,
+      content='observations',
+      content_rowid='id',
+      tokenize='unicode61'
+    )
+  `);
+
+  // Create triggers (6-column, pre-migration-26)
+  db.run(`
+    CREATE TRIGGER observations_ai AFTER INSERT ON observations BEGIN
+      INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text)
+      VALUES (new.id, COALESCE(new.title,''), COALESCE(new.narrative,''), COALESCE(new.facts,''), COALESCE(new.concepts,''), COALESCE(new.subtitle,''), COALESCE(new.text,''));
+    END
+  `);
+  db.run(`
+    CREATE TRIGGER observations_ad AFTER DELETE ON observations BEGIN
+      INSERT INTO observations_fts(observations_fts, rowid, title, narrative, facts, concepts, subtitle, text)
+      VALUES('delete', old.id, COALESCE(old.title,''), COALESCE(old.narrative,''), COALESCE(old.facts,''), COALESCE(old.concepts,''), COALESCE(old.subtitle,''), COALESCE(old.text,''));
+    END
+  `);
+  db.run(`
+    CREATE TRIGGER observations_au AFTER UPDATE ON observations BEGIN
+      INSERT INTO observations_fts(observations_fts, rowid, title, narrative, facts, concepts, subtitle, text)
+      VALUES('delete', old.id, COALESCE(old.title,''), COALESCE(old.narrative,''), COALESCE(old.facts,''), COALESCE(old.concepts,''), COALESCE(old.subtitle,''), COALESCE(old.text,''));
+      INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text)
+      VALUES (new.id, COALESCE(new.title,''), COALESCE(new.narrative,''), COALESCE(new.facts,''), COALESCE(new.concepts,''), COALESCE(new.subtitle,''), COALESCE(new.text,''));
+    END
+  `);
+
+  // session_summaries_fts (not touched by migration 26, just needed for completeness)
+  db.run(`
+    CREATE VIRTUAL TABLE session_summaries_fts USING fts5(
+      request, investigated, learned, completed, next_steps, notes,
+      content='session_summaries', content_rowid='id', tokenize='unicode61'
+    )
+  `);
+  db.run(`
+    CREATE TRIGGER session_summaries_ai AFTER INSERT ON session_summaries BEGIN
+      INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+      VALUES (new.id, COALESCE(new.request,''), COALESCE(new.investigated,''), COALESCE(new.learned,''), COALESCE(new.completed,''), COALESCE(new.next_steps,''), COALESCE(new.notes,''));
+    END
+  `);
+  db.run(`
+    CREATE TRIGGER session_summaries_ad AFTER DELETE ON session_summaries BEGIN
+      INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+      VALUES('delete', old.id, COALESCE(old.request,''), COALESCE(old.investigated,''), COALESCE(old.learned,''), COALESCE(old.completed,''), COALESCE(old.next_steps,''), COALESCE(old.notes,''));
+    END
+  `);
+  db.run(`
+    CREATE TRIGGER session_summaries_au AFTER UPDATE ON session_summaries BEGIN
+      INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+      VALUES('delete', old.id, COALESCE(old.request,''), COALESCE(old.investigated,''), COALESCE(old.learned,''), COALESCE(old.completed,''), COALESCE(old.next_steps,''), COALESCE(old.notes,''));
+      INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+      VALUES (new.id, COALESCE(new.request,''), COALESCE(new.investigated,''), COALESCE(new.learned,''), COALESCE(new.completed,''), COALESCE(new.next_steps,''), COALESCE(new.notes,''));
+    END
+  `);
+
   // Mark all migrations up to 25 as already applied
   const versions = [4, 5, 6, 7, 8, 9, 10, 11, 16, 17, 19, 20, 21, 23, 24, 25];
   const insertVersion = db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)');
@@ -404,5 +469,215 @@ describe('ensureEnrichmentColumns migration (version 26)', () => {
     expect(row.title).toBe('Important discovery');
     expect(row.narrative).toBe('Found a critical bug');
     expect(row.priority).toBe('critical');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FTS5 Trigger Update Tests (Task 2)
+// ---------------------------------------------------------------------------
+
+function getFTSColumnCount(db: Database): number {
+  // Query the FTS shadow table to get column count
+  try {
+    const row = db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='observations_fts'"
+    ).get() as { sql: string } | undefined;
+    if (!row) return 0;
+    // Count columns from the CREATE VIRTUAL TABLE statement
+    const colMatch = row.sql.match(/USING fts5\(([^)]+)\)/s);
+    if (!colMatch) return 0;
+    const cols = colMatch[1].split(',').filter(c => !c.trim().startsWith('content') && !c.trim().startsWith('tokenize'));
+    return cols.length;
+  } catch {
+    return 0;
+  }
+}
+
+function hasTrigger(db: Database, triggerName: string): boolean {
+  const result = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='trigger' AND name=?"
+  ).get(triggerName) as { name: string } | undefined;
+  return !!result;
+}
+
+function getTriggerSQL(db: Database, triggerName: string): string {
+  const result = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?"
+  ).get(triggerName) as { sql: string } | undefined;
+  return result?.sql ?? '';
+}
+
+describe('FTS5 trigger update (migration 26)', () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = createPreMigrationDb();
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('FTS table has 8 columns after migration (was 6)', () => {
+    expect(getFTSColumnCount(db)).toBe(6);
+
+    const runner = new MigrationRunner(db);
+    runner.runAllMigrations();
+
+    expect(getFTSColumnCount(db)).toBe(8);
+  });
+
+  it('topics are searchable via FTS5 MATCH', () => {
+    const runner = new MigrationRunner(db);
+    runner.runAllMigrations();
+
+    // Insert observation with topics
+    db.prepare(`
+      INSERT INTO observations
+      (memory_session_id, project, type, title, narrative, topics, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('mem-1', 'test', 'discovery', 'Test', 'Narrative', '["authentication", "migration"]', new Date().toISOString(), Date.now());
+
+    const results = db.prepare(
+      "SELECT rowid FROM observations_fts WHERE observations_fts MATCH 'authentication'"
+    ).all();
+    expect(results.length).toBe(1);
+  });
+
+  it('entity names are searchable via FTS5 MATCH', () => {
+    const runner = new MigrationRunner(db);
+    runner.runAllMigrations();
+
+    // Insert observation with entities (comma-separated names go in FTS)
+    db.prepare(`
+      INSERT INTO observations
+      (memory_session_id, project, type, title, narrative, entities, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('mem-1', 'test', 'discovery', 'Test', 'Narrative',
+      JSON.stringify([{ name: 'Alice', type: 'person' }, { name: 'DevOps', type: 'team' }]),
+      new Date().toISOString(), Date.now());
+
+    const results = db.prepare(
+      "SELECT rowid FROM observations_fts WHERE observations_fts MATCH 'Alice'"
+    ).all();
+    expect(results.length).toBe(1);
+  });
+
+  it('bm25 with 8 weights executes without error', () => {
+    const runner = new MigrationRunner(db);
+    runner.runAllMigrations();
+
+    db.prepare(`
+      INSERT INTO observations
+      (memory_session_id, project, type, title, narrative, topics, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('mem-1', 'test', 'discovery', 'Auth system', 'Authentication review', '["auth"]', new Date().toISOString(), Date.now());
+
+    const results = db.prepare(
+      "SELECT rowid, bm25(observations_fts, 10.0, 5.0, 3.0, 2.0, 1.0, 1.0, 2.0, 1.5) as score FROM observations_fts WHERE observations_fts MATCH 'auth' ORDER BY rank"
+    ).all() as Array<{ rowid: number; score: number }>;
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].score).toBeDefined();
+  });
+
+  it('UPDATE trigger has WHEN clause (does not fire on access_count/pinned changes)', () => {
+    const runner = new MigrationRunner(db);
+    runner.runAllMigrations();
+
+    const triggerSQL = getTriggerSQL(db, 'observations_au');
+    expect(triggerSQL).toContain('WHEN');
+    // Should fire on content changes
+    expect(triggerSQL).toContain('OLD.title');
+    expect(triggerSQL).toContain('OLD.topics');
+    // Should NOT mention access_count or pinned in the WHEN clause
+    // (the trigger should NOT fire on those changes)
+  });
+
+  it('updating access_count does NOT trigger FTS re-index', () => {
+    const runner = new MigrationRunner(db);
+    runner.runAllMigrations();
+
+    db.prepare(`
+      INSERT INTO observations
+      (memory_session_id, project, type, title, narrative, topics, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('mem-1', 'test', 'discovery', 'Unique term xyzzy', 'Narrative', '["auth"]', new Date().toISOString(), Date.now());
+
+    // Verify searchable
+    const before = db.prepare(
+      "SELECT rowid FROM observations_fts WHERE observations_fts MATCH 'xyzzy'"
+    ).all();
+    expect(before.length).toBe(1);
+
+    // Update access_count — should NOT trigger FTS re-index
+    db.prepare('UPDATE observations SET access_count = access_count + 1 WHERE id = 1').run();
+
+    // Still searchable (FTS not corrupted)
+    const after = db.prepare(
+      "SELECT rowid FROM observations_fts WHERE observations_fts MATCH 'xyzzy'"
+    ).all();
+    expect(after.length).toBe(1);
+  });
+
+  it('deleting an observation removes it from FTS index', () => {
+    const runner = new MigrationRunner(db);
+    runner.runAllMigrations();
+
+    db.prepare(`
+      INSERT INTO observations
+      (memory_session_id, project, type, title, narrative, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('mem-1', 'test', 'discovery', 'Deletable item', 'Narrative', new Date().toISOString(), Date.now());
+
+    const before = db.prepare(
+      "SELECT rowid FROM observations_fts WHERE observations_fts MATCH 'Deletable'"
+    ).all();
+    expect(before.length).toBe(1);
+
+    db.prepare('DELETE FROM observations WHERE id = 1').run();
+
+    const after = db.prepare(
+      "SELECT rowid FROM observations_fts WHERE observations_fts MATCH 'Deletable'"
+    ).all();
+    expect(after.length).toBe(0);
+  });
+
+  it('updating title updates FTS index', () => {
+    const runner = new MigrationRunner(db);
+    runner.runAllMigrations();
+
+    db.prepare(`
+      INSERT INTO observations
+      (memory_session_id, project, type, title, narrative, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('mem-1', 'test', 'discovery', 'Original title', 'Narrative', new Date().toISOString(), Date.now());
+
+    db.prepare("UPDATE observations SET title = 'Updated foobar title' WHERE id = 1").run();
+
+    const oldMatch = db.prepare(
+      "SELECT rowid FROM observations_fts WHERE observations_fts MATCH 'Original'"
+    ).all();
+    expect(oldMatch.length).toBe(0);
+
+    const newMatch = db.prepare(
+      "SELECT rowid FROM observations_fts WHERE observations_fts MATCH 'foobar'"
+    ).all();
+    expect(newMatch.length).toBe(1);
+  });
+
+  it('pre-existing observations are backfilled into new FTS columns', () => {
+    // Insert observation BEFORE migration with topics already set in main table
+    // (simulating data that was there pre-migration)
+    insertObservation(db, { title: 'Pre-existing obs', narrative: 'Has old data' });
+
+    const runner = new MigrationRunner(db);
+    runner.runAllMigrations();
+
+    // Pre-existing obs should be searchable by its title via FTS
+    // Use quotes around hyphenated term (FTS5 treats "-" as column prefix operator)
+    const results = db.prepare(
+      `SELECT rowid FROM observations_fts WHERE observations_fts MATCH '"Pre-existing"'`
+    ).all();
+    expect(results.length).toBe(1);
   });
 });

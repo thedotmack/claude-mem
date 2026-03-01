@@ -47,13 +47,13 @@ export class SessionSearch {
    *
    * FTS5 tables power BM25 keyword search alongside Chroma vector search.
    * Migration 24 recreates these tables with unicode61 tokenizer and optimized
-   * column order for weighted BM25 scoring.
+   * column order for weighted BM25 scoring. Migration 26 adds topics + entities.
    *
    * This method creates tables only if they don't exist (fallback for fresh installs
-   * where migration hasn't run yet). Migration 24 handles the unicode61 upgrade.
+   * where migration hasn't run yet). Migration 26 handles the enrichment upgrade.
    *
    * Column order for observations_fts matches bm25() weight order:
-   * title(10.0), narrative(5.0), facts(3.0), concepts(2.0), subtitle(1.0), text(1.0)
+   * title(10.0), narrative(5.0), facts(3.0), concepts(2.0), subtitle(1.0), text(1.0), topics(2.0), entities(1.5)
    */
   private ensureFTSTables(): void {
     // Check if FTS tables already exist
@@ -67,8 +67,8 @@ export class SessionSearch {
 
     logger.info('DB', 'Creating FTS5 tables');
 
-    // Create observations_fts virtual table
-    // Column order matches bm25() weight arguments: title=10, narrative=5, facts=3, concepts=2, subtitle=1, text=1
+    // Create observations_fts virtual table (8 columns including topics + entities)
+    // Column order matches bm25() weight arguments: title=10, narrative=5, facts=3, concepts=2, subtitle=1, text=1, topics=2, entities=1.5
     this.db.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
         title,
@@ -77,6 +77,8 @@ export class SessionSearch {
         concepts,
         subtitle,
         text,
+        topics,
+        entities,
         content='observations',
         content_rowid='id',
         tokenize='unicode61'
@@ -84,33 +86,80 @@ export class SessionSearch {
     `);
 
     // Populate with existing data
+    // For entities, extract names from JSON array to avoid BM25 noise from JSON structure
     this.db.run(`
-      INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text)
-      SELECT id, COALESCE(title,''), COALESCE(narrative,''), COALESCE(facts,''), COALESCE(concepts,''), COALESCE(subtitle,''), COALESCE(text,'')
+      INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text, topics, entities)
+      SELECT id,
+        COALESCE(title,''), COALESCE(narrative,''), COALESCE(facts,''),
+        COALESCE(concepts,''), COALESCE(subtitle,''), COALESCE(text,''),
+        COALESCE(topics,''),
+        COALESCE((
+          SELECT GROUP_CONCAT(json_extract(value, '$.name'), ', ')
+          FROM json_each(entities)
+        ), '')
       FROM observations;
     `);
 
     // Create triggers for observations
+    // INSERT trigger
     this.db.run(`
       CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
-        INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text)
-        VALUES (new.id, new.title, new.narrative, new.facts, new.concepts, new.subtitle, new.text);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
-        INSERT INTO observations_fts(observations_fts, rowid, title, narrative, facts, concepts, subtitle, text)
-        VALUES('delete', old.id, old.title, old.narrative, old.facts, old.concepts, old.subtitle, old.text);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
-        INSERT INTO observations_fts(observations_fts, rowid, title, narrative, facts, concepts, subtitle, text)
-        VALUES('delete', old.id, old.title, old.narrative, old.facts, old.concepts, old.subtitle, old.text);
-        INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text)
-        VALUES (new.id, new.title, new.narrative, new.facts, new.concepts, new.subtitle, new.text);
+        INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text, topics, entities)
+        VALUES (new.id,
+          COALESCE(new.title,''), COALESCE(new.narrative,''), COALESCE(new.facts,''),
+          COALESCE(new.concepts,''), COALESCE(new.subtitle,''), COALESCE(new.text,''),
+          COALESCE(new.topics,''),
+          COALESCE((
+            SELECT GROUP_CONCAT(json_extract(value, '$.name'), ', ')
+            FROM json_each(new.entities)
+          ), ''));
       END;
     `);
 
-    // Create session_summaries_fts virtual table
+    // DELETE trigger
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
+        INSERT INTO observations_fts(observations_fts, rowid, title, narrative, facts, concepts, subtitle, text, topics, entities)
+        VALUES('delete', old.id,
+          COALESCE(old.title,''), COALESCE(old.narrative,''), COALESCE(old.facts,''),
+          COALESCE(old.concepts,''), COALESCE(old.subtitle,''), COALESCE(old.text,''),
+          COALESCE(old.topics,''),
+          COALESCE((
+            SELECT GROUP_CONCAT(json_extract(value, '$.name'), ', ')
+            FROM json_each(old.entities)
+          ), ''));
+      END;
+    `);
+
+    // UPDATE trigger — conditional WHEN clause prevents firing on access_count/pinned changes
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations
+      WHEN OLD.title != NEW.title OR OLD.narrative != NEW.narrative OR OLD.facts != NEW.facts
+        OR OLD.concepts != NEW.concepts OR OLD.subtitle != NEW.subtitle OR OLD.text != NEW.text
+        OR OLD.topics != NEW.topics OR OLD.entities != NEW.entities
+      BEGIN
+        INSERT INTO observations_fts(observations_fts, rowid, title, narrative, facts, concepts, subtitle, text, topics, entities)
+        VALUES('delete', old.id,
+          COALESCE(old.title,''), COALESCE(old.narrative,''), COALESCE(old.facts,''),
+          COALESCE(old.concepts,''), COALESCE(old.subtitle,''), COALESCE(old.text,''),
+          COALESCE(old.topics,''),
+          COALESCE((
+            SELECT GROUP_CONCAT(json_extract(value, '$.name'), ', ')
+            FROM json_each(old.entities)
+          ), ''));
+        INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text, topics, entities)
+        VALUES (new.id,
+          COALESCE(new.title,''), COALESCE(new.narrative,''), COALESCE(new.facts,''),
+          COALESCE(new.concepts,''), COALESCE(new.subtitle,''), COALESCE(new.text,''),
+          COALESCE(new.topics,''),
+          COALESCE((
+            SELECT GROUP_CONCAT(json_extract(value, '$.name'), ', ')
+            FROM json_each(new.entities)
+          ), ''));
+      END;
+    `);
+
+    // Create session_summaries_fts virtual table (unchanged from migration 24)
     this.db.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
         request,
@@ -132,23 +181,23 @@ export class SessionSearch {
       FROM session_summaries;
     `);
 
-    // Create triggers for session_summaries
+    // Create triggers for session_summaries (unchanged from migration 24)
     this.db.run(`
       CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
         INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+        VALUES (new.id, COALESCE(new.request,''), COALESCE(new.investigated,''), COALESCE(new.learned,''), COALESCE(new.completed,''), COALESCE(new.next_steps,''), COALESCE(new.notes,''));
       END;
 
       CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
         INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+        VALUES('delete', old.id, COALESCE(old.request,''), COALESCE(old.investigated,''), COALESCE(old.learned,''), COALESCE(old.completed,''), COALESCE(old.next_steps,''), COALESCE(old.notes,''));
       END;
 
       CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
         INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+        VALUES('delete', old.id, COALESCE(old.request,''), COALESCE(old.investigated,''), COALESCE(old.learned,''), COALESCE(old.completed,''), COALESCE(old.next_steps,''), COALESCE(old.notes,''));
         INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+        VALUES (new.id, COALESCE(new.request,''), COALESCE(new.investigated,''), COALESCE(new.learned,''), COALESCE(new.completed,''), COALESCE(new.next_steps,''), COALESCE(new.notes,''));
       END;
     `);
 

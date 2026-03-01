@@ -845,6 +845,7 @@ export class MigrationRunner {
    * Ensure enrichment columns exist on observations (migration 26)
    * Adds topics, entities, event_date, pinned, access_count, supersedes_id
    * for observation enrichment metadata.
+   * Also recreates FTS5 observations table/triggers with 8 columns (topics + entities).
    */
   private ensureEnrichmentColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(26) as SchemaVersion | undefined;
@@ -877,7 +878,103 @@ export class MigrationRunner {
     this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_pinned ON observations(pinned) WHERE pinned = 1');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_supersedes ON observations(supersedes_id) WHERE supersedes_id IS NOT NULL');
 
+    // Recreate FTS5 with 8 columns: add topics and entities
+    // For entities, index only extracted names (comma-separated) to avoid BM25 noise from JSON
+    this.db.run('DROP TRIGGER IF EXISTS observations_ai');
+    this.db.run('DROP TRIGGER IF EXISTS observations_ad');
+    this.db.run('DROP TRIGGER IF EXISTS observations_au');
+    this.db.run('DROP TABLE IF EXISTS observations_fts');
+
+    this.db.run(`
+      CREATE VIRTUAL TABLE observations_fts USING fts5(
+        title,
+        narrative,
+        facts,
+        concepts,
+        subtitle,
+        text,
+        topics,
+        entities,
+        content='observations',
+        content_rowid='id',
+        tokenize='unicode61'
+      )
+    `);
+
+    // Backfill FTS from existing observations
+    // For entities, extract names from JSON array: [{"name":"Alice","type":"person"}] → "Alice"
+    this.db.run(`
+      INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text, topics, entities)
+      SELECT id,
+        COALESCE(title,''), COALESCE(narrative,''), COALESCE(facts,''),
+        COALESCE(concepts,''), COALESCE(subtitle,''), COALESCE(text,''),
+        COALESCE(topics,''),
+        COALESCE((
+          SELECT GROUP_CONCAT(json_extract(value, '$.name'), ', ')
+          FROM json_each(entities)
+        ), '')
+      FROM observations
+    `);
+
+    // INSERT trigger
+    this.db.run(`
+      CREATE TRIGGER observations_ai AFTER INSERT ON observations BEGIN
+        INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text, topics, entities)
+        VALUES (new.id,
+          COALESCE(new.title,''), COALESCE(new.narrative,''), COALESCE(new.facts,''),
+          COALESCE(new.concepts,''), COALESCE(new.subtitle,''), COALESCE(new.text,''),
+          COALESCE(new.topics,''),
+          COALESCE((
+            SELECT GROUP_CONCAT(json_extract(value, '$.name'), ', ')
+            FROM json_each(new.entities)
+          ), ''));
+      END
+    `);
+
+    // DELETE trigger
+    this.db.run(`
+      CREATE TRIGGER observations_ad AFTER DELETE ON observations BEGIN
+        INSERT INTO observations_fts(observations_fts, rowid, title, narrative, facts, concepts, subtitle, text, topics, entities)
+        VALUES('delete', old.id,
+          COALESCE(old.title,''), COALESCE(old.narrative,''), COALESCE(old.facts,''),
+          COALESCE(old.concepts,''), COALESCE(old.subtitle,''), COALESCE(old.text,''),
+          COALESCE(old.topics,''),
+          COALESCE((
+            SELECT GROUP_CONCAT(json_extract(value, '$.name'), ', ')
+            FROM json_each(old.entities)
+          ), ''));
+      END
+    `);
+
+    // UPDATE trigger — conditional WHEN clause prevents firing on access_count/pinned changes
+    this.db.run(`
+      CREATE TRIGGER observations_au AFTER UPDATE ON observations
+      WHEN OLD.title != NEW.title OR OLD.narrative != NEW.narrative OR OLD.facts != NEW.facts
+        OR OLD.concepts != NEW.concepts OR OLD.subtitle != NEW.subtitle OR OLD.text != NEW.text
+        OR OLD.topics != NEW.topics OR OLD.entities != NEW.entities
+      BEGIN
+        INSERT INTO observations_fts(observations_fts, rowid, title, narrative, facts, concepts, subtitle, text, topics, entities)
+        VALUES('delete', old.id,
+          COALESCE(old.title,''), COALESCE(old.narrative,''), COALESCE(old.facts,''),
+          COALESCE(old.concepts,''), COALESCE(old.subtitle,''), COALESCE(old.text,''),
+          COALESCE(old.topics,''),
+          COALESCE((
+            SELECT GROUP_CONCAT(json_extract(value, '$.name'), ', ')
+            FROM json_each(old.entities)
+          ), ''));
+        INSERT INTO observations_fts(rowid, title, narrative, facts, concepts, subtitle, text, topics, entities)
+        VALUES (new.id,
+          COALESCE(new.title,''), COALESCE(new.narrative,''), COALESCE(new.facts,''),
+          COALESCE(new.concepts,''), COALESCE(new.subtitle,''), COALESCE(new.text,''),
+          COALESCE(new.topics,''),
+          COALESCE((
+            SELECT GROUP_CONCAT(json_extract(value, '$.name'), ', ')
+            FROM json_each(new.entities)
+          ), ''));
+      END
+    `);
+
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
-    logger.debug('DB', 'Added enrichment columns to observations table (migration 26)');
+    logger.debug('DB', 'Added enrichment columns and updated FTS5 triggers (migration 26)');
   }
 }

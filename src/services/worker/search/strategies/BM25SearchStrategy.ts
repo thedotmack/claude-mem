@@ -147,7 +147,7 @@ export class BM25SearchStrategy extends BaseSearchStrategy implements SearchStra
     params.push(filters.limit);
 
     const sql = `
-      SELECT o.*, bm25(observations_fts, 10.0, 5.0, 3.0, 2.0, 1.0, 1.0) AS bm25_score
+      SELECT o.*, bm25(observations_fts, 10.0, 5.0, 3.0, 2.0, 1.0, 1.0, 2.0, 1.5) AS bm25_score
       FROM observations_fts
       JOIN observations o ON o.id = observations_fts.rowid
       WHERE observations_fts MATCH ?
