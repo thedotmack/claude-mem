@@ -48,6 +48,7 @@ export interface Observation {
   id: number;
   memory_session_id: string;
   type: string;
+  priority: 'critical' | 'important' | 'informational';
   title: string | null;
   subtitle: string | null;
   narrative: string | null;

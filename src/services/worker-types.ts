@@ -117,6 +117,7 @@ export interface Observation {
   memory_session_id: string;  // Renamed from sdk_session_id
   project: string;
   type: string;
+  priority: string;
   title: string;
   subtitle: string | null;
   text: string | null;

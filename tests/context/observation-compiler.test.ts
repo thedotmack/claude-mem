@@ -15,6 +15,7 @@ function createTestObservation(overrides: Partial<Observation> = {}): Observatio
     id: 1,
     memory_session_id: 'session-123',
     type: 'discovery',
+    priority: 'informational',
     title: 'Test Observation',
     subtitle: null,
     narrative: 'A test narrative',

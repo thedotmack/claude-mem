@@ -34,6 +34,7 @@ export class MigrationRunner {
     this.ensureReadTokensColumn();
     this.createContextInjectionsTable();
     this.recreateFTSTablesWithUnicode61();
+    this.ensurePriorityColumn();
   }
 
   /**
@@ -820,5 +821,22 @@ export class MigrationRunner {
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
     logger.debug('DB', 'FTS5 tables recreated with unicode61 tokenizer (migration 24)');
+  }
+
+  /**
+   * Ensure priority column exists on observations (migration 25)
+   * Priority indicates observation importance: 'critical', 'important', or 'informational' (default).
+   * No backfill needed — existing rows get the column default.
+   */
+  private ensurePriorityColumn(): void {
+    const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasPriority = observationsInfo.some(col => col.name === 'priority');
+
+    if (!hasPriority) {
+      this.db.run("ALTER TABLE observations ADD COLUMN priority TEXT DEFAULT 'informational'");
+      logger.debug('DB', 'Added priority column to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
   }
 }

@@ -51,6 +51,8 @@ ${mode.prompts.output_format_header}
   <!--
     ${mode.prompts.type_guidance}
   -->
+  <priority>[ critical | important | informational ]</priority>
+  <!-- critical: breaks workflows or causes data loss. important: significant insight or key decision. informational: routine observation (default). -->
   <title>${mode.prompts.xml_title_placeholder}</title>
   <subtitle>${mode.prompts.xml_subtitle_placeholder}</subtitle>
   <facts>
@@ -199,6 +201,8 @@ ${mode.prompts.output_format_header}
   <!--
     ${mode.prompts.type_guidance}
   -->
+  <priority>[ critical | important | informational ]</priority>
+  <!-- critical: breaks workflows or causes data loss. important: significant insight or key decision. informational: routine observation (default). -->
   <title>${mode.prompts.xml_title_placeholder}</title>
   <subtitle>${mode.prompts.xml_subtitle_placeholder}</subtitle>
   <facts>

@@ -10,6 +10,10 @@ export const OBSERVATION_CONCEPTS = [
   'problem-solution', 'gotcha', 'pattern', 'trade-off'
 ] as const;
 
+export const OBSERVATION_PRIORITIES = [
+  'critical', 'important', 'informational'
+] as const;
+
 export const ITEM_KINDS = [
   'observations', 'sessions', 'prompts'
 ] as const;

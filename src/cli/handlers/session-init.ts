@@ -130,11 +130,11 @@ export const sessionInitHandler: EventHandler = {
       // /review 101 -> review 101 (more semantic for observations)
       const cleanedPrompt = prompt.startsWith('/') ? prompt.substring(1) : prompt;
 
-      logger.debug('HOOK', 'session-init: Calling /sessions/{sessionDbId}/init', { sessionDbId, promptNumber });
+      logger.debug('HOOK', 'session-init: Calling /api/sessions/{sessionDbId}/start-agent', { sessionDbId, promptNumber });
 
-      // Initialize SDK agent session via HTTP (starts the agent!)
+      // Start SDK agent via consolidated API endpoint
       const response = await fetchWithRetry(
-        `http://127.0.0.1:${String(port)}/sessions/${String(sessionDbId)}/init`,
+        `http://127.0.0.1:${String(port)}/api/sessions/${String(sessionDbId)}/start-agent`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

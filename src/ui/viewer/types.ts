@@ -3,6 +3,7 @@ export interface Observation {
   memory_session_id: string;
   project: string;
   type: string;
+  priority: string | null;
   title: string | null;
   subtitle: string | null;
   narrative: string | null;
@@ -139,6 +140,7 @@ export interface FilterState {
   project: string;
   obsTypes: string[];
   concepts: string[];
+  priorities: string[];
   itemKinds: Array<'observations' | 'sessions' | 'prompts'>;
   dateStart: string;
   dateEnd: string;

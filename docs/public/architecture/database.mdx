@@ -74,6 +74,7 @@ CREATE TABLE observations (
   type TEXT,
   files_read TEXT,
   files_modified TEXT,
+  priority TEXT DEFAULT 'informational',
 
   created_at TEXT NOT NULL,
   created_at_epoch INTEGER NOT NULL,
@@ -89,6 +90,13 @@ CREATE TABLE observations (
 - `refactor` - Code refactoring and cleanup
 - `discovery` - Learnings about the codebase
 - `change` - General changes and modifications
+
+**Priority Levels** (v9.9.0+):
+- `critical` - Must-know information (architectural decisions, breaking changes, critical bugs)
+- `important` - Significant work (features, major refactors, key discoveries)
+- `informational` - Routine observations (default)
+
+Context injection orders observations by priority (critical first), then by recency within each priority level.
 
 **Indexes**:
 - `idx_observations_session` on `session_id`
@@ -295,6 +303,7 @@ Database schema is managed via migrations in `src/services/sqlite/migrations.ts`
 - Migration 005: Multi-prompt sessions (prompt_counter, prompt_number)
 - Migration 006: FTS5 virtual tables and triggers
 - Migration 007-010: Various improvements and user prompts table
+- Migration 025: Add `priority` column to observations (default: `'informational'`)
 
 ## Performance Considerations
 

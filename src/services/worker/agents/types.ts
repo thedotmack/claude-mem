@@ -36,6 +36,7 @@ export interface ObservationSSEPayload {
   memory_session_id: string | null;
   session_id: string;
   type: string;
+  priority: string;
   title: string | null;
   subtitle: string | null;
   text: string | null;

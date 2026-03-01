@@ -123,7 +123,7 @@ export class PaginationHelper {
       }
 
       let query = `
-        SELECT o.id, o.memory_session_id, o.project, o.type, o.title, o.subtitle,
+        SELECT o.id, o.memory_session_id, o.project, o.type, o.priority, o.title, o.subtitle,
                o.narrative, o.text, o.facts, o.concepts, o.files_read, o.files_modified,
                o.prompt_number, o.created_at, o.created_at_epoch
         FROM observations o
@@ -156,7 +156,7 @@ export class PaginationHelper {
       // Active/in-progress sessions pass memory_session_id, while summarized sessions
       // pass content_session_id — LEFT JOIN + OR handles both cases.
       let query = `
-        SELECT o.id, o.memory_session_id, o.project, o.type, o.title, o.subtitle,
+        SELECT o.id, o.memory_session_id, o.project, o.type, o.priority, o.title, o.subtitle,
                o.narrative, o.text, o.facts, o.concepts, o.files_read, o.files_modified,
                o.prompt_number, o.created_at, o.created_at_epoch
         FROM observations o
@@ -196,7 +196,7 @@ export class PaginationHelper {
 
     const result = this.paginate<Observation>(
       'observations',
-      'id, memory_session_id, project, type, title, subtitle, narrative, text, facts, concepts, files_read, files_modified, prompt_number, created_at, created_at_epoch',
+      'id, memory_session_id, project, type, priority, title, subtitle, narrative, text, facts, concepts, files_read, files_modified, prompt_number, created_at, created_at_epoch',
       offset,
       limit,
       project
@@ -369,8 +369,8 @@ export class PaginationHelper {
 
   /** Allowed column names for SELECT clauses in paginate() — defense-in-depth */
   private static readonly ALLOWED_SELECT_COLUMNS = new Set([
-    'id', 'memory_session_id', 'content_session_id', 'project', 'type', 'title',
-    'subtitle', 'narrative', 'text', 'facts', 'concepts', 'files_read',
+    'id', 'memory_session_id', 'content_session_id', 'project', 'type', 'priority',
+    'title', 'subtitle', 'narrative', 'text', 'facts', 'concepts', 'files_read',
     'files_modified', 'prompt_number', 'created_at', 'created_at_epoch',
     'request', 'investigated', 'learned', 'completed', 'next_steps',
     'session_id', 'prompt_text', 'observation_count',

@@ -45,6 +45,7 @@ function buildSearchParams(filters: FilterState, offset: number): URLSearchParam
   if (filters.project) params.set('project', filters.project);
   if (filters.obsTypes.length > 0) params.set('obs_type', filters.obsTypes.join(','));
   if (filters.concepts.length > 0) params.set('concepts', filters.concepts.join(','));
+  // TODO: Priority filter not yet supported by search API — needs server-side support first
   if (filters.dateStart) params.set('dateStart', inclusiveDateStart(filters.dateStart));
   if (filters.dateEnd) params.set('dateEnd', inclusiveDateEnd(filters.dateEnd));
 

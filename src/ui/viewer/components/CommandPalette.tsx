@@ -5,6 +5,7 @@ import { FilterChip } from './FilterChip';
 import {
   OBSERVATION_TYPES,
   OBSERVATION_CONCEPTS,
+  OBSERVATION_PRIORITIES,
   ITEM_KINDS,
   ITEM_KIND_LABELS,
 } from '../constants/filters';
@@ -16,6 +17,7 @@ interface CommandPaletteProps {
   filters: FilterState;
   onQueryChange: (query: string) => void;
   onToggleObsType: (type: string) => void;
+  onTogglePriority: (priority: string) => void;
   onToggleConcept: (concept: string) => void;
   onToggleItemKind: (kind: 'observations' | 'sessions' | 'prompts') => void;
   onDateRangeChange: (start: string, end: string) => void;
@@ -30,6 +32,7 @@ export function CommandPalette({
   filters,
   onQueryChange,
   onToggleObsType,
+  onTogglePriority,
   onToggleConcept,
   onToggleItemKind,
   onDateRangeChange,
@@ -92,6 +95,14 @@ export function CommandPalette({
                 onToggle={() => { onToggleObsType(type); }}
               />
             ))}
+            {filters.priorities.map(priority => (
+              <FilterChip
+                key={`active-priority-${priority}`}
+                label={priority}
+                isSelected={true}
+                onToggle={() => { onTogglePriority(priority); }}
+              />
+            ))}
             {filters.concepts.map(concept => (
               <FilterChip
                 key={`active-concept-${concept}`}
@@ -124,6 +135,20 @@ export function CommandPalette({
                   label={type}
                   isSelected={filters.obsTypes.includes(type)}
                   onToggle={() => { onToggleObsType(type); }}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div className="filter-section" data-group="priority">
+            <span className="filter-section-label">Priority</span>
+            <div className="filter-chips">
+              {OBSERVATION_PRIORITIES.map(priority => (
+                <FilterChip
+                  key={priority}
+                  label={priority}
+                  isSelected={filters.priorities.includes(priority)}
+                  onToggle={() => { onTogglePriority(priority); }}
                 />
               ))}
             </div>

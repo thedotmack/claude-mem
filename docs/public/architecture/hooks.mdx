@@ -84,7 +84,7 @@ graph LR
     subgraph WORKER_API["Worker HTTP Endpoints"]
         direction TB
         L[GET /api/context/inject]
-        M[POST /sessions/init]
+        M[POST /api/sessions/:id/start-agent]
         N[POST /sessions/observations]
         O[POST /sessions/summarize]
         P[POST /sessions/complete]
@@ -126,9 +126,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
 // VS Code Extension - UserPromptSubmit Hook
 const command = vscode.commands.registerCommand('extension.command', async (prompt) => {
-  await fetch('http://localhost:37777/sessions/init', {
+  await fetch('http://localhost:37777/api/sessions/${sessionDbId}/start-agent', {
     method: 'POST',
-    body: JSON.stringify({ sessionId, project, userPrompt: prompt })
+    body: JSON.stringify({ userPrompt: prompt, promptNumber })
   })
 })
 
@@ -350,7 +350,7 @@ sequenceDiagram
 
         NewHook->>DB: INSERT INTO user_prompts<br/>(session_id, prompt_number, prompt)
 
-        NewHook->>Worker: POST /sessions/{sessionDbId}/init<br/>{ project, userPrompt, promptNumber }<br/>(fire-and-forget, 2s timeout)
+        NewHook->>Worker: POST /api/sessions/{sessionDbId}/start-agent<br/>{ userPrompt, promptNumber }<br/>(fire-and-forget, 2s timeout)
         Worker-->>NewHook: 200 OK (or timeout)
 
         NewHook-->>IDE: { continue: true, suppressOutput: true }
@@ -397,9 +397,9 @@ if (!cleanedPrompt || cleanedPrompt.trim() === '') {
 // 6. Save user prompt to database
 db.saveUserPrompt(session_id, promptNumber, cleanedPrompt)
 
-// 7. Initialize session via worker HTTP
-POST http://127.0.0.1:37777/sessions/{sessionDbId}/init
-Body: { project, userPrompt, promptNumber }
+// 7. Start agent via worker HTTP
+POST http://127.0.0.1:37777/api/sessions/{sessionDbId}/start-agent
+Body: { userPrompt, promptNumber }
 ```
 
 **Output**:
@@ -907,7 +907,7 @@ For developers implementing this pattern on other platforms:
 
 ### Hook Implementation
 - [ ] context-hook: `GET /api/context/inject` (with health check)
-- [ ] new-hook: createSDKSession, saveUserPrompt, `POST /sessions/{id}/init`
+- [ ] new-hook: createSDKSession, saveUserPrompt, `POST /api/sessions/{id}/start-agent`
 - [ ] save-hook: Skip low-value tools, `POST /api/sessions/observations`
 - [ ] summary-hook: Parse transcript, `POST /api/sessions/summarize`
 - [ ] cleanup-hook: `POST /api/sessions/complete`

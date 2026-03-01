@@ -114,6 +114,8 @@ Context engineering manages:
 - Slower than pre-computed retrieval
 - Requires proper tool guidance to avoid dead-ends
 
+**Priority-Based Ordering** (v9.9.0+): magic-claude-mem applies priority ordering to context injection. Critical observations (architectural decisions, breaking changes) are surfaced first, followed by important observations, then informational. This ensures the highest-signal tokens appear earliest in context, where model attention is strongest.
+
 ### Pre-Inference Retrieval (Traditional RAG)
 **Approach**: Use embedding-based retrieval to surface context before inference
 

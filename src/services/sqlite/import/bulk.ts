@@ -138,6 +138,7 @@ export function importObservation(
     files_modified: string | null;
     prompt_number: number | null;
     discovery_tokens: number;
+    priority?: string;
     created_at: string;
     created_at_epoch: number;
   }
@@ -162,8 +163,8 @@ export function importObservation(
     INSERT INTO observations (
       memory_session_id, project, text, type, title, subtitle,
       facts, narrative, concepts, files_read, files_modified,
-      prompt_number, discovery_tokens, created_at, created_at_epoch
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      prompt_number, discovery_tokens, priority, created_at, created_at_epoch
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const result = stmt.run(
@@ -180,6 +181,7 @@ export function importObservation(
     obs.files_modified,
     obs.prompt_number,
     obs.discovery_tokens || 0,
+    obs.priority ?? 'informational',
     obs.created_at,
     obs.created_at_epoch
   );

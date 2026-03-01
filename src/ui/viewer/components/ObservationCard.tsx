@@ -86,6 +86,18 @@ export const ObservationCard = React.memo(function ObservationCard({ observation
       <div className="card-header">
         <div className="card-header-left">
           <span className="observation-card__type-badge">{observation.type || 'observation'}</span>
+          {observation.priority && observation.priority !== 'informational' && (
+            <span
+              className="observation-card__priority-badge"
+              data-priority={observation.priority}
+              style={{
+                backgroundColor: observation.priority === 'critical' ? '#CC3311' : '#EE7733',
+                color: '#fff',
+              }}
+            >
+              {observation.priority}
+            </span>
+          )}
           <span className="card-project">{observation.project}</span>
         </div>
         <span className="meta-date">#{observation.id} • {date}</span>

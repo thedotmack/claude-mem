@@ -15,6 +15,37 @@ This is the story of how magic-claude-mem evolved from a simple idea to a produc
 
 ---
 
+## v9.9.0: Priority Tagging and Route Consolidation (March 2026)
+
+### Priority Tagging for Observations
+
+**The Problem**: All observations were treated equally in context injection, regardless of significance. A critical architectural decision had the same weight as a routine file read.
+
+**The Solution**: Added a `priority` field to observations with three levels:
+
+| Priority | When Applied | Effect |
+|----------|-------------|--------|
+| `critical` | Architectural decisions, breaking changes, critical bugs | Surfaced first in context injection |
+| `important` | Features, major refactors, key discoveries | Surfaced after critical items |
+| `informational` | Routine observations (default) | Surfaced last |
+
+**Implementation**:
+- Migration 25 adds `priority TEXT DEFAULT 'informational'` to observations table
+- SDK XML parser extracts `<priority>` tags from Claude's structured output
+- Context injection orders by priority (critical first), then recency within each level
+- Viewer UI shows colorblind-safe priority badges (Tol palette: red for critical, orange for important)
+- CommandPalette provides priority filter chips
+
+**Why It Matters**: Context injection now delivers the most important observations first, improving Claude's awareness of critical decisions and bugs within the token budget.
+
+### Route Consolidation
+
+**The Problem**: Session initialization used a legacy endpoint pattern (`POST /sessions/:id/init`) inconsistent with the newer `/api/` prefix convention.
+
+**The Solution**: Added `POST /api/sessions/:sessionDbId/start-agent` as the canonical endpoint, with deprecation warnings on the legacy handler.
+
+---
+
 ## v5.x: Maturity and User Experience
 
 After establishing the solid v4 architecture, v5.x focused on user experience, visualization, and polish.

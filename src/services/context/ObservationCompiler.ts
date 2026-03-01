@@ -34,7 +34,7 @@ export function queryObservations(
 
   return db.db.prepare(`
     SELECT
-      id, memory_session_id, type, title, subtitle, narrative,
+      id, memory_session_id, type, priority, title, subtitle, narrative,
       facts, concepts, files_read, files_modified, discovery_tokens,
       created_at, created_at_epoch
     FROM observations
@@ -44,7 +44,7 @@ export function queryObservations(
         SELECT 1 FROM json_each(concepts)
         WHERE value IN (${conceptPlaceholders})
       )
-    ORDER BY created_at_epoch DESC
+    ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'important' THEN 1 ELSE 2 END ASC, created_at_epoch DESC
     LIMIT ?
   `).all(project, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
 }
@@ -87,7 +87,7 @@ export function queryObservationsMulti(
 
   return db.db.prepare(`
     SELECT
-      id, memory_session_id, type, title, subtitle, narrative,
+      id, memory_session_id, type, priority, title, subtitle, narrative,
       facts, concepts, files_read, files_modified, discovery_tokens,
       created_at, created_at_epoch, project
     FROM observations
@@ -97,7 +97,7 @@ export function queryObservationsMulti(
         SELECT 1 FROM json_each(concepts)
         WHERE value IN (${conceptPlaceholders})
       )
-    ORDER BY created_at_epoch DESC
+    ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'important' THEN 1 ELSE 2 END ASC, created_at_epoch DESC
     LIMIT ?
   `).all(...projects, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
 }

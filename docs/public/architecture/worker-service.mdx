@@ -137,6 +137,7 @@ GET /api/observations?project=my-project&limit=20&offset=0
     "id": 123,
     "title": "Fix authentication bug",
     "type": "bugfix",
+    "priority": "important",
     "narrative": "...",
     "created_at": "2025-11-06T10:30:00Z"
   }],
@@ -189,6 +190,7 @@ GET /api/observation/:id
   "memory_session_id": "abc123",
   "project": "my-project",
   "type": "bugfix",
+  "priority": "important",
   "title": "Fix authentication bug",
   "narrative": "...",
   "created_at": "2025-11-06T10:30:00Z",
@@ -234,6 +236,7 @@ POST /api/observations/batch
     "memory_session_id": "abc123",
     "project": "my-project",
     "type": "feature",
+    "priority": "important",
     "title": "Add new feature",
     "narrative": "...",
     "created_at": "2025-11-06T12:00:00Z",
@@ -244,6 +247,7 @@ POST /api/observations/batch
     "memory_session_id": "abc124",
     "project": "my-project",
     "type": "bugfix",
+    "priority": "critical",
     "title": "Fix authentication bug",
     "narrative": "...",
     "created_at": "2025-11-06T10:30:00Z",
@@ -529,10 +533,37 @@ POST /api/pending-queue/process
 
 ### Session Management Endpoints
 
-#### 19. Initialize Session
+#### 19. Start Agent (v9.9.0+)
+```
+POST /api/sessions/:sessionDbId/start-agent
+```
+
+**Purpose**: Start the SDK agent for a session. This is the preferred endpoint for session initialization, replacing the legacy `/sessions/:sessionDbId/init`.
+
+**Request Body**:
+```json
+{
+  "userPrompt": "Add login feature",
+  "promptNumber": 1
+}
+```
+
+**Response**:
+```json
+{
+  "status": "agent_started",
+  "sessionDbId": 42
+}
+```
+
+#### 19b. Initialize Session (Deprecated)
 ```
 POST /sessions/:sessionDbId/init
 ```
+
+<Warning>
+**Deprecated** as of v9.9.0. Use `POST /api/sessions/:sessionDbId/start-agent` instead. This endpoint logs a deprecation warning and will be removed in a future release.
+</Warning>
 
 **Request Body**:
 ```json

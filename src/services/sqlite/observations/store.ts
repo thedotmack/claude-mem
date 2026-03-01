@@ -38,8 +38,8 @@ export function storeObservation(
   const stmt = db.prepare(`
     INSERT INTO observations
     (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-     files_read, files_modified, prompt_number, discovery_tokens, read_tokens, created_at, created_at_epoch)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     files_read, files_modified, prompt_number, discovery_tokens, read_tokens, priority, created_at, created_at_epoch)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const result = stmt.run(
@@ -56,6 +56,7 @@ export function storeObservation(
     promptNumber || null,
     discoveryTokens,
     readTokens,
+    observation.priority ?? 'informational',
     timestampIso,
     timestampEpoch
   );

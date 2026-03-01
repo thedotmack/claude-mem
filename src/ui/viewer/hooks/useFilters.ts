@@ -6,6 +6,7 @@ const EMPTY_FILTER: FilterState = {
   project: '',
   obsTypes: [],
   concepts: [],
+  priorities: [],
   itemKinds: [],
   dateStart: '',
   dateEnd: '',
@@ -28,6 +29,15 @@ export function useFilters() {
       obsTypes: prev.obsTypes.includes(type)
         ? prev.obsTypes.filter(t => t !== type)
         : [...prev.obsTypes, type]
+    }));
+  }, []);
+
+  const togglePriority = useCallback((priority: string) => {
+    setFilters(prev => ({
+      ...prev,
+      priorities: prev.priorities.includes(priority)
+        ? prev.priorities.filter(p => p !== priority)
+        : [...prev.priorities, priority]
     }));
   }, []);
 
@@ -60,6 +70,7 @@ export function useFilters() {
     return filters.query !== '' ||
       filters.project !== '' ||
       filters.obsTypes.length > 0 ||
+      filters.priorities.length > 0 ||
       filters.concepts.length > 0 ||
       filters.itemKinds.length > 0 ||
       filters.dateStart !== '' ||
@@ -69,6 +80,7 @@ export function useFilters() {
   const isFilterMode = useMemo(() => {
     return filters.query !== '' ||
       filters.obsTypes.length > 0 ||
+      filters.priorities.length > 0 ||
       filters.concepts.length > 0 ||
       filters.itemKinds.length > 0 ||
       filters.dateStart !== '' ||
@@ -79,6 +91,7 @@ export function useFilters() {
     let count = 0;
     if (filters.query) count++;
     if (filters.obsTypes.length > 0) count++;
+    if (filters.priorities.length > 0) count++;
     if (filters.concepts.length > 0) count++;
     if (filters.itemKinds.length > 0) count++;
     if (filters.dateStart || filters.dateEnd) count++;
@@ -90,6 +103,7 @@ export function useFilters() {
     setQuery,
     setProject,
     toggleObsType,
+    togglePriority,
     toggleConcept,
     toggleItemKind,
     setDateRange,

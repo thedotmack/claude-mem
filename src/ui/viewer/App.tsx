@@ -62,8 +62,8 @@ export function App() {
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
   const {
-    filters, setQuery, setProject, toggleObsType, toggleConcept,
-    toggleItemKind, setDateRange, clearAll,
+    filters, setQuery, setProject, toggleObsType, togglePriority,
+    toggleConcept, toggleItemKind, setDateRange, clearAll,
     hasActiveFilters, isFilterMode, activeFilterCount
   } = useFilters();
 
@@ -316,6 +316,7 @@ export function App() {
         filters={filters}
         onQueryChange={setQuery}
         onToggleObsType={toggleObsType}
+        onTogglePriority={togglePriority}
         onToggleConcept={toggleConcept}
         onToggleItemKind={toggleItemKind}
         onDateRangeChange={setDateRange}

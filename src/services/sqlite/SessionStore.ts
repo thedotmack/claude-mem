@@ -60,6 +60,7 @@ export class SessionStore {
     this.createContextInjectionsTable();
     this.ensureSubprocessPidColumn();
     this.recreateFTSTablesWithUnicode61();
+    this.ensurePriorityColumn();
   }
 
   /**
@@ -865,6 +866,25 @@ export class SessionStore {
   }
 
   /**
+   * Ensure priority column exists on observations (migration 25)
+   * Stores observation priority level: 'critical' | 'important' | 'informational'
+   */
+  private ensurePriorityColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(25) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasPriority = observationsInfo.some(col => col.name === 'priority');
+
+    if (!hasPriority) {
+      this.db.run("ALTER TABLE observations ADD COLUMN priority TEXT DEFAULT 'informational'");
+      logger.debug('DB', 'Added priority column to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
+  }
+
+  /**
    * Persist a subprocess PID for crash-recovery
    * Called after spawning a Claude subprocess so the PID survives worker crashes
    */
@@ -1514,6 +1534,7 @@ export class SessionStore {
       concepts: string[];
       files_read: string[];
       files_modified: string[];
+      priority?: string;
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
@@ -1534,8 +1555,8 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, read_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, read_tokens, priority, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1552,6 +1573,7 @@ export class SessionStore {
       promptNumber || null,
       discoveryTokens,
       readTokens,
+      observation.priority ?? 'informational',
       timestampIso,
       timestampEpoch
     );
@@ -1648,6 +1670,7 @@ export class SessionStore {
       concepts: string[];
       files_read: string[];
       files_modified: string[];
+      priority?: string;
     }>,
     summary: {
       request: string;
@@ -1673,8 +1696,8 @@ export class SessionStore {
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-         files_read, files_modified, prompt_number, discovery_tokens, read_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         files_read, files_modified, prompt_number, discovery_tokens, read_tokens, priority, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
@@ -1699,6 +1722,7 @@ export class SessionStore {
           promptNumber || null,
           discoveryTokens,
           readTokens,
+          observation.priority ?? 'informational',
           timestampIso,
           timestampEpoch
         );
@@ -1778,6 +1802,7 @@ export class SessionStore {
       concepts: string[];
       files_read: string[];
       files_modified: string[];
+      priority?: string;
     }>,
     summary: {
       request: string;
@@ -1805,8 +1830,8 @@ export class SessionStore {
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-         files_read, files_modified, prompt_number, discovery_tokens, read_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         files_read, files_modified, prompt_number, discovery_tokens, read_tokens, priority, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
@@ -1831,6 +1856,7 @@ export class SessionStore {
           promptNumber || null,
           discoveryTokens,
           readTokens,
+          observation.priority ?? 'informational',
           timestampIso,
           timestampEpoch
         );
@@ -2361,6 +2387,7 @@ export class SessionStore {
     discovery_tokens: number;
     created_at: string;
     created_at_epoch: number;
+    priority?: string;
   }): { imported: boolean; id: number } {
     // Check if observation already exists
     const existing = this.db.prepare(`
@@ -2376,8 +2403,8 @@ export class SessionStore {
       INSERT INTO observations (
         memory_session_id, project, text, type, title, subtitle,
         facts, narrative, concepts, files_read, files_modified,
-        prompt_number, discovery_tokens, created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        prompt_number, discovery_tokens, priority, created_at, created_at_epoch
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -2394,6 +2421,7 @@ export class SessionStore {
       obs.files_modified,
       obs.prompt_number,
       obs.discovery_tokens || 0,
+      obs.priority ?? 'informational',
       obs.created_at,
       obs.created_at_epoch
     );

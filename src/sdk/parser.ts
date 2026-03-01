@@ -9,6 +9,7 @@ import type { ModeConfig } from '../services/domain/types.js';
 
 export interface ParsedObservation {
   type: string;
+  priority: 'critical' | 'important' | 'informational';
   title: string | null;
   subtitle: string | null;
   facts: string[];
@@ -43,6 +44,7 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
 
     // Extract all fields
     const type = extractField(obsContent, 'type');
+    const rawPriority = extractField(obsContent, 'priority');
     const title = extractField(obsContent, 'title');
     const subtitle = extractField(obsContent, 'subtitle');
     const narrative = extractField(obsContent, 'narrative');
@@ -75,8 +77,16 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
     // Validate and normalize concepts against mode's allowed concept IDs
     const validatedConcepts = validateConcepts(concepts, finalType, mode, correlationId);
 
+    // Validate priority — must be one of the three valid values, default to 'informational'
+    const VALID_PRIORITIES = ['critical', 'important', 'informational'] as const;
+    type Priority = typeof VALID_PRIORITIES[number];
+    const priority: Priority = rawPriority && VALID_PRIORITIES.includes(rawPriority as Priority)
+      ? (rawPriority as Priority)
+      : 'informational';
+
     observations.push({
       type: finalType,
+      priority,
       title,
       subtitle,
       facts,

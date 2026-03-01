@@ -233,6 +233,7 @@ function syncAndBroadcastObservations(
       memory_session_id: session.memorySessionId,
       session_id: session.contentSessionId,
       type: obs.type,
+      priority: obs.priority ?? 'informational',
       title: obs.title,
       subtitle: obs.subtitle,
       text: null,  // text field is not in ParsedObservation

@@ -120,7 +120,10 @@ export class SessionRoutes extends BaseRouteHandler {
     if (isOpenAICompatSelected() && isOpenAICompatAvailable()) {
       return 'openai-compat';
     }
-    return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
+    if (isGeminiSelected() && isGeminiAvailable()) {
+      return 'gemini';
+    }
+    return 'claude';
   }
 
   /**
@@ -167,8 +170,18 @@ export class SessionRoutes extends BaseRouteHandler {
   ): void {
     if (!session) return;
 
-    const agent = provider === 'openai-compat' ? this.openaiCompatAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openai-compat' ? 'OpenAI-Compat' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    let agent: SDKAgent | GeminiAgent | OpenAICompatAgent;
+    let agentName: string;
+    if (provider === 'openai-compat') {
+      agent = this.openaiCompatAgent;
+      agentName = 'OpenAI-Compat';
+    } else if (provider === 'gemini') {
+      agent = this.geminiAgent;
+      agentName = 'Gemini';
+    } else {
+      agent = this.sdkAgent;
+      agentName = 'Claude SDK';
+    }
 
     logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
       sessionId: session.sessionDbId,
@@ -282,6 +295,9 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/init', this.handleSessionInitByClaudeId.bind(this));
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
+
+    // Purpose-built agent start endpoint (replaces legacy init for agent startup)
+    app.post('/api/sessions/:sessionDbId/start-agent', this.handleStartAgent.bind(this));
   }
 
   /**
@@ -290,6 +306,8 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleSessionInit = this.wrapHandler((req: Request, res: Response): void => {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
+
+    logger.warn('HTTP', 'DEPRECATED: Legacy endpoint /sessions/:sessionDbId/init called. Use /api/sessions/:sessionDbId/start-agent instead.', { endpoint: '/sessions/:sessionDbId/init', sessionDbId });
 
     const body = req.body as SessionInitBody;
     const { userPrompt, promptNumber } = body;
@@ -360,6 +378,8 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
+    logger.warn('HTTP', 'DEPRECATED: Legacy endpoint /sessions/:sessionDbId/observations called. Use /api/sessions/observations instead.', { endpoint: '/sessions/:sessionDbId/observations', sessionDbId });
+
     const body = req.body as ObservationsBody;
     const { tool_name, tool_input, tool_response, prompt_number, cwd } = body;
 
@@ -387,6 +407,8 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleSummarize = this.wrapHandler((req: Request, res: Response): void => {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
+
+    logger.warn('HTTP', 'DEPRECATED: Legacy endpoint /sessions/:sessionDbId/summarize called. Use /api/sessions/summarize instead.', { endpoint: '/sessions/:sessionDbId/summarize', sessionDbId });
 
     const body = req.body as SummarizeBody;
     const { last_assistant_message } = body;
@@ -517,19 +539,20 @@ export class SessionRoutes extends BaseRouteHandler {
       ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
       : '{}';
 
+    if (!cwd) {
+      logger.error('SESSION', 'Missing cwd when queueing observation in SessionRoutes', {
+        sessionId: sessionDbId,
+        tool_name
+      });
+    }
+
     // Queue observation
     this.sessionManager.queueObservation(sessionDbId, {
       tool_name,
       tool_input: cleanedToolInput,
       tool_response: cleanedToolResponse,
       prompt_number: promptNumber,
-      cwd: cwd || (() => {
-        logger.error('SESSION', 'Missing cwd when queueing observation in SessionRoutes', {
-          sessionId: sessionDbId,
-          tool_name
-        });
-        return '';
-      })()
+      cwd: cwd ?? ''
     });
 
     // Ensure SDK agent is running
@@ -585,6 +608,33 @@ export class SessionRoutes extends BaseRouteHandler {
     this.eventBroadcaster.broadcastSummarizeQueued();
 
     res.json({ status: 'queued' });
+  });
+
+  /**
+   * Start agent for a session (purpose-built endpoint)
+   * POST /api/sessions/:sessionDbId/start-agent
+   * Body: { userPrompt, promptNumber }
+   *
+   * Performs agent startup + session-started broadcast only.
+   * DB initialization is already handled by handleSessionInitByClaudeId.
+   */
+  private handleStartAgent = this.wrapHandler((req: Request, res: Response): void => {
+    const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
+    if (sessionDbId === null) return;
+
+    logger.info('HTTP', 'SessionRoutes: handleStartAgent called', { sessionDbId });
+
+    // Resolve project via DB lookup (not available in request body)
+    const session = this.dbManager.getSessionStore().getSessionById(sessionDbId);
+    const project = session?.project ?? '';
+
+    // Start agent in background
+    this.ensureGeneratorRunning(sessionDbId, 'start-agent');
+
+    // Broadcast session started event
+    this.eventBroadcaster.broadcastSessionStarted(sessionDbId, project);
+
+    res.json({ status: 'agent_started', sessionDbId });
   });
 
   /**

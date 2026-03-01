@@ -5,7 +5,7 @@ icon: plug
 ---
 
 <Note>
-**Version:** 9.8.3 (February 2026)
+**Version:** 9.9.0 (March 2026)
 **Target Audience:** Developers building magic-claude-mem integrations (VSCode extensions, IDE plugins, CLI tools)
 </Note>
 
@@ -23,6 +23,10 @@ const DEFAULT_PORT = 37777; // Override with MAGIC_CLAUDE_MEM_WORKER_PORT
 ```typescript
 // Health check
 GET /api/health
+
+// Start agent for a session (v9.9.0+, preferred over legacy init)
+POST /api/sessions/:sessionDbId/start-agent
+Body: { userPrompt, promptNumber }
 
 // Create/get session and queue observation
 POST /api/sessions/observations
@@ -131,7 +135,8 @@ Platform Hook/Extension
     - SSE stream for real-time updates
   </Accordion>
   <Accordion title="SessionRoutes" icon="timeline">
-    - Session lifecycle (init, observations, summarize, complete)
+    - Session lifecycle (start-agent, observations, summarize, complete)
+    - Start agent endpoint (`POST /api/sessions/:id/start-agent`) — preferred over legacy init
     - Privacy checks and tag stripping
     - Auto-start SDK agent generators
   </Accordion>
@@ -422,14 +427,15 @@ DELETE /api/projects/:name
 **Destructive Operation:** Deleting a project removes all sessions, observations, summaries, and context injections. This also triggers FK cascades that delete associated `user_prompts` and `pending_messages` rows. This cannot be undone.
 </Warning>
 
-#### Legacy Endpoints (Still Supported)
+#### Legacy Endpoints (Deprecated)
 
 <Tabs>
-  <Tab title="Initialize Session">
+  <Tab title="Initialize Session (Deprecated)">
     ```http
     POST /sessions/:sessionDbId/init
     Body: { userPrompt, promptNumber }
     ```
+    Use `POST /api/sessions/:sessionDbId/start-agent` instead (v9.9.0+).
   </Tab>
   <Tab title="Queue Observations">
     ```http
@@ -917,6 +923,7 @@ interface PendingMessage {
       files_read: string | null;      // JSON array of files read
       files_modified: string | null;  // JSON array of files modified
       type: string;                   // discovery, decision, bugfix, feature, refactor
+      priority: string;               // critical, important, informational (default)
       project: string;
       created_at: string;
       created_at_epoch: number;
@@ -1801,7 +1808,8 @@ export function registerSearchTool(context: vscode.ExtensionContext) {
 **IMPORTANT:** Use `contentSessionId` (string) for new API endpoints, not `sessionDbId` (number).
 
 - `sessionDbId` - Numeric database ID (legacy endpoints and ActiveSessionRoutes use this for `:id` params)
-- `contentSessionId` - String identifier from Claude platform (used by `/api/sessions/observations`, `/api/sessions/summarize`, `/api/sessions/init`, `/api/sessions/complete`)
+- `contentSessionId` - String identifier from Claude platform (used by `/api/sessions/observations`, `/api/sessions/summarize`, `/api/sessions/complete`)
+- `sessionDbId` is also used by `POST /api/sessions/:sessionDbId/start-agent` (v9.9.0+)
 - `memorySessionId` - Internal memory agent session ID (replaces the old `sdk_session_id` field)
 </Warning>
 

@@ -2,6 +2,7 @@
  * Type definitions for observation operations
  * Extracted from SessionStore.ts for modular organization
  */
+
 /**
  * Input type for storeObservation function
  */
@@ -14,6 +15,7 @@ export interface ObservationInput {
   concepts: string[];
   files_read: string[];
   files_modified: string[];
+  priority?: 'critical' | 'important' | 'informational';
 }
 
 /**
