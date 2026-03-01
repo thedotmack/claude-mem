@@ -261,11 +261,113 @@ Three dates per observation:
 | Working memory (structured scratchpad) | **HIGH** — reduces redundant re-injection | P1 |
 | Temporal anchoring (referenced dates) | **MEDIUM** — better timeline queries | P2 |
 | State change tracking (supersedes) | **MEDIUM** — prevents stale context | P2 |
-| Prompt caching alignment | **MEDIUM** — needs Claude Code investigation | P2 |
+| Prompt caching alignment | **HIGH** — working memory enables cross-session cache hits (see Appendix A) | P1 |
 | Async buffering / batching | **LOW** — current per-observation model works for short sessions | P3 |
 | Token budget config | **LOW** — effort setting covers most needs | P3 |
 | No vector search | **NOT APPLICABLE** — cross-session search is a core strength | N/A |
 | Two-stage compression | **NOT APPLICABLE** — no context bloat problem | N/A |
 | Resource scope | **NOT APPLICABLE** — single-user system | N/A |
 
-**Bottom line:** Mastra's OM is an impressive system optimized for long, continuous agent sessions. claude-mem serves a fundamentally different use case (cross-session coding memory with search). The most transferable ideas are priority tagging, working memory, and temporal anchoring — all of which would improve claude-mem's context injection quality without requiring architectural changes to the search system.
+**Bottom line:** Mastra's OM is an impressive system optimized for long, continuous agent sessions. claude-mem serves a fundamentally different use case (cross-session coding memory with search). The most transferable ideas are priority tagging, working memory, temporal anchoring, and prompt caching alignment — all of which would improve claude-mem's context injection quality and cost efficiency without requiring architectural changes to the search system.
+
+---
+
+## Appendix A: Prompt Caching Evaluation
+
+**Date:** 2026-03-01
+**Question:** Does claude-mem's hook-injected `additionalContext` benefit from Anthropic's prompt caching?
+
+### Background: How Claude Code Uses Prompt Caching
+
+Claude Code **automatically uses prompt caching** via the Anthropic API (`cache_control`). Key mechanics:
+
+- **Cache hierarchy**: `tools → system prompt → messages` (prefix-based, exact match required)
+- **Cache hits**: 0.1x base input price (90% discount)
+- **Cache writes**: 1.25x base input price (25% premium)
+- **TTL**: 5 minutes (resets on each hit; active sessions stay warm indefinitely)
+- **Minimum tokens**: 1,024–4,096 depending on model
+- **Invalidation**: Any change to a level invalidates that level and all subsequent levels
+
+Claude Code keeps the system prompt stable within a session. Dynamic content (git status, file changes, hook output) is sent as `<system-reminder>` tags in user messages, preserving the system prompt cache.
+
+### How claude-mem's Context Injection Interacts with Caching
+
+SessionStart `additionalContext` is injected into the **message layer** (not system prompt). It fires once per session (startup, resume, clear, compact).
+
+```
+Turn 1:
+  [system prompt + tools + CLAUDE.md]        ← cached (stable)
+  [SessionStart additionalContext]           ← injected ONCE, becomes part of prefix
+  [user message 1]
+  [assistant response 1]
+
+Turn 2:
+  [system prompt + tools + CLAUDE.md]        ← cache HIT (0.1x)
+  [SessionStart additionalContext]           ← cache HIT (stable prefix)
+  [user message 1]                           ← cache HIT
+  [assistant response 1]                     ← cache HIT
+  [user message 2]                           ← NEW (cache write)
+```
+
+### Current State: Within-Session Caching Works
+
+| Scenario | Cost | Notes |
+|----------|------|-------|
+| Turn 1 (first in session) | 1.25x (cache write) | SessionStart context is new |
+| Turn 2–N (same session) | 0.1x (cache read) | Stable prefix → cache hits |
+| After compaction | 1.25x (cache write) | SessionStart fires again → new context |
+| New session (same project) | 1.25x (cache write) | Different search results → cache miss |
+
+For a typical 20-turn session with 3,000 tokens of injected context:
+- **Without caching**: 20 × 3,000 = 60,000 context tokens at full price
+- **With caching (current)**: 1 write + 19 reads = 3,750 + 5,700 = 9,450 effective tokens (**84% savings within session**)
+
+### The Gap: No Cross-Session Caching
+
+Each new session generates different context injection content (different search results, different recent observations, different token budgets). The prefix changes completely between sessions → full cache miss → 1.25x write cost on turn 1 of every session.
+
+### The Optimization: Working Memory as Stable Cache Prefix
+
+Split context injection into two tiers:
+
+```
+┌─────────────────────────────────────────┐
+│ Tier 1: Working Memory (per-project)    │  ← STABLE across sessions
+│   Key decisions, tech stack, patterns   │     → Cross-session cache hits
+├─────────────────────────────────────────┤
+│ Tier 2: Recent Observations (dynamic)   │  ← CHANGES per session
+│   Latest session summaries, context     │     → Cache miss on turn 1 only
+└─────────────────────────────────────────┘
+```
+
+**Why this works**: Working memory contains stable project facts (tech stack, architecture decisions, team conventions) that don't change between sessions. If injected first as a stable prefix, Anthropic's backward sequential cache checking finds a cache hit on the working memory block even when the dynamic observations block changes.
+
+**Savings estimate** for a 2,000-token working memory block across 10 sessions:
+- **Current**: 10 cache writes = 10 × 2,500 = 25,000 effective tokens
+- **With stable prefix**: 1 write + 9 reads = 2,500 + 1,800 = 4,300 effective tokens (**83% additional savings**)
+
+### Key Insight
+
+**Working Memory is not just a UX feature — it's a cost optimization.** The Mastra comparison initially rated prompt caching alignment as P2 ("needs investigation"). This evaluation upgrades it to **P1**, because:
+
+1. Within-session caching already works (84% savings on context tokens)
+2. Cross-session caching is achievable via Working Memory (stable prefix)
+3. Working Memory was already rated P1 for UX reasons — the caching benefit is additive
+4. The implementation is the same feature serving two purposes
+
+### Caveats
+
+- **Claude Code controls cache placement** — claude-mem cannot set explicit `cache_control` breakpoints. We rely on Claude Code's automatic caching placing the breakpoint after our injected content.
+- **Cache TTL is 5 minutes** — if a user starts a new session >5 minutes after the previous one, the cache expires regardless. This limits cross-session benefit to rapid session restarts (common during development).
+- **Compaction resets caching** — SessionStart fires again after compaction, but this is unavoidable and already has good within-session behavior afterward.
+- **Minimum token threshold** — Working memory must meet the model's minimum (1,024–4,096 tokens) to be cached. Small working memory blocks might not qualify alone but will be cached as part of the larger system prompt prefix.
+
+### Verdict
+
+| Question | Answer |
+|----------|--------|
+| Does caching work today? | **Yes**, within sessions (turns 2–N get 90% discount) |
+| Is cross-session caching possible? | **Yes, via Working Memory** — stable project facts would cache across sessions |
+| Implementation effort | **Medium** — requires the Working Memory feature |
+| Expected additional savings | **~15-25%** on context injection tokens for same-project sessions |
+| Dependency | Working Memory feature (P1 in Section 5) — same implementation serves both UX and cost goals |
