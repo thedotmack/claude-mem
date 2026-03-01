@@ -242,6 +242,12 @@ function syncAndBroadcastObservations(
       concepts: JSON.stringify(obs.concepts),
       files_read: JSON.stringify(obs.files_read),
       files_modified: JSON.stringify(obs.files_modified),
+      topics: obs.topics?.length ? JSON.stringify(obs.topics) : null,
+      entities: obs.entities?.length ? JSON.stringify(obs.entities) : null,
+      event_date: obs.event_date || null,
+      pinned: 0,
+      access_count: 0,
+      supersedes_id: null,
       project: session.project,
       prompt_number: session.lastPromptNumber,
       created_at_epoch: result.createdAtEpoch

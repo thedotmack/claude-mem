@@ -356,6 +356,23 @@ export class ChromaSync {
       baseMetadata.files_modified = files_modified.join(',');
     }
 
+    // Enrichment metadata
+    if (obs.topics) {
+      const topics: string[] = JSON.parse(obs.topics) as string[];
+      if (topics.length > 0) {
+        baseMetadata.topics = topics.join(',');
+      }
+    }
+    if (obs.entities) {
+      const entities = JSON.parse(obs.entities) as Array<{ name: string; type: string }>;
+      if (entities.length > 0) {
+        baseMetadata.entities = entities.map(e => e.name).join(',');
+      }
+    }
+    if (obs.event_date) {
+      baseMetadata.event_date = obs.event_date;
+    }
+
     // Narrative as separate document
     if (obs.narrative) {
       documents.push({
@@ -524,6 +541,10 @@ export class ChromaSync {
       concepts: JSON.stringify(obs.concepts),
       files_read: JSON.stringify(obs.files_read),
       files_modified: JSON.stringify(obs.files_modified),
+      topics: obs.topics?.length ? JSON.stringify(obs.topics) : null,
+      entities: obs.entities?.length ? JSON.stringify(obs.entities) : null,
+      event_date: obs.event_date || null,
+      pinned: 0,
       prompt_number: promptNumber,
       discovery_tokens: discoveryTokens,
       created_at: new Date(createdAtEpoch * 1000).toISOString(),
