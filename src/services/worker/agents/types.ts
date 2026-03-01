@@ -45,6 +45,12 @@ export interface ObservationSSEPayload {
   concepts: string;  // JSON stringified
   files_read: string;  // JSON stringified
   files_modified: string;  // JSON stringified
+  topics: string | null;  // JSON stringified
+  entities: string | null;  // JSON stringified
+  event_date: string | null;
+  pinned: number;
+  access_count: number;
+  supersedes_id: string | null;
   project: string;
   prompt_number: number;
   created_at_epoch: number;

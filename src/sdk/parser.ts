@@ -17,6 +17,9 @@ export interface ParsedObservation {
   concepts: string[];
   files_read: string[];
   files_modified: string[];
+  topics: string[];
+  entities: Array<{ name: string; type: string }>;
+  event_date: string | null;
 }
 
 export interface ParsedSummary {

@@ -57,6 +57,12 @@ export interface Observation {
   files_read: string | null;
   files_modified: string | null;
   discovery_tokens: number | null;
+  topics: string | null;
+  entities: string | null;
+  event_date: string | null;
+  pinned: number;
+  access_count: number;
+  supersedes_id: string | null;
   created_at: string;
   created_at_epoch: number;
   /** Project this observation belongs to (for multi-project queries) */

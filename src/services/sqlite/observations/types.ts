@@ -16,6 +16,9 @@ export interface ObservationInput {
   files_read: string[];
   files_modified: string[];
   priority?: 'critical' | 'important' | 'informational';
+  topics?: string[];
+  entities?: Array<{ name: string; type: string }>;
+  event_date?: string | null;
 }
 
 /**

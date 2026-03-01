@@ -44,6 +44,10 @@ interface StoredObservation {
   concepts: string | null; // JSON
   files_read: string | null; // JSON
   files_modified: string | null; // JSON
+  topics: string | null; // JSON
+  entities: string | null; // JSON
+  event_date: string | null;
+  pinned: number;
   prompt_number: number;
   discovery_tokens: number; // ROI metrics
   created_at: string;

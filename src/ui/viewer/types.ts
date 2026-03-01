@@ -12,6 +12,12 @@ export interface Observation {
   concepts: string | null;
   files_read: string | null;
   files_modified: string | null;
+  topics: string | null;
+  entities: string | null;
+  event_date: string | null;
+  pinned: number | null;
+  access_count: number | null;
+  supersedes_id: string | null;
   prompt_number: number | null;
   created_at: string;
   created_at_epoch: number;
@@ -141,6 +147,9 @@ export interface FilterState {
   obsTypes: string[];
   concepts: string[];
   priorities: string[];
+  topics: string[];
+  entityTypes: string[];
+  pinned: boolean | null;
   itemKinds: Array<'observations' | 'sessions' | 'prompts'>;
   dateStart: string;
   dateEnd: string;

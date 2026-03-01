@@ -216,6 +216,14 @@ export interface ObservationRow {
   files_modified: string | null; // JSON array
   prompt_number: number | null;
   discovery_tokens: number; // ROI metrics: tokens spent discovering this observation
+  read_tokens: number | null; // Estimated token size when read
+  priority: 'critical' | 'important' | 'informational' | null;
+  topics: string | null; // JSON array of topic strings
+  entities: string | null; // JSON array of {name, type} objects
+  event_date: string | null; // ISO8601 date
+  pinned: number; // 0 or 1
+  access_count: number; // retrieval counter
+  supersedes_id: string | null; // UUID of replaced observation
   created_at: string;
   created_at_epoch: number;
 }
