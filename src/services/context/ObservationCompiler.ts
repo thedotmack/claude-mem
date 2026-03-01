@@ -57,8 +57,8 @@ export function queryObservations(
     setImmediate(() => {
       try {
         db.db.prepare(`UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`).run(...ids);
-      } catch {
-        // Non-critical: don't block context injection on access_count failure
+      } catch (err) {
+        logger.debug('DB', `access_count increment failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     });
   }
@@ -127,8 +127,8 @@ export function queryObservationsMulti(
     setImmediate(() => {
       try {
         db.db.prepare(`UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`).run(...ids);
-      } catch {
-        // Non-critical: don't block context injection on access_count failure
+      } catch (err) {
+        logger.debug('DB', `access_count increment failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     });
   }

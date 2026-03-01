@@ -949,9 +949,9 @@ export class MigrationRunner {
     // UPDATE trigger — conditional WHEN clause prevents firing on access_count/pinned changes
     this.db.run(`
       CREATE TRIGGER observations_au AFTER UPDATE ON observations
-      WHEN OLD.title != NEW.title OR OLD.narrative != NEW.narrative OR OLD.facts != NEW.facts
-        OR OLD.concepts != NEW.concepts OR OLD.subtitle != NEW.subtitle OR OLD.text != NEW.text
-        OR OLD.topics != NEW.topics OR OLD.entities != NEW.entities
+      WHEN OLD.title IS NOT NEW.title OR OLD.narrative IS NOT NEW.narrative OR OLD.facts IS NOT NEW.facts
+        OR OLD.concepts IS NOT NEW.concepts OR OLD.subtitle IS NOT NEW.subtitle OR OLD.text IS NOT NEW.text
+        OR OLD.topics IS NOT NEW.topics OR OLD.entities IS NOT NEW.entities
       BEGIN
         INSERT INTO observations_fts(observations_fts, rowid, title, narrative, facts, concepts, subtitle, text, topics, entities)
         VALUES('delete', old.id,

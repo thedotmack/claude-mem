@@ -149,14 +149,11 @@ export function getUnenrichedObservations(
   db: Database.Database,
   limit?: number
 ): ObservationRow[] {
-  const sql = `
-    SELECT id, title, subtitle, narrative, facts, concepts
-    FROM observations
-    WHERE topics IS NULL
-    ORDER BY id ASC
-    ${limit ? `LIMIT ${limit}` : ''}
-  `;
-  return db.prepare(sql).all() as ObservationRow[];
+  const sql = limit !== undefined
+    ? `SELECT id, title, subtitle, narrative, facts, concepts FROM observations WHERE topics IS NULL ORDER BY id ASC LIMIT ?`
+    : `SELECT id, title, subtitle, narrative, facts, concepts FROM observations WHERE topics IS NULL ORDER BY id ASC`;
+  const stmt = db.prepare(sql);
+  return (limit !== undefined ? stmt.all(limit) : stmt.all()) as ObservationRow[];
 }
 
 /**
