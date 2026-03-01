@@ -17,6 +17,32 @@ export function safeParseJsonArray(value: string | null | undefined): string[] {
   }
 }
 
+// Parse entities JSON string into typed array — exported for unit testing
+export function parseEntities(value: string | null | undefined): Array<{ name: string; type: string }> {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as Array<Record<string, unknown>>).filter(
+      (e) => typeof e === 'object' && e !== null && typeof e.name === 'string'
+    ) as Array<{ name: string; type: string }>;
+  } catch {
+    return [];
+  }
+}
+
+// Format event_date for display — exported for unit testing
+export function formatEventDate(date: string | null | undefined): string | null {
+  if (!date) return null;
+  try {
+    const d = new Date(date + 'T00:00:00');
+    if (isNaN(d.getTime())) return null;
+    return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  } catch {
+    return null;
+  }
+}
+
 // Merge subtitle into narrative — exported for unit testing
 export function mergeNarrative(subtitle: string | null, title: string | null, narrative: string | null): string | null {
   if (subtitle && subtitle !== title) {
@@ -59,6 +85,10 @@ export const ObservationCard = React.memo(function ObservationCard({ observation
   const filesRead: string[] = safeParseJsonArray(observation.files_read).map(stripProjectRoot);
   const filesModified: string[] = safeParseJsonArray(observation.files_modified).map(stripProjectRoot);
 
+  const topics: string[] = safeParseJsonArray(observation.topics);
+  const entities = parseEntities(observation.entities);
+  const eventDateFormatted = formatEventDate(observation.event_date);
+
   const mergedNarrative = mergeNarrative(observation.subtitle, observation.title, observation.narrative);
 
   const hasExpandableContent = facts.length > 0 || mergedNarrative;
@@ -98,6 +128,9 @@ export const ObservationCard = React.memo(function ObservationCard({ observation
               {observation.priority}
             </span>
           )}
+          {observation.pinned === 1 && (
+            <span className="observation-card__pin-badge" title="Pinned">📌</span>
+          )}
           <span className="card-project">{observation.project}</span>
         </div>
         <span className="meta-date">#{observation.id} • {date}</span>
@@ -122,6 +155,36 @@ export const ObservationCard = React.memo(function ObservationCard({ observation
           {filesModified.length > 0 && (
             <span className="meta-files">
               <span className="file-label">modified:</span> {filesModified.join(', ')}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Enrichment badges — topics, entities, event_date, access_count */}
+      {(topics.length > 0 || entities.length > 0 || eventDateFormatted || (observation.access_count ?? 0) > 0) && (
+        <div className="card__enrichment">
+          {topics.map((topic, i) => (
+            <span key={`topic-${String(i)}`} className="observation-card__topic-chip">
+              {topic}
+            </span>
+          ))}
+          {entities.map((entity, i) => (
+            <span
+              key={`entity-${String(i)}`}
+              className="observation-card__entity-chip"
+              data-entity-type={entity.type}
+            >
+              {entity.name}
+            </span>
+          ))}
+          {eventDateFormatted && (
+            <span className="observation-card__event-date">
+              References: {eventDateFormatted}
+            </span>
+          )}
+          {(observation.access_count ?? 0) > 0 && (
+            <span className="observation-card__access-count">
+              Retrieved {observation.access_count} time{observation.access_count === 1 ? '' : 's'}
             </span>
           )}
         </div>

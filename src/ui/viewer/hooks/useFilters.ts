@@ -1,7 +1,7 @@
 import { useState, useCallback, useMemo } from 'react';
 import type { FilterState } from '../types';
 
-const EMPTY_FILTER: FilterState = {
+export const EMPTY_FILTER: FilterState = {
   query: '',
   project: '',
   obsTypes: [],
@@ -75,6 +75,9 @@ export function useFilters() {
       filters.obsTypes.length > 0 ||
       filters.priorities.length > 0 ||
       filters.concepts.length > 0 ||
+      filters.topics.length > 0 ||
+      filters.entityTypes.length > 0 ||
+      filters.pinned !== null ||
       filters.itemKinds.length > 0 ||
       filters.dateStart !== '' ||
       filters.dateEnd !== '';
@@ -85,6 +88,9 @@ export function useFilters() {
       filters.obsTypes.length > 0 ||
       filters.priorities.length > 0 ||
       filters.concepts.length > 0 ||
+      filters.topics.length > 0 ||
+      filters.entityTypes.length > 0 ||
+      filters.pinned !== null ||
       filters.itemKinds.length > 0 ||
       filters.dateStart !== '' ||
       filters.dateEnd !== '';
@@ -96,6 +102,9 @@ export function useFilters() {
     if (filters.obsTypes.length > 0) count++;
     if (filters.priorities.length > 0) count++;
     if (filters.concepts.length > 0) count++;
+    if (filters.topics.length > 0) count++;
+    if (filters.entityTypes.length > 0) count++;
+    if (filters.pinned !== null) count++;
     if (filters.itemKinds.length > 0) count++;
     if (filters.dateStart || filters.dateEnd) count++;
     return count;

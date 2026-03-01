@@ -14,6 +14,10 @@ export const OBSERVATION_PRIORITIES = [
   'critical', 'important', 'informational'
 ] as const;
 
+export const ENTITY_TYPES = [
+  'person', 'system', 'team', 'technology', 'component'
+] as const;
+
 export const ITEM_KINDS = [
   'observations', 'sessions', 'prompts'
 ] as const;
