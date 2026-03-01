@@ -39,6 +39,10 @@ interface NormalizedParams extends StrategySearchOptions {
   concepts?: string[];
   files?: string[];
   obsType?: string[];
+  topics?: string[];
+  entity?: string;
+  entityType?: string;
+  pinned?: boolean;
 }
 
 export class SearchOrchestrator {
@@ -260,6 +264,16 @@ export class SearchOrchestrator {
       };
       delete normalized.dateStart;
       delete normalized.dateEnd;
+    }
+
+    // Parse comma-separated topics into array
+    if (normalized.topics && typeof normalized.topics === 'string') {
+      normalized.topics = normalized.topics.split(',').map((s: string) => s.trim()).filter(Boolean);
+    }
+
+    // Parse pinned as boolean
+    if (normalized.pinned !== undefined) {
+      normalized.pinned = normalized.pinned === true || normalized.pinned === 'true' || normalized.pinned === '1';
     }
 
     return normalized as NormalizedParams;

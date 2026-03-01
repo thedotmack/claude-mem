@@ -269,6 +269,10 @@ export interface SearchFilters {
   concepts?: string | string[];
   files?: string | string[];
   dateRange?: DateRange;
+  topics?: string[];
+  entity?: string;
+  entityType?: string;
+  pinned?: boolean;
 }
 
 export interface SearchOptions extends SearchFilters {

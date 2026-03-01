@@ -277,6 +277,31 @@ export class SessionSearch {
       }
     }
 
+    // Topics filter (JSON array search — AND: all specified topics must be present)
+    if (filters.topics && filters.topics.length > 0) {
+      for (const topic of filters.topics) {
+        conditions.push(`EXISTS (SELECT 1 FROM json_each(${tableAlias}.topics) WHERE value = ?)`);
+        params.push(topic);
+      }
+    }
+
+    // Entity name filter (search within entities JSON array)
+    if (filters.entity) {
+      conditions.push(`EXISTS (SELECT 1 FROM json_each(${tableAlias}.entities) WHERE json_extract(value, '$.name') = ?)`);
+      params.push(filters.entity);
+    }
+
+    // Entity type filter (search within entities JSON array)
+    if (filters.entityType) {
+      conditions.push(`EXISTS (SELECT 1 FROM json_each(${tableAlias}.entities) WHERE json_extract(value, '$.type') = ?)`);
+      params.push(filters.entityType);
+    }
+
+    // Pinned filter
+    if (filters.pinned === true) {
+      conditions.push(`${tableAlias}.pinned = 1`);
+    }
+
     return conditions.length > 0 ? conditions.join(' AND ') : '';
   }
 
