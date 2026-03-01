@@ -26,6 +26,7 @@ const EXCLUDED_PATTERNS = [
   /\.d\.ts$/,            // Type declaration files
   /^ui\//,               // UI components (separate logging context)
   /^bin\//,              // CLI utilities (may use console.log for output)
+  /^scripts\//,          // Standalone CLI scripts (console.log for user output)
   /index\.ts$/,          // Re-export files
   /logger\.ts$/,         // Logger itself
   /hook-constants\.ts$/, // Pure constants
