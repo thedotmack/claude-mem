@@ -10,6 +10,7 @@ import type { Database } from './sqlite-compat.js';
 import { logger } from '../../utils/logger.js';
 import type { ObservationInput } from './observations/types.js';
 import { isSummaryContentEmpty, type SummaryInput } from './summaries/types.js';
+import { estimateReadTokens } from '../../shared/timeline-formatting.js';
 
 /**
  * Result from storeObservations / storeObservationsAndMarkComplete transaction
@@ -67,11 +68,25 @@ export function storeObservationsAndMarkComplete(
     const obsStmt = db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, priority, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, read_tokens, priority,
+       topics, entities, event_date, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const observation of observations) {
+      const readTokens = estimateReadTokens({
+        narrative: observation.narrative,
+        title: observation.title,
+        facts: JSON.stringify(observation.facts),
+        concepts: JSON.stringify(observation.concepts),
+        text: null,
+      });
+
+      // Empty-array-to-NULL coercion: ensures backfill's WHERE topics IS NULL works correctly
+      const topicsJson = observation.topics?.length ? JSON.stringify(observation.topics) : null;
+      const entitiesJson = observation.entities?.length ? JSON.stringify(observation.entities) : null;
+      const eventDate = observation.event_date ?? null;
+
       const result = obsStmt.run(
         memorySessionId,
         project,
@@ -85,7 +100,11 @@ export function storeObservationsAndMarkComplete(
         JSON.stringify(observation.files_modified),
         promptNumber || null,
         discoveryTokens,
+        readTokens,
         observation.priority ?? 'informational',
+        topicsJson,
+        entitiesJson,
+        eventDate,
         timestampIso,
         timestampEpoch
       );
@@ -184,11 +203,25 @@ export function storeObservations(
     const obsStmt = db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, priority, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, read_tokens, priority,
+       topics, entities, event_date, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const observation of observations) {
+      const readTokens = estimateReadTokens({
+        narrative: observation.narrative,
+        title: observation.title,
+        facts: JSON.stringify(observation.facts),
+        concepts: JSON.stringify(observation.concepts),
+        text: null,
+      });
+
+      // Empty-array-to-NULL coercion: ensures backfill's WHERE topics IS NULL works correctly
+      const topicsJson = observation.topics?.length ? JSON.stringify(observation.topics) : null;
+      const entitiesJson = observation.entities?.length ? JSON.stringify(observation.entities) : null;
+      const eventDate = observation.event_date ?? null;
+
       const result = obsStmt.run(
         memorySessionId,
         project,
@@ -202,7 +235,11 @@ export function storeObservations(
         JSON.stringify(observation.files_modified),
         promptNumber || null,
         discoveryTokens,
+        readTokens,
         observation.priority ?? 'informational',
+        topicsJson,
+        entitiesJson,
+        eventDate,
         timestampIso,
         timestampEpoch
       );

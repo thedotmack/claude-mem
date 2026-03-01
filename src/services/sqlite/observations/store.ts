@@ -35,11 +35,17 @@ export function storeObservation(
     text: null,
   });
 
+  // Empty-array-to-NULL coercion: ensures backfill's WHERE topics IS NULL works correctly
+  const topicsJson = observation.topics?.length ? JSON.stringify(observation.topics) : null;
+  const entitiesJson = observation.entities?.length ? JSON.stringify(observation.entities) : null;
+  const eventDate = observation.event_date ?? null;
+
   const stmt = db.prepare(`
     INSERT INTO observations
     (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-     files_read, files_modified, prompt_number, discovery_tokens, read_tokens, priority, created_at, created_at_epoch)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     files_read, files_modified, prompt_number, discovery_tokens, read_tokens, priority,
+     topics, entities, event_date, created_at, created_at_epoch)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const result = stmt.run(
@@ -57,6 +63,9 @@ export function storeObservation(
     discoveryTokens,
     readTokens,
     observation.priority ?? 'informational',
+    topicsJson,
+    entitiesJson,
+    eventDate,
     timestampIso,
     timestampEpoch
   );
