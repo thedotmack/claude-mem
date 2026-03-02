@@ -17,6 +17,8 @@ export const DEFAULT_SETTINGS = {
   CLAUDE_MEM_OPENROUTER_SITE_URL: '',
   CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',
+  CLAUDE_MEM_OPENCODE_BASE_URL: 'http://127.0.0.1:4096',
+  CLAUDE_MEM_OPENCODE_MODE: 'sdk_agent',
 
   // Token Economics (all true for backwards compatibility)
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',

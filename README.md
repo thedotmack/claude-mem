@@ -122,6 +122,48 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 
 > **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. To use Claude-Mem as a plugin, always install via the `/plugin` commands above.
 
+### OpenCode Plugin Integration
+
+Claude-Mem fully supports [OpenCode](https://opencode.ai) as a plugin with persistent memory across sessions.
+
+**Prerequisites:**
+- Node.js 18.0.0+
+- Bun (auto-installed if missing)
+- Clone and build the project first:
+
+```bash
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+npm install
+npm run build
+```
+
+**Install for the current project:**
+
+```bash
+npm run opencode:install
+```
+
+**Install globally (recommended):**
+
+```bash
+npm run opencode:install:global
+```
+
+**Check status:**
+
+```bash
+npm run opencode:status
+```
+
+**What the installer does:**
+- Installs the plugin file to `.opencode/plugins/` (project) or `~/.config/opencode/plugins/` (global)
+- Configures a `claude-mem` MCP server in `opencode.json`
+- Wires OpenCode session/tool events to Claude-Mem hook handlers
+- Auto-starts the worker service on port 37777
+
+Once installed, start a new OpenCode session and Claude-Mem will automatically capture context and inject relevant history from previous sessions.
+
 ### 🦞 OpenClaw Gateway
 
 Install claude-mem as a persistent memory plugin on [OpenClaw](https://openclaw.ai) gateways with a single command:

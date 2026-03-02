@@ -14,6 +14,7 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
 import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from '../../GeminiAgent.js';
 import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterAgent.js';
+import { OpenCodeAgent, isOpenCodeSelected, isOpenCodeAvailable } from '../../OpenCodeAgent.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -34,6 +35,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private sdkAgent: SDKAgent,
     private geminiAgent: GeminiAgent,
     private openRouterAgent: OpenRouterAgent,
+    private openCodeAgent: OpenCodeAgent,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService
   ) {
@@ -51,13 +53,21 @@ export class SessionRoutes extends BaseRouteHandler {
    * Note: Session linking via contentSessionId allows provider switching mid-session.
    * The conversationHistory on ActiveSession maintains context across providers.
    */
-  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
+  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent | OpenCodeAgent {
     if (isOpenRouterSelected()) {
       if (isOpenRouterAvailable()) {
         logger.debug('SESSION', 'Using OpenRouter agent');
         return this.openRouterAgent;
       } else {
         throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
+      }
+    }
+    if (isOpenCodeSelected()) {
+      if (isOpenCodeAvailable()) {
+        logger.debug('SESSION', 'Using OpenCode agent');
+        return this.openCodeAgent;
+      } else {
+        throw new Error('OpenCode provider selected but not available.');
       }
     }
     if (isGeminiSelected()) {
@@ -74,9 +84,12 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Get the currently selected provider name
    */
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
+  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'opencode' {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
+    }
+    if (isOpenCodeSelected() && isOpenCodeAvailable()) {
+      return 'opencode';
     }
     return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
   }
@@ -92,7 +105,20 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private static readonly STALE_GENERATOR_THRESHOLD_MS = 30_000; // 30 seconds (#1099)
 
-  private ensureGeneratorRunning(sessionDbId: number, source: string): void {
+  private getOpenCodeMode(): 'sdk_agent' | 'direct_store' {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    return settings.CLAUDE_MEM_OPENCODE_MODE === 'direct_store' ? 'direct_store' : 'sdk_agent';
+  }
+
+  private shouldUseOpenCodeSdkPath(platform: unknown): boolean {
+    return platform === 'opencode' && this.getOpenCodeMode() === 'sdk_agent';
+  }
+
+  private ensureGeneratorRunning(
+    sessionDbId: number,
+    source: string,
+    forcedProvider?: 'claude' | 'gemini' | 'openrouter' | 'opencode'
+  ): void {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 
@@ -102,7 +128,7 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    const selectedProvider = this.getSelectedProvider();
+    const selectedProvider = forcedProvider ?? this.getSelectedProvider();
 
     // Start generator if not running
     if (!session.generatorPromise) {
@@ -149,7 +175,7 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
+    provider: 'claude' | 'gemini' | 'openrouter' | 'opencode',
     source: string
   ): void {
     if (!session) return;
@@ -164,8 +190,14 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortController = new AbortController();
     }
 
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agent = provider === 'openrouter'
+      ? this.openRouterAgent
+      : (provider === 'gemini'
+        ? this.geminiAgent
+        : (provider === 'opencode' ? this.openCodeAgent : this.sdkAgent));
+    const agentName = provider === 'openrouter'
+      ? 'OpenRouter'
+      : (provider === 'gemini' ? 'Gemini' : (provider === 'opencode' ? 'OpenCode' : 'Claude SDK'));
 
     // Use database count for accurate telemetry (in-memory array is always empty due to FK constraint fix)
     const pendingStore = this.sessionManager.getPendingMessageStore();
@@ -356,29 +388,32 @@ export class SessionRoutes extends BaseRouteHandler {
       // Sync user prompt to Chroma
       const chromaStart = Date.now();
       const promptText = latestPrompt.prompt_text;
-      this.dbManager.getChromaSync().syncUserPrompt(
-        latestPrompt.id,
-        latestPrompt.memory_session_id,
-        latestPrompt.project,
-        promptText,
-        latestPrompt.prompt_number,
-        latestPrompt.created_at_epoch
-      ).then(() => {
-        const chromaDuration = Date.now() - chromaStart;
-        const truncatedPrompt = promptText.length > 60
-          ? promptText.substring(0, 60) + '...'
-          : promptText;
-        logger.debug('CHROMA', 'User prompt synced', {
-          promptId: latestPrompt.id,
-          duration: `${chromaDuration}ms`,
-          prompt: truncatedPrompt
+      const chromaSync = this.dbManager.getChromaSync();
+      if (chromaSync) {
+        chromaSync.syncUserPrompt(
+          latestPrompt.id,
+          latestPrompt.memory_session_id,
+          latestPrompt.project,
+          promptText,
+          latestPrompt.prompt_number,
+          latestPrompt.created_at_epoch
+        ).then(() => {
+          const chromaDuration = Date.now() - chromaStart;
+          const truncatedPrompt = promptText.length > 60
+            ? promptText.substring(0, 60) + '...'
+            : promptText;
+          logger.debug('CHROMA', 'User prompt synced', {
+            promptId: latestPrompt.id,
+            duration: `${chromaDuration}ms`,
+            prompt: truncatedPrompt
+          });
+        }).catch((error) => {
+          logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
+            promptId: latestPrompt.id,
+            prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
+          }, error);
         });
-      }).catch((error) => {
-        logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
-          promptId: latestPrompt.id,
-          prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
-        }, error);
-      });
+      }
     }
 
     // Idempotent: ensure generator is running (matches handleObservations / handleSummarize)
@@ -496,7 +531,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
+    const { contentSessionId, platform, tool_name, tool_input, tool_response, cwd } = req.body;
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');
@@ -557,6 +592,46 @@ export class SessionRoutes extends BaseRouteHandler {
         ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
         : '{}';
 
+      if (platform === 'opencode' && !this.shouldUseOpenCodeSdkPath(platform)) {
+        const memorySessionId = `opencode:${contentSessionId}`;
+        store.ensureMemorySessionIdRegistered(sessionDbId, memorySessionId);
+
+        const dbSession = store.getSessionById(sessionDbId) as { project?: string } | undefined;
+        const projectName = dbSession?.project || 'unknown';
+
+        let inputFiles: string[] = [];
+        try {
+          const parsedInput = JSON.parse(cleanedToolInput) as Record<string, unknown>;
+          const filePath = parsedInput?.file_path;
+          if (typeof filePath === 'string' && filePath.trim()) {
+            inputFiles = [filePath.trim()];
+          }
+        } catch {
+          inputFiles = [];
+        }
+
+        const narrative = `tool=${tool_name}\ninput=${cleanedToolInput}\noutput=${cleanedToolResponse}`;
+
+        store.storeObservation(
+          memorySessionId,
+          projectName,
+          {
+            type: 'implementation',
+            title: tool_name ? `Tool: ${tool_name}` : 'Tool invocation',
+            subtitle: null,
+            facts: [],
+            narrative,
+            concepts: [],
+            files_read: inputFiles,
+            files_modified: []
+          },
+          promptNumber
+        );
+
+        res.json({ status: 'stored', mode: 'opencode' });
+        return;
+      }
+
       // Queue observation
       this.sessionManager.queueObservation(sessionDbId, {
         tool_name,
@@ -573,7 +648,11 @@ export class SessionRoutes extends BaseRouteHandler {
       });
 
       // Ensure SDK agent is running
-      this.ensureGeneratorRunning(sessionDbId, 'observation');
+      if (this.shouldUseOpenCodeSdkPath(platform)) {
+        this.ensureGeneratorRunning(sessionDbId, 'observation-opencode', 'opencode');
+      } else {
+        this.ensureGeneratorRunning(sessionDbId, 'observation');
+      }
 
       // Broadcast observation queued event
       this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
@@ -594,7 +673,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * Checks privacy, queues summarize request for SDK agent
    */
   private handleSummarizeByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, last_assistant_message } = req.body;
+    const { contentSessionId, platform, last_assistant_message } = req.body;
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');
@@ -619,11 +698,44 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    if (platform === 'opencode' && !this.shouldUseOpenCodeSdkPath(platform)) {
+      const memorySessionId = `opencode:${contentSessionId}`;
+      store.ensureMemorySessionIdRegistered(sessionDbId, memorySessionId);
+
+      const dbSession = store.getSessionById(sessionDbId) as { project?: string } | undefined;
+      const projectName = dbSession?.project || 'unknown';
+      const requestText = store.getUserPrompt(contentSessionId, promptNumber) || 'OpenCode session';
+      const summaryText = typeof last_assistant_message === 'string' && last_assistant_message.trim()
+        ? last_assistant_message.trim()
+        : 'No assistant summary content provided by OpenCode.';
+
+      store.storeSummary(
+        memorySessionId,
+        projectName,
+        {
+          request: requestText,
+          investigated: summaryText,
+          learned: '',
+          completed: '',
+          next_steps: '',
+          notes: null
+        },
+        promptNumber
+      );
+
+      res.json({ status: 'stored', mode: 'opencode' });
+      return;
+    }
+
     // Queue summarize
     this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
 
     // Ensure SDK agent is running
-    this.ensureGeneratorRunning(sessionDbId, 'summarize');
+    if (this.shouldUseOpenCodeSdkPath(platform)) {
+      this.ensureGeneratorRunning(sessionDbId, 'summarize-opencode', 'opencode');
+    } else {
+      this.ensureGeneratorRunning(sessionDbId, 'summarize');
+    }
 
     // Broadcast summarize queued event
     this.eventBroadcaster.broadcastSummarizeQueued();
@@ -692,7 +804,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * Returns: { sessionDbId, promptNumber, skipped: boolean, reason?: string }
    */
   private handleSessionInitByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId } = req.body;
+    const { contentSessionId, platform } = req.body;
 
     // Only contentSessionId is truly required — Cursor and other platforms
     // may omit prompt/project in their payload (#838, #1049)
@@ -762,6 +874,11 @@ export class SessionRoutes extends BaseRouteHandler {
     // Step 6: Check if SDK agent is already running for this session (#1079)
     // If contextInjected is true, the hook should skip re-initializing the SDK agent
     const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
+
+    if (this.shouldUseOpenCodeSdkPath(platform) && !contextInjected) {
+      this.sessionManager.initializeSession(sessionDbId, cleanedPrompt, promptNumber);
+      this.ensureGeneratorRunning(sessionDbId, 'init-opencode', 'opencode');
+    }
 
     // Debug-level log since CREATED already logged the key info
     logger.debug('SESSION', 'User prompt saved', {

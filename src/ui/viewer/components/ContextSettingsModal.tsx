@@ -414,7 +414,7 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
+                tooltip="Choose the backend provider used for memory extraction"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
@@ -423,6 +423,7 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="opencode">OpenCode SDK (opencode server)</option>
                 </select>
               </FormField>
 
@@ -525,6 +526,34 @@ export function ContextSettingsModal({
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
                       placeholder="claude-mem"
                     />
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'opencode' && (
+                <>
+                  <FormField
+                    label="OpenCode Base URL"
+                    tooltip="OpenCode server URL used by the SDK client"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENCODE_BASE_URL || 'http://127.0.0.1:4096'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENCODE_BASE_URL', e.target.value)}
+                      placeholder="http://127.0.0.1:4096"
+                    />
+                  </FormField>
+                  <FormField
+                    label="OpenCode Mode"
+                    tooltip="sdk_agent runs LLM extraction; direct_store stores tool payloads directly"
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_OPENCODE_MODE || 'sdk_agent'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENCODE_MODE', e.target.value)}
+                    >
+                      <option value="sdk_agent">sdk_agent (OpenCode SDK extraction)</option>
+                      <option value="direct_store">direct_store (existing direct persist)</option>
+                    </select>
                   </FormField>
                 </>
               )}
