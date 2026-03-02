@@ -377,6 +377,9 @@ export class SDKAgent {
         cwdTracker.lastCwd = message.cwd;
       }
 
+      // Hub mode: capture project override from each message
+      session.currentProjectOverride = message.project_override;
+
       if (message.type === 'observation') {
         // Update last prompt number
         if (message.prompt_number !== undefined) {

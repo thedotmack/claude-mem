@@ -496,7 +496,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
+    const { contentSessionId, tool_name, tool_input, tool_response, cwd, project_override } = req.body;
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');
@@ -569,7 +569,8 @@ export class SessionRoutes extends BaseRouteHandler {
             tool_name
           });
           return '';
-        })()
+        })(),
+        ...(project_override ? { project_override } : {})
       });
 
       // Ensure SDK agent is running

@@ -93,11 +93,14 @@ export async function processAgentResponse(
     memorySessionId: session.memorySessionId
   });
 
+  // Hub mode: use per-observation project override if available
+  const effectiveProject = session.currentProjectOverride || session.project;
+
   // ATOMIC TRANSACTION: Store observations + summary ONCE
   // Messages are already deleted from queue on claim, so no completion tracking needed
   const result = sessionStore.storeObservations(
     session.memorySessionId,
-    session.project,
+    effectiveProject,
     observations,
     summaryForStore,
     session.lastPromptNumber,
@@ -132,7 +135,8 @@ export async function processAgentResponse(
     worker,
     discoveryTokens,
     agentName,
-    projectRoot
+    projectRoot,
+    effectiveProject
   );
 
   // Sync and broadcast summary if present
@@ -144,7 +148,8 @@ export async function processAgentResponse(
     dbManager,
     worker,
     discoveryTokens,
-    agentName
+    agentName,
+    effectiveProject
   );
 
   // Clean up session state
@@ -185,8 +190,11 @@ async function syncAndBroadcastObservations(
   worker: WorkerRef | undefined,
   discoveryTokens: number,
   agentName: string,
-  projectRoot?: string
+  projectRoot?: string,
+  effectiveProject?: string
 ): Promise<void> {
+  const project = effectiveProject || session.project;
+
   for (let i = 0; i < observations.length; i++) {
     const obsId = result.observationIds[i];
     const obs = observations[i];
@@ -196,7 +204,7 @@ async function syncAndBroadcastObservations(
     dbManager.getChromaSync()?.syncObservation(
       obsId,
       session.contentSessionId,
-      session.project,
+      project,
       obs,
       session.lastPromptNumber,
       result.createdAtEpoch,
@@ -232,7 +240,7 @@ async function syncAndBroadcastObservations(
       concepts: JSON.stringify(obs.concepts || []),
       files_read: JSON.stringify(obs.files_read || []),
       files_modified: JSON.stringify(obs.files_modified || []),
-      project: session.project,
+      project,
       prompt_number: session.lastPromptNumber,
       created_at_epoch: result.createdAtEpoch
     });
@@ -256,11 +264,11 @@ async function syncAndBroadcastObservations(
     if (allFilePaths.length > 0) {
       updateFolderClaudeMdFiles(
         allFilePaths,
-        session.project,
+        project,
         getWorkerPort(),
         projectRoot
       ).catch(error => {
-        logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: session.project }, error as Error);
+        logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project }, error as Error);
       });
     }
   }
@@ -277,19 +285,21 @@ async function syncAndBroadcastSummary(
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
   discoveryTokens: number,
-  agentName: string
+  agentName: string,
+  effectiveProject?: string
 ): Promise<void> {
   if (!summaryForStore || !result.summaryId) {
     return;
   }
 
+  const project = effectiveProject || session.project;
   const chromaStart = Date.now();
 
   // Sync to Chroma (fire-and-forget, skipped if Chroma is disabled)
   dbManager.getChromaSync()?.syncSummary(
     result.summaryId,
     session.contentSessionId,
-    session.project,
+    project,
     summaryForStore,
     session.lastPromptNumber,
     result.createdAtEpoch,
@@ -318,13 +328,13 @@ async function syncAndBroadcastSummary(
     completed: summary!.completed,
     next_steps: summary!.next_steps,
     notes: summary!.notes,
-    project: session.project,
+    project,
     prompt_number: session.lastPromptNumber,
     created_at_epoch: result.createdAtEpoch
   });
 
   // Update Cursor context file for registered projects (fire-and-forget)
-  updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
-    logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
+  updateCursorContextForProject(project, getWorkerPort()).catch(error => {
+    logger.warn('CURSOR', 'Context update failed (non-critical)', { project }, error as Error);
   });
 }

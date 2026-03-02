@@ -197,6 +197,10 @@ export class GeminiAgent {
         if (message.cwd) {
           lastCwd = message.cwd;
         }
+
+        // Hub mode: capture project override from each message
+        session.currentProjectOverride = message.project_override;
+
         // Capture earliest timestamp BEFORE processing (will be cleared after)
         // This ensures backlog messages get their original timestamps, not current time
         const originalTimestamp = session.earliestPendingTimestamp;

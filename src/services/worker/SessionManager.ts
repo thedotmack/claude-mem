@@ -212,7 +212,8 @@ export class SessionManager {
       tool_input: data.tool_input,
       tool_response: data.tool_response,
       prompt_number: data.prompt_number,
-      cwd: data.cwd
+      cwd: data.cwd,
+      ...(data.project_override ? { project_override: data.project_override } : {})
     };
 
     try {

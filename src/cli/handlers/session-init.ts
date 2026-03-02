@@ -6,7 +6,7 @@
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
-import { getProjectName } from '../../utils/project-name.js';
+import { getProjectName, loadHubConfig } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { isProjectExcluded } from '../../utils/project-filter.js';
@@ -41,7 +41,9 @@ export const sessionInitHandler: EventHandler = {
     // Use placeholder so sessions still get created and tracked for memory
     const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
 
-    const project = getProjectName(cwd);
+    // Hub mode: use default_project from hub config instead of basename(cwd)
+    const hubConfig = loadHubConfig(cwd);
+    const project = hubConfig ? hubConfig.default_project : getProjectName(cwd);
     const port = getWorkerPort();
 
     logger.debug('HOOK', 'session-init: Calling /api/sessions/init', { contentSessionId: sessionId, project });

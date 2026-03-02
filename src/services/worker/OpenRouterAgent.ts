@@ -153,6 +153,10 @@ export class OpenRouterAgent {
         if (message.cwd) {
           lastCwd = message.cwd;
         }
+
+        // Hub mode: capture project override from each message
+        session.currentProjectOverride = message.project_override;
+
         // Capture earliest timestamp BEFORE processing (will be cleared after)
         const originalTimestamp = session.earliestPendingTimestamp;
 

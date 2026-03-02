@@ -40,6 +40,8 @@ export interface ActiveSession {
   // CLAIM-CONFIRM FIX: Track IDs of messages currently being processed
   // These IDs will be confirmed (deleted) after successful storage
   processingMessageIds: number[];
+  /** Hub mode: current project override from the latest message being processed */
+  currentProjectOverride?: string;
 }
 
 export interface PendingMessage {
@@ -50,6 +52,8 @@ export interface PendingMessage {
   prompt_number?: number;
   cwd?: string;
   last_assistant_message?: string;
+  /** Hub mode: override project name for this specific observation */
+  project_override?: string;
 }
 
 /**
@@ -68,6 +72,8 @@ export interface ObservationData {
   tool_response: any;
   prompt_number: number;
   cwd?: string;
+  /** Hub mode: override project name for this specific observation */
+  project_override?: string;
 }
 
 // ============================================================================

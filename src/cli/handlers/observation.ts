@@ -9,6 +9,8 @@ import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { isProjectExcluded } from '../../utils/project-filter.js';
+import { loadHubConfig, resolveProjectFromFilePath } from '../../utils/project-name.js';
+import { extractFilePathsFromTool } from '../../utils/file-path-extractor.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
@@ -48,6 +50,24 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
+    // Hub mode: resolve project from file paths instead of cwd basename
+    let projectOverride: string | undefined;
+    const hubConfig = loadHubConfig(cwd);
+    if (hubConfig) {
+      const filePaths = extractFilePathsFromTool(toolName, toolInput, toolResponse);
+      if (filePaths.length > 0) {
+        // Use the first file path to determine the project
+        projectOverride = resolveProjectFromFilePath(filePaths[0], cwd, hubConfig);
+        logger.debug('HOOK', 'Hub mode: resolved project from file path', {
+          toolName,
+          filePath: filePaths[0],
+          project: projectOverride
+        });
+      } else {
+        projectOverride = hubConfig.default_project;
+      }
+    }
+
     // Send to worker - worker handles privacy check and database operations
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
@@ -58,7 +78,8 @@ export const observationHandler: EventHandler = {
           tool_name: toolName,
           tool_input: toolInput,
           tool_response: toolResponse,
-          cwd
+          cwd,
+          ...(projectOverride ? { project_override: projectOverride } : {})
         })
         // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
       });
