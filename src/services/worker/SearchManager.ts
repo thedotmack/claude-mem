@@ -1856,4 +1856,28 @@ export class SearchManager {
       };
     }
   }
+
+  /**
+   * Get hub project stats: observation count and last activity per project.
+   * Used by /api/hub/projects endpoint for context injection in hub mode.
+   */
+  getHubProjectStats(projects: string[]): Array<{ project: string; observation_count: number; last_active_epoch: number }> {
+    if (projects.length === 0) return [];
+
+    const placeholders = projects.map(() => '?').join(',');
+    const sql = `
+      SELECT project, COUNT(*) as observation_count, MAX(created_at_epoch) as last_active_epoch
+      FROM observations
+      WHERE project IN (${placeholders})
+      GROUP BY project
+      HAVING observation_count > 0
+      ORDER BY last_active_epoch DESC
+    `;
+
+    return this.sessionStore.db.prepare(sql).all(...projects) as Array<{
+      project: string;
+      observation_count: number;
+      last_active_epoch: number;
+    }>;
+  }
 }

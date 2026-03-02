@@ -194,17 +194,15 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   }
 
   // Check hub mode first — takes priority over worktree detection
+  // In hub mode, only return default_project in allProjects to avoid context dilution.
+  // Project selection is handled by the context handler (hub projects table) and /focus skill.
   const hubConfig = loadHubConfig(cwd);
   if (hubConfig) {
-    const uniqueProjects = new Set<string>([hubConfig.default_project]);
-    for (const projectName of Object.values(hubConfig.project_patterns)) {
-      uniqueProjects.add(projectName);
-    }
     return {
       primary: hubConfig.default_project,
       parent: null,
       isWorktree: false,
-      allProjects: Array.from(uniqueProjects)
+      allProjects: [hubConfig.default_project]
     };
   }
 

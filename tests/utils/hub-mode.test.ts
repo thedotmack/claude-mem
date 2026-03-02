@@ -201,7 +201,7 @@ describe('Hub Mode', () => {
   });
 
   describe('getProjectContext (hub mode)', () => {
-    it('returns all hub projects in allProjects array', () => {
+    it('returns only default_project in allProjects to avoid context dilution', () => {
       const config = {
         hub_mode: true,
         default_project: 'obsidian-vault',
@@ -216,12 +216,10 @@ describe('Hub Mode', () => {
       expect(context.primary).toBe('obsidian-vault');
       expect(context.parent).toBeNull();
       expect(context.isWorktree).toBe(false);
-      expect(context.allProjects).toContain('obsidian-vault');
-      expect(context.allProjects).toContain('core');
-      expect(context.allProjects).toContain('ui');
+      expect(context.allProjects).toEqual(['obsidian-vault']);
     });
 
-    it('deduplicates projects in allProjects', () => {
+    it('does not include pattern projects in allProjects', () => {
       const config = {
         hub_mode: true,
         default_project: 'vault',
@@ -233,8 +231,8 @@ describe('Hub Mode', () => {
       writeFileSync(path.join(tmpDir, '.claude-mem-hub.json'), JSON.stringify(config));
 
       const context = getProjectContext(tmpDir);
-      const vaultCount = context.allProjects.filter(p => p === 'vault').length;
-      expect(vaultCount).toBe(1);
+      expect(context.allProjects).toEqual(['vault']);
+      expect(context.allProjects).not.toContain('other');
     });
   });
 

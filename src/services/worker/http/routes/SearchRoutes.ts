@@ -39,6 +39,9 @@ export class SearchRoutes extends BaseRouteHandler {
     app.get('/api/context/preview', this.handleContextPreview.bind(this));
     app.get('/api/context/inject', this.handleContextInject.bind(this));
 
+    // Hub mode endpoints
+    app.get('/api/hub/projects', this.handleHubProjects.bind(this));
+
     // Timeline and help endpoints
     app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
     app.get('/api/search/help', this.handleSearchHelp.bind(this));
@@ -242,6 +245,31 @@ export class SearchRoutes extends BaseRouteHandler {
     // Return as plain text
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.send(contextText);
+  });
+
+  /**
+   * Hub project stats for context injection
+   * GET /api/hub/projects?projects=legal-core,prognosticos,...
+   *
+   * Returns observation count and last activity per project.
+   */
+  private handleHubProjects = this.wrapHandler((req: Request, res: Response): void => {
+    const projectsParam = req.query.projects as string;
+
+    if (!projectsParam) {
+      this.badRequest(res, 'projects parameter is required');
+      return;
+    }
+
+    const projects = projectsParam.split(',').map(p => p.trim()).filter(Boolean);
+
+    if (projects.length === 0) {
+      this.badRequest(res, 'At least one project is required');
+      return;
+    }
+
+    const stats = this.searchManager.getHubProjectStats(projects);
+    res.json(stats);
   });
 
   /**
