@@ -132,9 +132,10 @@ export const contextHandler: EventHandler = {
       const coloredTimeline = colorResult.trim();
 
       // In hub mode, append a summary of active projects so the user can /focus
+      let hubProjectsTable: string | null = null;
       const hubConfig = loadHubConfig(cwd);
       if (hubConfig) {
-        const hubProjectsTable = await fetchHubProjectsTable(port, hubConfig);
+        hubProjectsTable = await fetchHubProjectsTable(port, hubConfig);
         if (hubProjectsTable) {
           additionalContext = additionalContext
             ? `${additionalContext}\n\n${hubProjectsTable}`
@@ -142,9 +143,14 @@ export const contextHandler: EventHandler = {
         }
       }
 
-      const systemMessage = showTerminalOutput && coloredTimeline
-        ? `${coloredTimeline}\n\nView Observations Live @ http://localhost:${port}`
-        : undefined;
+      // Build terminal display — include hub projects table so user sees it
+      let systemMessage: string | undefined;
+      if (showTerminalOutput && coloredTimeline) {
+        systemMessage = `${coloredTimeline}\n\nView Observations Live @ http://localhost:${port}`;
+        if (hubProjectsTable) {
+          systemMessage += `\n\n${hubProjectsTable}`;
+        }
+      }
 
       return {
         hookSpecificOutput: {
