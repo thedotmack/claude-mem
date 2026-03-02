@@ -28,6 +28,10 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
+import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
 /**
  * Worker HTTP API configuration
@@ -235,28 +239,115 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     }
   },
   {
-    name: 'save_observation',
-    description: 'Save an observation to the database. Params: text (required), title, project',
+    name: 'smart_search',
+    description: 'Search codebase for symbols, functions, classes using tree-sitter AST parsing. Returns folded structural views with token counts. Use path parameter to scope the search.',
     inputSchema: {
       type: 'object',
       properties: {
-        text: {
+        query: {
           type: 'string',
-          description: 'Content to remember (required)'
+          description: 'Search term — matches against symbol names, file names, and file content'
         },
-        title: {
+        path: {
           type: 'string',
-          description: 'Short title (auto-generated from text if omitted)'
+          description: 'Root directory to search (default: current working directory)'
         },
-        project: {
+        max_results: {
+          type: 'number',
+          description: 'Maximum results to return (default: 20)'
+        },
+        file_pattern: {
           type: 'string',
-          description: 'Project name (uses "claude-mem" if omitted)'
+          description: 'Substring filter for file paths (e.g. ".ts", "src/services")'
         }
       },
-      required: ['text']
+      required: ['query']
     },
     handler: async (args: any) => {
-      return await callWorkerAPIPost('/api/memory/save', args);
+      const rootDir = resolve(args.path || process.cwd());
+      const result = await searchCodebase(rootDir, args.query, {
+        maxResults: args.max_results || 20,
+        filePattern: args.file_pattern
+      });
+      const formatted = formatSearchResults(result, args.query);
+      return {
+        content: [{ type: 'text' as const, text: formatted }]
+      };
+    }
+  },
+  {
+    name: 'smart_unfold',
+    description: 'Expand a specific symbol (function, class, method) from a file. Returns the full source code of just that symbol. Use after smart_search or smart_outline to read specific code.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file_path: {
+          type: 'string',
+          description: 'Path to the source file'
+        },
+        symbol_name: {
+          type: 'string',
+          description: 'Name of the symbol to unfold (function, class, method, etc.)'
+        }
+      },
+      required: ['file_path', 'symbol_name']
+    },
+    handler: async (args: any) => {
+      const filePath = resolve(args.file_path);
+      const content = await readFile(filePath, 'utf-8');
+      const unfolded = unfoldSymbol(content, filePath, args.symbol_name);
+      if (unfolded) {
+        return {
+          content: [{ type: 'text' as const, text: unfolded }]
+        };
+      }
+      // Symbol not found — show available symbols
+      const parsed = parseFile(content, filePath);
+      if (parsed.symbols.length > 0) {
+        const available = parsed.symbols.map(s => `  - ${s.name} (${s.kind})`).join('\n');
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Symbol "${args.symbol_name}" not found in ${args.file_path}.\n\nAvailable symbols:\n${available}`
+          }]
+        };
+      }
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `Could not parse ${args.file_path}. File may be unsupported or empty.`
+        }]
+      };
+    }
+  },
+  {
+    name: 'smart_outline',
+    description: 'Get structural outline of a file — shows all symbols (functions, classes, methods, types) with signatures but bodies folded. Much cheaper than reading the full file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file_path: {
+          type: 'string',
+          description: 'Path to the source file'
+        }
+      },
+      required: ['file_path']
+    },
+    handler: async (args: any) => {
+      const filePath = resolve(args.file_path);
+      const content = await readFile(filePath, 'utf-8');
+      const parsed = parseFile(content, filePath);
+      if (parsed.symbols.length > 0) {
+        return {
+          content: [{ type: 'text' as const, text: formatFoldedView(parsed) }]
+        };
+      }
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `Could not parse ${args.file_path}. File may use an unsupported language or be empty.`
+        }]
+      };
     }
   }
 ];

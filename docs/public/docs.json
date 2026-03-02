@@ -62,7 +62,8 @@
         "icon": "lightbulb",
         "pages": [
           "context-engineering",
-          "progressive-disclosure"
+          "progressive-disclosure",
+          "smart-explore-benchmark"
         ]
       },
       {
