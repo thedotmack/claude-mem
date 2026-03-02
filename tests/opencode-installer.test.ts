@@ -147,12 +147,12 @@ describe('OpenCode Plugin Installer', () => {
       expect(result).toBe(0);
     });
 
-    it('reports not installed when no files exist', () => {
+    it('reports not installed when no project files exist', () => {
       process.chdir(tempDir);
       checkOpenCodePluginStatus();
-      // Should have logged "No OpenCode integration found"
       const calls = consoleLogSpy.mock.calls.map((c: any) => c[0]);
-      expect(calls.some((msg: string) => msg.includes('No OpenCode integration found'))).toBe(true);
+      // Project-level plugin should report Not installed in a clean temp dir
+      expect(calls.some((msg: string) => typeof msg === 'string' && msg.includes('Not installed'))).toBe(true);
     });
   });
 
