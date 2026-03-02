@@ -35,6 +35,10 @@ def load_hub_config(vault_dir: str) -> dict:
         print("Error: missing default_project or project_patterns in config")
         sys.exit(1)
 
+    # absolute_patterns is optional
+    if "absolute_patterns" not in config:
+        config["absolute_patterns"] = {}
+
     return config
 
 
@@ -57,16 +61,24 @@ def resolve_project(
     vault_dir: str,
     project_patterns: dict,
     real_path_patterns: dict,
+    absolute_patterns: dict,
 ) -> str | None:
     """Resolve a file path to a project name. Returns None if no match."""
     if not file_path:
         return None
 
     # Sort by length (longest first) for correct matching
+    sorted_absolute = sorted(absolute_patterns.items(), key=lambda x: len(x[0]), reverse=True)
     sorted_real = sorted(real_path_patterns.items(), key=lambda x: len(x[0]), reverse=True)
     sorted_relative = sorted(project_patterns.items(), key=lambda x: len(x[0]), reverse=True)
 
-    # Try absolute path match against real repo locations
+    # Try absolute_patterns first (files outside vault accessed by real path)
+    for pattern, project in sorted_absolute:
+        normalized = pattern.rstrip("/")
+        if file_path.startswith(normalized + "/") or file_path == normalized:
+            return project
+
+    # Try absolute path match against real repo locations (from symlinks)
     for pattern, project in sorted_real:
         if file_path.startswith(pattern + "/") or file_path == pattern:
             return project
@@ -88,10 +100,8 @@ def resolve_project(
 
 def main():
     # Parse arguments
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    flags = [a for a in sys.argv[1:] if a.startswith("--")]
-
-    if not args:
+    argv = sys.argv[1:]
+    if not argv:
         print("Usage: python3 migrate-hub-projects.py /path/to/vault [--dry-run] [--source-project NAME]")
         print()
         print("Options:")
@@ -100,14 +110,21 @@ def main():
         print("                         (default: basename of vault directory)")
         sys.exit(1)
 
-    vault_dir = os.path.abspath(args[0])
-    dry_run = "--dry-run" in flags
+    dry_run = "--dry-run" in argv
 
-    # Parse --source-project
+    # Parse --source-project VALUE
     source_project = None
-    for i, flag in enumerate(flags):
-        if flag == "--source-project" and i + 1 < len(flags):
-            source_project = flags[i + 1]
+    for i, arg in enumerate(argv):
+        if arg == "--source-project" and i + 1 < len(argv):
+            source_project = argv[i + 1]
+
+    # Vault dir is the first non-flag argument
+    positional = [a for a in argv if not a.startswith("--") and (argv.index(a) == 0 or argv[argv.index(a) - 1] != "--source-project")]
+    if not positional:
+        print("Error: vault directory is required")
+        sys.exit(1)
+
+    vault_dir = os.path.abspath(positional[0])
 
     if not source_project:
         source_project = os.path.basename(vault_dir)
@@ -120,6 +137,7 @@ def main():
     config = load_hub_config(vault_dir)
     project_patterns = config["project_patterns"]
     default_project = config["default_project"]
+    absolute_patterns = config.get("absolute_patterns", {})
 
     # Build real-path patterns from symlinks
     real_path_patterns = build_real_path_patterns(vault_dir, project_patterns)
@@ -127,7 +145,7 @@ def main():
     print(f"Vault: {vault_dir}")
     print(f"Source project: {source_project}")
     print(f"Default project: {default_project}")
-    print(f"Patterns: {len(project_patterns)} relative + {len(real_path_patterns)} real-path")
+    print(f"Patterns: {len(project_patterns)} relative + {len(real_path_patterns)} real-path + {len(absolute_patterns)} absolute")
 
     # Open database
     db_path = os.path.expanduser("~/.claude-mem/claude-mem.db")
@@ -160,7 +178,7 @@ def main():
         # Try to resolve project from any file path
         resolved = None
         for f in all_files:
-            resolved = resolve_project(f, vault_dir, project_patterns, real_path_patterns)
+            resolved = resolve_project(f, vault_dir, project_patterns, real_path_patterns, absolute_patterns)
             if resolved:
                 break
 

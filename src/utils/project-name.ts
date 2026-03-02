@@ -16,6 +16,12 @@ export interface HubConfig {
   hub_mode: boolean;
   default_project: string;
   project_patterns: Record<string, string>;
+  /**
+   * Absolute path patterns for files outside the vault.
+   * Key: absolute path prefix (e.g. "/home/user/claude-mem")
+   * Value: project name
+   */
+  absolute_patterns?: Record<string, string>;
 }
 
 // Cache hub config per cwd to avoid repeated filesystem reads
@@ -95,7 +101,20 @@ export function resolveProjectFromFilePath(
     // Symlink resolution failed — use original relative path
   }
 
-  // Longest-prefix match against project_patterns
+  // Check absolute_patterns first (files outside the vault accessed by real path)
+  // Sort by length (longest first) for correct prefix matching
+  if (hubConfig.absolute_patterns) {
+    const sortedAbsolute = Object.entries(hubConfig.absolute_patterns)
+      .sort(([a], [b]) => b.length - a.length);
+    for (const [absPattern, projectName] of sortedAbsolute) {
+      const normalized = absPattern.replace(/\/$/, '');
+      if (absolutePath.startsWith(normalized + '/') || absolutePath === normalized) {
+        return projectName;
+      }
+    }
+  }
+
+  // Longest-prefix match against project_patterns (vault-relative paths)
   // Sort patterns by length (longest first) for correct matching
   const sortedPatterns = Object.entries(hubConfig.project_patterns)
     .sort(([a], [b]) => b.length - a.length);
