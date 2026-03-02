@@ -272,12 +272,11 @@ export class SessionSearch {
    * Vector search is handled by ChromaDB - this only supports filtering without query text.
    */
   searchObservations(query: string | undefined, options: SearchOptions = {}): ObservationSearchResult[] {
-    const params: any[] = [];
-    const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
-
     // FILTER-ONLY PATH: When no query text, query table directly
     // This enables date filtering which Chroma cannot do (requires direct SQLite access)
     if (!query) {
+      const params: any[] = [];
+      const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
       const filterClause = this.buildFilterClause(filters, params, 'o');
       if (!filterClause) {
         throw new Error('Either query or filters required for search');
@@ -297,10 +296,47 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
     }
 
-    // Vector search with query text should be handled by ChromaDB
-    // This method only supports filter-only queries (query=undefined)
-    logger.warn('DB', 'Text search not supported - use ChromaDB for vector search');
-    return [];
+    // FTS5 search path - used when ChromaDB is not available
+    const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
+    const ftsQuery = query.replace(/['"*]/g, ' ').trim();
+    if (!ftsQuery) return [];
+
+    const params: any[] = [ftsQuery];
+    let sql = `
+      SELECT o.*
+      FROM observations o
+      JOIN observations_fts fts ON o.id = fts.rowid
+      WHERE fts.observations_fts MATCH ?
+    `;
+
+    const filterClauses: string[] = [];
+    if (filters.project) {
+      filterClauses.push('o.project = ?');
+      params.push(filters.project);
+    }
+    if (filters.type) {
+      if (Array.isArray(filters.type)) {
+        const placeholders = filters.type.map(() => '?').join(',');
+        filterClauses.push(`o.type IN (${placeholders})`);
+        params.push(...filters.type);
+      } else {
+        filterClauses.push('o.type = ?');
+        params.push(filters.type);
+      }
+    }
+    if (filterClauses.length > 0) {
+      sql += ` AND ${filterClauses.join(' AND ')}`;
+    }
+
+    sql += ` ORDER BY rank LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    try {
+      return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+    } catch (err) {
+      logger.error('DB', 'FTS5 search failed', { query: ftsQuery }, err as Error);
+      return [];
+    }
   }
 
   /**
@@ -596,6 +632,142 @@ export class SessionSearch {
     `);
 
     return stmt.all(contentSessionId) as UserPromptRow[];
+  }
+
+  /**
+   * Rank observations by temporal decay score.
+   * Half-life scales with importance (1-10): 18d at imp=1, 90d at imp=5, 180d at imp=10.
+   * Access count and staleness also factor in.
+   */
+  rankByTemporalScore(observations: ObservationSearchResult[]): ObservationSearchResult[] {
+    if (observations.length === 0) return observations;
+
+    const now = Date.now() / 1000;
+
+    return observations
+      .map(obs => {
+        const importance = Math.min(10, Math.max(1, obs.importance ?? 5));
+        const halfLifeDays = 90 * (importance / 5); // 18d at imp=1, 90d at imp=5, 180d at imp=10
+        const lambda = Math.log(2) / halfLifeDays;
+        const createdEpoch = obs.created_at_epoch / 1000; // created_at_epoch is ms
+        const daysSince = Math.max(0, (now - createdEpoch) / 86400);
+        const decayFactor = Math.exp(-lambda * daysSince);
+        const accessBoost = Math.log1p(obs.access_count ?? 0) * 0.1;
+        const stalenessPenalty = obs.is_stale ? 0.1 : 1.0;
+        const score = decayFactor * (1 + accessBoost) * stalenessPenalty;
+
+        return { obs, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .map(({ obs }) => obs);
+  }
+
+  /**
+   * Update last_accessed_at and increment access_count for a set of observation IDs.
+   */
+  updateAccessTracking(ids: number[]): void {
+    if (ids.length === 0) return;
+    const now = Math.floor(Date.now() / 1000);
+    const placeholders = ids.map(() => '?').join(',');
+    this.db.prepare(
+      `UPDATE observations SET last_accessed_at = ?, access_count = COALESCE(access_count, 0) + 1 WHERE id IN (${placeholders})`
+    ).run(now, ...ids);
+  }
+
+  /**
+   * Detect semantic drift in concept clusters.
+   * Flags clusters where old memories are unaccessed or heavily stale,
+   * suggesting the project has moved on and those memories may be outdated.
+   */
+  detectDrift(project?: string): {
+    driftedConcepts: Array<{
+      project: string;
+      concept: string;
+      totalCount: number;
+      recentCount: number;
+      oldCount: number;
+      unaccessedOld: number;
+      staleCount: number;
+      stalePct: number;
+      signal: 'high-stale' | 'likely-outdated' | 'monitor';
+    }>;
+    summary: string;
+  } {
+    const thirtyDaysAgoMs = Date.now() - 30 * 86400 * 1000;
+
+    let sql = `
+      WITH concept_stats AS (
+        SELECT
+          o.project,
+          je.value as concept,
+          COUNT(*) as total_count,
+          SUM(CASE WHEN o.created_at_epoch > ? THEN 1 ELSE 0 END) as recent_count,
+          SUM(CASE WHEN o.created_at_epoch <= ? THEN 1 ELSE 0 END) as old_count,
+          SUM(CASE WHEN o.created_at_epoch <= ? AND COALESCE(o.access_count, 0) = 0 THEN 1 ELSE 0 END) as unaccessed_old,
+          SUM(CASE WHEN o.is_stale = 1 THEN 1 ELSE 0 END) as stale_count
+        FROM observations o, json_each(o.concepts) je
+        WHERE o.concepts IS NOT NULL
+          AND o.concepts != '[]'
+          AND o.concepts != 'null'
+          AND json_valid(o.concepts)
+    `;
+
+    const params: (string | number)[] = [thirtyDaysAgoMs, thirtyDaysAgoMs, thirtyDaysAgoMs];
+
+    if (project) {
+      sql += ` AND o.project = ?`;
+      params.push(project);
+    }
+
+    sql += `
+        GROUP BY o.project, je.value
+        HAVING total_count >= 2
+      )
+      SELECT
+        project, concept, total_count, recent_count, old_count, unaccessed_old, stale_count,
+        ROUND(CAST(stale_count AS REAL) / total_count * 100) as stale_pct,
+        CASE
+          WHEN CAST(stale_count AS REAL) / total_count > 0.3 THEN 'high-stale'
+          WHEN recent_count > 0 AND old_count > 0
+            AND CAST(unaccessed_old AS REAL) / old_count > 0.5 THEN 'likely-outdated'
+          ELSE 'monitor'
+        END as signal
+      FROM concept_stats
+      WHERE
+        (CAST(stale_count AS REAL) / total_count > 0.3)
+        OR (recent_count > 0 AND old_count > 0 AND CAST(unaccessed_old AS REAL) / NULLIF(old_count, 0) > 0.5)
+      ORDER BY stale_pct DESC, unaccessed_old DESC
+      LIMIT 20
+    `;
+
+    let rows: any[] = [];
+    try {
+      rows = this.db.prepare(sql).all(...params) as any[];
+    } catch (err) {
+      logger.error('DB', 'Drift check query failed', { project: project ?? 'all' }, err as Error);
+      return { driftedConcepts: [], summary: 'Drift check unavailable (query failed — see worker logs).' };
+    }
+
+    const driftedConcepts = rows.map(r => ({
+      project: r.project as string,
+      concept: r.concept as string,
+      totalCount: r.total_count as number,
+      recentCount: r.recent_count as number,
+      oldCount: r.old_count as number,
+      unaccessedOld: r.unaccessed_old as number,
+      staleCount: r.stale_count as number,
+      stalePct: r.stale_pct as number,
+      signal: r.signal as 'high-stale' | 'likely-outdated' | 'monitor',
+    }));
+
+    const highStale = driftedConcepts.filter(c => c.signal === 'high-stale');
+    const likelyOutdated = driftedConcepts.filter(c => c.signal === 'likely-outdated');
+
+    const summary = driftedConcepts.length === 0
+      ? 'No drift detected. All concept clusters appear current.'
+      : `Drift detected in ${driftedConcepts.length} concept cluster(s): ${highStale.length} high-stale, ${likelyOutdated.length} likely-outdated. Consider using contradict() on stale memories in flagged clusters.`;
+
+    return { driftedConcepts, summary };
   }
 
   /**

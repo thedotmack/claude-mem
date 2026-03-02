@@ -1182,6 +1182,25 @@ export class SessionStore {
   }
 
   /**
+   * Mark an observation as stale and record the ID of its correction
+   */
+  markObservationStale(staleId: number, correctedById: number): void {
+    this.db.prepare(
+      'UPDATE observations SET is_stale = 1, corrected_by_id = ? WHERE id = ?'
+    ).run(correctedById, staleId);
+  }
+
+  /**
+   * Set the importance score (1-10) for an observation
+   */
+  setObservationImportance(id: number, importance: number): void {
+    const clamped = Math.min(10, Math.max(1, Math.round(importance)));
+    this.db.prepare(
+      'UPDATE observations SET importance = ? WHERE id = ?'
+    ).run(clamped, id);
+  }
+
+  /**
    * Get observations by array of IDs with ordering and limit
    */
   getObservationsByIds(
