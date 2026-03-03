@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
 
@@ -22,6 +23,12 @@ export interface HubConfig {
    * Value: project name
    */
   absolute_patterns?: Record<string, string>;
+  /**
+   * Path prefixes that identify vault content (e.g. "Threads/", "Areas/").
+   * Paths starting with these prefixes are excluded from basename fallback
+   * matching to avoid false positives on vault-internal directories.
+   */
+  vault_content_prefixes?: string[];
 }
 
 // Cache hub config per cwd to avoid repeated filesystem reads
@@ -88,8 +95,13 @@ export function resolveProjectFromFilePath(
 ): string {
   if (!filePath) return hubConfig.default_project;
 
+  // Expand ~ to home directory for tilde-prefixed paths
+  const expandedPath = filePath.startsWith('~/') || filePath === '~'
+    ? path.join(os.homedir(), filePath.slice(1))
+    : filePath;
+
   // Make path relative to cwd for pattern matching
-  const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
+  const absolutePath = path.isAbsolute(expandedPath) ? expandedPath : path.join(cwd, expandedPath);
   const relativePath = path.relative(cwd, absolutePath);
 
   // Also try resolved symlink path
@@ -130,6 +142,46 @@ export function resolveProjectFromFilePath(
     if (resolvedRelativePath &&
       (resolvedRelativePath.startsWith(normalizedPattern + '/') || resolvedRelativePath === normalizedPattern)) {
       return projectName;
+    }
+
+    // Resolve symlinks in the pattern path and compare against absolute file path.
+    // This handles the case where file paths use real paths (e.g. /home/user/repo/...)
+    // but patterns use symlink paths (e.g. repos/api/repo -> /home/user/repo).
+    try {
+      const patternAbsolute = path.join(cwd, normalizedPattern);
+      const patternReal = fs.realpathSync(patternAbsolute);
+      if (absolutePath.startsWith(patternReal + '/') || absolutePath === patternReal) {
+        return projectName;
+      }
+    } catch {
+      // Pattern path doesn't exist or can't be resolved — skip
+    }
+  }
+
+  // Fallback: match project name as a leading directory in the file path.
+  // This catches relative paths like "my-project/packages/..." that
+  // were stored without the repos/ prefix. Skip vault content directories.
+  const vaultContentPrefixes = hubConfig.vault_content_prefixes ?? [];
+  if (!vaultContentPrefixes.some(p => expandedPath.startsWith(p))) {
+    const basenameMap = new Map<string, string>();
+    for (const [pattern, projectName] of sortedPatterns) {
+      const bn = path.basename(pattern);
+      if (bn.length >= 4) basenameMap.set(bn, projectName);
+    }
+    if (hubConfig.absolute_patterns) {
+      for (const [absPattern, projectName] of Object.entries(hubConfig.absolute_patterns)) {
+        const bn = path.basename(absPattern.replace(/\/$/, ''));
+        if (bn.length >= 4) basenameMap.set(bn, projectName);
+      }
+    }
+
+    // Only check first 2 path components to avoid deep false positives
+    const parts = expandedPath.split('/').filter(Boolean).slice(0, 2);
+    for (const part of parts) {
+      if (basenameMap.has(part)) return basenameMap.get(part)!;
+      // Try hyphen/underscore variant (documents_pipeline -> documents-pipeline)
+      const alt = part.includes('_') ? part.replace(/_/g, '-') : part.replace(/-/g, '_');
+      if (alt !== part && basenameMap.has(alt)) return basenameMap.get(alt)!;
     }
   }
 

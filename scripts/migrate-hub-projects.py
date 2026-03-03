@@ -62,10 +62,15 @@ def resolve_project(
     project_patterns: dict,
     real_path_patterns: dict,
     absolute_patterns: dict,
+    config: dict | None = None,
 ) -> str | None:
     """Resolve a file path to a project name. Returns None if no match."""
     if not file_path:
         return None
+
+    # Expand ~ to home directory for tilde-prefixed paths
+    if file_path.startswith("~/") or file_path == "~":
+        file_path = os.path.expanduser(file_path)
 
     # Sort by length (longest first) for correct matching
     sorted_absolute = sorted(absolute_patterns.items(), key=lambda x: len(x[0]), reverse=True)
@@ -94,6 +99,36 @@ def resolve_project(
         for pattern, project in sorted_relative:
             if rel_path.startswith(pattern + "/") or rel_path == pattern:
                 return project
+
+    # Fallback: match project name as a leading directory in the path
+    # This catches relative paths like "my-project/packages/..." stored
+    # without the repos/ prefix. Only matches if the project name appears as
+    # the first or second path component to avoid false positives from generic
+    # names like "api" appearing deep in the path.
+    vault_content_prefixes = tuple(config.get("vault_content_prefixes", []))
+    if not any(file_path.startswith(p) for p in vault_content_prefixes):
+        # Build a map of project basenames to project names
+        # Skip short/ambiguous names (< 4 chars) to avoid false positives
+        basename_map = {}
+        for pattern, project in sorted_relative:
+            basename = os.path.basename(pattern)
+            if len(basename) >= 4:
+                basename_map[basename] = project
+        for pattern, project in sorted_absolute:
+            basename = os.path.basename(pattern.rstrip("/"))
+            if len(basename) >= 4:
+                basename_map[basename] = project
+
+        parts = file_path.replace("\\", "/").split("/")
+        # Only check first 2 non-empty parts to avoid deep matches
+        leading_parts = [p for p in parts[:2] if p]
+        for part in leading_parts:
+            if part in basename_map:
+                return basename_map[part]
+            # Try hyphen/underscore variant (e.g. documents_pipeline -> documents-pipeline)
+            alt = part.replace("_", "-") if "_" in part else part.replace("-", "_")
+            if alt != part and alt in basename_map:
+                return basename_map[alt]
 
     return None
 
@@ -178,7 +213,7 @@ def main():
         # Try to resolve project from any file path
         resolved = None
         for f in all_files:
-            resolved = resolve_project(f, vault_dir, project_patterns, real_path_patterns, absolute_patterns)
+            resolved = resolve_project(f, vault_dir, project_patterns, real_path_patterns, absolute_patterns, config)
             if resolved:
                 break
 

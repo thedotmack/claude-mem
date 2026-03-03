@@ -14,6 +14,13 @@ import { extractFilePathsFromTool } from '../../utils/file-path-extractor.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
+// Session-level project cache: once a session resolves to a specific project
+// (e.g. my-project via file paths), subsequent observations without
+// file paths inherit that project instead of falling back to default.
+// This prevents debugging observations (AWS CLI, log reading) from being
+// mistagged when the session is clearly working on a specific project.
+const sessionProjectCache = new Map<string, string>();
+
 export const observationHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     // Ensure worker is running before any other logic
@@ -56,15 +63,45 @@ export const observationHandler: EventHandler = {
     if (hubConfig) {
       const filePaths = extractFilePathsFromTool(toolName, toolInput, toolResponse);
       if (filePaths.length > 0) {
-        // Use the first file path to determine the project
-        projectOverride = resolveProjectFromFilePath(filePaths[0], cwd, hubConfig);
-        logger.debug('HOOK', 'Hub mode: resolved project from file path', {
+        // Try all file paths until we find a non-default project.
+        // This handles the case where the first path is a vault content file
+        // (e.g. Threads/context/project/...) but later paths are actual
+        // project files (e.g. my-project/src/...).
+        for (const fp of filePaths) {
+          const resolved = resolveProjectFromFilePath(fp, cwd, hubConfig);
+          if (resolved !== hubConfig.default_project) {
+            projectOverride = resolved;
+            break;
+          }
+        }
+        // If all paths resolved to default, use default
+        if (!projectOverride) {
+          projectOverride = hubConfig.default_project;
+        }
+        logger.debug('HOOK', 'Hub mode: resolved project from file paths', {
           toolName,
-          filePath: filePaths[0],
+          filePathCount: filePaths.length,
           project: projectOverride
         });
       } else {
-        projectOverride = hubConfig.default_project;
+        // No file paths — use session-sticky project if available,
+        // otherwise fall back to default project.
+        // This prevents observations like "AWS CLI query" or "reading logs"
+        // from being tagged as the default when the session is clearly
+        // working on a specific project.
+        const stickyProject = sessionProjectCache.get(sessionId ?? '');
+        projectOverride = stickyProject ?? hubConfig.default_project;
+        if (stickyProject) {
+          logger.debug('HOOK', 'Hub mode: using session-sticky project (no file paths)', {
+            toolName,
+            project: stickyProject
+          });
+        }
+      }
+
+      // Update session-sticky project when we resolve to a non-default project
+      if (sessionId && projectOverride !== hubConfig.default_project) {
+        sessionProjectCache.set(sessionId, projectOverride);
       }
     }
 
