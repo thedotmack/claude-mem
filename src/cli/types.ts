@@ -1,30 +1,33 @@
-export interface NormalizedHookInput {
-  sessionId: string;
-  cwd: string;
-  platform?: string;   // 'claude-code' or 'cursor'
-  prompt?: string;
-  toolName?: string;
-  toolInput?: unknown;
-  toolResponse?: unknown;
-  transcriptPath?: string;
-  // Cursor-specific fields
-  filePath?: string;   // afterFileEdit
-  edits?: unknown[];   // afterFileEdit
+/**
+ * Claude-Mem CLI Type Definitions
+ */
+
+export interface HealthCheckResult {
+  name: string;
+  ok: boolean;
+  message: string;
+  severity: 'info' | 'warning' | 'error';
+  data?: Record<string, unknown>;
+  fixable?: boolean;
 }
 
-export interface HookResult {
-  continue?: boolean;
-  suppressOutput?: boolean;
-  hookSpecificOutput?: { hookEventName: string; additionalContext: string };
-  systemMessage?: string;
-  exitCode?: number;
+export interface RepairResult {
+  issue: string;
+  fixed: boolean;
+  message: string;
+  error?: Error;
 }
 
-export interface PlatformAdapter {
-  normalizeInput(raw: unknown): NormalizedHookInput;
-  formatOutput(result: HookResult): unknown;
+export interface WorkerStatus {
+  running: boolean;
+  pid?: number;
+  port?: number;
+  uptime?: string;
+  version?: string;
 }
 
-export interface EventHandler {
-  execute(input: NormalizedHookInput): Promise<HookResult>;
+export interface CLIOptions {
+  verbose: boolean;
+  json: boolean;
+  fix: boolean;
 }
