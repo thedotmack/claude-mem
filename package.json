@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "10.5.2",
+  "version": "10.6.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -45,6 +45,9 @@
     "node": ">=18.0.0",
     "bun": ">=1.0.0"
   },
+  "bin": {
+    "claude-mem": "./dist/cli/index.js"
+  },
   "scripts": {
     "dev": "npm run build-and-sync",
     "build": "node scripts/build-hooks.js",
@@ -83,6 +86,10 @@
     "test:context": "bun test tests/context/",
     "test:infra": "bun test tests/infrastructure/",
     "test:server": "bun test tests/server/",
+    "cli:build": "bun build src/cli/index.ts --outfile=dist/cli/index.js --target=node --shebang",
+    "cli:dev": "bun src/cli/index.ts",
+    "cli:doctor": "bun src/cli/index.ts doctor",
+    "cli:repair": "bun src/cli/index.ts repair",
     "prepublishOnly": "npm run build",
     "release": "np",
     "release:patch": "np patch --no-cleanup",
@@ -99,6 +106,9 @@
     "@anthropic-ai/claude-agent-sdk": "^0.1.76",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "ansi-to-html": "^0.7.2",
+    "archiver": "^6.0.0",
+    "chalk": "^5.3.0",
+    "commander": "^12.0.0",
     "dompurify": "^3.3.1",
     "express": "^4.18.2",
     "glob": "^11.0.3",
@@ -127,7 +137,7 @@
     "tree-sitter-ruby": "^0.23.1",
     "tree-sitter-rust": "^0.24.0",
     "tree-sitter-typescript": "^0.23.2",
-    "tsx": "^4.20.6",
+    "tsx": "^4.21.0",
     "typescript": "^5.3.0"
   }
 }

@@ -6,6 +6,11 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **5 Lifecycle Hooks**: SessionStart → UserPromptSubmit → PostToolUse → Summary → SessionEnd
 
+**CLI** (`src/cli/`) - Command line interface for managing Claude-Mem:
+- 11 commands: doctor, repair, config, shell, logs, backup, stats, search, clean, export, import
+- Built with Commander.js, provides system diagnostics and data management
+- Entry point: `src/cli/index.ts`
+
 **Hooks** (`src/hooks/*.ts`) - TypeScript → ESM, built to `plugin/scripts/*-hook.js`
 
 **Worker Service** (`src/services/worker-service.ts`) - Express API on port 37777, Bun-managed, handles AI processing asynchronously
