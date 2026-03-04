@@ -109,12 +109,9 @@ export class SearchOrchestrator {
         return result;
       }
 
-      // Chroma failed - fall back to SQLite for filter-only
-      logger.debug('SEARCH', 'Orchestrator: Chroma failed, falling back to SQLite', {});
-      const fallbackResult = await this.sqliteStrategy.search({
-        ...options,
-        query: undefined // Remove query for SQLite fallback
-      });
+      // Chroma failed - fall back to SQLite FTS5 with query text preserved
+      logger.debug('SEARCH', 'Orchestrator: Chroma failed, falling back to SQLite FTS5', {});
+      const fallbackResult = await this.sqliteStrategy.search(options);
 
       return {
         ...fallbackResult,
