@@ -71,8 +71,20 @@ export class SearchOrchestrator {
   async search(args: any): Promise<StrategySearchResult> {
     const options = this.normalizeParams(args);
 
-    // Decision tree for strategy selection
-    return await this.executeWithFallback(options);
+    const result = await this.executeWithFallback(options);
+
+    if (result.results.observations && result.results.observations.length > 0) {
+      result.results.observations = this.sessionSearch.rankByTemporalScore(result.results.observations);
+    }
+
+    // Filter stale observations by default unless caller explicitly opts in
+    if (args.include_stale !== true && args.include_stale !== 'true' && result.results.observations) {
+      result.results.observations = result.results.observations.filter(
+        obs => !obs.is_stale
+      );
+    }
+
+    return result;
   }
 
   /**
@@ -97,12 +109,9 @@ export class SearchOrchestrator {
         return result;
       }
 
-      // Chroma failed - fall back to SQLite for filter-only
-      logger.debug('SEARCH', 'Orchestrator: Chroma failed, falling back to SQLite', {});
-      const fallbackResult = await this.sqliteStrategy.search({
-        ...options,
-        query: undefined // Remove query for SQLite fallback
-      });
+      // Chroma failed - fall back to SQLite FTS5 with query text preserved
+      logger.debug('SEARCH', 'Orchestrator: Chroma failed, falling back to SQLite FTS5', {});
+      const fallbackResult = await this.sqliteStrategy.search(options);
 
       return {
         ...fallbackResult,
@@ -110,14 +119,9 @@ export class SearchOrchestrator {
       };
     }
 
-    // PATH 3: No Chroma available
-    logger.debug('SEARCH', 'Orchestrator: Chroma not available', {});
-    return {
-      results: { observations: [], sessions: [], prompts: [] },
-      usedChroma: false,
-      fellBack: false,
-      strategy: 'sqlite'
-    };
+    // PATH 3: No Chroma available - use SQLite FTS5 search
+    logger.debug('SEARCH', 'Orchestrator: Chroma not available, using SQLite FTS5', {});
+    return this.sqliteStrategy.search(options);
   }
 
   /**

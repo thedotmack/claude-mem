@@ -93,6 +93,36 @@ get_observations(ids=[11131, 10942])
 
 **Returns:** Complete observation objects with title, subtitle, narrative, facts, concepts, files (~500-1000 tokens each)
 
+## Saving Memories
+
+Use the `save_memory` MCP tool to store manual observations:
+
+```
+save_memory(text="Important discovery about the auth system", title="Auth Architecture", project="my-project")
+```
+
+**Parameters:**
+
+- `text` (string, required) - Content to remember
+- `title` (string, optional) - Short title, auto-generated if omitted
+- `project` (string, optional) - Project name, defaults to "claude-mem"
+
+## Correcting Outdated Memories
+
+Use the `contradict` MCP tool when a stored memory is no longer accurate:
+
+```
+contradict(stale_id=11131, correction="Auth now uses session cookies, not JWT tokens", title="Auth Architecture Update")
+```
+
+This marks the old observation (`stale_id`) as stale and saves the correction as a new observation linked to it.
+
+**Parameters:**
+
+- `stale_id` (number, required) - ID of the memory to mark as stale
+- `correction` (string, required) - The corrected or updated information
+- `title` (string, optional) - Short title for the correction, auto-generated if omitted
+
 ## Examples
 
 **Find recent bug fixes:**
