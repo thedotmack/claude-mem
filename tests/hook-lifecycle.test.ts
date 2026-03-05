@@ -256,26 +256,28 @@ describe('Cursor IDE Compatibility (#838, #1049)', () => {
 // --- Platform Adapter Tests ---
 
 describe('Hook Lifecycle - Claude Code Adapter', () => {
-  it('should default suppressOutput to true when not explicitly set', async () => {
+  it('should return empty object for default result (no unrecognized fields)', async () => {
     const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
 
-    // Result with no suppressOutput field
-    const output = claudeCodeAdapter.formatOutput({ continue: true });
-    expect(output).toEqual({ continue: true, suppressOutput: true });
-  });
-
-  it('should default both continue and suppressOutput to true for empty result', async () => {
-    const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
-
+    // Empty result should produce empty output — Claude Code Stop hooks
+    // reject unrecognized fields like `continue` or `suppressOutput`
     const output = claudeCodeAdapter.formatOutput({});
-    expect(output).toEqual({ continue: true, suppressOutput: true });
+    expect(output).toEqual({});
   });
 
-  it('should respect explicit suppressOutput: false', async () => {
+  it('should not include continue or suppressOutput in output', async () => {
     const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
 
-    const output = claudeCodeAdapter.formatOutput({ continue: true, suppressOutput: false });
-    expect(output).toEqual({ continue: true, suppressOutput: false });
+    const output = claudeCodeAdapter.formatOutput({ continue: true, suppressOutput: true }) as Record<string, unknown>;
+    expect(output.continue).toBeUndefined();
+    expect(output.suppressOutput).toBeUndefined();
+  });
+
+  it('should include systemMessage when present in result', async () => {
+    const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
+
+    const output = claudeCodeAdapter.formatOutput({ systemMessage: 'test message' }) as Record<string, unknown>;
+    expect(output.systemMessage).toBe('test message');
   });
 
   it('should use hookSpecificOutput format for context injection', async () => {

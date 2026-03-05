@@ -23,6 +23,14 @@ export const claudeCodeAdapter: PlatformAdapter = {
       }
       return output;
     }
-    return { continue: result.continue ?? true, suppressOutput: result.suppressOutput ?? true };
+    // Return only fields from the Claude Code hook contract.
+    // Stop hooks validate against {decision?, reason?, systemMessage?} and reject
+    // unrecognized fields like `continue` or `suppressOutput` with
+    // "JSON validation failed". An empty object is valid for all hook types.
+    const output: Record<string, unknown> = {};
+    if (result.systemMessage) {
+      output.systemMessage = result.systemMessage;
+    }
+    return output;
   }
 };
