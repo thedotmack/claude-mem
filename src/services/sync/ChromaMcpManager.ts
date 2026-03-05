@@ -201,9 +201,7 @@ export class ChromaMcpManager {
         '--port', chromaPort
       ];
 
-      if (chromaSsl) {
-        args.push('--ssl');
-      }
+      args.push('--ssl', chromaSsl ? 'true' : 'false');
 
       if (chromaTenant !== 'default_tenant') {
         args.push('--tenant', chromaTenant);
