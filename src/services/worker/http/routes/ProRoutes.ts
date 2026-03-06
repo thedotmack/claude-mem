@@ -21,7 +21,7 @@ import { CloudSync, ALL_PROJECTS_SENTINEL } from '../../../sync/CloudSync.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 
 // Default Pro API URL (can be overridden)
-const DEFAULT_PRO_API_URL = process.env.CLAUDE_MEM_PRO_API_URL || 'https://claude-mem-pro.vercel.app';
+const DEFAULT_PRO_API_URL = process.env.CLAUDE_MEM_PRO_API_URL || 'https://claude-mem.ai';
 
 export class ProRoutes extends BaseRouteHandler {
   setupRoutes(app: express.Application): void {

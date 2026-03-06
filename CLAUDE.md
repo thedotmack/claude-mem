@@ -71,23 +71,56 @@ See `private/context/claude-code/exit-codes.md` for full hook behavior matrix.
 
 ## Pro Features Architecture
 
-Claude-mem is designed with a clean separation between open-source core functionality and optional Pro features.
+Claude-mem has a clean separation between open-source core and optional Pro cloud sync.
 
-**Open-Source Core** (this repository):
+### URLs
+
+- **Production**: `https://claude-mem.ai` (Vercel, Next.js)
+- **Supabase**: `https://data.claude-mem.ai` (custom domain)
+- **Dashboard**: `https://claude-mem.ai/dashboard`
+- **Docs**: `https://docs.claude-mem.ai` (Mintlify)
+
+### Stack
+
+- **Database**: Supabase PostgreSQL (shared tables with `user_id` isolation via RLS)
+- **Auth**: Supabase Auth (GitHub, Google, email) — two patterns: session-based (cookies for UI) and Bearer token (`setup_token` for worker sync)
+- **Vectors**: Pinecone Serverless — namespace-per-user (`user_<first8chars_of_userId>`), embeddings via `multilingual-e5-large` (1024d)
+- **Payments**: Stripe (webhook at `/api/webhooks/stripe`)
+
+### Pro API (claude-mem-pro repo, deployed to Vercel)
+
+33 API routes under `src/app/api/pro/` covering: validate-setup, store (batch/observation/summary/prompt), sync (observation/summary/prompt/status/query/stats), fetch (observations/summaries/prompts), checkout, provision, initialize, status, export.
+
+### Worker-Side Pro (this repo)
+
+- **ProRoutes** (`src/services/worker/http/routes/ProRoutes.ts`) — `/api/pro/setup`, `/status`, `/disconnect`, `/import`
+- **ProConfig** (`src/services/pro/ProConfig.ts`) — Reads/writes `~/.claude-mem/pro.json`
+- **CloudSync** (`src/services/sync/CloudSync.ts`) — SyncProvider for Pro users, stores directly to Supabase/Pinecone via mem-pro API
+- **SyncProvider** (`src/services/sync/SyncProvider.ts`) — Dual-mode abstraction: `isCloudPrimary()` toggles between CloudSync (Pro) and ChromaSync (free)
+
+### Dual Sync Mode
+
+- **Free**: SQLite primary, ChromaSync backs up vectors to local Chroma
+- **Pro**: Cloud-primary, CloudSync stores directly to Supabase/Pinecone (bypasses SQLite for new data)
+- `ResponseProcessor` checks `syncProvider.isCloudPrimary()` to decide the write path
+- `ensureBackfilled()` migrates all existing local SQLite data to cloud on first Pro setup
+
+### Setup Flow
+
+1. User runs `/pro-setup` skill with their `cm_pro_<32-hex>` token
+2. Skill calls `POST https://claude-mem.ai/api/pro/validate-setup` directly
+3. Config saved to `~/.claude-mem/pro.json`
+4. Worker detects Pro config and uses CloudSync instead of ChromaSync
+
+### Testing Pro Locally
+
+The worker's `DEFAULT_PRO_API_URL` in `ProRoutes.ts` can be overridden via `CLAUDE_MEM_PRO_API_URL` env var for local testing against staging.
+
+### Open-Source Core (this repository)
 
 - All worker API endpoints on localhost:37777 remain fully open and accessible
-- Pro features are headless - no proprietary UI elements in this codebase
-- Pro integration points are minimal: settings for license keys, tunnel provisioning logic
-- The architecture ensures Pro features extend rather than replace core functionality
-
-**Pro Features** (coming soon, external):
-
-- Enhanced UI (Memory Stream) connects to the same localhost:37777 endpoints as the open viewer
-- Additional features like advanced filtering, timeline scrubbing, and search tools
-- Access gated by license validation, not by modifying core endpoints
-- Users without Pro licenses continue using the full open-source viewer UI without limitation
-
-This architecture preserves the open-source nature of the project while enabling sustainable development through optional paid features.
+- Pro features are headless — no proprietary UI elements in this codebase
+- Users without Pro continue using the full open-source viewer UI without limitation
 
 ## Important
 

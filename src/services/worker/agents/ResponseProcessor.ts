@@ -87,6 +87,7 @@ export async function processAgentResponse(
   // in case the DB was somehow not updated (race condition, crash, etc.).
   // In multi-terminal scenarios, createSDKSession() now resets memory_session_id to NULL
   // for each new generator, ensuring clean isolation.
+  const sessionStore = dbManager.getSessionStore();
   sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId);
 
   // Log pre-storage with session ID chain for verification

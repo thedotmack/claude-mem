@@ -572,7 +572,7 @@ export class WorkerService {
           'CLAUDE_CODE_PATH',
           'ENOENT',
           'spawn',
-          'Invalid API key',
+          // 'Invalid API key' removed — can be transient with CLI subscription billing
         ];
         if (unrecoverablePatterns.some(pattern => errorMessage.includes(pattern))) {
           hadUnrecoverableError = true;
