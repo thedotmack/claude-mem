@@ -157,6 +157,7 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 - **[Usage Guide](https://docs.claude-mem.ai/usage/getting-started)** - How Claude-Mem works automatically
 - **[Search Tools](https://docs.claude-mem.ai/usage/search-tools)** - Query your project history with natural language
 - **[Beta Features](https://docs.claude-mem.ai/beta-features)** - Try experimental features like Endless Mode
+- **[Session Backfill](#session-backfill)** - Import historical Claude Code sessions into claude-mem
 
 ### Best Practices
 
@@ -240,6 +241,32 @@ See [Search Tools Guide](https://docs.claude-mem.ai/usage/search-tools) for deta
 Claude-Mem offers a **beta channel** with experimental features like **Endless Mode** (biomimetic memory architecture for extended sessions). Switch between stable and beta versions from the web viewer UI at http://localhost:37777 → Settings.
 
 See **[Beta Features Documentation](https://docs.claude-mem.ai/beta-features)** for details on Endless Mode and how to try it.
+
+---
+
+## Session Backfill
+
+Already have Claude Code sessions from before installing claude-mem? The backfill script imports historical JSONL session logs into your memory database, so past work becomes searchable.
+
+```bash
+cd ~/.claude/plugins/marketplaces/thedotmack
+
+# See what projects are available
+node scripts/backfill-sessions.mjs --list
+
+# Preview what would be imported (no data sent)
+node scripts/backfill-sessions.mjs --all --dry-run
+
+# Import a single project
+node scripts/backfill-sessions.mjs --project=myapp
+
+# Import everything
+node scripts/backfill-sessions.mjs --all
+```
+
+The script auto-discovers projects from `~/.claude/projects/`, extracts file edits, significant commands, and user prompts, then imports them via the worker API with duplicate prevention. Run `--help` for all options including date filtering and verbose output.
+
+> **Note:** The claude-mem worker must be running before importing. Backfilled sessions are prefixed with `backfill-` to distinguish them from live-captured sessions.
 
 ---
 
