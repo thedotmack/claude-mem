@@ -25,8 +25,8 @@ const MAX_TAG_COUNT = 100;
  * Used for ReDoS protection before regex processing
  */
 function countTags(content: string): number {
-  const privateCount = (content.match(/<private>/g) || []).length;
-  const contextCount = (content.match(/<claude-mem-context>/g) || []).length;
+  const privateCount = (content.match(/<private>/gi) || []).length;
+  const contextCount = (content.match(/<claude-mem-context>/gi) || []).length;
   return privateCount + contextCount;
 }
 
@@ -47,8 +47,8 @@ function stripTagsInternal(content: string): string {
   }
 
   return content
-    .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
-    .replace(/<private>[\s\S]*?<\/private>/g, '')
+    .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/gi, '')
+    .replace(/<private>[\s\S]*?<\/private>/gi, '')
     .trim();
 }
 
