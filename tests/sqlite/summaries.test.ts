@@ -128,6 +128,17 @@ describe('Summaries Module', () => {
       expect(result.createdAtEpoch).toBeLessThanOrEqual(after);
     });
 
+    it('should store prompt_number=0 as 0 (not NULL)', () => {
+      const memorySessionId = createSessionWithMemoryId('content-sum-zero', 'session-sum-zero');
+      const summary = createSummaryInput();
+
+      storeSummary(db, memorySessionId, 'test-project', summary, 0);
+      const stored = getSummaryForSession(db, memorySessionId);
+
+      expect(stored).not.toBeNull();
+      expect(stored!.prompt_number).toBe(0);
+    });
+
     it('should handle null notes', () => {
       const memorySessionId = createSessionWithMemoryId('content-sum-null', 'session-sum-null');
       const summary = createSummaryInput({ notes: null });

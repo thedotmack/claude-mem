@@ -46,7 +46,7 @@ export function storeSummary(
     summary.completed,
     summary.next_steps,
     summary.notes,
-    promptNumber || null,
+    promptNumber ?? null,
     discoveryTokens,
     timestampIso,
     timestampEpoch
