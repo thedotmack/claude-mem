@@ -122,6 +122,16 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
+      // Litestream Cloud Backup
+      'CLAUDE_MEM_BACKUP_ENABLED',
+      'CLAUDE_MEM_BACKUP_PROVIDER',
+      'CLAUDE_MEM_BACKUP_BUCKET',
+      'CLAUDE_MEM_BACKUP_PATH',
+      'CLAUDE_MEM_BACKUP_ENDPOINT',
+      'CLAUDE_MEM_BACKUP_REGION',
+      'CLAUDE_MEM_BACKUP_ACCESS_KEY_ID',
+      'CLAUDE_MEM_BACKUP_SECRET_ACCESS_KEY',
+      'CLAUDE_MEM_BACKUP_GCS_CREDENTIALS_PATH',
     ];
 
     for (const key of settingKeys) {
@@ -353,6 +363,19 @@ export class SettingsRoutes extends BaseRouteHandler {
         // Invalid URL format
         logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_SITE_URL, error: error instanceof Error ? error.message : String(error) });
         return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_SITE_URL must be a valid URL' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_BACKUP_ENABLED
+    if (settings.CLAUDE_MEM_BACKUP_ENABLED && !['true', 'false'].includes(settings.CLAUDE_MEM_BACKUP_ENABLED)) {
+      return { valid: false, error: 'CLAUDE_MEM_BACKUP_ENABLED must be "true" or "false"' };
+    }
+
+    // Validate CLAUDE_MEM_BACKUP_PROVIDER
+    if (settings.CLAUDE_MEM_BACKUP_PROVIDER) {
+      const validProviders = ['gcs', 's3', 'abs', 'sftp'];
+      if (!validProviders.includes(settings.CLAUDE_MEM_BACKUP_PROVIDER)) {
+        return { valid: false, error: 'CLAUDE_MEM_BACKUP_PROVIDER must be one of: gcs, s3, abs, sftp' };
       }
     }
 
