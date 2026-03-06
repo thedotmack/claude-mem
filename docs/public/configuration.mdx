@@ -14,7 +14,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_MODEL`            | `sonnet`                        | AI model for processing observations (when using Claude) |
-| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, or `openrouter` |
+| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, `openrouter`, or `github-copilot` |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
@@ -42,6 +42,19 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and free
 | `CLAUDE_MEM_OPENROUTER_APP_NAME`             | `claude-mem`                | Optional: App name for analytics      |
 
 See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
+
+### GitHub Copilot Provider Settings
+
+| Setting                          | Default   | Description |
+|----------------------------------|-----------|-------------|
+| `CLAUDE_MEM_COPILOT_MODEL`       | `gpt-4.1` | Model identifier to request from GitHub Copilot |
+| `CLAUDE_MEM_COPILOT_TOKEN_FILE`  | `~/.openclaw/credentials/github-copilot.token.json` | Path to a JSON token file containing `token` and `expiresAt` |
+
+If you are using OpenClaw, you can generate/refresh this token with:
+
+```bash
+openclaw models auth login-github-copilot
+```
 
 ### System Configuration
 
