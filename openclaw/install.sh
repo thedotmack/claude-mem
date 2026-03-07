@@ -1264,10 +1264,23 @@ start_worker() {
     fi
   fi
 
-  # Start worker in background with nohup
-  CLAUDE_MEM_WORKER_PORT=37777 nohup "$BUN_PATH" "$worker_script" \
+  # Remove stale PID files to prevent the worker from detecting its own PID
+  # as an existing instance and refusing to start (self-duplicate detection bug)
+  rm -f "${HOME}/.claude-mem/worker.pid" "${HOME}/.claude-mem/worker-37777.pid" 2>/dev/null
+
+  # Start worker in background with nohup using --daemon flag.
+  # The --daemon flag triggers the worker's default code path which starts
+  # the HTTP server directly. Without it, the worker may exit immediately
+  # when it detects no matching command (argv[2] is undefined).
+  CLAUDE_MEM_WORKER_PORT=37777 nohup "$BUN_PATH" "$worker_script" --daemon \
     >> "$log_file" 2>&1 &
   WORKER_PID=$!
+
+  # Brief delay to let the worker pass its PID file check before we write ours.
+  # Without this, writing the PID file immediately can race with the worker's
+  # startup duplicate-detection logic (it reads worker.pid and exits if the
+  # PID is alive — which would be itself).
+  sleep 1
 
   # Write PID file for future management
   local pid_file="${HOME}/.claude-mem/worker.pid"
