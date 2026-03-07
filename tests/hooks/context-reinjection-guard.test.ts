@@ -35,6 +35,7 @@ mock.module('../../src/utils/project-name.js', () => ({
 
 mock.module('../../src/utils/project-filter.js', () => ({
   isProjectExcluded: () => false,
+  isProjectLocallyDisabled: () => false,
 }));
 
 // Now import after mocks

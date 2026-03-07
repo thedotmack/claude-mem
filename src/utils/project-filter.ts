@@ -6,6 +6,8 @@
  */
 
 import { homedir } from 'os';
+import { existsSync } from 'fs';
+import { join } from 'path';
 
 /**
  * Convert a glob pattern to a regular expression
@@ -70,4 +72,13 @@ export function isProjectExcluded(projectPath: string, exclusionPatterns: string
   }
 
   return false;
+}
+
+/**
+ * Check if a project has been locally disabled via a .claude-mem-disable file.
+ * Users can `touch .claude-mem-disable` in any repo to disable claude-mem for that repo.
+ */
+export function isProjectLocallyDisabled(cwd: string): boolean {
+  if (!cwd) return false;
+  return existsSync(join(cwd, '.claude-mem-disable'));
 }

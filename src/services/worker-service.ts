@@ -10,7 +10,7 @@
  */
 
 import path from 'path';
-import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, statSync } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
@@ -20,6 +20,7 @@ import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
+import { addToExcluded, removeFromExcluded } from '../utils/repo-exclude-utils.js';
 
 // Windows: avoid repeated spawn popups when startup fails (issue #921)
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
@@ -1160,6 +1161,32 @@ async function main() {
       const { cleanClaudeMd } = await import('../cli/claude-md-commands.js');
       const result = await cleanClaudeMd(dryRun);
       process.exit(result);
+      break;
+    }
+
+    case 'disable': {
+      const repoPath = process.argv[3] || process.cwd();
+      const { USER_SETTINGS_PATH: settingsPath } = await import('../shared/paths.js');
+      const settingsRaw = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf-8') : '{}';
+      const settingsData = JSON.parse(settingsRaw);
+      const current = settingsData.CLAUDE_MEM_EXCLUDED_PROJECTS ?? '';
+      settingsData.CLAUDE_MEM_EXCLUDED_PROJECTS = addToExcluded(current, repoPath);
+      writeFileSync(settingsPath, JSON.stringify(settingsData, null, 2), 'utf-8');
+      console.log(`claude-mem disabled for: ${repoPath}`);
+      process.exit(0);
+      break;
+    }
+
+    case 'enable': {
+      const repoPath = process.argv[3] || process.cwd();
+      const { USER_SETTINGS_PATH: settingsPath } = await import('../shared/paths.js');
+      const settingsRaw = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf-8') : '{}';
+      const settingsData = JSON.parse(settingsRaw);
+      const current = settingsData.CLAUDE_MEM_EXCLUDED_PROJECTS ?? '';
+      settingsData.CLAUDE_MEM_EXCLUDED_PROJECTS = removeFromExcluded(current, repoPath);
+      writeFileSync(settingsPath, JSON.stringify(settingsData, null, 2), 'utf-8');
+      console.log(`claude-mem enabled for: ${repoPath}`);
+      process.exit(0);
       break;
     }
 

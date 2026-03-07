@@ -12,6 +12,7 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { isProjectExcluded, isProjectLocallyDisabled } from '../../utils/project-filter.js';
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -29,12 +30,31 @@ export const contextHandler: EventHandler = {
     }
 
     const cwd = input.cwd ?? process.cwd();
+
+    // Check local .claude-mem-disable file first (no settings required)
+    if (isProjectLocallyDisabled(cwd)) {
+      logger.info('HOOK', 'Project locally disabled (.claude-mem-disable), skipping context', { cwd });
+      return {
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+        exitCode: HOOK_EXIT_CODES.SUCCESS
+      };
+    }
+
     const context = getProjectContext(cwd);
     const port = getWorkerPort();
 
     // Check if terminal output should be shown (load settings early)
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const showTerminalOutput = settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true';
+
+    // Check if project is excluded from tracking
+    if (isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+      logger.info('HOOK', 'Project excluded from tracking, skipping context', { cwd });
+      return {
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+        exitCode: HOOK_EXIT_CODES.SUCCESS
+      };
+    }
 
     // Pass all projects (parent + worktree if applicable) for unified timeline
     const projectsParam = context.allProjects.join(',');

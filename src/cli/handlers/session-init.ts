@@ -9,7 +9,7 @@ import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js
 import { getProjectName } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
-import { isProjectExcluded } from '../../utils/project-filter.js';
+import { isProjectExcluded, isProjectLocallyDisabled } from '../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
@@ -28,6 +28,12 @@ export const sessionInitHandler: EventHandler = {
     if (!sessionId) {
       logger.warn('HOOK', 'session-init: No sessionId provided, skipping (Codex CLI or unknown platform)');
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    // Check local .claude-mem-disable file first (no settings required)
+    if (cwd && isProjectLocallyDisabled(cwd)) {
+      logger.info('HOOK', 'Project locally disabled (.claude-mem-disable)', { cwd });
+      return { continue: true, suppressOutput: true };
     }
 
     // Check if project is excluded from tracking
