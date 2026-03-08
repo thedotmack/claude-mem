@@ -1264,10 +1264,37 @@ start_worker() {
     fi
   fi
 
-  # Start worker in background with nohup
-  CLAUDE_MEM_WORKER_PORT=37777 nohup "$BUN_PATH" "$worker_script" \
+  # Remove stale PID files to prevent the worker from detecting its own PID
+  # as an existing instance and refusing to start (self-duplicate detection bug).
+  # Only remove if the PID inside is dead — a live worker means we should skip restart.
+  for _pidfile in "${HOME}/.claude-mem/worker.pid" "${HOME}/.claude-mem/worker-37777.pid"; do
+    if [[ -f "$_pidfile" ]]; then
+      _old_pid=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$_pidfile','utf8')).pid)}catch{}" 2>/dev/null)
+      if [[ -n "$_old_pid" ]] && kill -0 "$_old_pid" 2>/dev/null; then
+        # Verify it's actually a worker process, not a recycled PID
+        if ps -p "$_old_pid" -o args= 2>/dev/null | grep -q "worker-service"; then
+          info "Worker already running (PID: $_old_pid) — skipping start"
+          return 0
+        fi
+      fi
+      # PID is dead or not a worker process — safe to remove stale file
+      rm -f "$_pidfile" 2>/dev/null
+    fi
+  done
+
+  # Start worker in background with nohup using --daemon flag.
+  # The --daemon flag triggers the worker's default code path which starts
+  # the HTTP server directly. Without it, the worker may exit immediately
+  # when it detects no matching command (argv[2] is undefined).
+  CLAUDE_MEM_WORKER_PORT=37777 nohup "$BUN_PATH" "$worker_script" --daemon \
     >> "$log_file" 2>&1 &
   WORKER_PID=$!
+
+  # Brief delay to let the worker pass its PID file check before we write ours.
+  # Without this, writing the PID file immediately can race with the worker's
+  # startup duplicate-detection logic (it reads worker.pid and exits if the
+  # PID is alive — which would be itself).
+  sleep 1
 
   # Write PID file for future management
   local pid_file="${HOME}/.claude-mem/worker.pid"
