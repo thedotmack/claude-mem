@@ -146,20 +146,28 @@ export function resolveNodeRuntimePath(options: RuntimeResolverOptions = {}): st
     return execPath;
   }
 
+  const overrideCandidates = [env.CLAUDE_MEM_NODE_PATH, env.NODE];
+  for (const candidate of overrideCandidates) {
+    const normalized = candidate?.trim();
+    if (!normalized) continue;
+
+    if (normalized.toLowerCase() == 'node') {
+      return normalized;
+    }
+
+    if (pathExists(normalized)) {
+      return normalized;
+    }
+  }
+
   const candidatePaths = platform === 'win32'
     ? [
-        env.CLAUDE_MEM_NODE_PATH,
-        env.NODE,
-        env.NODE_PATH,
         env.ProgramFiles ? path.join(env.ProgramFiles, 'nodejs', 'node.exe') : undefined,
         env['ProgramFiles(x86)'] ? path.join(env['ProgramFiles(x86)'], 'nodejs', 'node.exe') : undefined,
         env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'Programs', 'nodejs', 'node.exe') : undefined,
         env.USERPROFILE ? path.join(env.USERPROFILE, '.fnm', 'aliases', 'default', 'bin', 'node.exe') : undefined,
       ]
     : [
-        env.CLAUDE_MEM_NODE_PATH,
-        env.NODE,
-        env.NODE_PATH,
         '/usr/local/bin/node',
         '/opt/homebrew/bin/node',
         '/usr/bin/node',
@@ -173,10 +181,6 @@ export function resolveNodeRuntimePath(options: RuntimeResolverOptions = {}): st
     if (!normalized) continue;
 
     if (isNodeExecutablePath(normalized) && pathExists(normalized)) {
-      return normalized;
-    }
-
-    if (normalized.toLowerCase() === 'node') {
       return normalized;
     }
   }

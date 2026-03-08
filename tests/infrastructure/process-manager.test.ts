@@ -299,11 +299,24 @@ describe('ProcessManager', () => {
       expect(resolved).toBe('/usr/bin/node');
     });
 
-    it('should fall back to common system paths when PATH lookup fails', () => {
+    it('should honor CLAUDE_MEM_NODE_PATH override when it points to an existing executable', () => {
       const resolved = resolveNodeRuntimePath({
         platform: 'darwin',
         execPath: '/Users/alice/.bun/bin/bun',
-        env: {} as NodeJS.ProcessEnv,
+        env: { CLAUDE_MEM_NODE_PATH: '/custom/tools/node-wrapper' } as NodeJS.ProcessEnv,
+        pathExists: candidatePath => candidatePath === '/custom/tools/node-wrapper',
+        lookupInPath: () => null,
+        homeDirectory: '/Users/alice'
+      });
+
+      expect(resolved).toBe('/custom/tools/node-wrapper');
+    });
+
+    it('should ignore NODE_PATH module directories and fall back to common system paths', () => {
+      const resolved = resolveNodeRuntimePath({
+        platform: 'darwin',
+        execPath: '/Users/alice/.bun/bin/bun',
+        env: { NODE_PATH: '/Users/alice/.nvm/modules' } as NodeJS.ProcessEnv,
         pathExists: candidatePath => candidatePath === '/usr/local/bin/node',
         lookupInPath: () => null,
         homeDirectory: '/Users/alice'
