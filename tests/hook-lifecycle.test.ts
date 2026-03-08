@@ -256,43 +256,74 @@ describe('Cursor IDE Compatibility (#838, #1049)', () => {
 // --- Platform Adapter Tests ---
 
 describe('Hook Lifecycle - Claude Code Adapter', () => {
-  it('should return empty object for default result (no unrecognized fields)', async () => {
+  const fmt = async (input: any) => {
     const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
+    return claudeCodeAdapter.formatOutput(input);
+  };
 
-    // Empty result should produce empty output — Claude Code Stop hooks
-    // reject unrecognized fields like `continue` or `suppressOutput`
-    const output = claudeCodeAdapter.formatOutput({});
-    expect(output).toEqual({});
+  // --- Happy paths ---
+
+  it('should return empty object for empty result', async () => {
+    expect(await fmt({})).toEqual({});
   });
 
-  it('should not include continue or suppressOutput in output', async () => {
-    const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
-
-    const output = claudeCodeAdapter.formatOutput({ continue: true, suppressOutput: true }) as Record<string, unknown>;
-    expect(output.continue).toBeUndefined();
-    expect(output.suppressOutput).toBeUndefined();
+  it('should include systemMessage when present', async () => {
+    expect(await fmt({ systemMessage: 'test message' })).toEqual({ systemMessage: 'test message' });
   });
 
-  it('should include systemMessage when present in result', async () => {
-    const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
-
-    const output = claudeCodeAdapter.formatOutput({ systemMessage: 'test message' }) as Record<string, unknown>;
-    expect(output.systemMessage).toBe('test message');
-  });
-
-  it('should use hookSpecificOutput format for context injection', async () => {
-    const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
-
-    const result = {
+  it('should use hookSpecificOutput format with systemMessage', async () => {
+    const output = await fmt({
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'test context' },
       systemMessage: 'test message'
-    };
-    const output = claudeCodeAdapter.formatOutput(result) as Record<string, unknown>;
+    }) as Record<string, unknown>;
     expect(output.hookSpecificOutput).toEqual({ hookEventName: 'SessionStart', additionalContext: 'test context' });
     expect(output.systemMessage).toBe('test message');
-    // Should NOT have continue/suppressOutput when using hookSpecificOutput
-    expect(output.continue).toBeUndefined();
-    expect(output.suppressOutput).toBeUndefined();
+  });
+
+  it('should return hookSpecificOutput without systemMessage when absent', async () => {
+    expect(await fmt({
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'ctx' },
+    })).toEqual({
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'ctx' },
+    });
+  });
+
+  // --- Edge cases / unhappy paths (addresses PR #1291 review) ---
+
+  it('should return empty object for malformed input (undefined/null)', async () => {
+    expect(await fmt(undefined)).toEqual({});
+    expect(await fmt(null)).toEqual({});
+  });
+
+  it('should exclude falsy systemMessage values', async () => {
+    expect(await fmt({ systemMessage: '' })).toEqual({});
+    expect(await fmt({ systemMessage: null })).toEqual({});
+    expect(await fmt({ systemMessage: 0 })).toEqual({});
+  });
+
+  it('should strip all non-contract fields', async () => {
+    expect(await fmt({
+      continue: false,
+      suppressOutput: false,
+      systemMessage: 'msg',
+      exitCode: 2,
+      hookSpecificOutput: undefined,
+    })).toEqual({ systemMessage: 'msg' });
+  });
+
+  it('should only emit keys from the Claude Code hook contract', async () => {
+    const allowedKeys = new Set(['hookSpecificOutput', 'systemMessage', 'decision', 'reason']);
+    const cases = [
+      {},
+      { systemMessage: 'x' },
+      { continue: true, suppressOutput: true, systemMessage: 'x', exitCode: 1 },
+      { hookSpecificOutput: { hookEventName: 'E', additionalContext: 'C' }, systemMessage: 'x' },
+    ];
+    for (const input of cases) {
+      for (const key of Object.keys(await fmt(input) as object)) {
+        expect(allowedKeys.has(key)).toBe(true);
+      }
+    }
   });
 });
 

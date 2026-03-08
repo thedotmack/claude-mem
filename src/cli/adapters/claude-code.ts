@@ -16,20 +16,19 @@ export const claudeCodeAdapter: PlatformAdapter = {
     };
   },
   formatOutput(result) {
-    if (result.hookSpecificOutput) {
+    const r = result ?? ({} as HookResult);
+    if (r.hookSpecificOutput) {
       const output: Record<string, unknown> = { hookSpecificOutput: result.hookSpecificOutput };
-      if (result.systemMessage) {
-        output.systemMessage = result.systemMessage;
+      if (r.systemMessage) {
+        output.systemMessage = r.systemMessage;
       }
       return output;
     }
-    // Return only fields from the Claude Code hook contract.
-    // Stop hooks validate against {decision?, reason?, systemMessage?} and reject
-    // unrecognized fields like `continue` or `suppressOutput` with
-    // "JSON validation failed". An empty object is valid for all hook types.
+    // Only emit fields in the Claude Code hook contract — unrecognized fields
+    // cause "JSON validation failed" in Stop hooks.
     const output: Record<string, unknown> = {};
-    if (result.systemMessage) {
-      output.systemMessage = result.systemMessage;
+    if (r.systemMessage) {
+      output.systemMessage = r.systemMessage;
     }
     return output;
   }
