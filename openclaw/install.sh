@@ -1265,8 +1265,22 @@ start_worker() {
   fi
 
   # Remove stale PID files to prevent the worker from detecting its own PID
-  # as an existing instance and refusing to start (self-duplicate detection bug)
-  rm -f "${HOME}/.claude-mem/worker.pid" "${HOME}/.claude-mem/worker-37777.pid" 2>/dev/null
+  # as an existing instance and refusing to start (self-duplicate detection bug).
+  # Only remove if the PID inside is dead — a live worker means we should skip restart.
+  for _pidfile in "${HOME}/.claude-mem/worker.pid" "${HOME}/.claude-mem/worker-37777.pid"; do
+    if [[ -f "$_pidfile" ]]; then
+      _old_pid=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$_pidfile','utf8')).pid)}catch{}" 2>/dev/null)
+      if [[ -n "$_old_pid" ]] && kill -0 "$_old_pid" 2>/dev/null; then
+        # Verify it's actually a worker process, not a recycled PID
+        if ps -p "$_old_pid" -o args= 2>/dev/null | grep -q "worker-service"; then
+          info "Worker already running (PID: $_old_pid) — skipping start"
+          return 0
+        fi
+      fi
+      # PID is dead or not a worker process — safe to remove stale file
+      rm -f "$_pidfile" 2>/dev/null
+    fi
+  done
 
   # Start worker in background with nohup using --daemon flag.
   # The --daemon flag triggers the worker's default code path which starts
