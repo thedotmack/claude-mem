@@ -1,0 +1,267 @@
+---
+title: VS Code MCP
+description: Use claude-mem memory and code intelligence in VS Code via MCP tools
+icon: code
+---
+
+<Note>
+**Availability:** Works with VS Code and VS Code Insiders on macOS, Windows, and Linux. Uses VS Code's built-in **Copilot agent mode** (the tools icon in the chat panel).
+</Note>
+
+## Overview
+
+VS Code can access your claude-mem memory database and code intelligence tools through **MCP (Model Context Protocol)**. This gives the Copilot agent access to:
+
+- **Memory search** — recall past sessions, decisions, and observations
+- **Code intelligence** — AST-based symbol search, file outlines, and targeted code reading via tree-sitter
+
+## Prerequisites
+
+- **Node.js** 18.0.0 or higher
+- **Bun** runtime — install from [bun.sh](https://bun.sh) if you don't have it
+- **VS Code** with Copilot agent mode enabled
+
+## Installation
+
+### Step 1: Install the npm Package
+
+```bash
+npm install -g claude-mem
+```
+
+This installs the pre-built package globally. No compilation or repo cloning needed. The package includes the MCP server, worker service, and VS Code templates.
+
+After installation, find the package location:
+
+<Tabs>
+  <Tab title="macOS / Linux">
+    ```bash
+    CLAUDE_MEM_PATH=$(npm root -g)/claude-mem
+    echo $CLAUDE_MEM_PATH
+    # e.g. /usr/local/lib/node_modules/claude-mem
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```powershell
+    $CLAUDE_MEM_PATH = "$(npm root -g)\claude-mem"
+    echo $CLAUDE_MEM_PATH
+    # e.g. C:\Users\you\AppData\Roaming\npm\node_modules\claude-mem
+    ```
+  </Tab>
+</Tabs>
+
+### Step 2: Start the Worker
+
+The MCP server needs the worker running on localhost:37777.
+
+<Tabs>
+  <Tab title="macOS / Linux">
+    ```bash
+    # Start the worker
+    node $(npm root -g)/claude-mem/plugin/scripts/worker-cli.js start
+
+    # Verify it's running
+    curl http://localhost:37777/api/health
+    # Should return: {"status":"ok"}
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```powershell
+    # Start the worker
+    node "$(npm root -g)\claude-mem\plugin\scripts\worker-cli.js" start
+
+    # Verify it's running
+    curl http://localhost:37777/api/health
+    # Should return: {"status":"ok"}
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+The MCP server will also attempt to auto-start the worker if it detects it's not running.
+</Note>
+
+### Step 3: Add MCP Server to Your Project
+
+Create `.vscode/mcp.json` in your project root, pointing to the installed package:
+
+<Tabs>
+  <Tab title="macOS / Linux">
+    ```bash
+    # Find your package path
+    echo "$(npm root -g)/claude-mem/plugin/scripts/mcp-server.cjs"
+    ```
+
+    Then create `.vscode/mcp.json`:
+
+    ```json
+    {
+      "servers": {
+        "claude-mem": {
+          "type": "stdio",
+          "command": "node",
+          "args": ["/usr/local/lib/node_modules/claude-mem/plugin/scripts/mcp-server.cjs"]
+        }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```powershell
+    # Find your package path
+    echo "$(npm root -g)\claude-mem\plugin\scripts\mcp-server.cjs"
+    ```
+
+    Then create `.vscode\mcp.json`:
+
+    ```json
+    {
+      "servers": {
+        "claude-mem": {
+          "type": "stdio",
+          "command": "node",
+          "args": ["C:/Users/YOU/AppData/Roaming/npm/node_modules/claude-mem/plugin/scripts/mcp-server.cjs"]
+        }
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+Replace the path with your actual output from `npm root -g`. Use the full absolute path — VS Code does not expand `~` or environment variables in `mcp.json` args.
+</Warning>
+
+<Tip>
+A template is included at `<package-path>/plugin/templates/vscode-mcp.json` — copy it and update the path.
+</Tip>
+
+### Step 4: Add Agent Instructions
+
+Copy the instructions file so the Copilot agent prefers claude-mem tools over built-in alternatives:
+
+<Tabs>
+  <Tab title="macOS">
+    ```bash
+    mkdir -p ~/Library/Application\ Support/Code/User/prompts
+
+    cp $(npm root -g)/claude-mem/plugin/templates/claude-mem.instructions.md \
+       ~/Library/Application\ Support/Code/User/prompts/claude-mem.instructions.md
+
+    # For VS Code Insiders
+    mkdir -p ~/Library/Application\ Support/Code\ -\ Insiders/User/prompts
+    cp $(npm root -g)/claude-mem/plugin/templates/claude-mem.instructions.md \
+       ~/Library/Application\ Support/Code\ -\ Insiders/User/prompts/claude-mem.instructions.md
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```powershell
+    New-Item -ItemType Directory -Force -Path "$env:APPDATA\Code\User\prompts"
+
+    Copy-Item "$(npm root -g)\claude-mem\plugin\templates\claude-mem.instructions.md" `
+      "$env:APPDATA\Code\User\prompts\claude-mem.instructions.md"
+
+    # For VS Code Insiders
+    New-Item -ItemType Directory -Force -Path "$env:APPDATA\Code - Insiders\User\prompts"
+    Copy-Item "$(npm root -g)\claude-mem\plugin\templates\claude-mem.instructions.md" `
+      "$env:APPDATA\Code - Insiders\User\prompts\claude-mem.instructions.md"
+    ```
+  </Tab>
+  <Tab title="Linux">
+    ```bash
+    mkdir -p ~/.config/Code/User/prompts
+    cp $(npm root -g)/claude-mem/plugin/templates/claude-mem.instructions.md \
+       ~/.config/Code/User/prompts/claude-mem.instructions.md
+    ```
+  </Tab>
+</Tabs>
+
+The instructions file uses `applyTo: '**'` so it applies globally across all projects.
+
+### Step 5: Reload VS Code
+
+Reload the VS Code window (`Ctrl+Shift+P` → "Developer: Reload Window") for the MCP server and instructions to take effect.
+
+## Data Directory
+
+On first use, the worker creates `~/.claude-mem/` with:
+
+| Path | Description |
+|------|-------------|
+| `~/.claude-mem/claude-mem.db` | SQLite database (all observations and memories) |
+| `~/.claude-mem/settings.json` | Configuration (auto-created with defaults) |
+| `~/.claude-mem/logs/` | Worker logs |
+
+Override with: `export CLAUDE_MEM_DATA_DIR=/custom/path`
+
+## Available Tools
+
+### Memory Tools (3-Layer Workflow)
+
+| Tool | Description |
+|------|-------------|
+| `search` | Search memory index — returns compact results with IDs for filtering |
+| `timeline` | Get chronological context around a query or observation ID |
+| `get_observations` | Fetch full observation details by ID (use after filtering) |
+| `save_memory` | Persist discoveries, decisions, and patterns for future sessions |
+
+**Token-efficient workflow:**
+
+1. **Search** → Get index with IDs (~50-100 tokens/result)
+2. **Timeline** → Get context around interesting results
+3. **Get Observations** → Fetch full details ONLY for filtered IDs
+
+### Code Intelligence Tools
+
+| Tool | Description |
+|------|-------------|
+| `smart_search` | AST-based symbol search using tree-sitter — finds functions, classes, types |
+| `smart_outline` | Structural file outline with signatures (bodies folded) — cheaper than reading full files |
+| `smart_unfold` | Expand a specific symbol to see its full source code |
+
+## Usage
+
+Once installed, the Copilot agent will use claude-mem tools when prompted:
+
+```
+"What did we work on last session?"
+"Find the authentication middleware"
+"Show me the outline of worker-service.ts"
+"How did we implement the caching layer?"
+"Save this decision: we chose JWT over sessions for auth"
+```
+
+## Troubleshooting
+
+### MCP Server Not Connecting
+
+1. Verify the worker is running: `curl http://localhost:37777/api/health`
+2. Check the path in `.vscode/mcp.json` — run `node <your-path>/mcp-server.cjs` directly to test
+3. Ensure Node.js is on your PATH
+4. Check VS Code Output panel → select "MCP" from the dropdown for error logs
+
+### Agent Not Using MCP Tools
+
+1. Ensure you're using **Copilot agent mode** (the tools icon in the chat panel)
+2. Verify `claude-mem.instructions.md` exists in your VS Code `prompts/` directory
+3. Reload VS Code window
+
+### Worker Not Starting
+
+1. Ensure **Bun** is installed: `bun --version`
+2. Check if another process is on port 37777
+3. Check worker logs in `~/.claude-mem/logs/`
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Claude Desktop MCP" icon="desktop" href="/usage/claude-desktop">
+    Set up MCP in Claude Desktop
+  </Card>
+  <Card title="Search Tools" icon="magnifying-glass" href="/usage/search-tools">
+    Complete search API reference
+  </Card>
+  <Card title="Platform Integration" icon="plug" href="/platform-integration">
+    Build custom integrations
+  </Card>
+</CardGroup>
