@@ -1,0 +1,239 @@
+---
+title: VS Code MCP
+description: Use claude-mem memory and code intelligence in VS Code via MCP tools
+icon: code
+---
+
+<Note>
+**Tested on:** Windows with VS Code Insiders and the Claude partner agent.
+</Note>
+
+## Overview
+
+VS Code can access your claude-mem memory database and code intelligence tools through **MCP (Model Context Protocol)**. Combined with **hooks** that automatically capture observations, this gives you two layers of memory:
+
+- **Automatic capture** (hooks) — SessionStart, PostToolUse, and other lifecycle hooks run automatically, capturing observations to the database as you work
+- **Explicit read/write** (MCP tools) — the agent can search past memories, save new ones, and use AST-based code intelligence on demand
+
+## Prerequisites
+
+- **Node.js** 18.0.0 or higher
+- **Bun** runtime — install from [bun.sh](https://bun.sh) if you don't have it
+- **VS Code** with the Claude partner agent
+
+## Installation
+
+### Step 1: Install the npm Package
+
+```powershell
+npm install -g claude-mem
+```
+
+This installs the pre-built package globally. No compilation or repo cloning needed.
+
+Find the installed path:
+
+```powershell
+$CLAUDE_MEM_PATH = "$(npm root -g)\claude-mem"
+echo $CLAUDE_MEM_PATH
+# e.g. C:\Users\you\AppData\Roaming\npm\node_modules\claude-mem
+```
+
+### Step 2: Start the Worker
+
+The MCP server needs the worker running on localhost:37777. The worker **auto-starts** when the MCP server launches — in most cases you don't need to start it manually.
+
+To start or verify manually:
+
+```powershell
+# Start the worker
+node "$(npm root -g)\claude-mem\plugin\scripts\worker-cli.js" start
+
+# Verify it's running
+curl http://localhost:37777/api/health
+# Should return: {"status":"ok"}
+```
+
+<Note>
+The MCP server auto-starts the worker when it launches. If auto-start fails (e.g. Bun not installed), use the manual command above.
+</Note>
+
+### Step 3: Add MCP Config to Your Project
+
+The Claude partner agent reads **`.mcp.json`** in your project root (not `.vscode/mcp.json`). Create it with your absolute path:
+
+```json
+{
+  "mcpServers": {
+    "claude-mem": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["C:/Users/YOU/AppData/Roaming/npm/node_modules/claude-mem/plugin/scripts/mcp-server.cjs"]
+    }
+  }
+}
+```
+
+<Warning>
+**Use your actual absolute path.** Replace `C:/Users/YOU/...` with the output from `npm root -g`. The Claude partner agent does **not** resolve VS Code variables like `${workspaceFolder}` or `${userHome}`.
+</Warning>
+
+### Step 4: Add Agent Instructions
+
+The Claude partner agent reads **`CLAUDE.md`** in your project root. Add the MCP tool instructions so the agent uses claude-mem tools:
+
+```powershell
+# Append instructions to your project's CLAUDE.md
+Get-Content "$(npm root -g)\claude-mem\plugin\templates\claude-mem.instructions.md" | Add-Content CLAUDE.md
+```
+
+Or manually add this to your `CLAUDE.md`:
+
+```markdown
+## MCP Tool Requirements (MANDATORY)
+
+When the `claude-mem` MCP is available, you MUST use these tools. This is NOT optional.
+
+### Code Exploration — use claude-mem tools INSTEAD of built-in tools:
+
+| Task | USE THIS | NOT THIS |
+|------|----------|----------|
+| Find symbols, functions, classes | `smart_search` | Grep, Glob |
+| Understand file structure | `smart_outline` | Read (full file) |
+| Read a specific function | `smart_unfold` | Read (full file) |
+| Recall past work / decisions | `search` → `timeline` → `get_observations` | Starting from scratch |
+
+### Memory — save as you work, NOT at the end:
+
+- **`save_memory`**: Use IMMEDIATELY when you discover something important
+- Do NOT batch memories at the end of a session. Save them inline as you work.
+- Before starting work, ALWAYS check memory first: `search` for relevant past observations
+```
+
+<Note>
+The Claude partner agent also supports **hooks** — lifecycle events (SessionStart, PostToolUse, etc.) that automatically capture observations to the claude-mem database. The MCP tools give the agent **explicit** read/write access on top of that automatic capture.
+</Note>
+
+<Tip>
+The agent also maintains a **local memory file** at `~/.claude/projects/<project>/memory/MEMORY.md`. This is Claude's built-in memory — separate from the claude-mem database. Both work together: the local file gives fast session context, while claude-mem provides rich searchable history across all sessions.
+</Tip>
+
+### Step 5: Reload VS Code
+
+Reload the VS Code window (`Ctrl+Shift+P` → "Developer: Reload Window") for the MCP server to connect.
+
+## Verify It Works
+
+Test the MCP connection in your VS Code agent chat:
+
+**1. Check tools are available** — ask the agent:
+```
+Do you have access to claude-mem MCP tools? List them.
+```
+The agent should list tools like `search`, `timeline`, `save_memory`, `smart_search`, etc.
+
+**2. Save a test memory:**
+```
+Use save_memory to save: "Testing claude-mem MCP integration"
+```
+You should see a success response with an observation ID.
+
+**3. Search for it:**
+```
+Search claude-mem for "testing"
+```
+The test memory should appear in results.
+
+**4. Try code intelligence:**
+```
+Use smart_outline on any source file in this project
+```
+
+<Tip>
+If the agent doesn't see the tools, check [Troubleshooting](#troubleshooting) below.
+</Tip>
+
+## Data Directory
+
+On first use, the worker creates `~/.claude-mem/` with:
+
+| Path | Description |
+|------|-------------|
+| `~/.claude-mem/claude-mem.db` | SQLite database (all observations and memories) |
+| `~/.claude-mem/settings.json` | Configuration (auto-created with defaults) |
+| `~/.claude-mem/logs/` | Worker logs |
+
+Override with: `set CLAUDE_MEM_DATA_DIR=C:\custom\path`
+
+## Available Tools
+
+### Memory Tools (3-Layer Workflow)
+
+| Tool | Description |
+|------|-------------|
+| `search` | Search memory index — returns compact results with IDs for filtering |
+| `timeline` | Get chronological context around a query or observation ID |
+| `get_observations` | Fetch full observation details by ID (use after filtering) |
+| `save_memory` | Persist discoveries, decisions, and patterns for future sessions |
+
+**Token-efficient workflow:**
+
+1. **Search** → Get index with IDs (~50-100 tokens/result)
+2. **Timeline** → Get context around interesting results
+3. **Get Observations** → Fetch full details ONLY for filtered IDs
+
+### Code Intelligence Tools
+
+| Tool | Description |
+|------|-------------|
+| `smart_search` | AST-based symbol search using tree-sitter — finds functions, classes, types |
+| `smart_outline` | Structural file outline with signatures (bodies folded) — cheaper than reading full files |
+| `smart_unfold` | Expand a specific symbol to see its full source code |
+
+## Usage
+
+Once installed, the agent will use claude-mem tools when prompted:
+
+```
+"What did we work on last session?"
+"Find the authentication middleware"
+"Show me the outline of worker-service.ts"
+"How did we implement the caching layer?"
+"Save this decision: we chose JWT over sessions for auth"
+```
+
+## Troubleshooting
+
+### MCP Server Not Connecting
+
+1. Verify the worker is running: `curl http://localhost:37777/api/health`
+2. Run `node <your-path>\mcp-server.cjs` directly to test
+3. Ensure Node.js is on your PATH
+4. Check VS Code Output panel → select "MCP" from the dropdown for error logs
+
+### Agent Not Using MCP Tools
+
+1. Verify you have **`.mcp.json`** (not `.vscode/mcp.json`) in your project root with the `mcpServers` key
+2. Verify the path is an **absolute path** to `mcp-server.cjs`
+3. Check your `CLAUDE.md` has the MCP tool preferences section
+4. Reload VS Code window
+
+### Worker Not Starting
+
+1. Ensure **Bun** is installed: `bun --version`
+2. Check if another process is on port 37777
+3. Check worker logs in `~/.claude-mem/logs/`
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Claude Desktop MCP" icon="desktop" href="/usage/claude-desktop">
+    Set up MCP in Claude Desktop
+  </Card>
+  <Card title="Search Tools" icon="magnifying-glass" href="/usage/search-tools">
+    Complete search API reference
+  </Card>
+  <Card title="Platform Integration" icon="plug" href="/platform-integration">
+    Build custom integrations
+  </Card>
+</CardGroup>

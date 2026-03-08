@@ -27,7 +27,7 @@ Auto Run Docs/
 src/ui/viewer.html
 
 # Local MCP server config (for development only)
-.mcp.json
+/.mcp.json
 .cursor/
 
 # Prevent literal tilde directories (path validation bug artifacts)
@@ -39,3 +39,4 @@ https*/
 
 # Ignore WebStorm project files (for dinosaur IDE users)
 .idea/
+plugin/.cli-installed

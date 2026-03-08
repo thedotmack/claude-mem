@@ -31,7 +31,10 @@ import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
+import { execSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 /**
  * Worker HTTP API configuration
@@ -239,6 +242,31 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     }
   },
   {
+    name: 'save_memory',
+    description: 'Save a memory/observation to the database. Use this to persist important discoveries, decisions, patterns, or context for future sessions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'The memory content to save (required)'
+        },
+        title: {
+          type: 'string',
+          description: 'Short title for the memory (auto-generated from text if omitted)'
+        },
+        project: {
+          type: 'string',
+          description: 'Project name to associate with (uses default if omitted)'
+        }
+      },
+      required: ['text']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/memory/save', args);
+    }
+  },
+  {
     name: 'smart_search',
     description: 'Search codebase for symbols, functions, classes using tree-sitter AST parsing. Returns folded structural views with token counts. Use path parameter to scope the search.',
     inputSchema: {
@@ -398,6 +426,70 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+/**
+ * Attempt to start the worker service if not running.
+ * Tries the worker-cli.js script from the installed plugin location.
+ */
+async function tryStartWorker(): Promise<boolean> {
+  const marketplaceRoot = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+
+  // Resolve worker-cli.js relative to this MCP server script's location
+  // This works regardless of install method (npm global, marketplace, repo)
+  const scriptDir = typeof __dirname !== 'undefined' ? __dirname : dirname(resolve(process.argv[1] || ''));
+
+  const workerCliPaths = [
+    join(scriptDir, 'worker-cli.js'),              // Same directory as mcp-server (npm global or built plugin)
+    join(marketplaceRoot, 'plugin', 'scripts', 'worker-cli.js'),
+    join(marketplaceRoot, 'scripts', 'worker-cli.js'),
+  ];
+
+  // Find bun executable
+  const isWin = process.platform === 'win32';
+  const bunPaths = isWin
+    ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
+    : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun', '/opt/homebrew/bin/bun'];
+
+  let bunPath: string | null = null;
+  try {
+    execSync('bun --version', { stdio: 'pipe' });
+    bunPath = 'bun';
+  } catch {
+    for (const p of bunPaths) {
+      if (existsSync(p)) { bunPath = p; break; }
+    }
+  }
+
+  if (!bunPath) {
+    logger.warn('SYSTEM', 'Cannot auto-start worker: bun not found');
+    return false;
+  }
+
+  for (const cliPath of workerCliPaths) {
+    if (!existsSync(cliPath)) continue;
+
+    try {
+      logger.info('SYSTEM', 'Auto-starting worker service', { cliPath });
+      execSync(`"${bunPath}" "${cliPath}" start`, {
+        stdio: 'pipe',
+        timeout: 15000,
+        env: { ...process.env },
+      });
+
+      // Wait briefly then verify
+      await new Promise(r => setTimeout(r, 2000));
+      if (await verifyWorkerConnection()) {
+        logger.info('SYSTEM', 'Worker auto-started successfully');
+        return true;
+      }
+    } catch (error) {
+      logger.warn('SYSTEM', 'Worker auto-start attempt failed', { cliPath },
+        error instanceof Error ? error : undefined);
+    }
+  }
+
+  return false;
+}
+
 // Parent heartbeat: self-exit when parent dies (ppid=1 on Unix means orphaned)
 // Prevents orphaned MCP server processes when Claude Code exits unexpectedly
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -444,13 +536,17 @@ async function main() {
   // Start parent heartbeat to detect orphaned MCP servers
   startParentHeartbeat();
 
-  // Check Worker availability in background
+  // Check Worker availability in background, auto-start if needed
   setTimeout(async () => {
     const workerAvailable = await verifyWorkerConnection();
     if (!workerAvailable) {
-      logger.error('SYSTEM', 'Worker not available', undefined, { workerUrl: WORKER_BASE_URL });
-      logger.error('SYSTEM', 'Tools will fail until Worker is started');
-      logger.error('SYSTEM', 'Start Worker with: npm run worker:restart');
+      logger.info('SYSTEM', 'Worker not available, attempting auto-start');
+      const started = await tryStartWorker();
+      if (!started) {
+        logger.error('SYSTEM', 'Worker not available and auto-start failed', undefined, { workerUrl: WORKER_BASE_URL });
+        logger.error('SYSTEM', 'Memory tools will fail until Worker is started');
+        logger.error('SYSTEM', 'Start Worker with: npm run worker:restart');
+      }
     } else {
       logger.info('SYSTEM', 'Worker available', undefined, { workerUrl: WORKER_BASE_URL });
     }

@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "claude-mem": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["REPLACE_WITH_ABSOLUTE_PATH/node_modules/claude-mem/plugin/scripts/mcp-server.cjs"]
+    }
+  }
+}
