@@ -1,6 +1,3 @@
----
-applyTo: '**'
----
 # Claude-Mem: Persistent Memory Plugin
 
 You have access to the **claude-mem** MCP server which provides persistent memory across sessions and AST-based code intelligence. Always prefer these tools over built-in equivalents when they are available.

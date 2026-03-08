@@ -31,7 +31,7 @@ import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
 import { readFile } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -432,7 +432,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
  */
 async function tryStartWorker(): Promise<boolean> {
   const marketplaceRoot = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+
+  // Resolve worker-cli.js relative to this MCP server script's location
+  // This works regardless of install method (npm global, marketplace, repo)
+  const scriptDir = typeof __dirname !== 'undefined' ? __dirname : dirname(resolve(process.argv[1] || ''));
+
   const workerCliPaths = [
+    join(scriptDir, 'worker-cli.js'),              // Same directory as mcp-server (npm global or built plugin)
     join(marketplaceRoot, 'plugin', 'scripts', 'worker-cli.js'),
     join(marketplaceRoot, 'scripts', 'worker-cli.js'),
   ];

@@ -3,7 +3,7 @@
     "claude-mem": {
       "type": "stdio",
       "command": "node",
-      "args": ["${userHome}/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs"]
+      "args": ["REPLACE_WITH_ABSOLUTE_PATH/node_modules/claude-mem/plugin/scripts/mcp-server.cjs"]
     }
   }
 }
