@@ -77,6 +77,7 @@ import {
   runOneTimeChromaMigration,
   cleanStalePidFile,
   isProcessAlive,
+  resolveNodeRuntimePath,
   spawnDaemon,
   createSignalHandler,
   isPidFileRecent,
@@ -446,8 +447,12 @@ export class WorkerService {
 
       // Connect to MCP server
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
+      const nodeRuntimePath = resolveNodeRuntimePath();
+      if (!nodeRuntimePath) {
+        throw new Error('Node.js executable not found for MCP startup. Set CLAUDE_MEM_NODE_PATH or install node in a standard location.');
+      }
       const transport = new StdioClientTransport({
-        command: 'node',
+        command: nodeRuntimePath,
         args: [mcpServerPath],
         env: process.env
       });

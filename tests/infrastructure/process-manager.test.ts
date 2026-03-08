@@ -14,6 +14,7 @@ import {
   isPidFileRecent,
   touchPidFile,
   spawnDaemon,
+  resolveNodeRuntimePath,
   resolveWorkerRuntimePath,
   runOneTimeChromaMigration,
   type PidInfo
@@ -281,6 +282,47 @@ describe('ProcessManager', () => {
       });
 
       expect(resolved).toBeNull();
+    });
+  });
+
+
+  describe('resolveNodeRuntimePath', () => {
+    it('should reuse execPath when already running under Node', () => {
+      const resolved = resolveNodeRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: {} as NodeJS.ProcessEnv,
+        pathExists: () => false,
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBe('/usr/bin/node');
+    });
+
+    it('should fall back to common system paths when PATH lookup fails', () => {
+      const resolved = resolveNodeRuntimePath({
+        platform: 'darwin',
+        execPath: '/Users/alice/.bun/bin/bun',
+        env: {} as NodeJS.ProcessEnv,
+        pathExists: candidatePath => candidatePath === '/usr/local/bin/node',
+        lookupInPath: () => null,
+        homeDirectory: '/Users/alice'
+      });
+
+      expect(resolved).toBe('/usr/local/bin/node');
+    });
+
+    it('should fall back to PATH lookup when common paths are unavailable', () => {
+      const resolved = resolveNodeRuntimePath({
+        platform: 'linux',
+        execPath: '/Users/alice/.bun/bin/bun',
+        env: {} as NodeJS.ProcessEnv,
+        pathExists: () => false,
+        lookupInPath: () => '/opt/homebrew/bin/node',
+        homeDirectory: '/Users/alice'
+      });
+
+      expect(resolved).toBe('/opt/homebrew/bin/node');
     });
   });
 
