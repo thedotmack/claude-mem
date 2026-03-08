@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "claude-mem": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${workspaceFolder}/plugin/scripts/mcp-server.cjs"]
+    }
+  }
+}
