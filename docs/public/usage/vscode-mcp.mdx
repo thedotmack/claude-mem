@@ -10,10 +10,10 @@ icon: code
 
 ## Overview
 
-VS Code can access your claude-mem memory database and code intelligence tools through **MCP (Model Context Protocol)**. This gives your agent access to:
+VS Code can access your claude-mem memory database and code intelligence tools through **MCP (Model Context Protocol)**. Combined with **hooks** that automatically capture observations, this gives you two layers of memory:
 
-- **Memory search** — recall past sessions, decisions, and observations
-- **Code intelligence** — AST-based symbol search, file outlines, and targeted code reading via tree-sitter
+- **Automatic capture** (hooks) — SessionStart, PostToolUse, and other lifecycle hooks run automatically, capturing observations to the database as you work
+- **Explicit read/write** (MCP tools) — the agent can search past memories, save new ones, and use AST-based code intelligence on demand
 
 ## Prerequisites
 
@@ -80,7 +80,7 @@ The Claude partner agent reads **`.mcp.json`** in your project root (not `.vscod
 
 ### Step 4: Add Agent Instructions
 
-The Claude partner agent reads **`CLAUDE.md`** in your project root. Add the MCP tool preferences so the agent knows to use claude-mem tools:
+The Claude partner agent reads **`CLAUDE.md`** in your project root. Add the MCP tool instructions so the agent uses claude-mem tools:
 
 ```powershell
 # Append instructions to your project's CLAUDE.md
@@ -90,16 +90,33 @@ Get-Content "$(npm root -g)\claude-mem\plugin\templates\claude-mem.instructions.
 Or manually add this to your `CLAUDE.md`:
 
 ```markdown
-## MCP Tool Preferences
+## MCP Tool Requirements (MANDATORY)
 
-When the claude-mem MCP is available, prefer these tools for code exploration:
+When the `claude-mem` MCP is available, you MUST use these tools. This is NOT optional.
 
-- Use `smart_search` instead of Grep/Glob for finding symbols, functions, and classes
-- Use `smart_outline` instead of Read to understand file structure
-- Use `smart_unfold` to read specific functions instead of reading entire files
-- Use `search` / `timeline` / `get_observations` for recalling past work
-- Use `save_memory` to persist important discoveries and decisions
+### Code Exploration — use claude-mem tools INSTEAD of built-in tools:
+
+| Task | USE THIS | NOT THIS |
+|------|----------|----------|
+| Find symbols, functions, classes | `smart_search` | Grep, Glob |
+| Understand file structure | `smart_outline` | Read (full file) |
+| Read a specific function | `smart_unfold` | Read (full file) |
+| Recall past work / decisions | `search` → `timeline` → `get_observations` | Starting from scratch |
+
+### Memory — save as you work, NOT at the end:
+
+- **`save_memory`**: Use IMMEDIATELY when you discover something important
+- Do NOT batch memories at the end of a session. Save them inline as you work.
+- Before starting work, ALWAYS check memory first: `search` for relevant past observations
 ```
+
+<Note>
+The Claude partner agent also supports **hooks** — lifecycle events (SessionStart, PostToolUse, etc.) that automatically capture observations to the claude-mem database. The MCP tools give the agent **explicit** read/write access on top of that automatic capture.
+</Note>
+
+<Tip>
+The agent also maintains a **local memory file** at `~/.claude/projects/<project>/memory/MEMORY.md`. This is Claude's built-in memory — separate from the claude-mem database. Both work together: the local file gives fast session context, while claude-mem provides rich searchable history across all sessions.
+</Tip>
 
 ### Step 5: Reload VS Code
 
