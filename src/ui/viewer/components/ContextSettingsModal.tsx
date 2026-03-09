@@ -54,62 +54,6 @@ function CollapsibleSection({
   );
 }
 
-// Chip group with select all/none
-function ChipGroup({
-  label,
-  options,
-  selectedValues,
-  onToggle,
-  onSelectAll,
-  onSelectNone
-}: {
-  label: string;
-  options: string[];
-  selectedValues: string[];
-  onToggle: (value: string) => void;
-  onSelectAll: () => void;
-  onSelectNone: () => void;
-}) {
-  const allSelected = options.every(opt => selectedValues.includes(opt));
-  const noneSelected = options.every(opt => !selectedValues.includes(opt));
-
-  return (
-    <div className="chip-group">
-      <div className="chip-group-header">
-        <span className="chip-group-label">{label}</span>
-        <div className="chip-group-actions">
-          <button
-            type="button"
-            className={`chip-action ${allSelected ? 'active' : ''}`}
-            onClick={onSelectAll}
-          >
-            All
-          </button>
-          <button
-            type="button"
-            className={`chip-action ${noneSelected ? 'active' : ''}`}
-            onClick={onSelectNone}
-          >
-            None
-          </button>
-        </div>
-      </div>
-      <div className="chips-container">
-        {options.map(option => (
-          <button
-            key={option}
-            type="button"
-            className={`chip ${selectedValues.includes(option) ? 'selected' : ''}`}
-            onClick={() => onToggle(option)}
-          >
-            {option}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // Form field with optional tooltip
 function FormField({
   label,
@@ -209,24 +153,6 @@ export function ContextSettingsModal({
     updateSetting(key, newValue);
   }, [formState, updateSetting]);
 
-  const toggleArrayValue = useCallback((key: keyof Settings, value: string) => {
-    const currentValue = formState[key] || '';
-    const currentArray = currentValue ? currentValue.split(',') : [];
-    const newArray = currentArray.includes(value)
-      ? currentArray.filter(v => v !== value)
-      : [...currentArray, value];
-    updateSetting(key, newArray.join(','));
-  }, [formState, updateSetting]);
-
-  const getArrayValues = useCallback((key: keyof Settings): string[] => {
-    const currentValue = formState[key] || '';
-    return currentValue ? currentValue.split(',') : [];
-  }, [formState]);
-
-  const setAllArrayValues = useCallback((key: keyof Settings, values: string[]) => {
-    updateSetting(key, values.join(','));
-  }, [updateSetting]);
-
   // Handle ESC key
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
@@ -239,9 +165,6 @@ export function ContextSettingsModal({
   }, [isOpen, onClose]);
 
   if (!isOpen) return null;
-
-  const observationTypes = ['bugfix', 'feature', 'refactor', 'discovery', 'decision', 'change'];
-  const observationConcepts = ['how-it-works', 'why-it-exists', 'what-changed', 'problem-solution', 'gotcha', 'pattern', 'trade-off'];
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -322,30 +245,7 @@ export function ContextSettingsModal({
               </FormField>
             </CollapsibleSection>
 
-            {/* Section 2: Filters */}
-            <CollapsibleSection
-              title="Filters"
-              description="Which observation types to include"
-            >
-              <ChipGroup
-                label="Type"
-                options={observationTypes}
-                selectedValues={getArrayValues('CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES')}
-                onToggle={(value) => toggleArrayValue('CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES', value)}
-                onSelectAll={() => setAllArrayValues('CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES', observationTypes)}
-                onSelectNone={() => setAllArrayValues('CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES', [])}
-              />
-              <ChipGroup
-                label="Concept"
-                options={observationConcepts}
-                selectedValues={getArrayValues('CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS')}
-                onToggle={(value) => toggleArrayValue('CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS', value)}
-                onSelectAll={() => setAllArrayValues('CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS', observationConcepts)}
-                onSelectNone={() => setAllArrayValues('CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS', [])}
-              />
-            </CollapsibleSection>
-
-            {/* Section 3: Display */}
+            {/* Section 2: Display */}
             <CollapsibleSection
               title="Display"
               description="What to show in context tables"
