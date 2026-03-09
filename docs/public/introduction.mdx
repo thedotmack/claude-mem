@@ -25,7 +25,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - 🧠 **Persistent Memory** - Context survives across sessions
 - 📁 **Folder Context Files** - Auto-generated `CLAUDE.md` in project folders with activity timelines
 - 🌐 **Multilingual Modes** - Supports 28 languages (Spanish, Chinese, French, Japanese, etc.)
-- 🎭 **Mode System** - Switch between workflows (Code, Email Investigation, Chill)
+- 🎭 **Mode System** - Switch between workflows (Code, Cowork, Email Investigation, and custom modes)
 - 🔍 **MCP Search Tools** - Query your project history with natural language
 - 🌐 **Web Viewer UI** - Real-time memory stream visualization at http://localhost:37777
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
@@ -77,6 +77,12 @@ See [Architecture Overview](architecture/overview) for details.
 
 ## What's New
 
+**v10.6.0 - Cowork Modes:**
+- **Cowork Mode**: Persistent memory for non-coding knowledge work — writers, researchers, analysts, project managers, and anyone doing knowledge work with Claude Code
+- **Custom Modes**: Create your own mode with `/make-mode` — Claude interviews you and builds a mode tailored to your workflow, no coding required
+- **`/set-mode` Command**: Activate any mode with a single command — updates settings, installs project instructions, and restarts the worker automatically
+- **Cowork Chill Variant**: Low-noise option that only remembers things painful to rediscover
+
 **v9.0.0 - Live Context:**
 - **Folder Context Files**: Auto-generated `CLAUDE.md` in project folders with activity timelines
 - **Worktree Support**: Unified context from parent repos and git worktrees
@@ -103,8 +109,8 @@ See [Architecture Overview](architecture/overview) for details.
   <Card title="Getting Started" icon="rocket" href="/usage/getting-started">
     Learn how Claude-Mem works automatically
   </Card>
-  <Card title="Folder Context" icon="folder-open" href="/usage/folder-context">
-    Auto-generated folder CLAUDE.md files
+  <Card title="Cowork Modes" icon="users" href="/cowork-modes">
+    Persistent memory for non-coding work
   </Card>
   <Card title="Search Tools" icon="magnifying-glass" href="/usage/search-tools">
     Query your project history
