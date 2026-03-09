@@ -162,17 +162,46 @@ Use this JSON skeleton — fill in ALL fields:
    - Only override `name`, `prompts.recording_focus`, and `prompts.skip_guidance`
    - Follow the pattern from `plugin/modes/code--chill.json`
 
-## Step 6: Activate
+## Step 6: Create Mode CLAUDE.md (Primary Agent Instructions)
 
-Update settings to use the new mode:
+A mode has **two files** that serve different purposes:
+- **JSON config** (Step 5) — tells the *memory observer agent* what to watch for and how to record
+- **CLAUDE.md** (this step) — tells the *primary Claude agent* how to behave with the user
 
-```bash
-curl -s -X POST http://localhost:37777/api/settings \
-  -H "Content-Type: application/json" \
-  -d '{"CLAUDE_MEM_MODE": "{mode-name}", "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "{comma-separated-type-ids}", "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "{comma-separated-concept-ids}"}'
-```
+The CLAUDE.md defines the relationship between the human and the primary agent for this type of work. Ask the user if they want project instructions for this mode. If yes:
 
-Tell the user: mode takes full effect on the next session (after `/clear` or new conversation).
+### What to include
+
+- **Role**: What Claude is in this context (study partner, research assistant, analyst, etc.)
+- **Methodology**: How to approach the work (reading cases, analyzing data, drafting documents, etc.)
+- **Critical questions**: Domain-specific questions Claude should drive the user to answer
+- **Tone and pace**: How to communicate (direct, supportive, Socratic, etc.)
+- **Session start**: What the user should provide at the beginning of a session
+
+### What to NEVER include
+
+- Any reference to claude-mem, memory agents, observers, or the plugin system
+- `/mem-search`, `/mode`, or any plugin commands
+- How observations are recorded or compressed
+- The memory database, worker service, or any infrastructure
+- Token economics, context windows, or session management
+
+The CLAUDE.md is a **standalone document** — it should work as project instructions even if claude-mem didn't exist. It describes how Claude should think and interact, not how the memory system works.
+
+### Reference
+
+Study `plugin/modes/law-study-CLAUDE.md` as the canonical example. It defines Claude as a "rigorous legal study partner" with sections for reading cases, critical questions, issue spotting, synthesizing doctrine, and tone — with zero references to claude-mem internals.
+
+### Write the file
+
+Write to `plugin/modes/{mode-name}-CLAUDE.md`. This file will be installed into the user's project by the `/set-mode` skill.
+
+## Step 7: Activate
+
+Tell the user to run `/set-mode {mode-name}` to activate the mode. This will:
+- Update memory settings (mode, observation types, concepts)
+- Install the CLAUDE.md as project instructions (if created)
+- Restart the worker so changes take effect immediately
 
 ## Anti-Pattern Guards
 
