@@ -2,6 +2,18 @@
 
 All notable changes to claude-mem.
 
+## [v10.5.5] - 2026-03-09
+
+### Bug Fix
+
+- **Fixed empty context queries after mode switching**: Switching from a non-code mode (e.g., law-study) back to code mode left stale observation type/concept filters in `settings.json`, causing all context queries to return empty results. All modes now read types/concepts from their mode JSON definition uniformly.
+
+### Cleanup
+
+- Removed dead `CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES` and `CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS` settings constants
+- Deleted `src/constants/observation-metadata.ts` (no longer needed)
+- Removed observation type/concept filter UI controls from the viewer's Context Settings modal
+
 ## [v10.5.4] - 2026-03-09
 
 ## Bug Fixes
@@ -1167,23 +1179,4 @@ Version 9.0.0 introduces the **Live Context System** - a major new capability th
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.10...v9.0.0
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v8.5.10] - 2026-01-06
-
-## Bug Fixes
-
-- **#545**: Fixed `formatTool` crash when parsing non-JSON tool inputs (e.g., raw Bash commands)
-- **#544**: Fixed terminology in context hints - changed "mem-search skill" to "MCP tools"
-- **#557**: Settings file now auto-creates with defaults on first run (no more "module loader" errors)
-- **#543**: Fixed hook execution by switching runtime from `node` to `bun` (resolves `bun:sqlite` issues)
-
-## Code Quality
-
-- Fixed circular dependency between Logger and SettingsDefaultsManager
-- Added 72 integration tests for critical coverage gaps
-- Cleaned up mock-heavy tests causing module cache pollution
-
-## Full Changelog
-
-See PR #558 for complete details and diagnostic reports.
 
