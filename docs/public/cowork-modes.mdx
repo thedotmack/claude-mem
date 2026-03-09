@@ -1,0 +1,318 @@
+---
+title: "Cowork Modes"
+description: "Persistent memory for any kind of work — no coding required"
+---
+
+# Cowork Modes
+
+**Claude-Mem isn't just for developers anymore.**
+
+If you use Claude Code to write documents, do research, analyze data, manage projects, or any other knowledge work — Cowork Modes give Claude a memory that carries over between sessions. No coding knowledge required.
+
+<Info>
+**What does that actually mean?** Normally, every time you start a new Claude session, Claude has no idea what you worked on yesterday. With Claude-Mem in Cowork Mode, Claude remembers your documents, your research, your preferences, and your decisions — so you pick up right where you left off.
+</Info>
+
+## Who Is This For?
+
+<CardGroup cols={2}>
+  <Card title="Writers & Content Creators" icon="pen-nib">
+    Claude remembers your drafts, your style preferences, and your editorial decisions across sessions.
+  </Card>
+  <Card title="Researchers & Analysts" icon="magnifying-glass-chart">
+    Claude remembers which sources you found, what analysis you did, and what conclusions you reached.
+  </Card>
+  <Card title="Consultants & Strategists" icon="chess">
+    Claude remembers client deliverables, frameworks you've built, and strategic decisions you've made.
+  </Card>
+  <Card title="Students & Educators" icon="graduation-cap">
+    Claude remembers your study material, key concepts, and learning progress between study sessions.
+  </Card>
+  <Card title="Project Managers" icon="list-check">
+    Claude remembers decisions, action items, and project context without re-explaining everything.
+  </Card>
+  <Card title="Anyone Doing Knowledge Work" icon="lightbulb">
+    If your work involves creating, researching, or organizing information — this is for you.
+  </Card>
+</CardGroup>
+
+## What Claude Remembers
+
+When Cowork Mode is active, Claude automatically tracks six types of work in the background. You don't need to do anything special — just work normally.
+
+### Things You Create
+
+Documents, presentations, spreadsheets, images, or any other deliverable you produce.
+
+> *"Monthly report created with Q4 revenue data from three source spreadsheets"*
+
+### Research You Do
+
+Sources you find, analysis you perform, and information you gather.
+
+> *"Competitive landscape analysis completed — identified 4 key market gaps from 12 competitor reviews"*
+
+### Data You Transform
+
+Files you convert, data you clean up, and content you restructure.
+
+> *"CSV data cleaned and reformatted into pivot table structure"*
+
+### Decisions You Make
+
+Your preferences, the approaches you choose, and requirements you clarify.
+
+> *"User prefers bullet-point summaries over paragraph form"*
+
+### What Claude Learns About You
+
+Your workflow patterns, how you organize your files, and how you like to work.
+
+> *"Project files are organized by client name, then by quarter"*
+
+### Workflows You Streamline
+
+Recurring tasks, templates you create, and shortcuts you establish.
+
+> *"Weekly status report template created — reuse for all Monday check-ins"*
+
+---
+
+## Getting Started
+
+Setting up Cowork Mode takes about two minutes. Here's everything you need to do.
+
+### Step 1: Install Claude-Mem
+
+<Note>
+**Already have Claude-Mem installed?** Skip to Step 2.
+</Note>
+
+Open Claude Code and type these two commands, one at a time:
+
+```
+/plugin marketplace add thedotmack/claude-mem
+```
+
+```
+/plugin install claude-mem
+```
+
+Then restart Claude Code. That's the only time you'll need to restart.
+
+### Step 2: Activate Cowork Mode
+
+In your Claude Code session, type:
+
+```
+/set-mode cowork
+```
+
+Claude will confirm that Cowork Mode is active. You'll see a message like:
+
+> *Cowork mode activated. Worker restarted. The mode is now fully active — no need to start a new conversation.*
+
+**That's it.** You're done with setup. Cowork Mode is now active for this project.
+
+### Step 3: Work Normally
+
+There's nothing special to do during your work. Just use Claude Code the way you always have:
+
+- Ask Claude to write a document
+- Have Claude research a topic
+- Get Claude to analyze some data
+- Ask Claude to organize your files
+
+Claude-Mem quietly watches in the background and remembers the important parts.
+
+### Step 4: Come Back Tomorrow
+
+Start a new Claude Code session in the same project folder. Claude already knows:
+
+- What documents you created
+- What research you did
+- What your preferences are
+- What decisions you made
+
+No need to re-explain your project. Just say something like *"Let's continue working on the report"* and Claude already has the context.
+
+---
+
+## Choosing Your Style
+
+Cowork Mode comes in two flavors. You can switch between them anytime.
+
+### Cowork (Standard)
+
+Claude remembers all your important work — every document created, every research finding, every decision made. Best for projects where you want a thorough record.
+
+```
+/set-mode cowork
+```
+
+### Cowork Chill
+
+Claude only remembers things that would be **painful to figure out again**. Skips routine work and only records major deliverables, key preferences, and significant research findings. Best if you find the standard mode too detailed.
+
+```
+/set-mode cowork--chill
+```
+
+| | **Cowork** | **Cowork Chill** |
+|---|---|---|
+| Documents created | Remembers all | Only major ones |
+| Research findings | Remembers all | Only hard-to-rediscover ones |
+| Your preferences | Remembers all | Remembers all |
+| Routine file edits | Remembers | Skips |
+| Quick one-off tasks | Remembers | Skips |
+| Best for | Thorough project history | Low-noise essentials |
+
+---
+
+## Create Your Own Mode
+
+Cowork Mode is designed for general knowledge work. But if your work has specific needs — sales, academic research, content marketing, legal review — you can create a **custom mode** tailored exactly to your workflow.
+
+No coding required. Claude interviews you and builds it for you.
+
+### How It Works
+
+Type this in Claude Code:
+
+```
+/make-mode
+```
+
+Claude will ask you three questions:
+
+1. **What kind of work do you do?**
+   Tell Claude about your role and daily work.
+
+2. **What would be most valuable to remember across sessions?**
+   What context would save you the most time if Claude already knew it?
+
+3. **What would be noise — not worth recording?**
+   What routine tasks should Claude ignore?
+
+Based on your answers, Claude designs a custom mode and saves it. Then you activate it:
+
+```
+/set-mode your-mode-name
+```
+
+### Example: Sales Mode
+
+> *You: /make-mode sales*
+>
+> *Claude asks about your sales workflow, what's worth tracking (deal stages, client preferences, objection patterns), and what to skip (routine email formatting, calendar checks).*
+>
+> *Claude creates a mode that remembers client relationships, deal progress, negotiation strategies, and competitive intelligence across sessions.*
+
+### Example: Academic Research Mode
+
+> *You: /make-mode academic-research*
+>
+> *Claude asks about your research process, what matters (sources, hypotheses, methodology decisions), and what doesn't (routine formatting, file organization).*
+>
+> *Claude creates a mode that remembers your sources, theoretical frameworks, methodology choices, and cross-paper connections.*
+
+### Example: Content Strategy Mode
+
+> *You: /make-mode content-strategy*
+>
+> *Claude asks about your content workflow, what to track (content pieces, audience insights, editorial decisions), and what to ignore (routine scheduling, basic formatting).*
+>
+> *Claude creates a mode that remembers your editorial calendar, audience research, brand voice decisions, and content performance insights.*
+
+<Tip>
+You can also name your mode when you start: `/make-mode sales` pre-fills the mode name so Claude can jump straight to asking about your workflow.
+</Tip>
+
+---
+
+## Tips for Getting the Most Out of It
+
+**Best for ongoing projects.** Claude-Mem shines when you return to the same project across multiple sessions. One-off questions don't benefit as much.
+
+**Memory compounds over time.** The more sessions you have, the more context Claude carries forward. After a week of working on a project, Claude knows your preferences, your files, your decisions — and everything gets faster.
+
+**Search your history.** Ask Claude things like:
+- *"What did we decide about the report format?"*
+- *"What sources did we find for the market analysis?"*
+- *"Did we already create a template for this?"*
+
+Claude searches your work history automatically.
+
+**Switch modes anytime.** Working on code in the morning and documents in the afternoon? Switch modes as needed:
+```
+/set-mode code
+```
+```
+/set-mode cowork
+```
+
+Your memories from each mode are kept separately and stay available.
+
+**Keep sensitive content private.** Wrap anything you don't want remembered in privacy tags:
+```
+<private>confidential client information here</private>
+```
+
+Claude-Mem will never store content inside those tags.
+
+---
+
+## Frequently Asked Questions
+
+<AccordionGroup>
+  <Accordion title="Does this work with Claude.ai or the Claude app?">
+    No. Claude-Mem is a plugin for **Claude Code** — Anthropic's command-line tool. It doesn't work with the Claude website or mobile app. If you don't have Claude Code, you can get it from Anthropic's website.
+  </Accordion>
+
+  <Accordion title="Will this slow down Claude?">
+    No. Claude-Mem runs quietly in the background. Your conversations with Claude aren't slowed down at all.
+  </Accordion>
+
+  <Accordion title="Does it cost extra?">
+    No. Claude-Mem is free and open source. You only pay for your normal Claude Code usage.
+  </Accordion>
+
+  <Accordion title="What about my privacy?">
+    All your memories are stored locally on your computer. Nothing is sent to external servers. You can also use `<private>` tags to prevent specific content from being remembered, and you can export or delete your data anytime.
+  </Accordion>
+
+  <Accordion title="Can I go back to the default coding mode?">
+    Yes. Just type `/set-mode code` and you're back to the default developer mode.
+  </Accordion>
+
+  <Accordion title="Can I use different modes for different projects?">
+    Yes. Each project folder can have its own active mode. Use Cowork Mode for your writing projects and Code Mode for your development projects — they don't interfere with each other.
+  </Accordion>
+
+  <Accordion title="How do I see what Claude remembers?">
+    Open your browser to `http://localhost:37777` while Claude-Mem is running. You'll see a live stream of everything Claude has remembered. You can also just ask Claude directly: *"What do you remember about this project?"*
+  </Accordion>
+
+  <Accordion title="I want even less noise. Is there something quieter than Chill?">
+    You can create a fully custom mode with `/make-mode` and tell Claude exactly what to skip. You have complete control over what gets remembered.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Search Your History" icon="magnifying-glass" href="/usage/search-tools">
+    Learn how to query your past work with natural language
+  </Card>
+  <Card title="Privacy Controls" icon="lock" href="/usage/private-tags">
+    Keep sensitive content out of your memory
+  </Card>
+  <Card title="Modes Reference" icon="sliders" href="/modes">
+    Technical details on all available modes
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Fine-tune Claude-Mem's behavior
+  </Card>
+</CardGroup>
