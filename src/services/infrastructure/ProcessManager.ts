@@ -48,6 +48,12 @@ function isBunExecutablePath(executablePath: string | undefined | null): boolean
   return /(^|[\\/])bun(\.exe)?$/i.test(executablePath.trim());
 }
 
+function isNodeExecutablePath(executablePath: string | undefined | null): boolean {
+  if (!executablePath) return false;
+
+  return /(^|[\\/])node(\.exe)?$/i.test(executablePath.trim());
+}
+
 function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): string | null {
   const command = platform === 'win32' ? `where ${binaryName}` : `which ${binaryName}`;
 
@@ -119,6 +125,67 @@ export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): 
   }
 
   return lookupInPath('bun', platform);
+}
+
+/**
+ * Resolve the Node.js executable used to spawn the MCP server.
+ *
+ * The worker itself runs under Bun, so `process.execPath` is often Bun on Unix.
+ * When the environment PATH is incomplete (launchd/cron), probe common install
+ * locations before falling back to PATH lookup.
+ */
+export function resolveNodeRuntimePath(options: RuntimeResolverOptions = {}): string | null {
+  const platform = options.platform ?? process.platform;
+  const execPath = options.execPath ?? process.execPath;
+  const env = options.env ?? process.env;
+  const homeDirectory = options.homeDirectory ?? homedir();
+  const pathExists = options.pathExists ?? existsSync;
+  const lookupInPath = options.lookupInPath ?? lookupBinaryInPath;
+
+  if (isNodeExecutablePath(execPath)) {
+    return execPath;
+  }
+
+  const overrideCandidates = [env.CLAUDE_MEM_NODE_PATH, env.NODE];
+  for (const candidate of overrideCandidates) {
+    const normalized = candidate?.trim();
+    if (!normalized) continue;
+
+    if (normalized.toLowerCase() == 'node') {
+      return normalized;
+    }
+
+    if (pathExists(normalized)) {
+      return normalized;
+    }
+  }
+
+  const candidatePaths = platform === 'win32'
+    ? [
+        env.ProgramFiles ? path.join(env.ProgramFiles, 'nodejs', 'node.exe') : undefined,
+        env['ProgramFiles(x86)'] ? path.join(env['ProgramFiles(x86)'], 'nodejs', 'node.exe') : undefined,
+        env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'Programs', 'nodejs', 'node.exe') : undefined,
+        env.USERPROFILE ? path.join(env.USERPROFILE, '.fnm', 'aliases', 'default', 'bin', 'node.exe') : undefined,
+      ]
+    : [
+        '/usr/local/bin/node',
+        '/opt/homebrew/bin/node',
+        '/usr/bin/node',
+        path.join(homeDirectory, '.fnm', 'aliases', 'default', 'bin', 'node'),
+        path.join(homeDirectory, '.volta', 'bin', 'node'),
+        path.join(homeDirectory, '.nvm', 'current', 'bin', 'node'),
+      ];
+
+  for (const candidate of candidatePaths) {
+    const normalized = candidate?.trim();
+    if (!normalized) continue;
+
+    if (isNodeExecutablePath(normalized) && pathExists(normalized)) {
+      return normalized;
+    }
+  }
+
+  return lookupInPath('node', platform);
 }
 
 export interface PidInfo {
