@@ -16,7 +16,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
-import { getAuthMethodDescription } from '../shared/EnvManager.js';
+import { getAuthMethodDescription, checkOAuthTokenStatus } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
@@ -238,6 +238,10 @@ export class WorkerService {
         let provider = 'claude';
         if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
         else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
+
+        // Check OAuth token health for proactive monitoring
+        const tokenStatus = checkOAuthTokenStatus();
+
         return {
           provider,
           authMethod: getAuthMethodDescription(),
@@ -248,6 +252,9 @@ export class WorkerService {
                 ...(this.lastAiInteraction.error && { error: this.lastAiInteraction.error }),
               }
             : null,
+          ...(tokenStatus.expired && { tokenExpired: true }),
+          ...(tokenStatus.expiringSoon && { tokenExpiringSoon: true }),
+          ...(tokenStatus.expiresAt && { tokenExpiresAt: tokenStatus.expiresAt }),
         };
       },
     });
@@ -561,6 +568,7 @@ export class WorkerService {
           'ENOENT',
           'spawn',
           'Invalid API key',
+          'Authentication failed',       // Thrown by SDKAgent after refresh attempt fails
         ];
         if (unrecoverablePatterns.some(pattern => errorMessage.includes(pattern))) {
           hadUnrecoverableError = true;
