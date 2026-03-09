@@ -22,6 +22,7 @@ import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProcessBySession, ensureProcessExit } from '../../ProcessRegistry.js';
+import { getProjectName } from '../../../../utils/project-name.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -531,7 +532,22 @@ export class SessionRoutes extends BaseRouteHandler {
       const store = this.dbManager.getSessionStore();
 
       // Get or create session
-      const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+      // Derive project from cwd for Cowork environments where session-init may not fire
+      const project = getProjectName(cwd);
+      const sessionDbId = store.createSDKSession(contentSessionId, project, '');
+
+      // Lazy session init: if no in-memory session exists, auto-initialize one
+      // This handles Cowork environments where UserPromptSubmit hook doesn't fire
+      if (!this.sessionManager.getSession(sessionDbId)) {
+        const syntheticPrompt = '[auto-initialized from observation]';
+        store.saveUserPrompt(contentSessionId, 1, syntheticPrompt);
+        this.sessionManager.initializeSession(sessionDbId, syntheticPrompt, 1);
+        this.ensureGeneratorRunning(sessionDbId, 'lazy-init');
+        logger.info('SESSION', '[LAZY-INIT] Auto-initialized session for contentSessionId: %s', contentSessionId, {
+          sessionDbId, project, cwd
+        });
+      }
+
       const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
       // Privacy check: skip if user prompt was entirely private

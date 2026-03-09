@@ -183,7 +183,7 @@ export class ChromaMcpManager {
   private buildCommandArgs(): string[] {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const chromaMode = settings.CLAUDE_MEM_CHROMA_MODE || 'local';
-    const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || settings.CLAUDE_MEM_PYTHON_VERSION || '3.13';
+    const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || settings.CLAUDE_MEM_PYTHON_VERSION || this.detectPythonVersion();
 
     if (chromaMode === 'remote') {
       const chromaHost = settings.CLAUDE_MEM_CHROMA_HOST || '127.0.0.1';
@@ -227,6 +227,25 @@ export class ChromaMcpManager {
       '--client-type', 'persistent',
       '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
     ];
+  }
+
+  /**
+   * Detect available Python version for uvx.
+   * Probes from 3.13 down to 3.10, returns first available.
+   */
+  private detectPythonVersion(): string {
+    const versionsToTry = ['3.13', '3.12', '3.11', '3.10'];
+    for (const version of versionsToTry) {
+      try {
+        execSync(`python${version} --version`, { stdio: 'ignore', timeout: 5000 });
+        logger.info('CHROMA', `Detected Python ${version}`);
+        return version;
+      } catch {
+        // Version not available, try next
+      }
+    }
+    logger.warn('CHROMA', 'No Python 3.10-3.13 detected, defaulting to 3.13');
+    return '3.13';
   }
 
   /**
