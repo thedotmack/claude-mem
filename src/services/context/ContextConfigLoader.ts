@@ -18,27 +18,10 @@ export function loadContextConfig(): ContextConfig {
   const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-  // For non-code modes, use all types/concepts from active mode instead of settings
-  const modeId = settings.CLAUDE_MEM_MODE;
-  const isCodeMode = modeId === 'code' || modeId.startsWith('code--');
-
-  let observationTypes: Set<string>;
-  let observationConcepts: Set<string>;
-
-  if (isCodeMode) {
-    // Code mode: use settings-based filtering
-    observationTypes = new Set(
-      settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES.split(',').map((t: string) => t.trim()).filter(Boolean)
-    );
-    observationConcepts = new Set(
-      settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS.split(',').map((c: string) => c.trim()).filter(Boolean)
-    );
-  } else {
-    // Non-code modes: use all types/concepts from active mode
-    const mode = ModeManager.getInstance().getActiveMode();
-    observationTypes = new Set(mode.observation_types.map(t => t.id));
-    observationConcepts = new Set(mode.observation_concepts.map(c => c.id));
-  }
+  // Always read types/concepts from the active mode definition
+  const mode = ModeManager.getInstance().getActiveMode();
+  const observationTypes = new Set(mode.observation_types.map(t => t.id));
+  const observationConcepts = new Set(mode.observation_concepts.map(c => c.id));
 
   return {
     totalObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10),
