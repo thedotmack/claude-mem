@@ -5,24 +5,33 @@ import { getProjectName } from '../utils/project-name.js';
 import { logger } from '../utils/logger.js';
 
 export interface UserPromptSubmitInput {
-  session_id: string;
+  session_id?: string;
+  conversation_id?: string; // Cursor sends conversation_id instead of session_id
   cwd: string;
   prompt: string;
 }
-
 
 /**
  * New Hook Main Logic
  */
 async function newHook(input?: UserPromptSubmitInput): Promise<void> {
-  // Ensure worker is running before any other logic
   await ensureWorkerRunning();
 
   if (!input) {
     throw new Error('newHook requires input');
   }
 
-  const { session_id, cwd, prompt } = input;
+  const { cwd, prompt } = input;
+  // Cursor sends conversation_id instead of session_id; fall back gracefully
+  const session_id = input.session_id ?? input.conversation_id;
+
+  // Skip gracefully if no session ID is available (e.g. Cursor running claude-code hooks)
+  if (!session_id) {
+    logger.debug('HOOK', 'new-hook: Skipping - no session_id or conversation_id available');
+    console.log(STANDARD_HOOK_RESPONSE);
+    return;
+  }
+
   const project = getProjectName(cwd);
 
   logger.info('HOOK', 'new-hook: Received hook input', { session_id, has_prompt: !!prompt, cwd });
@@ -31,7 +40,6 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   logger.info('HOOK', 'new-hook: Calling /api/sessions/init', { contentSessionId: session_id, project, prompt_length: prompt?.length });
 
-  // Initialize session via HTTP - handles DB operations and privacy checks
   const initResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -40,7 +48,6 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
       project,
       prompt
     })
-    // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
   });
 
   if (!initResponse.ok) {
@@ -53,7 +60,6 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   logger.info('HOOK', 'new-hook: Received from /api/sessions/init', { sessionDbId, promptNumber, skipped: initResult.skipped });
 
-  // Check if prompt was entirely private (worker performs privacy check)
   if (initResult.skipped && initResult.reason === 'private') {
     logger.info('HOOK', `new-hook: Session ${sessionDbId}, prompt #${promptNumber} (fully private - skipped)`);
     console.log(STANDARD_HOOK_RESPONSE);
@@ -62,18 +68,14 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   logger.info('HOOK', `new-hook: Session ${sessionDbId}, prompt #${promptNumber}`);
 
-  // Strip leading slash from commands for memory agent
-  // /review 101 → review 101 (more semantic for observations)
   const cleanedPrompt = prompt.startsWith('/') ? prompt.substring(1) : prompt;
 
   logger.info('HOOK', 'new-hook: Calling /sessions/{sessionDbId}/init', { sessionDbId, promptNumber, userPrompt_length: cleanedPrompt?.length });
 
-  // Initialize SDK agent session via HTTP (starts the agent!)
   const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber })
-    // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
   });
 
   if (!response.ok) {
@@ -83,7 +85,6 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   console.log(STANDARD_HOOK_RESPONSE);
 }
 
-// Entry Point
 let input = '';
 stdin.on('data', (chunk) => input += chunk);
 stdin.on('end', async () => {
