@@ -470,7 +470,7 @@ export class WorkerService {
         }
         return activeIds;
       });
-      logger.info('SYSTEM', 'Started orphan reaper (runs every 5 minutes)');
+      logger.info('SYSTEM', 'Started orphan reaper (runs every 1 minute)');
 
       // Reap stale sessions to unblock orphan process cleanup (Issue #1168)
       this.staleSessionReaperInterval = setInterval(async () => {
@@ -618,7 +618,7 @@ export class WorkerService {
       .finally(async () => {
         // CRITICAL: Verify subprocess exit to prevent zombie accumulation (Issue #1168)
         const trackedProcess = getProcessBySession(session.sessionDbId);
-        if (trackedProcess && !trackedProcess.process.killed && trackedProcess.process.exitCode === null) {
+        if (trackedProcess && trackedProcess.process.exitCode === null) {
           await ensureProcessExit(trackedProcess, 5000);
         }
 
