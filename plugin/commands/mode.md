@@ -16,9 +16,10 @@ You are handling the `/mode` command for claude-mem.
    Extract the `CLAUDE_MEM_MODE` value — this is the currently active mode.
 
 2. Discover all available modes by reading JSON files from the plugin modes directory. Use the Glob tool to find all `*.json` files in the plugin modes directory, then read each file to get `name` and `description`:
-   ```
-   Glob pattern: plugin/modes/*.json (relative to CLAUDE_PLUGIN_ROOT or ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/)
-   ```
+   Check these locations and use whichever exists:
+   - Cache install: glob `~/.claude/plugins/cache/thedotmack/claude-mem/*/modes/*.json`
+   - Marketplace install: glob `~/.claude/plugins/marketplaces/*/plugin/modes/*.json`
+   - Development repo: glob `plugin/modes/*.json`
 
 3. Display a table showing all modes:
 

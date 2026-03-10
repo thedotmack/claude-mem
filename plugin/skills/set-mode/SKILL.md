@@ -16,7 +16,7 @@ If no arguments provided, tell the user: `Usage: /set-mode <mode-name>`. Suggest
 
 Find the mode JSON file. Check these paths in order:
 
-1. `~/.claude/plugins/marketplaces/thedotmack/plugin/modes/$ARGUMENTS.json` (installed plugin)
+1. `${CLAUDE_SKILL_DIR}/../../modes/$ARGUMENTS.json` (installed plugin)
 2. `plugin/modes/$ARGUMENTS.json` (development — only if working in the claude-mem repo)
 
 If the file doesn't exist at either path, show an error and list available modes by globbing `*.json` from the modes directory.
@@ -79,7 +79,7 @@ Skip this step. Not all modes require custom project instructions.
 Restart the worker so it picks up the new mode configuration:
 
 ```bash
-bun ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-cli.js restart
+bun "${CLAUDE_SKILL_DIR}/../../scripts/worker-cli.js" restart
 ```
 
 If running in the claude-mem development repo, use instead:
