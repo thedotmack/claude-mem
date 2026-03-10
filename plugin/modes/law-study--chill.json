@@ -1,0 +1,7 @@
+{
+  "name": "Law Study (Chill)",
+  "prompts": {
+    "recording_focus": "WHAT TO RECORD (HIGH SIGNAL ONLY)\n----------------------------------\nOnly record what would be painful to reconstruct later:\n- Issue-spotting triggers: specific fact patterns that signal a testable issue\n- Professor's explicit emphasis, frameworks, or exam tips\n- Counterintuitive holdings or gotchas that contradict intuition\n- Cross-case connections that reframe how a doctrine works\n- A synthesized rule only if it distills something non-obvious from multiple sources\n\nSkip anything that could be looked up in a casebook in under 60 seconds.\n\nUse verbs like: held, established, revealed, distinguished, flagged",
+    "skip_guidance": "WHEN TO SKIP (LIBERAL — WHEN IN DOUBT, SKIP)\n---------------------------------------------\nSkip freely:\n- All case briefs, even condensed ones, unless the holding is counterintuitive\n- Any rule or doctrine stated plainly in the casebook without nuance\n- Definitions of standard legal terms\n- Procedural history\n- Any fact pattern or case that wasn't specifically emphasized by the professor\n- Anything you could find again in under 60 seconds\n- **No output necessary if skipping.**"
+  }
+}

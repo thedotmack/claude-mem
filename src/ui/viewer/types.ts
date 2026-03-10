@@ -76,10 +76,6 @@ export interface Settings {
   CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT?: string;
   CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT?: string;
 
-  // Observation Filtering
-  CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES?: string;
-  CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS?: string;
-
   // Display Configuration
   CLAUDE_MEM_CONTEXT_FULL_COUNT?: string;
   CLAUDE_MEM_CONTEXT_FULL_FIELD?: string;
