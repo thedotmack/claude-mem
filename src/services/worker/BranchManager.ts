@@ -2,7 +2,7 @@
  * BranchManager: Git branch detection and switching for beta feature toggle
  *
  * Enables users to switch between stable (main) and beta branches via the UI.
- * The installed plugin at ~/.claude/plugins/marketplaces/thedotmack/ is a git repo.
+ * The installed plugin directory (resolved via MARKETPLACE_ROOT) is a git repo.
  */
 
 import { execSync, spawnSync } from 'child_process';
