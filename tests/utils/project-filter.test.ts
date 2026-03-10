@@ -5,9 +5,12 @@
  * Source: src/utils/project-filter.ts
  */
 
-import { describe, it, expect } from 'bun:test';
-import { isProjectExcluded } from '../../src/utils/project-filter.js';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { isProjectExcluded, isProjectLocallyDisabled } from '../../src/utils/project-filter.js';
 import { homedir } from 'os';
+import { mkdirSync, writeFileSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
 describe('Project Filter', () => {
   describe('isProjectExcluded', () => {
@@ -91,6 +94,32 @@ describe('Project Filter', () => {
         expect(isProjectExcluded('/var/tmp/test', patterns)).toBe(true);
         expect(isProjectExcluded('/home/user/tmp', patterns)).toBe(false);
       });
+    });
+  });
+
+  describe('isProjectLocallyDisabled', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = join(tmpdir(), `claude-mem-test-${Date.now()}`);
+      mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterEach(() => {
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('returns false when .claude-mem-disable does not exist', () => {
+      expect(isProjectLocallyDisabled(tmpDir)).toBe(false);
+    });
+
+    it('returns true when .claude-mem-disable exists', () => {
+      writeFileSync(join(tmpDir, '.claude-mem-disable'), '');
+      expect(isProjectLocallyDisabled(tmpDir)).toBe(true);
+    });
+
+    it('returns false for empty string cwd', () => {
+      expect(isProjectLocallyDisabled('')).toBe(false);
     });
   });
 });

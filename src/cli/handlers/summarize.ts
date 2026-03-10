@@ -11,6 +11,9 @@ import { ensureWorkerRunning, getWorkerPort, fetchWithTimeout } from '../../shar
 import { logger } from '../../utils/logger.js';
 import { extractLastMessage } from '../../shared/transcript-parser.js';
 import { HOOK_EXIT_CODES, HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
+import { isProjectExcluded, isProjectLocallyDisabled } from '../../utils/project-filter.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 const SUMMARIZE_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.DEFAULT);
 
@@ -23,9 +26,22 @@ export const summarizeHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    const { sessionId, transcriptPath } = input;
+    const { sessionId, cwd, transcriptPath } = input;
 
     const port = getWorkerPort();
+
+    // Check local .claude-mem-disable file first (no settings required)
+    if (cwd && isProjectLocallyDisabled(cwd)) {
+      logger.debug('HOOK', 'Project locally disabled (.claude-mem-disable), skipping summarize', { cwd });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    // Check if project is excluded from tracking
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+      logger.debug('HOOK', 'Project excluded from tracking, skipping summarize', { cwd });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
 
     // Validate required fields before processing
     if (!transcriptPath) {

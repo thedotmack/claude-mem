@@ -6,6 +6,8 @@
  */
 
 import { homedir } from 'os';
+import { existsSync, realpathSync } from 'fs';
+import { join } from 'path';
 
 /**
  * Convert a glob pattern to a regular expression
@@ -16,6 +18,11 @@ function globToRegex(pattern: string): RegExp {
   let expanded = pattern.startsWith('~')
     ? homedir() + pattern.slice(1)
     : pattern;
+
+  // Resolve symlinks for non-glob patterns (e.g., /tmp -> /private/tmp on macOS)
+  if (!/[*?]/.test(expanded)) {
+    try { expanded = realpathSync(expanded); } catch { /* use original if path doesn't exist */ }
+  }
 
   // Normalize path separators to forward slashes
   expanded = expanded.replace(/\\/g, '/');
@@ -48,8 +55,10 @@ export function isProjectExcluded(projectPath: string, exclusionPatterns: string
     return false;
   }
 
-  // Normalize cwd path separators
-  const normalizedProjectPath = projectPath.replace(/\\/g, '/');
+  // Resolve symlinks (e.g., /tmp -> /private/tmp on macOS) and normalize separators
+  let resolvedPath = projectPath;
+  try { resolvedPath = realpathSync(projectPath); } catch { /* use original if path doesn't exist */ }
+  const normalizedProjectPath = resolvedPath.replace(/\\/g, '/');
 
   // Parse comma-separated patterns
   const patternList = exclusionPatterns
@@ -63,6 +72,18 @@ export function isProjectExcluded(projectPath: string, exclusionPatterns: string
       if (regex.test(normalizedProjectPath)) {
         return true;
       }
+      // Also match subdirectories: pattern "/tmp/temp" should exclude "/tmp/temp/foo"
+      // Only apply prefix matching for patterns without glob characters
+      if (!/[*?]/.test(pattern)) {
+        let expanded = pattern.startsWith('~')
+          ? homedir() + pattern.slice(1)
+          : pattern;
+        try { expanded = realpathSync(expanded); } catch { /* use original */ }
+        const normalizedPattern = expanded.replace(/\\/g, '/').replace(/\/+$/, '');
+        if (normalizedProjectPath.startsWith(normalizedPattern + '/')) {
+          return true;
+        }
+      }
     } catch {
       // Invalid pattern, skip it
       continue;
@@ -70,4 +91,13 @@ export function isProjectExcluded(projectPath: string, exclusionPatterns: string
   }
 
   return false;
+}
+
+/**
+ * Check if a project has been locally disabled via a .claude-mem-disable file.
+ * Users can `touch .claude-mem-disable` in any repo to disable claude-mem for that repo.
+ */
+export function isProjectLocallyDisabled(cwd: string): boolean {
+  if (!cwd) return false;
+  return existsSync(join(cwd, '.claude-mem-disable'));
 }
