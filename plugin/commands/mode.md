@@ -17,7 +17,6 @@ You are handling the `/mode` command for claude-mem.
 
 2. Discover all available modes by reading JSON files from the plugin modes directory. Use the Glob tool to find all `*.json` files in the plugin modes directory, then read each file to get `name` and `description`:
    Check these locations and use whichever exists:
-   - Cache install: glob `~/.claude/plugins/cache/thedotmack/claude-mem/*/modes/*.json`
    - Marketplace install: glob `~/.claude/plugins/marketplaces/*/plugin/modes/*.json`
    - Development repo: glob `plugin/modes/*.json`
 
