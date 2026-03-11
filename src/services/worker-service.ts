@@ -188,6 +188,9 @@ export class WorkerService {
   // Stale session reaper interval (Issue #1168)
   private staleSessionReaperInterval: ReturnType<typeof setInterval> | null = null;
 
+  // Transcript watcher for Codex integration
+  private transcriptWatcher: any | null = null;
+
   // AI interaction tracking for health endpoint
   private lastAiInteraction: {
     timestamp: number;
@@ -496,9 +499,41 @@ export class WorkerService {
       }).catch(error => {
         logger.error('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
       });
+
+      // Start transcript watcher if config exists
+      await this.startTranscriptWatcher();
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
       throw error;
+    }
+  }
+
+  /**
+   * Start transcript watcher if config exists
+   */
+  private async startTranscriptWatcher(): Promise<void> {
+    try {
+      const { DEFAULT_CONFIG_PATH, loadTranscriptWatchConfig, expandHomePath } = await import('./transcripts/config.js');
+      const { TranscriptWatcher } = await import('./transcripts/watcher.js');
+      const { existsSync } = await import('fs');
+
+      const configPath = expandHomePath(DEFAULT_CONFIG_PATH);
+      if (!existsSync(configPath)) {
+        logger.debug('TRANSCRIPT', 'No transcript watch config found, skipping watcher startup');
+        return;
+      }
+
+      const config = loadTranscriptWatchConfig(configPath);
+      const statePath = expandHomePath(config.stateFile ?? DEFAULT_CONFIG_PATH.replace('transcript-watch.json', 'transcript-watch-state.json'));
+
+      this.transcriptWatcher = new TranscriptWatcher(config, statePath);
+      await this.transcriptWatcher.start();
+
+      logger.info('TRANSCRIPT', 'Transcript watcher started', {
+        watches: config.watches.map(w => ({ name: w.name, path: w.path }))
+      });
+    } catch (error) {
+      logger.error('TRANSCRIPT', 'Failed to start transcript watcher (non-blocking)', {}, error as Error);
     }
   }
 
@@ -857,6 +892,13 @@ export class WorkerService {
       this.staleSessionReaperInterval = null;
     }
 
+    // Stop transcript watcher
+    if (this.transcriptWatcher) {
+      this.transcriptWatcher.stop();
+      this.transcriptWatcher = null;
+      logger.info('TRANSCRIPT', 'Transcript watcher stopped');
+    }
+
     await performGracefulShutdown({
       server: this.server.getHttpServer(),
       sessionManager: this.sessionManager,
@@ -1098,6 +1140,14 @@ async function main() {
       const subcommand = process.argv[3];
       const cursorResult = await handleCursorCommand(subcommand, process.argv.slice(4));
       process.exit(cursorResult);
+      break;
+    }
+
+    case 'transcript': {
+      const { runTranscriptCommand } = await import('./transcripts/cli.js');
+      const subcommand = process.argv[3];
+      const transcriptResult = await runTranscriptCommand(subcommand, process.argv.slice(4));
+      process.exit(transcriptResult);
       break;
     }
 

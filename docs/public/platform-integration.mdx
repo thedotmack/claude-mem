@@ -62,6 +62,289 @@ npm run worker:logs           # View worker logs
 npm run worker:status         # Check worker status
 ```
 
+## Codex CLI Integration
+
+Claude-Mem supports **Codex CLI** through transcript-based memory capture, enabling persistent memory across Codex sessions.
+
+### Architecture
+
+**Dual Integration Model:**
+- **MCP for reading** - Codex uses MCP tools to search claude-mem's memory
+- **Transcript watcher for writing** - Claude-mem watches Codex session transcripts and captures observations
+
+```plaintext
+Codex CLI (~/.codex/sessions/*.jsonl)
+    ↓ File watching
+Transcript Processor
+    ↓ Event handlers
+Worker Service (port 37777)
+    ↓
+SQLite + Chroma Search
+```
+
+### Setup
+
+<Steps>
+  <Step title="Initialize transcript watching">
+    ```bash
+    # For installed plugin users
+    claude-mem transcript init
+
+    # For development (source code)
+    bun run src/services/worker-service.ts transcript init
+    ```
+    Creates `~/.claude-mem/transcript-watch.json` with Codex schema
+  </Step>
+  <Step title="Start worker">
+    ```bash
+    # For installed plugin users
+    claude-mem start
+
+    # For development (source code)
+    bun run src/services/worker-service.ts start
+    ```
+    Transcript watcher starts automatically if config exists
+  </Step>
+  <Step title="Verify watching">
+    Check worker logs for transcript watcher startup:
+    ```
+    [TRANSCRIPT] Transcript watcher started
+    ```
+  </Step>
+</Steps>
+
+### What Gets Captured
+
+The transcript watcher monitors `~/.codex/sessions/**/*.jsonl` and captures:
+
+<CardGroup cols={2}>
+  <Card title="Session Metadata" icon="info-circle">
+    Session ID, working directory, project context
+  </Card>
+  <Card title="User Messages" icon="user">
+    User prompts and questions
+  </Card>
+  <Card title="Assistant Messages" icon="robot">
+    Agent responses and explanations
+  </Card>
+  <Card title="Tool Calls" icon="wrench">
+    function_call, custom_tool_call, web_search_call
+  </Card>
+  <Card title="Tool Results" icon="check-circle">
+    Tool outputs and responses
+  </Card>
+  <Card title="Session End" icon="flag-checkered">
+    Turn completion and session termination
+  </Card>
+</CardGroup>
+
+### Configuration
+
+The transcript watch config at `~/.claude-mem/transcript-watch.json`:
+
+```json
+{
+  "version": 1,
+  "schemas": {
+    "codex": {
+      "name": "codex",
+      "version": "0.2",
+      "description": "Schema for Codex session JSONL files",
+      "events": [
+        {
+          "name": "session-meta",
+          "match": { "path": "type", "equals": "session_meta" },
+          "action": "session_context",
+          "fields": {
+            "sessionId": "payload.id",
+            "cwd": "payload.cwd"
+          }
+        },
+        {
+          "name": "user-message",
+          "match": { "path": "payload.type", "equals": "user_message" },
+          "action": "session_init",
+          "fields": {
+            "prompt": "payload.message"
+          }
+        },
+        {
+          "name": "tool-use",
+          "match": {
+            "path": "payload.type",
+            "in": ["function_call", "custom_tool_call", "web_search_call"]
+          },
+          "action": "tool_use",
+          "fields": {
+            "toolId": "payload.call_id",
+            "toolName": {
+              "coalesce": ["payload.name", { "value": "web_search" }]
+            },
+            "toolInput": {
+              "coalesce": ["payload.arguments", "payload.input", "payload.action"]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "watches": [{
+    "name": "codex",
+    "path": "~/.codex/sessions/**/*.jsonl",
+    "schema": "codex",
+    "startAtEnd": true
+  }],
+  "stateFile": "~/.claude-mem/transcript-watch-state.json"
+}
+```
+
+### Manual Commands
+
+<Tabs>
+  <Tab title="Initialize">
+    ```bash
+    bun run src/services/worker-service.ts transcript init [--config <path>]
+    ```
+    Creates sample config at specified path (default: `~/.claude-mem/transcript-watch.json`)
+  </Tab>
+  <Tab title="Validate">
+    ```bash
+    bun run src/services/worker-service.ts transcript validate [--config <path>]
+    ```
+    Validates config structure and schema definitions
+  </Tab>
+  <Tab title="Watch (Standalone)">
+    ```bash
+    bun run src/services/worker-service.ts transcript watch [--config <path>]
+    ```
+    Runs watcher in foreground (for testing/debugging only)
+  </Tab>
+</Tabs>
+
+<Note>
+The transcript watcher runs automatically when the worker starts, so manual watching is only needed for debugging.
+</Note>
+
+### Lifecycle Management
+
+The worker manages the transcript watcher lifecycle:
+
+**Startup:**
+1. Worker checks for `~/.claude-mem/transcript-watch.json`
+2. If config exists, loads schema and watch targets
+3. Starts file watcher for `~/.codex/sessions/**/*.jsonl`
+4. Logs: `[TRANSCRIPT] Transcript watcher started`
+
+**Shutdown:**
+1. Worker receives SIGTERM/SIGINT
+2. Stops transcript watcher gracefully
+3. Saves watcher state to `~/.claude-mem/transcript-watch-state.json`
+4. Logs: `[TRANSCRIPT] Transcript watcher stopped`
+
+### Event Processing
+
+Codex transcript events are mapped to claude-mem actions:
+
+| Codex Event | Action | Description |
+|-------------|--------|-------------|
+| `session_meta` | `session_context` | Captures session ID and working directory |
+| `turn_context` | `session_context` | Updates working directory for turn |
+| `user_message` | `session_init` | Initializes session with user prompt |
+| `agent_message` | `assistant_message` | Captures assistant response |
+| `function_call` | `tool_use` | Records tool invocation |
+| `function_call_output` | `tool_result` | Records tool output |
+| `turn_aborted`, `task_complete` | `session_end` | Marks session completion |
+
+### Field Extraction
+
+The schema uses **coalesce** for flexible field extraction:
+
+```typescript
+// Tool name with fallback
+toolName: {
+  coalesce: [
+    "payload.name",           // Try payload.name first
+    { value: "web_search" }   // Fallback to "web_search"
+  ]
+}
+
+// Tool input from multiple sources
+toolInput: {
+  coalesce: [
+    "payload.arguments",  // Try arguments first
+    "payload.input",      // Then input
+    "payload.action"      // Finally action
+  ]
+}
+```
+
+### Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Watcher not starting">
+    **Check config exists:**
+    ```bash
+    ls -la ~/.claude-mem/transcript-watch.json
+    ```
+
+    **Validate config:**
+    ```bash
+    bun run src/services/worker-service.ts transcript validate
+    ```
+
+    **Check worker logs:**
+    ```bash
+    tail -f ~/.claude-mem/logs/worker.log | grep TRANSCRIPT
+    ```
+  </Accordion>
+
+  <Accordion title="Events not being captured">
+    **Verify Codex session files exist:**
+    ```bash
+    ls -la ~/.codex/sessions/
+    ```
+
+    **Check watcher state:**
+    ```bash
+    cat ~/.claude-mem/transcript-watch-state.json
+    ```
+
+    **Test with standalone watcher:**
+    ```bash
+    bun run src/services/worker-service.ts transcript watch
+    ```
+  </Accordion>
+
+  <Accordion title="Schema mismatch errors">
+    **Reinitialize config:**
+    ```bash
+    bun run src/services/worker-service.ts transcript init
+    ```
+
+    **Check Codex transcript format:**
+    ```bash
+    head -5 ~/.codex/sessions/latest.jsonl
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Testing
+
+Verify end-to-end integration:
+
+```bash
+# Run schema validation tests
+bun test tests/transcripts/codex-schema.test.ts
+
+# Run ingestion tests
+bun test tests/transcripts/processor-codex-ingestion.test.ts
+
+# Check observations in database
+sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM observations WHERE project LIKE '%codex%';"
+```
+
+---
+
 ## Worker Architecture
 
 ### Request Flow
