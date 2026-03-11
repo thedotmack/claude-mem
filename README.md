@@ -243,6 +243,75 @@ See **[Beta Features Documentation](https://docs.claude-mem.ai/beta-features)** 
 
 ---
 
+## Codex CLI Integration
+
+Claude-Mem supports **Codex CLI** through transcript-based memory capture, enabling persistent memory across Codex sessions.
+
+**How It Works:**
+- **MCP for reading** - Codex uses MCP tools to search claude-mem's memory
+- **Transcript watcher for writing** - Claude-mem watches Codex session transcripts and captures observations
+
+**Setup:**
+
+1. Initialize transcript watching:
+```bash
+# For installed plugin users
+claude-mem transcript init
+
+# For development (source code)
+bun run src/services/worker-service.ts transcript init
+```
+
+2. Start the worker (transcript watcher starts automatically if config exists):
+```bash
+# For installed plugin users
+claude-mem start
+
+# For development (source code)
+bun run src/services/worker-service.ts start
+```
+
+3. The watcher monitors `~/.codex/sessions/**/*.jsonl` and captures:
+   - User messages and assistant responses
+   - Tool calls (function_call, custom_tool_call, web_search_call)
+   - Tool results
+   - Session metadata and context
+
+**Configuration:**
+
+The transcript watcher config is stored at `~/.claude-mem/transcript-watch.json`:
+
+```json
+{
+  "version": 1,
+  "schemas": { "codex": { /* schema definition */ } },
+  "watches": [{
+    "name": "codex",
+    "path": "~/.codex/sessions/**/*.jsonl",
+    "schema": "codex",
+    "startAtEnd": true
+  }],
+  "stateFile": "~/.claude-mem/transcript-watch-state.json"
+}
+```
+
+**Manual Commands:**
+
+```bash
+# Initialize config
+bun run src/services/worker-service.ts transcript init
+
+# Validate config
+bun run src/services/worker-service.ts transcript validate
+
+# Run watcher standalone (for testing)
+bun run src/services/worker-service.ts transcript watch
+```
+
+The transcript watcher runs automatically when the worker starts, so manual watching is only needed for debugging.
+
+---
+
 ## System Requirements
 
 - **Node.js**: 18.0.0 or higher
