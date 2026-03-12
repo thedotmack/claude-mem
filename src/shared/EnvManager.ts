@@ -35,6 +35,7 @@ export const MANAGED_CREDENTIAL_KEYS = [
   'ANTHROPIC_API_KEY',
   'GEMINI_API_KEY',
   'OPENROUTER_API_KEY',
+  'MINIMAX_API_KEY',
 ];
 
 export interface ClaudeMemEnv {
@@ -42,6 +43,7 @@ export interface ClaudeMemEnv {
   ANTHROPIC_API_KEY?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
+  MINIMAX_API_KEY?: string;
 }
 
 /**
@@ -117,6 +119,7 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
     if (parsed.ANTHROPIC_API_KEY) result.ANTHROPIC_API_KEY = parsed.ANTHROPIC_API_KEY;
     if (parsed.GEMINI_API_KEY) result.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
     if (parsed.OPENROUTER_API_KEY) result.OPENROUTER_API_KEY = parsed.OPENROUTER_API_KEY;
+    if (parsed.MINIMAX_API_KEY) result.MINIMAX_API_KEY = parsed.MINIMAX_API_KEY;
 
     return result;
   } catch (error) {
@@ -163,6 +166,13 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
         updated.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
       } else {
         delete updated.OPENROUTER_API_KEY;
+      }
+    }
+    if (env.MINIMAX_API_KEY !== undefined) {
+      if (env.MINIMAX_API_KEY) {
+        updated.MINIMAX_API_KEY = env.MINIMAX_API_KEY;
+      } else {
+        delete updated.MINIMAX_API_KEY;
       }
     }
 
@@ -217,6 +227,9 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     }
     if (credentials.OPENROUTER_API_KEY) {
       isolatedEnv.OPENROUTER_API_KEY = credentials.OPENROUTER_API_KEY;
+    }
+    if (credentials.MINIMAX_API_KEY) {
+      isolatedEnv.MINIMAX_API_KEY = credentials.MINIMAX_API_KEY;
     }
 
     // 4. Pass through Claude CLI's OAuth token if available (fallback for CLI subscription billing)
