@@ -133,10 +133,15 @@ export class SettingsDefaultsManager {
   }
 
   /**
-   * Get a default value from defaults (no environment variable override)
+   * Get a setting value with environment variable override.
+   * Priority: process.env > hardcoded default
+   *
+   * For full priority (env > settings file > default), use loadFromFile().
+   * This method is safe to call at module-load time (no file I/O) and still
+   * respects environment variable overrides that were previously ignored.
    */
   static get(key: keyof SettingsDefaults): string {
-    return this.DEFAULTS[key];
+    return process.env[key] ?? this.DEFAULTS[key];
   }
 
   /**
