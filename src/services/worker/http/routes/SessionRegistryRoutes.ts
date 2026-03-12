@@ -554,11 +554,14 @@ class SessionIndex {
           const pt = payload.type || '';
 
           if (t === 'session_meta') {
-            result.id = payload.id || '';
-            result.cwd = payload.cwd || '';
-            result.version = payload.cli_version || '';
+            // Only use the FIRST session_meta — Codex subagent files
+            // include the parent's session_meta as line 1, which would
+            // overwrite the subagent's own id and shadow the parent session.
+            if (!result.id) result.id = payload.id || '';
+            if (!result.cwd) result.cwd = payload.cwd || '';
+            if (!result.version) result.version = payload.cli_version || '';
             const git = payload.git || {};
-            if (typeof git === 'object') result.gitBranch = git.branch || '';
+            if (typeof git === 'object' && !result.gitBranch) result.gitBranch = git.branch || '';
           } else if (t === 'turn_context' && !result.model) {
             result.model = payload.model || '';
           } else if (t === 'event_msg' && pt === 'user_message' && !result.slug) {
