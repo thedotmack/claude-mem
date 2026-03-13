@@ -963,7 +963,9 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
       logger.info('SYSTEM', 'Worker is now healthy');
       return true;
     }
-    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
+    // Not an error: another session's worker may still be initializing (#1346).
+    // The hook case has a second-chance check and will use HTTP if port becomes healthy.
+    logger.info('SYSTEM', 'Port in use but worker not yet responding to health checks — another session likely starting', { port });
     return false;
   }
 
@@ -1144,9 +1146,18 @@ async function main() {
           startedWorkerInProcess = true;
           // Worker is now running in this process on the port
         } catch (error) {
-          logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
-          removePidFile();
-          process.exit(0);
+          const isPortCollision = error instanceof Error &&
+            ('code' in error && (error as NodeJS.ErrnoException).code === 'EADDRINUSE' ||
+             error.message.includes('EADDRINUSE'));
+          if (isPortCollision) {
+            // Another session's worker grabbed the port between our check and bind (#1346).
+            // Fall through to use the existing worker via HTTP — don't exit the process.
+            logger.info('SYSTEM', 'Port claimed by another worker during in-process start, using existing worker via HTTP', { port });
+          } else {
+            logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
+            removePidFile();
+            process.exit(0);
+          }
         }
       }
       // If port in use, we'll use HTTP to the existing worker
