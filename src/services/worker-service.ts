@@ -561,6 +561,7 @@ export class WorkerService {
           'ENOENT',
           'spawn',
           'Invalid API key',
+          'FOREIGN KEY constraint failed',
         ];
         if (unrecoverablePatterns.some(pattern => errorMessage.includes(pattern))) {
           hadUnrecoverableError = true;
@@ -659,16 +660,35 @@ export class WorkerService {
 
         // Check if there's pending work that needs processing with a fresh AbortController
         const pendingCount = pendingStore.getPendingCount(session.sessionDbId);
+        const MAX_PENDING_RESTARTS = 3;
 
         if (pendingCount > 0) {
+          // Track consecutive pending-work restarts to prevent infinite loops (e.g. FK errors)
+          session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1;
+
+          if (session.consecutiveRestarts > MAX_PENDING_RESTARTS) {
+            logger.error('SYSTEM', 'Exceeded max pending-work restarts, stopping to prevent infinite loop', {
+              sessionId: session.sessionDbId,
+              pendingCount,
+              consecutiveRestarts: session.consecutiveRestarts
+            });
+            session.consecutiveRestarts = 0;
+            this.broadcastProcessingStatus();
+            return;
+          }
+
           logger.info('SYSTEM', 'Pending work remains after generator exit, restarting with fresh AbortController', {
             sessionId: session.sessionDbId,
-            pendingCount
+            pendingCount,
+            attempt: session.consecutiveRestarts
           });
           // Reset AbortController for restart
           session.abortController = new AbortController();
           // Restart processor
           this.startSessionProcessor(session, 'pending-work-restart');
+        } else {
+          // Successful completion with no pending work — reset counter
+          session.consecutiveRestarts = 0;
         }
 
         this.broadcastProcessingStatus();
