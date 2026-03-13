@@ -34,10 +34,36 @@ check_dependencies() {
     fi
     echo -e "${GREEN}✓ Node.js: $(node --version)${NC}"
 
+    # Bun is REQUIRED - hooks use bun-runner which requires Bun to be installed
     if command -v bun &> /dev/null; then
         echo -e "${GREEN}✓ Bun: $(bun --version)${NC}"
     else
-        echo -e "${YELLOW}⚠ Bun not installed (optional, needed for worker)${NC}"
+        # Check common Bun installation paths (bun-runner.js does this too)
+        local BUN_PATHS=(
+            "${HOME}/.bun/bin/bun"
+            "/usr/local/bin/bun"
+            "/opt/homebrew/bin/bun"
+        )
+        local BUN_FOUND=false
+        for path in "${BUN_PATHS[@]}"; do
+            if [ -x "$path" ]; then
+                echo -e "${GREEN}✓ Bun: $($path --version) (at $path)${NC}"
+                BUN_FOUND=true
+                break
+            fi
+        done
+
+        if [ "$BUN_FOUND" = false ]; then
+            echo -e "${RED}Error: Bun is not installed${NC}"
+            echo ""
+            echo "Bun is REQUIRED for claude-mem hooks to function."
+            echo "All hook commands use bun-runner which requires Bun runtime."
+            echo ""
+            echo "Install Bun:"
+            echo "  curl -fsSL https://bun.sh/install | bash"
+            echo "  # Then restart your shell or run: source ~/.bashrc"
+            exit 1
+        fi
     fi
 }
 
@@ -193,8 +219,9 @@ start_worker() {
     if curl -s "http://localhost:${WORKER_PORT}/api/health" > /dev/null 2>&1; then
         echo -e "${GREEN}✓ Worker already running on port ${WORKER_PORT}${NC}"
     else
-        # Start worker (background)
-        nohup node plugin/scripts/worker-service.cjs start > /dev/null 2>&1 &
+        # Start worker using bun-runner (same as hooks do)
+        # worker-service.cjs requires Bun runtime modules (bun:sqlite, etc.)
+        nohup node plugin/scripts/bun-runner.js plugin/scripts/worker-service.cjs start > /dev/null 2>&1 &
         sleep 2
 
         if curl -s "http://localhost:${WORKER_PORT}/api/health" > /dev/null 2>&1; then
