@@ -25,29 +25,26 @@ export function App() {
   const { preference, resolvedTheme, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
 
-  // When filtering by project: ONLY use paginated data (API-filtered)
-  // When showing all projects: merge SSE live data with paginated data
+  // Merge SSE live data with paginated data, filtering by project when active
   const allObservations = useMemo(() => {
-    if (currentFilter) {
-      // Project filter active: API handles filtering, ignore SSE items
-      return paginatedObservations;
-    }
-    // No filter: merge SSE + paginated, deduplicate by ID
-    return mergeAndDeduplicateByProject(observations, paginatedObservations);
+    const live = currentFilter
+      ? observations.filter(o => o.project === currentFilter)
+      : observations;
+    return mergeAndDeduplicateByProject(live, paginatedObservations);
   }, [observations, paginatedObservations, currentFilter]);
 
   const allSummaries = useMemo(() => {
-    if (currentFilter) {
-      return paginatedSummaries;
-    }
-    return mergeAndDeduplicateByProject(summaries, paginatedSummaries);
+    const live = currentFilter
+      ? summaries.filter(s => s.project === currentFilter)
+      : summaries;
+    return mergeAndDeduplicateByProject(live, paginatedSummaries);
   }, [summaries, paginatedSummaries, currentFilter]);
 
   const allPrompts = useMemo(() => {
-    if (currentFilter) {
-      return paginatedPrompts;
-    }
-    return mergeAndDeduplicateByProject(prompts, paginatedPrompts);
+    const live = currentFilter
+      ? prompts.filter(p => p.project === currentFilter)
+      : prompts;
+    return mergeAndDeduplicateByProject(live, paginatedPrompts);
   }, [prompts, paginatedPrompts, currentFilter]);
 
   // Toggle context preview modal

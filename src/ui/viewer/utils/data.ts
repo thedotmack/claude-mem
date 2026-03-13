@@ -5,10 +5,9 @@
 
 /**
  * Merge real-time SSE items with paginated items, removing duplicates by ID
- * NOTE: This should ONLY be used when no project filter is active.
- * When filtering, use ONLY paginated data (API-filtered).
+ * Callers should pre-filter liveItems by project when a filter is active.
  *
- * @param liveItems - Items from SSE stream (unfiltered)
+ * @param liveItems - Items from SSE stream (pre-filtered if needed)
  * @param paginatedItems - Items from pagination API
  * @returns Merged and deduplicated array
  */
