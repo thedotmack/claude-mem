@@ -206,6 +206,25 @@ describe('SettingsDefaultsManager', () => {
       });
     });
 
+    describe('chroma lazy init settings', () => {
+      it('should default CLAUDE_MEM_CHROMA_LAZY_INIT to true', () => {
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(result.CLAUDE_MEM_CHROMA_LAZY_INIT).toBe('true');
+      });
+
+      it('should allow disabling lazy init via settings file', () => {
+        const customSettings = {
+          CLAUDE_MEM_CHROMA_LAZY_INIT: 'false',
+          CLAUDE_MEM_CHROMA_STARTUP_DELAY_MS: '10000',
+        };
+        writeFileSync(settingsPath, JSON.stringify(customSettings));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(result.CLAUDE_MEM_CHROMA_LAZY_INIT).toBe('false');
+        expect(result.CLAUDE_MEM_CHROMA_STARTUP_DELAY_MS).toBe('10000');
+      });
+    });
+
     describe('nested schema migration', () => {
       it('should migrate old nested { env: {...} } schema to flat schema', () => {
         const nestedSettings = {
@@ -304,6 +323,10 @@ describe('SettingsDefaultsManager', () => {
       // System settings
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
       expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();
+
+      // Chroma startup settings
+      expect(defaults.CLAUDE_MEM_CHROMA_LAZY_INIT).toBe('true');
+      expect(defaults.CLAUDE_MEM_CHROMA_STARTUP_DELAY_MS).toBe('5000');
     });
   });
 

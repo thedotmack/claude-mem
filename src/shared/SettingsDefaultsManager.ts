@@ -60,6 +60,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_HOST: string;
   CLAUDE_MEM_CHROMA_PORT: string;
   CLAUDE_MEM_CHROMA_SSL: string;
+  CLAUDE_MEM_CHROMA_LAZY_INIT: string;
+  CLAUDE_MEM_CHROMA_STARTUP_DELAY_MS: string;
   // Future cloud support
   CLAUDE_MEM_CHROMA_API_KEY: string;
   CLAUDE_MEM_CHROMA_TENANT: string;
@@ -119,6 +121,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_HOST: '127.0.0.1',
     CLAUDE_MEM_CHROMA_PORT: '8000',
     CLAUDE_MEM_CHROMA_SSL: 'false',
+    CLAUDE_MEM_CHROMA_LAZY_INIT: 'true',
+    CLAUDE_MEM_CHROMA_STARTUP_DELAY_MS: '5000',
     // Future cloud support (claude-mem pro)
     CLAUDE_MEM_CHROMA_API_KEY: '',
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',

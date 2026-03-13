@@ -435,13 +435,25 @@ export class WorkerService {
       this.resolveInitialization();
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
 
-      // Auto-backfill Chroma for all projects if out of sync with SQLite (fire-and-forget)
+      // Auto-backfill Chroma for all projects if out of sync with SQLite (fire-and-forget).
+      // When CLAUDE_MEM_CHROMA_LAZY_INIT is true (default), skip eager backfill to prevent
+      // HNSW index rebuild CPU spike on startup (#1248). Chroma will connect lazily on first
+      // search request instead, spreading the CPU cost to when it's actually needed.
       if (this.chromaMcpManager) {
-        ChromaSync.backfillAllProjects().then(() => {
-          logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
-        }).catch(error => {
-          logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
-        });
+        const chromaLazyInit = settings.CLAUDE_MEM_CHROMA_LAZY_INIT !== 'false';
+        if (chromaLazyInit) {
+          logger.info('CHROMA_SYNC', 'Chroma lazy init enabled — skipping eager backfill (will connect on first search)');
+        } else {
+          const startupDelayMs = parseInt(settings.CLAUDE_MEM_CHROMA_STARTUP_DELAY_MS || '5000', 10);
+          logger.info('CHROMA_SYNC', `Chroma eager backfill in ${startupDelayMs}ms`);
+          setTimeout(() => {
+            ChromaSync.backfillAllProjects().then(() => {
+              logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
+            }).catch(error => {
+              logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
+            });
+          }, startupDelayMs);
+        }
       }
 
       // Connect to MCP server
