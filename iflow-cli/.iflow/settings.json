@@ -1,0 +1,86 @@
+{
+  "$schema": "https://platform.iflow.cn/schemas/settings.json",
+  "mcpServers": {
+    "claude-mem": {
+      "command": "node",
+      "args": ["~/.iflow/mcp/mcp-server.cjs"],
+      "env": {
+        "CLAUDE_MEM_DATA_DIR": "~/.claude-mem/data"
+      }
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ~/.iflow/hooks/claude-mem/bun-runner.cjs ~/.iflow/hooks/claude-mem/worker-service.cjs start",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "node ~/.iflow/hooks/claude-mem/bun-runner.cjs ~/.iflow/hooks/claude-mem/worker-service.cjs hook iflow-cli context",
+            "timeout": 60
+          }
+        ]
+      },
+      {
+        "matcher": "clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ~/.iflow/hooks/claude-mem/bun-runner.cjs ~/.iflow/hooks/claude-mem/worker-service.cjs start",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ~/.iflow/hooks/claude-mem/bun-runner.cjs ~/.iflow/hooks/claude-mem/worker-service.cjs hook iflow-cli session-init",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write|write_file|replace|run_shell_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ~/.iflow/hooks/claude-mem/bun-runner.cjs ~/.iflow/hooks/claude-mem/worker-service.cjs hook iflow-cli observation",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ~/.iflow/hooks/claude-mem/bun-runner.cjs ~/.iflow/hooks/claude-mem/worker-service.cjs hook iflow-cli summarize",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ~/.iflow/hooks/claude-mem/bun-runner.cjs ~/.iflow/hooks/claude-mem/worker-service.cjs hook iflow-cli session-complete",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
