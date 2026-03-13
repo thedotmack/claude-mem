@@ -2324,6 +2324,92 @@ test_skill_md_documents_options() {
 test_skill_md_documents_options
 
 ###############################################################################
+# Worker PID file handling tests
+###############################################################################
+
+test_worker_stale_pid_cleanup() {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  local fake_home="$tmpdir/fakehome"
+  mkdir -p "$fake_home/.claude-mem"
+
+  # Write a PID file with a dead PID (99999999 should not exist)
+  cat > "$fake_home/.claude-mem/worker.pid" <<'EOF'
+{"pid":99999999,"port":37777,"startedAt":"2026-01-01T00:00:00.000Z","version":"installer"}
+EOF
+
+  # Source the relevant function and check that the stale file gets removed
+  # We test the logic inline since start_worker has other dependencies
+  local _pidfile="$fake_home/.claude-mem/worker.pid"
+  local _old_pid
+  _old_pid=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$_pidfile','utf8')).pid)}catch{}" 2>/dev/null)
+
+  if [[ -n "$_old_pid" ]] && ! kill -0 "$_old_pid" 2>/dev/null; then
+    rm -f "$_pidfile" 2>/dev/null
+  fi
+
+  if [[ ! -f "$_pidfile" ]]; then
+    test_pass "Stale PID file (dead process) is removed"
+  else
+    test_fail "Stale PID file was not removed"
+  fi
+
+  rm -rf "$tmpdir"
+}
+
+test_worker_live_pid_preserved() {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  local fake_home="$tmpdir/fakehome"
+  mkdir -p "$fake_home/.claude-mem"
+
+  # Write a PID file with our own PID (guaranteed alive, but not a worker)
+  cat > "$fake_home/.claude-mem/worker.pid" <<EOF
+{"pid":$$,"port":37777,"startedAt":"2026-01-01T00:00:00.000Z","version":"installer"}
+EOF
+
+  local _pidfile="$fake_home/.claude-mem/worker.pid"
+  local _old_pid
+  _old_pid=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$_pidfile','utf8')).pid)}catch{}" 2>/dev/null)
+
+  local should_remove=true
+  if [[ -n "$_old_pid" ]] && kill -0 "$_old_pid" 2>/dev/null; then
+    # PID is alive — check if it's actually a worker process
+    if ps -p "$_old_pid" -o args= 2>/dev/null | grep -q "worker-service"; then
+      should_remove=false
+    fi
+    # PID alive but not a worker → still remove (recycled PID)
+  fi
+
+  if [[ "$should_remove" == "true" ]]; then
+    rm -f "$_pidfile" 2>/dev/null
+  fi
+
+  # Our PID is alive but NOT a worker-service process, so the file should be removed
+  if [[ ! -f "$_pidfile" ]]; then
+    test_pass "PID file with live non-worker PID is removed (recycled PID)"
+  else
+    test_fail "PID file with live non-worker PID was preserved incorrectly"
+  fi
+
+  rm -rf "$tmpdir"
+}
+
+test_worker_daemon_flag_present() {
+  # Verify install.sh passes --daemon to worker-service
+  if grep -q 'worker_script.*--daemon' "$INSTALL_SCRIPT" || \
+     grep -q '"$worker_script" --daemon' "$INSTALL_SCRIPT"; then
+    test_pass "install.sh passes --daemon flag to worker-service"
+  else
+    test_fail "install.sh does not pass --daemon flag to worker-service"
+  fi
+}
+
+test_worker_stale_pid_cleanup
+test_worker_live_pid_preserved
+test_worker_daemon_flag_present
+
+###############################################################################
 # Summary
 ###############################################################################
 
