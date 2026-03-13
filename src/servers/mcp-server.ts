@@ -282,20 +282,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Cleanup function
-async function cleanup() {
-  logger.info('SYSTEM', 'MCP server shutting down');
+// Cleanup function - guard against double-exit
+let isShuttingDown = false;
+async function cleanup(reason?: string) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  logger.info('SYSTEM', `MCP server shutting down${reason ? ` (${reason})` : ''}`);
   process.exit(0);
 }
 
 // Register cleanup handlers for graceful shutdown
-process.on('SIGTERM', cleanup);
-process.on('SIGINT', cleanup);
+process.on('SIGTERM', () => cleanup('SIGTERM'));
+process.on('SIGINT', () => cleanup('SIGINT'));
+
+// Detect parent process death: when the parent (Claude Code) exits or crashes,
+// stdin gets EOF/close. The MCP SDK's StdioServerTransport does NOT listen for
+// these events, so without this handler the process leaks indefinitely.
+process.stdin.on('end', () => cleanup('stdin end'));
+process.stdin.on('close', () => cleanup('stdin close'));
 
 // Start the server
 async function main() {
   // Start the MCP server
   const transport = new StdioServerTransport();
+
+  // Also handle transport-level close (fires if server.close() is called)
+  transport.onclose = () => cleanup('transport close');
+
   await server.connect(transport);
   logger.info('SYSTEM', 'Claude-mem search server started');
 
