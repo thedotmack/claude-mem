@@ -163,3 +163,41 @@ describe('smart-install verifyCriticalModules logic', () => {
     expect(missing).toEqual(['@chroma-core/other-pkg']);
   });
 });
+
+describe('hooks.json Setup hook (#1268)', () => {
+  const hooksJsonPath = join(__dirname, '..', 'plugin', 'hooks', 'hooks.json');
+
+  it('should reference an existing script in the Setup hook', () => {
+    const hooksJson = JSON.parse(readFileSync(hooksJsonPath, 'utf-8'));
+    const setupHooks = hooksJson.hooks?.Setup;
+    expect(setupHooks).toBeDefined();
+    expect(setupHooks.length).toBeGreaterThan(0);
+
+    const setupCommand: string = setupHooks[0].hooks[0].command;
+
+    // Extract the script path from the hook command.
+    // Format: _R="..."; [ -z "$_R" ] && _R="..."; node "$_R/scripts/<script>"
+    // The script name is the last path component after /scripts/
+    const scriptMatch = setupCommand.match(/scripts\/([^\s"]+)/);
+    expect(scriptMatch).not.toBeNull();
+
+    const scriptName = scriptMatch![1];
+    const scriptPath = join(__dirname, '..', 'plugin', 'scripts', scriptName);
+
+    expect(existsSync(scriptPath)).toBe(true);
+  });
+
+  it('should not reference the deleted setup.sh script', () => {
+    const hooksJson = JSON.parse(readFileSync(hooksJsonPath, 'utf-8'));
+    const setupCommand: string = hooksJson.hooks.Setup[0].hooks[0].command;
+
+    expect(setupCommand).not.toContain('setup.sh');
+  });
+
+  it('should reference smart-install.js which handles all setup tasks', () => {
+    const hooksJson = JSON.parse(readFileSync(hooksJsonPath, 'utf-8'));
+    const setupCommand: string = hooksJson.hooks.Setup[0].hooks[0].command;
+
+    expect(setupCommand).toContain('smart-install.js');
+  });
+});
