@@ -945,6 +945,19 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
       logger.info('SYSTEM', 'Worker already running and healthy');
       return true;
     }
+  } else {
+    // Health check failed — if PID file still exists (cleanStalePidFile kept it
+    // because PID was alive), the recorded process is alive but NOT our worker.
+    // This is the PID reuse case (#1231). Remove the stale PID file so the
+    // daemon we're about to spawn doesn't refuse to start at its own guard.
+    const residualPidInfo = readPidFile();
+    if (residualPidInfo) {
+      logger.info('SYSTEM', 'Removing stale PID file: process alive but worker not healthy (likely PID reuse)', {
+        pid: residualPidInfo.pid,
+        port: residualPidInfo.port
+      });
+      removePidFile();
+    }
   }
 
   // Check if port is in use by something else
@@ -1170,16 +1183,29 @@ async function main() {
 
     case '--daemon':
     default: {
-      // GUARD 1: Refuse to start if another worker is already alive (PID check).
-      // Instant check (kill -0) — no HTTP dependency.
+      // GUARD 1: Refuse to start if another worker is already alive (PID + health check).
+      // Two-step validation: PID liveness (kill -0) then health endpoint (#1231).
+      // A stale PID can be reused by an unrelated process after OOM/crash,
+      // so PID liveness alone is insufficient — we must also verify health.
       const existingPidInfo = readPidFile();
       if (existingPidInfo && isProcessAlive(existingPidInfo.pid)) {
-        logger.info('SYSTEM', 'Worker already running (PID alive), refusing to start duplicate', {
-          existingPid: existingPidInfo.pid,
-          existingPort: existingPidInfo.port,
-          startedAt: existingPidInfo.startedAt
-        });
-        process.exit(0);
+        const isActuallyOurWorker = await isPortInUse(existingPidInfo.port);
+        if (isActuallyOurWorker) {
+          logger.info('SYSTEM', 'Worker already running (PID alive + health OK), refusing to start duplicate', {
+            existingPid: existingPidInfo.pid,
+            existingPort: existingPidInfo.port,
+            startedAt: existingPidInfo.startedAt
+          });
+          process.exit(0);
+        } else {
+          // PID alive but health check failed — OS reused the PID for a different
+          // process. Remove the stale PID file so we can start a new worker (#1231).
+          logger.info('SYSTEM', 'Stale PID file detected: process alive but not a healthy worker (PID reuse), removing', {
+            stalePid: existingPidInfo.pid,
+            expectedPort: existingPidInfo.port
+          });
+          removePidFile();
+        }
       }
 
       // GUARD 2: Refuse to start if the port is already bound.
