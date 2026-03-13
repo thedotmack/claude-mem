@@ -13,6 +13,14 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
+/**
+ * Maximum size for additionalContext before truncation.
+ * Claude Code saves hookSpecificOutput to session files (saved_hook_context),
+ * and large contexts cause the session file to grow, slowing all subsequent
+ * hook invocations. 50KB keeps context useful while preventing bloat (#1269).
+ */
+const MAX_CONTEXT_SIZE_BYTES = 50_000;
+
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     // Ensure worker is running before any other logic
@@ -64,8 +72,18 @@ export const contextHandler: EventHandler = {
         colorResponse?.ok ? colorResponse.text() : Promise.resolve('')
       ]);
 
-      const additionalContext = contextResult.trim();
+      let additionalContext = contextResult.trim();
       const coloredTimeline = colorResult.trim();
+
+      // Truncate context to prevent saved_hook_context bloat in Claude Code session files (#1269)
+      if (additionalContext.length > MAX_CONTEXT_SIZE_BYTES) {
+        logger.warn('HOOK', 'Context exceeds 50KB limit, truncating', {
+          originalSize: additionalContext.length,
+          limit: MAX_CONTEXT_SIZE_BYTES
+        });
+        additionalContext = additionalContext.slice(0, MAX_CONTEXT_SIZE_BYTES) +
+          '\n\n[Context truncated — exceeded 50KB limit. Use mem-search for full history.]';
+      }
 
       const systemMessage = showTerminalOutput && coloredTimeline
         ? `${coloredTimeline}\n\nView Observations Live @ http://localhost:${port}`
