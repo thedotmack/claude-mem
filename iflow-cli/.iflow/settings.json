@@ -1,0 +1,72 @@
+{
+  "$schema": "https://platform.iflow.cn/schemas/settings.json",
+  "mcpServers": {
+    "claude-mem": {
+      "command": "node",
+      "args": ["${CLAUDE_MEM_ROOT}/plugin/scripts/mcp-server.cjs"],
+      "env": {
+        "CLAUDE_MEM_DATA_DIR": "~/.claude-mem/data"
+      }
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/start-worker.cjs",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/inject-context.cjs",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write|write_file|replace|run_shell_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/capture-observation.cjs",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/summarize-session.cjs",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/session-complete.cjs",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  },
+  "claudeMem": {
+    "workerPort": 37777,
+    "project": "iflow-cli",
+    "autoCapture": true,
+    "autoInject": true,
+    "maxContextTokens": 4000
+  }
+}
