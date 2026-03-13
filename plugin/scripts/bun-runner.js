@@ -108,6 +108,14 @@ if (args.length === 0) {
 // Fix broken script paths caused by empty CLAUDE_PLUGIN_ROOT (#1215)
 args[0] = fixBrokenScriptPath(args[0]);
 
+// Normalize Windows backslash paths in script path (#1281)
+// CLAUDE_PLUGIN_ROOT on Windows contains backslashes which, when concatenated
+// with forward-slash suffixes in hooks.json, creates mixed-separator paths
+// that cause MODULE_NOT_FOUND errors.
+if (IS_WINDOWS) {
+  args[0] = args[0].replace(/\\/g, '/');
+}
+
 const bunPath = findBun();
 
 if (!bunPath) {

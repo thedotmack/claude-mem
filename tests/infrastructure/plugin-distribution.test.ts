@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync, existsSync, statSync } from 'fs';
+import { execSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -48,6 +49,7 @@ describe('Plugin Distribution - Required Files', () => {
   const requiredFiles = [
     'plugin/hooks/hooks.json',
     'plugin/scripts/bun-exec-runner.sh',
+    'plugin/scripts/bun-runner.js',
     'plugin/.claude-plugin/plugin.json',
     'plugin/skills/mem-search/SKILL.md',
   ];
@@ -135,8 +137,8 @@ describe('Plugin Distribution - bun-exec-runner.sh (#1249)', () => {
   });
 });
 
-describe('Plugin Distribution - hooks.json uses bun-exec-runner.sh (#1249)', () => {
-  it('should use bun-exec-runner.sh instead of node bun-runner.js for worker hooks', () => {
+describe('Plugin Distribution - hooks.json uses node bun-runner.js for cross-platform compatibility (#1281)', () => {
+  it('should use node bun-runner.js for worker hooks (cross-platform, handles Windows paths)', () => {
     const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
 
@@ -154,9 +156,9 @@ describe('Plugin Distribution - hooks.json uses bun-exec-runner.sh (#1249)', () 
 
     expect(workerCommands.length).toBeGreaterThan(0);
     for (const cmd of workerCommands) {
-      // Must use bun-exec-runner.sh, NOT node bun-runner.js
-      expect(cmd).toContain('bun-exec-runner.sh');
-      expect(cmd).not.toContain('node "$_R/scripts/bun-runner.js"');
+      // Must use node bun-runner.js for cross-platform compatibility (#1281)
+      // bun-runner.js handles Windows path normalization internally
+      expect(cmd).toContain('node "$_R/scripts/bun-runner.js"');
     }
   });
 });
@@ -179,5 +181,96 @@ describe('Plugin Distribution - Build Script Verification', () => {
     expect(content).toContain('plugin/skills/mem-search/SKILL.md');
     expect(content).toContain('plugin/hooks/hooks.json');
     expect(content).toContain('plugin/.claude-plugin/plugin.json');
+  });
+});
+
+describe('Plugin Distribution - Windows backslash path normalization (#1281)', () => {
+  it('should include backslash-to-forward-slash normalization in all hook commands', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+
+    // The tr command normalizes Windows backslash paths to forward slashes.
+    const windowsPathNormalization = "tr '\\\\' '/'";
+
+    for (const [eventName, matchers] of Object.entries(parsed.hooks)) {
+      for (const matcher of matchers as any[]) {
+        for (const hook of matcher.hooks) {
+          if (hook.type === 'command') {
+            expect(hook.command).toContain(windowsPathNormalization);
+          }
+        }
+      }
+    }
+  });
+
+  it('should normalize backslashes before using $_R in paths', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+
+    for (const [eventName, matchers] of Object.entries(parsed.hooks)) {
+      for (const matcher of matchers as any[]) {
+        for (const hook of matcher.hooks) {
+          if (hook.type === 'command') {
+            // The tr normalization must appear BEFORE any "$_R/scripts/" usage
+            const normalizationIndex = hook.command.indexOf("tr '\\\\' '/'");
+            const firstPathUsage = hook.command.indexOf('"$_R/scripts/');
+            expect(normalizationIndex).toBeGreaterThan(-1);
+            expect(firstPathUsage).toBeGreaterThan(-1);
+            expect(normalizationIndex).toBeLessThan(firstPathUsage);
+          }
+        }
+      }
+    }
+  });
+
+  it('should produce forward-slash paths when shell executes normalization with backslash input', () => {
+    // Verify the tr command actually normalizes Windows paths.
+    // Simulates: _R="C:\Users\foo\.claude\plugins" then applies printf | tr
+    const result = execSync(
+      'bash -c \'_R="C:\\Users\\foo\\.claude\\plugins"; _R=$(printf "%s" "$_R" | tr "\\\\" "/"); echo "$_R"\'',
+      { encoding: 'utf-8' }
+    ).trim();
+
+    expect(result).toBe('C:/Users/foo/.claude/plugins');
+    expect(result).not.toContain('\\');
+  });
+
+  it('should leave forward-slash paths unchanged when shell executes normalization', () => {
+    // Unix paths should pass through normalization unmodified
+    const result = execSync(
+      'bash -c \'_R="/home/user/.claude/plugins"; _R=$(printf "%s" "$_R" | tr "\\\\" "/"); echo "$_R"\'',
+      { encoding: 'utf-8' }
+    ).trim();
+
+    expect(result).toBe('/home/user/.claude/plugins');
+  });
+});
+
+describe('Plugin Distribution - bun-runner.js Windows path normalization (#1281)', () => {
+  it('should include IS_WINDOWS path normalization for script arguments', () => {
+    const runnerPath = path.join(projectRoot, 'plugin/scripts/bun-runner.js');
+    const content = readFileSync(runnerPath, 'utf-8');
+
+    // Must normalize backslash paths on Windows
+    expect(content).toContain('IS_WINDOWS');
+    expect(content).toContain('#1281');
+    expect(content).toContain("args[0] = args[0].replace(/\\\\/g, '/');");
+  });
+
+  it('should normalize paths after fixBrokenScriptPath and before findBun', () => {
+    const runnerPath = path.join(projectRoot, 'plugin/scripts/bun-runner.js');
+    const content = readFileSync(runnerPath, 'utf-8');
+
+    const fixBrokenIndex = content.indexOf('fixBrokenScriptPath(args[0])');
+    const normalizeIndex = content.indexOf("args[0] = args[0].replace(/\\\\/g, '/');");
+    const findBunIndex = content.indexOf('const bunPath = findBun()');
+
+    expect(fixBrokenIndex).toBeGreaterThan(-1);
+    expect(normalizeIndex).toBeGreaterThan(-1);
+    expect(findBunIndex).toBeGreaterThan(-1);
+
+    // Order: fixBrokenScriptPath → Windows normalization → findBun
+    expect(normalizeIndex).toBeGreaterThan(fixBrokenIndex);
+    expect(normalizeIndex).toBeLessThan(findBunIndex);
   });
 });

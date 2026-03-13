@@ -188,7 +188,7 @@ async function buildHooks() {
       'plugin/skills/mem-search/SKILL.md',
       'plugin/skills/smart-explore/SKILL.md',
       'plugin/hooks/hooks.json',
-      'plugin/scripts/bun-exec-runner.sh',
+      'plugin/scripts/bun-runner.js',
       'plugin/.claude-plugin/plugin.json',
     ];
     for (const filePath of requiredDistributionFiles) {
