@@ -37,7 +37,13 @@ export const summarizeHandler: EventHandler = {
     // Extract last assistant message from transcript (the work Claude did)
     // Note: "user" messages in transcripts are mostly tool_results, not actual user input.
     // The user's original request is already stored in user_prompts table.
-    const lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
+    // Guard: transcript may be missing after context compaction (#1274)
+    let lastAssistantMessage = '';
+    try {
+      lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
+    } catch (error) {
+      logger.warn('HOOK', `Transcript unavailable for session ${sessionId}, proceeding without summary content: ${error instanceof Error ? error.message : error}`);
+    }
 
     logger.dataIn('HOOK', 'Stop: Requesting summary', {
       workerPort: port,
