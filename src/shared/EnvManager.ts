@@ -174,6 +174,26 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
 }
 
 /**
+ * Read a fresh OAuth token from ~/.claude/.credentials.json
+ * This avoids using stale tokens cached in process.env when the worker
+ * daemon outlives a token rotation by Claude Code.
+ */
+function readFreshOAuthToken(): string | undefined {
+  try {
+    const credentialsPath = join(homedir(), '.claude', '.credentials.json');
+    const raw = readFileSync(credentialsPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    const token = parsed?.claudeAiOauth?.accessToken;
+    if (token && typeof token === 'string') {
+      return token;
+    }
+  } catch {
+    // File missing or malformed — fall through to env var or CLI billing
+  }
+  return undefined;
+}
+
+/**
  * Build a clean environment for spawning SDK subprocesses
  *
  * Uses a BLOCKLIST approach: inherits the full process environment but strips
@@ -209,6 +229,9 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     // If not configured, CLI billing will be used (via ANTHROPIC_AUTH_TOKEN passthrough)
     if (credentials.ANTHROPIC_API_KEY) {
       isolatedEnv.ANTHROPIC_API_KEY = credentials.ANTHROPIC_API_KEY;
+      // Enforce deterministic auth chain: API key mode must not carry OAuth token.
+      // This avoids ambiguous precedence when the parent process exports a token.
+      delete isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN;
     }
     // Note: GEMINI_API_KEY and OPENROUTER_API_KEY pass through from process.env,
     // but claude-mem's .env takes precedence if configured
@@ -219,12 +242,17 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
       isolatedEnv.OPENROUTER_API_KEY = credentials.OPENROUTER_API_KEY;
     }
 
-    // 4. Pass through Claude CLI's OAuth token if available (fallback for CLI subscription billing)
-    // When no ANTHROPIC_API_KEY is configured, the spawned CLI uses subscription billing
-    // which requires either ~/.claude/.credentials.json or CLAUDE_CODE_OAUTH_TOKEN.
-    // The worker inherits this token from the Claude Code session that started it.
-    if (!isolatedEnv.ANTHROPIC_API_KEY && process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-      isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    // 4. Pass through Claude CLI's OAuth token for subscription billing
+    // Read fresh token from ~/.claude/.credentials.json instead of the env var,
+    // which may be stale if the worker daemon outlives a token rotation.
+    if (!isolatedEnv.ANTHROPIC_API_KEY) {
+      const freshToken = readFreshOAuthToken();
+      if (freshToken) {
+        isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = freshToken;
+      } else if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+        // Fallback to inherited env var if credentials.json is unavailable
+        isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      }
     }
   }
 
@@ -265,6 +293,9 @@ export function hasAnthropicApiKey(): boolean {
 export function getAuthMethodDescription(): string {
   if (hasAnthropicApiKey()) {
     return 'API key (from ~/.claude-mem/.env)';
+  }
+  if (readFreshOAuthToken()) {
+    return 'Claude Code OAuth token (from ~/.claude/.credentials.json)';
   }
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
     return 'Claude Code OAuth token (from parent process)';
