@@ -5,6 +5,12 @@ import { logger } from '../../utils/logger.js';
 /** Messages processing longer than this are considered stale and reset to pending by self-healing */
 const STALE_PROCESSING_THRESHOLD_MS = 60_000;
 
+/** Maximum number of pending messages to recover per session on startup (#1262) */
+const MAX_RECOVERY_BATCH_SIZE = 50;
+
+/** Pending messages older than this are deleted during recovery instead of re-queued (#1262) */
+const MAX_PENDING_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 /**
  * Persistent pending message record from database
  */
@@ -179,6 +185,18 @@ export class PendingMessageStore {
     if (result.changes > 0) {
       logger.info('QUEUE', `RESET_STALE | count=${result.changes} | thresholdMs=${thresholdMs}${sessionDbId !== undefined ? ` | sessionDbId=${sessionDbId}` : ''}`);
     }
+
+    // Delete messages older than MAX_PENDING_AGE_MS to prevent unbounded queue growth (#1262)
+    const ageCutoff = Date.now() - MAX_PENDING_AGE_MS;
+    const deleteStmt = this.db.prepare(`
+      DELETE FROM pending_messages
+      WHERE created_at_epoch < ? AND status IN ('pending', 'processing')
+    `);
+    const deleteResult = deleteStmt.run(ageCutoff);
+    if (deleteResult.changes > 0) {
+      logger.info('QUEUE', `PRUNED_OLD | deleted=${deleteResult.changes} | messages older than 24h`);
+    }
+
     return result.changes;
   }
 
@@ -432,6 +450,44 @@ export class PendingMessageStore {
     `);
     const results = stmt.all() as { session_db_id: number }[];
     return results.map(r => r.session_db_id);
+  }
+
+  /**
+   * Prune excess pending messages per session, keeping only the most recent N (#1262).
+   * Deletes older messages beyond MAX_RECOVERY_BATCH_SIZE to prevent unbounded CPU
+   * when hundreds of messages accumulated during crashes.
+   * @returns Total number of messages deleted across all sessions
+   */
+  pruneExcessPendingMessages(): number {
+    // Get all sessions with pending work
+    const sessions = this.getSessionsWithPendingMessages();
+    let totalDeleted = 0;
+
+    for (const sessionDbId of sessions) {
+      // Find the created_at_epoch cutoff: keep the N most recent, delete the rest
+      const cutoffRow = this.db.prepare(`
+        SELECT created_at_epoch FROM pending_messages
+        WHERE session_db_id = ? AND status IN ('pending', 'processing')
+        ORDER BY created_at_epoch DESC
+        LIMIT 1 OFFSET ?
+      `).get(sessionDbId, MAX_RECOVERY_BATCH_SIZE) as { created_at_epoch: number } | undefined;
+
+      if (cutoffRow) {
+        // Delete messages older than the Nth most recent
+        const deleteResult = this.db.prepare(`
+          DELETE FROM pending_messages
+          WHERE session_db_id = ? AND status IN ('pending', 'processing')
+            AND created_at_epoch <= ?
+        `).run(sessionDbId, cutoffRow.created_at_epoch);
+
+        if (deleteResult.changes > 0) {
+          totalDeleted += deleteResult.changes;
+          logger.info('QUEUE', `PRUNED_EXCESS | sessionDbId=${sessionDbId} | deleted=${deleteResult.changes} | kept=${MAX_RECOVERY_BATCH_SIZE}`);
+        }
+      }
+    }
+
+    return totalDeleted;
   }
 
   /**

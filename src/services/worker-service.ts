@@ -406,12 +406,17 @@ export class WorkerService {
 
       await this.dbManager.initialize();
 
-      // Reset any messages that were processing when worker died
+      // Reset any messages that were processing when worker died.
+      // Also prunes messages older than 24h and caps per-session recovery to 50 messages (#1262).
       const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
       const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-      const resetCount = pendingStore.resetStaleProcessingMessages(0); // 0 = reset ALL processing
+      const resetCount = pendingStore.resetStaleProcessingMessages(0); // 0 = reset ALL processing (also prunes old messages)
       if (resetCount > 0) {
         logger.info('SYSTEM', `Reset ${resetCount} stale processing messages to pending`);
+      }
+      const prunedCount = pendingStore.pruneExcessPendingMessages();
+      if (prunedCount > 0) {
+        logger.info('SYSTEM', `Pruned ${prunedCount} excess pending messages (capped at 50 per session)`);
       }
 
       // Initialize search services
