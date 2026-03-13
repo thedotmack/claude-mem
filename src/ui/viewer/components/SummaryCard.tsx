@@ -22,6 +22,9 @@ export function SummaryCard({ summary }: SummaryCardProps) {
         <div className="summary-badge-row">
           <span className="card-type summary-badge">Session Summary</span>
           <span className="summary-project-badge">{summary.project}</span>
+          {summary.model && (
+            <span className="card-model">{summary.model}</span>
+          )}
         </div>
         {summary.request && (
           <h2 className="summary-title">{summary.request}</h2>

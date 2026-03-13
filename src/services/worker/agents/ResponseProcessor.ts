@@ -93,6 +93,10 @@ export async function processAgentResponse(
     memorySessionId: session.memorySessionId
   });
 
+  // Read the active model from settings for attribution
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  const activeModel = settings.CLAUDE_MEM_MODEL || null;
+
   // ATOMIC TRANSACTION: Store observations + summary ONCE
   // Messages are already deleted from queue on claim, so no completion tracking needed
   const result = sessionStore.storeObservations(
@@ -102,7 +106,8 @@ export async function processAgentResponse(
     summaryForStore,
     session.lastPromptNumber,
     discoveryTokens,
-    originalTimestamp ?? undefined
+    originalTimestamp ?? undefined,
+    activeModel
   );
 
   // Log storage result with IDs for end-to-end traceability

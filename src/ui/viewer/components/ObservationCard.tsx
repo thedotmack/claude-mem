@@ -53,6 +53,9 @@ export function ObservationCard({ observation }: ObservationCardProps) {
             {observation.type}
           </span>
           <span className="card-project">{observation.project}</span>
+          {observation.model && (
+            <span className="card-model">{observation.model}</span>
+          )}
         </div>
         <div className="view-mode-toggles">
           {hasFactsContent && (

@@ -211,4 +211,28 @@ describe('Summaries Module', () => {
       expect(retrieved).toHaveProperty('created_at_epoch');
     });
   });
+
+  describe('model field (#1265)', () => {
+    it('should store and retrieve model when provided', () => {
+      const memorySessionId = createSessionWithMemoryId('content-model-s1', 'mem-model-s1');
+      const summary = createSummaryInput();
+
+      const result = storeSummary(db, memorySessionId, 'test-project', summary, 1, 0, undefined, 'claude-haiku-4-5');
+
+      const row = db.prepare('SELECT model FROM session_summaries WHERE id = ?').get(result.id) as { model: string | null } | null;
+      expect(row).not.toBeNull();
+      expect(row!.model).toBe('claude-haiku-4-5');
+    });
+
+    it('should store null model when not provided', () => {
+      const memorySessionId = createSessionWithMemoryId('content-model-s2', 'mem-model-s2');
+      const summary = createSummaryInput();
+
+      const result = storeSummary(db, memorySessionId, 'test-project', summary);
+
+      const row = db.prepare('SELECT model FROM session_summaries WHERE id = ?').get(result.id) as { model: string | null } | null;
+      expect(row).not.toBeNull();
+      expect(row!.model).toBeNull();
+    });
+  });
 });

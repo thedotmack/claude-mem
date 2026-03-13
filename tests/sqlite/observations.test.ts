@@ -228,4 +228,28 @@ describe('Observations Module', () => {
       expect(recent).toEqual([]);
     });
   });
+
+  describe('model field (#1265)', () => {
+    it('should store and retrieve model when provided', () => {
+      const memorySessionId = createSessionWithMemoryId('content-model-1', 'mem-model-1');
+      const observation = createObservationInput();
+
+      const result = storeObservation(db, memorySessionId, 'test-project', observation, 1, 0, undefined, 'claude-sonnet-4-5');
+
+      const stored = getObservationById(db, result.id);
+      expect(stored).not.toBeNull();
+      expect((stored as any).model).toBe('claude-sonnet-4-5');
+    });
+
+    it('should store null model when not provided', () => {
+      const memorySessionId = createSessionWithMemoryId('content-model-2', 'mem-model-2');
+      const observation = createObservationInput();
+
+      const result = storeObservation(db, memorySessionId, 'test-project', observation);
+
+      const stored = getObservationById(db, result.id);
+      expect(stored).not.toBeNull();
+      expect((stored as any).model).toBeNull();
+    });
+  });
 });

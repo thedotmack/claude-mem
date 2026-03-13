@@ -12,6 +12,7 @@ export interface Observation {
   files_read: string | null;
   files_modified: string | null;
   prompt_number: number | null;
+  model: string | null;
   created_at: string;
   created_at_epoch: number;
 }
@@ -25,6 +26,7 @@ export interface Summary {
   learned?: string;
   completed?: string;
   next_steps?: string;
+  model?: string;
   created_at_epoch: number;
 }
 

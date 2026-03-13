@@ -34,6 +34,7 @@ export class MigrationRunner {
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
+    this.addModelColumn();
   }
 
   /**
@@ -858,5 +859,28 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
+  }
+
+  /**
+   * Add model column to observations and session_summaries (migration 24)
+   * Records which AI model produced each observation/summary for comparison.
+   */
+  private addModelColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const obsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    if (!obsInfo.some(col => col.name === 'model')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN model TEXT');
+      logger.debug('DB', 'Added model column to observations table');
+    }
+
+    const sumInfo = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
+    if (!sumInfo.some(col => col.name === 'model')) {
+      this.db.run('ALTER TABLE session_summaries ADD COLUMN model TEXT');
+      logger.debug('DB', 'Added model column to session_summaries table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
   }
 }
