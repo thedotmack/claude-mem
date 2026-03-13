@@ -309,6 +309,32 @@ export class WorkerService {
       next(); // Delegate to SearchRoutes handler
     });
 
+    // Guard ALL /sessions/* routes during initialization — wait for DB with timeout
+    // Legacy session endpoints (e.g., /sessions/:id/init) access the database directly
+    // and will throw "Database not initialized" if hit before initializeBackground() completes (#1323)
+    this.server.app.use('/sessions', async (req, res, next) => {
+      if (this.initializationCompleteFlag) {
+        next();
+        return;
+      }
+
+      const timeoutMs = 30000;
+      const timeoutPromise = new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error('Database initialization timeout')), timeoutMs)
+      );
+
+      try {
+        await Promise.race([this.initializationComplete, timeoutPromise]);
+        next();
+      } catch (error) {
+        logger.error('HTTP', `Request to ${req.method} /sessions${req.path} rejected — DB not initialized`, {}, error as Error);
+        res.status(503).json({
+          error: 'Service initializing',
+          message: 'Database is still initializing, please retry'
+        });
+      }
+    });
+
     // Guard ALL /api/* routes during initialization — wait for DB with timeout
     // Exceptions: /api/health, /api/readiness, /api/version (handled by Server.ts core routes)
     // and /api/context/inject (handled above with fail-open)
