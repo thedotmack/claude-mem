@@ -12,7 +12,9 @@ const path = require('path');
 const os = require('os');
 
 const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+const FACTORY_INSTALLED_PATH = path.join(os.homedir(), '.factory', 'plugins', 'marketplaces', 'thedotmack');
 const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
+const FACTORY_CACHE_BASE_PATH = path.join(os.homedir(), '.factory', 'plugins', 'cache', 'thedotmack', 'claude-mem');
 
 function getCurrentBranch() {
   try {
@@ -102,6 +104,31 @@ try {
   // Install dependencies in cache directory so worker can resolve them
   console.log(`Running bun install in cache folder (version ${version})...`);
   execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
+
+  // Sync to Factory/Droid CLI marketplace path
+  console.log('\nSyncing to Factory (Droid CLI) marketplace...');
+  try {
+    execSync(`mkdir -p "${FACTORY_INSTALLED_PATH}"`, { stdio: 'inherit' });
+    execSync(
+      `rsync -av --delete --exclude=.git --exclude=bun.lock --exclude=package-lock.json ${gitignoreExcludes} ./ "${FACTORY_INSTALLED_PATH}/"`,
+      { stdio: 'inherit' }
+    );
+    console.log('Running bun install in Factory marketplace...');
+    execSync(`bun install`, { cwd: FACTORY_INSTALLED_PATH, stdio: 'inherit' });
+
+    // Sync to Factory cache folder
+    const FACTORY_CACHE_VERSION_PATH = path.join(FACTORY_CACHE_BASE_PATH, version);
+    console.log(`Syncing to Factory cache folder (version ${version})...`);
+    execSync(`mkdir -p "${FACTORY_CACHE_VERSION_PATH}"`, { stdio: 'inherit' });
+    execSync(
+      `rsync -av --delete --exclude=.git ${pluginGitignoreExcludes} plugin/ "${FACTORY_CACHE_VERSION_PATH}/"`,
+      { stdio: 'inherit' }
+    );
+    execSync(`bun install`, { cwd: FACTORY_CACHE_VERSION_PATH, stdio: 'inherit' });
+    console.log('\x1b[32m%s\x1b[0m', '✓ Factory marketplace sync complete');
+  } catch (factoryError) {
+    console.log('\x1b[33m%s\x1b[0m', `ℹ Factory sync skipped: ${factoryError.message}`);
+  }
 
   console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 

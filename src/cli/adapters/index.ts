@@ -1,11 +1,13 @@
 import type { PlatformAdapter } from '../types.js';
 import { claudeCodeAdapter } from './claude-code.js';
 import { cursorAdapter } from './cursor.js';
+import { droidAdapter } from './droid.js';
 import { rawAdapter } from './raw.js';
 
 export function getPlatformAdapter(platform: string): PlatformAdapter {
   switch (platform) {
     case 'claude-code': return claudeCodeAdapter;
+    case 'droid': return droidAdapter;
     case 'cursor': return cursorAdapter;
     case 'raw': return rawAdapter;
     // Codex CLI and other compatible platforms use the raw adapter (accepts both camelCase and snake_case fields)
@@ -13,4 +15,4 @@ export function getPlatformAdapter(platform: string): PlatformAdapter {
   }
 }
 
-export { claudeCodeAdapter, cursorAdapter, rawAdapter };
+export { claudeCodeAdapter, droidAdapter, cursorAdapter, rawAdapter };

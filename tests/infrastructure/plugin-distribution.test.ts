@@ -48,6 +48,7 @@ describe('Plugin Distribution - Required Files', () => {
   const requiredFiles = [
     'plugin/hooks/hooks.json',
     'plugin/.claude-plugin/plugin.json',
+    'plugin/.factory-plugin/plugin.json',
     'plugin/skills/mem-search/SKILL.md',
   ];
 
@@ -97,6 +98,47 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
       }
     }
   });
+
+  it('should include DROID_PLUGIN_ROOT in the fallback chain for all hook commands', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+
+    for (const [eventName, matchers] of Object.entries(parsed.hooks)) {
+      for (const matcher of matchers as any[]) {
+        for (const hook of matcher.hooks) {
+          if (hook.type === 'command') {
+            expect(hook.command).toContain('${DROID_PLUGIN_ROOT}');
+          }
+        }
+      }
+    }
+  });
+
+  it('should include .factory/plugins path in the fallback chain for all hook commands', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+    const expectedFactoryPath = '$HOME/.factory/plugins/marketplaces/thedotmack/plugin';
+
+    for (const [eventName, matchers] of Object.entries(parsed.hooks)) {
+      for (const matcher of matchers as any[]) {
+        for (const hook of matcher.hooks) {
+          if (hook.type === 'command') {
+            expect(hook.command).toContain(expectedFactoryPath);
+          }
+        }
+      }
+    }
+  });
+
+  it('should include SessionEnd and PreCompact hooks for Droid CLI', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+
+    expect(parsed.hooks.SessionEnd).toBeDefined();
+    expect(parsed.hooks.PreCompact).toBeDefined();
+    expect(Array.isArray(parsed.hooks.SessionEnd)).toBe(true);
+    expect(Array.isArray(parsed.hooks.PreCompact)).toBe(true);
+  });
 });
 
 describe('Plugin Distribution - package.json Files Field', () => {
@@ -117,5 +159,6 @@ describe('Plugin Distribution - Build Script Verification', () => {
     expect(content).toContain('plugin/skills/mem-search/SKILL.md');
     expect(content).toContain('plugin/hooks/hooks.json');
     expect(content).toContain('plugin/.claude-plugin/plugin.json');
+    expect(content).toContain('plugin/.factory-plugin/plugin.json');
   });
 });

@@ -65,6 +65,18 @@ export function isWorkerUnavailableError(error: unknown): boolean {
   return false;
 }
 
+/**
+ * Auto-detect the calling platform from environment variables.
+ * Factory/Droid sets DROID_PLUGIN_ROOT alongside CLAUDE_PLUGIN_ROOT.
+ * Claude Code only sets CLAUDE_PLUGIN_ROOT.
+ * Explicit non-default platform args (e.g., 'cursor') are respected.
+ */
+export function detectPlatform(cliPlatform: string): string {
+  if (cliPlatform !== 'claude-code') return cliPlatform;
+  if (process.env.DROID_PLUGIN_ROOT) return 'droid';
+  return cliPlatform;
+}
+
 export async function hookCommand(platform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
   // Suppress stderr in hook context — Claude Code shows stderr as error UI (#1181)
   // Exit 1: stderr shown to user. Exit 2: stderr fed to Claude for processing.
@@ -73,12 +85,13 @@ export async function hookCommand(platform: string, event: string, options: Hook
   process.stderr.write = (() => true) as typeof process.stderr.write;
 
   try {
-    const adapter = getPlatformAdapter(platform);
+    const resolvedPlatform = detectPlatform(platform);
+    const adapter = getPlatformAdapter(resolvedPlatform);
     const handler = getEventHandler(event);
 
     const rawInput = await readJsonFromStdin();
     const input = adapter.normalizeInput(rawInput);
-    input.platform = platform;  // Inject platform for handler-level decisions
+    input.platform = resolvedPlatform;  // Inject platform for handler-level decisions
     const result = await handler.execute(input);
     const output = adapter.formatOutput(result);
 

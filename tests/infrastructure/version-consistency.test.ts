@@ -45,6 +45,14 @@ describe('Version Consistency', () => {
     expect(pluginJson.version).toBe(rootVersion);
   });
 
+  it('should have matching version in plugin/.factory-plugin/plugin.json', () => {
+    const pluginJsonPath = path.join(projectRoot, 'plugin/.factory-plugin/plugin.json');
+    expect(existsSync(pluginJsonPath)).toBe(true);
+    
+    const pluginJson = JSON.parse(readFileSync(pluginJsonPath, 'utf-8'));
+    expect(pluginJson.version).toBe(rootVersion);
+  });
+
   it('should have matching version in .claude-plugin/marketplace.json', () => {
     const marketplaceJsonPath = path.join(projectRoot, '.claude-plugin/marketplace.json');
     expect(existsSync(marketplaceJsonPath)).toBe(true);
