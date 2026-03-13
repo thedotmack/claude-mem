@@ -1,9 +1,12 @@
 import path from 'path';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
+import { findGitRoot } from './git-root.js';
 
 /**
- * Extract project name from working directory path
+ * Extract project name from working directory path.
+ * Prefers the git repository root name over the raw cwd basename,
+ * so that running from any subdirectory yields a consistent project name.
  * Handles edge cases: null/undefined cwd, drive roots, trailing slashes
  *
  * @param cwd - Current working directory (absolute path)
@@ -13,6 +16,16 @@ export function getProjectName(cwd: string | null | undefined): string {
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
     return 'unknown-project';
+  }
+
+  // Prefer git root name for consistent project identification across subdirectories
+  const gitRoot = findGitRoot(cwd);
+  if (gitRoot) {
+    const gitRootName = path.basename(gitRoot);
+    if (gitRootName !== '') {
+      logger.debug('PROJECT_NAME', 'Using git root as project name', { cwd, gitRoot, gitRootName });
+      return gitRootName;
+    }
   }
 
   // Extract basename (handles trailing slashes automatically)
@@ -64,13 +77,10 @@ export interface ProjectContext {
  */
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {
   const primary = getProjectName(cwd);
-
   if (!cwd) {
     return { primary, parent: null, isWorktree: false, allProjects: [primary] };
   }
-
   const worktreeInfo = detectWorktree(cwd);
-
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
     // In a worktree: include parent first for chronological ordering
     return {
@@ -80,6 +90,5 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
       allProjects: [worktreeInfo.parentProjectName, primary]
     };
   }
-
   return { primary, parent: null, isWorktree: false, allProjects: [primary] };
 }
