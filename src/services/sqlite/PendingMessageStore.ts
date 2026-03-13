@@ -77,7 +77,7 @@ export class PendingMessageStore {
       message.tool_response ? JSON.stringify(message.tool_response) : null,
       message.cwd || null,
       message.last_assistant_message || null,
-      message.prompt_number || null,
+      message.prompt_number ?? null,
       now
     );
 
@@ -481,7 +481,7 @@ export class PendingMessageStore {
       tool_name: persistent.tool_name || undefined,
       tool_input: persistent.tool_input ? JSON.parse(persistent.tool_input) : undefined,
       tool_response: persistent.tool_response ? JSON.parse(persistent.tool_response) : undefined,
-      prompt_number: persistent.prompt_number || undefined,
+      prompt_number: persistent.prompt_number ?? undefined,
       cwd: persistent.cwd || undefined,
       last_assistant_message: persistent.last_assistant_message || undefined
     };
