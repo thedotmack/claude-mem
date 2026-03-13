@@ -11,7 +11,82 @@ import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { isProjectExcluded } from '../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH, DATA_DIR } from '../../shared/paths.js';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import { setIdleFlag } from './idle-flags.js';
+
+/**
+ * Debounce state stored in a file so it persists across the short-lived hook processes.
+ * Maps contentSessionId -> lastInitEpochMs
+ */
+interface DebounceState {
+  [contentSessionId: string]: number;
+}
+
+const DEBOUNCE_FILE_PATH = join(DATA_DIR, 'session-init-dedup.json');
+const DEBOUNCE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * Load the current debounce state from disk.
+ * Returns an empty object if the file doesn't exist or can't be read.
+ */
+function loadDebounceState(): DebounceState {
+  try {
+    if (!existsSync(DEBOUNCE_FILE_PATH)) {
+      return {};
+    }
+    const raw = readFileSync(DEBOUNCE_FILE_PATH, 'utf-8');
+    return JSON.parse(raw) as DebounceState;
+  } catch {
+    // If file is unreadable or corrupted, proceed normally
+    return {};
+  }
+}
+
+/**
+ * Persist debounce state to disk, pruning entries older than 24 hours.
+ */
+function saveDebounceState(state: DebounceState): void {
+  try {
+    const now = Date.now();
+    const pruned: DebounceState = {};
+    for (const [id, ts] of Object.entries(state)) {
+      if (now - ts < DEBOUNCE_MAX_AGE_MS) {
+        pruned[id] = ts;
+      }
+    }
+    // Ensure the data directory exists before writing
+    if (!existsSync(DATA_DIR)) {
+      mkdirSync(DATA_DIR, { recursive: true });
+    }
+    writeFileSync(DEBOUNCE_FILE_PATH, JSON.stringify(pruned), 'utf-8');
+  } catch {
+    // File write failure is non-fatal — debounce simply won't persist
+  }
+}
+
+/**
+ * Check if session-init has already run for the given contentSessionId.
+ * Returns true if we should SKIP processing (already initialized).
+ * Within a single session, only one init is needed — subsequent prompts
+ * (including system-generated idle pings) should not re-initialize.
+ * Entries are pruned after 24 hours via saveDebounceState().
+ */
+function isAlreadyInitialized(contentSessionId: string): boolean {
+  const state = loadDebounceState();
+  return contentSessionId in state;
+}
+
+/**
+ * Record a successful session-init for the given contentSessionId.
+ */
+function recordDebounceTimestamp(contentSessionId: string): void {
+  const state = loadDebounceState();
+  state[contentSessionId] = Date.now();
+  saveDebounceState(state);
+}
+
 
 export const sessionInitHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -34,6 +109,17 @@ export const sessionInitHandler: EventHandler = {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
       logger.info('HOOK', 'Project excluded from tracking', { cwd });
+      return { continue: true, suppressOutput: true };
+    }
+
+    // Deduplicate: skip session-init if this contentSessionId was already initialized.
+    // Within a single session, only one init is needed. Subsequent UserPromptSubmit
+    // events (including system-generated idle pings) should not re-initialize.
+    // Controlled by CLAUDE_MEM_SESSION_INIT_DEDUP setting (default: true).
+    const dedupEnabled = settings.CLAUDE_MEM_SESSION_INIT_DEDUP === 'true';
+    if (dedupEnabled && isAlreadyInitialized(sessionId)) {
+      logger.info('HOOK', 'session-init skipped: already initialized for this session', { contentSessionId: sessionId });
+      setIdleFlag(sessionId);
       return { continue: true, suppressOutput: true };
     }
 
@@ -121,6 +207,9 @@ export const sessionInitHandler: EventHandler = {
     } else if (input.platform === 'cursor') {
       logger.debug('HOOK', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
     }
+
+    // Record that this session has been initialized (prevents re-init from idle pings)
+    recordDebounceTimestamp(sessionId);
 
     logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | project=${project}`, {
       sessionId: sessionDbId
