@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, statSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -47,6 +47,7 @@ describe('Plugin Distribution - Skills', () => {
 describe('Plugin Distribution - Required Files', () => {
   const requiredFiles = [
     'plugin/hooks/hooks.json',
+    'plugin/scripts/bun-exec-runner.sh',
     'plugin/.claude-plugin/plugin.json',
     'plugin/skills/mem-search/SKILL.md',
   ];
@@ -95,6 +96,67 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
           }
         }
       }
+    }
+  });
+});
+
+
+describe('Plugin Distribution - bun-exec-runner.sh (#1249)', () => {
+  const scriptPath = path.join(projectRoot, 'plugin/scripts/bun-exec-runner.sh');
+
+  it('should exist and be executable', () => {
+    expect(existsSync(scriptPath)).toBe(true);
+    const stats = statSync(scriptPath);
+    // Check execute permission (owner)
+    expect(stats.mode & 0o100).toBeTruthy();
+  });
+
+  it('should have a POSIX shell shebang', () => {
+    const content = readFileSync(scriptPath, 'utf-8');
+    expect(content.startsWith('#!/bin/sh')).toBe(true);
+  });
+
+  it('should use exec to avoid grandchild process tree', () => {
+    const content = readFileSync(scriptPath, 'utf-8');
+    // Must use exec to replace shell with bun (key fix for #1249)
+    expect(content).toContain('exec "$_BUN"');
+  });
+
+  it('should check common bun install locations', () => {
+    const content = readFileSync(scriptPath, 'utf-8');
+    expect(content).toContain('$HOME/.bun/bin/bun');
+    expect(content).toContain('/opt/homebrew/bin/bun');
+    expect(content).toContain('/usr/local/bin/bun');
+  });
+
+  it('should fall back to node bun-runner.js', () => {
+    const content = readFileSync(scriptPath, 'utf-8');
+    expect(content).toContain('bun-runner.js');
+  });
+});
+
+describe('Plugin Distribution - hooks.json uses bun-exec-runner.sh (#1249)', () => {
+  it('should use bun-exec-runner.sh instead of node bun-runner.js for worker hooks', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+
+    // Collect all hook commands that invoke worker-service.cjs
+    const workerCommands: string[] = [];
+    for (const [eventName, matchers] of Object.entries(parsed.hooks)) {
+      for (const matcher of matchers as any[]) {
+        for (const hook of matcher.hooks) {
+          if (hook.type === 'command' && hook.command.includes('worker-service.cjs')) {
+            workerCommands.push(hook.command);
+          }
+        }
+      }
+    }
+
+    expect(workerCommands.length).toBeGreaterThan(0);
+    for (const cmd of workerCommands) {
+      // Must use bun-exec-runner.sh, NOT node bun-runner.js
+      expect(cmd).toContain('bun-exec-runner.sh');
+      expect(cmd).not.toContain('node "$_R/scripts/bun-runner.js"');
     }
   });
 });
