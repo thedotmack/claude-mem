@@ -41,6 +41,18 @@ export function buildSettingsObject(
     if (providerConfig.model) settings.CLAUDE_MEM_OPENROUTER_MODEL = providerConfig.model;
   }
 
+  // OpenClaw-specific provider override
+  if (providerConfig.openclawProvider && providerConfig.openclawProvider !== providerConfig.provider) {
+    settings.CLAUDE_MEM_OPENCLAW_PROVIDER = providerConfig.openclawProvider;
+    // Write OpenClaw-specific API key if it's a different provider that needs one
+    if (providerConfig.openclawProvider === 'gemini' && providerConfig.openclawApiKey) {
+      if (!settings.CLAUDE_MEM_GEMINI_API_KEY) settings.CLAUDE_MEM_GEMINI_API_KEY = providerConfig.openclawApiKey;
+    } else if (providerConfig.openclawProvider === 'openrouter' && providerConfig.openclawApiKey) {
+      if (!settings.CLAUDE_MEM_OPENROUTER_API_KEY) settings.CLAUDE_MEM_OPENROUTER_API_KEY = providerConfig.openclawApiKey;
+    }
+    // openai-codex: credentials managed by OpenClaw OAuth — nothing to write here
+  }
+
   // Chroma settings
   if (settingsConfig.chromaEnabled) {
     settings.CLAUDE_MEM_CHROMA_MODE = settingsConfig.chromaMode ?? 'local';
