@@ -1,9 +1,13 @@
 import path from "path";
+import os from "os";
 import { readFileSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT } from "./paths.js";
+
+const DEFAULT_BASE_PORT = 37777;
+const PER_USER_PORT_RANGE = 1000;
 
 // Named constants for health checks
 // Allow env var override for users on slow systems (e.g., CLAUDE_MEM_HEALTH_TIMEOUT_MS=10000)
@@ -46,9 +50,31 @@ let cachedPort: number | null = null;
 let cachedHost: string | null = null;
 
 /**
- * Get the worker port number from settings
- * Uses CLAUDE_MEM_WORKER_PORT from settings file or default (37777)
- * Caches the port value to avoid repeated file reads
+ * Get the effective UID for per-user port derivation.
+ * Returns 0 on Windows (process.getuid undefined, os.userInfo().uid is -1).
+ */
+export function getEffectiveUid(): number {
+  if (typeof process.getuid === 'function') return process.getuid();
+  const uid = os.userInfo().uid;
+  return uid >= 0 ? uid : 0;
+}
+
+/**
+ * Derive a per-user port from a base port and UID.
+ * Prevents cross-account data leakage on multi-user systems (#1255).
+ * UID 0 (root) and Windows (uid unavailable) use the base port unchanged.
+ */
+export function computePerUserPort(basePort: number): number {
+  const uid = getEffectiveUid();
+  if (uid === 0) return basePort;
+  return basePort + (uid % PER_USER_PORT_RANGE);
+}
+
+/**
+ * Get the worker port number from settings.
+ * When the user has not explicitly configured a port (env var or non-default in settings),
+ * derives a per-user port from UID to prevent cross-account data leakage (#1255).
+ * Caches the port value to avoid repeated file reads.
  */
 export function getWorkerPort(): number {
   if (cachedPort !== null) {
@@ -57,7 +83,19 @@ export function getWorkerPort(): number {
 
   const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+  const configuredPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+
+  // Respect explicit user configuration (env var or non-default in settings file)
+  const isExplicitlyConfigured =
+    process.env.CLAUDE_MEM_WORKER_PORT !== undefined ||
+    configuredPort !== DEFAULT_BASE_PORT;
+
+  if (isExplicitlyConfigured) {
+    cachedPort = configuredPort;
+  } else {
+    cachedPort = computePerUserPort(configuredPort);
+  }
+
   return cachedPort;
 }
 

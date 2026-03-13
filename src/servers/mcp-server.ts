@@ -2,7 +2,7 @@
  * Claude-mem MCP Search Server - Thin HTTP Wrapper
  *
  * Refactored from 2,718 lines to ~600-800 lines
- * Delegates all business logic to Worker HTTP API at localhost:37777
+ * Delegates all business logic to Worker HTTP API at localhost (per-user port derived from UID)
  * Maintains MCP protocol handling and tool schemas
  */
 
