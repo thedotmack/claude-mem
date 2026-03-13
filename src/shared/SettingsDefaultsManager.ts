@@ -18,7 +18,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORKER_HOST: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
   // AI Provider Configuration
-  CLAUDE_MEM_PROVIDER: string;  // 'claude' | 'gemini' | 'openrouter'
+  CLAUDE_MEM_PROVIDER: string;  // 'claude' | 'gemini' | 'openrouter' | 'minimax'
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  // 'cli' | 'api' - how Claude provider authenticates
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  // 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-3-flash-preview'
@@ -29,6 +29,11 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
   CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
   CLAUDE_MEM_OPENROUTER_MAX_TOKENS: string;
+  CLAUDE_MEM_MINIMAX_API_KEY: string;
+  CLAUDE_MEM_MINIMAX_MODEL: string;
+  CLAUDE_MEM_MINIMAX_BASE_URL: string;
+  CLAUDE_MEM_MINIMAX_MAX_CONTEXT_MESSAGES: string;
+  CLAUDE_MEM_MINIMAX_MAX_TOKENS: string;
   // System Configuration
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
@@ -88,6 +93,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
     CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
+    CLAUDE_MEM_MINIMAX_API_KEY: '',  // Empty by default, can be set via UI or env
+    CLAUDE_MEM_MINIMAX_MODEL: 'MiniMax-M2.5',  // Default MiniMax model
+    CLAUDE_MEM_MINIMAX_BASE_URL: 'https://api.minimax.io/v1',  // MiniMax API base URL (overseas)
+    CLAUDE_MEM_MINIMAX_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
+    CLAUDE_MEM_MINIMAX_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
     // System Configuration
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',

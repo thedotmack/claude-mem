@@ -108,6 +108,7 @@ import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from './worker/GeminiAgent.js';
 import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterAgent.js';
+import { MiniMaxAgent, isMiniMaxSelected, isMiniMaxAvailable } from './worker/MiniMaxAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
@@ -168,6 +169,7 @@ export class WorkerService {
   private sdkAgent: SDKAgent;
   private geminiAgent: GeminiAgent;
   private openRouterAgent: OpenRouterAgent;
+  private miniMaxAgent: MiniMaxAgent;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -209,6 +211,7 @@ export class WorkerService {
     this.sdkAgent = new SDKAgent(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiAgent(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterAgent(this.dbManager, this.sessionManager);
+    this.miniMaxAgent = new MiniMaxAgent(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
@@ -337,7 +340,7 @@ export class WorkerService {
 
     // Standard routes (registered AFTER guard middleware)
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
+    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.miniMaxAgent, this.sessionEventBroadcaster, this));
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
@@ -506,7 +509,10 @@ export class WorkerService {
    * Get the appropriate agent based on provider settings.
    * Same logic as SessionRoutes.getActiveAgent() for consistency.
    */
-  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
+  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent | MiniMaxAgent {
+    if (isMiniMaxSelected() && isMiniMaxAvailable()) {
+      return this.miniMaxAgent;
+    }
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return this.openRouterAgent;
     }
@@ -736,6 +742,18 @@ export class WorkerService {
         return;
       } catch (e) {
         logger.warn('SDK', 'Fallback Gemini failed, trying OpenRouter', {
+          sessionId: sessionDbId,
+          error: e instanceof Error ? e.message : String(e)
+        });
+      }
+    }
+
+    if (isMiniMaxAvailable()) {
+      try {
+        await this.miniMaxAgent.startSession(session, this);
+        return;
+      } catch (e) {
+        logger.warn('SDK', 'Fallback MiniMax failed, trying OpenRouter', {
           sessionId: sessionDbId,
           error: e instanceof Error ? e.message : String(e)
         });
