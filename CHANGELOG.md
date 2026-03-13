@@ -2,6 +2,46 @@
 
 All notable changes to claude-mem.
 
+## [v10.6.0] - 2026-03-03
+
+## CLI: Command Line Interface
+
+This release introduces a comprehensive **CLI tool** for managing Claude-Mem from the terminal, providing system diagnostics, data management, and configuration without needing to interact with the web UI.
+
+### New Commands (11 Total)
+
+**System Commands (4):**
+- **`doctor`** — Run comprehensive health checks on plugin, worker, database, Bun, and Node.js. Includes `--fix` flag for automatic repairs.
+- **`repair`** — Interactive repair wizard for common issues. Supports `--dry-run` and `--force` flags.
+- **`config`** — Manage settings with validation. Subcommands: `get`, `set`, `list`, `reset`, `validate`.
+- **`shell`** — Shell completion support for Bash, Zsh, and Fish.
+
+**Worker Commands (1):**
+- **`logs`** — View and manage worker logs with `--tail`, `--follow`, `--level` filters, and `--clean` for old log removal.
+
+**Data Commands (6):**
+- **`backup`** — Create backups (full, database-only, settings-only). List with `--list`.
+- **`stats`** — Display database statistics including observations, sessions, activity, and top projects. Supports `--json` output.
+- **`search`** — Full-text memory search with filters for project, type, and date. Includes `--recent` and `--projects` flags.
+- **`clean`** — Remove old data (sessions, observations, logs, failed records). Supports `--dry-run`.
+- **`export`** — Export observations to JSON or Markdown with date/project filters.
+- **`import`** — Import observations from JSON with validation and `--dry-run` support.
+
+### Key Features
+
+- **Health Diagnostics**: Automatic detection of plugin, worker, database, and runtime issues
+- **Validation**: Real-time validation for PORT (1024-65535), LOG_LEVEL (DEBUG/INFO/WARN/ERROR), and other settings
+- **Colorized Output**: Clear visual feedback with ✓/✗/⚠ symbols
+- **JSON Mode**: All commands support `--json` for programmatic access
+- **Cross-Platform**: Works on Windows, macOS, and Linux
+- **35 Unit Tests**: Comprehensive test coverage for utils and services
+
+### Documentation
+
+- New comprehensive CLI guide at `docs/CLI_GUIDE.md`
+- Updated README.md with CLI quick reference
+- Full command documentation with examples
+
 ## [v10.5.5] - 2026-03-09
 
 ### Bug Fix

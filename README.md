@@ -62,7 +62,7 @@
     <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-10.6.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
@@ -121,6 +121,38 @@ Start a new Claude Code session in the terminal and enter the following commands
 Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
 
 > **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. To use Claude-Mem as a plugin, always install via the `/plugin` commands above.
+
+### 🖥️ Command Line Interface (CLI)
+
+Claude-Mem includes a powerful CLI for managing your memory system:
+
+```bash
+# System diagnostics and repair
+claude-mem doctor              # Run health checks
+claude-mem doctor --fix        # Auto-fix detected issues
+claude-mem repair              # Interactive repair wizard
+
+# View and manage logs
+claude-mem logs --tail 100     # View last 100 lines
+claude-mem logs --follow       # Follow logs in real-time
+claude-mem logs --clean 30     # Remove logs older than 30 days
+
+# Data management
+claude-mem backup              # Create backup
+claude-mem backup --list       # List available backups
+claude-mem stats               # Show statistics
+claude-mem search "auth"       # Search memories
+claude-mem clean --logs 30     # Clean old logs
+claude-mem export --format md  # Export to Markdown
+
+# Configuration
+claude-mem config list         # Show all settings
+claude-mem config get PORT     # Get specific setting
+claude-mem config set PORT 37778  # Update setting
+claude-mem shell install bash  # Install shell completion
+```
+
+See [CLI Documentation](https://docs.claude-mem.ai/cli) for detailed usage.
 
 ### 🦞 OpenClaw Gateway
 

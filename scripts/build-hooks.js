@@ -197,11 +197,35 @@ async function buildHooks() {
     }
     console.log('✓ All required distribution files present');
 
-    console.log('\n✅ Worker service, MCP server, and context generator built successfully!');
+    // Build CLI
+    console.log('\n🔧 Building CLI...');
+    const cliDir = 'dist/cli';
+    if (!fs.existsSync(cliDir)) {
+      fs.mkdirSync(cliDir, { recursive: true });
+    }
+    await build({
+      entryPoints: ['src/cli/index.ts'],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'esm',
+      outfile: `${cliDir}/index.js`,
+      minify: true,
+      logLevel: 'error',
+      banner: {
+        js: '#!/usr/bin/env node'
+      }
+    });
+    fs.chmodSync(`${cliDir}/index.js`, 0o755);
+    const cliStats = fs.statSync(`${cliDir}/index.js`);
+    console.log(`✓ CLI built (${(cliStats.size / 1024).toFixed(2)} KB)`);
+
+    console.log('\n✅ Build completed successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Context Generator: context-generator.cjs`);
+    console.log(`   - CLI: ${cliDir}/index.js`);
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);
