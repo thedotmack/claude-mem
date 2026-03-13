@@ -3,6 +3,7 @@
   "hooks": {
     "Setup": [
       {
+        "_comment": "Uses smart-install.js (not setup.sh which was deleted in 74d94aa2). See #1268.",
         "matcher": "*",
         "hooks": [
           {
