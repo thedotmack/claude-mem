@@ -40,6 +40,26 @@ export const contextHandler: EventHandler = {
     const context = getProjectContext(cwd);
     const port = getWorkerPort();
 
+    // Wait for worker to be fully initialized (DB + search ready).
+    // The 'start' hook may restart the worker in parallel, so /api/context/inject
+    // can hit the initialization guard and return empty. Poll /api/readiness first.
+    const readinessUrl = `http://127.0.0.1:${port}/api/readiness`;
+    const readinessStart = Date.now();
+    const readinessTimeoutMs = 15_000;
+    let ready = false;
+    while (Date.now() - readinessStart < readinessTimeoutMs) {
+      try {
+        const r = await fetch(readinessUrl);
+        if (r.ok) { ready = true; break; }
+      } catch {
+        // Worker not yet listening — retry
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+    if (!ready) {
+      logger.warn('HOOK', 'Worker readiness timed out before context fetch');
+    }
+
     // Check if terminal output should be shown (load settings early)
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const showTerminalOutput = settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true';

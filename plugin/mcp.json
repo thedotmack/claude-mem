@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "claude-mem": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.cjs"]
+    }
+  }
+}
