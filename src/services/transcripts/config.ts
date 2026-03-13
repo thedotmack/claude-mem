@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
+import { isPathWithinHomeDirectory } from '../../utils/agents-md-utils.js';
 import type { TranscriptSchema, TranscriptWatchConfig } from './types.js';
 
 export const DEFAULT_CONFIG_PATH = join(homedir(), '.claude-mem', 'transcript-watch.json');
@@ -124,6 +125,22 @@ export function loadTranscriptWatchConfig(path = DEFAULT_CONFIG_PATH): Transcrip
   if (!parsed.stateFile) {
     parsed.stateFile = DEFAULT_STATE_PATH;
   }
+
+  // Validate context.path values are within home directory (#1204)
+  if (parsed.watches) {
+    for (const watch of parsed.watches) {
+      if (watch.context?.path) {
+        const expandedContextPath = expandHomePath(watch.context.path);
+        const resolvedContextPath = resolve(expandedContextPath);
+        if (!isPathWithinHomeDirectory(resolvedContextPath)) {
+          throw new Error(
+            `Watch "${watch.name}" context.path resolves outside home directory: ${watch.context.path} → ${resolvedContextPath}`
+          );
+        }
+      }
+    }
+  }
+
   return parsed;
 }
 
