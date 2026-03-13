@@ -79,4 +79,5 @@ export interface AllRecentObservationRow {
   prompt_number: number | null;
   created_at: string;
   created_at_epoch: number;
+  model: string | null;
 }

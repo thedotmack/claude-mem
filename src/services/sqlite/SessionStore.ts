@@ -1003,9 +1003,10 @@ export class SessionStore {
     prompt_number: number | null;
     created_at: string;
     created_at_epoch: number;
+    model: string | null;
   }> {
     const stmt = this.db.prepare(`
-      SELECT id, type, title, subtitle, text, project, prompt_number, created_at, created_at_epoch
+      SELECT id, type, title, subtitle, text, project, prompt_number, created_at, created_at_epoch, model
       FROM observations
       ORDER BY created_at_epoch DESC
       LIMIT ?

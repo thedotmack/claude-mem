@@ -34,7 +34,7 @@ export function getAllRecentObservations(
   limit: number = 100
 ): AllRecentObservationRow[] {
   const stmt = db.prepare(`
-    SELECT id, type, title, subtitle, text, project, prompt_number, created_at, created_at_epoch
+    SELECT id, type, title, subtitle, text, project, prompt_number, created_at, created_at_epoch, model
     FROM observations
     ORDER BY created_at_epoch DESC
     LIMIT ?

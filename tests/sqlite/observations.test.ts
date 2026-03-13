@@ -15,6 +15,7 @@ import {
   storeObservation,
   getObservationById,
   getRecentObservations,
+  getAllRecentObservations,
 } from '../../src/services/sqlite/Observations.js';
 import {
   createSDKSession,
@@ -250,6 +251,37 @@ describe('Observations Module', () => {
       const stored = getObservationById(db, result.id);
       expect(stored).not.toBeNull();
       expect((stored as any).model).toBeNull();
+    });
+
+    it('should include model in getAllRecentObservations results', () => {
+      const mem1 = createSessionWithMemoryId('content-recent-m1', 'session-recent-m1', 'test-project');
+      const mem2 = createSessionWithMemoryId('content-recent-m2', 'session-recent-m2', 'test-project');
+      const mem3 = createSessionWithMemoryId('content-recent-m3', 'session-recent-m3', 'test-project');
+
+      storeObservation(db, mem1, 'test-project', createObservationInput(), 1, 0, 1000000000000, 'claude-opus-4-5');
+      storeObservation(db, mem2, 'test-project', createObservationInput(), 2, 0, 2000000000000, 'claude-haiku-4-5');
+      storeObservation(db, mem3, 'test-project', createObservationInput(), 3, 0, 3000000000000);
+
+      const recent = getAllRecentObservations(db, 10);
+
+      expect(recent.length).toBe(3);
+      // Most recent first (no model)
+      expect(recent[0].model).toBeNull();
+      // Second has haiku
+      expect(recent[1].model).toBe('claude-haiku-4-5');
+      // Oldest has opus
+      expect(recent[2].model).toBe('claude-opus-4-5');
+    });
+
+    it('should return model as null for observations without model in getAllRecentObservations', () => {
+      const mem1 = createSessionWithMemoryId('content-nomodel-1', 'session-nomodel-1', 'test-project');
+      storeObservation(db, mem1, 'test-project', createObservationInput());
+
+      const recent = getAllRecentObservations(db, 10);
+
+      expect(recent.length).toBe(1);
+      expect(recent[0]).toHaveProperty('model');
+      expect(recent[0].model).toBeNull();
     });
   });
 });
