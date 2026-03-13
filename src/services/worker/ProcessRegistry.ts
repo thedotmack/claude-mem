@@ -91,7 +91,14 @@ function notifySlotAvailable(): void {
  * @param maxConcurrent Max number of concurrent agents
  * @param timeoutMs Max time to wait before giving up
  */
+const TOTAL_PROCESS_HARD_CAP = 10;
+
 export async function waitForSlot(maxConcurrent: number, timeoutMs: number = 60_000): Promise<void> {
+  // Hard cap: refuse to spawn if too many processes exist regardless of pool accounting
+  if (processRegistry.size >= TOTAL_PROCESS_HARD_CAP) {
+    throw new Error(`Hard cap exceeded: ${processRegistry.size} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`);
+  }
+
   if (processRegistry.size < maxConcurrent) return;
 
   logger.info('PROCESS', `Pool limit reached (${processRegistry.size}/${maxConcurrent}), waiting for slot...`);
@@ -136,8 +143,9 @@ export function getActiveProcesses(): Array<{ pid: number; sessionDbId: number; 
 export async function ensureProcessExit(tracked: TrackedProcess, timeoutMs: number = 5000): Promise<void> {
   const { pid, process: proc } = tracked;
 
-  // Already exited?
-  if (proc.killed || proc.exitCode !== null) {
+  // Already exited? Only trust exitCode, NOT proc.killed
+  // proc.killed only means Node sent a signal — the process can still be alive
+  if (proc.exitCode !== null) {
     unregisterProcess(pid);
     return;
   }
@@ -153,8 +161,8 @@ export async function ensureProcessExit(tracked: TrackedProcess, timeoutMs: numb
 
   await Promise.race([exitPromise, timeoutPromise]);
 
-  // Check if exited gracefully
-  if (proc.killed || proc.exitCode !== null) {
+  // Check if exited gracefully — only trust exitCode
+  if (proc.exitCode !== null) {
     unregisterProcess(pid);
     return;
   }
@@ -167,8 +175,14 @@ export async function ensureProcessExit(tracked: TrackedProcess, timeoutMs: numb
     // Already dead
   }
 
-  // Brief wait for SIGKILL to take effect
-  await new Promise(resolve => setTimeout(resolve, 200));
+  // Wait for SIGKILL to take effect — use exit event with 1s timeout instead of blind sleep
+  const sigkillExitPromise = new Promise<void>((resolve) => {
+    proc.once('exit', () => resolve());
+  });
+  const sigkillTimeout = new Promise<void>((resolve) => {
+    setTimeout(resolve, 1000);
+  });
+  await Promise.race([sigkillExitPromise, sigkillTimeout]);
   unregisterProcess(pid);
 }
 
@@ -234,8 +248,8 @@ async function killIdleDaemonChildren(): Promise<number> {
         minutes = parseInt(minMatch[1], 10);
       }
 
-      // Kill if idle for more than 2 minutes
-      if (minutes >= 2) {
+      // Kill if idle for more than 1 minute
+      if (minutes >= 1) {
         logger.info('PROCESS', `Killing idle daemon child PID ${pid} (idle ${minutes}m)`, { pid, minutes });
         try {
           process.kill(pid, 'SIGKILL');
@@ -393,7 +407,7 @@ export function createPidCapturingSpawn(sessionDbId: number) {
  * Start the orphan reaper interval
  * Returns cleanup function to stop the interval
  */
-export function startOrphanReaper(getActiveSessionIds: () => Set<number>, intervalMs: number = 5 * 60 * 1000): () => void {
+export function startOrphanReaper(getActiveSessionIds: () => Set<number>, intervalMs: number = 60 * 1000): () => void {
   const interval = setInterval(async () => {
     try {
       const activeIds = getActiveSessionIds();
