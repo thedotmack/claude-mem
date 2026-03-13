@@ -14,6 +14,8 @@ import { summarizeHandler } from './summarize.js';
 import { userMessageHandler } from './user-message.js';
 import { fileEditHandler } from './file-edit.js';
 import { sessionCompleteHandler } from './session-complete.js';
+import { sessionEndHandler } from './session-end.js';
+import { preCompactHandler } from './pre-compact.js';
 
 export type EventType =
   | 'context'           // SessionStart - inject context
@@ -21,6 +23,8 @@ export type EventType =
   | 'observation'       // PostToolUse - save observation
   | 'summarize'         // Stop - generate summary (phase 1)
   | 'session-complete'  // Stop - complete session (phase 2) - fixes #842
+  | 'session-end'       // Droid SessionEnd - delegates to session-complete
+  | 'pre-compact'       // Droid PreCompact - summarize before compact
   | 'user-message'      // SessionStart (parallel) - display to user
   | 'file-edit';        // Cursor afterFileEdit
 
@@ -30,6 +34,8 @@ const handlers: Record<EventType, EventHandler> = {
   'observation': observationHandler,
   'summarize': summarizeHandler,
   'session-complete': sessionCompleteHandler,
+  'session-end': sessionEndHandler,
+  'pre-compact': preCompactHandler,
   'user-message': userMessageHandler,
   'file-edit': fileEditHandler
 };
@@ -65,3 +71,5 @@ export { summarizeHandler } from './summarize.js';
 export { userMessageHandler } from './user-message.js';
 export { fileEditHandler } from './file-edit.js';
 export { sessionCompleteHandler } from './session-complete.js';
+export { sessionEndHandler } from './session-end.js';
+export { preCompactHandler } from './pre-compact.js';

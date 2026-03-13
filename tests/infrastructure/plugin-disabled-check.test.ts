@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { isPluginDisabledInClaudeSettings } from '../../src/shared/plugin-state.js';
+import { isPluginDisabledInClaudeSettings, isPluginDisabledInFactorySettings, isPluginDisabledInAnySettings } from '../../src/shared/plugin-state.js';
 
 /**
  * Tests for isPluginDisabledInClaudeSettings() (#781).
@@ -14,13 +14,19 @@ import { isPluginDisabledInClaudeSettings } from '../../src/shared/plugin-state.
  */
 
 let tempDir: string;
+let factoryTempDir: string;
 let originalClaudeConfigDir: string | undefined;
+let originalFactoryConfigDir: string | undefined;
 
 beforeEach(() => {
   tempDir = join(tmpdir(), `plugin-disabled-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  factoryTempDir = join(tmpdir(), `factory-disabled-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(tempDir, { recursive: true });
+  mkdirSync(factoryTempDir, { recursive: true });
   originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  originalFactoryConfigDir = process.env.FACTORY_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = tempDir;
+  process.env.FACTORY_CONFIG_DIR = factoryTempDir;
 });
 
 afterEach(() => {
@@ -29,8 +35,14 @@ afterEach(() => {
   } else {
     delete process.env.CLAUDE_CONFIG_DIR;
   }
+  if (originalFactoryConfigDir !== undefined) {
+    process.env.FACTORY_CONFIG_DIR = originalFactoryConfigDir;
+  } else {
+    delete process.env.FACTORY_CONFIG_DIR;
+  }
   try {
     rmSync(tempDir, { recursive: true, force: true });
+    rmSync(factoryTempDir, { recursive: true, force: true });
   } catch {
     // Ignore cleanup errors
   }
@@ -87,5 +99,71 @@ describe('isPluginDisabledInClaudeSettings (#781)', () => {
   it('should return false when settings.json is empty', () => {
     writeFileSync(join(tempDir, 'settings.json'), '');
     expect(isPluginDisabledInClaudeSettings()).toBe(false);
+  });
+});
+
+describe('isPluginDisabledInFactorySettings (Droid CLI)', () => {
+  it('should return false when settings.json does not exist', () => {
+    expect(isPluginDisabledInFactorySettings()).toBe(false);
+  });
+
+  it('should return false when plugin is explicitly enabled', () => {
+    const settings = {
+      enabledPlugins: {
+        'claude-mem@thedotmack': true
+      }
+    };
+    writeFileSync(join(factoryTempDir, 'settings.json'), JSON.stringify(settings));
+    expect(isPluginDisabledInFactorySettings()).toBe(false);
+  });
+
+  it('should return true when plugin is explicitly disabled', () => {
+    const settings = {
+      enabledPlugins: {
+        'claude-mem@thedotmack': false
+      }
+    };
+    writeFileSync(join(factoryTempDir, 'settings.json'), JSON.stringify(settings));
+    expect(isPluginDisabledInFactorySettings()).toBe(true);
+  });
+
+  it('should return false when enabledPlugins key is missing', () => {
+    const settings = { permissions: { allow: [] } };
+    writeFileSync(join(factoryTempDir, 'settings.json'), JSON.stringify(settings));
+    expect(isPluginDisabledInFactorySettings()).toBe(false);
+  });
+
+  it('should return false when settings.json contains invalid JSON', () => {
+    writeFileSync(join(factoryTempDir, 'settings.json'), '{ invalid }}}');
+    expect(isPluginDisabledInFactorySettings()).toBe(false);
+  });
+});
+
+describe('isPluginDisabledInAnySettings (combined check)', () => {
+  it('should return false when neither platform has it disabled', () => {
+    expect(isPluginDisabledInAnySettings()).toBe(false);
+  });
+
+  it('should return true when disabled in Claude Code only', () => {
+    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify({
+      enabledPlugins: { 'claude-mem@thedotmack': false }
+    }));
+    expect(isPluginDisabledInAnySettings()).toBe(true);
+  });
+
+  it('should return true when disabled in Factory only', () => {
+    writeFileSync(join(factoryTempDir, 'settings.json'), JSON.stringify({
+      enabledPlugins: { 'claude-mem@thedotmack': false }
+    }));
+    expect(isPluginDisabledInAnySettings()).toBe(true);
+  });
+
+  it('should return true when disabled in both platforms', () => {
+    const settings = JSON.stringify({
+      enabledPlugins: { 'claude-mem@thedotmack': false }
+    });
+    writeFileSync(join(tempDir, 'settings.json'), settings);
+    writeFileSync(join(factoryTempDir, 'settings.json'), settings);
+    expect(isPluginDisabledInAnySettings()).toBe(true);
   });
 });

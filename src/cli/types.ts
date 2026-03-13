@@ -10,6 +10,12 @@ export interface NormalizedHookInput {
   // Cursor-specific fields
   filePath?: string;   // afterFileEdit
   edits?: unknown[];   // afterFileEdit
+  // Droid-specific fields
+  permissionMode?: string;
+  hookEventName?: string;
+  source?: string;
+  reason?: string;
+  stopHookActive?: boolean;
 }
 
 export interface HookResult {

@@ -60,8 +60,8 @@ function clearWorkerSpawnAttempted(): void {
 }
 
 // Re-export for backward compatibility — canonical implementation in shared/plugin-state.ts
-export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
-import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
+export { isPluginDisabledInClaudeSettings, isPluginDisabledInFactorySettings, isPluginDisabledInAnySettings } from '../shared/plugin-state.js';
+import { isPluginDisabledInAnySettings } from '../shared/plugin-state.js';
 
 // Version injected at build time by esbuild define
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -1002,10 +1002,10 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
 async function main() {
   const command = process.argv[2];
 
-  // Early exit if plugin is disabled in Claude Code settings (#781).
+  // Early exit if plugin is disabled in Claude Code or Droid CLI settings (#781).
   // Only gate hook-initiated commands; CLI management (stop/status) still works.
   const hookInitiatedCommands = ['start', 'hook', 'restart', '--daemon'];
-  if ((hookInitiatedCommands.includes(command) || command === undefined) && isPluginDisabledInClaudeSettings()) {
+  if ((hookInitiatedCommands.includes(command) || command === undefined) && isPluginDisabledInAnySettings()) {
     process.exit(0);
   }
 
@@ -1113,8 +1113,8 @@ async function main() {
       const event = process.argv[4];
       if (!platform || !event) {
         console.error('Usage: claude-mem hook <platform> <event>');
-        console.error('Platforms: claude-code, cursor, raw');
-        console.error('Events: context, session-init, observation, summarize, session-complete');
+        console.error('Platforms: claude-code, droid, cursor, raw');
+        console.error('Events: context, session-init, observation, summarize, session-complete, session-end, pre-compact');
         process.exit(1);
       }
 
