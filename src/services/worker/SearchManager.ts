@@ -61,6 +61,9 @@ export class SearchManager {
     limit: number,
     whereFilter?: Record<string, any>
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
+    if (!this.chromaSync) {
+      return { ids: [], distances: [], metadatas: [] };
+    }
     return await this.chromaSync.queryChroma(query, limit, whereFilter);
   }
 
