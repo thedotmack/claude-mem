@@ -59,6 +59,7 @@ function clearWorkerSpawnAttempted(): void {
   }
 }
 
+
 // Re-export for backward compatibility — canonical implementation in shared/plugin-state.ts
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -80,7 +81,8 @@ import {
   spawnDaemon,
   createSignalHandler,
   isPidFileRecent,
-  touchPidFile
+  touchPidFile,
+  isRunningUnderSystemd
 } from './infrastructure/ProcessManager.js';
 import {
   isPortInUse,
@@ -1018,7 +1020,17 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
 // ============================================================================
 
 async function main() {
-  const command = process.argv[2];
+  let command = process.argv[2];
+
+  // Under systemd, the 'start' command must NOT fork a daemon and exit.
+  // systemd's default KillMode=control-group kills all processes in the cgroup
+  // when the parent exits, including the forked worker (#1245).
+  // Redirect to --daemon (foreground) mode so systemd tracks the correct PID.
+  // Users should configure their service file with Type=exec or Type=simple, not Type=forking.
+  if (command === 'start' && isRunningUnderSystemd()) {
+    logger.info('SYSTEM', 'Systemd detected (INVOCATION_ID set) — running worker in foreground instead of forking');
+    command = '--daemon';
+  }
 
   // Early exit if plugin is disabled in Claude Code settings (#781).
   // Only gate hook-initiated commands; CLI management (stop/status) still works.

@@ -758,6 +758,18 @@ export function touchPidFile(): void {
 }
 
 /**
+ * Detect if the process is running under systemd.
+ *
+ * systemd sets INVOCATION_ID (a unique UUID) for every service process.
+ * When present, the worker must run in the foreground — forking a daemon
+ * and exiting causes systemd's default KillMode=control-group to kill
+ * the forked child along with the parent (#1245).
+ */
+export function isRunningUnderSystemd(): boolean {
+  return !!process.env.INVOCATION_ID;
+}
+
+/**
  * Read the PID file and remove it if the recorded process is dead (stale).
  *
  * This is a cheap operation: one filesystem read + one signal-0 check.
