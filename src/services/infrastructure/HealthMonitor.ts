@@ -150,6 +150,22 @@ export async function getRunningWorkerVersion(port: number): Promise<string | nu
   }
 }
 
+/**
+ * Fetch the PID from a running worker's /api/health endpoint.
+ * Returns the PID if the worker responds, or null on any failure.
+ * Used by cleanStalePidFile to cross-check PID file against actual worker.
+ */
+export async function getHealthPid(port: number): Promise<number | null> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+    if (!response.ok) return null;
+    const data = await response.json() as { pid?: number };
+    return data.pid ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export interface VersionCheckResult {
   matches: boolean;
   pluginVersion: string;

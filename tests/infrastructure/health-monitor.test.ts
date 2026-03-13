@@ -4,7 +4,8 @@ import {
   waitForHealth,
   waitForPortFree,
   getInstalledPluginVersion,
-  checkVersionMatch
+  checkVersionMatch,
+  getHealthPid
 } from '../../src/services/infrastructure/index.js';
 
 describe('HealthMonitor', () => {
@@ -180,6 +181,47 @@ describe('HealthMonitor', () => {
       expect(result.matches).toBe(true);
       expect(result.pluginVersion).toBe(pluginVersion);
       expect(result.workerVersion).toBe(pluginVersion);
+    });
+  });
+
+  describe('getHealthPid (#1231)', () => {
+    it('should return PID from health endpoint', async () => {
+      global.fetch = mock(() => Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ pid: 12345, status: 'ok' })
+      } as Response));
+
+      const pid = await getHealthPid(37777);
+
+      expect(pid).toBe(12345);
+      expect(global.fetch).toHaveBeenCalledWith('http://127.0.0.1:37777/api/health');
+    });
+
+    it('should return null when worker is not responding', async () => {
+      global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
+
+      const pid = await getHealthPid(39999);
+
+      expect(pid).toBeNull();
+    });
+
+    it('should return null when health returns non-ok', async () => {
+      global.fetch = mock(() => Promise.resolve({ ok: false, status: 503 } as Response));
+
+      const pid = await getHealthPid(37777);
+
+      expect(pid).toBeNull();
+    });
+
+    it('should return null when response has no pid field', async () => {
+      global.fetch = mock(() => Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ status: 'ok' })
+      } as Response));
+
+      const pid = await getHealthPid(37777);
+
+      expect(pid).toBeNull();
     });
   });
 

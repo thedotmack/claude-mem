@@ -16,6 +16,7 @@ import {
   spawnDaemon,
   resolveWorkerRuntimePath,
   runOneTimeChromaMigration,
+  getHealthPid,
   type PidInfo
 } from '../../src/services/infrastructure/index.js';
 
@@ -516,6 +517,60 @@ describe('ProcessManager', () => {
       // No chroma dir exists — should just write marker without error
       expect(() => runOneTimeChromaMigration(testDataDir)).not.toThrow();
       expect(existsSync(path.join(testDataDir, '.chroma-cleaned-v10.3'))).toBe(true);
+    });
+  });
+
+  describe('stale PID detection integration (#1231)', () => {
+    const originalFetch = global.fetch;
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    it('should detect stale PID when health reports different PID', async () => {
+      // Simulate: PID file says PID 99999, but health endpoint reports PID 12345
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
+
+      // Mock health endpoint returning a DIFFERENT PID
+      global.fetch = (() => Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ pid: process.pid + 1, status: 'ok' })
+      } as Response)) as typeof fetch;
+
+      const healthPid = await getHealthPid(37777);
+      const pidInfo = readPidFile();
+
+      expect(pidInfo).not.toBeNull();
+      expect(healthPid).not.toBeNull();
+      expect(healthPid).not.toBe(pidInfo!.pid);
+    });
+
+    it('should detect stale PID when health endpoint is unreachable', async () => {
+      // Simulate: PID file exists but worker is dead (no health response)
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
+
+      global.fetch = (() => Promise.reject(new Error('ECONNREFUSED'))) as typeof fetch;
+
+      const healthPid = await getHealthPid(37777);
+      const pidInfo = readPidFile();
+
+      expect(pidInfo).not.toBeNull();
+      expect(healthPid).toBeNull();
+    });
+
+    it('should confirm healthy when PIDs match', async () => {
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
+
+      global.fetch = (() => Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ pid: process.pid, status: 'ok' })
+      } as Response)) as typeof fetch;
+
+      const healthPid = await getHealthPid(37777);
+      const pidInfo = readPidFile();
+
+      expect(pidInfo).not.toBeNull();
+      expect(healthPid).toBe(pidInfo!.pid);
     });
   });
 });

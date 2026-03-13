@@ -88,7 +88,8 @@ import {
   waitForReadiness,
   waitForPortFree,
   httpShutdown,
-  checkVersionMatch
+  checkVersionMatch,
+  getHealthPid
 } from './infrastructure/HealthMonitor.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 
@@ -922,6 +923,29 @@ export class WorkerService {
 async function ensureWorkerStarted(port: number): Promise<boolean> {
   // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
   cleanStalePidFile();
+
+  // Cross-check: if PID file survived cleanup (process appears alive),
+  // verify the health endpoint's PID matches. Catches PID reuse by unrelated
+  // processes and zombie PID files after OOM/sleep/wake (#1231).
+  const pidInfo = readPidFile();
+  if (pidInfo) {
+    const healthPid = await getHealthPid(port);
+    if (healthPid !== null && healthPid !== pidInfo.pid) {
+      logger.info('SYSTEM', 'PID file is stale: health endpoint reports different PID', {
+        pidFilePid: pidInfo.pid,
+        healthPid,
+        port
+      });
+      removePidFile();
+    } else if (healthPid === null && !await waitForHealth(port, 1000)) {
+      // PID file says alive but health endpoint unreachable — stale
+      logger.info('SYSTEM', 'PID file is stale: process alive but not responding to health checks', {
+        pid: pidInfo.pid,
+        port
+      });
+      removePidFile();
+    }
+  }
 
   // Check if worker is already running and healthy
   if (await waitForHealth(port, 1000)) {
