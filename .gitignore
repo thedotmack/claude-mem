@@ -1,7 +1,6 @@
 datasets/
 node_modules/
 dist/
-!installer/dist/
 **/_tree-sitter/
 *.log
 .DS_Store

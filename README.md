@@ -110,7 +110,13 @@
 
 ## Quick Start
 
-Start a new Claude Code session in the terminal and enter the following commands:
+Install with a single command:
+
+```bash
+npx claude-mem install
+```
+
+Or install from the plugin marketplace inside Claude Code:
 
 ```
 /plugin marketplace add thedotmack/claude-mem
@@ -120,7 +126,7 @@ Start a new Claude Code session in the terminal and enter the following commands
 
 Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
 
-> **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. To use Claude-Mem as a plugin, always install via the `/plugin` commands above.
+> **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. Always install via `npx claude-mem install` or the `/plugin` commands above.
 
 ### 🦞 OpenClaw Gateway
 
