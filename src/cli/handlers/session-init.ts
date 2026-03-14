@@ -13,12 +13,34 @@ import { isProjectExcluded } from '../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
+/**
+ * Wait for the worker to become available, retrying with backoff.
+ * Covers the race condition where SessionStart is still starting the worker
+ * when the first UserPromptSubmit fires (fixes #XXXX).
+ *
+ * @param timeoutMs Maximum time to wait for the worker (default: 10s)
+ * @param intervalMs Polling interval (default: 500ms)
+ */
+async function waitForWorkerWithRetry(timeoutMs: number = 10000, intervalMs: number = 500): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (await ensureWorkerRunning()) {
+      return true;
+    }
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+  return false;
+}
+
 export const sessionInitHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
-    // Ensure worker is running before any other logic
-    const workerReady = await ensureWorkerRunning();
+    // Wait for worker with retry — SessionStart may still be starting the worker
+    // when the first UserPromptSubmit arrives (race condition on new sessions).
+    // Single-shot check was insufficient; polling for up to 10s covers the startup window.
+    const workerReady = await waitForWorkerWithRetry();
     if (!workerReady) {
-      // Worker not available - skip session init gracefully
+      // Worker not available after retries - skip session init gracefully
+      logger.info('HOOK', 'session-init: Worker not available after retry, skipping gracefully');
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 

@@ -1122,13 +1122,6 @@ async function main() {
     }
 
     case 'hook': {
-      // Auto-start worker if not running
-      const workerReady = await ensureWorkerStarted(port);
-      if (!workerReady) {
-        logger.warn('SYSTEM', 'Worker failed to start before hook, handler will retry');
-      }
-
-      // Existing logic unchanged
       const platform = process.argv[3];
       const event = process.argv[4];
       if (!platform || !event) {
@@ -1138,26 +1131,44 @@ async function main() {
         process.exit(1);
       }
 
-      // Check if worker is already running on port
-      const portInUse = await isPortInUse(port);
       let startedWorkerInProcess = false;
 
-      if (!portInUse) {
-        // Port free - start worker IN THIS PROCESS (no spawn!)
-        // This process becomes the worker and stays alive
-        try {
-          logger.info('SYSTEM', 'Starting worker in-process for hook', { event });
-          const worker = new WorkerService();
-          await worker.start();
-          startedWorkerInProcess = true;
-          // Worker is now running in this process on the port
-        } catch (error) {
-          logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
-          removePidFile();
-          process.exit(0);
+      try {
+        // Auto-start worker if not running
+        const workerReady = await ensureWorkerStarted(port);
+        if (!workerReady) {
+          logger.warn('SYSTEM', 'Worker failed to start before hook, handler will retry');
         }
+
+        // Check if worker is already running on port
+        const portInUse = await isPortInUse(port);
+
+        if (!portInUse) {
+          // Port free - start worker IN THIS PROCESS (no spawn!)
+          // This process becomes the worker and stays alive
+          try {
+            logger.info('SYSTEM', 'Starting worker in-process for hook', { event });
+            const worker = new WorkerService();
+            await worker.start();
+            startedWorkerInProcess = true;
+            // Worker is now running in this process on the port
+          } catch (error) {
+            logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
+            removePidFile();
+            // Don't exit here - fall through to hookCommand which will degrade gracefully
+          }
+        }
+        // If port in use, we'll use HTTP to the existing worker
+      } catch (error) {
+        // Defensive: any unexpected error during worker startup should not
+        // prevent the hook from completing. The handler will degrade gracefully
+        // if the worker is unavailable. Fixes race condition where SessionStart
+        // and UserPromptSubmit hooks compete to start the worker.
+        logger.warn('SYSTEM', 'Unexpected error during hook worker startup, proceeding to handler', {
+          event,
+          error: error instanceof Error ? error.message : String(error)
+        });
       }
-      // If port in use, we'll use HTTP to the existing worker
 
       const { hookCommand } = await import('../cli/hook-command.js');
       // If we started the worker in this process, skip process.exit() so we stay alive as the worker
