@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { createProcessRegistry } from '../../src/supervisor/process-registry.js';
-import { runShutdownCascade } from '../../src/supervisor/shutdown.js';
+import { cleanupSocketFiles, runShutdownCascade } from '../../src/supervisor/shutdown.js';
 
 function makeTempDir(): string {
   return path.join(tmpdir(), `claude-mem-shutdown-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -121,5 +121,124 @@ describe('supervisor shutdown cascade', () => {
       { pid: 41002, signal: 'SIGTERM' },
       { pid: 41001, signal: 'SIGTERM' }
     ]);
+  });
+
+  it('handles already-dead processes gracefully without throwing', async () => {
+    const tempDir = makeTempDir();
+    tempDirs.push(tempDir);
+    mkdirSync(tempDir, { recursive: true });
+
+    const registryPath = path.join(tempDir, 'supervisor.json');
+    const registry = createProcessRegistry(registryPath);
+
+    // Register processes with PIDs that are definitely dead
+    registry.register('dead:1', {
+      pid: 2147483640,
+      type: 'sdk',
+      startedAt: '2026-03-15T00:00:00.000Z'
+    });
+    registry.register('dead:2', {
+      pid: 2147483641,
+      type: 'mcp',
+      startedAt: '2026-03-15T00:00:01.000Z'
+    });
+
+    // Should not throw
+    await runShutdownCascade({
+      registry,
+      currentPid: process.pid,
+      dataDir: tempDir,
+      pidFilePath: path.join(tempDir, 'worker.pid')
+    });
+
+    // All entries should be unregistered
+    const persisted = JSON.parse(readFileSync(registryPath, 'utf-8'));
+    expect(Object.keys(persisted.processes)).toHaveLength(0);
+  });
+
+  it('unregisters all children from registry after cascade', async () => {
+    const tempDir = makeTempDir();
+    tempDirs.push(tempDir);
+    mkdirSync(tempDir, { recursive: true });
+
+    const registryPath = path.join(tempDir, 'supervisor.json');
+    const registry = createProcessRegistry(registryPath);
+
+    registry.register('worker', {
+      pid: process.pid,
+      type: 'worker',
+      startedAt: '2026-03-15T00:00:00.000Z'
+    });
+    registry.register('child:1', {
+      pid: 2147483640,
+      type: 'sdk',
+      startedAt: '2026-03-15T00:00:01.000Z'
+    });
+    registry.register('child:2', {
+      pid: 2147483641,
+      type: 'mcp',
+      startedAt: '2026-03-15T00:00:02.000Z'
+    });
+
+    await runShutdownCascade({
+      registry,
+      currentPid: process.pid,
+      dataDir: tempDir,
+      pidFilePath: path.join(tempDir, 'worker.pid')
+    });
+
+    // All records (including the current process one) should be removed
+    expect(registry.getAll()).toHaveLength(0);
+  });
+});
+
+describe('cleanupSocketFiles', () => {
+  afterEach(() => {
+    while (tempDirs.length > 0) {
+      const dir = tempDirs.pop();
+      if (dir) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('removes socket files from explicit paths and from dataDir', () => {
+    const tempDir = makeTempDir();
+    tempDirs.push(tempDir);
+    mkdirSync(tempDir, { recursive: true });
+
+    const socket1 = path.join(tempDir, 'worker.sock');
+    const socket2 = path.join(tempDir, 'mcp.sock');
+    writeFileSync(socket1, '');
+    writeFileSync(socket2, '');
+
+    cleanupSocketFiles([socket1], tempDir);
+
+    // Both should be cleaned — socket1 from explicit paths, socket2 from dataDir scan
+    expect(existsSync(socket1)).toBe(false);
+    expect(existsSync(socket2)).toBe(false);
+  });
+
+  it('handles non-existent socket paths gracefully', () => {
+    const tempDir = makeTempDir();
+    tempDirs.push(tempDir);
+    mkdirSync(tempDir, { recursive: true });
+
+    // Should not throw
+    cleanupSocketFiles(['/nonexistent/path/worker.sock'], tempDir);
+  });
+
+  it('skips undefined entries in socket paths array', () => {
+    const tempDir = makeTempDir();
+    tempDirs.push(tempDir);
+    mkdirSync(tempDir, { recursive: true });
+
+    // Should not throw
+    cleanupSocketFiles([undefined, '/some/path.sock', undefined], tempDir);
+  });
+
+  it('handles non-existent dataDir gracefully', () => {
+    // Should not throw
+    cleanupSocketFiles([], '/nonexistent/directory/path');
   });
 });
