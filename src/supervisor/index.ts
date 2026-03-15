@@ -24,7 +24,6 @@ export type ValidateWorkerPidStatus = 'missing' | 'alive' | 'stale' | 'invalid';
 class Supervisor {
   private readonly registry: ProcessRegistry;
   private started = false;
-  private acceptingSpawns = true;
   private stopPromise: Promise<void> | null = null;
   private signalHandlersRegistered = false;
   private shutdownHandler: (() => Promise<void>) | null = null;
@@ -42,7 +41,6 @@ class Supervisor {
       throw new Error('Worker already running');
     }
 
-    this.acceptingSpawns = true;
     this.started = true;
 
     startHealthChecker();
@@ -60,7 +58,6 @@ class Supervisor {
         return;
       }
 
-      this.acceptingSpawns = false;
       logger.info('SYSTEM', `Received ${signal}, shutting down...`);
 
       try {
@@ -101,7 +98,6 @@ class Supervisor {
       return;
     }
 
-    this.acceptingSpawns = false;
     stopHealthChecker();
     this.stopPromise = runShutdownCascade({
       registry: this.registry,
