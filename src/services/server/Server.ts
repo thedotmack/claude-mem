@@ -17,6 +17,9 @@ import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
 import { createMiddleware, summarizeRequestBody, requireLocalhost } from './Middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
+import { getSupervisor } from '../../supervisor/index.js';
+import { isPidAlive } from '../../supervisor/process-registry.js';
+import { homedir } from 'os';
 
 // Build-time injected version constant (set by esbuild define)
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -316,6 +319,77 @@ export class Server {
           }
         }, 100);
       }
+    });
+
+    // Doctor endpoint - diagnostic view of supervisor, processes, and health
+    this.app.get('/api/admin/doctor', requireLocalhost, (_req: Request, res: Response) => {
+      const supervisor = getSupervisor();
+      const registry = supervisor.getRegistry();
+      const allRecords = registry.getAll();
+
+      // Check each process liveness
+      const processes = allRecords.map(record => ({
+        id: record.id,
+        pid: record.pid,
+        type: record.type,
+        status: isPidAlive(record.pid) ? 'alive' as const : 'dead' as const,
+        startedAt: record.startedAt,
+      }));
+
+      // Check for stale socket files
+      const socketsDir = path.join(homedir(), '.claude-mem', 'sockets');
+      let staleSocketFiles = false;
+      if (fs.existsSync(socketsDir)) {
+        const aliveSocketPaths = new Set(
+          allRecords
+            .filter(r => r.socketPath && isPidAlive(r.pid))
+            .map(r => r.socketPath!)
+        );
+        try {
+          const entries = fs.readdirSync(socketsDir);
+          for (const entry of entries) {
+            if (!entry.endsWith('.sock') || entry.startsWith('.probe')) continue;
+            const socketPath = path.join(socketsDir, entry);
+            if (!aliveSocketPaths.has(socketPath)) {
+              staleSocketFiles = true;
+              break;
+            }
+          }
+        } catch {
+          // Best-effort check
+        }
+      }
+
+      // Check for zombie PID files (dead processes still in registry)
+      const zombiePidFiles = processes.some(p => p.status === 'dead');
+
+      // Check if CLAUDECODE_* env vars are leaking into this process
+      const envPrefixes = ['CLAUDECODE_', 'CLAUDE_CODE_'];
+      const exactMatches = ['CLAUDECODE', 'CLAUDE_CODE_SESSION', 'CLAUDE_CODE_ENTRYPOINT', 'MCP_SESSION_ID'];
+      const envClean = !Object.keys(process.env).some(key =>
+        exactMatches.includes(key) || envPrefixes.some(prefix => key.startsWith(prefix))
+      );
+
+      // Format uptime
+      const uptimeMs = Date.now() - this.startTime;
+      const uptimeSeconds = Math.floor(uptimeMs / 1000);
+      const hours = Math.floor(uptimeSeconds / 3600);
+      const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+      const formattedUptime = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+
+      res.json({
+        supervisor: {
+          running: true,
+          pid: process.pid,
+          uptime: formattedUptime,
+        },
+        processes,
+        health: {
+          zombiePidFiles,
+          staleSocketFiles,
+          envClean,
+        },
+      });
     });
   }
 

@@ -4,6 +4,7 @@ import path from 'path';
 import { logger } from '../utils/logger.js';
 import { getProcessRegistry, isPidAlive, type ManagedProcessInfo, type ProcessRegistry } from './process-registry.js';
 import { cleanupSocketFiles, runShutdownCascade } from './shutdown.js';
+import { startHealthChecker, stopHealthChecker } from './health-checker.js';
 
 const DATA_DIR = path.join(homedir(), '.claude-mem');
 const PID_FILE = path.join(DATA_DIR, 'worker.pid');
@@ -47,6 +48,8 @@ class Supervisor {
 
     this.acceptingSpawns = true;
     this.started = true;
+
+    startHealthChecker();
   }
 
   configureSignalHandlers(shutdownHandler: () => Promise<void>): void {
@@ -103,6 +106,7 @@ class Supervisor {
     }
 
     this.acceptingSpawns = false;
+    stopHealthChecker();
     this.stopPromise = runShutdownCascade({
       registry: this.registry,
       currentPid: process.pid
