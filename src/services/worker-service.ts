@@ -1197,13 +1197,7 @@ async function main() {
     }
 
     case 'hook': {
-      // Auto-start worker if not running
-      const workerReady = await ensureWorkerStarted(port);
-      if (!workerReady) {
-        logger.warn('SYSTEM', 'Worker failed to start before hook, handler will retry');
-      }
-
-      // Existing logic unchanged
+      // Validate CLI args first (before any I/O)
       const platform = process.argv[3];
       const event = process.argv[4];
       if (!platform || !event) {
@@ -1213,40 +1207,20 @@ async function main() {
         process.exit(1);
       }
 
-      // Check if worker is already running on port
-      const portInUse = await isPortInUse(port);
-      let startedWorkerInProcess = false;
-
-      if (!portInUse) {
-        const existingPidInfo = readPidFile();
-        if (existingPidInfo && isProcessAlive(existingPidInfo.pid)) {
-          logger.info('SYSTEM', 'Live worker PID detected during hook startup, skipping in-process start', {
-            existingPid: existingPidInfo.pid,
-            existingPort: existingPidInfo.port
-          });
-        } else {
-          // Port free - start worker IN THIS PROCESS (no spawn!)
-          // This process becomes the worker and stays alive
-          try {
-            logger.info('SYSTEM', 'Starting worker in-process for hook', { event });
-            const worker = new WorkerService();
-            await worker.start();
-            startedWorkerInProcess = true;
-            // Worker is now running in this process on the port
-          } catch (error) {
-            logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
-            removePidFile();
-            process.exit(0);
-          }
-        }
+      // Ensure worker is running as a detached daemon (#1249).
+      //
+      // IMPORTANT: The hook process MUST NOT become the worker. Starting the
+      // worker in-process makes it a grandchild of Claude Code, which the
+      // sandbox kills. Instead, ensureWorkerStarted() spawns a fully detached
+      // daemon (detached: true, stdio: 'ignore', child.unref()) that survives
+      // the hook process's exit and is invisible to Claude Code's sandbox.
+      const workerReady = await ensureWorkerStarted(port);
+      if (!workerReady) {
+        logger.warn('SYSTEM', 'Worker failed to start before hook, handler will proceed gracefully');
       }
-      // If port in use, we'll use HTTP to the existing worker
 
       const { hookCommand } = await import('../cli/hook-command.js');
-      // If we started the worker in this process, skip process.exit() so we stay alive as the worker
-      await hookCommand(platform, event, { skipExit: startedWorkerInProcess });
-      // Note: if we started worker in-process, this process stays alive as the worker
-      // The break allows the event loop to continue serving requests
+      await hookCommand(platform, event);
       break;
     }
 
