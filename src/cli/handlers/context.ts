@@ -6,7 +6,7 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, workerHttpRequest, getWorkerAddress, buildWorkerUrl } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
@@ -38,16 +38,16 @@ export const contextHandler: EventHandler = {
 
     // Pass all projects (parent + worktree if applicable) for unified timeline
     const projectsParam = context.allProjects.join(',');
-    const url = `http://127.0.0.1:${port}/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
+    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
+    const colorApiPath = `${apiPath}&colors=true`;
 
     // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
     // Worker service has its own timeouts, so client-side timeout is redundant
     try {
       // Fetch markdown (for Claude context) and optionally colored (for user display)
-      const colorUrl = `${url}&colors=true`;
       const [response, colorResponse] = await Promise.all([
-        fetch(url),
-        showTerminalOutput ? fetch(colorUrl).catch(() => null) : Promise.resolve(null)
+        workerHttpRequest(apiPath),
+        showTerminalOutput ? workerHttpRequest(colorApiPath).catch(() => null) : Promise.resolve(null)
       ]);
 
       if (!response.ok) {

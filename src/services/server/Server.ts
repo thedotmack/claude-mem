@@ -87,12 +87,44 @@ export class Server {
   }
 
   /**
-   * Start listening on the specified host and port
+   * Start listening on the specified host and port (TCP mode)
    */
   async listen(port: number, host: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       this.server = this.app.listen(port, host, () => {
         logger.info('SYSTEM', 'HTTP server started', { host, port, pid: process.pid });
+        resolve();
+      });
+      this.server.on('error', reject);
+    });
+  }
+
+  /**
+   * Start listening on a Unix domain socket path.
+   * Unlinks any stale socket file before binding.
+   */
+  async listenOnSocket(socketPath: string): Promise<void> {
+    // Remove stale socket file before listening
+    try {
+      fs.unlinkSync(socketPath);
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        logger.warn('SYSTEM', 'Failed to remove stale socket file before listen', { socketPath }, error as Error);
+      }
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      this.server = this.app.listen(socketPath, () => {
+        // Set socket file permissions to owner-only (read/write)
+        if (process.platform !== 'win32') {
+          try {
+            fs.chmodSync(socketPath, 0o600);
+          } catch {
+            // Best-effort — some filesystems don't support chmod
+          }
+        }
+        logger.info('SYSTEM', 'HTTP server started on socket', { socketPath, pid: process.pid });
         resolve();
       });
       this.server.on('error', reject);
