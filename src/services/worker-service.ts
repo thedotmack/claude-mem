@@ -487,7 +487,7 @@ export class WorkerService {
         }
         return activeIds;
       });
-      logger.info('SYSTEM', 'Started orphan reaper (runs every 1 minute)');
+      logger.info('SYSTEM', 'Started orphan reaper (runs every 30 seconds)');
 
       // Reap stale sessions to unblock orphan process cleanup (Issue #1168)
       this.staleSessionReaperInterval = setInterval(async () => {

@@ -445,7 +445,7 @@ export function createPidCapturingSpawn(sessionDbId: number) {
  * Start the orphan reaper interval
  * Returns cleanup function to stop the interval
  */
-export function startOrphanReaper(getActiveSessionIds: () => Set<number>, intervalMs: number = 60 * 1000): () => void {
+export function startOrphanReaper(getActiveSessionIds: () => Set<number>, intervalMs: number = 30 * 1000): () => void {
   const interval = setInterval(async () => {
     try {
       const activeIds = getActiveSessionIds();
