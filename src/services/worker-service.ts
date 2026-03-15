@@ -20,6 +20,8 @@ import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
+import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
+import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
 // Windows: avoid repeated spawn popups when startup fails (issue #921)
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
@@ -78,7 +80,6 @@ import {
   cleanStalePidFile,
   isProcessAlive,
   spawnDaemon,
-  createSignalHandler,
   isPidFileRecent,
   touchPidFile
 } from './infrastructure/ProcessManager.js';
@@ -263,33 +264,10 @@ export class WorkerService {
    * Register signal handlers for graceful shutdown
    */
   private registerSignalHandlers(): void {
-    const shutdownRef = { value: this.isShuttingDown };
-    const handler = createSignalHandler(() => this.shutdown(), shutdownRef);
-
-    process.on('SIGTERM', () => {
-      this.isShuttingDown = shutdownRef.value;
-      handler('SIGTERM');
+    configureSupervisorSignalHandlers(async () => {
+      this.isShuttingDown = true;
+      await this.shutdown();
     });
-    process.on('SIGINT', () => {
-      this.isShuttingDown = shutdownRef.value;
-      handler('SIGINT');
-    });
-
-    // SIGHUP: sent by kernel when controlling terminal closes.
-    // Daemon mode: ignore it (survive parent shell exit).
-    // Interactive mode: treat like SIGTERM (graceful shutdown).
-    if (process.platform !== 'win32') {
-      if (process.argv.includes('--daemon')) {
-        process.on('SIGHUP', () => {
-          logger.debug('SYSTEM', 'Ignoring SIGHUP in daemon mode');
-        });
-      } else {
-        process.on('SIGHUP', () => {
-          this.isShuttingDown = shutdownRef.value;
-          handler('SIGHUP');
-        });
-      }
-    }
   }
 
   /**
@@ -351,6 +329,8 @@ export class WorkerService {
     const port = getWorkerPort();
     const host = getWorkerHost();
 
+    await startSupervisor();
+
     // Start HTTP server FIRST - make port available immediately
     await this.server.listen(port, host);
 
@@ -360,6 +340,12 @@ export class WorkerService {
     writePidFile({
       pid: process.pid,
       port,
+      startedAt: new Date().toISOString()
+    });
+
+    getSupervisor().registerProcess('worker', {
+      pid: process.pid,
+      type: 'worker',
       startedAt: new Date().toISOString()
     });
 
@@ -446,19 +432,50 @@ export class WorkerService {
 
       // Connect to MCP server
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
+      getSupervisor().assertCanSpawn('mcp server');
       const transport = new StdioClientTransport({
         command: 'node',
         args: [mcpServerPath],
-        env: process.env
+        env: sanitizeEnv(process.env)
       });
 
       const MCP_INIT_TIMEOUT_MS = 300000;
       const mcpConnectionPromise = this.mcpClient.connect(transport);
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('MCP connection timeout after 5 minutes')), MCP_INIT_TIMEOUT_MS)
-      );
+      let timeoutId: ReturnType<typeof setTimeout>;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error('MCP connection timeout after 5 minutes')),
+          MCP_INIT_TIMEOUT_MS
+        );
+      });
 
-      await Promise.race([mcpConnectionPromise, timeoutPromise]);
+      try {
+        await Promise.race([mcpConnectionPromise, timeoutPromise]);
+      } catch (connectionError) {
+        clearTimeout(timeoutId!);
+        logger.warn('WORKER', 'MCP server connection failed, cleaning up subprocess', {
+          error: connectionError instanceof Error ? connectionError.message : String(connectionError)
+        });
+        try {
+          await transport.close();
+        } catch {
+          // Best effort: the supervisor handles later process cleanup for survivors.
+        }
+        throw connectionError;
+      }
+      clearTimeout(timeoutId!);
+
+      const mcpProcess = (transport as unknown as { _process?: import('child_process').ChildProcess })._process;
+      if (mcpProcess?.pid) {
+        getSupervisor().registerProcess('mcp-server', {
+          pid: mcpProcess.pid,
+          type: 'mcp',
+          startedAt: new Date().toISOString()
+        }, mcpProcess);
+        mcpProcess.once('exit', () => {
+          getSupervisor().unregisterProcess('mcp-server');
+        });
+      }
       this.mcpReady = true;
       logger.success('WORKER', 'MCP server connected');
 
@@ -921,7 +938,17 @@ export class WorkerService {
  */
 async function ensureWorkerStarted(port: number): Promise<boolean> {
   // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
-  cleanStalePidFile();
+  const pidFileStatus = cleanStalePidFile();
+  if (pidFileStatus === 'alive') {
+    logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
+    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
+    if (healthy) {
+      logger.info('SYSTEM', 'Worker became healthy while waiting on live PID');
+      return true;
+    }
+    logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout');
+    return false;
+  }
 
   // Check if worker is already running and healthy
   if (await waitForHealth(port, 1000)) {
@@ -1143,18 +1170,26 @@ async function main() {
       let startedWorkerInProcess = false;
 
       if (!portInUse) {
-        // Port free - start worker IN THIS PROCESS (no spawn!)
-        // This process becomes the worker and stays alive
-        try {
-          logger.info('SYSTEM', 'Starting worker in-process for hook', { event });
-          const worker = new WorkerService();
-          await worker.start();
-          startedWorkerInProcess = true;
-          // Worker is now running in this process on the port
-        } catch (error) {
-          logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
-          removePidFile();
-          process.exit(0);
+        const existingPidInfo = readPidFile();
+        if (existingPidInfo && isProcessAlive(existingPidInfo.pid)) {
+          logger.info('SYSTEM', 'Live worker PID detected during hook startup, skipping in-process start', {
+            existingPid: existingPidInfo.pid,
+            existingPort: existingPidInfo.port
+          });
+        } else {
+          // Port free - start worker IN THIS PROCESS (no spawn!)
+          // This process becomes the worker and stays alive
+          try {
+            logger.info('SYSTEM', 'Starting worker in-process for hook', { event });
+            const worker = new WorkerService();
+            await worker.start();
+            startedWorkerInProcess = true;
+            // Worker is now running in this process on the port
+          } catch (error) {
+            logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
+            removePidFile();
+            process.exit(0);
+          }
         }
       }
       // If port in use, we'll use HTTP to the existing worker

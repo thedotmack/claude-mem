@@ -21,12 +21,15 @@ import fs from 'fs';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
+import { getSupervisor } from '../../supervisor/index.js';
 
 const CHROMA_MCP_CLIENT_NAME = 'claude-mem-chroma';
 const CHROMA_MCP_CLIENT_VERSION = '1.0.0';
 const MCP_CONNECTION_TIMEOUT_MS = 30_000;
 const RECONNECT_BACKOFF_MS = 10_000; // Don't retry connections faster than this after failure
 const DEFAULT_CHROMA_DATA_DIR = path.join(os.homedir(), '.claude-mem', 'chroma');
+const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
@@ -101,6 +104,7 @@ export class ChromaMcpManager {
 
     const commandArgs = this.buildCommandArgs();
     const spawnEnvironment = this.getSpawnEnv();
+    getSupervisor().assertCanSpawn('chroma mcp');
 
     // On Windows, .cmd files require shell resolution. Since MCP SDK's
     // StdioClientTransport doesn't support `shell: true`, route through
@@ -155,6 +159,7 @@ export class ChromaMcpManager {
     clearTimeout(timeoutId!);
 
     this.connected = true;
+    this.registerManagedProcess();
 
     logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
 
@@ -169,6 +174,7 @@ export class ChromaMcpManager {
       }
       logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff');
       this.connected = false;
+      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
       this.client = null;
       this.transport = null;
       this.lastConnectionFailureTimestamp = Date.now();
@@ -333,6 +339,7 @@ export class ChromaMcpManager {
       logger.debug('CHROMA_MCP', 'Error during client close (subprocess may already be dead)', {}, error as Error);
     }
 
+    getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
     this.client = null;
     this.transport = null;
     this.connected = false;
@@ -428,7 +435,7 @@ export class ChromaMcpManager {
    */
   private getSpawnEnv(): Record<string, string> {
     const baseEnv: Record<string, string> = {};
-    for (const [key, value] of Object.entries(process.env)) {
+    for (const [key, value] of Object.entries(sanitizeEnv(process.env))) {
       if (value !== undefined) {
         baseEnv[key] = value;
       }
@@ -450,5 +457,22 @@ export class ChromaMcpManager {
       CURL_CA_BUNDLE: combinedCertPath,
       NODE_EXTRA_CA_CERTS: combinedCertPath
     };
+  }
+
+  private registerManagedProcess(): void {
+    const chromaProcess = (this.transport as unknown as { _process?: import('child_process').ChildProcess })._process;
+    if (!chromaProcess?.pid) {
+      return;
+    }
+
+    getSupervisor().registerProcess(CHROMA_SUPERVISOR_ID, {
+      pid: chromaProcess.pid,
+      type: 'chroma',
+      startedAt: new Date().toISOString()
+    }, chromaProcess);
+
+    chromaProcess.once('exit', () => {
+      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+    });
   }
 }
