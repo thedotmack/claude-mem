@@ -100,12 +100,4 @@ describe('validateWorkerPidFile edge cases', () => {
     expect(validStatuses).toContain(status);
   });
 
-  it('accepts socketPaths option without throwing', () => {
-    expect(() => {
-      validateWorkerPidFile({
-        logAlive: false,
-        socketPaths: ['/tmp/nonexistent.sock']
-      });
-    }).not.toThrow();
-  });
 });

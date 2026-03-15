@@ -1,5 +1,5 @@
 import { execFile } from 'child_process';
-import { existsSync, readdirSync, rmSync } from 'fs';
+import { rmSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import { promisify } from 'util';
@@ -18,35 +18,6 @@ export interface ShutdownCascadeOptions {
   currentPid?: number;
   dataDir?: string;
   pidFilePath?: string;
-}
-
-export function cleanupSocketFiles(
-  socketPaths: Array<string | undefined> = [],
-  dataDir: string = DATA_DIR
-): void {
-  const knownSockets = new Set<string>();
-
-  for (const socketPath of socketPaths) {
-    if (socketPath) {
-      knownSockets.add(socketPath);
-    }
-  }
-
-  if (existsSync(dataDir)) {
-    for (const entry of readdirSync(dataDir)) {
-      if (entry.endsWith('.sock')) {
-        knownSockets.add(path.join(dataDir, entry));
-      }
-    }
-  }
-
-  for (const socketPath of knownSockets) {
-    try {
-      rmSync(socketPath, { force: true });
-    } catch (error) {
-      logger.debug('SYSTEM', 'Failed to remove stale socket file', { socketPath }, error as Error);
-    }
-  }
 }
 
 export async function runShutdownCascade(options: ShutdownCascadeOptions): Promise<void> {
@@ -96,8 +67,6 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
   for (const record of allRecords.filter(record => record.pid === currentPid)) {
     options.registry.unregister(record.id);
   }
-
-  cleanupSocketFiles(allRecords.map(record => record.socketPath), dataDir);
 
   try {
     rmSync(pidFilePath, { force: true });

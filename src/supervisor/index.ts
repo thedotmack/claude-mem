@@ -3,7 +3,7 @@ import { homedir } from 'os';
 import path from 'path';
 import { logger } from '../utils/logger.js';
 import { getProcessRegistry, isPidAlive, type ManagedProcessInfo, type ProcessRegistry } from './process-registry.js';
-import { cleanupSocketFiles, runShutdownCascade } from './shutdown.js';
+import { runShutdownCascade } from './shutdown.js';
 import { startHealthChecker, stopHealthChecker } from './health-checker.js';
 
 const DATA_DIR = path.join(homedir(), '.claude-mem');
@@ -17,7 +17,6 @@ interface PidInfo {
 
 interface ValidateWorkerPidOptions {
   logAlive?: boolean;
-  socketPaths?: string[];
 }
 
 export type ValidateWorkerPidStatus = 'missing' | 'alive' | 'stale' | 'invalid';
@@ -38,10 +37,7 @@ class Supervisor {
     if (this.started) return;
 
     this.registry.initialize();
-    const pidStatus = validateWorkerPidFile({
-      logAlive: false,
-      socketPaths: this.registry.getAll().map(record => record.socketPath).filter(Boolean) as string[]
-    });
+    const pidStatus = validateWorkerPidFile({ logAlive: false });
     if (pidStatus === 'alive') {
       throw new Error('Worker already running');
     }
@@ -160,7 +156,6 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
     return 'missing';
   }
 
-  const socketPaths = options.socketPaths ?? [];
   let pidInfo: PidInfo | null = null;
 
   try {
@@ -168,7 +163,6 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
   } catch (error) {
     logger.warn('SYSTEM', 'Failed to parse worker PID file, removing it', { path: PID_FILE }, error as Error);
     rmSync(PID_FILE, { force: true });
-    cleanupSocketFiles(socketPaths);
     return 'invalid';
   }
 
@@ -189,6 +183,5 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
     startedAt: pidInfo.startedAt
   });
   rmSync(PID_FILE, { force: true });
-  cleanupSocketFiles(socketPaths);
   return 'stale';
 }

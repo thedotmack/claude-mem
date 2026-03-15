@@ -13,8 +13,7 @@ import path from 'path';
 import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { getWorkerPort, getWorkerHost, getWorkerAddress } from '../shared/worker-utils.js';
-import { resolveWorkerAddress, prepareSocketForListening, cleanStaleSocketFiles } from '../supervisor/socket-manager.js';
+import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { getAuthMethodDescription } from '../shared/EnvManager.js';
@@ -89,7 +88,6 @@ import {
   waitForHealth,
   waitForReadiness,
   waitForPortFree,
-  waitForWorkerStopped,
   httpShutdown,
   checkVersionMatch
 } from './infrastructure/HealthMonitor.js';
@@ -328,43 +326,30 @@ export class WorkerService {
    * Start the worker service
    */
   async start(): Promise<void> {
-    const address = resolveWorkerAddress();
+    const port = getWorkerPort();
+    const host = getWorkerHost();
 
     await startSupervisor();
 
     // Start HTTP server FIRST - make it available immediately
-    if (address.type === 'socket') {
-      // Clean any stale socket files before listening
-      cleanStaleSocketFiles();
-      prepareSocketForListening(address.socketPath);
-      await this.server.listenOnSocket(address.socketPath);
-    } else {
-      await this.server.listen(address.port, address.host);
-    }
+    await this.server.listen(port, host);
 
     // Worker writes its own PID - reliable on all platforms
     // This happens after listen() succeeds, ensuring the worker is actually ready
     // On Windows, the spawner's PID is cmd.exe (useless), so worker must write its own
-    const port = address.type === 'tcp' ? address.port : getWorkerPort();
     writePidFile({
       pid: process.pid,
       port,
       startedAt: new Date().toISOString()
     });
 
-    const socketPath = address.type === 'socket' ? address.socketPath : undefined;
     getSupervisor().registerProcess('worker', {
       pid: process.pid,
       type: 'worker',
-      startedAt: new Date().toISOString(),
-      socketPath
+      startedAt: new Date().toISOString()
     });
 
-    if (address.type === 'socket') {
-      logger.info('SYSTEM', 'Worker started', { socketPath: address.socketPath, pid: process.pid });
-    } else {
-      logger.info('SYSTEM', 'Worker started', { host: address.host, port: address.port, pid: process.pid });
-    }
+    logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
 
     // Do slow initialization in background (non-blocking)
     this.initializeBackground().catch((error) => {
@@ -948,20 +933,15 @@ export class WorkerService {
  * Ensures the worker is started and healthy.
  * This function can be called by both 'start' and 'hook' commands.
  *
- * Supports both Unix domain socket and TCP transports.
- * The address is resolved from settings/platform automatically.
- *
  * @param port - The TCP port (used for port-in-use checks and daemon spawn)
  * @returns true if worker is healthy (existing or newly started), false on failure
  */
 async function ensureWorkerStarted(port: number): Promise<boolean> {
-  const address = resolveWorkerAddress();
-
   // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
   const pidFileStatus = cleanStalePidFile();
   if (pidFileStatus === 'alive') {
     logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
-    const healthy = await waitForHealth(address, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
+    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
     if (healthy) {
       logger.info('SYSTEM', 'Worker became healthy while waiting on live PID');
       return true;
@@ -971,8 +951,8 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   }
 
   // Check if worker is already running and healthy
-  if (await waitForHealth(address, 1000)) {
-    const versionCheck = await checkVersionMatch(address);
+  if (await waitForHealth(port, 1000)) {
+    const versionCheck = await checkVersionMatch(port);
     if (!versionCheck.matches) {
       // Guard: If PID file was written recently, another session is likely already
       // restarting the worker. Poll health instead of starting a concurrent restart.
@@ -983,7 +963,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
           pluginVersion: versionCheck.pluginVersion,
           workerVersion: versionCheck.workerVersion
         });
-        const healthy = await waitForHealth(address, RESTART_COORDINATION_THRESHOLD_MS);
+        const healthy = await waitForHealth(port, RESTART_COORDINATION_THRESHOLD_MS);
         if (healthy) {
           logger.info('SYSTEM', 'Worker became healthy after waiting for concurrent restart');
           return true;
@@ -996,19 +976,11 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
         workerVersion: versionCheck.workerVersion
       });
 
-      await httpShutdown(address);
-      if (address.type === 'tcp') {
-        const freed = await waitForPortFree(address.port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
-        if (!freed) {
-          logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port: address.port });
-          return false;
-        }
-      } else {
-        const stopped = await waitForWorkerStopped(address, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
-        if (!stopped) {
-          logger.error('SYSTEM', 'Worker did not stop after shutdown for version mismatch restart');
-          return false;
-        }
+      await httpShutdown(port);
+      const freed = await waitForPortFree(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
+      if (!freed) {
+        logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port });
+        return false;
       }
       removePidFile();
     } else {
@@ -1017,19 +989,17 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
     }
   }
 
-  // Check if port is in use by something else (TCP mode only)
-  if (address.type === 'tcp') {
-    const portInUse = await isPortInUse(address.port);
-    if (portInUse) {
-      logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
-      const healthy = await waitForHealth(address, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
-      if (healthy) {
-        logger.info('SYSTEM', 'Worker is now healthy');
-        return true;
-      }
-      logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-      return false;
+  // Check if port is in use by something else
+  const portInUse = await isPortInUse(port);
+  if (portInUse) {
+    logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
+    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
+    if (healthy) {
+      logger.info('SYSTEM', 'Worker is now healthy');
+      return true;
     }
+    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
+    return false;
   }
 
   // Windows: skip spawn if a recent attempt already failed (prevents repeated bun.exe popups, issue #921)
@@ -1050,7 +1020,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   // PID file is written by the worker itself after listen() succeeds
   // This is race-free and works correctly on Windows where cmd.exe PID is useless
 
-  const healthy = await waitForHealth(address, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
+  const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
   if (!healthy) {
     removePidFile();
     logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
@@ -1059,7 +1029,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
 
   // Health passed (HTTP listening). Now wait for DB + search initialization
   // so hooks that run immediately after can actually use the worker.
-  const ready = await waitForReadiness(address, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+  const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
   if (!ready) {
     logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
   }
@@ -1087,7 +1057,6 @@ async function main() {
   }
 
   const port = getWorkerPort();
-  const cliAddress = resolveWorkerAddress();
 
   // Helper for JSON status output in 'start' command
   // Exit code 0 ensures Windows Terminal doesn't keep tabs open
@@ -1109,14 +1078,10 @@ async function main() {
     }
 
     case 'stop': {
-      await httpShutdown(cliAddress);
-      if (cliAddress.type === 'tcp') {
-        const freed = await waitForPortFree(cliAddress.port, getPlatformTimeout(15000));
-        if (!freed) {
-          logger.warn('SYSTEM', 'Port did not free up after shutdown', { port: cliAddress.port });
-        }
-      } else {
-        await waitForWorkerStopped(cliAddress, getPlatformTimeout(15000));
+      await httpShutdown(port);
+      const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+      if (!freed) {
+        logger.warn('SYSTEM', 'Port did not free up after shutdown', { port });
       }
       removePidFile();
       logger.info('SYSTEM', 'Worker stopped successfully');
@@ -1126,19 +1091,11 @@ async function main() {
 
     case 'restart': {
       logger.info('SYSTEM', 'Restarting worker');
-      await httpShutdown(cliAddress);
-      if (cliAddress.type === 'tcp') {
-        const freed = await waitForPortFree(cliAddress.port, getPlatformTimeout(15000));
-        if (!freed) {
-          logger.error('SYSTEM', 'Port did not free up after shutdown, aborting restart', { port: cliAddress.port });
-          process.exit(0);
-        }
-      } else {
-        const stopped = await waitForWorkerStopped(cliAddress, getPlatformTimeout(15000));
-        if (!stopped) {
-          logger.error('SYSTEM', 'Worker did not stop after shutdown, aborting restart');
-          process.exit(0);
-        }
+      await httpShutdown(port);
+      const restartFreed = await waitForPortFree(port, getPlatformTimeout(15000));
+      if (!restartFreed) {
+        logger.error('SYSTEM', 'Port did not free up after shutdown, aborting restart', { port });
+        process.exit(0);
       }
       removePidFile();
 
@@ -1153,7 +1110,7 @@ async function main() {
       // PID file is written by the worker itself after listen() succeeds
       // This is race-free and works correctly on Windows where cmd.exe PID is useless
 
-      const healthy = await waitForHealth(cliAddress, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
+      const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
       if (!healthy) {
         removePidFile();
         logger.error('SYSTEM', 'Worker failed to restart');
@@ -1168,19 +1125,12 @@ async function main() {
     }
 
     case 'status': {
-      const workerReachable = await (async () => {
-        try { return await (await import('./infrastructure/HealthMonitor.js')).isWorkerReachable(cliAddress); }
-        catch { return false; }
-      })();
+      const portInUse = await isPortInUse(port);
       const pidInfo = readPidFile();
-      if (workerReachable && pidInfo) {
+      if (portInUse && pidInfo) {
         console.log('Worker is running');
         console.log(`  PID: ${pidInfo.pid}`);
         console.log(`  Port: ${pidInfo.port}`);
-        console.log(`  Transport: ${cliAddress.type}`);
-        if (cliAddress.type === 'socket') {
-          console.log(`  Socket: ${cliAddress.socketPath}`);
-        }
         console.log(`  Started: ${pidInfo.startedAt}`);
       } else {
         console.log('Worker is not running');

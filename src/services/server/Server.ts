@@ -19,7 +19,6 @@ import { createMiddleware, summarizeRequestBody, requireLocalhost } from './Midd
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
-import { homedir } from 'os';
 
 // Build-time injected version constant (set by esbuild define)
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -90,44 +89,12 @@ export class Server {
   }
 
   /**
-   * Start listening on the specified host and port (TCP mode)
+   * Start listening on the specified host and port
    */
   async listen(port: number, host: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       this.server = this.app.listen(port, host, () => {
         logger.info('SYSTEM', 'HTTP server started', { host, port, pid: process.pid });
-        resolve();
-      });
-      this.server.on('error', reject);
-    });
-  }
-
-  /**
-   * Start listening on a Unix domain socket path.
-   * Unlinks any stale socket file before binding.
-   */
-  async listenOnSocket(socketPath: string): Promise<void> {
-    // Remove stale socket file before listening
-    try {
-      fs.unlinkSync(socketPath);
-    } catch (error: unknown) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT') {
-        logger.warn('SYSTEM', 'Failed to remove stale socket file before listen', { socketPath }, error as Error);
-      }
-    }
-
-    return new Promise<void>((resolve, reject) => {
-      this.server = this.app.listen(socketPath, () => {
-        // Set socket file permissions to owner-only (read/write)
-        if (process.platform !== 'win32') {
-          try {
-            fs.chmodSync(socketPath, 0o600);
-          } catch {
-            // Best-effort — some filesystems don't support chmod
-          }
-        }
-        logger.info('SYSTEM', 'HTTP server started on socket', { socketPath, pid: process.pid });
         resolve();
       });
       this.server.on('error', reject);
@@ -336,30 +303,6 @@ export class Server {
         startedAt: record.startedAt,
       }));
 
-      // Check for stale socket files
-      const socketsDir = path.join(homedir(), '.claude-mem', 'sockets');
-      let staleSocketFiles = false;
-      if (fs.existsSync(socketsDir)) {
-        const aliveSocketPaths = new Set(
-          allRecords
-            .filter(r => r.socketPath && isPidAlive(r.pid))
-            .map(r => r.socketPath!)
-        );
-        try {
-          const entries = fs.readdirSync(socketsDir);
-          for (const entry of entries) {
-            if (!entry.endsWith('.sock') || entry.startsWith('.probe')) continue;
-            const socketPath = path.join(socketsDir, entry);
-            if (!aliveSocketPaths.has(socketPath)) {
-              staleSocketFiles = true;
-              break;
-            }
-          }
-        } catch {
-          // Best-effort check
-        }
-      }
-
       // Check for zombie PID files (dead processes still in registry)
       const zombiePidFiles = processes.some(p => p.status === 'dead');
 
@@ -386,7 +329,6 @@ export class Server {
         processes,
         health: {
           zombiePidFiles,
-          staleSocketFiles,
           envClean,
         },
       });

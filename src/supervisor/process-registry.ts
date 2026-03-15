@@ -15,7 +15,6 @@ export interface ManagedProcessInfo {
   type: string;
   sessionId?: string | number;
   startedAt: string;
-  socketPath?: string;
 }
 
 export interface ManagedProcessRecord extends ManagedProcessInfo {

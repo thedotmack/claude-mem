@@ -6,7 +6,7 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, getWorkerPort, workerHttpRequest, getWorkerAddress, buildWorkerUrl } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, workerHttpRequest, buildWorkerUrl } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';

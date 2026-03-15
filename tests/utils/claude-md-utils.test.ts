@@ -14,11 +14,10 @@ mock.module('../../src/utils/logger.js', () => ({
   },
 }));
 
-// Mock worker-utils to delegate workerHttpRequest to global.fetch (socket manager not available in tests)
+// Mock worker-utils to delegate workerHttpRequest to global.fetch
 mock.module('../../src/shared/worker-utils.js', () => ({
   getWorkerPort: () => 37777,
   getWorkerHost: () => '127.0.0.1',
-  getWorkerAddress: () => ({ type: 'tcp', host: '127.0.0.1', port: 37777 }),
   workerHttpRequest: (apiPath: string, options?: any) => {
     const url = `http://127.0.0.1:37777${apiPath}`;
     return globalThis.fetch(url, {
