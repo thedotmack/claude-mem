@@ -50,7 +50,15 @@ export const sessionCompleteHandler: EventHandler = {
           body: text
         });
       } else {
-        logger.info('HOOK', 'Session completed successfully', { contentSessionId: sessionId });
+        const result = await response.json() as { status: string; reason?: string };
+        if (result.status === 'skipped' && result.reason === 'not_active') {
+          // Session was never in the active map — likely SDK agent init failed (#623)
+          logger.warn('HOOK', 'session-complete: Session was never active — possible init failure', {
+            contentSessionId: sessionId
+          });
+        } else {
+          logger.info('HOOK', 'Session completed successfully', { contentSessionId: sessionId });
+        }
       }
     } catch (error) {
       // Log but don't fail - session may already be gone
