@@ -17,6 +17,9 @@ import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
 import { createMiddleware, summarizeRequestBody, requireLocalhost } from './Middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
+import { getSupervisor } from '../../supervisor/index.js';
+import { isPidAlive } from '../../supervisor/process-registry.js';
+import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.js';
 
 // Build-time injected version constant (set by esbuild define)
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -284,6 +287,50 @@ export class Server {
           }
         }, 100);
       }
+    });
+
+    // Doctor endpoint - diagnostic view of supervisor, processes, and health
+    this.app.get('/api/admin/doctor', requireLocalhost, (_req: Request, res: Response) => {
+      const supervisor = getSupervisor();
+      const registry = supervisor.getRegistry();
+      const allRecords = registry.getAll();
+
+      // Check each process liveness
+      const processes = allRecords.map(record => ({
+        id: record.id,
+        pid: record.pid,
+        type: record.type,
+        status: isPidAlive(record.pid) ? 'alive' as const : 'dead' as const,
+        startedAt: record.startedAt,
+      }));
+
+      // Check for dead processes still in registry
+      const deadProcessPids = processes.filter(p => p.status === 'dead').map(p => p.pid);
+
+      // Check if CLAUDECODE_* env vars are leaking into this process
+      const envClean = !Object.keys(process.env).some(key =>
+        ENV_EXACT_MATCHES.has(key) || ENV_PREFIXES.some(prefix => key.startsWith(prefix))
+      );
+
+      // Format uptime
+      const uptimeMs = Date.now() - this.startTime;
+      const uptimeSeconds = Math.floor(uptimeMs / 1000);
+      const hours = Math.floor(uptimeSeconds / 3600);
+      const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+      const formattedUptime = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+
+      res.json({
+        supervisor: {
+          running: true,
+          pid: process.pid,
+          uptime: formattedUptime,
+        },
+        processes,
+        health: {
+          deadProcessPids,
+          envClean,
+        },
+      });
     });
   }
 

@@ -27,18 +27,11 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { workerHttpRequest } from '../shared/worker-utils.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-
-/**
- * Worker HTTP API configuration
- */
-const WORKER_PORT = getWorkerPort();
-const WORKER_HOST = getWorkerHost();
-const WORKER_BASE_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
 
 /**
  * Map tool names to Worker HTTP endpoints
@@ -49,7 +42,7 @@ const TOOL_ENDPOINT_MAP: Record<string, string> = {
 };
 
 /**
- * Call Worker HTTP API endpoint
+ * Call Worker HTTP API endpoint (uses socket or TCP automatically)
  */
 async function callWorkerAPI(
   endpoint: string,
@@ -67,8 +60,8 @@ async function callWorkerAPI(
       }
     }
 
-    const url = `${WORKER_BASE_URL}${endpoint}?${searchParams}`;
-    const response = await fetch(url);
+    const apiPath = `${endpoint}?${searchParams}`;
+    const response = await workerHttpRequest(apiPath);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -103,12 +96,9 @@ async function callWorkerAPIPost(
   logger.debug('HTTP', 'Worker API request (POST)', undefined, { endpoint });
 
   try {
-    const url = `${WORKER_BASE_URL}${endpoint}`;
-    const response = await fetch(url, {
+    const response = await workerHttpRequest(endpoint, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
 
@@ -145,7 +135,7 @@ async function callWorkerAPIPost(
  */
 async function verifyWorkerConnection(): Promise<boolean> {
   try {
-    const response = await fetch(`${WORKER_BASE_URL}/api/health`);
+    const response = await workerHttpRequest('/api/health');
     return response.ok;
   } catch (error) {
     // Expected during worker startup or if worker is down
@@ -448,11 +438,11 @@ async function main() {
   setTimeout(async () => {
     const workerAvailable = await verifyWorkerConnection();
     if (!workerAvailable) {
-      logger.error('SYSTEM', 'Worker not available', undefined, { workerUrl: WORKER_BASE_URL });
+      logger.error('SYSTEM', 'Worker not available', undefined, {});
       logger.error('SYSTEM', 'Tools will fail until Worker is started');
       logger.error('SYSTEM', 'Start Worker with: npm run worker:restart');
     } else {
-      logger.info('SYSTEM', 'Worker available', undefined, { workerUrl: WORKER_BASE_URL });
+      logger.info('SYSTEM', 'Worker available', undefined, {});
     }
   }, 0);
 }

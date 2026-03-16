@@ -59,7 +59,11 @@ describe('HealthMonitor', () => {
 
   describe('waitForHealth', () => {
     it('should succeed immediately when server responds', async () => {
-      global.fetch = mock(() => Promise.resolve({ ok: true } as Response));
+      global.fetch = mock(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('')
+      } as unknown as Response));
 
       const start = Date.now();
       const result = await waitForHealth(37777, 5000);
@@ -91,7 +95,11 @@ describe('HealthMonitor', () => {
         if (callCount < 3) {
           return Promise.reject(new Error('ECONNREFUSED'));
         }
-        return Promise.resolve({ ok: true } as Response);
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve('')
+        } as unknown as Response);
       });
 
       const result = await waitForHealth(37777, 5000);
@@ -101,7 +109,11 @@ describe('HealthMonitor', () => {
     });
 
     it('should check health endpoint for liveness', async () => {
-      const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+      const fetchMock = mock(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('')
+      } as unknown as Response));
       global.fetch = fetchMock;
 
       await waitForHealth(37777, 1000);
@@ -115,7 +127,11 @@ describe('HealthMonitor', () => {
     });
 
     it('should use default timeout when not specified', async () => {
-      global.fetch = mock(() => Promise.resolve({ ok: true } as Response));
+      global.fetch = mock(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('')
+      } as unknown as Response));
 
       // Just verify it doesn't throw and returns quickly
       const result = await waitForHealth(37777);
@@ -154,8 +170,9 @@ describe('HealthMonitor', () => {
     it('should detect version mismatch', async () => {
       global.fetch = mock(() => Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ version: '0.0.0-definitely-wrong' })
-      } as Response));
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ version: '0.0.0-definitely-wrong' }))
+      } as unknown as Response));
 
       const result = await checkVersionMatch(37777);
 
@@ -172,8 +189,9 @@ describe('HealthMonitor', () => {
 
       global.fetch = mock(() => Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ version: pluginVersion })
-      } as Response));
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ version: pluginVersion }))
+      } as unknown as Response));
 
       const result = await checkVersionMatch(37777);
 
