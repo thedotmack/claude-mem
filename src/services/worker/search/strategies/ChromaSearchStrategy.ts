@@ -48,7 +48,8 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       files,
       limit = SEARCH_CONSTANTS.DEFAULT_LIMIT,
       project,
-      orderBy = 'date_desc'
+      orderBy = 'date_desc',
+      commit_sha
     } = options;
 
     if (!query) {
@@ -63,9 +64,14 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
 
+    // Normalize commit_sha to string array for Chroma filter
+    const commitShas = commit_sha
+      ? (Array.isArray(commit_sha) ? commit_sha : [commit_sha])
+      : undefined;
+
     try {
-      // Build Chroma where filter for doc_type and project
-      const whereFilter = this.buildWhereFilter(searchType, project);
+      // Build Chroma where filter for doc_type, project, and branch
+      const whereFilter = this.buildWhereFilter(searchType, project, commitShas);
 
       // Step 1: Chroma semantic search
       logger.debug('SEARCH', 'ChromaSearchStrategy: Querying Chroma', { query, searchType });
@@ -157,31 +163,44 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
    * larger projects dominate the top-N results and smaller projects get
    * crowded out before the post-hoc SQLite project filter can take effect.
    */
-  private buildWhereFilter(searchType: string, project?: string): Record<string, any> | undefined {
-    let docTypeFilter: Record<string, any> | undefined;
+  private buildWhereFilter(searchType: string, project?: string, commitShas?: string[]): Record<string, any> | undefined {
+    const conditions: Record<string, any>[] = [];
+
+    // Doc type filter
     switch (searchType) {
       case 'observations':
-        docTypeFilter = { doc_type: 'observation' };
+        conditions.push({ doc_type: 'observation' });
         break;
       case 'sessions':
-        docTypeFilter = { doc_type: 'session_summary' };
+        conditions.push({ doc_type: 'session_summary' });
         break;
       case 'prompts':
-        docTypeFilter = { doc_type: 'user_prompt' };
+        conditions.push({ doc_type: 'user_prompt' });
         break;
-      default:
-        docTypeFilter = undefined;
     }
 
+    // Project filter
     if (project) {
-      const projectFilter = { project };
-      if (docTypeFilter) {
-        return { $and: [docTypeFilter, projectFilter] };
-      }
-      return projectFilter;
+      conditions.push({ project });
     }
 
-    return docTypeFilter;
+    // Branch-aware commit SHA filter: include matching commits OR pre-migration docs (empty commit_sha)
+    if (commitShas && commitShas.length > 0) {
+      conditions.push({
+        $or: [
+          { commit_sha: { $in: commitShas } },
+          { commit_sha: { $eq: '' } }
+        ]
+      });
+    }
+
+    if (conditions.length === 0) {
+      return undefined;
+    }
+    if (conditions.length === 1) {
+      return conditions[0];
+    }
+    return { $and: conditions };
   }
 
   /**
