@@ -1,10 +1,12 @@
 /**
- * ChromaMcpManager - Singleton managing a persistent MCP connection to chroma-mcp via uvx
+ * ChromaMcpManager - Singleton managing a persistent MCP connection to chroma-mcp
  *
- * Replaces ChromaServerManager (which spawned `npx chroma run`) with a stdio-based
- * MCP client that communicates with chroma-mcp as a subprocess. The chroma-mcp server
- * handles its own embedding and persistent storage, eliminating the need for a separate
- * HTTP server, chromadb npm package, and ONNX/WASM embedding dependencies.
+ * Uses a persistent virtual environment (~/.claude-mem/chroma-venv/) instead of uvx
+ * to avoid cache bloat. uvx creates a new ~331MB ephemeral Python environment in
+ * ~/.cache/uv on every invocation, causing several GB/day of disk growth.
+ *
+ * The venv is auto-created on first use and reused across sessions. chroma-mcp is
+ * installed once and invoked directly from the venv's bin directory.
  *
  * Lifecycle: lazy-connects on first callTool() use, maintains a single persistent
  * connection per worker lifetime, and auto-reconnects if the subprocess dies.
@@ -27,6 +29,8 @@ const CHROMA_MCP_CLIENT_VERSION = '1.0.0';
 const MCP_CONNECTION_TIMEOUT_MS = 30_000;
 const RECONNECT_BACKOFF_MS = 10_000; // Don't retry connections faster than this after failure
 const DEFAULT_CHROMA_DATA_DIR = path.join(os.homedir(), '.claude-mem', 'chroma');
+const VENV_DIR = path.join(os.homedir(), '.claude-mem', 'chroma-venv');
+const PYTHON_VERSION_PATTERN = /^\d+\.\d+$/;
 
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
@@ -82,7 +86,60 @@ export class ChromaMcpManager {
   }
 
   /**
-   * Internal connection logic - spawns uvx chroma-mcp and performs MCP handshake.
+   * Resolve the Python binary path, preferring a specific version if available.
+   * Sanitizes the version string to prevent command injection.
+   */
+  private resolvePythonBin(pythonVersion: string): string {
+    if (!PYTHON_VERSION_PATTERN.test(pythonVersion)) {
+      logger.warn('CHROMA_MCP', `Invalid python version "${pythonVersion}", falling back to "python3"`);
+      return 'python3';
+    }
+    // Try version-specific binary first (e.g. python3.13), fall back to python3
+    const versionedBin = `python${pythonVersion}`;
+    try {
+      execSync(`${versionedBin} --version`, { stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000 });
+      return versionedBin;
+    } catch {
+      return 'python3';
+    }
+  }
+
+  /**
+   * Ensure the persistent venv exists with chroma-mcp installed.
+   * Creates the venv on first use; subsequent calls are a fast fs.existsSync check.
+   */
+  private ensureVenv(): string {
+    const isWindows = process.platform === 'win32';
+    const binDir = isWindows ? path.join(VENV_DIR, 'Scripts') : path.join(VENV_DIR, 'bin');
+    const chromaMcpBin = path.join(binDir, isWindows ? 'chroma-mcp.exe' : 'chroma-mcp');
+
+    if (fs.existsSync(chromaMcpBin)) {
+      return chromaMcpBin;
+    }
+
+    logger.info('CHROMA_MCP', 'Creating persistent venv for chroma-mcp', { path: VENV_DIR });
+
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || settings.CLAUDE_MEM_PYTHON_VERSION || '3.13';
+    const pythonBin = this.resolvePythonBin(pythonVersion);
+
+    execSync(`${pythonBin} -m venv "${VENV_DIR}"`, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 30_000
+    });
+
+    const pipBin = path.join(binDir, isWindows ? 'pip.exe' : 'pip');
+    execSync(`"${pipBin}" install chroma-mcp`, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 120_000
+    });
+
+    logger.info('CHROMA_MCP', 'Persistent venv created successfully');
+    return chromaMcpBin;
+  }
+
+  /**
+   * Internal connection logic - spawns chroma-mcp from persistent venv and performs MCP handshake.
    * Called behind the connection lock to ensure only one connection attempt at a time.
    */
   private async connectInternal(): Promise<void> {
@@ -99,26 +156,23 @@ export class ChromaMcpManager {
     this.transport = null;
     this.connected = false;
 
+    const chromaMcpBin = this.ensureVenv();
     const commandArgs = this.buildCommandArgs();
     const spawnEnvironment = this.getSpawnEnv();
 
-    // On Windows, .cmd files require shell resolution. Since MCP SDK's
-    // StdioClientTransport doesn't support `shell: true`, route through
-    // cmd.exe which resolves .cmd/.bat extensions and PATH automatically.
-    // This also fixes Git Bash compatibility (#1062) since cmd.exe handles
-    // Windows-native command resolution regardless of the calling shell.
+    // On Windows, route through cmd.exe for .exe resolution and Git Bash compatibility (#1062).
     const isWindows = process.platform === 'win32';
-    const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'uvx';
-    const uvxSpawnArgs = isWindows ? ['/c', 'uvx', ...commandArgs] : commandArgs;
+    const spawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : chromaMcpBin;
+    const spawnArgs = isWindows ? ['/c', chromaMcpBin, ...commandArgs] : commandArgs;
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
-      command: uvxSpawnCommand,
-      args: uvxSpawnArgs.join(' ')
+      command: spawnCommand,
+      args: spawnArgs.join(' ')
     });
 
     this.transport = new StdioClientTransport({
-      command: uvxSpawnCommand,
-      args: uvxSpawnArgs,
+      command: spawnCommand,
+      args: spawnArgs,
       env: spawnEnvironment,
       stderr: 'pipe'
     });
@@ -176,14 +230,16 @@ export class ChromaMcpManager {
   }
 
   /**
-   * Build the uvx command arguments based on current settings.
+   * Build the chroma-mcp command arguments based on current settings.
    * In local mode: uses persistent client with local data directory.
    * In remote mode: uses http client with configured host/port/auth.
+   *
+   * Note: --python and chroma-mcp positional args are no longer needed since
+   * we invoke the chroma-mcp binary directly from the persistent venv.
    */
   private buildCommandArgs(): string[] {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const chromaMode = settings.CLAUDE_MEM_CHROMA_MODE || 'local';
-    const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || settings.CLAUDE_MEM_PYTHON_VERSION || '3.13';
 
     if (chromaMode === 'remote') {
       const chromaHost = settings.CLAUDE_MEM_CHROMA_HOST || '127.0.0.1';
@@ -194,8 +250,6 @@ export class ChromaMcpManager {
       const chromaApiKey = settings.CLAUDE_MEM_CHROMA_API_KEY || '';
 
       const args = [
-        '--python', pythonVersion,
-        'chroma-mcp',
         '--client-type', 'http',
         '--host', chromaHost,
         '--port', chromaPort
@@ -220,8 +274,6 @@ export class ChromaMcpManager {
 
     // Local mode: persistent client with data directory
     return [
-      '--python', pythonVersion,
-      'chroma-mcp',
       '--client-type', 'persistent',
       '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
     ];
@@ -377,8 +429,10 @@ export class ChromaMcpManager {
     try {
       let certifiPath: string | undefined;
       try {
+        const isWindows = process.platform === 'win32';
+        const venvPython = path.join(VENV_DIR, isWindows ? 'Scripts' : 'bin', 'python');
         certifiPath = execSync(
-          'uvx --with certifi python -c "import certifi; print(certifi.where())"',
+          `"${venvPython}" -c "import certifi; print(certifi.where())"`,
           { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 }
         ).trim();
       } catch {
