@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { spawnSync } from 'child_process';
 
 /**
  * Smart Install Script Tests
@@ -161,5 +162,78 @@ describe('smart-install verifyCriticalModules logic', () => {
     }
 
     expect(missing).toEqual(['@chroma-core/other-pkg']);
+  });
+});
+
+describe('smart-install stdout JSON output (#1253)', () => {
+  const SCRIPT_PATH = join(__dirname, '..', 'plugin', 'scripts', 'smart-install.js');
+
+  it('should not have any execSync with stdio: inherit (prevents stdout leak)', () => {
+    const content = readFileSync(SCRIPT_PATH, 'utf-8');
+    // stdio: 'inherit' would leak non-JSON output to stdout, breaking Claude Code hooks
+    expect(content).not.toContain("stdio: 'inherit'");
+    expect(content).not.toContain('stdio: "inherit"');
+  });
+
+  it('should output valid JSON to stdout on success path', () => {
+    const content = readFileSync(SCRIPT_PATH, 'utf-8');
+    // The script must print JSON to stdout for the Claude Code hook contract
+    expect(content).toContain('console.log(JSON.stringify(');
+    expect(content).toContain('continue');
+    expect(content).toContain('suppressOutput');
+  });
+
+  it('should output valid JSON to stdout even in error catch block', () => {
+    const content = readFileSync(SCRIPT_PATH, 'utf-8');
+    // Find the catch block and verify it also outputs JSON
+    const catchIndex = content.lastIndexOf('catch (e)');
+    expect(catchIndex).toBeGreaterThan(0);
+    const catchBlock = content.slice(catchIndex, catchIndex + 300);
+    expect(catchBlock).toContain('console.log(JSON.stringify(');
+  });
+
+  it('should use piped stdout for all execSync calls', () => {
+    const content = readFileSync(SCRIPT_PATH, 'utf-8');
+    // All execSync calls should pipe stdout to prevent leaking to the hook output.
+    // Match execSync calls that have a stdio option — they should all use array form.
+    // All execSync calls should either use 'ignore', array form, or the installStdio variable
+    // — never bare 'inherit' which leaks non-JSON output to stdout
+    expect(content).not.toContain("stdio: 'inherit'");
+    expect(content).not.toContain('stdio: "inherit"');
+    // Verify the installStdio variable is defined with the correct pipe config
+    expect(content).toContain("const installStdio = ['pipe', 'pipe', 'inherit']");
+  });
+
+  it('should produce valid JSON when run with plugin disabled', () => {
+    // Run the actual script with the plugin forcefully disabled via settings
+    // This exercises the early exit path
+    const settingsDir = join(tmpdir(), `claude-mem-test-settings-${process.pid}`);
+    const settingsFile = join(settingsDir, 'settings.json');
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(settingsFile, JSON.stringify({
+      enabledPlugins: { 'claude-mem@thedotmack': false }
+    }));
+
+    try {
+      const result = spawnSync('node', [SCRIPT_PATH], {
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          CLAUDE_CONFIG_DIR: settingsDir,
+        },
+        timeout: 10000,
+      });
+
+      // When plugin is disabled, script exits with 0 and produces no stdout
+      // (the early exit at line 31-33 calls process.exit(0) before any output)
+      expect(result.status).toBe(0);
+      // stdout should be empty or valid JSON (not plain text install messages)
+      const stdout = (result.stdout || '').trim();
+      if (stdout.length > 0) {
+        expect(() => JSON.parse(stdout)).not.toThrow();
+      }
+    } finally {
+      rmSync(settingsDir, { recursive: true, force: true });
+    }
   });
 });

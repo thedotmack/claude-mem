@@ -281,7 +281,7 @@ export class SDKAgent {
     } finally {
       // Ensure subprocess is terminated after query completes (or on error)
       const tracked = getProcessBySession(session.sessionDbId);
-      if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
+      if (tracked && tracked.process.exitCode === null) {
         await ensureProcessExit(tracked, 5000);
       }
     }

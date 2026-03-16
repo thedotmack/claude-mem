@@ -16,13 +16,20 @@ export const claudeCodeAdapter: PlatformAdapter = {
     };
   },
   formatOutput(result) {
-    if (result.hookSpecificOutput) {
+    const r = result ?? ({} as HookResult);
+    if (r.hookSpecificOutput) {
       const output: Record<string, unknown> = { hookSpecificOutput: result.hookSpecificOutput };
-      if (result.systemMessage) {
-        output.systemMessage = result.systemMessage;
+      if (r.systemMessage) {
+        output.systemMessage = r.systemMessage;
       }
       return output;
     }
-    return { continue: result.continue ?? true, suppressOutput: result.suppressOutput ?? true };
+    // Only emit fields in the Claude Code hook contract — unrecognized fields
+    // cause "JSON validation failed" in Stop hooks.
+    const output: Record<string, unknown> = {};
+    if (r.systemMessage) {
+      output.systemMessage = r.systemMessage;
+    }
+    return output;
   }
 };

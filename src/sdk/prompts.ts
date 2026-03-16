@@ -130,7 +130,11 @@ export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): strin
     return '';
   })();
 
-  return `${mode.prompts.header_summary_checkpoint}
+  return `--- MODE SWITCH: PROGRESS SUMMARY ---
+Do NOT output <observation> tags. This is a summary request, not an observation request.
+Your response MUST use <summary> tags ONLY. Any <observation> output will be discarded.
+
+${mode.prompts.header_summary_checkpoint}
 ${mode.prompts.summary_instruction}
 
 ${mode.prompts.summary_context_label}

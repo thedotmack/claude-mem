@@ -304,7 +304,7 @@ export class SessionManager {
 
     // 3. Verify subprocess exit with 5s timeout (Issue #737 fix)
     const tracked = getProcessBySession(sessionDbId);
-    if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
+    if (tracked && tracked.process.exitCode === null) {
       logger.debug('SESSION', `Waiting for subprocess PID ${tracked.pid} to exit`, {
         sessionId: sessionDbId,
         pid: tracked.pid
