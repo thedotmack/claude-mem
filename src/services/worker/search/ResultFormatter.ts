@@ -161,7 +161,8 @@ export class ResultFormatter {
     const id = `#${obs.id}`;
     const time = formatTime(obs.created_at_epoch);
     const icon = ModeManager.getInstance().getTypeIcon(obs.type);
-    const title = obs.title || 'Untitled';
+    const rawTitle = obs.title || 'Untitled';
+    const title = obs.branch ? `${rawTitle} [${this.truncateBranch(obs.branch)}]` : rawTitle;
     const readTokens = this.estimateReadTokens(obs);
 
     const timeDisplay = time === lastTime ? '"' : time;
@@ -256,6 +257,13 @@ export class ResultFormatter {
       : prompt.prompt_text;
 
     return `| ${id} | ${time} | ${icon} | ${title} | - | - |`;
+  }
+
+  /**
+   * Truncate branch name to 20 chars with ellipsis
+   */
+  truncateBranch(branch: string): string {
+    return branch.length > 20 ? branch.substring(0, 17) + '...' : branch;
   }
 
   /**
