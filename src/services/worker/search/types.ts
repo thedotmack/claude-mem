@@ -49,6 +49,8 @@ export interface ChromaMetadata {
   files_modified?: string;
   field_type?: string;
   prompt_number?: number;
+  branch?: string;
+  commit_sha?: string;
 }
 
 /**

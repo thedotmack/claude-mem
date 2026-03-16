@@ -40,6 +40,8 @@ interface StoredObservation {
   discovery_tokens: number; // ROI metrics
   created_at: string;
   created_at_epoch: number;
+  branch?: string | null;
+  commit_sha?: string | null;
 }
 
 interface StoredSummary {
@@ -56,6 +58,8 @@ interface StoredSummary {
   discovery_tokens: number; // ROI metrics
   created_at: string;
   created_at_epoch: number;
+  branch?: string | null;
+  commit_sha?: string | null;
 }
 
 interface StoredUserPrompt {
