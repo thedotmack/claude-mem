@@ -1043,6 +1043,29 @@
       color: var(--color-text-muted);
     }
 
+    /* Branch badge styling */
+    .card-branch {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      background: var(--color-bg-tertiary);
+      color: var(--color-text-muted);
+      border-radius: 3px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .card-commit-sha {
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      opacity: 0.7;
+      font-size: 10px;
+    }
+
+    .card-commit-sha::before {
+      content: '@';
+    }
+
     .summary-card {
       border-color: var(--color-border-summary);
       background: var(--color-bg-summary);
