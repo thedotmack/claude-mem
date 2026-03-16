@@ -2,6 +2,27 @@
 
 All notable changes to claude-mem.
 
+## [v10.5.6] - 2026-03-16
+
+## Patch: Process Supervisor Hardening & Logging Cleanup
+
+### Fixes
+- **Downgrade HTTP request/response logging from INFO to DEBUG** — eliminates noisy per-request log spam from the viewer UI polling
+- **Fix `isPidAlive(0)` returning true** — PID 0 is the kernel scheduler, not a valid child process
+- **Fix signal handler race condition** — added `shutdownInitiated` flag to prevent duplicate shutdown cascades when signals arrive before `stopPromise` is set
+- **Remove unused `dataDir` parameter** from `ShutdownCascadeOptions`
+- **Export and reuse env sanitizer constants** — `Server.ts` now imports `ENV_PREFIXES`/`ENV_EXACT_MATCHES` from `env-sanitizer.ts` instead of duplicating them
+- **Rename `zombiePidFiles` to `deadProcessPids`** — now returns actual PID array instead of a boolean
+- **Use `buildWorkerUrl` helper** in `workerHttpRequest` instead of inline URL construction
+- **Remove unused `getWorkerPort` imports** from observation and session-init handlers
+- **Upgrade `reapSession` failure log** from debug to warn level
+- **Clean up `.gitignore`** — remove stale `~*/`, `http*/`, `https*/` patterns and duplicate `datasets/` entry
+
+### Tests
+- Rewrote supervisor index tests to use temp directories instead of relying on real `~/.claude-mem/worker.pid`
+- Added deterministic test cases for missing, invalid, stale, and alive PID file states
+- Removed unused `dataDir` from shutdown test fixtures
+
 ## [v10.5.5] - 2026-03-09
 
 ### Bug Fix
@@ -1112,71 +1133,4 @@ Fixed an issue where the worker service startup wasn't producing proper JSON sta
 - Standardized Claude Code 2.1.0 note wording across documentation
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.0...v9.0.1
-
-## [v9.0.0] - 2026-01-06
-
-## 🚀 Live Context System
-
-Version 9.0.0 introduces the **Live Context System** - a major new capability that provides folder-level activity context through auto-generated CLAUDE.md files.
-
-### ✨ New Features
-
-#### Live Context System
-- **Folder CLAUDE.md Files**: Each directory now gets an auto-generated CLAUDE.md file containing a chronological timeline of recent development activity
-- **Activity Timelines**: Tables show observation ID, time, type, title, and estimated token cost for relevant work in each folder
-- **Worktree Support**: Proper detection of git worktrees with project-aware filtering to show only relevant observations per worktree
-- **Configurable Limits**: Control observation count via `CLAUDE_MEM_CONTEXT_OBSERVATIONS` setting
-
-#### Modular Architecture Refactor
-- **Service Layer Decomposition**: Major refactoring from monolithic worker-service to modular domain services
-- **SQLite Module Extraction**: Database operations split into dedicated modules (observations, sessions, summaries, prompts, timeline)
-- **Context Builder System**: New modular context generation with TimelineRenderer, FooterRenderer, and ObservationCompiler
-- **Error Handler Centralization**: Unified Express error handling via ErrorHandler module
-
-#### SDK Agent Improvements
-- **Session Resume**: Memory sessions can now resume across Claude conversations using SDK session IDs
-- **Memory Session ID Tracking**: Proper separation of content session IDs from memory session IDs
-- **Response Processor Refactor**: Cleaner message handling and observation extraction
-
-### 🔧 Improvements
-
-#### Windows Stability
-- Fixed Windows PowerShell variable escaping in hook execution
-- Improved IPC detection for Windows managed mode
-- Better PATH handling for Bun and uv on Windows
-
-#### Settings & Configuration
-- **Auto-Creation**: Settings file automatically created with defaults on first run
-- **Worker Host Configuration**: `CLAUDE_MEM_WORKER_HOST` setting for custom worker endpoints
-- Settings validation with helpful error messages
-
-#### MCP Tools
-- Standardized naming: "MCP tools" terminology instead of "mem-search skill"
-- Improved tool descriptions for better Claude integration
-- Context injection API now supports worktree parameter
-
-### 📚 Documentation
-- New **Folder Context Files** documentation page
-- **Worktree Support** section explaining git worktree behavior
-- Updated architecture documentation reflecting modular refactor
-- v9.0 release notes in introduction page
-
-### 🐛 Bug Fixes
-- Fixed stale session resume crash when SDK session is orphaned
-- Fixed logger serialization bug causing silent ChromaSync failures
-- Fixed CLAUDE.md path resolution in worktree environments
-- Fixed date preservation in folder timeline generation
-- Fixed foreign key constraint issues in observation storage
-- Resolved multiple TypeScript type errors across codebase
-
-### 🗑️ Removed
-- Deprecated context-generator.ts (functionality moved to modular system)
-- Obsolete queue analysis documents
-- Legacy worker wrapper scripts
-
----
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.10...v9.0.0
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
