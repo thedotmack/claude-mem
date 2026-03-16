@@ -14,6 +14,8 @@ export interface Observation {
   prompt_number: number | null;
   created_at: string;
   created_at_epoch: number;
+  branch?: string | null;
+  commit_sha?: string | null;
 }
 
 export interface Summary {
