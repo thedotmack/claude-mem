@@ -16,13 +16,11 @@ type TreeKillFn = (pid: number, signal?: string, callback?: (error?: Error | nul
 export interface ShutdownCascadeOptions {
   registry: ProcessRegistry;
   currentPid?: number;
-  dataDir?: string;
   pidFilePath?: string;
 }
 
 export async function runShutdownCascade(options: ShutdownCascadeOptions): Promise<void> {
   const currentPid = options.currentPid ?? process.pid;
-  const dataDir = options.dataDir ?? DATA_DIR;
   const pidFilePath = options.pidFilePath ?? PID_FILE;
   const allRecords = options.registry.getAll();
   const childRecords = [...allRecords]

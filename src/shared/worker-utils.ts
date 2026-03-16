@@ -110,7 +110,7 @@ export function workerHttpRequest(
   const method = options.method ?? 'GET';
   const timeoutMs = options.timeoutMs ?? HEALTH_CHECK_TIMEOUT_MS;
 
-  const url = `http://${getWorkerHost()}:${getWorkerPort()}${apiPath}`;
+  const url = buildWorkerUrl(apiPath);
   const init: RequestInit = { method };
   if (options.headers) {
     init.headers = options.headers;

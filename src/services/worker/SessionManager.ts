@@ -317,7 +317,7 @@ export class SessionManager {
     try {
       await getSupervisor().getRegistry().reapSession(sessionDbId);
     } catch (error) {
-      logger.debug('SESSION', 'Supervisor reapSession failed (non-blocking)', {
+      logger.warn('SESSION', 'Supervisor reapSession failed (non-blocking)', {
         sessionId: sessionDbId
       }, error as Error);
     }

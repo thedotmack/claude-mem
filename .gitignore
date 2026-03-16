@@ -20,7 +20,6 @@ plugin/data.backup/
 package-lock.json
 bun.lock
 private/
-datasets/
 Auto Run Docs/
 
 # Generated UI files (built from viewer-template.html)
@@ -29,13 +28,6 @@ src/ui/viewer.html
 # Local MCP server config (for development only)
 .mcp.json
 .cursor/
-
-# Prevent literal tilde directories (path validation bug artifacts)
-~*/
-
-# Prevent other malformed path directories
-http*/
-https*/
 
 # Ignore WebStorm project files (for dinosaur IDE users)
 .idea/

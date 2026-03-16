@@ -17,6 +17,7 @@ interface PidInfo {
 
 interface ValidateWorkerPidOptions {
   logAlive?: boolean;
+  pidFilePath?: string;
 }
 
 export type ValidateWorkerPidStatus = 'missing' | 'alive' | 'stale' | 'invalid';
@@ -26,6 +27,7 @@ class Supervisor {
   private started = false;
   private stopPromise: Promise<void> | null = null;
   private signalHandlersRegistered = false;
+  private shutdownInitiated = false;
   private shutdownHandler: (() => Promise<void>) | null = null;
 
   constructor(registry: ProcessRegistry) {
@@ -53,10 +55,11 @@ class Supervisor {
     this.signalHandlersRegistered = true;
 
     const handleSignal = async (signal: string): Promise<void> => {
-      if (this.stopPromise) {
+      if (this.shutdownInitiated) {
         logger.warn('SYSTEM', `Received ${signal} but shutdown already in progress`);
         return;
       }
+      this.shutdownInitiated = true;
 
       logger.info('SYSTEM', `Received ${signal}, shutting down...`);
 
@@ -148,17 +151,19 @@ export function configureSupervisorSignalHandlers(shutdownHandler: () => Promise
 }
 
 export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): ValidateWorkerPidStatus {
-  if (!existsSync(PID_FILE)) {
+  const pidFilePath = options.pidFilePath ?? PID_FILE;
+
+  if (!existsSync(pidFilePath)) {
     return 'missing';
   }
 
   let pidInfo: PidInfo | null = null;
 
   try {
-    pidInfo = JSON.parse(readFileSync(PID_FILE, 'utf-8')) as PidInfo;
+    pidInfo = JSON.parse(readFileSync(pidFilePath, 'utf-8')) as PidInfo;
   } catch (error) {
-    logger.warn('SYSTEM', 'Failed to parse worker PID file, removing it', { path: PID_FILE }, error as Error);
-    rmSync(PID_FILE, { force: true });
+    logger.warn('SYSTEM', 'Failed to parse worker PID file, removing it', { path: pidFilePath }, error as Error);
+    rmSync(pidFilePath, { force: true });
     return 'invalid';
   }
 
@@ -178,6 +183,6 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
     port: pidInfo.port,
     startedAt: pidInfo.startedAt
   });
-  rmSync(PID_FILE, { force: true });
+  rmSync(pidFilePath, { force: true });
   return 'stale';
 }

@@ -19,6 +19,7 @@ import { createMiddleware, summarizeRequestBody, requireLocalhost } from './Midd
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
+import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.js';
 
 // Build-time injected version constant (set by esbuild define)
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -303,14 +304,12 @@ export class Server {
         startedAt: record.startedAt,
       }));
 
-      // Check for zombie PID files (dead processes still in registry)
-      const zombiePidFiles = processes.some(p => p.status === 'dead');
+      // Check for dead processes still in registry
+      const deadProcessPids = processes.filter(p => p.status === 'dead').map(p => p.pid);
 
       // Check if CLAUDECODE_* env vars are leaking into this process
-      const envPrefixes = ['CLAUDECODE_', 'CLAUDE_CODE_'];
-      const exactMatches = ['CLAUDECODE', 'CLAUDE_CODE_SESSION', 'CLAUDE_CODE_ENTRYPOINT', 'MCP_SESSION_ID'];
       const envClean = !Object.keys(process.env).some(key =>
-        exactMatches.includes(key) || envPrefixes.some(prefix => key.startsWith(prefix))
+        ENV_EXACT_MATCHES.has(key) || ENV_PREFIXES.some(prefix => key.startsWith(prefix))
       );
 
       // Format uptime
@@ -328,7 +327,7 @@ export class Server {
         },
         processes,
         health: {
-          zombiePidFiles,
+          deadProcessPids,
           envClean,
         },
       });

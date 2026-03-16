@@ -27,7 +27,7 @@ interface PersistedRegistry {
 
 export function isPidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid < 0) return false;
-  if (pid === 0) return true;
+  if (pid === 0) return false;
 
   try {
     process.kill(pid, 0);

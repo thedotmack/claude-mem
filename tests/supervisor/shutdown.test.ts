@@ -50,7 +50,6 @@ describe('supervisor shutdown cascade', () => {
     await runShutdownCascade({
       registry,
       currentPid: process.pid,
-      dataDir: tempDir,
       pidFilePath
     });
 
@@ -105,8 +104,7 @@ describe('supervisor shutdown cascade', () => {
       await runShutdownCascade({
         registry,
         currentPid: process.pid,
-        dataDir: tempDir,
-        pidFilePath: path.join(tempDir, 'worker.pid')
+          pidFilePath: path.join(tempDir, 'worker.pid')
       });
     } finally {
       process.kill = originalKill;
@@ -143,7 +141,6 @@ describe('supervisor shutdown cascade', () => {
     await runShutdownCascade({
       registry,
       currentPid: process.pid,
-      dataDir: tempDir,
       pidFilePath: path.join(tempDir, 'worker.pid')
     });
 
@@ -179,7 +176,6 @@ describe('supervisor shutdown cascade', () => {
     await runShutdownCascade({
       registry,
       currentPid: process.pid,
-      dataDir: tempDir,
       pidFilePath: path.join(tempDir, 'worker.pid')
     });
 
