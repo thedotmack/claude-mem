@@ -53,6 +53,7 @@ export class SessionStore {
     this.addSessionCustomTitleColumn();
     this.addObservationBranchColumns();
     this.addPendingMessagesBranchColumns();
+    this.addSummaryBranchColumns();
   }
 
   /**
@@ -925,6 +926,31 @@ export class SessionStore {
   }
 
   /**
+   * Add branch and commit_sha columns to session_summaries for branch memory (migration 26)
+   * Enables backfill to propagate branch metadata through to Chroma vector search.
+   */
+  private addSummaryBranchColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(26) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tableInfo = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
+    const hasBranch = tableInfo.some(col => col.name === 'branch');
+    const hasCommitSha = tableInfo.some(col => col.name === 'commit_sha');
+
+    if (!hasBranch) {
+      this.db.run('ALTER TABLE session_summaries ADD COLUMN branch TEXT');
+      logger.debug('DB', 'Added branch column to session_summaries table');
+    }
+
+    if (!hasCommitSha) {
+      this.db.run('ALTER TABLE session_summaries ADD COLUMN commit_sha TEXT');
+      logger.debug('DB', 'Added commit_sha column to session_summaries table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
+  }
+
+  /**
    * Update the memory session ID for a session
    * Called by SDKAgent when it captures the session ID from the first SDK message
    * Also used to RESET to null on stale resume failures (worker-service.ts)
@@ -1639,7 +1665,9 @@ export class SessionStore {
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    branch?: string | null,
+    commitSha?: string | null
   ): { id: number; createdAtEpoch: number } {
     // Use override timestamp if provided (for processing backlog messages with original timestamps)
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1648,8 +1676,9 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries
       (memory_session_id, project, request, investigated, learned, completed,
-       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+       branch, commit_sha)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1664,7 +1693,9 @@ export class SessionStore {
       promptNumber || null,
       discoveryTokens,
       timestampIso,
-      timestampEpoch
+      timestampEpoch,
+      branch ?? null,
+      commitSha ?? null
     );
 
     return {
@@ -1770,8 +1801,9 @@ export class SessionStore {
         const summaryStmt = this.db.prepare(`
           INSERT INTO session_summaries
           (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+           branch, commit_sha)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = summaryStmt.run(
@@ -1786,7 +1818,9 @@ export class SessionStore {
           promptNumber || null,
           discoveryTokens,
           timestampIso,
-          timestampEpoch
+          timestampEpoch,
+          branch ?? null,
+          commitSha ?? null
         );
         summaryId = Number(result.lastInsertRowid);
       }
