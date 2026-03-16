@@ -252,9 +252,17 @@ export class ChromaMcpManager {
       // Transport error: chroma-mcp subprocess likely died (e.g., killed by orphan reaper,
       // HNSW index corruption). Mark connection dead and retry once after reconnect (#1131).
       // Without this retry, callers see a one-shot error even though reconnect would succeed.
+      //
+      // CRITICAL: Close the transport before nulling to kill the subprocess (#1369).
+      // If we null this.transport first, connectInternal() sees transport === null,
+      // skips cleanup, and spawns a new subprocess, orphaning the old one.
       this.connected = false;
+      const staleTransport = this.transport;
       this.client = null;
       this.transport = null;
+      if (staleTransport) {
+        try { await staleTransport.close(); } catch { /* subprocess may already be dead */ }
+      }
 
       logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
@@ -267,7 +275,14 @@ export class ChromaMcpManager {
           arguments: toolArguments
         });
       } catch (retryError) {
+        // Retry also failed. Close transport to prevent another orphan.
         this.connected = false;
+        const retryTransport = this.transport;
+        this.client = null;
+        this.transport = null;
+        if (retryTransport) {
+          try { await retryTransport.close(); } catch { /* subprocess may already be dead */ }
+        }
         throw new Error(`chroma-mcp transport error during "${toolName}" (retry failed): ${retryError instanceof Error ? retryError.message : String(retryError)}`);
       }
     }
