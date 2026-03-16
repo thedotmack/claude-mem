@@ -39,3 +39,8 @@ https*/
 
 # Ignore WebStorm project files (for dinosaur IDE users)
 .idea/
+
+.claude-octopus/
+.claude/session-intent.md
+.claude/session-plan.md
+.octo/
