@@ -325,7 +325,9 @@ export class ChromaSync {
     obs: ParsedObservation,
     promptNumber: number,
     createdAtEpoch: number,
-    discoveryTokens: number = 0
+    discoveryTokens: number = 0,
+    branch?: string | null,
+    commitSha?: string | null
   ): Promise<void> {
     // Convert ParsedObservation to StoredObservation format
     const stored: StoredObservation = {
@@ -344,7 +346,9 @@ export class ChromaSync {
       prompt_number: promptNumber,
       discovery_tokens: discoveryTokens,
       created_at: new Date(createdAtEpoch * 1000).toISOString(),
-      created_at_epoch: createdAtEpoch
+      created_at_epoch: createdAtEpoch,
+      branch: branch,
+      commit_sha: commitSha
     };
 
     const documents = this.formatObservationDocs(stored);
@@ -369,7 +373,9 @@ export class ChromaSync {
     summary: ParsedSummary,
     promptNumber: number,
     createdAtEpoch: number,
-    discoveryTokens: number = 0
+    discoveryTokens: number = 0,
+    branch?: string | null,
+    commitSha?: string | null
   ): Promise<void> {
     // Convert ParsedSummary to StoredSummary format
     const stored: StoredSummary = {
@@ -385,7 +391,9 @@ export class ChromaSync {
       prompt_number: promptNumber,
       discovery_tokens: discoveryTokens,
       created_at: new Date(createdAtEpoch * 1000).toISOString(),
-      created_at_epoch: createdAtEpoch
+      created_at_epoch: createdAtEpoch,
+      branch: branch,
+      commit_sha: commitSha
     };
 
     const documents = this.formatSummaryDocs(stored);
