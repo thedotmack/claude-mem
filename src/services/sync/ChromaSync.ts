@@ -155,6 +155,12 @@ export class ChromaSync {
     if (files_modified.length > 0) {
       baseMetadata.files_modified = files_modified.join(',');
     }
+    if (obs.branch) {
+      baseMetadata.branch = obs.branch;
+    }
+    if (obs.commit_sha) {
+      baseMetadata.commit_sha = obs.commit_sha;
+    }
 
     // Narrative as separate document
     if (obs.narrative) {
@@ -201,6 +207,13 @@ export class ChromaSync {
       created_at_epoch: summary.created_at_epoch,
       prompt_number: summary.prompt_number || 0
     };
+
+    if (summary.branch) {
+      baseMetadata.branch = summary.branch;
+    }
+    if (summary.commit_sha) {
+      baseMetadata.commit_sha = summary.commit_sha;
+    }
 
     // Each field becomes a separate document
     if (summary.request) {
