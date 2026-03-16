@@ -257,6 +257,10 @@ async function buildHooks() {
         external: [
           'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
           'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
+          // @opencode-ai/plugin is provided by the OpenCode runtime
+          '@opencode-ai/plugin',
+          '@opencode-ai/plugin/tool',
+          'zod',
         ],
       });
 
