@@ -10,12 +10,7 @@
 
 import http from 'http';
 import { logger } from '../../utils/logger.js';
-import {
-  getChildProcesses,
-  forceKillProcess,
-  waitForProcessesExit,
-  removePidFile
-} from './ProcessManager.js';
+import { stopSupervisor } from '../../supervisor/index.js';
 
 export interface ShutdownableService {
   shutdownAll(): Promise<void>;
@@ -57,49 +52,35 @@ export interface GracefulShutdownConfig {
 export async function performGracefulShutdown(config: GracefulShutdownConfig): Promise<void> {
   logger.info('SYSTEM', 'Shutdown initiated');
 
-  // Clean up PID file on shutdown
-  removePidFile();
-
-  // STEP 1: Enumerate all child processes BEFORE we start closing things
-  const childPids = await getChildProcesses(process.pid);
-  logger.info('SYSTEM', 'Found child processes', { count: childPids.length, pids: childPids });
-
-  // STEP 2: Close HTTP server first
+  // STEP 1: Close HTTP server first
   if (config.server) {
     await closeHttpServer(config.server);
     logger.info('SYSTEM', 'HTTP server closed');
   }
 
-  // STEP 3: Shutdown active sessions
+  // STEP 2: Shutdown active sessions
   await config.sessionManager.shutdownAll();
 
-  // STEP 4: Close MCP client connection (signals child to exit gracefully)
+  // STEP 3: Close MCP client connection (signals child to exit gracefully)
   if (config.mcpClient) {
     await config.mcpClient.close();
     logger.info('SYSTEM', 'MCP client closed');
   }
 
-  // STEP 5: Stop Chroma MCP connection
+  // STEP 4: Stop Chroma MCP connection
   if (config.chromaMcpManager) {
     logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
     await config.chromaMcpManager.stop();
     logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
   }
 
-  // STEP 6: Close database connection (includes ChromaSync cleanup)
+  // STEP 5: Close database connection (includes ChromaSync cleanup)
   if (config.dbManager) {
     await config.dbManager.close();
   }
 
-  // STEP 7: Force kill any remaining child processes (Windows zombie port fix)
-  if (childPids.length > 0) {
-    logger.info('SYSTEM', 'Force killing remaining children');
-    for (const pid of childPids) {
-      await forceKillProcess(pid);
-    }
-    // Wait for children to fully exit
-    await waitForProcessesExit(childPids, 5000);
-  }
+  // STEP 6: Supervisor handles tracked child termination, PID cleanup, and stale sockets.
+  await stopSupervisor();
 
   logger.info('SYSTEM', 'Worker shutdown complete');
 }

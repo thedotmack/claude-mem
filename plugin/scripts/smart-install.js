@@ -220,14 +220,14 @@ function installBun() {
       // Windows: Use PowerShell installer
       console.error('   Installing via PowerShell...');
       execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
-        stdio: 'inherit',
+        stdio: ['pipe', 'pipe', 'inherit'],
         shell: true
       });
     } else {
       // Unix/macOS: Use curl installer
       console.error('   Installing via curl...');
       execSync('curl -fsSL https://bun.sh/install | bash', {
-        stdio: 'inherit',
+        stdio: ['pipe', 'pipe', 'inherit'],
         shell: true
       });
     }
@@ -285,14 +285,14 @@ function installUv() {
       // Windows: Use PowerShell installer
       console.error('   Installing via PowerShell...');
       execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
-        stdio: 'inherit',
+        stdio: ['pipe', 'pipe', 'inherit'],
         shell: true
       });
     } else {
       // Unix/macOS: Use curl installer
       console.error('   Installing via curl...');
       execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
-        stdio: 'inherit',
+        stdio: ['pipe', 'pipe', 'inherit'],
         shell: true
       });
     }
@@ -426,14 +426,18 @@ function installDeps() {
   // Quote path for Windows paths with spaces
   const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
 
+  // Use pipe for stdout to prevent non-JSON output leaking to Claude Code hooks.
+  // stderr is inherited so progress/errors are still visible to the user.
+  const installStdio = ['pipe', 'pipe', 'inherit'];
+
   let bunSucceeded = false;
   try {
-    execSync(`${bunCmd} install`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+    execSync(`${bunCmd} install`, { cwd: ROOT, stdio: installStdio, shell: IS_WINDOWS });
     bunSucceeded = true;
   } catch {
     // First attempt failed, try with force flag
     try {
-      execSync(`${bunCmd} install --force`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+      execSync(`${bunCmd} install --force`, { cwd: ROOT, stdio: installStdio, shell: IS_WINDOWS });
       bunSucceeded = true;
     } catch {
       // Bun failed completely, will try npm fallback
@@ -445,7 +449,7 @@ function installDeps() {
     console.error('⚠️  Bun install failed, falling back to npm...');
     console.error('   (This can happen with npm alias packages like *-cjs)');
     try {
-      execSync('npm install', { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+      execSync('npm install', { cwd: ROOT, stdio: installStdio, shell: IS_WINDOWS });
     } catch (npmError) {
       throw new Error('Both bun and npm install failed: ' + npmError.message);
     }
@@ -506,7 +510,7 @@ try {
     console.error(`⚠️  Bun ${currentVersion} is outdated. Minimum required: ${MIN_BUN_VERSION}`);
     console.error('   Upgrading bun...');
     try {
-      execSync('bun upgrade', { stdio: 'inherit', shell: IS_WINDOWS });
+      execSync('bun upgrade', { stdio: ['pipe', 'pipe', 'inherit'], shell: IS_WINDOWS });
       if (!isBunVersionSufficient()) {
         console.error(`❌ Bun upgrade failed. Please manually upgrade: bun upgrade`);
         process.exit(1);
@@ -542,7 +546,7 @@ try {
     if (!verifyCriticalModules()) {
       console.error('⚠️  Retrying install with npm...');
       try {
-        execSync('npm install --production', { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+        execSync('npm install --production', { cwd: ROOT, stdio: ['pipe', 'pipe', 'inherit'], shell: IS_WINDOWS });
       } catch {
         // npm also failed
       }
@@ -577,7 +581,12 @@ try {
 
   // Step 4: Install CLI to PATH
   installCLI();
+
+  // Output valid JSON for Claude Code hook contract
+  console.log(JSON.stringify({ continue: true, suppressOutput: true }));
 } catch (e) {
   console.error('❌ Installation failed:', e.message);
+  // Still output valid JSON so Claude Code doesn't show a confusing error
+  console.log(JSON.stringify({ continue: true, suppressOutput: true }));
   process.exit(1);
 }

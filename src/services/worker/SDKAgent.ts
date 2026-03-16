@@ -22,6 +22,7 @@ import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
 import { createPidCapturingSpawn, getProcessBySession, ensureProcessExit, waitForSlot } from './ProcessRegistry.js';
+import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -96,7 +97,7 @@ export class SDKAgent {
     // Build isolated environment from ~/.claude-mem/.env
     // This prevents Issue #733: random ANTHROPIC_API_KEY from project .env files
     // being used instead of the configured auth method (CLI subscription or explicit API key)
-    const isolatedEnv = buildIsolatedEnv();
+    const isolatedEnv = sanitizeEnv(buildIsolatedEnv());
     const authMethod = getAuthMethodDescription();
 
     logger.info('SDK', 'Starting SDK query', {
@@ -281,7 +282,7 @@ export class SDKAgent {
     } finally {
       // Ensure subprocess is terminated after query completes (or on error)
       const tracked = getProcessBySession(session.sessionDbId);
-      if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
+      if (tracked && tracked.process.exitCode === null) {
         await ensureProcessExit(tracked, 5000);
       }
     }

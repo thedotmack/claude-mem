@@ -15,6 +15,8 @@ import { exec, execSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
+import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
+import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 
 const execAsync = promisify(exec);
 
@@ -625,11 +627,13 @@ export function spawnDaemon(
   extraEnv: Record<string, string> = {}
 ): number | undefined {
   const isWindows = process.platform === 'win32';
-  const env = {
+  getSupervisor().assertCanSpawn('worker daemon');
+
+  const env = sanitizeEnv({
     ...process.env,
     CLAUDE_MEM_WORKER_PORT: String(port),
     ...extraEnv
-  };
+  });
 
   if (isWindows) {
     // Use PowerShell Start-Process to spawn a hidden, independent process
@@ -764,18 +768,8 @@ export function touchPidFile(): void {
  * Called at the top of ensureWorkerStarted() to clean up after WSL2
  * hibernate, OOM kills, or other ungraceful worker deaths.
  */
-export function cleanStalePidFile(): void {
-  const pidInfo = readPidFile();
-  if (!pidInfo) return;
-
-  if (!isProcessAlive(pidInfo.pid)) {
-    logger.info('SYSTEM', 'Removing stale PID file (worker process is dead)', {
-      pid: pidInfo.pid,
-      port: pidInfo.port,
-      startedAt: pidInfo.startedAt
-    });
-    removePidFile();
-  }
+export function cleanStalePidFile(): ValidateWorkerPidStatus {
+  return validateWorkerPidFile({ logAlive: false });
 }
 
 /**

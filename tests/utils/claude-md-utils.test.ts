@@ -14,6 +14,24 @@ mock.module('../../src/utils/logger.js', () => ({
   },
 }));
 
+// Mock worker-utils to delegate workerHttpRequest to global.fetch
+mock.module('../../src/shared/worker-utils.js', () => ({
+  getWorkerPort: () => 37777,
+  getWorkerHost: () => '127.0.0.1',
+  workerHttpRequest: (apiPath: string, options?: any) => {
+    const url = `http://127.0.0.1:37777${apiPath}`;
+    return globalThis.fetch(url, {
+      method: options?.method ?? 'GET',
+      headers: options?.headers,
+      body: options?.body,
+    });
+  },
+  clearPortCache: () => {},
+  ensureWorkerRunning: () => Promise.resolve(true),
+  fetchWithTimeout: (url: string, init: any, timeoutMs: number) => globalThis.fetch(url, init),
+  buildWorkerUrl: (apiPath: string) => `http://127.0.0.1:37777${apiPath}`,
+}));
+
 // Import after mocks
 import {
   replaceTaggedContent,

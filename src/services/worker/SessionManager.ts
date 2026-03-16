@@ -15,6 +15,7 @@ import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationDa
 import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
 import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
 import { getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
+import { getSupervisor } from '../../supervisor/index.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -302,12 +303,23 @@ export class SessionManager {
 
     // 3. Verify subprocess exit with 5s timeout (Issue #737 fix)
     const tracked = getProcessBySession(sessionDbId);
-    if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
+    if (tracked && tracked.process.exitCode === null) {
       logger.debug('SESSION', `Waiting for subprocess PID ${tracked.pid} to exit`, {
         sessionId: sessionDbId,
         pid: tracked.pid
       });
       await ensureProcessExit(tracked, 5000);
+    }
+
+    // 3b. Reap all supervisor-tracked processes for this session (#1351)
+    // This catches MCP servers and other child processes not tracked by the
+    // in-memory ProcessRegistry (e.g. processes registered only in supervisor.json).
+    try {
+      await getSupervisor().getRegistry().reapSession(sessionDbId);
+    } catch (error) {
+      logger.warn('SESSION', 'Supervisor reapSession failed (non-blocking)', {
+        sessionId: sessionDbId
+      }, error as Error);
     }
 
     // 4. Cleanup

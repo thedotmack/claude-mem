@@ -360,7 +360,7 @@ export class SessionRoutes extends BaseRouteHandler {
       // Sync user prompt to Chroma
       const chromaStart = Date.now();
       const promptText = latestPrompt.prompt_text;
-      this.dbManager.getChromaSync().syncUserPrompt(
+      this.dbManager.getChromaSync()?.syncUserPrompt(
         latestPrompt.id,
         latestPrompt.memory_session_id,
         latestPrompt.project,

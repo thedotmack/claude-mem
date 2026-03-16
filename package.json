@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "10.5.5",
+  "version": "10.5.6",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -134,5 +134,8 @@
     "tree-sitter-typescript": "^0.23.2",
     "tsx": "^4.20.6",
     "typescript": "^5.3.0"
+  },
+  "optionalDependencies": {
+    "tree-kill": "^1.2.2"
   }
 }

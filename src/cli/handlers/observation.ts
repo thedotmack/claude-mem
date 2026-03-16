@@ -5,7 +5,7 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { isProjectExcluded } from '../../utils/project-filter.js';
@@ -28,13 +28,9 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    const port = getWorkerPort();
-
     const toolStr = logger.formatTool(toolName, toolInput);
 
-    logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {
-      workerPort: port
-    });
+    logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {});
 
     // Validate required fields before sending to worker
     if (!cwd) {
@@ -50,7 +46,7 @@ export const observationHandler: EventHandler = {
 
     // Send to worker - worker handles privacy check and database operations
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
+      const response = await workerHttpRequest('/api/sessions/observations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -60,7 +56,6 @@ export const observationHandler: EventHandler = {
           tool_response: toolResponse,
           cwd
         })
-        // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
       });
 
       if (!response.ok) {

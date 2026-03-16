@@ -80,8 +80,8 @@ export function getWorkerHost(): string {
 }
 
 /**
- * Clear the cached port and host values
- * Call this when settings are updated to force re-reading from file
+ * Clear the cached port and host values.
+ * Call this when settings are updated to force re-reading from file.
  */
 export function clearPortCache(): void {
   cachedPort = null;
@@ -89,7 +89,46 @@ export function clearPortCache(): void {
 }
 
 /**
- * Check if worker HTTP server is responsive
+ * Build a full URL for a given API path.
+ */
+export function buildWorkerUrl(apiPath: string): string {
+  return `http://${getWorkerHost()}:${getWorkerPort()}${apiPath}`;
+}
+
+/**
+ * Make an HTTP request to the worker over TCP.
+ *
+ * This is the preferred way for hooks to communicate with the worker.
+ */
+export function workerHttpRequest(
+  apiPath: string,
+  options: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    timeoutMs?: number;
+  } = {}
+): Promise<Response> {
+  const method = options.method ?? 'GET';
+  const timeoutMs = options.timeoutMs ?? HEALTH_CHECK_TIMEOUT_MS;
+
+  const url = buildWorkerUrl(apiPath);
+  const init: RequestInit = { method };
+  if (options.headers) {
+    init.headers = options.headers;
+  }
+  if (options.body) {
+    init.body = options.body;
+  }
+
+  if (timeoutMs > 0) {
+    return fetchWithTimeout(url, init, timeoutMs);
+  }
+  return fetch(url, init);
+}
+
+/**
+ * Check if worker HTTP server is responsive.
  * Uses /api/health (liveness) instead of /api/readiness because:
  * - Hooks have 15-second timeout, but full initialization can take 5+ minutes (MCP connection)
  * - /api/health returns 200 as soon as HTTP server is up (sufficient for hook communication)
@@ -97,10 +136,7 @@ export function clearPortCache(): void {
  * See: https://github.com/thedotmack/claude-mem/issues/811
  */
 async function isWorkerHealthy(): Promise<boolean> {
-  const port = getWorkerPort();
-  const response = await fetchWithTimeout(
-    `http://127.0.0.1:${port}/api/health`, {}, HEALTH_CHECK_TIMEOUT_MS
-  );
+  const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
   return response.ok;
 }
 
@@ -127,10 +163,7 @@ function getPluginVersion(): string {
  * Get the running worker's version from the API
  */
 async function getWorkerVersion(): Promise<string> {
-  const port = getWorkerPort();
-  const response = await fetchWithTimeout(
-    `http://127.0.0.1:${port}/api/version`, {}, HEALTH_CHECK_TIMEOUT_MS
-  );
+  const response = await workerHttpRequest('/api/version', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
   if (!response.ok) {
     throw new Error(`Failed to get worker version: ${response.status}`);
   }

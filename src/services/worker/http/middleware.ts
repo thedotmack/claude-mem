@@ -57,13 +57,13 @@ export function createMiddleware(
 
     // Log incoming request with body summary
     const bodySummary = summarizeRequestBody(req.method, req.path, req.body);
-    logger.info('HTTP', `→ ${req.method} ${req.path}`, { requestId }, bodySummary);
+    logger.debug('HTTP', `→ ${req.method} ${req.path}`, { requestId }, bodySummary);
 
     // Capture response
     const originalSend = res.send.bind(res);
     res.send = function(body: any) {
       const duration = Date.now() - start;
-      logger.info('HTTP', `← ${res.statusCode} ${req.path}`, { requestId, duration: `${duration}ms` });
+      logger.debug('HTTP', `← ${res.statusCode} ${req.path}`, { requestId, duration: `${duration}ms` });
       return originalSend(body);
     };
 
