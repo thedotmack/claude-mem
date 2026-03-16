@@ -5,7 +5,7 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { getProjectName } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
@@ -42,12 +42,11 @@ export const sessionInitHandler: EventHandler = {
     const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
 
     const project = getProjectName(cwd);
-    const port = getWorkerPort();
 
     logger.debug('HOOK', 'session-init: Calling /api/sessions/init', { contentSessionId: sessionId, project });
 
     // Initialize session via HTTP - handles DB operations and privacy checks
-    const initResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
+    const initResponse = await workerHttpRequest('/api/sessions/init', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -55,7 +54,6 @@ export const sessionInitHandler: EventHandler = {
         project,
         prompt
       })
-      // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
     });
 
     if (!initResponse.ok) {
@@ -107,11 +105,10 @@ export const sessionInitHandler: EventHandler = {
       logger.debug('HOOK', 'session-init: Calling /sessions/{sessionDbId}/init', { sessionDbId, promptNumber });
 
       // Initialize SDK agent session via HTTP (starts the agent!)
-      const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
+      const response = await workerHttpRequest(`/sessions/${sessionDbId}/init`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber })
-        // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
       });
 
       if (!response.ok) {

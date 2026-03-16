@@ -823,20 +823,24 @@ export class MigrationRunner {
    * Backfills existing rows with unique random hashes so they don't block new inserts.
    */
   private addObservationContentHashColumn(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(22) as SchemaVersion | undefined;
-    if (applied) return;
-
+    // Check actual schema first — cross-machine DB sync can leave schema_versions
+    // claiming this migration ran while the column is actually missing (e.g. migration 21
+    // recreated the table without content_hash on the synced machine).
     const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const hasColumn = tableInfo.some(col => col.name === 'content_hash');
 
-    if (!hasColumn) {
-      this.db.run('ALTER TABLE observations ADD COLUMN content_hash TEXT');
-      // Backfill existing rows with unique random hashes
-      this.db.run("UPDATE observations SET content_hash = substr(hex(randomblob(8)), 1, 16) WHERE content_hash IS NULL");
-      // Index for fast dedup lookups
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_content_hash ON observations(content_hash, created_at_epoch)');
-      logger.debug('DB', 'Added content_hash column to observations table with backfill and index');
+    if (hasColumn) {
+      // Column exists — just ensure version record is present
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+      return;
     }
+
+    this.db.run('ALTER TABLE observations ADD COLUMN content_hash TEXT');
+    // Backfill existing rows with unique random hashes
+    this.db.run("UPDATE observations SET content_hash = substr(hex(randomblob(8)), 1, 16) WHERE content_hash IS NULL");
+    // Index for fast dedup lookups
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_content_hash ON observations(content_hash, created_at_epoch)');
+    logger.debug('DB', 'Added content_hash column to observations table with backfill and index');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
   }

@@ -12,7 +12,7 @@ import os from 'os';
 import { logger } from './logger.js';
 import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
-import { getWorkerHost } from '../shared/worker-utils.js';
+import { workerHttpRequest } from '../shared/worker-utils.js';
 
 const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
 
@@ -321,12 +321,12 @@ function isExcludedFolder(folderPath: string, excludePaths: string[]): boolean {
  *
  * @param filePaths - Array of absolute file paths (modified or read)
  * @param project - Project identifier for API query
- * @param port - Worker API port
+ * @param _port - Worker API port (legacy, now resolved automatically via socket/TCP)
  */
 export async function updateFolderClaudeMdFiles(
   filePaths: string[],
   project: string,
-  port: number,
+  _port: number,
   projectRoot?: string
 ): Promise<void> {
   // Load settings to get configurable observation limit and exclude list
@@ -417,10 +417,9 @@ export async function updateFolderClaudeMdFiles(
   // Process each folder
   for (const folderPath of folderPaths) {
     try {
-      // Fetch timeline via existing API
-      const host = getWorkerHost();
-      const response = await fetch(
-        `http://${host}:${port}/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
+      // Fetch timeline via existing API (uses socket or TCP automatically)
+      const response = await workerHttpRequest(
+        `/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
       );
 
       if (!response.ok) {

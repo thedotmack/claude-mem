@@ -6,7 +6,7 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 
@@ -25,10 +25,7 @@ export const fileEditHandler: EventHandler = {
       throw new Error('fileEditHandler requires filePath');
     }
 
-    const port = getWorkerPort();
-
     logger.dataIn('HOOK', `FileEdit: ${filePath}`, {
-      workerPort: port,
       editCount: edits?.length ?? 0
     });
 
@@ -40,7 +37,7 @@ export const fileEditHandler: EventHandler = {
     // Send to worker as an observation with file edit metadata
     // The observation handler on the worker will process this appropriately
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
+      const response = await workerHttpRequest('/api/sessions/observations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -50,7 +47,6 @@ export const fileEditHandler: EventHandler = {
           tool_response: { success: true },
           cwd
         })
-        // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
       });
 
       if (!response.ok) {

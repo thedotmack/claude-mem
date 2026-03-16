@@ -27,6 +27,15 @@ mock.module('../../src/shared/SettingsDefaultsManager.js', () => ({
 mock.module('../../src/shared/worker-utils.js', () => ({
   ensureWorkerRunning: () => Promise.resolve(true),
   getWorkerPort: () => 37777,
+  workerHttpRequest: (apiPath: string, options?: any) => {
+    // Delegate to global fetch so tests can mock fetch behavior
+    const url = `http://127.0.0.1:37777${apiPath}`;
+    return globalThis.fetch(url, {
+      method: options?.method ?? 'GET',
+      headers: options?.headers,
+      body: options?.body,
+    });
+  },
 }));
 
 mock.module('../../src/utils/project-name.js', () => ({

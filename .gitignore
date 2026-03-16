@@ -20,7 +20,6 @@ plugin/data.backup/
 package-lock.json
 bun.lock
 private/
-datasets/
 Auto Run Docs/
 
 # Generated UI files (built from viewer-template.html)
@@ -30,12 +29,10 @@ src/ui/viewer.html
 .mcp.json
 .cursor/
 
-# Prevent literal tilde directories (path validation bug artifacts)
-~*/
-
-# Prevent other malformed path directories
-http*/
-https*/
-
 # Ignore WebStorm project files (for dinosaur IDE users)
 .idea/
+
+.claude-octopus/
+.claude/session-intent.md
+.claude/session-plan.md
+.octo/
