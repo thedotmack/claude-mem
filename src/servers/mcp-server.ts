@@ -45,7 +45,13 @@ const WORKER_BASE_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
  */
 const TOOL_ENDPOINT_MAP: Record<string, string> = {
   'search': '/api/search',
-  'timeline': '/api/timeline'
+  'timeline': '/api/timeline',
+  'claim_files': '/api/coordination/claim',
+  'release_files': '/api/coordination/release',
+  'check_conflicts': '/api/coordination/check-conflicts',
+  'record_discovery': '/api/coordination/discovery',
+  'get_discoveries': '/api/coordination/discoveries',
+  'resolve_conflict': '/api/coordination/resolve-conflict',
 };
 
 /**
@@ -348,6 +354,109 @@ NEVER fetch full details without filtering first. 10x token savings.`,
           text: `Could not parse ${args.file_path}. File may use an unsupported language or be empty.`
         }]
       };
+    }
+  },
+  // ── Agent Coordination Tools ───────────────────────────────────────
+  {
+    name: 'claim_files',
+    description: 'Claim files before modifying them. Detects write-write conflicts with other agents. Params: agent_id, agent_name, files (string[]), scope ("read"|"write"), ttl_minutes, intent?, session_id?',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Unique agent identifier' },
+        agent_name: { type: 'string', description: 'Human-readable agent name' },
+        files: { type: 'array', items: { type: 'string' }, description: 'File paths to claim' },
+        scope: { type: 'string', enum: ['read', 'write'], description: 'Claim scope' },
+        ttl_minutes: { type: 'number', description: 'Time-to-live in minutes' },
+        intent: { type: 'string', description: 'What the agent plans to do' },
+        session_id: { type: 'string', description: 'Session identifier' }
+      },
+      required: ['agent_id', 'agent_name', 'files', 'scope', 'ttl_minutes']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost(TOOL_ENDPOINT_MAP['claim_files'], args);
+    }
+  },
+  {
+    name: 'release_files',
+    description: 'Release file claims after work is complete. Params: agent_id, files (string[])',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent identifier that owns the claims' },
+        files: { type: 'array', items: { type: 'string' }, description: 'File paths to release' }
+      },
+      required: ['agent_id', 'files']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost(TOOL_ENDPOINT_MAP['release_files'], args);
+    }
+  },
+  {
+    name: 'check_conflicts',
+    description: 'Check if files have active claims from other agents. Runs expired-claim cleanup first. Params: files (string[]), exclude_agent_id?',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        files: { type: 'array', items: { type: 'string' }, description: 'File paths to check' },
+        exclude_agent_id: { type: 'string', description: 'Exclude this agent from results' }
+      },
+      required: ['files']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost(TOOL_ENDPOINT_MAP['check_conflicts'], args);
+    }
+  },
+  {
+    name: 'record_discovery',
+    description: 'Share a finding with other agents. Params: agent_id, agent_name, discovery_type ("finding"|"warning"|"dependency"|"conflict"|"recommendation"), content, affected_files?, severity?, session_id?',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent identifier' },
+        agent_name: { type: 'string', description: 'Human-readable agent name' },
+        discovery_type: { type: 'string', enum: ['finding', 'warning', 'dependency', 'conflict', 'recommendation'] },
+        content: { type: 'string', description: 'Discovery content' },
+        affected_files: { type: 'array', items: { type: 'string' }, description: 'Related file paths' },
+        severity: { type: 'string', enum: ['info', 'warning', 'critical'] },
+        session_id: { type: 'string', description: 'Session identifier' }
+      },
+      required: ['agent_id', 'agent_name', 'discovery_type', 'content']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost(TOOL_ENDPOINT_MAP['record_discovery'], args);
+    }
+  },
+  {
+    name: 'get_discoveries',
+    description: 'Query discoveries from other agents. Params: session_id?, agent_id?, affected_file?, since_epoch?, limit?',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Filter by session' },
+        agent_id: { type: 'string', description: 'Filter by agent' },
+        affected_file: { type: 'string', description: 'Filter by affected file path' },
+        since_epoch: { type: 'number', description: 'Only discoveries after this epoch (ms)' },
+        limit: { type: 'number', description: 'Max results (default: 50)' }
+      }
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost(TOOL_ENDPOINT_MAP['get_discoveries'], args);
+    }
+  },
+  {
+    name: 'resolve_conflict',
+    description: 'Resolve a detected conflict. Params: conflict_id, resolution ("agent_a_priority"|"agent_b_priority"|"merged"|"dismissed")',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        conflict_id: { type: 'number', description: 'Conflict record ID' },
+        resolution: { type: 'string', enum: ['agent_a_priority', 'agent_b_priority', 'merged', 'dismissed'] }
+      },
+      required: ['conflict_id', 'resolution']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost(TOOL_ENDPOINT_MAP['resolve_conflict'], args);
     }
   }
 ];

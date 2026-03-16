@@ -34,6 +34,7 @@ export class MigrationRunner {
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
+    this.createCoordinationTables();
   }
 
   /**
@@ -858,5 +859,94 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
+  }
+
+  /**
+   * Create agent coordination tables (migration 24)
+   * Three tables for multi-agent file claiming, discovery sharing, and conflict detection.
+   */
+  private createCoordinationTables(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // Check if tables already exist
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_coordination_claims'").all() as TableNameRow[];
+    if (tables.length > 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
+      return;
+    }
+
+    logger.debug('DB', 'Creating agent coordination tables');
+
+    this.db.run('BEGIN TRANSACTION');
+
+    try {
+      // Claims table — tracks file ownership by agents
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS agent_coordination_claims (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          agent_id TEXT NOT NULL,
+          agent_name TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          scope TEXT NOT NULL CHECK(scope IN ('read', 'write')),
+          intent TEXT,
+          session_id TEXT,
+          claimed_at_epoch INTEGER NOT NULL,
+          expires_at_epoch INTEGER NOT NULL,
+          released_at_epoch INTEGER
+        )
+      `);
+
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_coord_claims_file ON agent_coordination_claims(file_path) WHERE released_at_epoch IS NULL`);
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_coord_claims_agent ON agent_coordination_claims(agent_id)`);
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_coord_claims_expires ON agent_coordination_claims(expires_at_epoch) WHERE released_at_epoch IS NULL`);
+
+      // Discoveries table — shared findings between agents
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS agent_coordination_discoveries (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          agent_id TEXT NOT NULL,
+          agent_name TEXT NOT NULL,
+          discovery_type TEXT NOT NULL CHECK(discovery_type IN ('finding','warning','dependency','conflict','recommendation')),
+          content TEXT NOT NULL,
+          affected_files TEXT,
+          severity TEXT NOT NULL DEFAULT 'info' CHECK(severity IN ('info','warning','critical')),
+          session_id TEXT,
+          created_at_epoch INTEGER NOT NULL
+        )
+      `);
+
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_coord_disc_session ON agent_coordination_discoveries(session_id)`);
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_coord_disc_created ON agent_coordination_discoveries(created_at_epoch DESC)`);
+
+      // Conflicts table — detected conflicts between claims
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS agent_coordination_conflicts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          claim_a_id INTEGER NOT NULL REFERENCES agent_coordination_claims(id),
+          claim_b_id INTEGER NOT NULL REFERENCES agent_coordination_claims(id),
+          agent_a_id TEXT NOT NULL,
+          agent_b_id TEXT NOT NULL,
+          conflict_type TEXT NOT NULL CHECK(conflict_type IN ('write_write','read_write')),
+          files TEXT NOT NULL,
+          description TEXT,
+          resolution TEXT NOT NULL DEFAULT 'unresolved' CHECK(resolution IN ('unresolved','agent_a_priority','agent_b_priority','merged','dismissed')),
+          resolved_at_epoch INTEGER,
+          session_id TEXT,
+          created_at_epoch INTEGER NOT NULL
+        )
+      `);
+
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_coord_conflicts_unresolved ON agent_coordination_conflicts(resolution) WHERE resolution = 'unresolved'`);
+
+      this.db.run('COMMIT');
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
+
+      logger.debug('DB', 'Agent coordination tables created successfully');
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      throw error;
+    }
   }
 }
