@@ -18,6 +18,8 @@ import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { getCredential } from '../../shared/EnvManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { estimateTokens } from '../../shared/timeline-formatting.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import {
@@ -55,6 +57,10 @@ const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
 
 // Track last request time for rate limiting
 let lastRequestTime = 0;
+
+// Context window limits (prevents O(N²) token cost growth)
+const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  // Maximum messages to keep in conversation history
+const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  // ~100k tokens max context (safety limit)
 
 /**
  * Enforce RPM rate limit for Gemini free tier.
@@ -343,6 +349,54 @@ export class GeminiAgent {
   }
 
   /**
+   * Truncate conversation history to prevent runaway context costs.
+   * Keeps most recent messages within both message count and token budget.
+   * Returns a new array — never mutates the original history.
+   */
+  private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+
+    const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
+    const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
+
+    if (history.length <= MAX_CONTEXT_MESSAGES) {
+      // Check token count even if message count is ok
+      const totalTokens = history.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+      if (totalTokens <= MAX_ESTIMATED_TOKENS) {
+        return history;
+      }
+    }
+
+    // Sliding window: keep most recent messages within limits
+    const truncated: ConversationMessage[] = [];
+    let tokenCount = 0;
+
+    // Process messages in reverse (most recent first)
+    for (let i = history.length - 1; i >= 0; i--) {
+      const msg = history[i];
+      const msgTokens = estimateTokens(msg.content);
+
+      // Always include at least the newest message — an empty contents array
+      // would cause a hard Gemini API error, which is worse than an oversized request.
+      if (truncated.length > 0 && (truncated.length >= MAX_CONTEXT_MESSAGES || tokenCount + msgTokens > MAX_ESTIMATED_TOKENS)) {
+        logger.warn('SDK', 'Context window truncated to prevent runaway costs', {
+          originalMessages: history.length,
+          keptMessages: truncated.length,
+          droppedMessages: i + 1,
+          estimatedTokens: tokenCount,
+          tokenLimit: MAX_ESTIMATED_TOKENS
+        });
+        break;
+      }
+
+      truncated.unshift(msg);  // Add to beginning
+      tokenCount += msgTokens;
+    }
+
+    return truncated;
+  }
+
+  /**
    * Convert shared ConversationMessage array to Gemini's contents format
    * Maps 'assistant' role to 'model' for Gemini API compatibility
    */
@@ -354,8 +408,8 @@ export class GeminiAgent {
   }
 
   /**
-   * Query Gemini via REST API with full conversation history (multi-turn)
-   * Sends the entire conversation context for coherent responses
+   * Query Gemini via REST API with truncated conversation history (multi-turn)
+   * Truncates history to prevent O(N²) token cost growth, then sends for coherent responses
    */
   private async queryGeminiMultiTurn(
     history: ConversationMessage[],
@@ -363,11 +417,13 @@ export class GeminiAgent {
     model: GeminiModel,
     rateLimitingEnabled: boolean
   ): Promise<{ content: string; tokensUsed?: number }> {
-    const contents = this.conversationToGeminiContents(history);
-    const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
+    const truncatedHistory = this.truncateHistory(history);
+    const contents = this.conversationToGeminiContents(truncatedHistory);
+    const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
 
     logger.debug('SDK', `Querying Gemini multi-turn (${model})`, {
-      turns: history.length,
+      turns: truncatedHistory.length,
+      totalTurns: history.length,
       totalChars
     });
 
