@@ -124,6 +124,8 @@ import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { EndlessRoutes } from './worker/http/routes/EndlessRoutes.js';
+import { EndlessRunner } from './worker/EndlessRunner.js';
 
 // Process management for zombie cleanup (Issue #737)
 import { startOrphanReaper, reapOrphanedProcesses, getProcessBySession, ensureProcessExit } from './worker/ProcessRegistry.js';
@@ -173,6 +175,9 @@ export class WorkerService {
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
 
+  // Endless mode orchestrator
+  private endlessRunner: EndlessRunner;
+
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
 
@@ -211,6 +216,7 @@ export class WorkerService {
     this.geminiAgent = new GeminiAgent(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterAgent(this.dbManager, this.sessionManager);
 
+    this.endlessRunner = new EndlessRunner(this.sessionManager, this.dbManager);
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
@@ -320,6 +326,7 @@ export class WorkerService {
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
+    this.server.registerRoutes(new EndlessRoutes(this.endlessRunner));
   }
 
   /**

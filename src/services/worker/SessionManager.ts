@@ -500,4 +500,33 @@ export class SessionManager {
   getPendingMessageStore(): PendingMessageStore {
     return this.getPendingStore();
   }
+
+  /**
+   * Wait for all pending messages to be processed for a session.
+   * Resolves immediately if count is already 0.
+   * Event-driven — no polling.
+   */
+  async waitForQueueEmpty(sessionDbId: number): Promise<void> {
+    const pendingStore = this.getPendingStore();
+
+    // Already empty?
+    if (pendingStore.getPendingCount(sessionDbId) === 0) {
+      return;
+    }
+
+    // Wait for event
+    return new Promise<void>((resolve) => {
+      const eventName = `queue-empty:${sessionDbId}`;
+      const handler = () => {
+        resolve();
+      };
+      pendingStore.getEvents().once(eventName, handler);
+
+      // Double-check after subscribing (race condition guard)
+      if (pendingStore.getPendingCount(sessionDbId) === 0) {
+        pendingStore.getEvents().removeListener(eventName, handler);
+        resolve();
+      }
+    });
+  }
 }

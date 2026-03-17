@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import { Database } from './sqlite-compat.js';
 import type { PendingMessage } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
@@ -47,10 +48,19 @@ export interface PersistentPendingMessage {
 export class PendingMessageStore {
   private db: Database;
   private maxRetries: number;
+  private events: EventEmitter;
 
   constructor(db: Database, maxRetries: number = 3) {
     this.db = db;
     this.maxRetries = maxRetries;
+    this.events = new EventEmitter();
+  }
+
+  /**
+   * Get the EventEmitter for subscribing to queue events (e.g., queue-empty:{sessionDbId})
+   */
+  getEvents(): EventEmitter {
+    return this.events;
   }
 
   /**
@@ -144,10 +154,27 @@ export class PendingMessageStore {
    * This prevents message loss on generator crash.
    */
   confirmProcessed(messageId: number): void {
+    // Look up session_db_id before deleting so we can check queue emptiness after
+    const lookupStmt = this.db.prepare('SELECT session_db_id FROM pending_messages WHERE id = ?');
+    const row = lookupStmt.get(messageId) as { session_db_id: number } | undefined;
+
     const stmt = this.db.prepare('DELETE FROM pending_messages WHERE id = ?');
     const result = stmt.run(messageId);
     if (result.changes > 0) {
       logger.debug('QUEUE', `CONFIRMED | messageId=${messageId} | deleted from queue`);
+
+      if (row) {
+        // Global event: any observation confirmed (for EndlessRunner cycle detection)
+        this.events.emit('observation-confirmed', row.session_db_id);
+
+        // Session-scoped event: queue fully drained (for EndlessRunner queue drain)
+        const remaining = this.getPendingCount(row.session_db_id);
+        if (remaining === 0) {
+          const eventName = `queue-empty:${row.session_db_id}`;
+          logger.debug('QUEUE', `QUEUE_EMPTY | sessionDbId=${row.session_db_id} | emitting ${eventName}`);
+          this.events.emit(eventName);
+        }
+      }
     }
   }
 
