@@ -47,16 +47,6 @@
 
 <h4 align="center">Persistent memory compression system built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
 
-## Star History
-
-<a href="https://www.star-history.com/">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left" />
- </picture>
-</a>
-
 <p align="center">
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
@@ -91,6 +81,16 @@
     </picture>
   </a>
 </p>
+
+## Star History
+
+<a href="https://www.star-history.com/">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left" />
+ </picture>
+</a>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
