@@ -57,8 +57,6 @@
  </picture>
 </a>
 
-[![thedotmack/claude-mem - Star History Chart](https://api.star-history.com/image?repos=thedotmack/claude-mem&style=landscape1)](https://star-history.com/thedotmack/claude-mem)
-
 <p align="center">
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
