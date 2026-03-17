@@ -73,12 +73,16 @@ export async function hookCommand(platform: string, event: string, options: Hook
   process.stderr.write = (() => true) as typeof process.stderr.write;
 
   try {
-    const adapter = getPlatformAdapter(platform);
     const handler = getEventHandler(event);
 
     const rawInput = await readJsonFromStdin();
+    // Auto-detect Cursor: when Claude Code plugins run inside Cursor, the raw input
+    // contains cursor_version even though the CLI arg says 'claude-code'. Use the
+    // cursor adapter so SDK agent init is skipped for hooks running in Cursor context.
+    const effectivePlatform = (rawInput as any)?.cursor_version ? 'cursor' : platform;
+    const adapter = getPlatformAdapter(effectivePlatform);
     const input = adapter.normalizeInput(rawInput);
-    input.platform = platform;  // Inject platform for handler-level decisions
+    input.platform = effectivePlatform;  // Inject platform for handler-level decisions
     const result = await handler.execute(input);
     const output = adapter.formatOutput(result);
 
