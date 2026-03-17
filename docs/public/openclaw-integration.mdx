@@ -315,7 +315,7 @@ The claude-mem worker service must be running on the same machine as the OpenCla
 </ParamField>
 
 <ParamField body="syncMemoryFileExclude" type="string[]" default={[]}>
-  Agent IDs excluded from automatic context injection. Useful for agents that curate their own memory and don't need the observation timeline (e.g., `["snarf", "debugger"]`). Observations are still recorded for excluded agents — only the prompt injection is skipped.
+  Agent IDs excluded from automatic context injection. Useful for agents that curate their own memory and don't need the observation timeline (e.g., `["snarf", "debugger"]`). Observations are still recorded for excluded agents — only the context injection is skipped.
 </ParamField>
 
 <ParamField body="workerPort" type="number" default={37777}>
