@@ -333,9 +333,6 @@ See the [LICENSE](LICENSE) file for full details.
 
 ---
 
-**<p align="center">
-  Official $CMEM Links: 
-  <a href="https://bags.fm/2TsmuYUrsctE57VLckZBYEEzdokUF8j8e1GavekWBAGS?ref=claudememory">Bags.fm</a>
-</p>
+### What About $CMEM?
 
-<p align="center">Official CA: 2TsmuYUrsctE57VLckZBYEEzdokUF8j8e1GavekWBAGS (on Solana)</p>**
+$CMEM is a solana token created by a 3rd party without Claude-Mem's prior consent, but officially embraced by the creator of Claude-Mem (Alex Newman, @thedotmack). The token acts as a community catalyst for growth and a vehicle for bringing real-time agent data to the developers and knowledge workers that need it most. $CMEM: 2TsmuYUrsctE57VLckZBYEEzdokUF8j8e1GavekWBAGS
