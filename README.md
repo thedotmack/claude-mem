@@ -74,23 +74,40 @@
 
 <br>
 
-<p align="center">
-  <a href="https://github.com/thedotmack/claude-mem">
-    <picture>
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
-    </picture>
-  </a>
-</p>
-
-## Star History
-
-<a href="https://www.star-history.com/">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left" />
- </picture>
-</a>
+<table align="center">
+  <tr>
+    <td align="center">
+      <a href="https://github.com/thedotmack/claude-mem">
+        <picture>
+          <img
+            src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif"
+            alt="Claude-Mem Preview"
+            width="500"
+          >
+        </picture>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://www.star-history.com/#thedotmack/claude-mem&Date">
+        <picture>
+          <source
+            media="(prefers-color-scheme: dark)"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&theme=dark&legend=top-left"
+          />
+          <source
+            media="(prefers-color-scheme: light)"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
+          />
+          <img
+            alt="Star History Chart"
+            src="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
+            width="500"
+          />
+        </picture>
+      </a>
+    </td>
+  </tr>
+</table>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
