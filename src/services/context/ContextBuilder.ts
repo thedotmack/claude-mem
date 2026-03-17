@@ -134,6 +134,12 @@ export async function generateContext(
   // Use provided projects array (for worktree support) or fall back to single project
   const projects = input?.projects || [project];
 
+  // Full mode: fetch all observations but keep normal rendering (level 1 summaries)
+  if (input?.full) {
+    config.totalObservationCount = 999999;
+    config.sessionCount = 999999;
+  }
+
   // Initialize database
   const db = initializeDatabase();
   if (!db) {
@@ -155,7 +161,7 @@ export async function generateContext(
     }
 
     // Build and return context
-    return buildContextOutput(
+    const output = buildContextOutput(
       project,
       observations,
       summaries,
@@ -164,6 +170,14 @@ export async function generateContext(
       input?.session_id,
       useColors
     );
+
+    // Write to file if requested
+    if (input?.dump_to_file) {
+      const { writeFileSync } = await import('fs');
+      writeFileSync(input.dump_to_file, output, 'utf-8');
+    }
+
+    return output;
   } finally {
     db.close();
   }

@@ -13,6 +13,10 @@ export interface ContextInput {
   source?: "startup" | "resume" | "clear" | "compact";
   /** Array of projects to query (for worktree support: [parent, worktree]) */
   projects?: string[];
+  /** When true, return ALL observations with no limit */
+  full?: boolean;
+  /** File path to write the full output to */
+  dump_to_file?: string;
   [key: string]: any;
 }
 
