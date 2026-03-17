@@ -779,15 +779,24 @@ install_plugin() {
   # OpenClaw's config validator blocks ALL CLI commands (including plugins install).
   # We temporarily remove the entry and save the config so `plugins install` can run,
   # then `plugins install` + `plugins enable` will re-create it properly.
+  #
+  # Also handle plugins.allow: if claude-mem is in the allowlist but not installed,
+  # config validation fails. We temporarily remove it and restore after install.
   local oc_config="${HOME}/.openclaw/openclaw.json"
   local saved_plugin_config=""
+  local saved_from_allowlist=false
   if [[ -f "$oc_config" ]]; then
-    saved_plugin_config=$(INSTALLER_CONFIG_FILE="$oc_config" node -e "
+    # Capture both stdout (config JSON) and stderr (allowlist signal)
+    local node_output
+    node_output=$(INSTALLER_CONFIG_FILE="$oc_config" node -e "
       const fs = require('fs');
       const configPath = process.env.INSTALLER_CONFIG_FILE;
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       const entry = config?.plugins?.entries?.['claude-mem'];
-      if (entry || config?.plugins?.slots?.memory === 'claude-mem') {
+      const allowlist = config?.plugins?.allow || [];
+      const allowIndex = allowlist.indexOf('claude-mem');
+
+      if (entry || config?.plugins?.slots?.memory === 'claude-mem' || allowIndex !== -1) {
         // Save the config block so we can restore it after install
         process.stdout.write(JSON.stringify(entry?.config || {}));
         // Remove the stale entry so OpenClaw CLI can run
@@ -797,9 +806,26 @@ install_plugin() {
         if (config?.plugins?.slots?.memory === 'claude-mem') {
           delete config.plugins.slots.memory;
         }
+        // Also remove from allowlist if present — OpenClaw validates that all
+        // allowed plugins are installed before any CLI command can run
+        if (allowIndex !== -1) {
+          allowlist.splice(allowIndex, 1);
+          config.plugins.allow = allowlist;
+          // Signal to restore allowlist after install (use a marker line)
+          process.stdout.write('\\n__ALLOWLIST_REMOVED__');
+        }
         fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
       }
-    " 2>/dev/null) || true
+    " 2>&1) || true
+    
+    # Check for allowlist removal marker
+    if echo "$node_output" | grep -q "__ALLOWLIST_REMOVED__"; then
+      saved_from_allowlist=true
+      # Remove the marker from config
+      saved_plugin_config=$(echo "$node_output" | grep -v "__ALLOWLIST_REMOVED__")
+    else
+      saved_plugin_config="$node_output"
+    fi
   fi
 
   # Install the plugin using OpenClaw's CLI
@@ -832,6 +858,22 @@ install_plugin() {
         fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
       }
     " 2>/dev/null || warn "Could not restore previous plugin config — configure manually"
+  fi
+
+  # Restore claude-mem to allowlist if we temporarily removed it
+  if [[ "$saved_from_allowlist" == "true" ]]; then
+    info "Restoring claude-mem to plugins.allow..."
+    INSTALLER_CONFIG_FILE="$oc_config" node -e "
+      const fs = require('fs');
+      const configPath = process.env.INSTALLER_CONFIG_FILE;
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (!config.plugins) config.plugins = {};
+      if (!config.plugins.allow) config.plugins.allow = [];
+      if (!config.plugins.allow.includes('claude-mem')) {
+        config.plugins.allow.push('claude-mem');
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      }
+    " 2>/dev/null || warn "Could not restore claude-mem to allowlist — add manually if needed"
   fi
 
   success "claude-mem plugin installed and enabled"
