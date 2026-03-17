@@ -18,14 +18,14 @@ export const DEFAULT_SETTINGS = {
   CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',
 
-  // Token Economics (all true for backwards compatibility)
-  CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
-  CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'true',
-  CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: 'true',
+  // Token Economics — match SettingsDefaultsManager defaults (off by default to keep context lean)
+  CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'false',
+  CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'false',
+  CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: 'false',
   CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: 'true',
 
-  // Display Configuration
-  CLAUDE_MEM_CONTEXT_FULL_COUNT: '5',
+  // Display Configuration — match SettingsDefaultsManager defaults
+  CLAUDE_MEM_CONTEXT_FULL_COUNT: '0',
   CLAUDE_MEM_CONTEXT_FULL_FIELD: 'narrative',
   CLAUDE_MEM_CONTEXT_SESSION_COUNT: '10',
 
