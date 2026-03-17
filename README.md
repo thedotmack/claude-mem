@@ -47,6 +47,10 @@
 
 <h4 align="center">Persistent memory compression system built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
 
+## Star History
+
+[![thedotmack/claude-mem - Star History Chart](https://api.star-history.com/image?repos=thedotmack/claude-mem&style=landscape1)](https://star-history.com/thedotmack/claude-mem)
+
 <p align="center">
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
