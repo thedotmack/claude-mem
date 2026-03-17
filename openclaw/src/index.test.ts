@@ -87,9 +87,11 @@ function createMockApi(pluginConfigOverride: Record<string, any> = {}) {
     getEventHandlers: (event: string) => eventHandlers.get(event) || [],
     fireEvent: async (event: string, data: any, ctx: any = {}) => {
       const handlers = eventHandlers.get(event) || [];
+      let lastResult: any;
       for (const handler of handlers) {
-        await handler(data, ctx);
+        lastResult = await handler(data, ctx);
       }
+      return lastResult;
     },
   };
 }
@@ -106,6 +108,7 @@ describe("claudeMemPlugin", () => {
     assert.ok(getEventHandlers("session_start").length > 0, "session_start handler registered");
     assert.ok(getEventHandlers("after_compaction").length > 0, "after_compaction handler registered");
     assert.ok(getEventHandlers("before_agent_start").length > 0, "before_agent_start handler registered");
+    assert.ok(getEventHandlers("before_prompt_build").length > 0, "before_prompt_build handler registered");
     assert.ok(getEventHandlers("tool_result_persist").length > 0, "tool_result_persist handler registered");
     assert.ok(getEventHandlers("agent_end").length > 0, "agent_end handler registered");
     assert.ok(getEventHandlers("gateway_start").length > 0, "gateway_start handler registered");
@@ -535,11 +538,10 @@ describe("Observation I/O event handlers", () => {
   });
 });
 
-describe("MEMORY.md context sync", () => {
+describe("before_prompt_build context injection", () => {
   let workerServer: Server;
   let workerPort: number;
   let receivedRequests: Array<{ method: string; url: string; body: any }> = [];
-  let tmpDir: string;
   let contextResponse = "# Claude-Mem Context\n\n## Timeline\n- Session 1: Did some work";
 
   function startWorkerMock(): Promise<number> {
@@ -586,21 +588,20 @@ describe("MEMORY.md context sync", () => {
     receivedRequests = [];
     contextResponse = "# Claude-Mem Context\n\n## Timeline\n- Session 1: Did some work";
     workerPort = await startWorkerMock();
-    tmpDir = await mkdtemp(join(tmpdir(), "claude-mem-test-"));
   });
 
   afterEach(async () => {
     workerServer?.close();
-    await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it("writes MEMORY.md to workspace on before_agent_start", async () => {
+  it("returns appendSystemContext from before_prompt_build", async () => {
     const { api, logs, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
-    await fireEvent("before_agent_start", {
+    const result = await fireEvent("before_prompt_build", {
       prompt: "Help me write a function",
-    }, { sessionKey: "sync-test", workspaceDir: tmpDir });
+      messages: [],
+    }, { agentId: "main" });
 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
@@ -608,148 +609,166 @@ describe("MEMORY.md context sync", () => {
     assert.ok(contextRequest, "should request context from worker");
     assert.ok(contextRequest!.url!.includes("projects=openclaw"));
 
-    const memoryContent = await readFile(join(tmpDir, "MEMORY.md"), "utf-8");
-    assert.ok(memoryContent.includes("Claude-Mem Context"), "MEMORY.md should contain context");
-    assert.ok(memoryContent.includes("Session 1"), "MEMORY.md should contain timeline");
-    assert.ok(logs.some((l) => l.includes("MEMORY.md synced")));
+    assert.ok(result, "should return a result");
+    assert.ok(result.appendSystemContext, "should return appendSystemContext");
+    assert.ok(result.appendSystemContext.includes("Claude-Mem Context"), "should contain context");
+    assert.ok(result.appendSystemContext.includes("Session 1"), "should contain timeline");
+    assert.ok(logs.some((l) => l.includes("Context injected via system prompt")));
   });
 
-  it("syncs MEMORY.md on every before_agent_start call", async () => {
-    const { api, fireEvent } = createMockApi({ workerPort });
-    claudeMemPlugin(api);
+  it("does not write MEMORY.md on before_agent_start", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "claude-mem-test-"));
+    try {
+      const { api, fireEvent } = createMockApi({ workerPort });
+      claudeMemPlugin(api);
 
-    await fireEvent("before_agent_start", {
-      prompt: "First prompt for this agent",
-    }, { sessionKey: "agent-a", workspaceDir: tmpDir });
+      await fireEvent("before_agent_start", {
+        prompt: "Help me write a function",
+      }, { sessionKey: "sync-test", workspaceDir: tmpDir });
 
-    await new Promise((resolve) => setTimeout(resolve, 200));
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
-    const firstContextRequests = receivedRequests.filter((r) => r.url?.startsWith("/api/context/inject"));
-    assert.equal(firstContextRequests.length, 1, "first call should fetch context");
-
-    await fireEvent("before_agent_start", {
-      prompt: "Second prompt for same agent",
-    }, { sessionKey: "agent-a", workspaceDir: tmpDir });
-
-    await new Promise((resolve) => setTimeout(resolve, 200));
-
-    const allContextRequests = receivedRequests.filter((r) => r.url?.startsWith("/api/context/inject"));
-    assert.equal(allContextRequests.length, 2, "should re-fetch context on every call");
+      let memoryExists = true;
+      try {
+        await readFile(join(tmpDir, "MEMORY.md"), "utf-8");
+      } catch {
+        memoryExists = false;
+      }
+      assert.ok(!memoryExists, "MEMORY.md should not be created by before_agent_start");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
-  it("syncs MEMORY.md on tool_result_persist via fire-and-forget", async () => {
-    const { api, fireEvent } = createMockApi({ workerPort });
-    claudeMemPlugin(api);
+  it("does not sync MEMORY.md on tool_result_persist", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "claude-mem-test-"));
+    try {
+      const { api, fireEvent } = createMockApi({ workerPort });
+      claudeMemPlugin(api);
 
-    // Init session to register workspace dir
-    await fireEvent("before_agent_start", {
-      prompt: "Help me write a function",
-    }, { sessionKey: "tool-sync", workspaceDir: tmpDir });
+      await fireEvent("before_agent_start", {
+        prompt: "Help me write a function",
+      }, { sessionKey: "tool-sync", workspaceDir: tmpDir });
 
-    await new Promise((resolve) => setTimeout(resolve, 200));
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
-    const preToolContextRequests = receivedRequests.filter((r) => r.url?.startsWith("/api/context/inject"));
-    assert.equal(preToolContextRequests.length, 1, "before_agent_start should sync once");
+      await fireEvent("tool_result_persist", {
+        toolName: "Read",
+        params: { file_path: "/src/app.ts" },
+        message: { content: [{ type: "text", text: "file contents" }] },
+      }, { sessionKey: "tool-sync" });
 
-    // Fire tool result — should trigger another MEMORY.md sync
-    await fireEvent("tool_result_persist", {
-      toolName: "Read",
-      params: { file_path: "/src/app.ts" },
-      message: { content: [{ type: "text", text: "file contents" }] },
-    }, { sessionKey: "tool-sync" });
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
-    await new Promise((resolve) => setTimeout(resolve, 200));
+      const contextRequests = receivedRequests.filter((r) => r.url?.startsWith("/api/context/inject"));
+      assert.equal(contextRequests.length, 0, "tool_result_persist should not fetch context");
 
-    const postToolContextRequests = receivedRequests.filter((r) => r.url?.startsWith("/api/context/inject"));
-    assert.equal(postToolContextRequests.length, 2, "tool_result_persist should trigger another sync");
-
-    const memoryContent = await readFile(join(tmpDir, "MEMORY.md"), "utf-8");
-    assert.ok(memoryContent.includes("Claude-Mem Context"), "MEMORY.md should be updated");
+      let memoryExists = true;
+      try {
+        await readFile(join(tmpDir, "MEMORY.md"), "utf-8");
+      } catch {
+        memoryExists = false;
+      }
+      assert.ok(!memoryExists, "MEMORY.md should not be written by tool_result_persist");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
-  it("skips MEMORY.md sync when syncMemoryFile is false", async () => {
+  it("skips context injection when syncMemoryFile is false", async () => {
     const { api, fireEvent } = createMockApi({ workerPort, syncMemoryFile: false });
     claudeMemPlugin(api);
 
-    await fireEvent("before_agent_start", {
+    const result = await fireEvent("before_prompt_build", {
       prompt: "Help me write a function",
-    }, { sessionKey: "no-sync", workspaceDir: tmpDir });
+      messages: [],
+    }, { agentId: "main" });
 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     const contextRequest = receivedRequests.find((r) => r.url?.startsWith("/api/context/inject"));
-    assert.ok(!contextRequest, "should not fetch context when sync disabled");
+    assert.ok(!contextRequest, "should not fetch context when injection disabled");
+    assert.equal(result, undefined, "should return undefined when injection disabled");
   });
 
-  it("skips MEMORY.md sync when no workspaceDir in context", async () => {
-    const { api, fireEvent } = createMockApi({ workerPort });
+  it("skips context injection for excluded agents", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort, syncMemoryFileExclude: ["snarf"] });
     claudeMemPlugin(api);
 
-    await fireEvent("before_agent_start", {
-      prompt: "Help me write a function",
-    }, { sessionKey: "no-workspace" });
+    const result = await fireEvent("before_prompt_build", {
+      prompt: "Help me",
+      messages: [],
+    }, { agentId: "snarf" });
 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     const contextRequest = receivedRequests.find((r) => r.url?.startsWith("/api/context/inject"));
-    assert.ok(!contextRequest, "should not fetch context without workspaceDir");
+    assert.ok(!contextRequest, "should not fetch context for excluded agent");
+    assert.equal(result, undefined, "should return undefined for excluded agent");
   });
 
-  it("skips writing MEMORY.md when context is empty", async () => {
+  it("injects context for non-excluded agents", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort, syncMemoryFileExclude: ["snarf"] });
+    claudeMemPlugin(api);
+
+    const result = await fireEvent("before_prompt_build", {
+      prompt: "Help me",
+      messages: [],
+    }, { agentId: "main" });
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    assert.ok(result, "should return a result for non-excluded agent");
+    assert.ok(result.appendSystemContext, "should inject context for non-excluded agent");
+  });
+
+  it("returns undefined when context is empty", async () => {
     contextResponse = "   ";
     const { api, logs, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
-    await fireEvent("before_agent_start", {
+    const result = await fireEvent("before_prompt_build", {
       prompt: "Help me write a function",
-    }, { sessionKey: "empty-ctx", workspaceDir: tmpDir });
+      messages: [],
+    }, { agentId: "main" });
 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    assert.ok(!logs.some((l) => l.includes("MEMORY.md synced")), "should not log sync for empty context");
-  });
-
-  it("gateway_start resets sync tracking so next agent re-syncs", async () => {
-    const { api, fireEvent } = createMockApi({ workerPort });
-    claudeMemPlugin(api);
-
-    // First sync
-    await fireEvent("before_agent_start", {
-      prompt: "Help me write a function",
-    }, { sessionKey: "agent-1", workspaceDir: tmpDir });
-
-    await new Promise((resolve) => setTimeout(resolve, 200));
-
-    const firstContextRequests = receivedRequests.filter((r) => r.url?.startsWith("/api/context/inject"));
-    assert.equal(firstContextRequests.length, 1);
-
-    // Gateway restart
-    await fireEvent("gateway_start", {}, {});
-
-    // Second sync after gateway restart — same workspace should re-sync
-    await fireEvent("before_agent_start", {
-      prompt: "Help me after gateway restart",
-    }, { sessionKey: "agent-1", workspaceDir: tmpDir });
-
-    await new Promise((resolve) => setTimeout(resolve, 200));
-
-    const allContextRequests = receivedRequests.filter((r) => r.url?.startsWith("/api/context/inject"));
-    assert.equal(allContextRequests.length, 2, "should re-fetch context after gateway restart");
+    assert.equal(result, undefined, "should return undefined for empty context");
+    assert.ok(!logs.some((l) => l.includes("Context injected")), "should not log injection for empty context");
   });
 
   it("uses custom project name in context inject URL", async () => {
     const { api, fireEvent } = createMockApi({ workerPort, project: "my-bot" });
     claudeMemPlugin(api);
 
-    await fireEvent("before_agent_start", {
+    await fireEvent("before_prompt_build", {
       prompt: "Help me write a function",
-    }, { sessionKey: "proj-test", workspaceDir: tmpDir });
+      messages: [],
+    }, { agentId: "main" });
 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     const contextRequest = receivedRequests.find((r) => r.url?.startsWith("/api/context/inject"));
     assert.ok(contextRequest, "should request context");
     assert.ok(contextRequest!.url!.includes("projects=my-bot"), "should use custom project name");
+  });
+
+  it("includes agent-scoped project in context request", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+
+    await fireEvent("before_prompt_build", {
+      prompt: "Help me",
+      messages: [],
+    }, { agentId: "debugger" });
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const contextRequest = receivedRequests.find((r) => r.url?.startsWith("/api/context/inject"));
+    assert.ok(contextRequest, "should request context");
+    const url = decodeURIComponent(contextRequest!.url!);
+    assert.ok(url.includes("openclaw,openclaw-debugger"), "should include both base and agent-scoped projects");
   });
 });
 
