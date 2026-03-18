@@ -9,9 +9,11 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import path from 'path';
 import { isProjectExcluded } from '../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { getProjectContext } from '../../utils/project-name.js';
 
 const TYPE_ICONS: Record<string, string> = {
   decision: '\u2696\uFE0F',
@@ -103,7 +105,13 @@ export const fileContextHandler: EventHandler = {
 
     // Query worker for observations related to this file
     try {
-      const queryParams = new URLSearchParams({ path: filePath });
+      const context = getProjectContext(input.cwd);
+      // Observations store relative paths — convert absolute to relative using cwd
+      const cwd = input.cwd || process.cwd();
+      const relativePath = path.isAbsolute(filePath) ? path.relative(cwd, filePath) : filePath;
+      const queryParams = new URLSearchParams({ path: relativePath });
+      // Pass all project names (parent + worktree) for unified lookup
+      queryParams.set('projects', context.allProjects.join(','));
 
       const response = await workerHttpRequest(`/api/observations/by-file?${queryParams.toString()}`, {
         method: 'GET',

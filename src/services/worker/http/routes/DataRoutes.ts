@@ -111,8 +111,8 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   /**
-   * Get observations associated with a file path
-   * GET /api/observations/by-file?path=<file_path>&project=<project>&limit=30
+   * Get observations associated with a file path, scoped to projects
+   * GET /api/observations/by-file?path=<file_path>&projects=<comma,separated>&limit=30
    */
   private handleGetObservationsByFile = this.wrapHandler((req: Request, res: Response): void => {
     const filePath = req.query.path as string | undefined;
@@ -121,11 +121,12 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    const project = req.query.project as string | undefined;
+    const projectsParam = req.query.projects as string | undefined;
+    const projects = projectsParam ? projectsParam.split(',').filter(Boolean) : undefined;
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
 
     const db = this.dbManager.getSessionStore().db;
-    const observations = getObservationsByFilePath(db, filePath, { project, limit });
+    const observations = getObservationsByFilePath(db, filePath, { projects, limit });
 
     res.json({ observations, count: observations.length });
   });

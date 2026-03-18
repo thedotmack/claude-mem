@@ -4,7 +4,6 @@
  */
 
 import { Database } from 'bun:sqlite';
-import path from 'path';
 import { logger } from '../../../utils/logger.js';
 import type { ObservationRecord } from '../../../types/database.js';
 import type { GetObservationsByIdsOptions, ObservationSessionRow } from './types.js';
@@ -114,28 +113,24 @@ export function getObservationsForSession(
 }
 
 /**
- * Get observations associated with a given file path.
- * Searches both files_read and files_modified using basename matching
- * to handle differing absolute paths across sessions.
+ * Get observations associated with a given file path, scoped to specific projects.
+ * Matches on the full file path (not just basename) to avoid cross-project collisions.
  */
 export function getObservationsByFilePath(
   db: Database,
   filePath: string,
-  options?: { project?: string; limit?: number }
+  options?: { projects?: string[]; limit?: number }
 ): ObservationRecord[] {
-  const basename = path.basename(filePath);
-  const likePattern = `%${basename}%`;
+  const likePattern = `%${filePath}%`;
   const limit = options?.limit ?? 30;
-
-  const additionalConditions: string[] = [];
   const params: any[] = [likePattern, likePattern];
 
-  if (options?.project) {
-    additionalConditions.push('AND project = ?');
-    params.push(options.project);
+  let projectClause = '';
+  if (options?.projects?.length) {
+    const placeholders = options.projects.map(() => '?').join(',');
+    projectClause = `AND project IN (${placeholders})`;
+    params.push(...options.projects);
   }
-
-  const additionalWhere = additionalConditions.join(' ');
 
   const stmt = db.prepare(`
     SELECT *
@@ -144,7 +139,7 @@ export function getObservationsByFilePath(
       EXISTS (SELECT 1 FROM json_each(files_read) WHERE value LIKE ?)
       OR EXISTS (SELECT 1 FROM json_each(files_modified) WHERE value LIKE ?)
     )
-    ${additionalWhere}
+    ${projectClause}
     ORDER BY created_at_epoch DESC
     LIMIT ${limit}
   `);
