@@ -2,13 +2,13 @@
  * MiniMaxAgent: MiniMax-based observation extraction
  *
  * Alternative to SDKAgent that uses MiniMax's OpenAI-compatible API
- * for accessing MiniMax M2.5 models.
+ * for accessing MiniMax M2.7 models.
  *
  * Responsibility:
  * - Call MiniMax REST API for observation extraction
  * - Parse XML responses (same format as Claude/Gemini/OpenRouter)
  * - Sync to database and Chroma
- * - Support MiniMax-M2.5 and MiniMax-M2.5-highspeed models
+ * - Support MiniMax-M2.7, MiniMax-M2.7-highspeed, and legacy M2.5 models
  */
 
 import { buildContinuationPrompt, buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from '../../sdk/prompts.js';
@@ -429,7 +429,7 @@ export class MiniMaxAgent {
     const apiKey = settings.CLAUDE_MEM_MINIMAX_API_KEY || getCredential('MINIMAX_API_KEY') || '';
 
     // Model: from settings or default
-    const model = settings.CLAUDE_MEM_MINIMAX_MODEL || 'MiniMax-M2.5';
+    const model = settings.CLAUDE_MEM_MINIMAX_MODEL || 'MiniMax-M2.7';
 
     // Base URL: from settings or default (overseas endpoint)
     const baseURL = settings.CLAUDE_MEM_MINIMAX_BASE_URL || 'https://api.minimax.io/v1';

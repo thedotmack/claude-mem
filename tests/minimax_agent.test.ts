@@ -50,14 +50,14 @@ describe('MiniMaxAgent', () => {
     loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
       ...SettingsDefaultsManager.getAllDefaults(),
       CLAUDE_MEM_MINIMAX_API_KEY: 'test-minimax-key',
-      CLAUDE_MEM_MINIMAX_MODEL: 'MiniMax-M2.5',
+      CLAUDE_MEM_MINIMAX_MODEL: 'MiniMax-M2.7',
       CLAUDE_MEM_MINIMAX_BASE_URL: 'https://api.minimax.io/v1',
       CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
     }));
 
     getSpy = spyOn(SettingsDefaultsManager, 'get').mockImplementation((key: string) => {
       if (key === 'CLAUDE_MEM_MINIMAX_API_KEY') return 'test-minimax-key';
-      if (key === 'CLAUDE_MEM_MINIMAX_MODEL') return 'MiniMax-M2.5';
+      if (key === 'CLAUDE_MEM_MINIMAX_MODEL') return 'MiniMax-M2.7';
       if (key === 'CLAUDE_MEM_MINIMAX_BASE_URL') return 'https://api.minimax.io/v1';
       if (key === 'CLAUDE_MEM_DATA_DIR') return '/tmp/claude-mem-test';
       return SettingsDefaultsManager.getAllDefaults()[key as keyof ReturnType<typeof SettingsDefaultsManager.getAllDefaults>] ?? '';
@@ -161,7 +161,7 @@ describe('MiniMaxAgent', () => {
 
     // Verify request body
     const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
-    expect(body.model).toBe('MiniMax-M2.5');
+    expect(body.model).toBe('MiniMax-M2.7');
     expect(body.temperature).toBe(1.0);  // MiniMax requires temperature > 0
 
     // Verify auth header

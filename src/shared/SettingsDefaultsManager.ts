@@ -94,7 +94,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
     CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
     CLAUDE_MEM_MINIMAX_API_KEY: '',  // Empty by default, can be set via UI or env
-    CLAUDE_MEM_MINIMAX_MODEL: 'MiniMax-M2.5',  // Default MiniMax model
+    CLAUDE_MEM_MINIMAX_MODEL: 'MiniMax-M2.7',  // Default MiniMax model
     CLAUDE_MEM_MINIMAX_BASE_URL: 'https://api.minimax.io/v1',  // MiniMax API base URL (overseas)
     CLAUDE_MEM_MINIMAX_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
     CLAUDE_MEM_MINIMAX_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
