@@ -2,6 +2,21 @@
 
 All notable changes to claude-mem.
 
+## [v10.6.1] - 2026-03-18
+
+### New Features
+- **Timeline Report Skill** — New `/timeline-report` skill generates narrative "Journey Into [Project]" reports from claude-mem's development history with token-aware economics
+- **Git Worktree Detection** — Timeline report automatically detects git worktrees and uses parent project as data source
+- **Compressed Context Output** — Markdown context injection compressed ~53% (tables → compact flat lines), reducing token overhead in session starts
+- **Full Observation Fetch** — Added `full=true` parameter to `/api/context/inject` for fetching all observations
+
+### Improvements
+- Split `TimelineRenderer` into separate markdown/color rendering paths
+- Fixed timestamp ditto marker leaking across session summary boundaries
+
+### Security
+- Removed arbitrary file write vulnerability (`dump_to_file` parameter)
+
 ## [v10.6.0] - 2026-03-18
 
 ## OpenClaw: System prompt context injection
@@ -1102,19 +1117,4 @@ Fixed an issue where the worker service startup wasn't producing proper JSON sta
 ## Housekeeping
 
 - Removed obsolete error handling baseline file
-
-## [v9.0.2] - 2026-01-10
-
-## Bug Fixes
-
-- **Windows Terminal Tab Accumulation (#625, #628)**: Fixed terminal tab accumulation on Windows by implementing graceful exit strategy. All expected failure scenarios (port conflicts, version mismatches, health check timeouts) now exit with code 0 instead of code 1.
-- **Windows 11 Compatibility (#625)**: Replaced deprecated WMIC commands with PowerShell `Get-Process` and `Get-CimInstance` for process enumeration. WMIC is being removed from Windows 11.
-
-## Maintenance
-
-- **Removed Obsolete CLAUDE.md Files**: Cleaned up auto-generated CLAUDE.md files from `~/.claude/plans/` and `~/.claude/plugins/marketplaces/` directories.
-
----
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.1...v9.0.2
 
