@@ -28,6 +28,23 @@ The claude-mem worker must be running on localhost:37777. The project must have 
 
 Ask the user which project to analyze if not obvious from context. The project name is typically the directory name of the project (e.g., "tokyo", "my-app"). If the user says "this project", use the current working directory's basename.
 
+**Worktree Detection:** Before using the directory basename, check if the current directory is a git worktree. In a worktree, the data source is the **parent project**, not the worktree directory itself. Run:
+
+```bash
+git_dir=$(git rev-parse --git-dir 2>/dev/null)
+git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+if [ "$git_dir" != "$git_common_dir" ]; then
+  # We're in a worktree — resolve the parent project name
+  parent_project=$(basename "$(dirname "$git_common_dir")")
+  echo "Worktree detected. Parent project: $parent_project"
+else
+  parent_project=$(basename "$PWD")
+fi
+echo "$parent_project"
+```
+
+If a worktree is detected, use `$parent_project` (the basename of the parent repo) as the project name for all API calls. Inform the user: "Detected git worktree. Using parent project '[name]' as the data source."
+
 ### Step 2: Fetch the Full Timeline
 
 Use Bash to fetch the complete timeline from the claude-mem worker API:
