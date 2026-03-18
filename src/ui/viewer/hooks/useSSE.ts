@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Observation, Summary, UserPrompt, StreamEvent } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
@@ -105,5 +105,9 @@ export function useSSE() {
     };
   }, []);
 
-  return { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected };
+  const removeObservation = useCallback((id: number) => {
+    setObservations(prev => prev.filter(o => o.id !== id));
+  }, []);
+
+  return { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected, removeObservation };
 }

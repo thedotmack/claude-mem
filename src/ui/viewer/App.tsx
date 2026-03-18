@@ -19,7 +19,7 @@ export function App() {
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
-  const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected } = useSSE();
+  const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected, removeObservation } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats, refreshStats } = useStats();
   const { preference, resolvedTheme, setThemePreference } = useTheme();
@@ -51,6 +51,23 @@ export function App() {
   const toggleContextPreview = useCallback(() => {
     setContextPreviewOpen(prev => !prev);
   }, []);
+
+  // Delete an observation: call the API then remove from all local state
+  const handleDeleteObservation = useCallback(async (id: number) => {
+    try {
+      const response = await fetch('/api/observations/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: [id] }),
+      });
+      if (!response.ok) throw new Error(`Delete failed: ${response.status}`);
+      removeObservation(id);
+      setPaginatedObservations(prev => prev.filter(o => o.id !== id));
+    } catch (error) {
+      console.error('Failed to delete observation:', error);
+      alert(`Failed to delete observation #${id}`);
+    }
+  }, [removeObservation]);
 
   // Toggle logs modal
   const toggleLogsModal = useCallback(() => {
@@ -108,6 +125,7 @@ export function App() {
         summaries={allSummaries}
         prompts={allPrompts}
         onLoadMore={handleLoadMore}
+        onDeleteObservation={handleDeleteObservation}
         isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
         hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
       />

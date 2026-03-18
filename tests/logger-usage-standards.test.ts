@@ -37,6 +37,7 @@ const EXCLUDED_PATTERNS = [
   /user-message-hook\.ts$/,  // Deprecated - kept for reference only, not registered in hooks.json
   /cli\/hook-command\.ts$/,  // CLI hook command uses console.log/error for hook protocol output
   /cli\/handlers\/user-message\.ts$/,  // User message handler uses console.error for user-visible context
+  /cli\/handlers\/delete\.ts$/,  // Delete command uses console.log/error for user-visible terminal output
   /services\/transcripts\/cli\.ts$/,  // CLI transcript subcommands use console.log for user-visible interactive output
 ];
 

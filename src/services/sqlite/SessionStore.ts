@@ -14,6 +14,7 @@ import {
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
 import { computeObservationContentHash, findDuplicateObservation } from './observations/store.js';
+import { deleteObservations, type DeleteObservationsResult } from './observations/delete.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -1876,6 +1877,14 @@ export class SessionStore {
   }
 
 
+
+  /**
+   * Delete observations by IDs.
+   * Returns which IDs were deleted vs not found.
+   */
+  deleteObservations(ids: number[]): DeleteObservationsResult {
+    return deleteObservations(this.db, ids);
+  }
 
   // REMOVED: cleanupOrphanedSessions - violates "EVERYTHING SHOULD SAVE ALWAYS"
   // There's no such thing as an "orphaned" session. Sessions are created by hooks

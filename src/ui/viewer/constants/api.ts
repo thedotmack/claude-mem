@@ -4,6 +4,7 @@
  */
 export const API_ENDPOINTS = {
   OBSERVATIONS: '/api/observations',
+  OBSERVATIONS_DELETE: '/api/observations/delete',
   SUMMARIES: '/api/summaries',
   PROMPTS: '/api/prompts',
   SETTINGS: '/api/settings',

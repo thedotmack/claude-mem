@@ -229,6 +229,25 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     }
   },
   {
+    name: 'delete_observations',
+    description: 'Delete observations by ID. Params: ids (array of observation IDs, required)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'number' },
+          description: 'Array of observation IDs to delete (required)'
+        }
+      },
+      required: ['ids'],
+      additionalProperties: false
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/observations/delete', args);
+    }
+  },
+  {
     name: 'smart_search',
     description: 'Search codebase for symbols, functions, classes using tree-sitter AST parsing. Returns folded structural views with token counts. Use path parameter to scope the search.',
     inputSchema: {

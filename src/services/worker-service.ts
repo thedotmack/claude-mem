@@ -1258,6 +1258,13 @@ async function main() {
       break;
     }
 
+    case 'delete': {
+      const { deleteCommand } = await import('../cli/handlers/delete.js');
+      const result = await deleteCommand(process.argv.slice(3));
+      process.exit(result);
+      break;
+    }
+
     case '--daemon':
     default: {
       // GUARD 1: Refuse to start if another worker is already alive (PID check).

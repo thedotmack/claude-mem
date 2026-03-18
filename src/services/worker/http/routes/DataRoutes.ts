@@ -58,6 +58,9 @@ export class DataRoutes extends BaseRouteHandler {
     app.delete('/api/pending-queue/failed', this.handleClearFailedQueue.bind(this));
     app.delete('/api/pending-queue/all', this.handleClearAllQueue.bind(this));
 
+    // Delete observations
+    app.post('/api/observations/delete', this.handleDeleteObservations.bind(this));
+
     // Import endpoint
     app.post('/api/import', this.handleImport.bind(this));
   }
@@ -141,6 +144,40 @@ export class DataRoutes extends BaseRouteHandler {
     const observations = store.getObservationsByIds(ids, { orderBy, limit, project });
 
     res.json(observations);
+  });
+
+  /**
+   * Delete observations by IDs
+   * POST /api/observations/delete
+   * Body: { ids: number[] }
+   */
+  private handleDeleteObservations = this.wrapHandler((req: Request, res: Response): void => {
+    let { ids } = req.body;
+
+    // Coerce string-encoded arrays from MCP clients (e.g. "[1,2,3]" or "1,2,3")
+    if (typeof ids === 'string') {
+      try { ids = JSON.parse(ids); } catch { ids = ids.split(',').map(Number); }
+    }
+
+    if (!ids || !Array.isArray(ids)) {
+      this.badRequest(res, 'ids must be an array of numbers');
+      return;
+    }
+
+    if (ids.length > 1000) {
+      this.badRequest(res, 'Cannot delete more than 1000 observations at once');
+      return;
+    }
+
+    if (!ids.every((id: unknown) => typeof id === 'number' && Number.isInteger(id))) {
+      this.badRequest(res, 'All ids must be integers');
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const result = store.deleteObservations(ids);
+
+    res.json({ success: true, ...result });
   });
 
   /**

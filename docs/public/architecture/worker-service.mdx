@@ -19,7 +19,7 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 
 ## REST API Endpoints
 
-The worker service exposes 22 HTTP endpoints organized into six categories:
+The worker service exposes 23 HTTP endpoints organized into six categories:
 
 ### Viewer & Health Endpoints
 
@@ -298,6 +298,45 @@ GET /api/prompt/:id
   "error": "Prompt #1 not found"
 }
 ```
+
+#### 11. Delete Observations (Batch)
+```
+POST /api/observations/delete
+```
+
+**Purpose**: Permanently delete one or more observations by ID
+
+**Request Body**:
+```json
+{
+  "ids": [123, 456, 789]
+}
+```
+
+**Body Parameters**:
+- `ids` (required): Array of observation IDs to delete (max 1000)
+
+**Response**:
+```json
+{
+  "success": true,
+  "deleted": [123, 456],
+  "notFound": [789]
+}
+```
+
+**Response Fields**:
+- `deleted`: IDs that were found and permanently removed
+- `notFound`: IDs that did not exist (already deleted or never existed)
+
+**Error Responses**:
+- `400 Bad Request`: `{"error": "ids must be an array of numbers"}`
+- `400 Bad Request`: `{"error": "Cannot delete more than 1000 observations at once"}`
+- `400 Bad Request`: `{"error": "All ids must be integers"}`
+
+**Use Case**: Used by the `delete_observations` MCP tool, the `claude-mem delete` CLI command, and the delete button in the Viewer UI to permanently remove unwanted observations from memory.
+
+**Note**: FTS5 index cleanup is handled automatically via database triggers — no manual cleanup required after deletion.
 
 #### 12. Get Stats
 ```

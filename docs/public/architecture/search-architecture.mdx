@@ -5,14 +5,14 @@ description: "MCP tools with 3-layer workflow for token-efficient memory retriev
 
 # Search Architecture
 
-Claude-mem uses an **MCP-based search architecture** that provides intelligent memory retrieval through 4 streamlined tools following a 3-layer workflow pattern.
+Claude-mem uses an **MCP-based search architecture** that provides intelligent memory retrieval through 5 streamlined tools: 4 following a 3-layer workflow pattern, plus 1 management tool for deleting observations.
 
 ## Overview
 
 **Architecture**: MCP Tools → MCP Protocol → HTTP API → Worker Service
 
 **Key Components**:
-1. **MCP Tools** (4 tools) - `search`, `timeline`, `get_observations`, `__IMPORTANT`
+1. **MCP Tools** (5 tools) - `search`, `timeline`, `get_observations`, `__IMPORTANT`, `delete_observations`
 2. **MCP Server** (`plugin/scripts/mcp-server.cjs`) - Thin wrapper over HTTP API
 3. **HTTP API Endpoints** - Fast search operations on Worker Service (port 37777)
 4. **Worker Service** - Express.js server with FTS5 full-text search
@@ -196,6 +196,40 @@ NEVER fetch full details without filtering first. 10x token savings.
 ```
 
 **Returns:** Complete observation details (~500-1,000 tokens per observation)
+
+### `delete_observations` - Remove Observations
+
+**Tool Definition:**
+```typescript
+{
+  name: 'delete_observations',
+  description: 'Permanently delete observations by ID. Use to remove incorrect or unwanted memories. Params: ids (array of observation IDs, required)',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      ids: {
+        type: 'array',
+        items: { type: 'number' },
+        description: 'Array of observation IDs to delete (required)'
+      }
+    },
+    required: ['ids']
+  }
+}
+```
+
+**HTTP Endpoint:** `POST /api/observations/delete`
+
+**Body:**
+```json
+{
+  "ids": [123, 456]
+}
+```
+
+**Returns:** `{ success, deleted, notFound }` — IDs confirmed deleted and IDs not found
+
+**Use Case**: Correct wrong memories, remove duplicate observations, or clean up test data. Not part of the 3-layer search workflow — invoke directly when observations need to be purged.
 
 ## MCP Server Implementation
 
