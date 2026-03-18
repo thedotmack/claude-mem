@@ -188,7 +188,17 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        query: { type: 'string', description: 'Search term' },
+        limit: { type: 'number', description: 'Max results (default 20, max 100)' },
+        project: { type: 'string', description: 'Project name filter' },
+        type: { type: 'string', description: 'observations, sessions, or prompts' },
+        obs_type: { type: 'string', description: 'Comma-separated: bugfix, feature, decision, discovery, change' },
+        dateStart: { type: 'string', description: 'YYYY-MM-DD or epoch ms' },
+        dateEnd: { type: 'string', description: 'YYYY-MM-DD or epoch ms' },
+        offset: { type: 'number', description: 'Skip N results' },
+        orderBy: { type: 'string', description: 'date_desc (default), date_asc, relevance' }
+      },
       additionalProperties: true
     },
     handler: async (args: any) => {
@@ -201,7 +211,13 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        anchor: { type: 'number', description: 'Observation ID to center around' },
+        query: { type: 'string', description: 'Find anchor automatically if anchor not provided' },
+        depth_before: { type: 'number', description: 'Items before anchor (default 5, max 20)' },
+        depth_after: { type: 'number', description: 'Items after anchor (default 5, max 20)' },
+        project: { type: 'string', description: 'Project name filter' }
+      },
       additionalProperties: true
     },
     handler: async (args: any) => {
