@@ -67,6 +67,8 @@ function renderDayTimelineMarkdown(
 
   for (const item of dayItems) {
     if (item.type === 'summary') {
+      lastTime = '';
+
       const summary = item.data as SummaryTimelineItem;
       const formattedTime = formatDateTime(summary.displayTime);
       output.push(...Markdown.renderMarkdownSummaryItem(summary, formattedTime));

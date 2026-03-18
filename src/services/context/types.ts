@@ -15,8 +15,6 @@ export interface ContextInput {
   projects?: string[];
   /** When true, return ALL observations with no limit */
   full?: boolean;
-  /** File path to write the full output to */
-  dump_to_file?: string;
   [key: string]: any;
 }
 

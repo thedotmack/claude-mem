@@ -171,12 +171,6 @@ export async function generateContext(
       useColors
     );
 
-    // Write to file if requested
-    if (input?.dump_to_file) {
-      const { writeFileSync } = await import('fs');
-      writeFileSync(input.dump_to_file, output, 'utf-8');
-    }
-
     return output;
   } finally {
     db.close();
