@@ -104,9 +104,6 @@ export const fileContextHandler: EventHandler = {
     // Query worker for observations related to this file
     try {
       const queryParams = new URLSearchParams({ path: filePath });
-      if (input.cwd) {
-        queryParams.set('project', input.cwd);
-      }
 
       const response = await workerHttpRequest(`/api/observations/by-file?${queryParams.toString()}`, {
         method: 'GET',
