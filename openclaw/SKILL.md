@@ -1,6 +1,6 @@
 # Claude-Mem OpenClaw Plugin — Setup Guide
 
-This guide walks through setting up the claude-mem plugin on an OpenClaw gateway. By the end, your agents will have persistent memory across sessions, a live-updating MEMORY.md in their workspace, and optionally a real-time observation feed streaming to a messaging channel.
+This guide walks through setting up the claude-mem plugin on an OpenClaw gateway. By the end, your agents will have persistent memory across sessions via system prompt context injection, and optionally a real-time observation feed streaming to a messaging channel.
 
 ## Quick Install (Recommended)
 
@@ -138,7 +138,9 @@ Add the `claude-mem` plugin to your OpenClaw gateway configuration:
 
 - **`project`** (string, default: `"openclaw"`) — The project name that scopes all observations in the memory database. Use a unique name per gateway/use-case so observations don't mix. For example, if this gateway runs a coding bot, use `"coding-bot"`.
 
-- **`syncMemoryFile`** (boolean, default: `true`) — When enabled, the plugin writes a `MEMORY.md` file to each agent's workspace directory. This file contains the full timeline of observations and summaries from previous sessions, and it updates on every tool use so agents always have fresh context. Set to `false` only if you don't want the plugin writing files to agent workspaces.
+- **`syncMemoryFile`** (boolean, default: `true`) — When enabled, the plugin injects the observation timeline into each agent's system prompt via the `before_prompt_build` hook. This gives agents cross-session context without writing to MEMORY.md. Set to `false` to disable context injection entirely (observations are still recorded).
+
+- **`syncMemoryFileExclude`** (string[], default: `[]`) — Agent IDs excluded from automatic context injection. Useful for agents that curate their own memory. Observations are still recorded for excluded agents.
 
 - **`workerPort`** (number, default: `37777`) — The port where the claude-mem worker service is listening. Only change this if you configured the worker to use a different port.
 
@@ -168,13 +170,14 @@ The observation feed shows `disconnected` because we haven't configured it yet. 
 
 Have an agent do some work. The plugin automatically records observations through these OpenClaw events:
 
-1. **`before_agent_start`** — Initializes a claude-mem session when the agent starts, syncs MEMORY.md to the workspace
-2. **`tool_result_persist`** — Records each tool use (Read, Write, Bash, etc.) as an observation, re-syncs MEMORY.md
-3. **`agent_end`** — Summarizes the session and marks it complete
+1. **`before_agent_start`** — Initializes a claude-mem session when the agent starts
+2. **`before_prompt_build`** — Injects the observation timeline into the agent's system prompt (cached for 60s)
+3. **`tool_result_persist`** — Records each tool use (Read, Write, Bash, etc.) as an observation
+4. **`agent_end`** — Summarizes the session and marks it complete
 
 All of this happens automatically. No additional configuration needed.
 
-To verify it's working, check the agent's workspace directory for a `MEMORY.md` file after the agent runs. It should contain a formatted timeline of observations.
+To verify it's working, check the worker's viewer UI at http://localhost:37777 to see observations appearing after the agent runs.
 
 You can also check the worker's viewer UI at http://localhost:37777 to see observations appearing in real time.
 
@@ -372,10 +375,11 @@ Shows observation feed status. Accepts optional `on`/`off` argument.
 ```
 OpenClaw Gateway
   │
-  ├── before_agent_start ──→ Sync MEMORY.md + Init session
-  ├── tool_result_persist ──→ Record observation + Re-sync MEMORY.md
+  ├── before_agent_start ───→ Init session
+  ├── before_prompt_build ──→ Inject context into system prompt
+  ├── tool_result_persist ──→ Record observation
   ├── agent_end ────────────→ Summarize + Complete session
-  └── gateway_start ────────→ Reset session tracking
+  └── gateway_start ────────→ Reset session tracking + context cache
                     │
                     ▼
          Claude-Mem Worker (localhost:37777)
@@ -383,17 +387,15 @@ OpenClaw Gateway
            ├── POST /api/sessions/observations
            ├── POST /api/sessions/summarize
            ├── POST /api/sessions/complete
-           ├── GET  /api/context/inject ──→ MEMORY.md content
+           ├── GET  /api/context/inject ──→ System prompt context
            └── GET  /stream ─────────────→ SSE → Messaging channels
 ```
 
-### MEMORY.md live sync
+### System prompt context injection
 
-The plugin writes `MEMORY.md` to each agent's workspace with the full observation timeline. It updates:
-- On every `before_agent_start` — agent gets fresh context before starting
-- On every `tool_result_persist` — context stays current as the agent works
+The plugin injects the observation timeline into each agent's system prompt via the `before_prompt_build` hook. The content comes from the worker's `GET /api/context/inject` endpoint. Context is cached for 60 seconds per project to avoid re-fetching on every LLM turn. The cache is cleared on gateway restart.
 
-Updates are fire-and-forget (non-blocking). The agent is never held up waiting for MEMORY.md to write.
+This keeps MEMORY.md under the agent's control for curated long-term memory, while the observation timeline is delivered through the system prompt.
 
 ### Observation recording
 
@@ -401,10 +403,11 @@ Every tool use (Read, Write, Bash, etc.) is sent to the claude-mem worker as an 
 
 ### Session lifecycle
 
-- **`before_agent_start`** — Creates a session in the worker, syncs MEMORY.md. Short prompts (under 10 chars) skip session init but still sync.
-- **`tool_result_persist`** — Records observation (fire-and-forget), re-syncs MEMORY.md (fire-and-forget). Tool responses are truncated to 1000 characters.
+- **`before_agent_start`** — Creates a session in the worker.
+- **`before_prompt_build`** — Fetches the observation timeline and returns it as `appendSystemContext`. Cached for 60s.
+- **`tool_result_persist`** — Records observation (fire-and-forget). Tool responses are truncated to 1000 characters.
 - **`agent_end`** — Sends the last assistant message for summarization, then completes the session. Both fire-and-forget.
-- **`gateway_start`** — Clears all session tracking (session IDs, workspace mappings) so agents start fresh.
+- **`gateway_start`** — Clears all session tracking (session IDs, context cache) so agents start fresh.
 
 ### Observation feed
 
@@ -417,7 +420,7 @@ A background service connects to the worker's SSE stream and forwards `new_obser
 | Worker health check fails | Is bun installed? (`bun --version`). Is something else on port 37777? (`lsof -i :37777`). Try running directly: `bun plugin/scripts/worker-service.cjs start` |
 | Worker started from Claude Code install but not responding | Check `cd ~/.claude/plugins/marketplaces/thedotmack && npm run worker:status`. May need `npm run worker:restart`. |
 | Worker started from cloned repo but not responding | Check `cd /path/to/claude-mem && npm run worker:status`. Make sure you ran `npm install && npm run build` first. |
-| No MEMORY.md appearing | Check that `syncMemoryFile` is not set to `false`. Verify the agent's event context includes `workspaceDir`. |
+| No context in agent system prompt | Check that `syncMemoryFile` is not set to `false`. Check that the agent's ID is not in `syncMemoryFileExclude`. Verify the worker is running and has observations. |
 | Observations not being recorded | Check gateway logs for `[claude-mem]` messages. The worker must be running and reachable on localhost:37777. |
 | Feed shows `disconnected` | Worker's `/stream` endpoint not reachable. Check `workerPort` matches the actual worker port. |
 | Feed shows `reconnecting` | Connection dropped. The plugin auto-reconnects — wait up to 30 seconds. |
@@ -451,7 +454,8 @@ A background service connects to the worker's SSE stream and forwards `new_obser
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `project` | string | `"openclaw"` | Project name scoping observations in the database |
-| `syncMemoryFile` | boolean | `true` | Write MEMORY.md to agent workspaces |
+| `syncMemoryFile` | boolean | `true` | Inject observation context into agent system prompt |
+| `syncMemoryFileExclude` | string[] | `[]` | Agent IDs excluded from context injection |
 | `workerPort` | number | `37777` | Claude-mem worker service port |
 | `observationFeed.enabled` | boolean | `false` | Stream observations to a messaging channel |
 | `observationFeed.channel` | string | — | Channel type: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `line` |

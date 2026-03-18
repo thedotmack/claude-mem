@@ -1,6 +1,6 @@
 ---
 title: OpenClaw Integration
-description: Persistent memory for OpenClaw agents — observation recording, MEMORY.md live sync, and real-time observation feeds
+description: Persistent memory for OpenClaw agents — observation recording, system prompt context injection, and real-time observation feeds
 icon: dragon
 ---
 
@@ -9,7 +9,7 @@ icon: dragon
 The OpenClaw plugin gives claude-mem persistent memory to agents running on the [OpenClaw](https://openclaw.ai) gateway. It handles three things:
 
 1. **Observation recording** — Captures tool usage from OpenClaw's embedded runner and sends it to the claude-mem worker for AI processing
-2. **MEMORY.md live sync** — Writes a continuously-updated timeline to each agent's workspace so agents always have context from previous sessions
+2. **System prompt context injection** — Injects the observation timeline into each agent's system prompt via the `before_prompt_build` hook, keeping `MEMORY.md` free for agent-curated memory
 3. **Observation feed** — Streams new observations to messaging channels (Telegram, Discord, Slack, etc.) in real-time via SSE
 
 <Info>
@@ -21,10 +21,11 @@ OpenClaw's embedded runner (`pi-embedded`) calls the Anthropic API directly with
 ```plaintext
 OpenClaw Gateway
   │
-  ├── before_agent_start ──→ Sync MEMORY.md + Init session
-  ├── tool_result_persist ──→ Record observation + Re-sync MEMORY.md
+  ├── before_agent_start ───→ Init session
+  ├── before_prompt_build ──→ Inject context into system prompt
+  ├── tool_result_persist ──→ Record observation
   ├── agent_end ────────────→ Summarize + Complete session
-  └── gateway_start ────────→ Reset session tracking
+  └── gateway_start ────────→ Reset session tracking + context cache
                     │
                     ▼
          Claude-Mem Worker (localhost:37777)
@@ -32,7 +33,7 @@ OpenClaw Gateway
            ├── POST /api/sessions/observations
            ├── POST /api/sessions/summarize
            ├── POST /api/sessions/complete
-           ├── GET  /api/context/inject ──→ MEMORY.md content
+           ├── GET  /api/context/inject ──→ System prompt context
            └── GET  /stream ─────────────→ SSE → Messaging channels
 ```
 
@@ -40,21 +41,15 @@ OpenClaw Gateway
 
 <Steps>
   <Step title="Agent starts (before_agent_start)">
-    When an OpenClaw agent starts, the plugin does two things:
+    When an OpenClaw agent starts, the plugin initializes a session by sending the user prompt to `POST /api/sessions/init` so the worker can create a new session and start processing.
+  </Step>
+  <Step title="Context injected (before_prompt_build)">
+    Before each LLM call, the plugin fetches the observation timeline from the worker's `/api/context/inject` endpoint and returns it as `appendSystemContext`. This injects cross-session context directly into the agent's system prompt without writing any files.
 
-    1. **Syncs MEMORY.md** — Fetches the latest timeline from the worker's `/api/context/inject` endpoint and writes it to `MEMORY.md` in the agent's workspace directory. This gives the agent context from all previous sessions before it starts working.
-
-    2. **Initializes a session** — Sends the user prompt to `POST /api/sessions/init` so the worker can create a new session and start processing.
-
-    Short prompts (under 10 characters) skip session init but still sync MEMORY.md.
+    The context is cached for 60 seconds to avoid re-fetching on every LLM turn within a session.
   </Step>
   <Step title="Tool use recorded (tool_result_persist)">
-    Every time the agent uses a tool (Read, Write, Bash, etc.), the plugin:
-
-    1. **Sends the observation** to `POST /api/sessions/observations` with the tool name, input, and truncated response (max 1000 chars)
-    2. **Re-syncs MEMORY.md** with the latest timeline from the worker
-
-    Both operations are fire-and-forget — they don't block the agent from continuing work. The MEMORY.md file gets progressively richer as the session continues.
+    Every time the agent uses a tool (Read, Write, Bash, etc.), the plugin sends the observation to `POST /api/sessions/observations` with the tool name, input, and truncated response (max 1000 chars). This is fire-and-forget — it doesn't block the agent from continuing work.
 
     Tools prefixed with `memory_` are skipped to avoid recursive recording.
   </Step>
@@ -62,21 +57,18 @@ OpenClaw Gateway
     When the agent completes, the plugin extracts the last assistant message and sends it to `POST /api/sessions/summarize`, then calls `POST /api/sessions/complete` to close the session. Both are fire-and-forget.
   </Step>
   <Step title="Gateway restarts (gateway_start)">
-    Clears all session tracking (session IDs, workspace directory mappings) so agents get fresh state after a gateway restart.
+    Clears all session tracking (session IDs, context cache) so agents get fresh state after a gateway restart.
   </Step>
 </Steps>
 
-### MEMORY.md Live Sync
+### System Prompt Context Injection
 
-The plugin writes a `MEMORY.md` file to each agent's workspace directory containing the full timeline of observations and summaries from previous sessions. This file is updated:
+The plugin injects cross-session observation context into each agent's system prompt via OpenClaw's `before_prompt_build` hook. The content comes from the worker's `GET /api/context/inject?projects=<project>` endpoint, which generates a formatted markdown timeline from the SQLite database.
 
-- On every `before_agent_start` event (agent gets fresh context before starting)
-- On every `tool_result_persist` event (context stays current during the session)
-
-The content comes from the worker's `GET /api/context/inject?projects=<project>` endpoint, which generates a formatted markdown timeline from the SQLite database.
+This approach keeps `MEMORY.md` under the agent's control for curated long-term memory (decisions, preferences, durable facts), while the observation timeline is delivered through the system prompt where it belongs.
 
 <Info>
-MEMORY.md updates are fire-and-forget. They run in the background without blocking the agent. The file reflects whatever the worker has processed so far — it doesn't wait for the current observation to be fully processed before writing.
+Context is cached for 60 seconds per project to avoid re-fetching on every LLM turn. The cache is cleared on gateway restart. Use `syncMemoryFileExclude` to opt specific agents out of context injection entirely.
 </Info>
 
 ### Observation Feed (SSE → Messaging)
@@ -319,7 +311,11 @@ The claude-mem worker service must be running on the same machine as the OpenCla
 </ParamField>
 
 <ParamField body="syncMemoryFile" type="boolean" default={true}>
-  Enable automatic MEMORY.md sync to agent workspaces. Set to `false` if you don't want the plugin writing files to workspace directories.
+  Inject observation context into the agent system prompt via `before_prompt_build` hook. When `true`, agents receive cross-session context automatically. Set to `false` to disable context injection entirely (observations are still recorded).
+</ParamField>
+
+<ParamField body="syncMemoryFileExclude" type="string[]" default={[]}>
+  Agent IDs excluded from automatic context injection. Useful for agents that curate their own memory and don't need the observation timeline (e.g., `["snarf", "debugger"]`). Observations are still recorded for excluded agents — only the context injection is skipped.
 </ParamField>
 
 <ParamField body="workerPort" type="number" default={37777}>
@@ -374,9 +370,9 @@ The plugin uses HTTP calls to the already-running claude-mem worker service rath
 Each OpenClaw agent session gets a unique `contentSessionId` (format: `openclaw-<sessionKey>-<timestamp>`) that maps to a claude-mem session in the worker. The plugin tracks:
 
 - `sessionIds` — Maps OpenClaw session keys to content session IDs
-- `workspaceDirsBySessionKey` — Maps session keys to workspace directories so `tool_result_persist` events can sync MEMORY.md even when the event context doesn't include `workspaceDir`
+- `contextCache` — TTL cache (60s) for context injection responses, keyed by project
 
-Both maps are cleared on `gateway_start`.
+Both are cleared on `gateway_start`.
 
 ## Requirements
 
