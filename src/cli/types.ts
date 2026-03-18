@@ -15,7 +15,12 @@ export interface NormalizedHookInput {
 export interface HookResult {
   continue?: boolean;
   suppressOutput?: boolean;
-  hookSpecificOutput?: { hookEventName: string; additionalContext: string };
+  hookSpecificOutput?: {
+    hookEventName: string;
+    additionalContext: string;
+    permissionDecision?: string;
+    permissionDecisionReason?: string;
+  };
   systemMessage?: string;
   exitCode?: number;
 }

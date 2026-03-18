@@ -13,6 +13,7 @@ import { observationHandler } from './observation.js';
 import { summarizeHandler } from './summarize.js';
 import { userMessageHandler } from './user-message.js';
 import { fileEditHandler } from './file-edit.js';
+import { fileContextHandler } from './file-context.js';
 import { sessionCompleteHandler } from './session-complete.js';
 
 export type EventType =
@@ -22,7 +23,8 @@ export type EventType =
   | 'summarize'         // Stop - generate summary (phase 1)
   | 'session-complete'  // Stop - complete session (phase 2) - fixes #842
   | 'user-message'      // SessionStart (parallel) - display to user
-  | 'file-edit';        // Cursor afterFileEdit
+  | 'file-edit'         // Cursor afterFileEdit
+  | 'file-context';     // PreToolUse - inject file observation history
 
 const handlers: Record<EventType, EventHandler> = {
   'context': contextHandler,
@@ -31,7 +33,8 @@ const handlers: Record<EventType, EventHandler> = {
   'summarize': summarizeHandler,
   'session-complete': sessionCompleteHandler,
   'user-message': userMessageHandler,
-  'file-edit': fileEditHandler
+  'file-edit': fileEditHandler,
+  'file-context': fileContextHandler
 };
 
 /**
@@ -64,4 +67,5 @@ export { observationHandler } from './observation.js';
 export { summarizeHandler } from './summarize.js';
 export { userMessageHandler } from './user-message.js';
 export { fileEditHandler } from './file-edit.js';
+export { fileContextHandler } from './file-context.js';
 export { sessionCompleteHandler } from './session-complete.js';

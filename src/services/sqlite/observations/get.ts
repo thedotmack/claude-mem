@@ -4,6 +4,7 @@
  */
 
 import { Database } from 'bun:sqlite';
+import path from 'path';
 import { logger } from '../../../utils/logger.js';
 import type { ObservationRecord } from '../../../types/database.js';
 import type { GetObservationsByIdsOptions, ObservationSessionRow } from './types.js';
@@ -110,4 +111,43 @@ export function getObservationsForSession(
   `);
 
   return stmt.all(memorySessionId) as ObservationSessionRow[];
+}
+
+/**
+ * Get observations associated with a given file path.
+ * Searches both files_read and files_modified using basename matching
+ * to handle differing absolute paths across sessions.
+ */
+export function getObservationsByFilePath(
+  db: Database,
+  filePath: string,
+  options?: { project?: string; limit?: number }
+): ObservationRecord[] {
+  const basename = path.basename(filePath);
+  const likePattern = `%${basename}%`;
+  const limit = options?.limit ?? 30;
+
+  const additionalConditions: string[] = [];
+  const params: any[] = [likePattern, likePattern];
+
+  if (options?.project) {
+    additionalConditions.push('AND project = ?');
+    params.push(options.project);
+  }
+
+  const additionalWhere = additionalConditions.join(' ');
+
+  const stmt = db.prepare(`
+    SELECT *
+    FROM observations
+    WHERE (
+      EXISTS (SELECT 1 FROM json_each(files_read) WHERE value LIKE ?)
+      OR EXISTS (SELECT 1 FROM json_each(files_modified) WHERE value LIKE ?)
+    )
+    ${additionalWhere}
+    ORDER BY created_at_epoch DESC
+    LIMIT ${limit}
+  `);
+
+  return stmt.all(...params) as ObservationRecord[];
 }

@@ -18,6 +18,7 @@ import { SessionManager } from '../../SessionManager.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 
 export class DataRoutes extends BaseRouteHandler {
   constructor(
@@ -39,6 +40,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     // Fetch by ID endpoints
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
+    app.get('/api/observations/by-file', this.handleGetObservationsByFile.bind(this));
     app.post('/api/observations/batch', this.handleGetObservationsByIds.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     app.post('/api/sdk-sessions/batch', this.handleGetSdkSessionsByIds.bind(this));
@@ -106,6 +108,26 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     res.json(observation);
+  });
+
+  /**
+   * Get observations associated with a file path
+   * GET /api/observations/by-file?path=<file_path>&project=<project>&limit=30
+   */
+  private handleGetObservationsByFile = this.wrapHandler((req: Request, res: Response): void => {
+    const filePath = req.query.path as string | undefined;
+    if (!filePath) {
+      this.badRequest(res, 'path query parameter is required');
+      return;
+    }
+
+    const project = req.query.project as string | undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+
+    const db = this.dbManager.getSessionStore().db;
+    const observations = getObservationsByFilePath(db, filePath, { project, limit });
+
+    res.json({ observations, count: observations.length });
   });
 
   /**
