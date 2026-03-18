@@ -6,7 +6,7 @@
  *    (prevents recursive storage when context injection is active)
  * 2. <private> - User-level tag for manual privacy control
  *    (allows users to mark content they don't want persisted)
- * 3. <system_instruction> - Conductor-injected system instructions
+ * 3. <system_instruction> / <system-instruction> - Conductor-injected system instructions
  *    (should not be persisted to memory)
  *
  * EDGE PROCESSING PATTERN: Filter at hook layer before sending to worker/storage.
@@ -30,7 +30,8 @@ function countTags(content: string): number {
   const privateCount = (content.match(/<private>/g) || []).length;
   const contextCount = (content.match(/<claude-mem-context>/g) || []).length;
   const systemInstructionCount = (content.match(/<system_instruction>/g) || []).length;
-  return privateCount + contextCount + systemInstructionCount;
+  const systemInstructionHyphenCount = (content.match(/<system-instruction>/g) || []).length;
+  return privateCount + contextCount + systemInstructionCount + systemInstructionHyphenCount;
 }
 
 /**
@@ -53,6 +54,7 @@ function stripTagsInternal(content: string): string {
     .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
     .replace(/<private>[\s\S]*?<\/private>/g, '')
     .replace(/<system_instruction>[\s\S]*?<\/system_instruction>/g, '')
+    .replace(/<system-instruction>[\s\S]*?<\/system-instruction>/g, '')
     .trim();
 }
 

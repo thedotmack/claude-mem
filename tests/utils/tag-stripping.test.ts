@@ -300,6 +300,31 @@ after`;
     });
   });
 
+  describe('system-instruction (hyphen variant) tag stripping', () => {
+    it('should strip single <system-instruction> tag from prompt', () => {
+      const input = 'user content <system-instruction>injected instructions</system-instruction> more content';
+      const result = stripMemoryTagsFromPrompt(input);
+      expect(result).toBe('user content  more content');
+    });
+
+    it('should strip both underscore and hyphen variants in same prompt', () => {
+      const input = '<system_instruction>underscore</system_instruction> middle <system-instruction>hyphen</system-instruction> end';
+      const result = stripMemoryTagsFromPrompt(input);
+      expect(result).toBe('middle  end');
+    });
+
+    it('should strip multiline <system-instruction> content', () => {
+      const input = `before
+<system-instruction>
+line one
+line two
+</system-instruction>
+after`;
+      const result = stripMemoryTagsFromPrompt(input);
+      expect(result).toBe('before\n\nafter');
+    });
+  });
+
   describe('privacy enforcement integration', () => {
     it('should allow empty result to trigger privacy skip', () => {
       // Simulates what SessionRoutes does with private-only prompts
