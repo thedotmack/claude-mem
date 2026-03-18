@@ -279,16 +279,12 @@ export class SessionSearch {
     // This enables date filtering which Chroma cannot do (requires direct SQLite access)
     if (!query) {
       const filterClause = this.buildFilterClause(filters, params, 'o');
-      if (!filterClause) {
-        throw new Error('Either query or filters required for search');
-      }
-
       const orderClause = this.buildOrderClause(orderBy, false);
 
       const sql = `
         SELECT o.*, o.discovery_tokens
         FROM observations o
-        WHERE ${filterClause}
+        ${filterClause ? `WHERE ${filterClause}` : ''}
         ${orderClause}
         LIMIT ? OFFSET ?
       `;
@@ -316,9 +312,6 @@ export class SessionSearch {
       const filterOptions = { ...filters };
       delete filterOptions.type;
       const filterClause = this.buildFilterClause(filterOptions, params, 's');
-      if (!filterClause) {
-        throw new Error('Either query or filters required for search');
-      }
 
       const orderClause = orderBy === 'date_asc'
         ? 'ORDER BY s.created_at_epoch ASC'
@@ -327,7 +320,7 @@ export class SessionSearch {
       const sql = `
         SELECT s.*, s.discovery_tokens
         FROM session_summaries s
-        WHERE ${filterClause}
+        ${filterClause ? `WHERE ${filterClause}` : ''}
         ${orderClause}
         LIMIT ? OFFSET ?
       `;
@@ -550,11 +543,9 @@ export class SessionSearch {
 
     // FILTER-ONLY PATH: When no query text, query user_prompts table directly
     if (!query) {
-      if (baseConditions.length === 0) {
-        throw new Error('Either query or filters required for search');
-      }
-
-      const whereClause = `WHERE ${baseConditions.join(' AND ')}`;
+      const whereClause = baseConditions.length > 0
+        ? `WHERE ${baseConditions.join(' AND ')}`
+        : '';
       const orderClause = orderBy === 'date_asc'
         ? 'ORDER BY up.created_at_epoch ASC'
         : 'ORDER BY up.created_at_epoch DESC';
