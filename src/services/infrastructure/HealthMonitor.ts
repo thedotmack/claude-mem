@@ -13,9 +13,11 @@ import path from 'path';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
+import { getWorkerHost } from '../../shared/worker-utils.js';
 
 /**
  * Make an HTTP request to the worker via TCP.
+ * Uses the configured CLAUDE_MEM_WORKER_HOST (defaults to 127.0.0.1).
  * Returns { ok, statusCode, body } or throws on transport error.
  */
 async function httpRequestToWorker(
@@ -23,7 +25,8 @@ async function httpRequestToWorker(
   endpointPath: string,
   method: string = 'GET'
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://127.0.0.1:${port}${endpointPath}`, { method });
+  const host = getWorkerHost();
+  const response = await fetch(`http://${host}:${port}${endpointPath}`, { method });
   // Gracefully handle cases where response body isn't available (e.g., test mocks)
   let body = '';
   try {
@@ -40,7 +43,8 @@ async function httpRequestToWorker(
 export async function isPortInUse(port: number): Promise<boolean> {
   try {
     // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+    const host = getWorkerHost();
+    const response = await fetch(`http://${host}:${port}/api/health`);
     return response.ok;
   } catch (error) {
     // [ANTI-PATTERN IGNORED]: Health check polls every 500ms, logging would flood

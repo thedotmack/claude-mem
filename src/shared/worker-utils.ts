@@ -78,6 +78,16 @@ export function getWorkerHost(): string {
 }
 
 /**
+ * Check if the configured worker host is a local address.
+ * Returns false for remote hosts, meaning the worker daemon should not
+ * be spawned locally — health checks should target the remote host instead.
+ */
+export function isWorkerLocal(): boolean {
+  const host = getWorkerHost();
+  return host === '127.0.0.1' || host === 'localhost' || host === '0.0.0.0' || host === '::1';
+}
+
+/**
  * Clear the cached port and host values.
  * Call this when settings are updated to force re-reading from file.
  */

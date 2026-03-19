@@ -6,7 +6,7 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, getWorkerPort, workerHttpRequest } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, getWorkerHost, workerHttpRequest } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
@@ -67,8 +67,10 @@ export const contextHandler: EventHandler = {
       const additionalContext = contextResult.trim();
       const coloredTimeline = colorResult.trim();
 
+      const host = getWorkerHost();
+      const displayHost = (host === '0.0.0.0' || host === '127.0.0.1') ? 'localhost' : host;
       const systemMessage = showTerminalOutput && coloredTimeline
-        ? `${coloredTimeline}\n\nView Observations Live @ http://localhost:${port}`
+        ? `${coloredTimeline}\n\nView Observations Live @ http://${displayHost}:${port}`
         : undefined;
 
       return {

@@ -13,7 +13,7 @@ import path from 'path';
 import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { getWorkerPort, getWorkerHost, isWorkerLocal } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { getAuthMethodDescription } from '../shared/EnvManager.js';
@@ -937,6 +937,18 @@ export class WorkerService {
  * @returns true if worker is healthy (existing or newly started), false on failure
  */
 async function ensureWorkerStarted(port: number): Promise<boolean> {
+  // When CLAUDE_MEM_WORKER_HOST points to a remote address, do not spawn
+  // a local daemon. Just check if the remote worker is healthy.
+  if (!isWorkerLocal()) {
+    const healthy = await waitForHealth(port, 1000);
+    if (healthy) {
+      logger.info('SYSTEM', 'Remote worker is healthy', { host: getWorkerHost() });
+      return true;
+    }
+    logger.warn('SYSTEM', 'Remote worker not reachable, skipping local daemon spawn', { host: getWorkerHost() });
+    return false;
+  }
+
   // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
   const pidFileStatus = cleanStalePidFile();
   if (pidFileStatus === 'alive') {
