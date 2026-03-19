@@ -480,10 +480,15 @@ export class SDKAgent {
 
   /**
    * Get model ID from settings or environment
+   * When CLAUDE_CODE_USE_BEDROCK is set, falls back to ANTHROPIC_MODEL so
+   * claude-mem automatically uses the same Bedrock model as the parent session.
    */
   private getModelId(): string {
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    if (process.env.CLAUDE_CODE_USE_BEDROCK && process.env.ANTHROPIC_MODEL) {
+      return process.env.ANTHROPIC_MODEL;
+    }
     return settings.CLAUDE_MEM_MODEL;
   }
 }
