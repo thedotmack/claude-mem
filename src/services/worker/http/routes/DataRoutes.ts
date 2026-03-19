@@ -217,8 +217,10 @@ export class DataRoutes extends BaseRouteHandler {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     const version = packageJson.version;
 
-    // Get database stats
-    const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
+    // Get database stats (project-filtered when project param is provided)
+    const totalObservations = project
+      ? db.prepare('SELECT COUNT(*) as count FROM observations WHERE project = ?').get(project) as { count: number }
+      : db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
     const totalSessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
     const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
 

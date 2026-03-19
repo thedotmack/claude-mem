@@ -539,6 +539,12 @@ export class WorkerService {
         }
       }, 2 * 60 * 1000);
 
+      // Start consolidation agent timer (runs every 30 minutes independently)
+      const { ConsolidationAgent } = await import('./worker/ConsolidationAgent.js');
+      const consolidationAgent = ConsolidationAgent.getInstance(this.dbManager.getSessionStore());
+      consolidationAgent.start();
+      logger.info('SYSTEM', 'Started consolidation agent (heuristic, zero-cost, runs every 30 minutes)');
+
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
         if (result.sessionsStarted > 0) {

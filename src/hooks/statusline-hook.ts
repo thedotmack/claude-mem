@@ -90,6 +90,7 @@ function calculateContextUsage(contextWindow: StatusLineInput['context_window'])
 
 interface WorkerStats {
   observations: number | null;
+  projectObservations: number | null;
   savings: number | null;
   savingsPercent: number | null;
 }
@@ -111,36 +112,39 @@ function getProjectFromPath(cwd: string | undefined): string | null {
 
 /**
  * Get stats from claude-mem worker (non-blocking)
- * Passes project parameter to enable on-demand savings calculation
+ * Fetches global stats (no project filter) for accurate savings across all projects,
+ * plus project-specific observation count for the current workspace.
  */
 async function getWorkerStats(project: string | null): Promise<WorkerStats> {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 500); // 500ms timeout
 
-    // Pass project parameter to enable on-demand DB calculation when cache is empty
-    const url = project
-      ? `http://127.0.0.1:37777/api/stats?project=${encodeURIComponent(project)}`
-      : 'http://127.0.0.1:37777/api/stats';
+    // Always fetch global stats for savings (project-filtered savings are often 0)
+    const urls = ['http://127.0.0.1:37777/api/stats'];
+    if (project) {
+      urls.push(`http://127.0.0.1:37777/api/stats?project=${encodeURIComponent(project)}`);
+    }
 
-    const response = await fetch(url, {
-      signal: controller.signal
-    });
+    const responses = await Promise.all(
+      urls.map(url => fetch(url, { signal: controller.signal }).then(r => r.ok ? r.json() : null).catch(() => null))
+    );
 
     clearTimeout(timeoutId);
 
-    if (response.ok) {
-      const data = await response.json();
-      return {
-        observations: data.database?.observations ?? null,
-        savings: data.savings?.current?.savings ?? null,
-        savingsPercent: data.savings?.current?.savingsPercent ?? null
-      };
-    }
+    const globalData = responses[0];
+    const projectData = responses[1];
+
+    return {
+      observations: globalData?.database?.observations ?? null,
+      projectObservations: projectData?.database?.observations ?? null,
+      savings: globalData?.savings?.current?.savings ?? null,
+      savingsPercent: globalData?.savings?.current?.savingsPercent ?? null
+    };
   } catch {
     // Worker not running or timeout - silently ignore
   }
-  return { observations: null, savings: null, savingsPercent: null };
+  return { observations: null, projectObservations: null, savings: null, savingsPercent: null };
 }
 
 /**
@@ -221,9 +225,12 @@ async function formatStatusLine(input: StatusLineInput): Promise<string> {
     parts.push(`${COLORS.bold}📝 ${sessionStats.observationsCount}${sessionTokensDisplay}${COLORS.reset}`);
   }
 
-  // Global stats (total observations)
+  // Observation counts: "N obs | M total" or just "M total"
   if (globalStats.observations !== null) {
-    parts.push(`${COLORS.dim}${globalStats.observations} total${COLORS.reset}`);
+    const projectPart = globalStats.projectObservations !== null
+      ? `${globalStats.projectObservations} obs | `
+      : '';
+    parts.push(`${COLORS.dim}${projectPart}${globalStats.observations} total${COLORS.reset}`);
   }
 
   // Cumulative savings (tokens saved from memory reuse)

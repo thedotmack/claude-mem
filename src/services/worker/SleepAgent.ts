@@ -6,6 +6,7 @@
  */
 
 import { SupersessionDetector } from './SupersessionDetector.js';
+import { ConsolidationAgent } from './ConsolidationAgent.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import {
@@ -41,6 +42,7 @@ export class SleepAgent {
   private static instance: SleepAgent | null = null;
 
   private supersessionDetector: SupersessionDetector;
+  private consolidationAgent: ConsolidationAgent;
   private idleConfig: IdleConfig;
   private idleCheckInterval: NodeJS.Timeout | null = null;
   private lastActivityAt: number = Date.now();
@@ -63,6 +65,7 @@ export class SleepAgent {
       chromaSync,
       sessionStore
     );
+    this.consolidationAgent = ConsolidationAgent.getInstance(sessionStore);
   }
 
   /**
@@ -346,6 +349,24 @@ export class SleepAgent {
         }
       }
 
+      // Phase 5: Cross-memory Consolidation (deep cycles only)
+      if (type === 'deep' || type === 'manual') {
+        try {
+          const consolidationResults = await this.consolidationAgent.runAllProjects(
+            config.supersessionLookbackDays
+          );
+          const totalInsights = consolidationResults.reduce((sum, r) => sum + r.insightsGenerated, 0);
+          if (totalInsights > 0) {
+            logger.info('SLEEP_AGENT', `Consolidation generated ${totalInsights} insights`, {
+              projects: consolidationResults.length,
+            });
+          }
+        } catch (consolidationError) {
+          // Non-blocking: consolidation failure should not fail the sleep cycle
+          logger.error('SLEEP_AGENT', 'Consolidation phase failed (non-blocking)', {}, consolidationError as Error);
+        }
+      }
+
       result.completedAt = Date.now();
       result.duration = result.completedAt - startedAt;
 
@@ -481,6 +502,13 @@ export class SleepAgent {
    */
   getSupersessionDetector(): SupersessionDetector {
     return this.supersessionDetector;
+  }
+
+  /**
+   * Get the consolidation agent (for API route access and standalone timer)
+   */
+  getConsolidationAgent(): ConsolidationAgent {
+    return this.consolidationAgent;
   }
 
   /**
