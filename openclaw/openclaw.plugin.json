@@ -14,7 +14,13 @@
       "syncMemoryFile": {
         "type": "boolean",
         "default": true,
-        "description": "Automatically sync MEMORY.md on session start"
+        "description": "Inject observation context into the agent system prompt via before_prompt_build hook. When true, agents receive cross-session context without MEMORY.md being overwritten."
+      },
+      "syncMemoryFileExclude": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": [],
+        "description": "Agent IDs excluded from automatic context injection (observations are still recorded, only prompt injection is skipped)"
       },
       "workerPort": {
         "type": "number",

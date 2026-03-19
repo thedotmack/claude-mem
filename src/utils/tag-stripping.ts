@@ -1,11 +1,13 @@
 /**
  * Tag Stripping Utilities
  *
- * Implements the dual-tag system for meta-observation control:
+ * Implements the tag system for meta-observation control:
  * 1. <claude-mem-context> - System-level tag for auto-injected observations
  *    (prevents recursive storage when context injection is active)
  * 2. <private> - User-level tag for manual privacy control
  *    (allows users to mark content they don't want persisted)
+ * 3. <system_instruction> / <system-instruction> - Conductor-injected system instructions
+ *    (should not be persisted to memory)
  *
  * EDGE PROCESSING PATTERN: Filter at hook layer before sending to worker/storage.
  * This keeps the worker service simple and follows one-way data stream.
@@ -27,7 +29,9 @@ const MAX_TAG_COUNT = 100;
 function countTags(content: string): number {
   const privateCount = (content.match(/<private>/g) || []).length;
   const contextCount = (content.match(/<claude-mem-context>/g) || []).length;
-  return privateCount + contextCount;
+  const systemInstructionCount = (content.match(/<system_instruction>/g) || []).length;
+  const systemInstructionHyphenCount = (content.match(/<system-instruction>/g) || []).length;
+  return privateCount + contextCount + systemInstructionCount + systemInstructionHyphenCount;
 }
 
 /**
@@ -49,6 +53,8 @@ function stripTagsInternal(content: string): string {
   return content
     .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
     .replace(/<private>[\s\S]*?<\/private>/g, '')
+    .replace(/<system_instruction>[\s\S]*?<\/system_instruction>/g, '')
+    .replace(/<system-instruction>[\s\S]*?<\/system-instruction>/g, '')
     .trim();
 }
 

@@ -2,6 +2,40 @@
 
 All notable changes to claude-mem.
 
+## [v10.6.1] - 2026-03-18
+
+### New Features
+- **Timeline Report Skill** — New `/timeline-report` skill generates narrative "Journey Into [Project]" reports from claude-mem's development history with token-aware economics
+- **Git Worktree Detection** — Timeline report automatically detects git worktrees and uses parent project as data source
+- **Compressed Context Output** — Markdown context injection compressed ~53% (tables → compact flat lines), reducing token overhead in session starts
+- **Full Observation Fetch** — Added `full=true` parameter to `/api/context/inject` for fetching all observations
+
+### Improvements
+- Split `TimelineRenderer` into separate markdown/color rendering paths
+- Fixed timestamp ditto marker leaking across session summary boundaries
+
+### Security
+- Removed arbitrary file write vulnerability (`dump_to_file` parameter)
+
+## [v10.6.0] - 2026-03-18
+
+## OpenClaw: System prompt context injection
+
+The OpenClaw plugin no longer writes to `MEMORY.md`. Instead, it injects the observation timeline into each agent's system prompt via the `before_prompt_build` hook using `appendSystemContext`. This keeps `MEMORY.md` under the agent's control for curated long-term memory. Context is cached for 60 seconds per project.
+
+## New `syncMemoryFileExclude` config
+
+Exclude specific agent IDs from automatic context injection (e.g., `["snarf", "debugger"]`). Observations are still recorded for excluded agents — only the context injection is skipped.
+
+## Fix: UI settings now preserve falsy values
+
+The viewer settings hook used `||` instead of `??`, which silently replaced backend values like `'0'`, `'false'`, and `''` with UI defaults. Fixed with nullish coalescing. Frontend defaults now aligned with backend `SettingsDefaultsManager`.
+
+## Documentation
+
+- Updated `openclaw-integration.mdx` and `openclaw/SKILL.md` to reflect system prompt injection behavior
+- Fixed "prompt injection" → "context injection" terminology to avoid confusion with the OWASP security term
+
 ## [v10.5.6] - 2026-03-16
 
 ## Patch: Process Supervisor Hardening & Logging Cleanup
@@ -1083,54 +1117,4 @@ Fixed an issue where the worker service startup wasn't producing proper JSON sta
 ## Housekeeping
 
 - Removed obsolete error handling baseline file
-
-## [v9.0.2] - 2026-01-10
-
-## Bug Fixes
-
-- **Windows Terminal Tab Accumulation (#625, #628)**: Fixed terminal tab accumulation on Windows by implementing graceful exit strategy. All expected failure scenarios (port conflicts, version mismatches, health check timeouts) now exit with code 0 instead of code 1.
-- **Windows 11 Compatibility (#625)**: Replaced deprecated WMIC commands with PowerShell `Get-Process` and `Get-CimInstance` for process enumeration. WMIC is being removed from Windows 11.
-
-## Maintenance
-
-- **Removed Obsolete CLAUDE.md Files**: Cleaned up auto-generated CLAUDE.md files from `~/.claude/plans/` and `~/.claude/plugins/marketplaces/` directories.
-
----
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.1...v9.0.2
-
-## [v9.0.1] - 2026-01-08
-
-## Bug Fixes
-
-### Claude Code 2.1.1 Compatibility
-- Fixed hook architecture for compatibility with Claude Code 2.1.0/2.1.1
-- Context is now injected silently via SessionStart hook
-- Removed deprecated `user-message-hook` (no longer used in CC 2.1.0+)
-
-### Path Validation for CLAUDE.md Distribution
-- Added `isValidPathForClaudeMd()` to reject malformed paths:
-  - Tilde paths (`~`) that Node.js doesn't expand
-  - URLs (`http://`, `https://`)
-  - Paths with spaces (likely command text or PR references)
-  - Paths with `#` (GitHub issue/PR references)
-  - Relative paths that escape project boundary
-- Cleaned up 12 invalid CLAUDE.md files created by bug artifacts
-- Updated `.gitignore` to prevent future accidents
-
-### Log-Level Audit
-- Promoted 38+ WARN messages to ERROR level for improved debugging:
-  - Parser: observation type errors, data contamination
-  - SDK/Agents: empty init responses (Gemini, OpenRouter)
-  - Worker/Queue: session recovery, auto-recovery failures
-  - Chroma: sync failures, search failures
-  - SQLite: search failures
-  - Session/Generator: failures, missing context
-  - Infrastructure: shutdown, process management failures
-
-## Internal Changes
-- Removed hardcoded fake token counts from context injection
-- Standardized Claude Code 2.1.0 note wording across documentation
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.0...v9.0.1
 

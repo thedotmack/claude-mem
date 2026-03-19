@@ -1,7 +1,8 @@
 /**
- * MarkdownFormatter - Formats context output as markdown (non-colored mode)
+ * MarkdownFormatter - Formats context output as compact markdown for LLM injection
  *
- * Handles all markdown formatting for context injection.
+ * Optimized for token efficiency: flat lines instead of tables, no repeated headers.
+ * The colored terminal formatter (ColorFormatter.ts) handles human-readable display separately.
  */
 
 import type {
@@ -34,7 +35,7 @@ function formatHeaderDateTime(): string {
  */
 export function renderMarkdownHeader(project: string): string[] {
   return [
-    `# [${project}] recent context, ${formatHeaderDateTime()}`,
+    `# $CMEM ${project} ${formatHeaderDateTime()}`,
     ''
   ];
 }
@@ -44,39 +45,28 @@ export function renderMarkdownHeader(project: string): string[] {
  */
 export function renderMarkdownLegend(): string[] {
   const mode = ModeManager.getInstance().getActiveMode();
-  const typeLegendItems = mode.observation_types.map(t => `${t.emoji} ${t.id}`).join(' | ');
+  const typeLegendItems = mode.observation_types.map(t => `${t.emoji}${t.id}`).join(' ');
 
   return [
-    `**Legend:** session-request | ${typeLegendItems}`,
+    `Legend: 🎯session ${typeLegendItems}`,
+    `Format: ID TIME TYPE TITLE`,
+    `Fetch details: get_observations([IDs]) | Search: mem-search skill`,
     ''
   ];
 }
 
 /**
- * Render markdown column key
+ * Render markdown column key - no longer needed in compact format
  */
 export function renderMarkdownColumnKey(): string[] {
-  return [
-    `**Column Key**:`,
-    `- **Read**: Tokens to read this observation (cost to learn it now)`,
-    `- **Work**: Tokens spent on work that produced this record ( research, building, deciding)`,
-    ''
-  ];
+  return [];
 }
 
 /**
- * Render markdown context index instructions
+ * Render markdown context index instructions - folded into legend
  */
 export function renderMarkdownContextIndex(): string[] {
-  return [
-    `**Context Index:** This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.`,
-    '',
-    `When you need implementation details, rationale, or debugging context:`,
-    `- Fetch by ID: get_observations([IDs]) for observations visible in this index`,
-    `- Search history: Use the mem-search skill for past decisions, bugs, and deeper research`,
-    `- Trust this index over re-reading code for past decisions and learnings`,
-    ''
-  ];
+  return [];
 }
 
 /**
@@ -88,21 +78,20 @@ export function renderMarkdownContextEconomics(
 ): string[] {
   const output: string[] = [];
 
-  output.push(`**Context Economics**:`);
-  output.push(`- Loading: ${economics.totalObservations} observations (${economics.totalReadTokens.toLocaleString()} tokens to read)`);
-  output.push(`- Work investment: ${economics.totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions`);
+  const parts: string[] = [
+    `${economics.totalObservations} obs (${economics.totalReadTokens.toLocaleString()}t read)`,
+    `${economics.totalDiscoveryTokens.toLocaleString()}t work`
+  ];
 
   if (economics.totalDiscoveryTokens > 0 && (config.showSavingsAmount || config.showSavingsPercent)) {
-    let savingsLine = '- Your savings: ';
-    if (config.showSavingsAmount && config.showSavingsPercent) {
-      savingsLine += `${economics.savings.toLocaleString()} tokens (${economics.savingsPercent}% reduction from reuse)`;
+    if (config.showSavingsPercent) {
+      parts.push(`${economics.savingsPercent}% savings`);
     } else if (config.showSavingsAmount) {
-      savingsLine += `${economics.savings.toLocaleString()} tokens`;
-    } else {
-      savingsLine += `${economics.savingsPercent}% reduction from reuse`;
+      parts.push(`${economics.savings.toLocaleString()}t saved`);
     }
-    output.push(savingsLine);
   }
+
+  output.push(`Stats: ${parts.join(' | ')}`);
   output.push('');
 
   return output;
@@ -114,37 +103,37 @@ export function renderMarkdownContextEconomics(
 export function renderMarkdownDayHeader(day: string): string[] {
   return [
     `### ${day}`,
-    ''
   ];
 }
 
 /**
- * Render markdown file header with table header
+ * Render markdown file header - no longer renders table headers in compact format
  */
-export function renderMarkdownFileHeader(file: string): string[] {
-  return [
-    `**${file}**`,
-    `| ID | Time | T | Title | Read | Work |`,
-    `|----|------|---|-------|------|------|`
-  ];
+export function renderMarkdownFileHeader(_file: string): string[] {
+  // File grouping eliminated in compact format - file context is in observation titles
+  return [];
 }
 
 /**
- * Render markdown table row for observation
+ * Format compact time: "9:23 AM" → "9:23a", "12:05 PM" → "12:05p"
+ */
+function compactTime(time: string): string {
+  return time.toLowerCase().replace(' am', 'a').replace(' pm', 'p');
+}
+
+/**
+ * Render compact flat line for observation (replaces table row)
  */
 export function renderMarkdownTableRow(
   obs: Observation,
   timeDisplay: string,
-  config: ContextConfig
+  _config: ContextConfig
 ): string {
   const title = obs.title || 'Untitled';
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
-  const { readTokens, discoveryDisplay } = formatObservationTokenDisplay(obs, config);
+  const time = timeDisplay ? compactTime(timeDisplay) : '"';
 
-  const readCol = config.showReadTokens ? `~${readTokens}` : '';
-  const workCol = config.showWorkTokens ? discoveryDisplay : '';
-
-  return `| #${obs.id} | ${timeDisplay || '"'} | ${icon} | ${title} | ${readCol} | ${workCol} |`;
+  return `${obs.id} ${time} ${icon} ${title}`;
 }
 
 /**
@@ -159,24 +148,23 @@ export function renderMarkdownFullObservation(
   const output: string[] = [];
   const title = obs.title || 'Untitled';
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
+  const time = timeDisplay ? compactTime(timeDisplay) : '"';
   const { readTokens, discoveryDisplay } = formatObservationTokenDisplay(obs, config);
 
-  output.push(`**#${obs.id}** ${timeDisplay || '"'} ${icon} **${title}**`);
+  output.push(`**${obs.id}** ${time} ${icon} **${title}**`);
   if (detailField) {
-    output.push('');
     output.push(detailField);
-    output.push('');
   }
 
   const tokenParts: string[] = [];
   if (config.showReadTokens) {
-    tokenParts.push(`Read: ~${readTokens}`);
+    tokenParts.push(`~${readTokens}t`);
   }
   if (config.showWorkTokens) {
-    tokenParts.push(`Work: ${discoveryDisplay}`);
+    tokenParts.push(discoveryDisplay);
   }
   if (tokenParts.length > 0) {
-    output.push(tokenParts.join(', '));
+    output.push(tokenParts.join(' '));
   }
   output.push('');
 
@@ -190,10 +178,8 @@ export function renderMarkdownSummaryItem(
   summary: { id: number; request: string | null },
   formattedTime: string
 ): string[] {
-  const summaryTitle = `${summary.request || 'Session started'} (${formattedTime})`;
   return [
-    `**#S${summary.id}** ${summaryTitle}`,
-    ''
+    `S${summary.id} ${summary.request || 'Session started'} (${formattedTime})`,
   ];
 }
 
@@ -229,7 +215,7 @@ export function renderMarkdownFooter(totalDiscoveryTokens: number, totalReadToke
   const workTokensK = Math.round(totalDiscoveryTokens / 1000);
   return [
     '',
-    `Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use the claude-mem skill to access memories by ID.`
+    `Access ${workTokensK}k tokens of past work via get_observations([IDs]) or mem-search skill.`
   ];
 }
 
@@ -237,5 +223,5 @@ export function renderMarkdownFooter(totalDiscoveryTokens: number, totalReadToke
  * Render markdown empty state
  */
 export function renderMarkdownEmptyState(project: string): string {
-  return `# [${project}] recent context, ${formatHeaderDateTime()}\n\nNo previous sessions found for this project yet.`;
+  return `# $CMEM ${project} ${formatHeaderDateTime()}\n\nNo previous sessions found.`;
 }
