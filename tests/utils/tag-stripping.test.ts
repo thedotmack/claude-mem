@@ -1,7 +1,7 @@
 /**
  * Tag Stripping Utility Tests
  *
- * Tests the dual-tag privacy system for <private> and <claude-mem-context> tags.
+ * Tests the tag privacy system for <private>, <claude-mem-context>, and <system_instruction> tags.
  * These tags enable users and the system to exclude content from memory storage.
  *
  * Sources:
@@ -254,6 +254,74 @@ finish`;
         const parsed = JSON.parse(result);
         expect(parsed.outer.inner).toBe(' visible');
       });
+    });
+  });
+
+  describe('system_instruction tag stripping', () => {
+    describe('basic system_instruction removal', () => {
+      it('should strip single <system_instruction> tag from prompt', () => {
+        const input = 'user content <system_instruction>injected instructions</system_instruction> more content';
+        const result = stripMemoryTagsFromPrompt(input);
+        expect(result).toBe('user content  more content');
+      });
+
+      it('should strip <system_instruction> mixed with <private> tags', () => {
+        const input = '<system_instruction>instructions</system_instruction> public <private>secret</private> end';
+        const result = stripMemoryTagsFromPrompt(input);
+        expect(result).toBe('public  end');
+      });
+
+      it('should return empty string for entirely <system_instruction> content', () => {
+        const input = '<system_instruction>entire prompt is system instructions</system_instruction>';
+        const result = stripMemoryTagsFromPrompt(input);
+        expect(result).toBe('');
+      });
+
+      it('should strip <system_instruction> tags from JSON content', () => {
+        const jsonContent = JSON.stringify({
+          data: '<system_instruction>injected</system_instruction> real data'
+        });
+        const result = stripMemoryTagsFromJson(jsonContent);
+        const parsed = JSON.parse(result);
+        expect(parsed.data).toBe(' real data');
+      });
+
+      it('should strip multiline content within <system_instruction> tags', () => {
+        const input = `before
+<system_instruction>
+line one
+line two
+line three
+</system_instruction>
+after`;
+        const result = stripMemoryTagsFromPrompt(input);
+        expect(result).toBe('before\n\nafter');
+      });
+    });
+  });
+
+  describe('system-instruction (hyphen variant) tag stripping', () => {
+    it('should strip single <system-instruction> tag from prompt', () => {
+      const input = 'user content <system-instruction>injected instructions</system-instruction> more content';
+      const result = stripMemoryTagsFromPrompt(input);
+      expect(result).toBe('user content  more content');
+    });
+
+    it('should strip both underscore and hyphen variants in same prompt', () => {
+      const input = '<system_instruction>underscore</system_instruction> middle <system-instruction>hyphen</system-instruction> end';
+      const result = stripMemoryTagsFromPrompt(input);
+      expect(result).toBe('middle  end');
+    });
+
+    it('should strip multiline <system-instruction> content', () => {
+      const input = `before
+<system-instruction>
+line one
+line two
+</system-instruction>
+after`;
+      const result = stripMemoryTagsFromPrompt(input);
+      expect(result).toBe('before\n\nafter');
     });
   });
 
