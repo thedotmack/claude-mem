@@ -92,7 +92,7 @@ function main() {
   console.log('='.repeat(60));
 }
 
-// Run if executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run if executed directly (file:/// with three slashes on Windows)
+if (import.meta.url === `file://${process.argv[1]}` || import.meta.url === `file:///${process.argv[1]}`) {
   main();
 }
