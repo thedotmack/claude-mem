@@ -32,32 +32,39 @@ export const summarizeHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    // Extract last assistant message from transcript (the work Claude did)
-    // Note: "user" messages in transcripts are mostly tool_results, not actual user input.
-    // The user's original request is already stored in user_prompts table.
-    const lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
+    try {
+      // Extract last assistant message from transcript (the work Claude did)
+      // Note: "user" messages in transcripts are mostly tool_results, not actual user input.
+      // The user's original request is already stored in user_prompts table.
+      const lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
 
-    logger.dataIn('HOOK', 'Stop: Requesting summary', {
-      hasLastAssistantMessage: !!lastAssistantMessage
-    });
+      logger.dataIn('HOOK', 'Stop: Requesting summary', {
+        hasLastAssistantMessage: !!lastAssistantMessage
+      });
 
-    // Send to worker - worker handles privacy check and database operations
-    const response = await workerHttpRequest('/api/sessions/summarize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contentSessionId: sessionId,
-        last_assistant_message: lastAssistantMessage
-      }),
-      timeoutMs: SUMMARIZE_TIMEOUT_MS
-    });
+      // Send to worker - worker handles privacy check and database operations
+      const response = await workerHttpRequest('/api/sessions/summarize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contentSessionId: sessionId,
+          last_assistant_message: lastAssistantMessage
+        }),
+        timeoutMs: SUMMARIZE_TIMEOUT_MS
+      });
 
-    if (!response.ok) {
-      // Return standard response even on failure (matches original behavior)
+      if (!response.ok) {
+        // Return standard response even on failure (matches original behavior)
+        return { continue: true, suppressOutput: true };
+      }
+
+      logger.debug('HOOK', 'Summary request sent successfully');
+    } catch (error) {
+      logger.warn('HOOK', 'summarize: Error sending summary request', {
+        error: (error as Error).message
+      });
       return { continue: true, suppressOutput: true };
     }
-
-    logger.debug('HOOK', 'Summary request sent successfully');
 
     return { continue: true, suppressOutput: true };
   }

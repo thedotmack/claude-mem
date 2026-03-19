@@ -99,6 +99,15 @@ export async function hookCommand(platform: string, event: string, options: Hook
       return HOOK_EXIT_CODES.SUCCESS;
     }
 
+    // Stop hooks should never block session exit — surface error in logs, don't block
+    if (event === 'summarize' || event === 'session-complete') {
+      logger.error('HOOK', `Stop hook error (non-blocking): ${error instanceof Error ? error.message : error}`, {}, error instanceof Error ? error : undefined);
+      if (!options.skipExit) {
+        process.exit(HOOK_EXIT_CODES.FAILURE);  // = 1 (non-blocking)
+      }
+      return HOOK_EXIT_CODES.FAILURE;
+    }
+
     // Handler/client bug — log to file instead of stderr (#1181)
     logger.error('HOOK', `Hook error: ${error instanceof Error ? error.message : error}`, {}, error instanceof Error ? error : undefined);
     if (!options.skipExit) {

@@ -27,7 +27,13 @@ export function extractLastMessage(
   let foundMatchingRole = false;
 
   for (let i = lines.length - 1; i >= 0; i--) {
-    const line = JSON.parse(lines[i]);
+    let line;
+    try {
+      line = JSON.parse(lines[i]);
+    } catch {
+      logger.warn('PARSER', `Malformed JSON at line ${i + 1} in transcript, skipping`);
+      continue;
+    }
     if (line.type === role) {
       foundMatchingRole = true;
 
@@ -43,8 +49,8 @@ export function extractLastMessage(
             .map((c: any) => c.text)
             .join('\n');
         } else {
-          // Unknown content format - throw error
-          throw new Error(`Unknown message content format in transcript. Type: ${typeof msgContent}`);
+          logger.warn('PARSER', `Unknown message content format in transcript: ${typeof msgContent}`);
+          continue;
         }
 
         if (stripSystemReminders) {
