@@ -1238,14 +1238,14 @@ async function main() {
   }
 }
 
-// Check if running as main module in both ESM and CommonJS
-// On Windows, import.meta.url uses three slashes (file:///C:/...) while
-// process.argv[1] is a plain path (C:/...), so we must check both forms.
-// The bundled .cjs extension also needs to be matched by endsWith.
+// Check if running as main module in both ESM and CommonJS.
+// Uses pathToFileURL for robust cross-platform comparison (handles drive letter
+// casing, slash direction, and URL encoding on Windows).
+import { pathToFileURL } from 'url';
+
 const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefined'
   ? require.main === module || !module.parent
-  : import.meta.url === `file://${process.argv[1]}`
-    || import.meta.url === `file:///${process.argv[1]}`
+  : (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
     || process.argv[1]?.endsWith('worker-service')
     || process.argv[1]?.endsWith('worker-service.cjs');
 

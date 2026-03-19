@@ -92,7 +92,8 @@ function main() {
   console.log('='.repeat(60));
 }
 
-// Run if executed directly (file:/// with three slashes on Windows)
-if (import.meta.url === `file://${process.argv[1]}` || import.meta.url === `file:///${process.argv[1]}`) {
+// Run if executed directly (pathToFileURL handles Windows drive letters, slashes, encoding)
+import { pathToFileURL } from 'url';
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }

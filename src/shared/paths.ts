@@ -19,6 +19,7 @@ function getDirname(): string {
   return dirname(fileURLToPath(import.meta.url));
 }
 
+// Called once at module load — result is cached in _dirname, no repeated existsSync calls.
 const _dirname = getDirname();
 
 /**
