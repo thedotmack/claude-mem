@@ -23,6 +23,7 @@ export interface HookResult {
   };
   systemMessage?: string;
   exitCode?: number;
+  stderrMessage?: string;  // Written to stderr before exit (for exit code 2 blocking feedback)
 }
 
 export interface PlatformAdapter {

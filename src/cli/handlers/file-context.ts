@@ -64,7 +64,7 @@ function formatFileTimeline(observations: ObservationRow[], filePath: string): s
   });
 
   const lines: string[] = [
-    `Existing observations for this file \u2014 review via get_observations([IDs]) to avoid duplicates:`,
+    `Read blocked: This file has prior observations. Use get_observations([IDs]) to load what you need. Re-read the file only if you need raw content not captured in observations:`,
   ];
 
   for (const [day, dayObservations] of sortedDays) {
@@ -128,15 +128,28 @@ export const fileContextHandler: EventHandler = {
         return { continue: true, suppressOutput: true };
       }
 
-      const timeline = formatFileTimeline(data.observations, filePath);
+      // Check the gate: has this file's timeline been shown in this session?
+      const gateResponse = await workerHttpRequest('/api/file-context/gate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: input.sessionId, filePath: relativePath }),
+      });
 
-      return {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'allow',
-          additionalContext: timeline,
-        },
-      };
+      if (gateResponse.ok) {
+        const gateData = await gateResponse.json() as { firstAttempt: boolean };
+
+        if (gateData.firstAttempt) {
+          // BLOCK: Show timeline, Claude decides whether to re-read or use get_observations()
+          const timeline = formatFileTimeline(data.observations, filePath);
+          return {
+            exitCode: HOOK_EXIT_CODES.BLOCKING_ERROR,
+            stderrMessage: timeline,
+          };
+        }
+      }
+
+      // ALLOW: Second attempt or gate check failed — let the read proceed silently
+      return { continue: true, suppressOutput: true };
     } catch (error) {
       logger.warn('HOOK', 'File context fetch error, skipping', {
         error: error instanceof Error ? error.message : String(error),

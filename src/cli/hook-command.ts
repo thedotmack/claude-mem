@@ -84,6 +84,14 @@ export async function hookCommand(platform: string, event: string, options: Hook
 
     console.log(JSON.stringify(output));
     const exitCode = result.exitCode ?? HOOK_EXIT_CODES.SUCCESS;
+
+    // If handler wants to send a blocking message via stderr (exit code 2 contract),
+    // restore stderr and write the message before exiting
+    if (result.stderrMessage && exitCode === HOOK_EXIT_CODES.BLOCKING_ERROR) {
+      process.stderr.write = originalStderrWrite;
+      process.stderr.write(result.stderrMessage);
+    }
+
     if (!options.skipExit) {
       process.exit(exitCode);
     }
