@@ -10,4 +10,10 @@ export const API_ENDPOINTS = {
   STATS: '/api/stats',
   PROCESSING_STATUS: '/api/processing-status',
   STREAM: '/stream',
+  // Collaboration endpoints
+  STATUS: '/api/status',
+  MAILBOX: '/api/mailbox',
+  CONTROLS: '/api/controls',
+  PLANS: '/api/plans',
+  LOCKS: '/api/locks',
 } as const;

@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
+import { StatusDashboard } from './components/StatusDashboard';
+import { Timeline } from './components/Timeline';
+import { PlanningBoard } from './components/PlanningBoard';
+import { ConflictResolution } from './components/ConflictResolution';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { LogsDrawer } from './components/LogsModal';
 import { useSSE } from './hooks/useSSE';
@@ -8,10 +12,20 @@ import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
-import { Observation, Summary, UserPrompt } from './types';
+import { useCollaboration } from './hooks/useCollaboration';
+import { Observation, Summary, UserPrompt, ViewerTab } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
 
+const TABS: { id: ViewerTab; label: string }[] = [
+  { id: 'feed', label: 'Feed' },
+  { id: 'status', label: 'Status' },
+  { id: 'timeline', label: 'Timeline' },
+  { id: 'plans', label: 'Plans' },
+  { id: 'conflicts', label: 'Conflicts' },
+];
+
 export function App() {
+  const [activeTab, setActiveTab] = useState<ViewerTab>('feed');
   const [currentFilter, setCurrentFilter] = useState('');
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
@@ -24,6 +38,7 @@ export function App() {
   const { stats, refreshStats } = useStats();
   const { preference, resolvedTheme, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
+  const collab = useCollaboration();
 
   // Merge SSE live data with paginated data, filtering by project when active
   const allObservations = useMemo(() => {
@@ -47,17 +62,14 @@ export function App() {
     return mergeAndDeduplicateByProject(live, paginatedPrompts);
   }, [prompts, paginatedPrompts, currentFilter]);
 
-  // Toggle context preview modal
   const toggleContextPreview = useCallback(() => {
     setContextPreviewOpen(prev => !prev);
   }, []);
 
-  // Toggle logs modal
   const toggleLogsModal = useCallback(() => {
     setLogsModalOpen(prev => !prev);
   }, []);
 
-  // Handle loading more data
   const handleLoadMore = useCallback(async () => {
     try {
       const [newObservations, newSummaries, newPrompts] = await Promise.all([
@@ -80,7 +92,6 @@ export function App() {
     }
   }, [currentFilter, pagination.observations, pagination.summaries, pagination.prompts]);
 
-  // Reset paginated data and load first page when filter changes
   useEffect(() => {
     setPaginatedObservations([]);
     setPaginatedSummaries([]);
@@ -88,6 +99,10 @@ export function App() {
     handleLoadMore();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFilter]);
+
+  // Count unread messages for badge
+  const unreadCount = collab.status?.unread_messages?.length || 0;
+  const conflictCount = collab.status ? collab.status.locks.filter(l => (Date.now() - l.locked_at_epoch) > 8 * 60 * 1000).length : 0;
 
   return (
     <>
@@ -103,14 +118,65 @@ export function App() {
         onContextPreviewToggle={toggleContextPreview}
       />
 
-      <Feed
-        observations={allObservations}
-        summaries={allSummaries}
-        prompts={allPrompts}
-        onLoadMore={handleLoadMore}
-        isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
-        hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
-      />
+      {/* Tab Navigation */}
+      <div className="collab-tabs">
+        {TABS.map(tab => (
+          <button
+            key={tab.id}
+            className={`collab-tab ${activeTab === tab.id ? 'collab-tab-active' : ''}`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.label}
+            {tab.id === 'status' && unreadCount > 0 && (
+              <span className="collab-tab-badge">{unreadCount}</span>
+            )}
+            {tab.id === 'conflicts' && conflictCount > 0 && (
+              <span className="collab-tab-badge collab-tab-badge-warn">{conflictCount}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab Content */}
+      {activeTab === 'feed' && (
+        <Feed
+          observations={allObservations}
+          summaries={allSummaries}
+          prompts={allPrompts}
+          onLoadMore={handleLoadMore}
+          isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
+          hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
+        />
+      )}
+
+      {activeTab === 'status' && (
+        <StatusDashboard
+          status={collab.status}
+          messages={collab.messages}
+          isLoading={collab.isLoading}
+          error={collab.error}
+        />
+      )}
+
+      {activeTab === 'timeline' && (
+        <Timeline
+          observations={allObservations}
+          messages={collab.messages}
+          plans={collab.plans}
+        />
+      )}
+
+      {activeTab === 'plans' && (
+        <PlanningBoard plans={collab.plans} />
+      )}
+
+      {activeTab === 'conflicts' && (
+        <ConflictResolution
+          observations={allObservations}
+          locks={collab.status?.locks || []}
+          controls={collab.status?.controls || null}
+        />
+      )}
 
       <ContextSettingsModal
         isOpen={contextPreviewOpen}

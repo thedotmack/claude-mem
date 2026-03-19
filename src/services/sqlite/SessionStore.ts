@@ -14,6 +14,7 @@ import {
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
 import { computeObservationContentHash, findDuplicateObservation } from './observations/store.js';
+import { MigrationRunner } from './migrations/runner.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -35,6 +36,10 @@ export class SessionStore {
 
     // Initialize schema if needed (fresh database)
     this.initializeSchema();
+
+    // Run all migrations (includes collaboration tables for multi-agent support)
+    const migrationRunner = new MigrationRunner(this.db);
+    migrationRunner.runAllMigrations();
 
     // Run migrations
     this.ensureWorkerPortColumn();

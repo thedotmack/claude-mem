@@ -301,17 +301,27 @@
       box-sizing: border-box;
     }
 
+    html {
+      height: auto;
+      overflow-y: scroll;
+    }
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
       background: var(--color-bg-primary);
       color: var(--color-text-primary);
       font-size: 14px;
-      overflow: hidden;
+      min-height: 100vh;
+      overflow-y: visible;
+    }
+
+    #root {
+      min-height: 100vh;
     }
 
     .full-height-flex-layout {
       display: flex;
-      height: 100%;
+      min-height: 100vh;
       position: relative;
     }
 
@@ -319,6 +329,7 @@
       flex: 1;
       display: flex;
       flex-direction: column;
+      min-height: 0;
     }
 
     .sidebar {
@@ -2864,6 +2875,475 @@
       .toggle-switch.on .toggle-knob {
         transform: translateX(16px);
       }
+    }
+
+    /* ==========================================
+       Collaboration Dashboard Styles
+       ========================================== */
+
+    .collab-tabs {
+      display: flex;
+      gap: 2px;
+      padding: 0 20px;
+      background: var(--color-bg-header);
+      border-bottom: 1px solid var(--color-border-primary);
+      position: sticky;
+      top: 60px;
+      z-index: 90;
+    }
+
+    .collab-tab {
+      padding: 10px 18px;
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--color-text-secondary);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .collab-tab:hover {
+      color: var(--color-text-primary);
+      background: var(--color-bg-card-hover);
+    }
+
+    .collab-tab-active {
+      color: var(--color-accent-primary);
+      border-bottom-color: var(--color-accent-primary);
+    }
+
+    .collab-tab-badge {
+      background: var(--color-accent-primary);
+      color: var(--color-text-button);
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+
+    .collab-tab-badge-warn {
+      background: var(--color-accent-error);
+    }
+
+    /* Dashboard Layout */
+    .collab-dashboard,
+    .collab-timeline,
+    .collab-board,
+    .collab-conflicts {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .collab-section {
+      margin-bottom: 24px;
+    }
+
+    .collab-section-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--color-text-primary);
+      margin: 0 0 12px 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .collab-count {
+      background: var(--color-bg-tertiary);
+      color: var(--color-text-muted);
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 500;
+    }
+
+    .collab-loading,
+    .collab-empty,
+    .collab-error {
+      text-align: center;
+      color: var(--color-text-muted);
+      font-size: 13px;
+      padding: 20px;
+    }
+
+    .collab-error {
+      color: var(--color-accent-error);
+    }
+
+    /* Agent Cards */
+    .collab-agents-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
+    }
+
+    .collab-agent-card {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      padding: 14px;
+      transition: border-color 0.15s;
+    }
+
+    .collab-agent-card:hover {
+      border-color: var(--color-border-hover);
+    }
+
+    .collab-agent-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .collab-agent-name {
+      font-weight: 600;
+      font-size: 14px;
+      color: var(--color-text-primary);
+    }
+
+    .collab-agent-status {
+      margin-left: auto;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .collab-agent-details {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .collab-agent-detail {
+      font-size: 11px;
+      color: var(--color-text-muted);
+      background: var(--color-bg-tertiary);
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+
+    /* Badges */
+    .collab-badge {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .collab-badge-leader {
+      background: var(--color-accent-primary);
+      color: var(--color-text-button);
+    }
+
+    .collab-badge-urgent {
+      background: var(--color-accent-error);
+      color: white;
+    }
+
+    .collab-badge-message {
+      background: var(--color-type-badge-bg);
+      color: var(--color-type-badge-text);
+    }
+
+    .collab-badge-observation {
+      background: var(--color-observation-badge-bg);
+      color: var(--color-observation-badge-text);
+    }
+
+    .collab-badge-plan-drafting {
+      background: var(--color-type-badge-bg);
+      color: var(--color-type-badge-text);
+    }
+
+    .collab-badge-plan-active {
+      background: rgba(26, 127, 55, 0.12);
+      color: var(--color-accent-success);
+    }
+
+    .collab-badge-plan-completed {
+      background: var(--color-summary-badge-bg);
+      color: var(--color-summary-badge-text);
+    }
+
+    .collab-badge-plan-archived {
+      background: var(--color-bg-tertiary);
+      color: var(--color-text-muted);
+    }
+
+    .collab-badge-phase-pending { background: var(--color-bg-tertiary); color: var(--color-text-muted); }
+    .collab-badge-phase-in_progress { background: var(--color-type-badge-bg); color: var(--color-type-badge-text); }
+    .collab-badge-phase-done { background: rgba(26, 127, 55, 0.12); color: var(--color-accent-success); }
+
+    .collab-badge-lock_contention { background: var(--color-accent-error); color: white; }
+    .collab-badge-decision_conflict { background: var(--color-accent-error); color: white; }
+    .collab-badge-stale_lock { background: var(--color-accent-summary); color: white; }
+
+    /* Locks */
+    .collab-lock-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 12px;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+
+    .collab-lock-path { font-family: var(--font-terminal); color: var(--color-text-primary); flex: 1; }
+    .collab-lock-agent { color: var(--color-accent-primary); font-weight: 500; }
+    .collab-lock-expires { color: var(--color-text-muted); }
+
+    /* Messages */
+    .collab-messages-list { display: flex; flex-direction: column; gap: 8px; }
+
+    .collab-message-row {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      padding: 12px;
+      transition: border-color 0.15s;
+    }
+
+    .collab-message-row:hover { border-color: var(--color-border-hover); }
+    .collab-message-urgent { border-left: 3px solid var(--color-accent-error); }
+    .collab-message-read { opacity: 0.6; }
+
+    .collab-message-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+      font-size: 12px;
+    }
+
+    .collab-message-from { font-weight: 600; color: var(--color-accent-primary); }
+    .collab-message-arrow { color: var(--color-text-muted); }
+    .collab-message-to { font-weight: 600; color: var(--color-accent-observation); }
+    .collab-message-time { margin-left: auto; color: var(--color-text-muted); font-size: 11px; }
+    .collab-message-subject { font-size: 13px; font-weight: 500; color: var(--color-text-primary); }
+    .collab-message-body { font-size: 12px; color: var(--color-text-secondary); margin-top: 4px; white-space: pre-wrap; }
+
+    /* Stats Grid */
+    .collab-stats-grid,
+    .collab-conflicts-summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+    }
+
+    .collab-stat-card {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      padding: 16px;
+      text-align: center;
+    }
+
+    .collab-stat-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--color-text-primary);
+    }
+
+    .collab-stat-label {
+      font-size: 11px;
+      color: var(--color-text-muted);
+      margin-top: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* Timeline */
+    .collab-timeline-group { margin-bottom: 24px; }
+
+    .collab-timeline-date {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--color-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--color-border-primary);
+      margin-bottom: 12px;
+    }
+
+    .collab-timeline-event {
+      display: flex;
+      gap: 12px;
+      padding: 8px 0;
+      position: relative;
+    }
+
+    .collab-timeline-event::before {
+      content: '';
+      position: absolute;
+      left: 6px;
+      top: 24px;
+      bottom: -8px;
+      width: 1px;
+      background: var(--color-border-primary);
+    }
+
+    .collab-timeline-event:last-child::before { display: none; }
+
+    .collab-timeline-dot {
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      border: 2px solid var(--color-border-primary);
+      background: var(--color-bg-primary);
+      flex-shrink: 0;
+      margin-top: 3px;
+      z-index: 1;
+    }
+
+    .collab-timeline-dot[data-type="observation"] { border-color: var(--color-accent-observation); }
+    .collab-timeline-dot[data-type="message"] { border-color: var(--color-accent-primary); }
+    .collab-timeline-dot[data-type="plan"] { border-color: var(--color-accent-success); }
+
+    .collab-timeline-content { flex: 1; min-width: 0; }
+
+    .collab-timeline-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .collab-timeline-time { font-size: 11px; color: var(--color-text-muted); margin-left: auto; }
+    .collab-timeline-title { font-size: 13px; font-weight: 500; color: var(--color-text-primary); }
+    .collab-timeline-detail { font-size: 12px; color: var(--color-text-secondary); margin-top: 2px; }
+
+    /* Planning Board */
+    .collab-board {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      max-width: 1200px;
+    }
+
+    .collab-board-column {
+      background: var(--color-bg-secondary);
+      border-radius: 8px;
+      padding: 12px;
+      min-height: 200px;
+    }
+
+    .collab-board-column-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--color-text-primary);
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--color-border-primary);
+      margin-bottom: 10px;
+    }
+
+    .collab-board-column-cards { display: flex; flex-direction: column; gap: 8px; }
+
+    .collab-plan-card {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      padding: 12px;
+    }
+
+    .collab-plan-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .collab-plan-title { font-size: 13px; font-weight: 600; color: var(--color-text-primary); }
+    .collab-plan-description { font-size: 12px; color: var(--color-text-secondary); margin-bottom: 8px; }
+    .collab-plan-label { font-size: 11px; font-weight: 600; color: var(--color-text-muted); text-transform: uppercase; margin-bottom: 4px; }
+
+    .collab-plan-goal-list {
+      margin: 0;
+      padding-left: 16px;
+      font-size: 12px;
+      color: var(--color-text-secondary);
+    }
+
+    .collab-plan-goal-list li { margin-bottom: 2px; }
+
+    .collab-plan-phases { margin-top: 8px; }
+
+    .collab-plan-phase {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0;
+      font-size: 12px;
+    }
+
+    .collab-plan-phase-name { color: var(--color-text-primary); flex: 1; }
+    .collab-plan-phase-assignee { color: var(--color-accent-primary); font-size: 11px; }
+    .collab-plan-notes { font-size: 12px; color: var(--color-text-muted); margin-top: 8px; font-style: italic; }
+
+    .collab-plan-footer {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--color-text-muted);
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid var(--color-border-primary);
+    }
+
+    /* Conflicts */
+    .collab-conflicts-list { display: flex; flex-direction: column; gap: 10px; }
+
+    .collab-conflict-card {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .collab-conflict-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .collab-conflict-severity { font-weight: 800; font-size: 14px; }
+    .collab-conflict-title { font-size: 13px; font-weight: 600; color: var(--color-text-primary); margin-bottom: 4px; }
+    .collab-conflict-description { font-size: 12px; color: var(--color-text-secondary); margin-bottom: 8px; }
+
+    .collab-conflict-agents { display: flex; gap: 6px; }
+
+    .collab-conflict-agent-tag {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: var(--color-type-badge-bg);
+      color: var(--color-type-badge-text);
+      font-weight: 500;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .collab-board { grid-template-columns: 1fr; }
+      .collab-tabs { overflow-x: auto; }
+      .collab-agents-grid { grid-template-columns: 1fr; }
+      .collab-stats-grid { grid-template-columns: repeat(2, 1fr); }
     }
   </style>
 </head>

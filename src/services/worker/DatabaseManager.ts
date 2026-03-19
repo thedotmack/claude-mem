@@ -63,6 +63,16 @@ export class DatabaseManager {
   }
 
   /**
+   * Get the raw SQLite database connection (for collaboration routes, etc.)
+   */
+  getConnection(): InstanceType<typeof import('better-sqlite3')> {
+    if (!this.sessionStore) {
+      throw new Error('Database not initialized');
+    }
+    return this.sessionStore.db;
+  }
+
+  /**
    * Get SessionStore instance (throws if not initialized)
    */
   getSessionStore(): SessionStore {

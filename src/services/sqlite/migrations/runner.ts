@@ -34,6 +34,7 @@ export class MigrationRunner {
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
+    this.createCollaborationTables();
   }
 
   /**
@@ -862,5 +863,123 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
+  }
+
+  /**
+   * Create collaboration tables for multi-agent shared memory (migration 24)
+   * Supports: mailbox messages, file locks, plans, agent controls, observation history
+   */
+  private createCollaborationTables(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
+    if (applied) return;
+
+    logger.debug('DB', 'Creating collaboration tables for multi-agent shared memory');
+
+    // ==========================================
+    // 1. Messages table — agent-to-agent mailbox
+    // ==========================================
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_agent TEXT NOT NULL,
+        to_agent TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        body TEXT,
+        urgent INTEGER NOT NULL DEFAULT 0,
+        read INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        read_at TEXT,
+        read_at_epoch INTEGER
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_messages_to_agent ON messages(to_agent, read);
+      CREATE INDEX IF NOT EXISTS idx_messages_from_agent ON messages(from_agent);
+      CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at_epoch DESC);
+    `);
+
+    // ==========================================
+    // 2. File locks table — prevent concurrent edits
+    // ==========================================
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS file_locks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_path TEXT NOT NULL UNIQUE,
+        locked_by TEXT NOT NULL,
+        locked_at TEXT NOT NULL,
+        locked_at_epoch INTEGER NOT NULL,
+        expires_at_epoch INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_file_locks_path ON file_locks(file_path);
+      CREATE INDEX IF NOT EXISTS idx_file_locks_agent ON file_locks(locked_by);
+      CREATE INDEX IF NOT EXISTS idx_file_locks_expires ON file_locks(expires_at_epoch);
+    `);
+
+    // ==========================================
+    // 3. Plans table — project planning with phases
+    // ==========================================
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS plans (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT,
+        status TEXT NOT NULL DEFAULT 'drafting',
+        goals TEXT,
+        phases TEXT,
+        notes TEXT,
+        project TEXT,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_at_epoch INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
+      CREATE INDEX IF NOT EXISTS idx_plans_project ON plans(project);
+      CREATE INDEX IF NOT EXISTS idx_plans_created ON plans(created_at_epoch DESC);
+    `);
+
+    // ==========================================
+    // 4. Observation history — rollback support
+    // ==========================================
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS observation_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        observation_id INTEGER NOT NULL,
+        previous_data TEXT NOT NULL,
+        changed_by TEXT NOT NULL,
+        change_type TEXT NOT NULL DEFAULT 'update',
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_obs_history_observation ON observation_history(observation_id);
+      CREATE INDEX IF NOT EXISTS idx_obs_history_created ON observation_history(created_at_epoch DESC);
+    `);
+
+    // ==========================================
+    // 5. Add metadata column to observations for collaboration fields
+    //    (assignee, priority, task_status, model, confidence, etc.)
+    // ==========================================
+    const obsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasMetadata = obsInfo.some(col => col.name === 'metadata');
+    if (!hasMetadata) {
+      this.db.run('ALTER TABLE observations ADD COLUMN metadata TEXT');
+      logger.debug('DB', 'Added metadata column to observations table');
+    }
+
+    // Add author column for tracking which agent wrote the observation
+    const hasAuthor = obsInfo.some(col => col.name === 'author');
+    if (!hasAuthor) {
+      this.db.run("ALTER TABLE observations ADD COLUMN author TEXT DEFAULT 'claude-code'");
+      logger.debug('DB', 'Added author column to observations table');
+    }
+
+    // Record migration
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
+
+    logger.debug('DB', 'Successfully created collaboration tables');
   }
 }

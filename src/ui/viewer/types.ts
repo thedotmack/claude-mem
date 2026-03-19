@@ -86,6 +86,74 @@ export interface Settings {
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
 }
 
+// Collaboration types
+export interface AgentMessage {
+  id: number;
+  from_agent: string;
+  to_agent: string;
+  subject: string;
+  body: string;
+  urgent: number;
+  read: number;
+  created_at: string;
+  created_at_epoch: number;
+  read_at?: string;
+  read_at_epoch?: number;
+}
+
+export interface FileLock {
+  id: number;
+  file_path: string;
+  locked_by: string;
+  locked_at: string;
+  locked_at_epoch: number;
+  expires_at_epoch: number;
+}
+
+export interface Plan {
+  id: string;
+  title: string;
+  description?: string;
+  status: 'drafting' | 'active' | 'completed' | 'archived';
+  goals?: string;
+  phases?: string;
+  notes?: string;
+  project?: string;
+  created_by?: string;
+  created_at: string;
+  created_at_epoch: number;
+  updated_at?: string;
+  updated_at_epoch?: number;
+}
+
+export interface AgentConfig {
+  listening: boolean;
+  polling_interval?: number;
+  model: string;
+  reasoning: string;
+  permissions: string;
+  status?: string;
+}
+
+export interface AgentControls {
+  leader: string;
+  leader_mode: string;
+  active_project: string | null;
+  projects: { path: string; name: string }[];
+  agents: Record<string, AgentConfig>;
+}
+
+export interface CollabStatus {
+  controls: AgentControls;
+  locks: FileLock[];
+  unread_messages: AgentMessage[];
+  pending_tasks: Observation[];
+  recent_observations: Observation[];
+  timestamp: number;
+}
+
+export type ViewerTab = 'feed' | 'status' | 'timeline' | 'plans' | 'conflicts';
+
 export interface WorkerStats {
   version?: string;
   uptime?: number;
