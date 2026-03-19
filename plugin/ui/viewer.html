@@ -3338,6 +3338,192 @@
       font-weight: 500;
     }
 
+    /* Plan Form */
+    .collab-board-wrapper { max-width: 960px; margin: 0 auto; padding: 20px; }
+    .collab-board-toolbar { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+
+    .plan-form {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .plan-form-title { font-size: 16px; font-weight: 600; color: var(--color-text-primary); margin-bottom: 16px; }
+    .plan-form-error { color: var(--color-accent-error); font-size: 13px; margin-bottom: 12px; padding: 8px; background: rgba(255,80,80,0.1); border-radius: 4px; }
+    .plan-form-label { display: block; font-size: 12px; font-weight: 600; color: var(--color-text-secondary); margin-bottom: 6px; margin-top: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .plan-form-slug { font-size: 11px; color: var(--color-text-muted); margin-top: 2px; }
+
+    .plan-form-input, .plan-form-textarea, .plan-form-select {
+      width: 100%;
+      padding: 8px 10px;
+      background: var(--color-bg-primary);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      color: var(--color-text-primary);
+      font-family: inherit;
+      font-size: 13px;
+    }
+    .plan-form-input:focus, .plan-form-textarea:focus, .plan-form-select:focus {
+      outline: none;
+      border-color: var(--color-accent-primary);
+    }
+    .plan-form-select { width: auto; min-width: 120px; }
+    .plan-form-flex { flex: 1; }
+
+    .plan-form-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+
+    .plan-form-phase {
+      background: var(--color-bg-primary);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+    .plan-form-phase-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .plan-form-phase-num { font-size: 12px; font-weight: 600; color: var(--color-accent-primary); }
+    .plan-form-tasks { margin-top: 8px; padding-left: 12px; border-left: 2px solid var(--color-border-primary); }
+
+    .plan-form-btn {
+      padding: 8px 16px;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      background: var(--color-bg-card);
+      color: var(--color-text-primary);
+      font-family: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .plan-form-btn:hover { background: var(--color-bg-card-hover); }
+    .plan-form-btn-primary { background: var(--color-accent-primary); color: #fff; border-color: var(--color-accent-primary); }
+    .plan-form-btn-primary:hover { opacity: 0.9; }
+    .plan-form-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .plan-form-btn-sm {
+      padding: 4px 10px;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 4px;
+      background: none;
+      color: var(--color-text-secondary);
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .plan-form-btn-sm:hover { color: var(--color-text-primary); background: var(--color-bg-card-hover); }
+    .plan-form-btn-danger { color: var(--color-accent-error); border-color: var(--color-accent-error); }
+    .plan-form-btn-danger:hover { background: rgba(255,80,80,0.1); }
+
+    .plan-form-actions { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; }
+
+    /* Live Terminal */
+    .live-terminal-container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+      height: calc(100vh - 120px);
+      display: flex;
+      flex-direction: column;
+    }
+    .live-terminal-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .live-terminal-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--color-text-primary);
+    }
+    .live-terminal-controls {
+      display: flex;
+      gap: 8px;
+    }
+    .live-terminal-active {
+      color: var(--color-accent-success) !important;
+      border-color: var(--color-accent-success) !important;
+    }
+    .live-terminal-split {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      min-height: 0;
+    }
+    .live-terminal-pane {
+      display: flex;
+      flex-direction: column;
+      background: #0d0d0d;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .live-terminal-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      background: #161616;
+      border-bottom: 2px solid var(--color-accent-primary);
+      flex-shrink: 0;
+    }
+    .live-terminal-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .live-terminal-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--color-text-primary);
+      font-family: 'Berkeley Mono', 'SF Mono', 'Fira Code', monospace;
+    }
+    .live-terminal-line-count {
+      margin-left: auto;
+      font-size: 11px;
+      color: var(--color-text-muted);
+    }
+    .live-terminal-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 0;
+      font-family: 'Berkeley Mono', 'SF Mono', 'Fira Code', monospace;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .live-terminal-empty {
+      padding: 40px 20px;
+      text-align: center;
+      color: var(--color-text-muted);
+      font-style: italic;
+    }
+    .live-terminal-line {
+      display: flex;
+      padding: 0 14px;
+    }
+    .live-terminal-line:hover {
+      background: rgba(255,255,255,0.03);
+    }
+    .live-terminal-lineno {
+      width: 40px;
+      flex-shrink: 0;
+      color: #555;
+      text-align: right;
+      padding-right: 12px;
+      user-select: none;
+    }
+    .live-terminal-text {
+      flex: 1;
+      color: #c8c8c8;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    @media (max-width: 768px) {
+      .live-terminal-split { grid-template-columns: 1fr; }
+    }
+
     /* Responsive */
     @media (max-width: 768px) {
       .collab-board { grid-template-columns: 1fr; }

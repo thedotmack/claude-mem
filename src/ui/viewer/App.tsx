@@ -5,6 +5,7 @@ import { StatusDashboard } from './components/StatusDashboard';
 import { Timeline } from './components/Timeline';
 import { PlanningBoard } from './components/PlanningBoard';
 import { ConflictResolution } from './components/ConflictResolution';
+import { LiveTerminal } from './components/LiveTerminal';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { LogsDrawer } from './components/LogsModal';
 import { useSSE } from './hooks/useSSE';
@@ -18,6 +19,7 @@ import { mergeAndDeduplicateByProject } from './utils/data';
 
 const TABS: { id: ViewerTab; label: string }[] = [
   { id: 'feed', label: 'Feed' },
+  { id: 'live', label: 'Live' },
   { id: 'status', label: 'Status' },
   { id: 'timeline', label: 'Timeline' },
   { id: 'plans', label: 'Plans' },
@@ -149,6 +151,10 @@ export function App() {
         />
       )}
 
+      {activeTab === 'live' && (
+        <LiveTerminal agentLogs={{}} />
+      )}
+
       {activeTab === 'status' && (
         <StatusDashboard
           status={collab.status}
@@ -167,7 +173,7 @@ export function App() {
       )}
 
       {activeTab === 'plans' && (
-        <PlanningBoard plans={collab.plans} />
+        <PlanningBoard plans={collab.plans} onPlanCreated={collab.refresh} />
       )}
 
       {activeTab === 'conflicts' && (

@@ -99,6 +99,7 @@ export class LogsRoutes extends BaseRouteHandler {
 
   setupRoutes(app: express.Application): void {
     app.get('/api/logs', this.handleGetLogs.bind(this));
+    app.get('/api/logs/live', this.handleGetLiveLogs.bind(this));
     app.post('/api/logs/clear', this.handleClearLogs.bind(this));
   }
 
@@ -139,6 +140,44 @@ export class LogsRoutes extends BaseRouteHandler {
    * POST /api/logs/clear
    * Clears the current day's log file
    */
+  /**
+   * GET /api/logs/live
+   * Returns recent lines from agent-specific live log files
+   * Query params:
+   *  - agent: 'claude-code' | 'codex' (required)
+   *  - tail: number of lines (default: 200)
+   */
+  private handleGetLiveLogs = this.wrapHandler((req: Request, res: Response): void => {
+    const agent = req.query.agent as string;
+    if (!agent || !['claude-code', 'codex', 'claude-app'].includes(agent)) {
+      res.status(400).json({ error: 'agent query param required (claude-code, codex, or claude-app)' });
+      return;
+    }
+
+    const logsDir = this.getLogsDir();
+    const logFile = join(logsDir, `${agent}-live.log`);
+    const tail = Math.min(parseInt(req.query.tail as string || '200', 10), 2000);
+
+    if (!existsSync(logFile)) {
+      // Fall back to today's worker log filtered by agent
+      const workerLog = this.getLogFilePath();
+      if (!existsSync(workerLog)) {
+        res.json({ lines: [], agent, exists: false });
+        return;
+      }
+      const { lines: content } = readLastLines(workerLog, tail * 3);
+      const filtered = content.split('\n')
+        .filter(l => l.toLowerCase().includes(agent) || l.includes('[heartbeat]') || l.includes('[observation]'))
+        .slice(-tail);
+      res.json({ lines: filtered, agent, source: 'worker-log' });
+      return;
+    }
+
+    const { lines: content } = readLastLines(logFile, tail);
+    const lineArr = content.split('\n').filter(l => l.length > 0);
+    res.json({ lines: lineArr, agent, source: 'live-log' });
+  });
+
   private handleClearLogs = this.wrapHandler((req: Request, res: Response): void => {
     const logFilePath = this.getLogFilePath();
 
