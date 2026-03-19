@@ -6,13 +6,16 @@ import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
 
-// Get __dirname that works in both ESM (hooks) and CJS (worker) contexts
+// Get __dirname that works in both ESM (hooks) and CJS (worker) contexts.
+// When bundled, esbuild replaces __dirname with a hardcoded string from the
+// build machine (e.g. "/Users/dev/.../src/shared") which won't exist on
+// the user's machine. We detect this by checking if the path actually exists
+// and fall back to import.meta.url when it doesn't.
 function getDirname(): string {
-  // CJS context - __dirname exists
-  if (typeof __dirname !== 'undefined') {
+  if (typeof __dirname !== 'undefined' && existsSync(__dirname)) {
     return __dirname;
   }
-  // ESM context - use import.meta.url
+  // ESM context or bundled with stale __dirname — use import.meta.url
   return dirname(fileURLToPath(import.meta.url));
 }
 
