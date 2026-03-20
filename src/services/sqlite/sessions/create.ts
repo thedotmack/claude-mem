@@ -3,7 +3,8 @@
  * Database-first parameter pattern for functional composition
  */
 
-import type { Database } from 'bun:sqlite';
+import type { DbAdapter } from '../adapter.js';
+import { exec, queryOne } from '../adapter.js';
 import { logger } from '../../../utils/logger.js';
 
 /**
@@ -17,35 +18,35 @@ import { logger } from '../../../utils/logger.js';
  * Pure get-or-create: never modifies memory_session_id.
  * Multi-terminal isolation is handled by ON UPDATE CASCADE at the schema level.
  */
-export function createSDKSession(
-  db: Database,
+export async function createSDKSession(
+  db: DbAdapter,
   contentSessionId: string,
   project: string,
   userPrompt: string,
   customTitle?: string
-): number {
+): Promise<number> {
   const now = new Date();
   const nowEpoch = now.getTime();
 
   // Check for existing session
-  const existing = db.prepare(`
+  const existing = await queryOne<{ id: number }>(db, `
     SELECT id FROM sdk_sessions WHERE content_session_id = ?
-  `).get(contentSessionId) as { id: number } | undefined;
+  `, [contentSessionId]);
 
   if (existing) {
     // Backfill project if session was created by another hook with empty project
     if (project) {
-      db.prepare(`
+      await exec(db, `
         UPDATE sdk_sessions SET project = ?
         WHERE content_session_id = ? AND (project IS NULL OR project = '')
-      `).run(project, contentSessionId);
+      `, [project, contentSessionId]);
     }
     // Backfill custom_title if provided and not yet set
     if (customTitle) {
-      db.prepare(`
+      await exec(db, `
         UPDATE sdk_sessions SET custom_title = ?
         WHERE content_session_id = ? AND custom_title IS NULL
-      `).run(customTitle, contentSessionId);
+      `, [customTitle, contentSessionId]);
     }
     return existing.id;
   }
@@ -54,16 +55,15 @@ export function createSDKSession(
   // NOTE: memory_session_id starts as NULL. It is captured by SDKAgent from the first SDK
   // response and stored via ensureMemorySessionIdRegistered(). CRITICAL: memory_session_id
   // must NEVER equal contentSessionId - that would inject memory messages into the user's transcript!
-  db.prepare(`
+  await exec(db, `
     INSERT INTO sdk_sessions
     (content_session_id, memory_session_id, project, user_prompt, custom_title, started_at, started_at_epoch, status)
     VALUES (?, NULL, ?, ?, ?, ?, ?, 'active')
-  `).run(contentSessionId, project, userPrompt, customTitle || null, now.toISOString(), nowEpoch);
+  `, [contentSessionId, project, userPrompt, customTitle || null, now.toISOString(), nowEpoch]);
 
   // Return new ID
-  const row = db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
-    .get(contentSessionId) as { id: number };
-  return row.id;
+  const row = await queryOne<{ id: number }>(db, 'SELECT id FROM sdk_sessions WHERE content_session_id = ?', [contentSessionId]);
+  return row!.id;
 }
 
 /**
@@ -71,14 +71,14 @@ export function createSDKSession(
  * Called by SDKAgent when it captures the session ID from the first SDK message
  * Also used to RESET to null on stale resume failures (worker-service.ts)
  */
-export function updateMemorySessionId(
-  db: Database,
+export async function updateMemorySessionId(
+  db: DbAdapter,
   sessionDbId: number,
   memorySessionId: string | null
-): void {
-  db.prepare(`
+): Promise<void> {
+  await exec(db, `
     UPDATE sdk_sessions
     SET memory_session_id = ?
     WHERE id = ?
-  `).run(memorySessionId, sessionDbId);
+  `, [memorySessionId, sessionDbId]);
 }

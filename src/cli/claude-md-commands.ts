@@ -10,7 +10,6 @@
  * - cleanClaudeMd: Remove auto-generated content from CLAUDE.md files
  */
 
-import { Database } from 'bun:sqlite';
 import path from 'path';
 import os from 'os';
 import {
@@ -26,6 +25,9 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
 import { isDirectChild } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
+import type { DbAdapter } from '../services/sqlite/adapter.js';
+import { queryAll } from '../services/sqlite/adapter.js';
+import { createDbAdapter } from '../services/sqlite/adapters/libsql-adapter.js';
 
 const DB_PATH = path.join(os.homedir(), '.claude-mem', 'claude-mem.db');
 const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
@@ -152,7 +154,7 @@ function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
  * Query observations for a specific folder.
  * Only returns observations with files directly in the folder (not in subfolders).
  */
-function findObservationsByFolder(db: Database, relativeFolderPath: string, project: string, limit: number): ObservationRow[] {
+async function findObservationsByFolder(db: DbAdapter, relativeFolderPath: string, project: string, limit: number): Promise<ObservationRow[]> {
   const queryLimit = limit * 3;
 
   const sql = `
@@ -167,7 +169,7 @@ function findObservationsByFolder(db: Database, relativeFolderPath: string, proj
   // Database stores paths with forward slashes (git-normalized)
   const normalizedFolderPath = relativeFolderPath.split(path.sep).join('/');
   const likePattern = `%"${normalizedFolderPath}/%`;
-  const allMatches = db.prepare(sql).all(project, likePattern, likePattern, queryLimit) as ObservationRow[];
+  const allMatches = await queryAll<ObservationRow>(db, sql, [project, likePattern, likePattern, queryLimit]);
 
   return allMatches.filter(obs => hasDirectChildFile(obs, relativeFolderPath)).slice(0, limit);
 }
@@ -307,15 +309,15 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
 /**
  * Regenerate CLAUDE.md for a single folder.
  */
-function regenerateFolder(
-  db: Database,
+async function regenerateFolder(
+  db: DbAdapter,
   absoluteFolder: string,
   relativeFolder: string,
   project: string,
   dryRun: boolean,
   workingDir: string,
   observationLimit: number
-): { success: boolean; observationCount: number; error?: string } {
+): Promise<{ success: boolean; observationCount: number; error?: string }> {
   try {
     if (!existsSync(absoluteFolder)) {
       return { success: false, observationCount: 0, error: 'Folder no longer exists' };
@@ -328,7 +330,7 @@ function regenerateFolder(
       return { success: false, observationCount: 0, error: 'Path escapes project root' };
     }
 
-    const observations = findObservationsByFolder(db, relativeFolder, project, observationLimit);
+    const observations = await findObservationsByFolder(db, relativeFolder, project, observationLimit);
 
     if (observations.length === 0) {
       return { success: false, observationCount: 0, error: 'No observations for folder' };
@@ -380,7 +382,7 @@ export async function generateClaudeMd(dryRun: boolean): Promise<number> {
       return 0;
     }
 
-    const db = new Database(DB_PATH, { readonly: true, create: false });
+    const db = await createDbAdapter(DB_PATH);
 
     let successCount = 0;
     let skipCount = 0;
@@ -391,7 +393,7 @@ export async function generateClaudeMd(dryRun: boolean): Promise<number> {
     for (const absoluteFolder of foldersArray) {
       const relativeFolder = path.relative(workingDir, absoluteFolder);
 
-      const result = regenerateFolder(
+      const result = await regenerateFolder(
         db,
         absoluteFolder,
         relativeFolder,
@@ -416,7 +418,7 @@ export async function generateClaudeMd(dryRun: boolean): Promise<number> {
       }
     }
 
-    db.close();
+    await db.close();
 
     logger.info('CLAUDE_MD', 'CLAUDE.md generation complete', {
       totalFolders: foldersArray.length,

@@ -1,7 +1,8 @@
 /**
  * Get session summaries from the database
  */
-import type { Database } from 'bun:sqlite';
+import type { DbAdapter } from '../adapter.js';
+import { queryOne, queryAll } from '../adapter.js';
 import { logger } from '../../../utils/logger.js';
 import type { SessionSummaryRecord } from '../../../types/database.js';
 import type { SessionSummary, GetByIdsOptions } from './types.js';
@@ -9,15 +10,15 @@ import type { SessionSummary, GetByIdsOptions } from './types.js';
 /**
  * Get summary for a specific session
  *
- * @param db - Database instance
+ * @param db - Database adapter
  * @param memorySessionId - SDK memory session ID
  * @returns Most recent summary for the session, or null if none exists
  */
-export function getSummaryForSession(
-  db: Database,
+export async function getSummaryForSession(
+  db: DbAdapter,
   memorySessionId: string
-): SessionSummary | null {
-  const stmt = db.prepare(`
+): Promise<SessionSummary | null> {
+  return queryOne<SessionSummary>(db, `
     SELECT
       request, investigated, learned, completed, next_steps,
       files_read, files_edited, notes, prompt_number, created_at,
@@ -26,42 +27,38 @@ export function getSummaryForSession(
     WHERE memory_session_id = ?
     ORDER BY created_at_epoch DESC
     LIMIT 1
-  `);
-
-  return (stmt.get(memorySessionId) as SessionSummary | undefined) || null;
+  `, [memorySessionId]);
 }
 
 /**
  * Get a single session summary by ID
  *
- * @param db - Database instance
+ * @param db - Database adapter
  * @param id - Summary ID
  * @returns Full summary record or null if not found
  */
-export function getSummaryById(
-  db: Database,
+export async function getSummaryById(
+  db: DbAdapter,
   id: number
-): SessionSummaryRecord | null {
-  const stmt = db.prepare(`
+): Promise<SessionSummaryRecord | null> {
+  return queryOne<SessionSummaryRecord>(db, `
     SELECT * FROM session_summaries WHERE id = ?
-  `);
-
-  return (stmt.get(id) as SessionSummaryRecord | undefined) || null;
+  `, [id]);
 }
 
 /**
  * Get session summaries by IDs (for hybrid Chroma search)
  * Returns summaries in specified temporal order
  *
- * @param db - Database instance
+ * @param db - Database adapter
  * @param ids - Array of summary IDs
  * @param options - Query options (orderBy, limit, project)
  */
-export function getSummariesByIds(
-  db: Database,
+export async function getSummariesByIds(
+  db: DbAdapter,
   ids: number[],
   options: GetByIdsOptions = {}
-): SessionSummaryRecord[] {
+): Promise<SessionSummaryRecord[]> {
   if (ids.length === 0) return [];
 
   const { orderBy = 'date_desc', limit, project } = options;
@@ -76,12 +73,10 @@ export function getSummariesByIds(
     : `WHERE id IN (${placeholders})`;
   if (project) params.push(project);
 
-  const stmt = db.prepare(`
+  return queryAll<SessionSummaryRecord>(db, `
     SELECT * FROM session_summaries
     ${whereClause}
     ORDER BY created_at_epoch ${orderClause}
     ${limitClause}
-  `);
-
-  return stmt.all(...params) as SessionSummaryRecord[];
+  `, params);
 }

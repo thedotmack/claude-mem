@@ -8,6 +8,7 @@
  */
 
 import { DatabaseManager } from './DatabaseManager.js';
+import { queryAll } from '../sqlite/adapter.js';
 import { logger } from '../../utils/logger.js';
 import type { PaginatedResult, Observation, Summary, UserPrompt } from '../worker-types.js';
 
@@ -71,8 +72,8 @@ export class PaginationHelper {
   /**
    * Get paginated observations
    */
-  getObservations(offset: number, limit: number, project?: string): PaginatedResult<Observation> {
-    const result = this.paginate<Observation>(
+  async getObservations(offset: number, limit: number, project?: string): Promise<PaginatedResult<Observation>> {
+    const result = await this.paginate<Observation>(
       'observations',
       'id, memory_session_id, project, type, title, subtitle, narrative, text, facts, concepts, files_read, files_modified, prompt_number, created_at, created_at_epoch',
       offset,
@@ -90,7 +91,7 @@ export class PaginationHelper {
   /**
    * Get paginated summaries
    */
-  getSummaries(offset: number, limit: number, project?: string): PaginatedResult<Summary> {
+  async getSummaries(offset: number, limit: number, project?: string): Promise<PaginatedResult<Summary>> {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `
@@ -118,8 +119,7 @@ export class PaginationHelper {
     query += ' ORDER BY ss.created_at_epoch DESC LIMIT ? OFFSET ?';
     params.push(limit + 1, offset);
 
-    const stmt = db.prepare(query);
-    const results = stmt.all(...params) as Summary[];
+    const results = await queryAll<Summary>(db, query, params);
 
     return {
       items: results.slice(0, limit),
@@ -132,7 +132,7 @@ export class PaginationHelper {
   /**
    * Get paginated user prompts
    */
-  getPrompts(offset: number, limit: number, project?: string): PaginatedResult<UserPrompt> {
+  async getPrompts(offset: number, limit: number, project?: string): Promise<PaginatedResult<UserPrompt>> {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `
@@ -150,8 +150,7 @@ export class PaginationHelper {
     query += ' ORDER BY up.created_at_epoch DESC LIMIT ? OFFSET ?';
     params.push(limit + 1, offset);
 
-    const stmt = db.prepare(query);
-    const results = stmt.all(...params) as UserPrompt[];
+    const results = await queryAll<UserPrompt>(db, query, params);
 
     return {
       items: results.slice(0, limit),
@@ -164,13 +163,13 @@ export class PaginationHelper {
   /**
    * Generic pagination implementation (DRY)
    */
-  private paginate<T>(
+  private async paginate<T>(
     table: string,
     columns: string,
     offset: number,
     limit: number,
     project?: string
-  ): PaginatedResult<T> {
+  ): Promise<PaginatedResult<T>> {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `SELECT ${columns} FROM ${table}`;
@@ -184,8 +183,7 @@ export class PaginationHelper {
     query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';
     params.push(limit + 1, offset); // Fetch one extra to check hasMore
 
-    const stmt = db.prepare(query);
-    const results = stmt.all(...params) as T[];
+    const results = await queryAll<T>(db, query, params);
 
     return {
       items: results.slice(0, limit),

@@ -15,6 +15,7 @@
 import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
+import { queryAll, queryOne } from '../sqlite/adapter.js';
 import { logger } from '../../utils/logger.js';
 
 interface ChromaDocument {
@@ -523,7 +524,7 @@ export class ChromaSync {
     // Fetch existing IDs from Chroma (fast, metadata only)
     const existing = await this.getExistingChromaIds(backfillProject);
 
-    const db = new SessionStore();
+    const db = await SessionStore.create();
 
     try {
       // Build exclusion list for observations
@@ -534,15 +535,15 @@ export class ChromaSync {
         : '';
 
       // Get only observations missing from Chroma
-      const observations = db.db.prepare(`
+      const observations = await queryAll<StoredObservation>(db.db, `
         SELECT * FROM observations
         WHERE project = ? ${obsExclusionClause}
         ORDER BY id ASC
-      `).all(backfillProject) as StoredObservation[];
+      `, [backfillProject]);
 
-      const totalObsCount = db.db.prepare(`
+      const totalObsCount = await queryOne<{ count: number }>(db.db, `
         SELECT COUNT(*) as count FROM observations WHERE project = ?
-      `).get(backfillProject) as { count: number };
+      `, [backfillProject]) ?? { count: 0 };
 
       logger.info('CHROMA_SYNC', 'Backfilling observations', {
         project: backfillProject,
@@ -575,15 +576,15 @@ export class ChromaSync {
         : '';
 
       // Get only summaries missing from Chroma
-      const summaries = db.db.prepare(`
+      const summaries = await queryAll<StoredSummary>(db.db, `
         SELECT * FROM session_summaries
         WHERE project = ? ${summaryExclusionClause}
         ORDER BY id ASC
-      `).all(backfillProject) as StoredSummary[];
+      `, [backfillProject]);
 
-      const totalSummaryCount = db.db.prepare(`
+      const totalSummaryCount = await queryOne<{ count: number }>(db.db, `
         SELECT COUNT(*) as count FROM session_summaries WHERE project = ?
-      `).get(backfillProject) as { count: number };
+      `, [backfillProject]) ?? { count: 0 };
 
       logger.info('CHROMA_SYNC', 'Backfilling summaries', {
         project: backfillProject,
@@ -616,7 +617,7 @@ export class ChromaSync {
         : '';
 
       // Get only user prompts missing from Chroma
-      const prompts = db.db.prepare(`
+      const prompts = await queryAll<StoredUserPrompt>(db.db, `
         SELECT
           up.*,
           s.project,
@@ -625,14 +626,14 @@ export class ChromaSync {
         JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
         WHERE s.project = ? ${promptExclusionClause}
         ORDER BY up.id ASC
-      `).all(backfillProject) as StoredUserPrompt[];
+      `, [backfillProject]);
 
-      const totalPromptCount = db.db.prepare(`
+      const totalPromptCount = await queryOne<{ count: number }>(db.db, `
         SELECT COUNT(*) as count
         FROM user_prompts up
         JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
         WHERE s.project = ?
-      `).get(backfillProject) as { count: number };
+      `, [backfillProject]) ?? { count: 0 };
 
       logger.info('CHROMA_SYNC', 'Backfilling user prompts', {
         project: backfillProject,
@@ -676,7 +677,7 @@ export class ChromaSync {
       logger.error('CHROMA_SYNC', 'Backfill failed', { project: backfillProject }, error as Error);
       throw new Error(`Backfill failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      db.close();
+      await db.close();
     }
   }
 
@@ -776,12 +777,13 @@ export class ChromaSync {
    * Designed to be called fire-and-forget on worker startup.
    */
   static async backfillAllProjects(): Promise<void> {
-    const db = new SessionStore();
+    const db = await SessionStore.create();
     const sync = new ChromaSync('claude-mem');
     try {
-      const projects = db.db.prepare(
-        'SELECT DISTINCT project FROM observations WHERE project IS NOT NULL AND project != ?'
-      ).all('') as { project: string }[];
+      const projects = await queryAll<{ project: string }>(db.db,
+        'SELECT DISTINCT project FROM observations WHERE project IS NOT NULL AND project != ?',
+        ['']
+      );
 
       logger.info('CHROMA_SYNC', `Backfill check for ${projects.length} projects`);
 
@@ -795,7 +797,7 @@ export class ChromaSync {
       }
     } finally {
       await sync.close();
-      db.close();
+      await db.close();
     }
   }
 

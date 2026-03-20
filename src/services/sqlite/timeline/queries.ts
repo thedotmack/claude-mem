@@ -5,7 +5,8 @@
  * grep-friendly: getTimelineAroundTimestamp, getTimelineAroundObservation, getAllProjects
  */
 
-import type { Database } from 'bun:sqlite';
+import type { DbAdapter } from '../adapter.js';
+import { queryAll } from '../adapter.js';
 import type { ObservationRecord, SessionSummaryRecord, UserPromptRecord } from '../../../types/database.js';
 import { logger } from '../../../utils/logger.js';
 
@@ -38,44 +39,29 @@ export interface TimelineResult {
 /**
  * Get timeline around a specific timestamp
  * Convenience wrapper that delegates to getTimelineAroundObservation with null anchor
- *
- * @param db Database connection
- * @param anchorEpoch Epoch timestamp to anchor the query around
- * @param depthBefore Number of records to retrieve before anchor (any type)
- * @param depthAfter Number of records to retrieve after anchor (any type)
- * @param project Optional project filter
- * @returns Object containing observations, sessions, and prompts for the specified window
  */
-export function getTimelineAroundTimestamp(
-  db: Database,
+export async function getTimelineAroundTimestamp(
+  db: DbAdapter,
   anchorEpoch: number,
   depthBefore: number = 10,
   depthAfter: number = 10,
   project?: string
-): TimelineResult {
+): Promise<TimelineResult> {
   return getTimelineAroundObservation(db, null, anchorEpoch, depthBefore, depthAfter, project);
 }
 
 /**
  * Get timeline around a specific observation ID
  * Uses observation ID offsets to determine time boundaries, then fetches all record types in that window
- *
- * @param db Database connection
- * @param anchorObservationId Observation ID to anchor around (null for timestamp-based)
- * @param anchorEpoch Epoch timestamp fallback or anchor for timestamp-based queries
- * @param depthBefore Number of records to retrieve before anchor
- * @param depthAfter Number of records to retrieve after anchor
- * @param project Optional project filter
- * @returns Object containing observations, sessions, and prompts for the specified window
  */
-export function getTimelineAroundObservation(
-  db: Database,
+export async function getTimelineAroundObservation(
+  db: DbAdapter,
   anchorObservationId: number | null,
   anchorEpoch: number,
   depthBefore: number = 10,
   depthAfter: number = 10,
   project?: string
-): TimelineResult {
+): Promise<TimelineResult> {
   const projectFilter = project ? 'AND project = ?' : '';
   const projectParams = project ? [project] : [];
 
@@ -84,26 +70,23 @@ export function getTimelineAroundObservation(
 
   if (anchorObservationId !== null) {
     // Get boundary observations by ID offset
-    const beforeQuery = `
-      SELECT id, created_at_epoch
-      FROM observations
-      WHERE id <= ? ${projectFilter}
-      ORDER BY id DESC
-      LIMIT ?
-    `;
-    const afterQuery = `
-      SELECT id, created_at_epoch
-      FROM observations
-      WHERE id >= ? ${projectFilter}
-      ORDER BY id ASC
-      LIMIT ?
-    `;
-
     try {
-      const beforeRecords = db.prepare(beforeQuery).all(anchorObservationId, ...projectParams, depthBefore + 1) as Array<{id: number; created_at_epoch: number}>;
-      const afterRecords = db.prepare(afterQuery).all(anchorObservationId, ...projectParams, depthAfter + 1) as Array<{id: number; created_at_epoch: number}>;
+      const beforeRecords = await queryAll<{id: number; created_at_epoch: number}>(db, `
+        SELECT id, created_at_epoch
+        FROM observations
+        WHERE id <= ? ${projectFilter}
+        ORDER BY id DESC
+        LIMIT ?
+      `, [anchorObservationId, ...projectParams, depthBefore + 1]);
 
-      // Get the earliest and latest timestamps from boundary observations
+      const afterRecords = await queryAll<{id: number; created_at_epoch: number}>(db, `
+        SELECT id, created_at_epoch
+        FROM observations
+        WHERE id >= ? ${projectFilter}
+        ORDER BY id ASC
+        LIMIT ?
+      `, [anchorObservationId, ...projectParams, depthAfter + 1]);
+
       if (beforeRecords.length === 0 && afterRecords.length === 0) {
         return { observations: [], sessions: [], prompts: [] };
       }
@@ -116,25 +99,22 @@ export function getTimelineAroundObservation(
     }
   } else {
     // For timestamp-based anchors, use time-based boundaries
-    // Get observations to find the time window
-    const beforeQuery = `
-      SELECT created_at_epoch
-      FROM observations
-      WHERE created_at_epoch <= ? ${projectFilter}
-      ORDER BY created_at_epoch DESC
-      LIMIT ?
-    `;
-    const afterQuery = `
-      SELECT created_at_epoch
-      FROM observations
-      WHERE created_at_epoch >= ? ${projectFilter}
-      ORDER BY created_at_epoch ASC
-      LIMIT ?
-    `;
-
     try {
-      const beforeRecords = db.prepare(beforeQuery).all(anchorEpoch, ...projectParams, depthBefore) as Array<{created_at_epoch: number}>;
-      const afterRecords = db.prepare(afterQuery).all(anchorEpoch, ...projectParams, depthAfter + 1) as Array<{created_at_epoch: number}>;
+      const beforeRecords = await queryAll<{created_at_epoch: number}>(db, `
+        SELECT created_at_epoch
+        FROM observations
+        WHERE created_at_epoch <= ? ${projectFilter}
+        ORDER BY created_at_epoch DESC
+        LIMIT ?
+      `, [anchorEpoch, ...projectParams, depthBefore]);
+
+      const afterRecords = await queryAll<{created_at_epoch: number}>(db, `
+        SELECT created_at_epoch
+        FROM observations
+        WHERE created_at_epoch >= ? ${projectFilter}
+        ORDER BY created_at_epoch ASC
+        LIMIT ?
+      `, [anchorEpoch, ...projectParams, depthAfter + 1]);
 
       if (beforeRecords.length === 0 && afterRecords.length === 0) {
         return { observations: [], sessions: [], prompts: [] };
@@ -149,31 +129,27 @@ export function getTimelineAroundObservation(
   }
 
   // Now query ALL record types within the time window
-  const obsQuery = `
+  const observations = await queryAll<ObservationRecord>(db, `
     SELECT *
     FROM observations
     WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${projectFilter}
     ORDER BY created_at_epoch ASC
-  `;
+  `, [startEpoch, endEpoch, ...projectParams]);
 
-  const sessQuery = `
+  const sessions = await queryAll<SessionSummaryRecord>(db, `
     SELECT *
     FROM session_summaries
     WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${projectFilter}
     ORDER BY created_at_epoch ASC
-  `;
+  `, [startEpoch, endEpoch, ...projectParams]);
 
-  const promptQuery = `
+  const prompts = await queryAll<UserPromptRecord>(db, `
     SELECT up.*, s.project, s.memory_session_id
     FROM user_prompts up
     JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
     WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${projectFilter.replace('project', 's.project')}
     ORDER BY up.created_at_epoch ASC
-  `;
-
-  const observations = db.prepare(obsQuery).all(startEpoch, endEpoch, ...projectParams) as ObservationRecord[];
-  const sessions = db.prepare(sessQuery).all(startEpoch, endEpoch, ...projectParams) as SessionSummaryRecord[];
-  const prompts = db.prepare(promptQuery).all(startEpoch, endEpoch, ...projectParams) as UserPromptRecord[];
+  `, [startEpoch, endEpoch, ...projectParams]);
 
   return {
     observations,
@@ -201,18 +177,13 @@ export function getTimelineAroundObservation(
 
 /**
  * Get all unique projects from the database (for web UI project filter)
- *
- * @param db Database connection
- * @returns Array of unique project names
  */
-export function getAllProjects(db: Database): string[] {
-  const stmt = db.prepare(`
+export async function getAllProjects(db: DbAdapter): Promise<string[]> {
+  const rows = await queryAll<{ project: string }>(db, `
     SELECT DISTINCT project
     FROM sdk_sessions
     WHERE project IS NOT NULL AND project != ''
     ORDER BY project ASC
   `);
-
-  const rows = stmt.all() as Array<{ project: string }>;
   return rows.map(row => row.project);
 }

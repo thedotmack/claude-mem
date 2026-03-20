@@ -3,7 +3,8 @@
  * Database-first parameter pattern for functional composition
  */
 
-import type { Database } from 'bun:sqlite';
+import type { DbAdapter } from '../adapter.js';
+import { queryOne, queryAll } from '../adapter.js';
 import { logger } from '../../../utils/logger.js';
 import type {
   SessionBasic,
@@ -15,49 +16,45 @@ import type {
 /**
  * Get session by ID (basic fields only)
  */
-export function getSessionById(db: Database, id: number): SessionBasic | null {
-  const stmt = db.prepare(`
+export async function getSessionById(db: DbAdapter, id: number): Promise<SessionBasic | null> {
+  return queryOne<SessionBasic>(db, `
     SELECT id, content_session_id, memory_session_id, project, user_prompt, custom_title
     FROM sdk_sessions
     WHERE id = ?
     LIMIT 1
-  `);
-
-  return (stmt.get(id) as SessionBasic | undefined) || null;
+  `, [id]);
 }
 
 /**
  * Get SDK sessions by memory session IDs
  * Used for exporting session metadata
  */
-export function getSdkSessionsBySessionIds(
-  db: Database,
+export async function getSdkSessionsBySessionIds(
+  db: DbAdapter,
   memorySessionIds: string[]
-): SessionFull[] {
+): Promise<SessionFull[]> {
   if (memorySessionIds.length === 0) return [];
 
   const placeholders = memorySessionIds.map(() => '?').join(',');
-  const stmt = db.prepare(`
+  return queryAll<SessionFull>(db, `
     SELECT id, content_session_id, memory_session_id, project, user_prompt, custom_title,
            started_at, started_at_epoch, completed_at, completed_at_epoch, status
     FROM sdk_sessions
     WHERE memory_session_id IN (${placeholders})
     ORDER BY started_at_epoch DESC
-  `);
-
-  return stmt.all(...memorySessionIds) as SessionFull[];
+  `, memorySessionIds);
 }
 
 /**
  * Get recent sessions with their status and summary info
  * Returns sessions ordered oldest-first for display
  */
-export function getRecentSessionsWithStatus(
-  db: Database,
+export async function getRecentSessionsWithStatus(
+  db: DbAdapter,
   project: string,
   limit: number = 3
-): SessionWithStatus[] {
-  const stmt = db.prepare(`
+): Promise<SessionWithStatus[]> {
+  return queryAll<SessionWithStatus>(db, `
     SELECT * FROM (
       SELECT
         s.memory_session_id,
@@ -74,19 +71,17 @@ export function getRecentSessionsWithStatus(
       LIMIT ?
     )
     ORDER BY started_at_epoch ASC
-  `);
-
-  return stmt.all(project, limit) as SessionWithStatus[];
+  `, [project, limit]);
 }
 
 /**
  * Get full session summary by ID (includes request_summary and learned_summary)
  */
-export function getSessionSummaryById(
-  db: Database,
+export async function getSessionSummaryById(
+  db: DbAdapter,
   id: number
-): SessionSummaryDetail | null {
-  const stmt = db.prepare(`
+): Promise<SessionSummaryDetail | null> {
+  return queryOne<SessionSummaryDetail>(db, `
     SELECT
       id,
       memory_session_id,
@@ -101,7 +96,5 @@ export function getSessionSummaryById(
     FROM sdk_sessions
     WHERE id = ?
     LIMIT 1
-  `);
-
-  return (stmt.get(id) as SessionSummaryDetail | undefined) || null;
+  `, [id]);
 }

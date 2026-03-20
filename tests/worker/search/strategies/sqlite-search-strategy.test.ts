@@ -229,19 +229,19 @@ describe('SQLiteSearchStrategy', () => {
   });
 
   describe('findByConcept', () => {
-    it('should return matching observations (sync)', () => {
+    it('should return matching observations', async () => {
       const options: StrategySearchOptions = {
         limit: 10
       };
 
-      const results = strategy.findByConcept('test-concept', options);
+      const results = await strategy.findByConcept('test-concept', options);
 
       expect(results).toHaveLength(1);
       expect(results[0].id).toBe(1);
       expect(mockSessionSearch.findByConcept).toHaveBeenCalledWith('test-concept', expect.any(Object));
     });
 
-    it('should pass all filter options to findByConcept', () => {
+    it('should pass all filter options to findByConcept', async () => {
       const options: StrategySearchOptions = {
         limit: 20,
         project: 'my-project',
@@ -249,7 +249,7 @@ describe('SQLiteSearchStrategy', () => {
         orderBy: 'date_desc'
       };
 
-      strategy.findByConcept('test-concept', options);
+      await strategy.findByConcept('test-concept', options);
 
       expect(mockSessionSearch.findByConcept).toHaveBeenCalledWith('test-concept', {
         limit: 20,
@@ -259,10 +259,10 @@ describe('SQLiteSearchStrategy', () => {
       });
     });
 
-    it('should use default limit when not specified', () => {
+    it('should use default limit when not specified', async () => {
       const options: StrategySearchOptions = {};
 
-      strategy.findByConcept('test-concept', options);
+      await strategy.findByConcept('test-concept', options);
 
       const callArgs = mockSessionSearch.findByConcept.mock.calls[0];
       expect(callArgs[1].limit).toBe(20); // SEARCH_CONSTANTS.DEFAULT_LIMIT
@@ -270,36 +270,36 @@ describe('SQLiteSearchStrategy', () => {
   });
 
   describe('findByType', () => {
-    it('should return typed observations (sync)', () => {
+    it('should return typed observations', async () => {
       const options: StrategySearchOptions = {
         limit: 10
       };
 
-      const results = strategy.findByType('decision', options);
+      const results = await strategy.findByType('decision', options);
 
       expect(results).toHaveLength(1);
       expect(results[0].type).toBe('decision');
       expect(mockSessionSearch.findByType).toHaveBeenCalledWith('decision', expect.any(Object));
     });
 
-    it('should handle array of types', () => {
+    it('should handle array of types', async () => {
       const options: StrategySearchOptions = {
         limit: 10
       };
 
-      strategy.findByType(['decision', 'bugfix'], options);
+      await strategy.findByType(['decision', 'bugfix'], options);
 
       expect(mockSessionSearch.findByType).toHaveBeenCalledWith(['decision', 'bugfix'], expect.any(Object));
     });
 
-    it('should pass filter options to findByType', () => {
+    it('should pass filter options to findByType', async () => {
       const options: StrategySearchOptions = {
         limit: 15,
         project: 'test-project',
         orderBy: 'date_asc'
       };
 
-      strategy.findByType('feature', options);
+      await strategy.findByType('feature', options);
 
       expect(mockSessionSearch.findByType).toHaveBeenCalledWith('feature', {
         limit: 15,
@@ -310,19 +310,19 @@ describe('SQLiteSearchStrategy', () => {
   });
 
   describe('findByFile', () => {
-    it('should return observations and sessions for file path', () => {
+    it('should return observations and sessions for file path', async () => {
       const options: StrategySearchOptions = {
         limit: 10
       };
 
-      const result = strategy.findByFile('/path/to/file.ts', options);
+      const result = await strategy.findByFile('/path/to/file.ts', options);
 
       expect(result.observations).toHaveLength(1);
       expect(result.sessions).toHaveLength(1);
       expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/path/to/file.ts', expect.any(Object));
     });
 
-    it('should pass filter options to findByFile', () => {
+    it('should pass filter options to findByFile', async () => {
       const options: StrategySearchOptions = {
         limit: 25,
         project: 'file-project',
@@ -330,7 +330,7 @@ describe('SQLiteSearchStrategy', () => {
         orderBy: 'date_desc'
       };
 
-      strategy.findByFile('/src/index.ts', options);
+      await strategy.findByFile('/src/index.ts', options);
 
       expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/src/index.ts', {
         limit: 25,

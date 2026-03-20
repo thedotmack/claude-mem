@@ -1,8 +1,10 @@
-import { Database } from 'bun:sqlite';
 import { TableNameRow } from '../../types/database.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isDirectChild } from '../../shared/path-utils.js';
+import type { DbAdapter } from './adapter.js';
+import { queryAll, exec } from './adapter.js';
+import { createDbAdapter } from './adapters/libsql-adapter.js';
 import {
   ObservationSearchResult,
   SessionSummarySearchResult,
@@ -20,51 +22,38 @@ import {
  * Vector search is handled by ChromaDB - this class only supports filtering without query text
  */
 export class SessionSearch {
-  private db: Database;
+  private db: DbAdapter;
 
-  constructor(dbPath?: string) {
+  private constructor(db: DbAdapter) {
+    this.db = db;
+  }
+
+  /**
+   * Create a SessionSearch instance (async factory)
+   */
+  static async create(dbPath?: string): Promise<SessionSearch> {
     if (!dbPath) {
       ensureDir(DATA_DIR);
       dbPath = DB_PATH;
     }
-    this.db = new Database(dbPath);
-    this.db.run('PRAGMA journal_mode = WAL');
+    const db = await createDbAdapter(dbPath);
+    await db.execute('PRAGMA journal_mode = WAL');
 
-    // Ensure FTS tables exist
-    this.ensureFTSTables();
+    const instance = new SessionSearch(db);
+    await instance.ensureFTSTables();
+    return instance;
   }
 
   /**
    * Ensure FTS5 tables exist (backward compatibility only - no longer used for search)
-   *
-   * FTS5 tables are maintained for backward compatibility but not used for search.
-   * Vector search (Chroma) is now the primary search mechanism.
-   *
-   * Retention Rationale:
-   * - Prevents breaking existing installations with FTS5 tables
-   * - Allows graceful migration path for users
-   * - Tables maintained but search paths removed
-   * - Triggers still fire to keep tables synchronized
-   *
-   * FTS5 may be unavailable on some platforms (e.g., Bun on Windows #791).
-   * When unavailable, we skip FTS table creation — search falls back to
-   * ChromaDB (vector) and LIKE queries (structured filters) which are unaffected.
-   *
-   * TODO: Remove FTS5 infrastructure in future major version (v7.0.0)
    */
-  private ensureFTSTables(): void {
-    // Check if FTS tables already exist
-    const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as TableNameRow[];
+  private async ensureFTSTables(): Promise<void> {
+    const tables = await queryAll<TableNameRow>(this.db, "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'");
     const hasFTS = tables.some(t => t.name === 'observations_fts' || t.name === 'session_summaries_fts');
 
-    if (hasFTS) {
-      // Already migrated
-      return;
-    }
+    if (hasFTS) return;
 
-    // Runtime check: verify FTS5 is available before attempting to create tables.
-    // bun:sqlite on Windows may not include the FTS5 extension (#791).
-    if (!this.isFts5Available()) {
+    if (!(await this.isFts5Available())) {
       logger.warn('DB', 'FTS5 not available on this platform — skipping FTS table creation (search uses ChromaDB)');
       return;
     }
@@ -72,109 +61,84 @@ export class SessionSearch {
     logger.info('DB', 'Creating FTS5 tables');
 
     try {
-      // Create observations_fts virtual table
-      this.db.run(`
+      await this.db.executeScript(`
         CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
-          title,
-          subtitle,
-          narrative,
-          text,
-          facts,
-          concepts,
-          content='observations',
-          content_rowid='id'
-        );
+          title, subtitle, narrative, text, facts, concepts,
+          content='observations', content_rowid='id'
+        )
       `);
 
-      // Populate with existing data
-      this.db.run(`
+      await this.db.execute(`
         INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
         SELECT id, title, subtitle, narrative, text, facts, concepts
-        FROM observations;
+        FROM observations
       `);
 
-      // Create triggers for observations
-      this.db.run(`
+      await this.db.executeScript(`
         CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
           INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
           VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
         END;
-
         CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
           INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
           VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
         END;
-
         CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
           INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
           VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
           INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
           VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-        END;
+        END
       `);
 
-      // Create session_summaries_fts virtual table
-      this.db.run(`
+      await this.db.executeScript(`
         CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
-          request,
-          investigated,
-          learned,
-          completed,
-          next_steps,
-          notes,
-          content='session_summaries',
-          content_rowid='id'
-        );
+          request, investigated, learned, completed, next_steps, notes,
+          content='session_summaries', content_rowid='id'
+        )
       `);
 
-      // Populate with existing data
-      this.db.run(`
+      await this.db.execute(`
         INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
         SELECT id, request, investigated, learned, completed, next_steps, notes
-        FROM session_summaries;
+        FROM session_summaries
       `);
 
-      // Create triggers for session_summaries
-      this.db.run(`
+      await this.db.executeScript(`
         CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
           INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
           VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
         END;
-
         CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
           INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
           VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
         END;
-
         CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
           INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
           VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
           INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
           VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-        END;
+        END
       `);
 
       logger.info('DB', 'FTS5 tables created successfully');
     } catch (error) {
-      // FTS5 creation failed at runtime despite probe succeeding — degrade gracefully
       logger.warn('DB', 'FTS5 table creation failed — search will use ChromaDB and LIKE queries', {}, error as Error);
     }
   }
 
   /**
-   * Probe whether the FTS5 extension is available in the current SQLite build.
-   * Creates and immediately drops a temporary FTS5 table.
+   * Probe whether the FTS5 extension is available
    */
-  private isFts5Available(): boolean {
+  private async isFts5Available(): Promise<boolean> {
     try {
-      this.db.run('CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)');
-      this.db.run('DROP TABLE _fts5_probe');
+      await this.db.execute('CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)');
+      await this.db.execute('DROP TABLE _fts5_probe');
       return true;
     } catch {
       return false;
     }
   }
-
 
   /**
    * Build WHERE clause for structured filters
@@ -186,13 +150,11 @@ export class SessionSearch {
   ): string {
     const conditions: string[] = [];
 
-    // Project filter
     if (filters.project) {
       conditions.push(`${tableAlias}.project = ?`);
       params.push(filters.project);
     }
 
-    // Type filter (for observations only)
     if (filters.type) {
       if (Array.isArray(filters.type)) {
         const placeholders = filters.type.map(() => '?').join(',');
@@ -204,7 +166,6 @@ export class SessionSearch {
       }
     }
 
-    // Date range filter
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
       if (start) {
@@ -219,27 +180,22 @@ export class SessionSearch {
       }
     }
 
-    // Concepts filter (JSON array search)
     if (filters.concepts) {
       const concepts = Array.isArray(filters.concepts) ? filters.concepts : [filters.concepts];
-      const conceptConditions = concepts.map(() => {
-        return `EXISTS (SELECT 1 FROM json_each(${tableAlias}.concepts) WHERE value = ?)`;
-      });
+      const conceptConditions = concepts.map(() =>
+        `EXISTS (SELECT 1 FROM json_each(${tableAlias}.concepts) WHERE value = ?)`
+      );
       if (conceptConditions.length > 0) {
         conditions.push(`(${conceptConditions.join(' OR ')})`);
         params.push(...concepts);
       }
     }
 
-    // Files filter (JSON array search)
     if (filters.files) {
       const files = Array.isArray(filters.files) ? filters.files : [filters.files];
-      const fileConditions = files.map(() => {
-        return `(
-          EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_read) WHERE value LIKE ?)
-          OR EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_modified) WHERE value LIKE ?)
-        )`;
-      });
+      const fileConditions = files.map(() =>
+        `(EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_read) WHERE value LIKE ?) OR EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_modified) WHERE value LIKE ?))`
+      );
       if (fileConditions.length > 0) {
         conditions.push(`(${fileConditions.join(' OR ')})`);
         files.forEach(file => {
@@ -251,9 +207,6 @@ export class SessionSearch {
     return conditions.length > 0 ? conditions.join(' AND ') : '';
   }
 
-  /**
-   * Build ORDER BY clause
-   */
   private buildOrderClause(orderBy: SearchOptions['orderBy'] = 'relevance', hasFTS: boolean = true, ftsTable: string = 'observations_fts'): string {
     switch (orderBy) {
       case 'relevance':
@@ -267,16 +220,10 @@ export class SessionSearch {
     }
   }
 
-  /**
-   * Search observations using filter-only direct SQLite query.
-   * Vector search is handled by ChromaDB - this only supports filtering without query text.
-   */
-  searchObservations(query: string | undefined, options: SearchOptions = {}): ObservationSearchResult[] {
+  async searchObservations(query: string | undefined, options: SearchOptions = {}): Promise<ObservationSearchResult[]> {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
 
-    // FILTER-ONLY PATH: When no query text, query table directly
-    // This enables date filtering which Chroma cannot do (requires direct SQLite access)
     if (!query) {
       const filterClause = this.buildFilterClause(filters, params, 'o');
       if (!filterClause) {
@@ -294,24 +241,17 @@ export class SessionSearch {
       `;
 
       params.push(limit, offset);
-      return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+      return queryAll<ObservationSearchResult>(this.db, sql, params);
     }
 
-    // Vector search with query text should be handled by ChromaDB
-    // This method only supports filter-only queries (query=undefined)
     logger.warn('DB', 'Text search not supported - use ChromaDB for vector search');
     return [];
   }
 
-  /**
-   * Search session summaries using filter-only direct SQLite query.
-   * Vector search is handled by ChromaDB - this only supports filtering without query text.
-   */
-  searchSessions(query: string | undefined, options: SearchOptions = {}): SessionSummarySearchResult[] {
+  async searchSessions(query: string | undefined, options: SearchOptions = {}): Promise<SessionSummarySearchResult[]> {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
 
-    // FILTER-ONLY PATH: When no query text, query session_summaries table directly
     if (!query) {
       const filterOptions = { ...filters };
       delete filterOptions.type;
@@ -333,23 +273,17 @@ export class SessionSearch {
       `;
 
       params.push(limit, offset);
-      return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
+      return queryAll<SessionSummarySearchResult>(this.db, sql, params);
     }
 
-    // Vector search with query text should be handled by ChromaDB
-    // This method only supports filter-only queries (query=undefined)
     logger.warn('DB', 'Text search not supported - use ChromaDB for vector search');
     return [];
   }
 
-  /**
-   * Find observations by concept tag
-   */
-  findByConcept(concept: string, options: SearchOptions = {}): ObservationSearchResult[] {
+  async findByConcept(concept: string, options: SearchOptions = {}): Promise<ObservationSearchResult[]> {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', ...filters } = options;
 
-    // Add concept to filters
     const conceptFilters = { ...filters, concepts: concept };
     const filterClause = this.buildFilterClause(conceptFilters, params, 'o');
     const orderClause = this.buildOrderClause(orderBy, false);
@@ -363,13 +297,9 @@ export class SessionSearch {
     `;
 
     params.push(limit, offset);
-
-    return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+    return queryAll<ObservationSearchResult>(this.db, sql, params);
   }
 
-  /**
-   * Check if an observation has any files that are direct children of the folder
-   */
   private hasDirectChildFile(obs: ObservationSearchResult, folderPath: string): boolean {
     const checkFiles = (filesJson: string | null): boolean => {
       if (!filesJson) return false;
@@ -381,13 +311,9 @@ export class SessionSearch {
       } catch {}
       return false;
     };
-
     return checkFiles(obs.files_modified) || checkFiles(obs.files_read);
   }
 
-  /**
-   * Check if a session has any files that are direct children of the folder
-   */
   private hasDirectChildFileSession(session: SessionSummarySearchResult, folderPath: string): boolean {
     const checkFiles = (filesJson: string | null): boolean => {
       if (!filesJson) return false;
@@ -399,25 +325,18 @@ export class SessionSearch {
       } catch {}
       return false;
     };
-
     return checkFiles(session.files_read) || checkFiles(session.files_edited);
   }
 
-  /**
-   * Find observations and summaries by file path
-   * When isFolder=true, only returns results with files directly in the folder (not subfolders)
-   */
-  findByFile(filePath: string, options: SearchOptions = {}): {
+  async findByFile(filePath: string, options: SearchOptions = {}): Promise<{
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];
-  } {
+  }> {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', isFolder = false, ...filters } = options;
 
-    // Query more results if we're filtering to direct children
     const queryLimit = isFolder ? limit * 3 : limit;
 
-    // Add file to filters
     const fileFilters = { ...filters, files: filePath };
     const filterClause = this.buildFilterClause(fileFilters, params, 'o');
     const orderClause = this.buildOrderClause(orderBy, false);
@@ -431,18 +350,16 @@ export class SessionSearch {
     `;
 
     params.push(queryLimit, offset);
+    let observations = await queryAll<ObservationSearchResult>(this.db, observationsSql, params);
 
-    let observations = this.db.prepare(observationsSql).all(...params) as ObservationSearchResult[];
-
-    // Post-filter to direct children if isFolder mode
     if (isFolder) {
       observations = observations.filter(obs => this.hasDirectChildFile(obs, filePath)).slice(0, limit);
     }
 
-    // For session summaries, search files_read and files_edited
+    // Session summaries
     const sessionParams: any[] = [];
     const sessionFilters = { ...filters };
-    delete sessionFilters.type; // Remove type filter for sessions
+    delete sessionFilters.type;
 
     const baseConditions: string[] = [];
     if (sessionFilters.project) {
@@ -464,7 +381,6 @@ export class SessionSearch {
       }
     }
 
-    // File condition
     baseConditions.push(`(
       EXISTS (SELECT 1 FROM json_each(s.files_read) WHERE value LIKE ?)
       OR EXISTS (SELECT 1 FROM json_each(s.files_edited) WHERE value LIKE ?)
@@ -480,10 +396,8 @@ export class SessionSearch {
     `;
 
     sessionParams.push(queryLimit, offset);
+    let sessions = await queryAll<SessionSummarySearchResult>(this.db, sessionsSql, sessionParams);
 
-    let sessions = this.db.prepare(sessionsSql).all(...sessionParams) as SessionSummarySearchResult[];
-
-    // Post-filter to direct children if isFolder mode
     if (isFolder) {
       sessions = sessions.filter(s => this.hasDirectChildFileSession(s, filePath)).slice(0, limit);
     }
@@ -491,17 +405,13 @@ export class SessionSearch {
     return { observations, sessions };
   }
 
-  /**
-   * Find observations by type
-   */
-  findByType(
+  async findByType(
     type: ObservationRow['type'] | ObservationRow['type'][],
     options: SearchOptions = {}
-  ): ObservationSearchResult[] {
+  ): Promise<ObservationSearchResult[]> {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', ...filters } = options;
 
-    // Add type to filters
     const typeFilters = { ...filters, type };
     const filterClause = this.buildFilterClause(typeFilters, params, 'o');
     const orderClause = this.buildOrderClause(orderBy, false);
@@ -515,19 +425,13 @@ export class SessionSearch {
     `;
 
     params.push(limit, offset);
-
-    return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+    return queryAll<ObservationSearchResult>(this.db, sql, params);
   }
 
-  /**
-   * Search user prompts using filter-only direct SQLite query.
-   * Vector search is handled by ChromaDB - this only supports filtering without query text.
-   */
-  searchUserPrompts(query: string | undefined, options: SearchOptions = {}): UserPromptSearchResult[] {
+  async searchUserPrompts(query: string | undefined, options: SearchOptions = {}): Promise<UserPromptSearchResult[]> {
     const params: any[] = [];
     const { limit = 20, offset = 0, orderBy = 'relevance', ...filters } = options;
 
-    // Build filter conditions (join with sdk_sessions for project filtering)
     const baseConditions: string[] = [];
     if (filters.project) {
       baseConditions.push('s.project = ?');
@@ -548,7 +452,6 @@ export class SessionSearch {
       }
     }
 
-    // FILTER-ONLY PATH: When no query text, query user_prompts table directly
     if (!query) {
       if (baseConditions.length === 0) {
         throw new Error('Either query or filters required for search');
@@ -569,39 +472,23 @@ export class SessionSearch {
       `;
 
       params.push(limit, offset);
-      return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
+      return queryAll<UserPromptSearchResult>(this.db, sql, params);
     }
 
-    // Vector search with query text should be handled by ChromaDB
-    // This method only supports filter-only queries (query=undefined)
     logger.warn('DB', 'Text search not supported - use ChromaDB for vector search');
     return [];
   }
 
-  /**
-   * Get all prompts for a session by content_session_id
-   */
-  getUserPromptsBySession(contentSessionId: string): UserPromptRow[] {
-    const stmt = this.db.prepare(`
-      SELECT
-        id,
-        content_session_id,
-        prompt_number,
-        prompt_text,
-        created_at,
-        created_at_epoch
+  async getUserPromptsBySession(contentSessionId: string): Promise<UserPromptRow[]> {
+    return queryAll<UserPromptRow>(this.db, `
+      SELECT id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch
       FROM user_prompts
       WHERE content_session_id = ?
       ORDER BY prompt_number ASC
-    `);
-
-    return stmt.all(contentSessionId) as UserPromptRow[];
+    `, [contentSessionId]);
   }
 
-  /**
-   * Close the database connection
-   */
-  close(): void {
-    this.db.close();
+  async close(): Promise<void> {
+    await this.db.close();
   }
 }

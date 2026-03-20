@@ -19,19 +19,20 @@ import { ClaudeMemDatabase } from '../src/services/sqlite/Database.js';
 import { PendingMessageStore } from '../src/services/sqlite/PendingMessageStore.js';
 import { createSDKSession } from '../src/services/sqlite/Sessions.js';
 import type { ActiveSession, PendingMessage } from '../src/services/worker-types.js';
-import type { Database } from 'bun:sqlite';
+import type { DbAdapter } from '../src/services/sqlite/adapter.js';
 
 describe('Zombie Agent Prevention', () => {
-  let db: Database;
+  let db: DbAdapter;
   let pendingStore: PendingMessageStore;
 
-  beforeEach(() => {
-    db = new ClaudeMemDatabase(':memory:').db;
+  beforeEach(async () => {
+    const cmdb = await ClaudeMemDatabase.create(':memory:');
+    db = cmdb.db;
     pendingStore = new PendingMessageStore(db, 3);
   });
 
-  afterEach(() => {
-    db.close();
+  afterEach(async () => {
+    await db.close();
   });
 
   /**
@@ -65,14 +66,14 @@ describe('Zombie Agent Prevention', () => {
   /**
    * Helper to create a session in the database and return its ID
    */
-  function createDbSession(contentSessionId: string, project: string = 'test-project'): number {
+  async function createDbSession(contentSessionId: string, project: string = 'test-project'): Promise<number> {
     return createSDKSession(db, contentSessionId, project, 'Test user prompt');
   }
 
   /**
    * Helper to enqueue a test message
    */
-  function enqueueTestMessage(sessionDbId: number, contentSessionId: string): number {
+  async function enqueueTestMessage(sessionDbId: number, contentSessionId: string): Promise<number> {
     const message: PendingMessage = {
       type: 'observation',
       tool_name: 'TestTool',
@@ -116,15 +117,15 @@ describe('Zombie Agent Prevention', () => {
   // Test 2: Crash recovery gate
   test('should prevent duplicate crash recovery spawns', async () => {
     // Create sessions in the database
-    const sessionId1 = createDbSession('content-1');
-    const sessionId2 = createDbSession('content-2');
+    const sessionId1 = await createDbSession('content-1');
+    const sessionId2 = await createDbSession('content-2');
 
     // Enqueue messages to simulate pending work
-    enqueueTestMessage(sessionId1, 'content-1');
-    enqueueTestMessage(sessionId2, 'content-2');
+    await enqueueTestMessage(sessionId1, 'content-1');
+    await enqueueTestMessage(sessionId2, 'content-2');
 
     // Verify both sessions have pending work
-    const orphanedSessions = pendingStore.getSessionsWithPendingMessages();
+    const orphanedSessions = await pendingStore.getSessionsWithPendingMessages();
     expect(orphanedSessions).toContain(sessionId1);
     expect(orphanedSessions).toContain(sessionId2);
 
@@ -173,73 +174,73 @@ describe('Zombie Agent Prevention', () => {
   // Test 3: queueDepth accuracy with CLAIM-CONFIRM pattern
   test('should report accurate queueDepth from database', async () => {
     // Create a session
-    const sessionId = createDbSession('content-queue-test');
+    const sessionId = await createDbSession('content-queue-test');
 
     // Initially no pending messages
-    expect(pendingStore.getPendingCount(sessionId)).toBe(0);
-    expect(pendingStore.hasAnyPendingWork()).toBe(false);
+    expect(await pendingStore.getPendingCount(sessionId)).toBe(0);
+    expect(await pendingStore.hasAnyPendingWork()).toBe(false);
 
     // Enqueue 3 messages
-    const msgId1 = enqueueTestMessage(sessionId, 'content-queue-test');
-    expect(pendingStore.getPendingCount(sessionId)).toBe(1);
+    const msgId1 = await enqueueTestMessage(sessionId, 'content-queue-test');
+    expect(await pendingStore.getPendingCount(sessionId)).toBe(1);
 
-    const msgId2 = enqueueTestMessage(sessionId, 'content-queue-test');
-    expect(pendingStore.getPendingCount(sessionId)).toBe(2);
+    const msgId2 = await enqueueTestMessage(sessionId, 'content-queue-test');
+    expect(await pendingStore.getPendingCount(sessionId)).toBe(2);
 
-    const msgId3 = enqueueTestMessage(sessionId, 'content-queue-test');
-    expect(pendingStore.getPendingCount(sessionId)).toBe(3);
+    const msgId3 = await enqueueTestMessage(sessionId, 'content-queue-test');
+    expect(await pendingStore.getPendingCount(sessionId)).toBe(3);
 
     // hasAnyPendingWork should return true
-    expect(pendingStore.hasAnyPendingWork()).toBe(true);
+    expect(await pendingStore.hasAnyPendingWork()).toBe(true);
 
     // CLAIM-CONFIRM pattern: claimNextMessage marks as 'processing' (not deleted)
-    const claimed = pendingStore.claimNextMessage(sessionId);
+    const claimed = await pendingStore.claimNextMessage(sessionId);
     expect(claimed).not.toBeNull();
     expect(claimed?.id).toBe(msgId1);
 
     // Count stays at 3 because 'processing' messages are still counted
     // (they need to be confirmed after successful storage)
-    expect(pendingStore.getPendingCount(sessionId)).toBe(3);
+    expect(await pendingStore.getPendingCount(sessionId)).toBe(3);
 
     // After confirmProcessed, the message is actually deleted
-    pendingStore.confirmProcessed(msgId1);
-    expect(pendingStore.getPendingCount(sessionId)).toBe(2);
+    await pendingStore.confirmProcessed(msgId1);
+    expect(await pendingStore.getPendingCount(sessionId)).toBe(2);
 
     // Claim and confirm remaining messages
-    const msg2 = pendingStore.claimNextMessage(sessionId);
-    pendingStore.confirmProcessed(msg2!.id);
-    expect(pendingStore.getPendingCount(sessionId)).toBe(1);
+    const msg2 = await pendingStore.claimNextMessage(sessionId);
+    await pendingStore.confirmProcessed(msg2!.id);
+    expect(await pendingStore.getPendingCount(sessionId)).toBe(1);
 
-    const msg3 = pendingStore.claimNextMessage(sessionId);
-    pendingStore.confirmProcessed(msg3!.id);
+    const msg3 = await pendingStore.claimNextMessage(sessionId);
+    await pendingStore.confirmProcessed(msg3!.id);
 
     // Should be empty now
-    expect(pendingStore.getPendingCount(sessionId)).toBe(0);
-    expect(pendingStore.hasAnyPendingWork()).toBe(false);
+    expect(await pendingStore.getPendingCount(sessionId)).toBe(0);
+    expect(await pendingStore.hasAnyPendingWork()).toBe(false);
   });
 
   // Additional test: Multiple sessions with pending work
   test('should track pending work across multiple sessions', async () => {
     // Create 3 sessions
-    const session1Id = createDbSession('content-multi-1');
-    const session2Id = createDbSession('content-multi-2');
-    const session3Id = createDbSession('content-multi-3');
+    const session1Id = await createDbSession('content-multi-1');
+    const session2Id = await createDbSession('content-multi-2');
+    const session3Id = await createDbSession('content-multi-3');
 
     // Enqueue different numbers of messages
-    enqueueTestMessage(session1Id, 'content-multi-1');
-    enqueueTestMessage(session1Id, 'content-multi-1'); // 2 messages
+    await enqueueTestMessage(session1Id, 'content-multi-1');
+    await enqueueTestMessage(session1Id, 'content-multi-1'); // 2 messages
 
-    enqueueTestMessage(session2Id, 'content-multi-2'); // 1 message
+    await enqueueTestMessage(session2Id, 'content-multi-2'); // 1 message
 
     // Session 3 has no messages
 
     // Verify counts
-    expect(pendingStore.getPendingCount(session1Id)).toBe(2);
-    expect(pendingStore.getPendingCount(session2Id)).toBe(1);
-    expect(pendingStore.getPendingCount(session3Id)).toBe(0);
+    expect(await pendingStore.getPendingCount(session1Id)).toBe(2);
+    expect(await pendingStore.getPendingCount(session2Id)).toBe(1);
+    expect(await pendingStore.getPendingCount(session3Id)).toBe(0);
 
     // getSessionsWithPendingMessages should return session 1 and 2
-    const sessionsWithPending = pendingStore.getSessionsWithPendingMessages();
+    const sessionsWithPending = await pendingStore.getSessionsWithPendingMessages();
     expect(sessionsWithPending).toContain(session1Id);
     expect(sessionsWithPending).toContain(session2Id);
     expect(sessionsWithPending).not.toContain(session3Id);
@@ -268,32 +269,32 @@ describe('Zombie Agent Prevention', () => {
 
   // Test: Stuck processing messages are recovered by claimNextMessage self-healing
   test('should recover stuck processing messages via claimNextMessage self-healing', async () => {
-    const sessionId = createDbSession('content-stuck-recovery');
+    const sessionId = await createDbSession('content-stuck-recovery');
 
     // Enqueue and claim a message (transitions to 'processing')
-    const msgId = enqueueTestMessage(sessionId, 'content-stuck-recovery');
-    const claimed = pendingStore.claimNextMessage(sessionId);
+    const msgId = await enqueueTestMessage(sessionId, 'content-stuck-recovery');
+    const claimed = await pendingStore.claimNextMessage(sessionId);
     expect(claimed).not.toBeNull();
     expect(claimed!.id).toBe(msgId);
 
     // Simulate crash: message stuck in 'processing' with stale timestamp
     const staleTimestamp = Date.now() - 120_000; // 2 minutes ago
-    db.run(
+    await db.execute(
       `UPDATE pending_messages SET started_processing_at_epoch = ? WHERE id = ?`,
       [staleTimestamp, msgId]
     );
 
     // Verify it's stuck
-    expect(pendingStore.getPendingCount(sessionId)).toBe(1); // processing counts as pending work
+    expect(await pendingStore.getPendingCount(sessionId)).toBe(1); // processing counts as pending work
 
     // Next claimNextMessage should self-heal: reset stuck message and re-claim it
-    const recovered = pendingStore.claimNextMessage(sessionId);
+    const recovered = await pendingStore.claimNextMessage(sessionId);
     expect(recovered).not.toBeNull();
     expect(recovered!.id).toBe(msgId);
 
     // Confirm it can be processed successfully
-    pendingStore.confirmProcessed(msgId);
-    expect(pendingStore.getPendingCount(sessionId)).toBe(0);
+    await pendingStore.confirmProcessed(msgId);
+    expect(await pendingStore.getPendingCount(sessionId)).toBe(0);
   });
 
   // Test: Generator cleanup on session delete

@@ -105,11 +105,11 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       // Step 4: Hydrate from SQLite with additional filters
       if (categorized.obsIds.length > 0) {
         const obsOptions = { type: obsType, concepts, files, orderBy, limit, project };
-        observations = this.sessionStore.getObservationsByIds(categorized.obsIds, obsOptions);
+        observations = await this.sessionStore.getObservationsByIds(categorized.obsIds, obsOptions);
       }
 
       if (categorized.sessionIds.length > 0) {
-        sessions = this.sessionStore.getSessionSummariesByIds(categorized.sessionIds, {
+        sessions = await this.sessionStore.getSessionSummariesByIds(categorized.sessionIds, {
           orderBy,
           limit,
           project
@@ -117,7 +117,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       }
 
       if (categorized.promptIds.length > 0) {
-        prompts = this.sessionStore.getUserPromptsByIds(categorized.promptIds, {
+        prompts = await this.sessionStore.getUserPromptsByIds(categorized.promptIds, {
           orderBy,
           limit,
           project

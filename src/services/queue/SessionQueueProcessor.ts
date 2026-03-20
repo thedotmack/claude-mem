@@ -37,7 +37,7 @@ export class SessionQueueProcessor {
       try {
         // Atomically claim next pending message (marks as 'processing')
         // Self-heals any stale processing messages before claiming
-        const persistentMessage = this.store.claimNextMessage(sessionDbId);
+        const persistentMessage = await this.store.claimNextMessage(sessionDbId);
 
         if (persistentMessage) {
           // Reset activity time when we successfully yield a message

@@ -46,9 +46,9 @@ const VERSION_MARKER_PATH = path.join(
 /**
  * Initialize database connection with error handling
  */
-function initializeDatabase(): SessionStore | null {
+async function initializeDatabase(): Promise<SessionStore | null> {
   try {
-    return new SessionStore();
+    return await SessionStore.create();
   } catch (error: any) {
     if (error.code === 'ERR_DLOPEN_FAILED') {
       try {
@@ -141,7 +141,7 @@ export async function generateContext(
   }
 
   // Initialize database
-  const db = initializeDatabase();
+  const db = await initializeDatabase();
   if (!db) {
     return '';
   }
@@ -149,11 +149,11 @@ export async function generateContext(
   try {
     // Query data for all projects (supports worktree: parent + worktree combined)
     const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config)
-      : queryObservations(db, project, config);
+      ? await queryObservationsMulti(db, projects, config)
+      : await queryObservations(db, project, config);
     const summaries = projects.length > 1
-      ? querySummariesMulti(db, projects, config)
-      : querySummaries(db, project, config);
+      ? await querySummariesMulti(db, projects, config)
+      : await querySummaries(db, project, config);
 
     // Handle empty state
     if (observations.length === 0 && summaries.length === 0) {
@@ -173,6 +173,6 @@ export async function generateContext(
 
     return output;
   } finally {
-    db.close();
+    await db.close();
   }
 }

@@ -26,8 +26,8 @@ export class DatabaseManager {
    */
   async initialize(): Promise<void> {
     // Open database connection (ONCE)
-    this.sessionStore = new SessionStore();
-    this.sessionSearch = new SessionSearch();
+    this.sessionStore = await SessionStore.create();
+    this.sessionSearch = await SessionSearch.create();
 
     // Initialize ChromaSync only if Chroma is enabled (SQLite-only fallback when disabled)
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -52,11 +52,11 @@ export class DatabaseManager {
     }
 
     if (this.sessionStore) {
-      this.sessionStore.close();
+      await this.sessionStore.close();
       this.sessionStore = null;
     }
     if (this.sessionSearch) {
-      this.sessionSearch.close();
+      await this.sessionSearch.close();
       this.sessionSearch = null;
     }
     logger.info('DB', 'Database closed');
@@ -96,14 +96,14 @@ export class DatabaseManager {
   /**
    * Get session by ID (throws if not found)
    */
-  getSessionById(sessionDbId: number): {
+  async getSessionById(sessionDbId: number): Promise<{
     id: number;
     content_session_id: string;
     memory_session_id: string | null;
     project: string;
     user_prompt: string;
-  } {
-    const session = this.getSessionStore().getSessionById(sessionDbId);
+  }> {
+    const session = await this.getSessionStore().getSessionById(sessionDbId);
     if (!session) {
       throw new Error(`Session ${sessionDbId} not found`);
     }

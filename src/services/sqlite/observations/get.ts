@@ -3,7 +3,8 @@
  * Extracted from SessionStore.ts for modular organization
  */
 
-import { Database } from 'bun:sqlite';
+import type { DbAdapter } from '../adapter.js';
+import { queryOne, queryAll } from '../adapter.js';
 import { logger } from '../../../utils/logger.js';
 import type { ObservationRecord } from '../../../types/database.js';
 import type { GetObservationsByIdsOptions, ObservationSessionRow } from './types.js';
@@ -11,24 +12,22 @@ import type { GetObservationsByIdsOptions, ObservationSessionRow } from './types
 /**
  * Get a single observation by ID
  */
-export function getObservationById(db: Database, id: number): ObservationRecord | null {
-  const stmt = db.prepare(`
+export async function getObservationById(db: DbAdapter, id: number): Promise<ObservationRecord | null> {
+  return queryOne<ObservationRecord>(db, `
     SELECT *
     FROM observations
     WHERE id = ?
-  `);
-
-  return stmt.get(id) as ObservationRecord | undefined || null;
+  `, [id]);
 }
 
 /**
  * Get observations by array of IDs with ordering and limit
  */
-export function getObservationsByIds(
-  db: Database,
+export async function getObservationsByIds(
+  db: DbAdapter,
   ids: number[],
   options: GetObservationsByIdsOptions = {}
-): ObservationRecord[] {
+): Promise<ObservationRecord[]> {
   if (ids.length === 0) return [];
 
   const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
@@ -84,30 +83,26 @@ export function getObservationsByIds(
     ? `WHERE id IN (${placeholders}) AND ${additionalConditions.join(' AND ')}`
     : `WHERE id IN (${placeholders})`;
 
-  const stmt = db.prepare(`
+  return queryAll<ObservationRecord>(db, `
     SELECT *
     FROM observations
     ${whereClause}
     ORDER BY created_at_epoch ${orderClause}
     ${limitClause}
-  `);
-
-  return stmt.all(...params) as ObservationRecord[];
+  `, params);
 }
 
 /**
  * Get observations for a specific session
  */
-export function getObservationsForSession(
-  db: Database,
+export async function getObservationsForSession(
+  db: DbAdapter,
   memorySessionId: string
-): ObservationSessionRow[] {
-  const stmt = db.prepare(`
+): Promise<ObservationSessionRow[]> {
+  return queryAll<ObservationSessionRow>(db, `
     SELECT title, subtitle, type, prompt_number
     FROM observations
     WHERE memory_session_id = ?
     ORDER BY created_at_epoch ASC
-  `);
-
-  return stmt.all(memorySessionId) as ObservationSessionRow[];
+  `, [memorySessionId]);
 }

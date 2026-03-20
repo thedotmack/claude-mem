@@ -21,17 +21,18 @@ import {
 } from '../../src/services/sqlite/Sessions.js';
 import type { ObservationInput } from '../../src/services/sqlite/observations/types.js';
 import type { SummaryInput } from '../../src/services/sqlite/summaries/types.js';
-import type { Database } from 'bun:sqlite';
+import type { DbAdapter } from '../../src/services/sqlite/adapter.js';
 
 describe('Transactions Module', () => {
-  let db: Database;
+  let db: DbAdapter;
 
-  beforeEach(() => {
-    db = new ClaudeMemDatabase(':memory:').db;
+  beforeEach(async () => {
+    const cmdb = await ClaudeMemDatabase.create(':memory:');
+    db = cmdb.db;
   });
 
-  afterEach(() => {
-    db.close();
+  afterEach(async () => {
+    await db.close();
   });
 
   // Helper to create a valid observation input
@@ -63,15 +64,15 @@ describe('Transactions Module', () => {
   }
 
   // Helper to create a session and return memory_session_id for FK constraints
-  function createSessionWithMemoryId(contentSessionId: string, memorySessionId: string, project: string = 'test-project'): { memorySessionId: string; sessionDbId: number } {
-    const sessionDbId = createSDKSession(db, contentSessionId, project, 'initial prompt');
-    updateMemorySessionId(db, sessionDbId, memorySessionId);
+  async function createSessionWithMemoryId(contentSessionId: string, memorySessionId: string, project: string = 'test-project'): Promise<{ memorySessionId: string; sessionDbId: number }> {
+    const sessionDbId = await createSDKSession(db, contentSessionId, project, 'initial prompt');
+    await updateMemorySessionId(db, sessionDbId, memorySessionId);
     return { memorySessionId, sessionDbId };
   }
 
   describe('storeObservations', () => {
-    it('should store multiple observations atomically and return result', () => {
-      const { memorySessionId } = createSessionWithMemoryId('content-atomic-123', 'atomic-session-123');
+    it('should store multiple observations atomically and return result', async () => {
+      const { memorySessionId } = await createSessionWithMemoryId('content-atomic-123', 'atomic-session-123');
       const project = 'test-project';
       const observations = [
         createObservationInput({ title: 'Obs 1' }),
@@ -79,7 +80,7 @@ describe('Transactions Module', () => {
         createObservationInput({ title: 'Obs 3' }),
       ];
 
-      const result = storeObservations(db, memorySessionId, project, observations, null);
+      const result = await storeObservations(db, memorySessionId, project, observations, null);
 
       expect(result.observationIds).toHaveLength(3);
       expect(result.observationIds.every((id) => typeof id === 'number')).toBe(true);
@@ -87,8 +88,8 @@ describe('Transactions Module', () => {
       expect(typeof result.createdAtEpoch).toBe('number');
     });
 
-    it('should store all observations with same timestamp', () => {
-      const { memorySessionId } = createSessionWithMemoryId('content-ts', 'timestamp-session');
+    it('should store all observations with same timestamp', async () => {
+      const { memorySessionId } = await createSessionWithMemoryId('content-ts', 'timestamp-session');
       const project = 'test-project';
       const observations = [
         createObservationInput({ title: 'Obs A' }),
@@ -96,7 +97,7 @@ describe('Transactions Module', () => {
       ];
       const fixedTimestamp = 1600000000000;
 
-      const result = storeObservations(
+      const result = await storeObservations(
         db,
         memorySessionId,
         project,
@@ -111,58 +112,58 @@ describe('Transactions Module', () => {
 
       // Verify each observation has the same timestamp
       for (const id of result.observationIds) {
-        const obs = getObservationById(db, id);
+        const obs = await getObservationById(db, id);
         expect(obs?.created_at_epoch).toBe(fixedTimestamp);
       }
     });
 
-    it('should store observations with summary', () => {
-      const { memorySessionId } = createSessionWithMemoryId('content-with-sum', 'with-summary-session');
+    it('should store observations with summary', async () => {
+      const { memorySessionId } = await createSessionWithMemoryId('content-with-sum', 'with-summary-session');
       const project = 'test-project';
       const observations = [createObservationInput({ title: 'Main Obs' })];
       const summary = createSummaryInput({ request: 'Test request' });
 
-      const result = storeObservations(db, memorySessionId, project, observations, summary);
+      const result = await storeObservations(db, memorySessionId, project, observations, summary);
 
       expect(result.observationIds).toHaveLength(1);
       expect(result.summaryId).not.toBeNull();
       expect(typeof result.summaryId).toBe('number');
 
       // Verify summary was stored
-      const storedSummary = getSummaryForSession(db, memorySessionId);
+      const storedSummary = await getSummaryForSession(db, memorySessionId);
       expect(storedSummary).not.toBeNull();
       expect(storedSummary?.request).toBe('Test request');
     });
 
-    it('should handle empty observations array', () => {
-      const { memorySessionId } = createSessionWithMemoryId('content-empty', 'empty-obs-session');
+    it('should handle empty observations array', async () => {
+      const { memorySessionId } = await createSessionWithMemoryId('content-empty', 'empty-obs-session');
       const project = 'test-project';
       const observations: ObservationInput[] = [];
 
-      const result = storeObservations(db, memorySessionId, project, observations, null);
+      const result = await storeObservations(db, memorySessionId, project, observations, null);
 
       expect(result.observationIds).toHaveLength(0);
       expect(result.summaryId).toBeNull();
     });
 
-    it('should handle summary-only (no observations)', () => {
-      const { memorySessionId } = createSessionWithMemoryId('content-sum-only', 'summary-only-session');
+    it('should handle summary-only (no observations)', async () => {
+      const { memorySessionId } = await createSessionWithMemoryId('content-sum-only', 'summary-only-session');
       const project = 'test-project';
       const summary = createSummaryInput({ request: 'Summary-only request' });
 
-      const result = storeObservations(db, memorySessionId, project, [], summary);
+      const result = await storeObservations(db, memorySessionId, project, [], summary);
 
       expect(result.observationIds).toHaveLength(0);
       expect(result.summaryId).not.toBeNull();
 
-      const storedSummary = getSummaryForSession(db, memorySessionId);
+      const storedSummary = await getSummaryForSession(db, memorySessionId);
       expect(storedSummary?.request).toBe('Summary-only request');
     });
 
-    it('should return correct createdAtEpoch', () => {
-      const { memorySessionId } = createSessionWithMemoryId('content-epoch', 'session-epoch');
+    it('should return correct createdAtEpoch', async () => {
+      const { memorySessionId } = await createSessionWithMemoryId('content-epoch', 'session-epoch');
       const before = Date.now();
-      const result = storeObservations(
+      const result = await storeObservations(
         db,
         memorySessionId,
         'project',
@@ -175,8 +176,8 @@ describe('Transactions Module', () => {
       expect(result.createdAtEpoch).toBeLessThanOrEqual(after);
     });
 
-    it('should apply promptNumber to all observations', () => {
-      const { memorySessionId } = createSessionWithMemoryId('content-pn', 'prompt-num-session');
+    it('should apply promptNumber to all observations', async () => {
+      const { memorySessionId } = await createSessionWithMemoryId('content-pn', 'prompt-num-session');
       const project = 'test-project';
       const observations = [
         createObservationInput({ title: 'Obs 1' }),
@@ -184,7 +185,7 @@ describe('Transactions Module', () => {
       ];
       const promptNumber = 5;
 
-      const result = storeObservations(
+      const result = await storeObservations(
         db,
         memorySessionId,
         project,
@@ -194,7 +195,7 @@ describe('Transactions Module', () => {
       );
 
       for (const id of result.observationIds) {
-        const obs = getObservationById(db, id);
+        const obs = await getObservationById(db, id);
         expect(obs?.prompt_number).toBe(promptNumber);
       }
     });
@@ -204,22 +205,21 @@ describe('Transactions Module', () => {
     // Note: This function also marks a pending message as processed.
     // For testing, we need a pending_messages row to exist first.
 
-    it('should store observations, summary, and mark message complete', () => {
-      const { memorySessionId, sessionDbId } = createSessionWithMemoryId('content-complete', 'complete-session');
+    it('should store observations, summary, and mark message complete', async () => {
+      const { memorySessionId, sessionDbId } = await createSessionWithMemoryId('content-complete', 'complete-session');
       const project = 'test-project';
       const observations = [createObservationInput({ title: 'Complete Obs' })];
       const summary = createSummaryInput({ request: 'Complete request' });
 
       // First, insert a pending message to mark as complete
-      const insertStmt = db.prepare(`
+      const msgResult = await db.execute(`
         INSERT INTO pending_messages
         (session_db_id, content_session_id, message_type, created_at_epoch, status)
         VALUES (?, ?, 'observation', ?, 'processing')
-      `);
-      const msgResult = insertStmt.run(sessionDbId, 'content-complete', Date.now());
-      const messageId = Number(msgResult.lastInsertRowid);
+      `, [sessionDbId, 'content-complete', Date.now()]);
+      const messageId = msgResult.lastInsertRowid;
 
-      const result = storeObservationsAndMarkComplete(
+      const result = await storeObservationsAndMarkComplete(
         db,
         memorySessionId,
         project,
@@ -232,13 +232,13 @@ describe('Transactions Module', () => {
       expect(result.summaryId).not.toBeNull();
 
       // Verify message was marked as processed
-      const msgStmt = db.prepare('SELECT status FROM pending_messages WHERE id = ?');
-      const msg = msgStmt.get(messageId) as { status: string } | undefined;
+      const msgRow = await db.execute('SELECT status FROM pending_messages WHERE id = ?', [messageId]);
+      const msg = msgRow.rows[0] as { status: string } | undefined;
       expect(msg?.status).toBe('processed');
     });
 
-    it('should maintain atomicity - all operations share same timestamp', () => {
-      const { memorySessionId, sessionDbId } = createSessionWithMemoryId('content-atomic-ts', 'atomic-timestamp-session');
+    it('should maintain atomicity - all operations share same timestamp', async () => {
+      const { memorySessionId, sessionDbId } = await createSessionWithMemoryId('content-atomic-ts', 'atomic-timestamp-session');
       const project = 'test-project';
       const observations = [
         createObservationInput({ title: 'Obs 1' }),
@@ -248,20 +248,21 @@ describe('Transactions Module', () => {
       const fixedTimestamp = 1700000000000;
 
       // Create pending message
-      db.prepare(`
+      await db.execute(`
         INSERT INTO pending_messages
         (session_db_id, content_session_id, message_type, created_at_epoch, status)
         VALUES (?, ?, 'observation', ?, 'processing')
-      `).run(sessionDbId, 'content-atomic-ts', Date.now());
-      const messageId = db.prepare('SELECT last_insert_rowid() as id').get() as { id: number };
+      `, [sessionDbId, 'content-atomic-ts', Date.now()]);
+      const msgIdResult = await db.execute('SELECT last_insert_rowid() as id');
+      const messageId = (msgIdResult.rows[0] as { id: number }).id;
 
-      const result = storeObservationsAndMarkComplete(
+      const result = await storeObservationsAndMarkComplete(
         db,
         memorySessionId,
         project,
         observations,
         summary,
-        messageId.id,
+        messageId,
         1,
         0,
         fixedTimestamp
@@ -271,35 +272,36 @@ describe('Transactions Module', () => {
 
       // All observations should have same timestamp
       for (const id of result.observationIds) {
-        const obs = getObservationById(db, id);
+        const obs = await getObservationById(db, id);
         expect(obs?.created_at_epoch).toBe(fixedTimestamp);
       }
 
       // Summary should have same timestamp
-      const storedSummary = getSummaryForSession(db, memorySessionId);
+      const storedSummary = await getSummaryForSession(db, memorySessionId);
       expect(storedSummary?.created_at_epoch).toBe(fixedTimestamp);
     });
 
-    it('should handle null summary', () => {
-      const { memorySessionId, sessionDbId } = createSessionWithMemoryId('content-no-sum', 'no-summary-session');
+    it('should handle null summary', async () => {
+      const { memorySessionId, sessionDbId } = await createSessionWithMemoryId('content-no-sum', 'no-summary-session');
       const project = 'test-project';
       const observations = [createObservationInput({ title: 'Only Obs' })];
 
       // Create pending message
-      db.prepare(`
+      await db.execute(`
         INSERT INTO pending_messages
         (session_db_id, content_session_id, message_type, created_at_epoch, status)
         VALUES (?, ?, 'observation', ?, 'processing')
-      `).run(sessionDbId, 'content-no-sum', Date.now());
-      const messageId = db.prepare('SELECT last_insert_rowid() as id').get() as { id: number };
+      `, [sessionDbId, 'content-no-sum', Date.now()]);
+      const msgIdResult = await db.execute('SELECT last_insert_rowid() as id');
+      const messageId = (msgIdResult.rows[0] as { id: number }).id;
 
-      const result = storeObservationsAndMarkComplete(
+      const result = await storeObservationsAndMarkComplete(
         db,
         memorySessionId,
         project,
         observations,
         null,
-        messageId.id
+        messageId
       );
 
       expect(result.observationIds).toHaveLength(1);

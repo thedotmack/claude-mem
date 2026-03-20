@@ -72,7 +72,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       logger.debug('SEARCH', 'HybridSearchStrategy: findByConcept', { concept });
 
       // Step 1: SQLite metadata filter
-      const metadataResults = this.sessionSearch.findByConcept(concept, filterOptions);
+      const metadataResults = await this.sessionSearch.findByConcept(concept, filterOptions);
       logger.debug('SEARCH', 'HybridSearchStrategy: Found metadata matches', {
         count: metadataResults.length
       });
@@ -96,7 +96,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
       // Step 4: Hydrate in semantic rank order
       if (rankedIds.length > 0) {
-        const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
+        const observations = await this.sessionStore.getObservationsByIds(rankedIds, { limit });
         // Restore semantic ranking order
         observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
 
@@ -113,7 +113,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     } catch (error) {
       logger.error('SEARCH', 'HybridSearchStrategy: findByConcept failed', {}, error as Error);
       // Fall back to metadata-only results
-      const results = this.sessionSearch.findByConcept(concept, filterOptions);
+      const results = await this.sessionSearch.findByConcept(concept, filterOptions);
       return {
         results: { observations: results, sessions: [], prompts: [] },
         usedChroma: false,
@@ -138,7 +138,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       logger.debug('SEARCH', 'HybridSearchStrategy: findByType', { type: typeStr });
 
       // Step 1: SQLite metadata filter
-      const metadataResults = this.sessionSearch.findByType(type as any, filterOptions);
+      const metadataResults = await this.sessionSearch.findByType(type as any, filterOptions);
       logger.debug('SEARCH', 'HybridSearchStrategy: Found metadata matches', {
         count: metadataResults.length
       });
@@ -162,7 +162,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
       // Step 4: Hydrate in rank order
       if (rankedIds.length > 0) {
-        const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
+        const observations = await this.sessionStore.getObservationsByIds(rankedIds, { limit });
         observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
 
         return {
@@ -177,7 +177,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     } catch (error) {
       logger.error('SEARCH', 'HybridSearchStrategy: findByType failed', {}, error as Error);
-      const results = this.sessionSearch.findByType(type as any, filterOptions);
+      const results = await this.sessionSearch.findByType(type as any, filterOptions);
       return {
         results: { observations: results, sessions: [], prompts: [] },
         usedChroma: false,
@@ -205,7 +205,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       logger.debug('SEARCH', 'HybridSearchStrategy: findByFile', { filePath });
 
       // Step 1: SQLite metadata filter
-      const metadataResults = this.sessionSearch.findByFile(filePath, filterOptions);
+      const metadataResults = await this.sessionSearch.findByFile(filePath, filterOptions);
       logger.debug('SEARCH', 'HybridSearchStrategy: Found file matches', {
         observations: metadataResults.observations.length,
         sessions: metadataResults.sessions.length
@@ -233,7 +233,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
       // Step 4: Hydrate in rank order
       if (rankedIds.length > 0) {
-        const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
+        const observations = await this.sessionStore.getObservationsByIds(rankedIds, { limit });
         observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
 
         return { observations, sessions, usedChroma: true };
@@ -243,7 +243,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     } catch (error) {
       logger.error('SEARCH', 'HybridSearchStrategy: findByFile failed', {}, error as Error);
-      const results = this.sessionSearch.findByFile(filePath, filterOptions);
+      const results = await this.sessionSearch.findByFile(filePath, filterOptions);
       return {
         observations: results.observations,
         sessions: results.sessions,

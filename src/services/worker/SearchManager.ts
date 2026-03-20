@@ -143,13 +143,13 @@ export class SearchManager {
       logger.debug('SEARCH', 'Filter-only query (no query text), using direct SQLite filtering', { enablesDateFilters: true });
       const obsOptions = { ...options, type: obs_type, concepts, files };
       if (searchObservations) {
-        observations = this.sessionSearch.searchObservations(undefined, obsOptions);
+        observations = await this.sessionSearch.searchObservations(undefined, obsOptions);
       }
       if (searchSessions) {
-        sessions = this.sessionSearch.searchSessions(undefined, options);
+        sessions = await this.sessionSearch.searchSessions(undefined, options);
       }
       if (searchPrompts) {
-        prompts = this.sessionSearch.searchUserPrompts(undefined, options);
+        prompts = await this.sessionSearch.searchUserPrompts(undefined, options);
       }
     }
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
@@ -237,13 +237,13 @@ export class SearchManager {
         if (obsIds.length > 0) {
           // Apply obs_type, concepts, files filters if provided
           const obsOptions = { ...options, type: obs_type, concepts, files };
-          observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
+          observations = await this.sessionStore.getObservationsByIds(obsIds, obsOptions);
         }
         if (sessionIds.length > 0) {
-          sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
+          sessions = await this.sessionStore.getSessionSummariesByIds(sessionIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
         }
         if (promptIds.length > 0) {
-          prompts = this.sessionStore.getUserPromptsByIds(promptIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
+          prompts = await this.sessionStore.getUserPromptsByIds(promptIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
         }
 
         logger.debug('SEARCH', 'Hydrated results from SQLite', { observations: observations.length, sessions: sessions.length, prompts: prompts.length });
@@ -442,7 +442,7 @@ export class SearchManager {
             });
 
             if (recentIds.length > 0) {
-              results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: 1 });
+              results = await this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: 1 });
             }
           }
         } catch (chromaError) {
@@ -464,12 +464,12 @@ export class SearchManager {
       anchorId = topResult.id;
       anchorEpoch = topResult.created_at_epoch;
       logger.debug('SEARCH', 'Query mode: Using observation as timeline anchor', { observationId: topResult.id });
-      timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depth_before, depth_after, project);
+      timelineData = await this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depth_before, depth_after, project);
     }
     // MODE 2: Anchor-based timeline
     else if (typeof anchor === 'number') {
       // Observation ID
-      const obs = this.sessionStore.getObservationById(anchor);
+      const obs = await this.sessionStore.getObservationById(anchor);
       if (!obs) {
         return {
           content: [{
@@ -481,13 +481,13 @@ export class SearchManager {
       }
       anchorId = anchor;
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depth_before, depth_after, project);
+      timelineData = await this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depth_before, depth_after, project);
     } else if (typeof anchor === 'string') {
       // Session ID or ISO timestamp
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
         const sessionId = anchor.replace(/^#?S/, '');
         const sessionNum = parseInt(sessionId, 10);
-        const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum]);
+        const sessions = await this.sessionStore.getSessionSummariesByIds([sessionNum]);
         if (sessions.length === 0) {
           return {
             content: [{
@@ -499,7 +499,7 @@ export class SearchManager {
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+        timelineData = await this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
       } else {
         // ISO timestamp
         const date = new Date(anchor);
@@ -514,7 +514,7 @@ export class SearchManager {
         }
         anchorEpoch = date.getTime();
         anchorId = anchor;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+        timelineData = await this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
       }
     } else {
       return {
@@ -687,14 +687,14 @@ export class SearchManager {
           const obsIds = chromaResults.ids;
 
           if (obsIds.length > 0) {
-            results = this.sessionStore.getObservationsByIds(obsIds, { ...filters, type: 'decision' });
+            results = await this.sessionStore.getObservationsByIds(obsIds, { ...filters, type: 'decision' });
             // Preserve Chroma ranking order
             results.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
           }
         } else {
           // No query: get all decisions, rank by "decision" keyword
           logger.debug('SEARCH', 'Using metadata-first + semantic ranking for decisions', {});
-          const metadataResults = this.sessionSearch.findByType('decision', filters);
+          const metadataResults = await this.sessionSearch.findByType('decision', filters);
 
           if (metadataResults.length > 0) {
             const ids = metadataResults.map(obs => obs.id);
@@ -708,7 +708,7 @@ export class SearchManager {
             }
 
             if (rankedIds.length > 0) {
-              results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
+              results = await this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
               results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
             }
           }
@@ -719,7 +719,7 @@ export class SearchManager {
     }
 
     if (results.length === 0) {
-      results = this.sessionSearch.findByType('decision', filters);
+      results = await this.sessionSearch.findByType('decision', filters);
     }
 
     if (results.length === 0) {
@@ -757,9 +757,9 @@ export class SearchManager {
         logger.debug('SEARCH', 'Using hybrid search for change-related observations', {});
 
         // Get all observations with type="change" or concepts containing change
-        const typeResults = this.sessionSearch.findByType('change', filters);
-        const conceptChangeResults = this.sessionSearch.findByConcept('change', filters);
-        const conceptWhatChangedResults = this.sessionSearch.findByConcept('what-changed', filters);
+        const typeResults = await this.sessionSearch.findByType('change', filters);
+        const conceptChangeResults = await this.sessionSearch.findByConcept('change', filters);
+        const conceptWhatChangedResults = await this.sessionSearch.findByConcept('what-changed', filters);
 
         // Combine and deduplicate
         const allIds = new Set<number>();
@@ -777,7 +777,7 @@ export class SearchManager {
           }
 
           if (rankedIds.length > 0) {
-            results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
+            results = await this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
             results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
           }
         }
@@ -787,9 +787,9 @@ export class SearchManager {
     }
 
     if (results.length === 0) {
-      const typeResults = this.sessionSearch.findByType('change', filters);
-      const conceptResults = this.sessionSearch.findByConcept('change', filters);
-      const whatChangedResults = this.sessionSearch.findByConcept('what-changed', filters);
+      const typeResults = await this.sessionSearch.findByType('change', filters);
+      const conceptResults = await this.sessionSearch.findByConcept('change', filters);
+      const whatChangedResults = await this.sessionSearch.findByConcept('what-changed', filters);
 
       const allIds = new Set<number>();
       [...typeResults, ...conceptResults, ...whatChangedResults].forEach(obs => allIds.add(obs.id));
@@ -837,7 +837,7 @@ export class SearchManager {
     // Search for how-it-works concept observations
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using metadata-first + semantic ranking for how-it-works', {});
-      const metadataResults = this.sessionSearch.findByConcept('how-it-works', filters);
+      const metadataResults = await this.sessionSearch.findByConcept('how-it-works', filters);
 
       if (metadataResults.length > 0) {
         const ids = metadataResults.map(obs => obs.id);
@@ -851,14 +851,14 @@ export class SearchManager {
         }
 
         if (rankedIds.length > 0) {
-          results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
+          results = await this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
           results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
         }
       }
     }
 
     if (results.length === 0) {
-      results = this.sessionSearch.findByConcept('how-it-works', filters);
+      results = await this.sessionSearch.findByConcept('how-it-works', filters);
     }
 
     if (results.length === 0) {
@@ -912,7 +912,7 @@ export class SearchManager {
         // Step 3: Hydrate from SQLite in temporal order
         if (recentIds.length > 0) {
           const limit = options.limit || 20;
-          results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit });
+          results = await this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit });
           logger.debug('SEARCH', 'Hydrated observations from SQLite', { count: results.length });
         }
       }
@@ -969,7 +969,7 @@ export class SearchManager {
         // Step 3: Hydrate from SQLite in temporal order
         if (recentIds.length > 0) {
           const limit = options.limit || 20;
-          results = this.sessionStore.getSessionSummariesByIds(recentIds, { orderBy: 'date_desc', limit });
+          results = await this.sessionStore.getSessionSummariesByIds(recentIds, { orderBy: 'date_desc', limit });
           logger.debug('SEARCH', 'Hydrated sessions from SQLite', { count: results.length });
         }
       }
@@ -1026,7 +1026,7 @@ export class SearchManager {
         // Step 3: Hydrate from SQLite in temporal order
         if (recentIds.length > 0) {
           const limit = options.limit || 20;
-          results = this.sessionStore.getUserPromptsByIds(recentIds, { orderBy: 'date_desc', limit });
+          results = await this.sessionStore.getUserPromptsByIds(recentIds, { orderBy: 'date_desc', limit });
           logger.debug('SEARCH', 'Hydrated user prompts from SQLite', { count: results.length });
         }
       }
@@ -1067,7 +1067,7 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using metadata-first + semantic ranking for concept search', {});
 
       // Step 1: SQLite metadata filter (get all IDs with this concept)
-      const metadataResults = this.sessionSearch.findByConcept(concept, filters);
+      const metadataResults = await this.sessionSearch.findByConcept(concept, filters);
       logger.debug('SEARCH', 'Found observations with concept', { concept, count: metadataResults.length });
 
       if (metadataResults.length > 0) {
@@ -1087,7 +1087,7 @@ export class SearchManager {
 
         // Step 3: Hydrate in semantic rank order
         if (rankedIds.length > 0) {
-          results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
+          results = await this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
           // Restore semantic ranking order
           results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
         }
@@ -1097,7 +1097,7 @@ export class SearchManager {
     // Fall back to SQLite-only if Chroma unavailable or failed
     if (results.length === 0) {
       logger.debug('SEARCH', 'Using SQLite-only concept search', {});
-      results = this.sessionSearch.findByConcept(concept, filters);
+      results = await this.sessionSearch.findByConcept(concept, filters);
     }
 
     if (results.length === 0) {
@@ -1138,7 +1138,7 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using metadata-first + semantic ranking for file search', {});
 
       // Step 1: SQLite metadata filter (get all results with this file)
-      const metadataResults = this.sessionSearch.findByFile(filePath, filters);
+      const metadataResults = await this.sessionSearch.findByFile(filePath, filters);
       logger.debug('SEARCH', 'Found results for file', { file: filePath, observations: metadataResults.observations.length, sessions: metadataResults.sessions.length });
 
       // Sessions: Keep as-is (already summarized, no semantic ranking needed)
@@ -1162,7 +1162,7 @@ export class SearchManager {
 
         // Step 3: Hydrate in semantic rank order
         if (rankedIds.length > 0) {
-          observations = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
+          observations = await this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
           // Restore semantic ranking order
           observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
         }
@@ -1172,7 +1172,7 @@ export class SearchManager {
     // Fall back to SQLite-only if Chroma unavailable or failed
     if (observations.length === 0 && sessions.length === 0) {
       logger.debug('SEARCH', 'Using SQLite-only file search', {});
-      const results = this.sessionSearch.findByFile(filePath, filters);
+      const results = await this.sessionSearch.findByFile(filePath, filters);
       observations = results.observations;
       sessions = results.sessions;
     }
@@ -1258,7 +1258,7 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using metadata-first + semantic ranking for type search', {});
 
       // Step 1: SQLite metadata filter (get all IDs with this type)
-      const metadataResults = this.sessionSearch.findByType(type, filters);
+      const metadataResults = await this.sessionSearch.findByType(type, filters);
       logger.debug('SEARCH', 'Found observations with type', { type: typeStr, count: metadataResults.length });
 
       if (metadataResults.length > 0) {
@@ -1278,7 +1278,7 @@ export class SearchManager {
 
         // Step 3: Hydrate in semantic rank order
         if (rankedIds.length > 0) {
-          results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
+          results = await this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
           // Restore semantic ranking order
           results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
         }
@@ -1288,7 +1288,7 @@ export class SearchManager {
     // Fall back to SQLite-only if Chroma unavailable or failed
     if (results.length === 0) {
       logger.debug('SEARCH', 'Using SQLite-only type search', {});
-      results = this.sessionSearch.findByType(type, filters);
+      results = await this.sessionSearch.findByType(type, filters);
     }
 
     if (results.length === 0) {
@@ -1320,7 +1320,7 @@ export class SearchManager {
     const project = args.project || basename(process.cwd());
     const limit = args.limit || 3;
 
-    const sessions = this.sessionStore.getRecentSessionsWithStatus(project, limit);
+    const sessions = await this.sessionStore.getRecentSessionsWithStatus(project, limit);
 
     if (sessions.length === 0) {
       return {
@@ -1344,7 +1344,7 @@ export class SearchManager {
       lines.push('');
 
       if (session.has_summary) {
-        const summary = this.sessionStore.getSummaryForSession(session.memory_session_id);
+        const summary = await this.sessionStore.getSummaryForSession(session.memory_session_id);
         if (summary) {
           const promptLabel = summary.prompt_number ? ` (Prompt #${summary.prompt_number})` : '';
           lines.push(`**Summary${promptLabel}**`);
@@ -1396,7 +1396,7 @@ export class SearchManager {
           lines.push(`**Request:** ${session.user_prompt}`);
         }
 
-        const observations = this.sessionStore.getObservationsForSession(session.memory_session_id);
+        const observations = await this.sessionStore.getObservationsForSession(session.memory_session_id);
         if (observations.length > 0) {
           lines.push('');
           lines.push(`**Observations (${observations.length}):**`);
@@ -1452,7 +1452,7 @@ export class SearchManager {
     let timelineData;
     if (typeof anchor === 'number') {
       // Observation ID - use ID-based boundary detection
-      const obs = this.sessionStore.getObservationById(anchor);
+      const obs = await this.sessionStore.getObservationById(anchor);
       if (!obs) {
         return {
           content: [{
@@ -1463,13 +1463,13 @@ export class SearchManager {
         };
       }
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depth_before, depth_after, project);
+      timelineData = await this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depth_before, depth_after, project);
     } else if (typeof anchor === 'string') {
       // Session ID or ISO timestamp
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
         const sessionId = anchor.replace(/^#?S/, '');
         const sessionNum = parseInt(sessionId, 10);
-        const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum]);
+        const sessions = await this.sessionStore.getSessionSummariesByIds([sessionNum]);
         if (sessions.length === 0) {
           return {
             content: [{
@@ -1481,7 +1481,7 @@ export class SearchManager {
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+        timelineData = await this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
       } else {
         // ISO timestamp
         const date = new Date(anchor);
@@ -1495,7 +1495,7 @@ export class SearchManager {
           };
         }
         anchorEpoch = date.getTime(); // Keep as milliseconds
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+        timelineData = await this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
       }
     } else {
       return {
@@ -1678,7 +1678,7 @@ export class SearchManager {
         logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
 
         if (recentIds.length > 0) {
-          results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: mode === 'auto' ? 1 : limit });
+          results = await this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: mode === 'auto' ? 1 : limit });
           logger.debug('SEARCH', 'Hydrated observations from SQLite', { count: results.length });
         }
       }
@@ -1733,7 +1733,7 @@ export class SearchManager {
       logger.debug('SEARCH', 'Auto mode: Using observation as timeline anchor', { observationId: topResult.id });
 
       // Get timeline around this observation
-      const timelineData = this.sessionStore.getTimelineAroundObservation(
+      const timelineData = await this.sessionStore.getTimelineAroundObservation(
         topResult.id,
         topResult.created_at_epoch,
         depth_before,

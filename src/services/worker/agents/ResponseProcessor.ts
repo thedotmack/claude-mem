@@ -85,7 +85,7 @@ export async function processAgentResponse(
   // in case the DB was somehow not updated (race condition, crash, etc.).
   // In multi-terminal scenarios, createSDKSession() now resets memory_session_id to NULL
   // for each new generator, ensuring clean isolation.
-  sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId);
+  await sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId);
 
   // Log pre-storage with session ID chain for verification
   logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
@@ -95,7 +95,7 @@ export async function processAgentResponse(
 
   // ATOMIC TRANSACTION: Store observations + summary ONCE
   // Messages are already deleted from queue on claim, so no completion tracking needed
-  const result = sessionStore.storeObservations(
+  const result = await sessionStore.storeObservations(
     session.memorySessionId,
     session.project,
     observations,
@@ -115,7 +115,7 @@ export async function processAgentResponse(
   // This is the critical step that prevents message loss on generator crash
   const pendingStore = sessionManager.getPendingMessageStore();
   for (const messageId of session.processingMessageIds) {
-    pendingStore.confirmProcessed(messageId);
+    await pendingStore.confirmProcessed(messageId);
   }
   if (session.processingMessageIds.length > 0) {
     logger.debug('QUEUE', `CONFIRMED_BATCH | sessionDbId=${session.sessionDbId} | count=${session.processingMessageIds.length} | ids=[${session.processingMessageIds.join(',')}]`);

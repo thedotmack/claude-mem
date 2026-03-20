@@ -8,6 +8,7 @@
  */
 
 import { DatabaseManager } from './DatabaseManager.js';
+import { queryAll, exec } from '../sqlite/adapter.js';
 import { logger } from '../../utils/logger.js';
 import type { ViewerSettings } from '../worker-types.js';
 
@@ -26,12 +27,11 @@ export class SettingsManager {
   /**
    * Get current viewer settings (with defaults)
    */
-  getSettings(): ViewerSettings {
+  async getSettings(): Promise<ViewerSettings> {
     const db = this.dbManager.getSessionStore().db;
 
     try {
-      const stmt = db.prepare('SELECT key, value FROM viewer_settings');
-      const rows = stmt.all() as Array<{ key: string; value: string }>;
+      const rows = await queryAll<{ key: string; value: string }>(db, 'SELECT key, value FROM viewer_settings');
 
       const settings: ViewerSettings = { ...this.defaultSettings };
       for (const row of rows) {
@@ -51,16 +51,11 @@ export class SettingsManager {
   /**
    * Update viewer settings (partial update)
    */
-  updateSettings(updates: Partial<ViewerSettings>): ViewerSettings {
+  async updateSettings(updates: Partial<ViewerSettings>): Promise<ViewerSettings> {
     const db = this.dbManager.getSessionStore().db;
 
-    const stmt = db.prepare(`
-      INSERT OR REPLACE INTO viewer_settings (key, value)
-      VALUES (?, ?)
-    `);
-
     for (const [key, value] of Object.entries(updates)) {
-      stmt.run(key, JSON.stringify(value));
+      await exec(db, `INSERT OR REPLACE INTO viewer_settings (key, value) VALUES (?, ?)`, [key, JSON.stringify(value)]);
     }
 
     return this.getSettings();

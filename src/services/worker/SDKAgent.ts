@@ -166,12 +166,12 @@ export class SDKAgent {
           session.memorySessionId = message.session_id;
           // Persist to database IMMEDIATELY for FK constraint compliance
           // This must happen BEFORE any observations referencing this ID are stored
-          this.dbManager.getSessionStore().ensureMemorySessionIdRegistered(
+          await this.dbManager.getSessionStore().ensureMemorySessionIdRegistered(
             session.sessionDbId,
             message.session_id
           );
           // Verify the update by reading back from DB
-          const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
+          const verification = await this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
           const dbVerified = verification?.memory_session_id === message.session_id;
           const logMessage = previousId
             ? `MEMORY_ID_CHANGED | sessionDbId=${session.sessionDbId} | from=${previousId} | to=${message.session_id} | dbVerified=${dbVerified}`

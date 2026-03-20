@@ -7,6 +7,7 @@
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { SessionStore } from '../sqlite/SessionStore.js';
+import { queryAll } from '../sqlite/adapter.js';
 import { logger } from '../../utils/logger.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import type {
@@ -22,17 +23,17 @@ import { SUMMARY_LOOKAHEAD } from './types.js';
 /**
  * Query observations from database with type and concept filtering
  */
-export function queryObservations(
+export async function queryObservations(
   db: SessionStore,
   project: string,
   config: ContextConfig
-): Observation[] {
+): Promise<Observation[]> {
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
 
-  return db.db.prepare(`
+  return queryAll<Observation>(db.db, `
     SELECT
       id, memory_session_id, type, title, subtitle, narrative,
       facts, concepts, files_read, files_modified, discovery_tokens,
@@ -46,24 +47,24 @@ export function queryObservations(
       )
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(project, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
+  `, [project, ...typeArray, ...conceptArray, config.totalObservationCount]);
 }
 
 /**
  * Query recent session summaries from database
  */
-export function querySummaries(
+export async function querySummaries(
   db: SessionStore,
   project: string,
   config: ContextConfig
-): SessionSummary[] {
-  return db.db.prepare(`
+): Promise<SessionSummary[]> {
+  return queryAll<SessionSummary>(db.db, `
     SELECT id, memory_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch
     FROM session_summaries
     WHERE project = ?
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(project, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+  `, [project, config.sessionCount + SUMMARY_LOOKAHEAD]);
 }
 
 /**
@@ -72,11 +73,11 @@ export function querySummaries(
  * Returns observations from all specified projects, interleaved chronologically.
  * Used when running in a worktree to show both parent repo and worktree observations.
  */
-export function queryObservationsMulti(
+export async function queryObservationsMulti(
   db: SessionStore,
   projects: string[],
   config: ContextConfig
-): Observation[] {
+): Promise<Observation[]> {
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
   const conceptArray = Array.from(config.observationConcepts);
@@ -85,7 +86,7 @@ export function queryObservationsMulti(
   // Build IN clause for projects
   const projectPlaceholders = projects.map(() => '?').join(',');
 
-  return db.db.prepare(`
+  return queryAll<Observation>(db.db, `
     SELECT
       id, memory_session_id, type, title, subtitle, narrative,
       facts, concepts, files_read, files_modified, discovery_tokens,
@@ -99,7 +100,7 @@ export function queryObservationsMulti(
       )
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(...projects, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
+  `, [...projects, ...typeArray, ...conceptArray, config.totalObservationCount]);
 }
 
 /**
@@ -108,21 +109,21 @@ export function queryObservationsMulti(
  * Returns summaries from all specified projects, interleaved chronologically.
  * Used when running in a worktree to show both parent repo and worktree summaries.
  */
-export function querySummariesMulti(
+export async function querySummariesMulti(
   db: SessionStore,
   projects: string[],
   config: ContextConfig
-): SessionSummary[] {
+): Promise<SessionSummary[]> {
   // Build IN clause for projects
   const projectPlaceholders = projects.map(() => '?').join(',');
 
-  return db.db.prepare(`
+  return queryAll<SessionSummary>(db.db, `
     SELECT id, memory_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch, project
     FROM session_summaries
     WHERE project IN (${projectPlaceholders})
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(...projects, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+  `, [...projects, config.sessionCount + SUMMARY_LOOKAHEAD]);
 }
 
 /**

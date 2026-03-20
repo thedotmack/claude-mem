@@ -3,42 +3,39 @@
  * Extracted from SessionStore.ts for modular organization
  */
 
-import { Database } from 'bun:sqlite';
+import type { DbAdapter } from '../adapter.js';
+import { queryAll } from '../adapter.js';
 import { logger } from '../../../utils/logger.js';
 import type { RecentObservationRow, AllRecentObservationRow } from './types.js';
 
 /**
  * Get recent observations for a project
  */
-export function getRecentObservations(
-  db: Database,
+export async function getRecentObservations(
+  db: DbAdapter,
   project: string,
   limit: number = 20
-): RecentObservationRow[] {
-  const stmt = db.prepare(`
+): Promise<RecentObservationRow[]> {
+  return queryAll<RecentObservationRow>(db, `
     SELECT type, text, prompt_number, created_at
     FROM observations
     WHERE project = ?
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `);
-
-  return stmt.all(project, limit) as RecentObservationRow[];
+  `, [project, limit]);
 }
 
 /**
  * Get recent observations across all projects (for web UI)
  */
-export function getAllRecentObservations(
-  db: Database,
+export async function getAllRecentObservations(
+  db: DbAdapter,
   limit: number = 100
-): AllRecentObservationRow[] {
-  const stmt = db.prepare(`
+): Promise<AllRecentObservationRow[]> {
+  return queryAll<AllRecentObservationRow>(db, `
     SELECT id, type, title, subtitle, text, project, prompt_number, created_at, created_at_epoch
     FROM observations
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `);
-
-  return stmt.all(limit) as AllRecentObservationRow[];
+  `, [limit]);
 }

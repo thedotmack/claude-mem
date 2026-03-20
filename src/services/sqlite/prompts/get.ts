@@ -2,7 +2,8 @@
  * User prompt retrieval operations
  */
 
-import type { Database } from 'bun:sqlite';
+import type { DbAdapter } from '../adapter.js';
+import { queryOne, queryAll } from '../adapter.js';
 import { logger } from '../../../utils/logger.js';
 import type { UserPromptRecord, LatestPromptResult } from '../../../types/database.js';
 import type { RecentUserPromptResult, PromptWithProject, GetPromptsByIdsOptions } from './types.js';
@@ -11,19 +12,17 @@ import type { RecentUserPromptResult, PromptWithProject, GetPromptsByIdsOptions 
  * Get user prompt by session ID and prompt number
  * @returns The prompt text, or null if not found
  */
-export function getUserPrompt(
-  db: Database,
+export async function getUserPrompt(
+  db: DbAdapter,
   contentSessionId: string,
   promptNumber: number
-): string | null {
-  const stmt = db.prepare(`
+): Promise<string | null> {
+  const result = await queryOne<{ prompt_text: string }>(db, `
     SELECT prompt_text
     FROM user_prompts
     WHERE content_session_id = ? AND prompt_number = ?
     LIMIT 1
-  `);
-
-  const result = stmt.get(contentSessionId, promptNumber) as { prompt_text: string } | undefined;
+  `, [contentSessionId, promptNumber]);
   return result?.prompt_text ?? null;
 }
 
@@ -31,22 +30,22 @@ export function getUserPrompt(
  * Get current prompt number by counting user_prompts for this session
  * Replaces the prompt_counter column which is no longer maintained
  */
-export function getPromptNumberFromUserPrompts(db: Database, contentSessionId: string): number {
-  const result = db.prepare(`
+export async function getPromptNumberFromUserPrompts(db: DbAdapter, contentSessionId: string): Promise<number> {
+  const result = await queryOne<{ count: number }>(db, `
     SELECT COUNT(*) as count FROM user_prompts WHERE content_session_id = ?
-  `).get(contentSessionId) as { count: number };
-  return result.count;
+  `, [contentSessionId]);
+  return result!.count;
 }
 
 /**
  * Get latest user prompt with session info for a Claude session
  * Used for syncing prompts to Chroma during session initialization
  */
-export function getLatestUserPrompt(
-  db: Database,
+export async function getLatestUserPrompt(
+  db: DbAdapter,
   contentSessionId: string
-): LatestPromptResult | undefined {
-  const stmt = db.prepare(`
+): Promise<LatestPromptResult | undefined> {
+  const result = await queryOne<LatestPromptResult>(db, `
     SELECT
       up.*,
       s.memory_session_id,
@@ -56,19 +55,18 @@ export function getLatestUserPrompt(
     WHERE up.content_session_id = ?
     ORDER BY up.created_at_epoch DESC
     LIMIT 1
-  `);
-
-  return stmt.get(contentSessionId) as LatestPromptResult | undefined;
+  `, [contentSessionId]);
+  return result ?? undefined;
 }
 
 /**
  * Get recent user prompts across all sessions (for web UI)
  */
-export function getAllRecentUserPrompts(
-  db: Database,
+export async function getAllRecentUserPrompts(
+  db: DbAdapter,
   limit: number = 100
-): RecentUserPromptResult[] {
-  const stmt = db.prepare(`
+): Promise<RecentUserPromptResult[]> {
+  return queryAll<RecentUserPromptResult>(db, `
     SELECT
       up.id,
       up.content_session_id,
@@ -81,16 +79,14 @@ export function getAllRecentUserPrompts(
     LEFT JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
     ORDER BY up.created_at_epoch DESC
     LIMIT ?
-  `);
-
-  return stmt.all(limit) as RecentUserPromptResult[];
+  `, [limit]);
 }
 
 /**
  * Get a single user prompt by ID
  */
-export function getPromptById(db: Database, id: number): PromptWithProject | null {
-  const stmt = db.prepare(`
+export async function getPromptById(db: DbAdapter, id: number): Promise<PromptWithProject | null> {
+  return queryOne<PromptWithProject>(db, `
     SELECT
       p.id,
       p.content_session_id,
@@ -103,19 +99,17 @@ export function getPromptById(db: Database, id: number): PromptWithProject | nul
     LEFT JOIN sdk_sessions s ON p.content_session_id = s.content_session_id
     WHERE p.id = ?
     LIMIT 1
-  `);
-
-  return (stmt.get(id) as PromptWithProject | undefined) || null;
+  `, [id]);
 }
 
 /**
  * Get multiple user prompts by IDs
  */
-export function getPromptsByIds(db: Database, ids: number[]): PromptWithProject[] {
+export async function getPromptsByIds(db: DbAdapter, ids: number[]): Promise<PromptWithProject[]> {
   if (ids.length === 0) return [];
 
   const placeholders = ids.map(() => '?').join(',');
-  const stmt = db.prepare(`
+  return queryAll<PromptWithProject>(db, `
     SELECT
       p.id,
       p.content_session_id,
@@ -128,20 +122,18 @@ export function getPromptsByIds(db: Database, ids: number[]): PromptWithProject[
     LEFT JOIN sdk_sessions s ON p.content_session_id = s.content_session_id
     WHERE p.id IN (${placeholders})
     ORDER BY p.created_at_epoch DESC
-  `);
-
-  return stmt.all(...ids) as PromptWithProject[];
+  `, ids);
 }
 
 /**
  * Get user prompts by IDs (for hybrid Chroma search)
  * Returns prompts in specified temporal order with optional project filter
  */
-export function getUserPromptsByIds(
-  db: Database,
+export async function getUserPromptsByIds(
+  db: DbAdapter,
   ids: number[],
   options: GetPromptsByIdsOptions = {}
-): UserPromptRecord[] {
+): Promise<UserPromptRecord[]> {
   if (ids.length === 0) return [];
 
   const { orderBy = 'date_desc', limit, project } = options;
@@ -153,7 +145,7 @@ export function getUserPromptsByIds(
   const projectFilter = project ? 'AND s.project = ?' : '';
   if (project) params.push(project);
 
-  const stmt = db.prepare(`
+  return queryAll<UserPromptRecord>(db, `
     SELECT
       up.*,
       s.project,
@@ -163,7 +155,5 @@ export function getUserPromptsByIds(
     WHERE up.id IN (${placeholders}) ${projectFilter}
     ORDER BY up.created_at_epoch ${orderClause}
     ${limitClause}
-  `);
-
-  return stmt.all(...params) as UserPromptRecord[];
+  `, params);
 }

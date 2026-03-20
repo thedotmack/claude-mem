@@ -79,7 +79,7 @@ describe('DataRoutes Type Coercion', () => {
 
   describe('handleGetObservationsByIds — ids coercion', () => {
     // Access the handler via setupRoutes
-    let handler: (req: Request, res: Response) => void;
+    let handler: (req: Request, res: Response) => Promise<void>;
 
     beforeEach(() => {
       const mockApp = {
@@ -92,55 +92,55 @@ describe('DataRoutes Type Coercion', () => {
       routes.setupRoutes(mockApp as any);
     });
 
-    it('should accept a native array of numbers', () => {
+    it('should accept a native array of numbers', async () => {
       const { req, res, jsonSpy } = createMockReqRes({ ids: [1, 2, 3] });
-      handler(req as Request, res as Response);
+      await handler(req as Request, res as Response);
 
       expect(mockGetObservationsByIds).toHaveBeenCalledWith([1, 2, 3], expect.anything());
       expect(jsonSpy).toHaveBeenCalled();
     });
 
-    it('should coerce a JSON-encoded string array "[1,2,3]" to native array', () => {
+    it('should coerce a JSON-encoded string array "[1,2,3]" to native array', async () => {
       const { req, res, jsonSpy } = createMockReqRes({ ids: '[1,2,3]' });
-      handler(req as Request, res as Response);
+      await handler(req as Request, res as Response);
 
       expect(mockGetObservationsByIds).toHaveBeenCalledWith([1, 2, 3], expect.anything());
       expect(jsonSpy).toHaveBeenCalled();
     });
 
-    it('should coerce a comma-separated string "1,2,3" to native array', () => {
+    it('should coerce a comma-separated string "1,2,3" to native array', async () => {
       const { req, res, jsonSpy } = createMockReqRes({ ids: '1,2,3' });
-      handler(req as Request, res as Response);
+      await handler(req as Request, res as Response);
 
       expect(mockGetObservationsByIds).toHaveBeenCalledWith([1, 2, 3], expect.anything());
       expect(jsonSpy).toHaveBeenCalled();
     });
 
-    it('should reject non-integer values after coercion', () => {
+    it('should reject non-integer values after coercion', async () => {
       const { req, res, statusSpy } = createMockReqRes({ ids: 'foo,bar' });
-      handler(req as Request, res as Response);
+      await handler(req as Request, res as Response);
 
       // NaN values should fail the Number.isInteger check
       expect(statusSpy).toHaveBeenCalledWith(400);
     });
 
-    it('should reject missing ids', () => {
+    it('should reject missing ids', async () => {
       const { req, res, statusSpy } = createMockReqRes({});
-      handler(req as Request, res as Response);
+      await handler(req as Request, res as Response);
 
       expect(statusSpy).toHaveBeenCalledWith(400);
     });
 
-    it('should return empty array for empty ids array', () => {
+    it('should return empty array for empty ids array', async () => {
       const { req, res, jsonSpy } = createMockReqRes({ ids: [] });
-      handler(req as Request, res as Response);
+      await handler(req as Request, res as Response);
 
       expect(jsonSpy).toHaveBeenCalledWith([]);
     });
   });
 
   describe('handleGetSdkSessionsByIds — memorySessionIds coercion', () => {
-    let handler: (req: Request, res: Response) => void;
+    let handler: (req: Request, res: Response) => Promise<void>;
 
     beforeEach(() => {
       const mockApp = {
@@ -153,41 +153,41 @@ describe('DataRoutes Type Coercion', () => {
       routes.setupRoutes(mockApp as any);
     });
 
-    it('should accept a native array of strings', () => {
+    it('should accept a native array of strings', async () => {
       const { req, res, jsonSpy } = createMockReqRes({ memorySessionIds: ['abc', 'def'] });
-      handler(req as Request, res as Response);
+      await handler(req as Request, res as Response);
 
       expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['abc', 'def']);
       expect(jsonSpy).toHaveBeenCalled();
     });
 
-    it('should coerce a JSON-encoded string array to native array', () => {
+    it('should coerce a JSON-encoded string array to native array', async () => {
       const { req, res, jsonSpy } = createMockReqRes({ memorySessionIds: '["abc","def"]' });
-      handler(req as Request, res as Response);
+      await handler(req as Request, res as Response);
 
       expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['abc', 'def']);
       expect(jsonSpy).toHaveBeenCalled();
     });
 
-    it('should coerce a comma-separated string to native array', () => {
+    it('should coerce a comma-separated string to native array', async () => {
       const { req, res, jsonSpy } = createMockReqRes({ memorySessionIds: 'abc,def' });
-      handler(req as Request, res as Response);
+      await handler(req as Request, res as Response);
 
       expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['abc', 'def']);
       expect(jsonSpy).toHaveBeenCalled();
     });
 
-    it('should trim whitespace from comma-separated values', () => {
+    it('should trim whitespace from comma-separated values', async () => {
       const { req, res, jsonSpy } = createMockReqRes({ memorySessionIds: 'abc, def , ghi' });
-      handler(req as Request, res as Response);
+      await handler(req as Request, res as Response);
 
       expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['abc', 'def', 'ghi']);
       expect(jsonSpy).toHaveBeenCalled();
     });
 
-    it('should reject non-array, non-string values', () => {
+    it('should reject non-array, non-string values', async () => {
       const { req, res, statusSpy } = createMockReqRes({ memorySessionIds: 42 });
-      handler(req as Request, res as Response);
+      await handler(req as Request, res as Response);
 
       expect(statusSpy).toHaveBeenCalledWith(400);
     });

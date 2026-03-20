@@ -3,27 +3,26 @@
  * Extracted from SessionStore.ts for modular organization
  */
 
-import { Database } from 'bun:sqlite';
+import type { DbAdapter } from '../adapter.js';
+import { queryAll } from '../adapter.js';
 import { logger } from '../../../utils/logger.js';
 import type { SessionFilesResult } from './types.js';
 
 /**
  * Get aggregated files from all observations for a session
  */
-export function getFilesForSession(
-  db: Database,
+export async function getFilesForSession(
+  db: DbAdapter,
   memorySessionId: string
-): SessionFilesResult {
-  const stmt = db.prepare(`
+): Promise<SessionFilesResult> {
+  const rows = await queryAll<{
+    files_read: string | null;
+    files_modified: string | null;
+  }>(db, `
     SELECT files_read, files_modified
     FROM observations
     WHERE memory_session_id = ?
-  `);
-
-  const rows = stmt.all(memorySessionId) as Array<{
-    files_read: string | null;
-    files_modified: string | null;
-  }>;
+  `, [memorySessionId]);
 
   const filesReadSet = new Set<string>();
   const filesModifiedSet = new Set<string>();

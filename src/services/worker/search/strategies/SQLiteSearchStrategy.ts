@@ -72,15 +72,15 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
           concepts,
           files
         };
-        observations = this.sessionSearch.searchObservations(undefined, obsOptions);
+        observations = await this.sessionSearch.searchObservations(undefined, obsOptions);
       }
 
       if (searchSessions) {
-        sessions = this.sessionSearch.searchSessions(undefined, baseOptions);
+        sessions = await this.sessionSearch.searchSessions(undefined, baseOptions);
       }
 
       if (searchPrompts) {
-        prompts = this.sessionSearch.searchUserPrompts(undefined, baseOptions);
+        prompts = await this.sessionSearch.searchUserPrompts(undefined, baseOptions);
       }
 
       logger.debug('SEARCH', 'SQLiteSearchStrategy: Results', {
@@ -105,7 +105,7 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
   /**
    * Find observations by concept (used by findByConcept tool)
    */
-  findByConcept(concept: string, options: StrategySearchOptions): ObservationSearchResult[] {
+  async findByConcept(concept: string, options: StrategySearchOptions): Promise<ObservationSearchResult[]> {
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy = 'date_desc' } = options;
     return this.sessionSearch.findByConcept(concept, { limit, project, dateRange, orderBy });
   }
@@ -113,7 +113,7 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
   /**
    * Find observations by type (used by findByType tool)
    */
-  findByType(type: string | string[], options: StrategySearchOptions): ObservationSearchResult[] {
+  async findByType(type: string | string[], options: StrategySearchOptions): Promise<ObservationSearchResult[]> {
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy = 'date_desc' } = options;
     return this.sessionSearch.findByType(type as any, { limit, project, dateRange, orderBy });
   }
@@ -121,10 +121,10 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
   /**
    * Find observations and sessions by file path (used by findByFile tool)
    */
-  findByFile(filePath: string, options: StrategySearchOptions): {
+  async findByFile(filePath: string, options: StrategySearchOptions): Promise<{
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];
-  } {
+  }> {
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy = 'date_desc' } = options;
     return this.sessionSearch.findByFile(filePath, { limit, project, dateRange, orderBy });
   }

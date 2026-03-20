@@ -22,7 +22,7 @@ export interface WorkerRef {
   sseBroadcaster?: {
     broadcast(event: SSEEventPayload): void;
   };
-  broadcastProcessingStatus?: () => void;
+  broadcastProcessingStatus?: () => void | Promise<void>;
 }
 
 // ============================================================================

@@ -54,6 +54,11 @@ export interface SettingsDefaults {
   // Exclusion Settings
   CLAUDE_MEM_EXCLUDED_PROJECTS: string;  // Comma-separated glob patterns for excluded project paths
   CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;  // JSON array of folder paths to exclude from CLAUDE.md generation
+  // Database Configuration (libSQL)
+  CLAUDE_MEM_DB_MODE: string;           // 'local' | 'remote' | 'replica' (default: 'local')
+  CLAUDE_MEM_DB_URL: string;            // libsql:// URL for remote/replica
+  CLAUDE_MEM_DB_AUTH_TOKEN: string;     // Auth token for sqld
+  CLAUDE_MEM_DB_SYNC_INTERVAL: string;  // Seconds between replica syncs (default: '60')
   // Chroma Vector Database Configuration
   CLAUDE_MEM_CHROMA_ENABLED: string;   // 'true' | 'false' - set to 'false' for SQLite-only mode
   CLAUDE_MEM_CHROMA_MODE: string;      // 'local' | 'remote'
@@ -113,6 +118,12 @@ export class SettingsDefaultsManager {
     // Exclusion Settings
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
+    // Chroma Vector Database Configuration
+    // Database Configuration (libSQL)
+    CLAUDE_MEM_DB_MODE: 'local',                // 'local' | 'remote' | 'replica'
+    CLAUDE_MEM_DB_URL: '',                       // libsql:// URL for remote/replica mode
+    CLAUDE_MEM_DB_AUTH_TOKEN: '',                 // Auth token for sqld
+    CLAUDE_MEM_DB_SYNC_INTERVAL: '60',           // Seconds between replica syncs
     // Chroma Vector Database Configuration
     CLAUDE_MEM_CHROMA_ENABLED: 'true',         // Set to 'false' to disable Chroma and use SQLite-only search
     CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' uses persistent chroma-mcp via uvx, 'remote' connects to existing server

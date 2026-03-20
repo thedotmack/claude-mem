@@ -12,6 +12,7 @@ import { logger } from '../../../../utils/logger.js';
 import { homedir } from 'os';
 import { getPackageRoot } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
+import { queryOne, queryAll } from '../../../sqlite/adapter.js';
 import { PaginationHelper } from '../../PaginationHelper.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SessionManager } from '../../SessionManager.js';
@@ -65,27 +66,27 @@ export class DataRoutes extends BaseRouteHandler {
   /**
    * Get paginated observations
    */
-  private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetObservations = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { offset, limit, project } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getObservations(offset, limit, project);
+    const result = await this.paginationHelper.getObservations(offset, limit, project);
     res.json(result);
   });
 
   /**
    * Get paginated summaries
    */
-  private handleGetSummaries = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetSummaries = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { offset, limit, project } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getSummaries(offset, limit, project);
+    const result = await this.paginationHelper.getSummaries(offset, limit, project);
     res.json(result);
   });
 
   /**
    * Get paginated user prompts
    */
-  private handleGetPrompts = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetPrompts = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { offset, limit, project } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getPrompts(offset, limit, project);
+    const result = await this.paginationHelper.getPrompts(offset, limit, project);
     res.json(result);
   });
 
@@ -93,12 +94,12 @@ export class DataRoutes extends BaseRouteHandler {
    * Get observation by ID
    * GET /api/observation/:id
    */
-  private handleGetObservationById = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetObservationById = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const id = this.parseIntParam(req, res, 'id');
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const observation = store.getObservationById(id);
+    const observation = await store.getObservationById(id);
 
     if (!observation) {
       this.notFound(res, `Observation #${id} not found`);
@@ -113,7 +114,7 @@ export class DataRoutes extends BaseRouteHandler {
    * POST /api/observations/batch
    * Body: { ids: number[], orderBy?: 'date_desc' | 'date_asc', limit?: number, project?: string }
    */
-  private handleGetObservationsByIds = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetObservationsByIds = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     let { ids, orderBy, limit, project } = req.body;
 
     // Coerce string-encoded arrays from MCP clients (e.g. "[1,2,3]" or "1,2,3")
@@ -138,7 +139,7 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     const store = this.dbManager.getSessionStore();
-    const observations = store.getObservationsByIds(ids, { orderBy, limit, project });
+    const observations = await store.getObservationsByIds(ids, { orderBy, limit, project });
 
     res.json(observations);
   });
@@ -147,12 +148,12 @@ export class DataRoutes extends BaseRouteHandler {
    * Get session by ID
    * GET /api/session/:id
    */
-  private handleGetSessionById = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetSessionById = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const id = this.parseIntParam(req, res, 'id');
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const sessions = store.getSessionSummariesByIds([id]);
+    const sessions = await store.getSessionSummariesByIds([id]);
 
     if (sessions.length === 0) {
       this.notFound(res, `Session #${id} not found`);
@@ -167,7 +168,7 @@ export class DataRoutes extends BaseRouteHandler {
    * POST /api/sdk-sessions/batch
    * Body: { memorySessionIds: string[] }
    */
-  private handleGetSdkSessionsByIds = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetSdkSessionsByIds = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     let { memorySessionIds } = req.body;
 
     // Coerce string-encoded arrays from MCP clients (e.g. '["a","b"]' or "a,b")
@@ -181,7 +182,7 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     const store = this.dbManager.getSessionStore();
-    const sessions = store.getSdkSessionsBySessionIds(memorySessionIds);
+    const sessions = await store.getSdkSessionsBySessionIds(memorySessionIds);
     res.json(sessions);
   });
 
@@ -189,12 +190,12 @@ export class DataRoutes extends BaseRouteHandler {
    * Get user prompt by ID
    * GET /api/prompt/:id
    */
-  private handleGetPromptById = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetPromptById = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const id = this.parseIntParam(req, res, 'id');
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const prompts = store.getUserPromptsByIds([id]);
+    const prompts = await store.getUserPromptsByIds([id]);
 
     if (prompts.length === 0) {
       this.notFound(res, `Prompt #${id} not found`);
@@ -207,7 +208,7 @@ export class DataRoutes extends BaseRouteHandler {
   /**
    * Get database statistics (with worker metadata)
    */
-  private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetStats = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const db = this.dbManager.getSessionStore().db;
 
     // Read version from package.json
@@ -217,9 +218,9 @@ export class DataRoutes extends BaseRouteHandler {
     const version = packageJson.version;
 
     // Get database stats
-    const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
-    const totalSessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
-    const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
+    const totalObservations = await queryOne<{ count: number }>(db, 'SELECT COUNT(*) as count FROM observations') ?? { count: 0 };
+    const totalSessions = await queryOne<{ count: number }>(db, 'SELECT COUNT(*) as count FROM sdk_sessions') ?? { count: 0 };
+    const totalSummaries = await queryOne<{ count: number }>(db, 'SELECT COUNT(*) as count FROM session_summaries') ?? { count: 0 };
 
     // Get database file size and path
     const dbPath = path.join(homedir(), '.claude-mem', 'claude-mem.db');
@@ -255,16 +256,16 @@ export class DataRoutes extends BaseRouteHandler {
    * Get list of distinct projects from observations
    * GET /api/projects
    */
-  private handleGetProjects = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetProjects = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const db = this.dbManager.getSessionStore().db;
 
-    const rows = db.prepare(`
+    const rows = await queryAll<{ project: string }>(db, `
       SELECT DISTINCT project
       FROM observations
       WHERE project IS NOT NULL
       GROUP BY project
       ORDER BY MAX(created_at_epoch) DESC
-    `).all() as Array<{ project: string }>;
+    `);
 
     const projects = rows.map(row => row.project);
 
@@ -275,9 +276,9 @@ export class DataRoutes extends BaseRouteHandler {
    * Get current processing status
    * GET /api/processing-status
    */
-  private handleGetProcessingStatus = this.wrapHandler((req: Request, res: Response): void => {
-    const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
+  private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const isProcessing = await this.sessionManager.isAnySessionProcessing();
+    const queueDepth = await this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
     res.json({ isProcessing, queueDepth });
   });
 
@@ -285,12 +286,12 @@ export class DataRoutes extends BaseRouteHandler {
    * Set processing status (called by hooks)
    * NOTE: This now broadcasts computed status based on active processing (ignores input)
    */
-  private handleSetProcessing = this.wrapHandler((req: Request, res: Response): void => {
+  private handleSetProcessing = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     // Broadcast current computed status (ignores manual input)
-    this.workerService.broadcastProcessingStatus();
+    await this.workerService.broadcastProcessingStatus();
 
-    const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalQueueDepth();
+    const isProcessing = await this.sessionManager.isAnySessionProcessing();
+    const queueDepth = await this.sessionManager.getTotalQueueDepth();
     const activeSessions = this.sessionManager.getActiveSessionCount();
 
     res.json({ status: 'ok', isProcessing, queueDepth, activeSessions });
@@ -312,7 +313,7 @@ export class DataRoutes extends BaseRouteHandler {
    * POST /api/import
    * Body: { sessions: [], summaries: [], observations: [], prompts: [] }
    */
-  private handleImport = this.wrapHandler((req: Request, res: Response): void => {
+  private handleImport = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { sessions, summaries, observations, prompts } = req.body;
 
     const stats = {
@@ -331,7 +332,7 @@ export class DataRoutes extends BaseRouteHandler {
     // Import sessions first (dependency for everything else)
     if (Array.isArray(sessions)) {
       for (const session of sessions) {
-        const result = store.importSdkSession(session);
+        const result = await store.importSdkSession(session);
         if (result.imported) {
           stats.sessionsImported++;
         } else {
@@ -343,7 +344,7 @@ export class DataRoutes extends BaseRouteHandler {
     // Import summaries (depends on sessions)
     if (Array.isArray(summaries)) {
       for (const summary of summaries) {
-        const result = store.importSessionSummary(summary);
+        const result = await store.importSessionSummary(summary);
         if (result.imported) {
           stats.summariesImported++;
         } else {
@@ -355,7 +356,7 @@ export class DataRoutes extends BaseRouteHandler {
     // Import observations (depends on sessions)
     if (Array.isArray(observations)) {
       for (const obs of observations) {
-        const result = store.importObservation(obs);
+        const result = await store.importObservation(obs);
         if (result.imported) {
           stats.observationsImported++;
         } else {
@@ -367,7 +368,7 @@ export class DataRoutes extends BaseRouteHandler {
     // Import prompts (depends on sessions)
     if (Array.isArray(prompts)) {
       for (const prompt of prompts) {
-        const result = store.importUserPrompt(prompt);
+        const result = await store.importUserPrompt(prompt);
         if (result.imported) {
           stats.promptsImported++;
         } else {
@@ -387,21 +388,21 @@ export class DataRoutes extends BaseRouteHandler {
    * GET /api/pending-queue
    * Returns all pending, processing, and failed messages with optional recently processed
    */
-  private handleGetPendingQueue = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetPendingQueue = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
     const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
 
     // Get queue contents (pending, processing, failed)
-    const queueMessages = pendingStore.getQueueMessages();
+    const queueMessages = await pendingStore.getQueueMessages();
 
     // Get recently processed (last 30 min, up to 20)
-    const recentlyProcessed = pendingStore.getRecentlyProcessed(20, 30);
+    const recentlyProcessed = await pendingStore.getRecentlyProcessed(20, 30);
 
     // Get stuck message count (processing > 5 min)
-    const stuckCount = pendingStore.getStuckCount(5 * 60 * 1000);
+    const stuckCount = await pendingStore.getStuckCount(5 * 60 * 1000);
 
     // Get sessions with pending work
-    const sessionsWithPending = pendingStore.getSessionsWithPendingMessages();
+    const sessionsWithPending = await pendingStore.getSessionsWithPendingMessages();
 
     res.json({
       queue: {
@@ -441,11 +442,11 @@ export class DataRoutes extends BaseRouteHandler {
    * DELETE /api/pending-queue/failed
    * Returns the number of messages cleared
    */
-  private handleClearFailedQueue = this.wrapHandler((req: Request, res: Response): void => {
+  private handleClearFailedQueue = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
     const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
 
-    const clearedCount = pendingStore.clearFailed();
+    const clearedCount = await pendingStore.clearFailed();
 
     logger.info('QUEUE', 'Cleared failed queue messages', { clearedCount });
 
@@ -460,11 +461,11 @@ export class DataRoutes extends BaseRouteHandler {
    * DELETE /api/pending-queue/all
    * Returns the number of messages cleared
    */
-  private handleClearAllQueue = this.wrapHandler((req: Request, res: Response): void => {
+  private handleClearAllQueue = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
     const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
 
-    const clearedCount = pendingStore.clearAll();
+    const clearedCount = await pendingStore.clearAll();
 
     logger.warn('QUEUE', 'Cleared ALL queue messages (pending, processing, failed)', { clearedCount });
 

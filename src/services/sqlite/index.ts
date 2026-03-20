@@ -1,3 +1,7 @@
+// Export adapter interface
+export type { DbAdapter, ExecResult } from './adapter.js';
+export { queryOne, queryAll, exec } from './adapter.js';
+
 // Export main components
 export {
   ClaudeMemDatabase,

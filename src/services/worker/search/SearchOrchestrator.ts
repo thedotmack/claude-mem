@@ -131,7 +131,7 @@ export class SearchOrchestrator {
     }
 
     // Fallback to SQLite
-    const results = this.sqliteStrategy.findByConcept(concept, options);
+    const results = await this.sqliteStrategy.findByConcept(concept, options);
     return {
       results: { observations: results, sessions: [], prompts: [] },
       usedChroma: false,
@@ -151,7 +151,7 @@ export class SearchOrchestrator {
     }
 
     // Fallback to SQLite
-    const results = this.sqliteStrategy.findByType(type, options);
+    const results = await this.sqliteStrategy.findByType(type, options);
     return {
       results: { observations: results, sessions: [], prompts: [] },
       usedChroma: false,
@@ -175,7 +175,7 @@ export class SearchOrchestrator {
     }
 
     // Fallback to SQLite
-    const results = this.sqliteStrategy.findByFile(filePath, options);
+    const results = await this.sqliteStrategy.findByFile(filePath, options);
     return { ...results, usedChroma: false };
   }
 

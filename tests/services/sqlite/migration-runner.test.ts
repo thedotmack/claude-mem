@@ -9,8 +9,10 @@
  * Value: Prevents regression where old DatabaseManager migrations mask core table creation
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { Database } from 'bun:sqlite';
+import { createClient } from '@libsql/client';
+import { LibsqlAdapter } from '../../../src/services/sqlite/adapters/libsql-adapter.js';
 import { MigrationRunner } from '../../../src/services/sqlite/migrations/runner.js';
+import type { DbAdapter } from '../../../src/services/sqlite/adapter.js';
 
 interface TableNameRow {
   name: string;
@@ -32,39 +34,41 @@ interface ForeignKeyInfo {
   on_delete: string;
 }
 
-function getTableNames(db: Database): string[] {
-  const rows = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as TableNameRow[];
-  return rows.map(r => r.name);
+async function getTableNames(db: DbAdapter): Promise<string[]> {
+  const result = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
+  return (result.rows as TableNameRow[]).map(r => r.name);
 }
 
-function getColumns(db: Database, table: string): TableColumnInfo[] {
-  return db.prepare(`PRAGMA table_info(${table})`).all() as TableColumnInfo[];
+async function getColumns(db: DbAdapter, table: string): Promise<TableColumnInfo[]> {
+  const result = await db.execute(`PRAGMA table_info(${table})`);
+  return result.rows as TableColumnInfo[];
 }
 
-function getSchemaVersions(db: Database): number[] {
-  const rows = db.prepare('SELECT version FROM schema_versions ORDER BY version').all() as SchemaVersion[];
-  return rows.map(r => r.version);
+async function getSchemaVersions(db: DbAdapter): Promise<number[]> {
+  const result = await db.execute('SELECT version FROM schema_versions ORDER BY version');
+  return (result.rows as SchemaVersion[]).map(r => r.version);
 }
 
 describe('MigrationRunner', () => {
-  let db: Database;
+  let db: DbAdapter;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.run('PRAGMA journal_mode = WAL');
-    db.run('PRAGMA foreign_keys = ON');
+  beforeEach(async () => {
+    const client = createClient({ url: 'file::memory:' });
+    db = new LibsqlAdapter(client);
+    await db.execute('PRAGMA journal_mode = WAL');
+    await db.execute('PRAGMA foreign_keys = ON');
   });
 
-  afterEach(() => {
-    db.close();
+  afterEach(async () => {
+    await db.close();
   });
 
   describe('fresh database initialization', () => {
-    it('should create all core tables on a fresh database', () => {
+    it('should create all core tables on a fresh database', async () => {
       const runner = new MigrationRunner(db);
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
-      const tables = getTableNames(db);
+      const tables = await getTableNames(db);
       expect(tables).toContain('schema_versions');
       expect(tables).toContain('sdk_sessions');
       expect(tables).toContain('observations');
@@ -73,11 +77,11 @@ describe('MigrationRunner', () => {
       expect(tables).toContain('pending_messages');
     });
 
-    it('should create sdk_sessions with all expected columns', () => {
+    it('should create sdk_sessions with all expected columns', async () => {
       const runner = new MigrationRunner(db);
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
-      const columns = getColumns(db, 'sdk_sessions');
+      const columns = await getColumns(db, 'sdk_sessions');
       const columnNames = columns.map(c => c.name);
 
       expect(columnNames).toContain('id');
@@ -89,11 +93,11 @@ describe('MigrationRunner', () => {
       expect(columnNames).toContain('prompt_counter');
     });
 
-    it('should create observations with all expected columns including content_hash', () => {
+    it('should create observations with all expected columns including content_hash', async () => {
       const runner = new MigrationRunner(db);
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
-      const columns = getColumns(db, 'observations');
+      const columns = await getColumns(db, 'observations');
       const columnNames = columns.map(c => c.name);
 
       expect(columnNames).toContain('id');
@@ -107,11 +111,11 @@ describe('MigrationRunner', () => {
       expect(columnNames).toContain('content_hash');
     });
 
-    it('should record all migration versions', () => {
+    it('should record all migration versions', async () => {
       const runner = new MigrationRunner(db);
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
-      const versions = getSchemaVersions(db);
+      const versions = await getSchemaVersions(db);
       // Core set of expected versions
       expect(versions).toContain(4);   // initializeSchema
       expect(versions).toContain(5);   // worker_port
@@ -131,27 +135,27 @@ describe('MigrationRunner', () => {
   });
 
   describe('idempotency — running migrations twice', () => {
-    it('should succeed when run twice on the same database', () => {
+    it('should succeed when run twice on the same database', async () => {
       const runner = new MigrationRunner(db);
 
       // First run
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
       // Second run — must not throw
-      expect(() => runner.runAllMigrations()).not.toThrow();
+      await runner.runAllMigrations();
     });
 
-    it('should produce identical schema when run twice', () => {
+    it('should produce identical schema when run twice', async () => {
       const runner = new MigrationRunner(db);
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
-      const tablesAfterFirst = getTableNames(db);
-      const versionsAfterFirst = getSchemaVersions(db);
+      const tablesAfterFirst = await getTableNames(db);
+      const versionsAfterFirst = await getSchemaVersions(db);
 
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
-      const tablesAfterSecond = getTableNames(db);
-      const versionsAfterSecond = getSchemaVersions(db);
+      const tablesAfterSecond = await getTableNames(db);
+      const versionsAfterSecond = await getSchemaVersions(db);
 
       expect(tablesAfterSecond).toEqual(tablesAfterFirst);
       expect(versionsAfterSecond).toEqual(versionsAfterFirst);
@@ -159,10 +163,10 @@ describe('MigrationRunner', () => {
   });
 
   describe('issue #979 — old DatabaseManager version conflict', () => {
-    it('should create core tables even when old migration versions 1-7 are in schema_versions', () => {
+    it('should create core tables even when old migration versions 1-7 are in schema_versions', async () => {
       // Simulate the old DatabaseManager having applied its migrations 1-7
       // (which are completely different operations with the same version numbers)
-      db.run(`
+      await db.execute(`
         CREATE TABLE IF NOT EXISTS schema_versions (
           id INTEGER PRIMARY KEY,
           version INTEGER UNIQUE NOT NULL,
@@ -172,14 +176,14 @@ describe('MigrationRunner', () => {
 
       const now = new Date().toISOString();
       for (let v = 1; v <= 7; v++) {
-        db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(v, now);
+        await db.execute('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)', [v, now]);
       }
 
       // Now run MigrationRunner — core tables MUST still be created
       const runner = new MigrationRunner(db);
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
-      const tables = getTableNames(db);
+      const tables = await getTableNames(db);
       expect(tables).toContain('sdk_sessions');
       expect(tables).toContain('observations');
       expect(tables).toContain('session_summaries');
@@ -187,36 +191,36 @@ describe('MigrationRunner', () => {
       expect(tables).toContain('pending_messages');
     });
 
-    it('should handle version 5 conflict (old=drop tables, new=add column) correctly', () => {
+    it('should handle version 5 conflict (old=drop tables, new=add column) correctly', async () => {
       // Old migration 5 drops streaming_sessions/observation_queue
       // New migration 5 adds worker_port column to sdk_sessions
       // With old version 5 already recorded, MigrationRunner must still add the column
-      db.run(`
+      await db.execute(`
         CREATE TABLE IF NOT EXISTS schema_versions (
           id INTEGER PRIMARY KEY,
           version INTEGER UNIQUE NOT NULL,
           applied_at TEXT NOT NULL
         )
       `);
-      db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(5, new Date().toISOString());
+      await db.execute('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)', [5, new Date().toISOString()]);
 
       const runner = new MigrationRunner(db);
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
       // sdk_sessions should exist and have worker_port (added by later migrations even if v5 is skipped)
-      const columns = getColumns(db, 'sdk_sessions');
+      const columns = await getColumns(db, 'sdk_sessions');
       const columnNames = columns.map(c => c.name);
       expect(columnNames).toContain('content_session_id');
     });
   });
 
   describe('crash recovery — leftover temp tables', () => {
-    it('should handle leftover session_summaries_new table from crashed migration 7', () => {
+    it('should handle leftover session_summaries_new table from crashed migration 7', async () => {
       const runner = new MigrationRunner(db);
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
       // Simulate a leftover temp table from a crash
-      db.run(`
+      await db.execute(`
         CREATE TABLE session_summaries_new (
           id INTEGER PRIMARY KEY,
           test TEXT
@@ -224,18 +228,18 @@ describe('MigrationRunner', () => {
       `);
 
       // Remove version 7 so migration tries to re-run
-      db.prepare('DELETE FROM schema_versions WHERE version = 7').run();
+      await db.execute('DELETE FROM schema_versions WHERE version = 7');
 
       // Re-run should handle the leftover table gracefully
-      expect(() => runner.runAllMigrations()).not.toThrow();
+      await runner.runAllMigrations();
     });
 
-    it('should handle leftover observations_new table from crashed migration 9', () => {
+    it('should handle leftover observations_new table from crashed migration 9', async () => {
       const runner = new MigrationRunner(db);
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
       // Simulate a leftover temp table from a crash
-      db.run(`
+      await db.execute(`
         CREATE TABLE observations_new (
           id INTEGER PRIMARY KEY,
           test TEXT
@@ -243,19 +247,20 @@ describe('MigrationRunner', () => {
       `);
 
       // Remove version 9 so migration tries to re-run
-      db.prepare('DELETE FROM schema_versions WHERE version = 9').run();
+      await db.execute('DELETE FROM schema_versions WHERE version = 9');
 
       // Re-run should handle the leftover table gracefully
-      expect(() => runner.runAllMigrations()).not.toThrow();
+      await runner.runAllMigrations();
     });
   });
 
   describe('ON UPDATE CASCADE FK constraints', () => {
-    it('should have ON UPDATE CASCADE on observations FK after migration 21', () => {
+    it('should have ON UPDATE CASCADE on observations FK after migration 21', async () => {
       const runner = new MigrationRunner(db);
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
-      const fks = db.prepare('PRAGMA foreign_key_list(observations)').all() as ForeignKeyInfo[];
+      const result = await db.execute('PRAGMA foreign_key_list(observations)');
+      const fks = result.rows as ForeignKeyInfo[];
       const memorySessionFk = fks.find(fk => fk.table === 'sdk_sessions');
 
       expect(memorySessionFk).toBeDefined();
@@ -263,11 +268,12 @@ describe('MigrationRunner', () => {
       expect(memorySessionFk!.on_delete).toBe('CASCADE');
     });
 
-    it('should have ON UPDATE CASCADE on session_summaries FK after migration 21', () => {
+    it('should have ON UPDATE CASCADE on session_summaries FK after migration 21', async () => {
       const runner = new MigrationRunner(db);
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
-      const fks = db.prepare('PRAGMA foreign_key_list(session_summaries)').all() as ForeignKeyInfo[];
+      const result = await db.execute('PRAGMA foreign_key_list(session_summaries)');
+      const fks = result.rows as ForeignKeyInfo[];
       const memorySessionFk = fks.find(fk => fk.table === 'sdk_sessions');
 
       expect(memorySessionFk).toBeDefined();
@@ -277,39 +283,39 @@ describe('MigrationRunner', () => {
   });
 
   describe('data integrity during migration', () => {
-    it('should preserve existing data through all migrations', () => {
+    it('should preserve existing data through all migrations', async () => {
       const runner = new MigrationRunner(db);
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
       // Insert test data
       const now = new Date().toISOString();
       const epoch = Date.now();
 
-      db.prepare(`
+      await db.execute(`
         INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
         VALUES (?, ?, ?, ?, ?, ?)
-      `).run('test-content-1', 'test-memory-1', 'test-project', now, epoch, 'active');
+      `, ['test-content-1', 'test-memory-1', 'test-project', now, epoch, 'active']);
 
-      db.prepare(`
+      await db.execute(`
         INSERT INTO observations (memory_session_id, project, text, type, created_at, created_at_epoch)
         VALUES (?, ?, ?, ?, ?, ?)
-      `).run('test-memory-1', 'test-project', 'test observation', 'discovery', now, epoch);
+      `, ['test-memory-1', 'test-project', 'test observation', 'discovery', now, epoch]);
 
-      db.prepare(`
+      await db.execute(`
         INSERT INTO session_summaries (memory_session_id, project, request, created_at, created_at_epoch)
         VALUES (?, ?, ?, ?, ?)
-      `).run('test-memory-1', 'test-project', 'test request', now, epoch);
+      `, ['test-memory-1', 'test-project', 'test request', now, epoch]);
 
       // Run migrations again — data should survive
-      runner.runAllMigrations();
+      await runner.runAllMigrations();
 
-      const sessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
-      const observations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
-      const summaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
+      const sessions = await db.execute('SELECT COUNT(*) as count FROM sdk_sessions');
+      const observations = await db.execute('SELECT COUNT(*) as count FROM observations');
+      const summaries = await db.execute('SELECT COUNT(*) as count FROM session_summaries');
 
-      expect(sessions.count).toBe(1);
-      expect(observations.count).toBe(1);
-      expect(summaries.count).toBe(1);
+      expect((sessions.rows[0] as { count: number }).count).toBe(1);
+      expect((observations.rows[0] as { count: number }).count).toBe(1);
+      expect((summaries.rows[0] as { count: number }).count).toBe(1);
     });
   });
 });
