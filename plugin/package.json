@@ -5,6 +5,7 @@
   "description": "Runtime dependencies for claude-mem bundled hooks",
   "type": "module",
   "dependencies": {
+    "@libsql/client": "^0.17.2",
     "tree-sitter-cli": "^0.26.5",
     "tree-sitter-c": "^0.24.1",
     "tree-sitter-cpp": "^0.23.4",
