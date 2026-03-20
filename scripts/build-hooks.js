@@ -45,17 +45,22 @@ function stripHardcodedDirname(filePath) {
   let content = fs.readFileSync(filePath, 'utf-8');
   const before = content.length;
 
-  // Remove `var __dirname = "...", rest` → `var rest`
-  content = content.replace(/\bvar __dirname\s*=\s*"[^"]*",\s*/g, 'var ');
-  // Remove standalone `var __dirname = "...";`
-  content = content.replace(/\bvar __dirname\s*=\s*"[^"]*";\s*/g, '');
-  // Remove `, __dirname = "..."` from mid/end of var declarations
-  content = content.replace(/,\s*__dirname\s*=\s*"[^"]*"/g, '');
+  // Match both double-quoted and single-quoted string literals.
+  // esbuild currently emits double quotes, but single quotes are handled
+  // defensively in case future versions change quoting style.
+  const str = `(?:"[^"]*"|'[^']*')`;
 
-  // Same for __filename
-  content = content.replace(/\bvar __filename\s*=\s*"[^"]*",\s*/g, 'var ');
-  content = content.replace(/\bvar __filename\s*=\s*"[^"]*";\s*/g, '');
-  content = content.replace(/,\s*__filename\s*=\s*"[^"]*"/g, '');
+  for (const id of ['__dirname', '__filename']) {
+    // Remove `var <id> = "...", rest` → `var rest`
+    content = content.replace(new RegExp(`\\bvar ${id}\\s*=\\s*${str},\\s*`, 'g'), 'var ');
+    // Remove standalone `var <id> = "...";`
+    content = content.replace(new RegExp(`\\bvar ${id}\\s*=\\s*${str};\\s*`, 'g'), '');
+    // Remove `, <id> = "..."` from mid/end of var declarations
+    content = content.replace(new RegExp(`,\\s*${id}\\s*=\\s*${str}`, 'g'), '');
+  }
+
+  // Clean up dangling `var ;` left when __dirname was the sole declarator
+  content = content.replace(/\bvar\s*;/g, '');
 
   const removed = before - content.length;
   if (removed > 0) {
