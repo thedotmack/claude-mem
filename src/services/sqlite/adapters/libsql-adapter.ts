@@ -10,7 +10,7 @@
 
 import { createClient, type Client, type ResultSet, type InStatement } from '@libsql/client';
 import type { DbAdapter, ExecResult } from '../adapter.js';
-import { DB_PATH } from '../../../shared/paths.js';
+import { DB_PATH, USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../../utils/logger.js';
 
@@ -158,12 +158,16 @@ export async function createDbAdapter(dbPath: string = DB_PATH): Promise<DbAdapt
 
 // ─── Settings helpers ──────────────────────────────────────
 
+function getSettings() {
+  return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+}
+
 function getDbMode(): string {
-  return SettingsDefaultsManager.get('CLAUDE_MEM_DB_MODE');
+  return getSettings().CLAUDE_MEM_DB_MODE;
 }
 
 function getDbUrl(): string {
-  const url = SettingsDefaultsManager.get('CLAUDE_MEM_DB_URL');
+  const url = getSettings().CLAUDE_MEM_DB_URL;
   if (!url) {
     throw new Error('CLAUDE_MEM_DB_URL must be set for remote/replica database mode');
   }
@@ -171,5 +175,5 @@ function getDbUrl(): string {
 }
 
 function getAuthToken(): string {
-  return SettingsDefaultsManager.get('CLAUDE_MEM_DB_AUTH_TOKEN');
+  return getSettings().CLAUDE_MEM_DB_AUTH_TOKEN;
 }
