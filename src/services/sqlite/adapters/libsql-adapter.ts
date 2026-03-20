@@ -8,7 +8,7 @@
  *   - replica: local file + background sync to remote (fast reads, shared state)
  */
 
-import { createClient, type Client, type ResultSet, type InStatement } from '@libsql/client';
+import { createClient, type Client, type Transaction, type ResultSet, type InStatement } from '@libsql/client';
 import type { DbAdapter, ExecResult } from '../adapter.js';
 import { DB_PATH, USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
@@ -67,8 +67,23 @@ function splitStatements(sql: string): string[] {
     .filter(s => s.length > 0);
 }
 
+/**
+ * Check if a SQL statement is a transaction control statement.
+ * Remote mode can't use raw BEGIN/COMMIT over HTTP — we intercept
+ * these and use client.transaction() for interactive transactions.
+ */
+function isTransactionControl(sql: string): 'begin' | 'commit' | 'rollback' | null {
+  const trimmed = sql.trim().toLowerCase();
+  if (trimmed.startsWith('begin')) return 'begin';
+  if (trimmed === 'commit') return 'commit';
+  if (trimmed === 'rollback') return 'rollback';
+  return null;
+}
+
 export class LibsqlAdapter implements DbAdapter {
   private isRemote: boolean;
+  /** Active interactive transaction (remote mode only) */
+  private tx: Transaction | null = null;
 
   constructor(
     private client: Client,
@@ -83,7 +98,35 @@ export class LibsqlAdapter implements DbAdapter {
       return { rows: [], rowsAffected: 0, lastInsertRowid: 0 };
     }
 
-    const rs = await this.client.execute({
+    // In remote mode, intercept transaction control and use client.transaction()
+    if (this.isRemote) {
+      const txCtrl = isTransactionControl(sql);
+
+      if (txCtrl === 'begin') {
+        this.tx = await this.client.transaction('write');
+        return { rows: [], rowsAffected: 0, lastInsertRowid: 0 };
+      }
+
+      if (txCtrl === 'commit') {
+        if (this.tx) {
+          await this.tx.commit();
+          this.tx = null;
+        }
+        return { rows: [], rowsAffected: 0, lastInsertRowid: 0 };
+      }
+
+      if (txCtrl === 'rollback') {
+        if (this.tx) {
+          await this.tx.rollback();
+          this.tx = null;
+        }
+        return { rows: [], rowsAffected: 0, lastInsertRowid: 0 };
+      }
+    }
+
+    // Execute on the active transaction if one exists, otherwise on the client
+    const target = this.tx ?? this.client;
+    const rs = await target.execute({
       sql,
       args: (args ?? []) as any,
     });
