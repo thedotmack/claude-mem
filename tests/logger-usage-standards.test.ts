@@ -44,7 +44,7 @@ const EXCLUDED_PATTERNS = [
 // Excludes UI files, type files, and pure utilities
 const HIGH_PRIORITY_PATTERNS = [
   /^services\/worker\/(?!.*types\.ts$)/,  // Worker services (not type files)
-  /^services\/sqlite\/(?!types\.ts$|index\.ts$)/,  // SQLite services
+  /^services\/sqlite\/(?!types\.ts$|index\.ts$|adapter\.ts$|prompts\/types\.ts$)/,  // SQLite services (not type/interface files)
   /^services\/sync\//,
   /^services\/context-generator\.ts$/,
   /^hooks\/(?!hook-response\.ts$)/,  // All src/hooks/* except hook-response.ts (NOT ui/hooks)

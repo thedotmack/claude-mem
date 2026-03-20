@@ -12,6 +12,7 @@ import { createClient, type Client, type ResultSet, type InStatement } from '@li
 import type { DbAdapter, ExecResult } from '../adapter.js';
 import { DB_PATH } from '../../../shared/paths.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
+import { logger } from '../../../utils/logger.js';
 
 /**
  * PRAGMAs that only apply to local/replica mode (skipped for remote connections)
@@ -129,6 +130,7 @@ export async function createDbAdapter(dbPath: string = DB_PATH): Promise<DbAdapt
   const mode = getDbMode();
 
   if (mode === 'remote') {
+    logger.info('Creating remote libSQL adapter');
     const client = createClient({
       url: getDbUrl(),
       authToken: getAuthToken() || undefined,
@@ -137,6 +139,7 @@ export async function createDbAdapter(dbPath: string = DB_PATH): Promise<DbAdapt
   }
 
   if (mode === 'replica') {
+    logger.info('Creating replica libSQL adapter', { dbPath });
     const client = createClient({
       url: `file:${dbPath}`,
       syncUrl: getDbUrl(),
@@ -146,6 +149,7 @@ export async function createDbAdapter(dbPath: string = DB_PATH): Promise<DbAdapt
   }
 
   // Default: local
+  logger.debug('Creating local libSQL adapter', { dbPath });
   const client = createClient({
     url: `file:${dbPath}`,
   });
