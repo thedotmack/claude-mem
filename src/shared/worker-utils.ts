@@ -139,6 +139,22 @@ async function isWorkerHealthy(): Promise<boolean> {
 }
 
 /**
+ * Lightweight health probe for use in SessionEnd hook.
+ * Does NOT attempt to start the worker — only checks if it is already reachable.
+ * Returns true if GET /api/health responds with HTTP 200 within the given timeout.
+ * Returns false on any error (connection refused, timeout, non-200 status).
+ */
+export async function checkWorkerHealth(timeoutMs: number = 3000): Promise<boolean> {
+  try {
+    const url = `http://${getWorkerHost()}:${getWorkerPort()}/api/health`;
+    const response = await fetchWithTimeout(url, {}, timeoutMs);
+    return response.status === 200;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Get the current plugin version from package.json.
  * Returns 'unknown' on ENOENT/EBUSY (shutdown race condition, fix #1042).
  */

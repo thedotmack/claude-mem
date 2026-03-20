@@ -412,6 +412,52 @@ function startParentHeartbeat() {
   if (heartbeatTimer.unref) heartbeatTimer.unref();
 }
 
+// Windows liveness probe: poll worker /api/health every 30 seconds.
+// ppid detection is unreliable on Windows (ppid does not change when parent exits),
+// so we use an HTTP heartbeat instead. After 2 consecutive failures (~60s), self-exit.
+const LIVENESS_PROBE_INTERVAL_MS = 30_000;
+const LIVENESS_FAILURE_THRESHOLD = 2;
+
+function startWorkerLivenessProbe(): void {
+  // HTTP probe is only needed on Windows; Unix uses startParentHeartbeat() above.
+  if (process.platform !== 'win32') return;
+
+  const workerPort = process.env.CLAUDE_MEM_WORKER_PORT
+    ? parseInt(process.env.CLAUDE_MEM_WORKER_PORT, 10)
+    : 37777;
+  const healthUrl = `http://127.0.0.1:${workerPort}/api/health`;
+
+  let consecutiveFailures = 0;
+
+  const probeTimer = setInterval(async () => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const response = await fetch(healthUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        consecutiveFailures = 0;
+      } else {
+        consecutiveFailures++;
+      }
+    } catch {
+      consecutiveFailures++;
+    }
+
+    if (consecutiveFailures >= LIVENESS_FAILURE_THRESHOLD) {
+      logger.info('SYSTEM', 'Worker unreachable for 2 consecutive liveness checks, self-exiting', {
+        healthUrl,
+        consecutiveFailures
+      });
+      cleanup();
+    }
+  }, LIVENESS_PROBE_INTERVAL_MS);
+
+  // Don't let the probe timer prevent clean exit
+  if (probeTimer.unref) probeTimer.unref();
+}
+
 // Cleanup function — synchronous to ensure consistent behavior whether called
 // from signal handlers, heartbeat interval, or awaited in async context
 function cleanup() {
@@ -431,8 +477,11 @@ async function main() {
   await server.connect(transport);
   logger.info('SYSTEM', 'Claude-mem search server started');
 
-  // Start parent heartbeat to detect orphaned MCP servers
+  // Start parent heartbeat to detect orphaned MCP servers (Unix: ppid-based)
   startParentHeartbeat();
+
+  // Start worker liveness probe (Windows: HTTP-based, replaces unavailable ppid detection)
+  startWorkerLivenessProbe();
 
   // Check Worker availability in background
   setTimeout(async () => {

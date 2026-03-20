@@ -186,3 +186,10 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
   rmSync(pidFilePath, { force: true });
   return 'stale';
 }
+
+export {
+  readRegistryRaw,
+  getRegisteredPidBySubsystem,
+  killRegisteredProcesses,
+  removeRegistryEntries
+} from './registry-reader.js';

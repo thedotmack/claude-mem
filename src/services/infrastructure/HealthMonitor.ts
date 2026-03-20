@@ -11,8 +11,10 @@
 
 import path from 'path';
 import { readFileSync } from 'fs';
+import { execSync } from 'child_process';
 import { logger } from '../../utils/logger.js';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
+import { readRegistryRaw } from '../../supervisor/registry-reader.js';
 
 /**
  * Make an HTTP request to the worker via TCP.
@@ -102,6 +104,81 @@ export async function waitForPortFree(port: number, timeoutMs: number = 10000): 
     await new Promise(r => setTimeout(r, 500));
   }
   return false;
+}
+
+/**
+ * Drain TCP sockets in CLOSE_WAIT / LISTEN state on the given port (Windows only).
+ *
+ * When the old worker exits abnormally its child processes can hold the port in
+ * CLOSE_WAIT, causing EADDRINUSE for the next spawn. This function finds those
+ * processes via PowerShell, verifies each PID is a known claude-mem process by
+ * cross-checking supervisor.json (Solution B — no collateral kills), and force-
+ * terminates them.
+ *
+ * Returns true if at least one PID was killed (caller should retry the spawn),
+ * false if nothing was killed or on any error.
+ *
+ * Non-Windows: returns false immediately (no-op).
+ */
+export async function drainTcpSocket(port: number): Promise<boolean> {
+  if (process.platform !== 'win32') return false;
+
+  // SECURITY: Validate port is a positive integer before interpolation
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return false;
+
+  try {
+    // Get PIDs holding the port in any active TCP state
+    const psCmd = [
+      'powershell', '-NoProfile', '-NonInteractive', '-Command',
+      `Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | ` +
+      `Select-Object -ExpandProperty OwningProcess`
+    ].join(' ');
+
+    let stdout: string;
+    try {
+      stdout = execSync(psCmd, { timeout: 5000, windowsHide: true, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      // PowerShell failed (e.g. no matching connections) — not an error
+      return false;
+    }
+
+    const candidatePids = stdout
+      .split(/\r?\n/)
+      .map(line => parseInt(line.trim(), 10))
+      .filter(pid => Number.isInteger(pid) && pid > 4 && pid !== process.pid);
+
+    if (candidatePids.length === 0) return false;
+
+    // Solution B: only kill PIDs that are registered in supervisor.json
+    const registryEntries = readRegistryRaw();
+    const knownPids = new Set(registryEntries.map(e => e.pid));
+
+    const pidsToKill = candidatePids.filter(pid => knownPids.has(pid));
+    if (pidsToKill.length === 0) {
+      logger.warn('SYSTEM', 'Port occupied by unknown process(es) — skipping drain to avoid collateral kill', {
+        port,
+        candidatePids
+      });
+      return false;
+    }
+
+    let anyKilled = false;
+    for (const pid of pidsToKill) {
+      try {
+        execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+        logger.info('SYSTEM', 'TCP drain: killed registered process holding port', { port, pid });
+        anyKilled = true;
+      } catch {
+        logger.debug('SYSTEM', 'TCP drain: taskkill failed (process may have already exited)', { pid });
+      }
+    }
+
+    return anyKilled;
+  } catch (error) {
+    // Drain is best-effort — never block startup on a failure here
+    logger.warn('SYSTEM', 'TCP drain failed unexpectedly', { port }, error as Error);
+    return false;
+  }
 }
 
 /**

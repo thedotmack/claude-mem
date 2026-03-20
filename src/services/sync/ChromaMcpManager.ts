@@ -174,7 +174,9 @@ export class ChromaMcpManager {
       }
       logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff');
       this.connected = false;
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      // Do NOT unregister here — leave the PID in supervisor.json so the
+      // SessionEnd fallback (Phase 2) can kill it if the worker crashes.
+      // pruneDeadEntries() on next startup will clean the stale entry.
       this.client = null;
       this.transport = null;
       this.lastConnectionFailureTimestamp = Date.now();
@@ -468,11 +470,11 @@ export class ChromaMcpManager {
     getSupervisor().registerProcess(CHROMA_SUPERVISOR_ID, {
       pid: chromaProcess.pid,
       type: 'chroma',
+      subsystem: 'chroma-mcp',
       startedAt: new Date().toISOString()
     }, chromaProcess);
-
-    chromaProcess.once('exit', () => {
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
-    });
+    // Do NOT unregister on exit — leave the entry on disk so the SessionEnd
+    // fallback (Phase 2) can kill the PID even if the worker has crashed.
+    // pruneDeadEntries() removes it on next startup.
   }
 }

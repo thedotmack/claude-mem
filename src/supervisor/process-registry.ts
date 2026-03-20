@@ -13,6 +13,7 @@ const DEFAULT_REGISTRY_PATH = path.join(DATA_DIR, 'supervisor.json');
 export interface ManagedProcessInfo {
   pid: number;
   type: string;
+  subsystem?: 'worker' | 'mcp-server' | 'chroma-mcp';
   sessionId?: string | number;
   startedAt: string;
 }

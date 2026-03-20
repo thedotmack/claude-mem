@@ -20,7 +20,7 @@ import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
-import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
+import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor, getRegisteredPidBySubsystem } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
 // Windows: avoid repeated spawn popups when startup fails (issue #921)
@@ -78,7 +78,9 @@ import {
   aggressiveStartupCleanup,
   runOneTimeChromaMigration,
   cleanStalePidFile,
+  cleanStaleRegistryEntries,
   isProcessAlive,
+  forceKillProcess,
   spawnDaemon,
   isPidFileRecent,
   touchPidFile
@@ -89,7 +91,8 @@ import {
   waitForReadiness,
   waitForPortFree,
   httpShutdown,
-  checkVersionMatch
+  checkVersionMatch,
+  drainTcpSocket
 } from './infrastructure/HealthMonitor.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 
@@ -346,6 +349,7 @@ export class WorkerService {
     getSupervisor().registerProcess('worker', {
       pid: process.pid,
       type: 'worker',
+      subsystem: 'worker',
       startedAt: new Date().toISOString()
     });
 
@@ -432,6 +436,28 @@ export class WorkerService {
 
       // Connect to MCP server
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
+
+      // Orphan-kill guard: if a previous worker crashed without cleaning up its
+      // MCP server, the old process will still be registered in supervisor.json.
+      // Kill it now before spawning a fresh one to prevent duplicate instances.
+      try {
+        const orphanMcpPid = getRegisteredPidBySubsystem('mcp-server');
+        if (orphanMcpPid !== null) {
+          logger.warn('WORKER', 'Detected orphaned MCP server from previous session, killing before spawn', {
+            pid: orphanMcpPid
+          });
+          await forceKillProcess(orphanMcpPid);
+          getSupervisor().unregisterProcess('mcp-server');
+          // Brief wait to ensure the process is fully gone before spawning a replacement
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      } catch (orphanKillError) {
+        // Non-blocking: a failed orphan kill must not prevent the fresh spawn
+        logger.warn('WORKER', 'Failed to kill orphaned MCP server, proceeding with spawn', {
+          error: orphanKillError instanceof Error ? orphanKillError.message : String(orphanKillError)
+        });
+      }
+
       getSupervisor().assertCanSpawn('mcp server');
       const transport = new StdioClientTransport({
         command: 'node',
@@ -470,11 +496,12 @@ export class WorkerService {
         getSupervisor().registerProcess('mcp-server', {
           pid: mcpProcess.pid,
           type: 'mcp',
+          subsystem: 'mcp-server',
           startedAt: new Date().toISOString()
         }, mcpProcess);
-        mcpProcess.once('exit', () => {
-          getSupervisor().unregisterProcess('mcp-server');
-        });
+        // Do NOT unregister on exit — leave the entry on disk so the SessionEnd
+        // fallback (Phase 2) can kill the PID even if the worker has crashed.
+        // pruneDeadEntries() removes it on next startup.
       }
       this.mcpReady = true;
       logger.success('WORKER', 'MCP server connected');
@@ -939,6 +966,14 @@ export class WorkerService {
 async function ensureWorkerStarted(port: number): Promise<boolean> {
   // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
   const pidFileStatus = cleanStalePidFile();
+
+  // Prune dead entries from supervisor.json left over from a previous crash.
+  // Must run before port-binding so orphan detection in initializeBackground() starts clean.
+  try {
+    await cleanStaleRegistryEntries();
+  } catch {
+    // Non-critical: failure must not block startup
+  }
   if (pidFileStatus === 'alive') {
     logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
     const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
@@ -998,8 +1033,22 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
       logger.info('SYSTEM', 'Worker is now healthy');
       return true;
     }
-    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-    return false;
+    // Port occupied but worker not responding — likely a CLOSE_WAIT zombie from previous crash.
+    // On Windows: attempt to drain the socket by killing the registered process holding it.
+    if (process.platform === 'win32') {
+      logger.warn('SYSTEM', 'Port occupied but unhealthy, attempting TCP drain', { port });
+      const drained = await drainTcpSocket(port);
+      if (drained) {
+        logger.info('SYSTEM', 'TCP drain succeeded, proceeding to spawn');
+        // Fall through to the spawn logic below
+      } else {
+        logger.error('SYSTEM', 'Port in use but worker not responding and TCP drain failed', { port });
+        return false;
+      }
+    } else {
+      logger.error('SYSTEM', 'Port in use but worker not responding to health checks', { port });
+      return false;
+    }
   }
 
   // Windows: skip spawn if a recent attempt already failed (prevents repeated bun.exe popups, issue #921)

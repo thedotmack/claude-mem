@@ -17,6 +17,7 @@ import { logger } from '../../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
+import { readRegistryRaw, removeRegistryEntries } from '../../supervisor/registry-reader.js';
 
 const execAsync = promisify(exec);
 
@@ -34,6 +35,12 @@ const ORPHAN_PROCESS_PATTERNS = [
 
 // Only kill processes older than this to avoid killing the current session
 const ORPHAN_MAX_AGE_MINUTES = 30;
+
+// MCP server orphans get a much shorter age gate because the liveness probe
+// (startWorkerLivenessProbe) will cause the MCP server to self-exit within
+// ~60 seconds of worker death. Any mcp-server.cjs older than 5 minutes
+// without a live worker is definitively orphaned.
+const MCP_SERVER_ORPHAN_MAX_AGE_MINUTES = 5;
 
 interface RuntimeResolverOptions {
   platform?: NodeJS.Platform;
@@ -485,14 +492,18 @@ export async function aggressiveStartupCleanup(): Promise<void> {
           pidsToKill.push(pid);
           logger.debug('SYSTEM', 'Found orphaned process (aggressive)', { pid, commandLine: commandLine.substring(0, 80) });
         } else {
-          // Age-gated: only kill if older than threshold
+          // Age-gated: only kill if older than threshold.
+          // mcp-server.cjs uses a shorter gate (5 min) because the liveness probe
+          // will self-exit the process within ~60s of worker death.
+          const isMcpServer = commandLine.includes('mcp-server.cjs');
+          const ageThreshold = isMcpServer ? MCP_SERVER_ORPHAN_MAX_AGE_MINUTES : ORPHAN_MAX_AGE_MINUTES;
           const creationMatch = proc.CreationDate?.match(/\/Date\((\d+)\)\//);
           if (creationMatch) {
             const creationTime = parseInt(creationMatch[1], 10);
             const ageMinutes = (now - creationTime) / (1000 * 60);
-            if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+            if (ageMinutes >= ageThreshold) {
               pidsToKill.push(pid);
-              logger.debug('SYSTEM', 'Found orphaned process (age-gated)', { pid, ageMinutes: Math.round(ageMinutes) });
+              logger.debug('SYSTEM', 'Found orphaned process (age-gated)', { pid, ageMinutes: Math.round(ageMinutes), ageThreshold });
             }
           }
         }
@@ -527,11 +538,15 @@ export async function aggressiveStartupCleanup(): Promise<void> {
           pidsToKill.push(pid);
           logger.debug('SYSTEM', 'Found orphaned process (aggressive)', { pid, command: command.substring(0, 80) });
         } else {
-          // Age-gated: only kill if older than threshold
+          // Age-gated: only kill if older than threshold.
+          // mcp-server.cjs uses a shorter gate (5 min) because the liveness probe
+          // will self-exit the process within ~60s of worker death.
+          const isMcpServer = command.includes('mcp-server.cjs');
+          const ageThreshold = isMcpServer ? MCP_SERVER_ORPHAN_MAX_AGE_MINUTES : ORPHAN_MAX_AGE_MINUTES;
           const ageMinutes = parseElapsedTime(etime);
-          if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+          if (ageMinutes >= ageThreshold) {
             pidsToKill.push(pid);
-            logger.debug('SYSTEM', 'Found orphaned process (age-gated)', { pid, ageMinutes, command: command.substring(0, 80) });
+            logger.debug('SYSTEM', 'Found orphaned process (age-gated)', { pid, ageMinutes, ageThreshold, command: command.substring(0, 80) });
           }
         }
       }
@@ -758,6 +773,33 @@ export function touchPidFile(): void {
     utimesSync(PID_FILE, now, now);
   } catch {
     // Best-effort — failure to touch doesn't affect correctness
+  }
+}
+
+/**
+ * Remove supervisor.json entries whose process is no longer alive.
+ *
+ * Called at the start of ensureWorkerStarted() so that stale entries from a
+ * previous crashed session are pruned before the new worker daemon spawns.
+ * The processes are already dead — no killing required, only file cleanup.
+ *
+ * This is fast: one synchronous file read + one signal-0 per entry + one write.
+ * On the happy path (no stale entries) it returns immediately after the read.
+ */
+export async function cleanStaleRegistryEntries(): Promise<void> {
+  try {
+    const entries = readRegistryRaw();
+    const deadPids = entries
+      .filter(e => !isProcessAlive(e.pid))
+      .map(e => e.pid);
+
+    if (deadPids.length === 0) return;
+
+    logger.info('SYSTEM', `Pruning ${deadPids.length} stale registry entries at startup`, { pids: deadPids });
+    removeRegistryEntries(deadPids);
+  } catch (error) {
+    // Non-critical: next startup's pruneDeadEntries will handle any leftovers
+    logger.warn('SYSTEM', 'Failed to prune stale registry entries', {}, error as Error);
   }
 }
 
