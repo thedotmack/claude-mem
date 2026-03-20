@@ -37,6 +37,7 @@
           "installation",
           "usage/getting-started",
           "usage/openrouter-provider",
+          "usage/openai-compatible-provider",
           "usage/gemini-provider",
           "usage/search-tools",
           "usage/claude-desktop",

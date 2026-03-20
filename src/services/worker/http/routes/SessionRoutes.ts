@@ -14,6 +14,8 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
 import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from '../../GeminiAgent.js';
 import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterAgent.js';
+import { OpenAICompatibleAgent, isOpenAICompatibleSelected, isOpenAICompatibleAvailable } from '../../OpenAICompatibleAgent.js';
+import { AnthropicCompatibleAgent, isAnthropicCompatibleSelected, isAnthropicCompatibleAvailable } from '../../AnthropicCompatibleAgent.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -34,6 +36,8 @@ export class SessionRoutes extends BaseRouteHandler {
     private sdkAgent: SDKAgent,
     private geminiAgent: GeminiAgent,
     private openRouterAgent: OpenRouterAgent,
+    private openAICompatibleAgent: OpenAICompatibleAgent,
+    private anthropicCompatibleAgent: AnthropicCompatibleAgent,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService
   ) {
@@ -51,7 +55,23 @@ export class SessionRoutes extends BaseRouteHandler {
    * Note: Session linking via contentSessionId allows provider switching mid-session.
    * The conversationHistory on ActiveSession maintains context across providers.
    */
-  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
+  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent | OpenAICompatibleAgent | AnthropicCompatibleAgent {
+    if (isAnthropicCompatibleSelected()) {
+      if (isAnthropicCompatibleAvailable()) {
+        logger.debug('SESSION', 'Using Anthropic-Compatible agent');
+        return this.anthropicCompatibleAgent;
+      } else {
+        throw new Error('Anthropic-compatible provider selected but base URL or model not configured. Set CLAUDE_MEM_ANTHROPIC_COMPATIBLE_BASE_URL and CLAUDE_MEM_ANTHROPIC_COMPATIBLE_MODEL in settings.');
+      }
+    }
+    if (isOpenAICompatibleSelected()) {
+      if (isOpenAICompatibleAvailable()) {
+        logger.debug('SESSION', 'Using OpenAI-Compatible agent');
+        return this.openAICompatibleAgent;
+      } else {
+        throw new Error('OpenAI-compatible provider selected but base URL or model not configured. Set CLAUDE_MEM_OPENAI_COMPATIBLE_BASE_URL and CLAUDE_MEM_OPENAI_COMPATIBLE_MODEL in settings.');
+      }
+    }
     if (isOpenRouterSelected()) {
       if (isOpenRouterAvailable()) {
         logger.debug('SESSION', 'Using OpenRouter agent');
@@ -74,7 +94,13 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Get the currently selected provider name
    */
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
+  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'openai-compatible' | 'anthropic-compatible' {
+    if (isAnthropicCompatibleSelected() && isAnthropicCompatibleAvailable()) {
+      return 'anthropic-compatible';
+    }
+    if (isOpenAICompatibleSelected() && isOpenAICompatibleAvailable()) {
+      return 'openai-compatible';
+    }
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
     }
@@ -149,7 +175,7 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
+    provider: 'claude' | 'gemini' | 'openrouter' | 'openai-compatible' | 'anthropic-compatible',
     source: string
   ): void {
     if (!session) return;
@@ -164,8 +190,8 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortController = new AbortController();
     }
 
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agent = provider === 'anthropic-compatible' ? this.anthropicCompatibleAgent : (provider === 'openai-compatible' ? this.openAICompatibleAgent : (provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent)));
+    const agentName = provider === 'anthropic-compatible' ? 'Anthropic-Compatible' : (provider === 'openai-compatible' ? 'OpenAI-Compatible' : (provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK')));
 
     // Use database count for accurate telemetry (in-memory array is always empty due to FK constraint fix)
     const pendingStore = this.sessionManager.getPendingMessageStore();

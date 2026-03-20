@@ -1,0 +1,136 @@
+---
+title: "OpenAI-Compatible Provider"
+description: "Use any OpenAI-compatible API endpoint with claude-mem: OpenAI, DeepSeek, Ollama, Azure OpenAI, DashScope/百炼, and more"
+---
+
+# OpenAI-Compatible Provider
+
+Claude-mem supports any service implementing the OpenAI `/v1/chat/completions` API. This includes local LLMs, cloud providers, and regional services—any endpoint that speaks the OpenAI chat completions protocol.
+
+<Tip>
+**Local LLMs Supported**: Ollama and other local model servers require no API key and work entirely offline, giving you full privacy and zero cost.
+</Tip>
+
+## Supported Services
+
+| Service | Example Base URL | Notes |
+|---------|-----------------|-------|
+| OpenAI | `https://api.openai.com/v1/chat/completions` | Official OpenAI API |
+| DeepSeek | `https://api.deepseek.com/v1/chat/completions` | Cost-effective reasoning models |
+| Ollama (local) | `http://localhost:11434/v1/chat/completions` | No API key needed |
+| Azure OpenAI | `https://<resource>.openai.azure.com/openai/deployments/<model>/chat/completions?api-version=...` | Enterprise Azure |
+| DashScope/百炼 | `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions` | Alibaba Cloud Qwen models |
+| Any compatible API | your custom endpoint | Any `/v1/chat/completions` endpoint |
+
+## Configuration Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_OPENAI_COMPATIBLE_API_KEY` | — | API key (or set `OPENAI_API_KEY` env var; optional for local endpoints) |
+| `CLAUDE_MEM_OPENAI_COMPATIBLE_BASE_URL` | — | Full chat completions endpoint URL **(required)** |
+| `CLAUDE_MEM_OPENAI_COMPATIBLE_MODEL` | — | Model name, e.g. `gpt-4o`, `deepseek-chat`, `llama3.2` **(required)** |
+| `CLAUDE_MEM_OPENAI_COMPATIBLE_MAX_CONTEXT_MESSAGES` | `20` | Max messages in conversation history |
+| `CLAUDE_MEM_OPENAI_COMPATIBLE_MAX_TOKENS` | `100000` | Token budget safety limit |
+
+## Manual Configuration
+
+Edit `~/.claude-mem/settings.json` directly:
+
+### DashScope / 百炼 (Qwen models)
+
+DashScope provides access to Alibaba's Qwen model family via an OpenAI-compatible API.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPATIBLE_API_KEY": "sk-your-dashscope-key",
+  "CLAUDE_MEM_OPENAI_COMPATIBLE_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+  "CLAUDE_MEM_OPENAI_COMPATIBLE_MODEL": "qwen3.5-plus"
+}
+```
+
+Get your DashScope API key at [dashscope.aliyuncs.com](https://dashscope.aliyuncs.com).
+
+### DeepSeek
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPATIBLE_API_KEY": "sk-your-deepseek-key",
+  "CLAUDE_MEM_OPENAI_COMPATIBLE_BASE_URL": "https://api.deepseek.com/v1/chat/completions",
+  "CLAUDE_MEM_OPENAI_COMPATIBLE_MODEL": "deepseek-chat"
+}
+```
+
+### Ollama (Local — No API Key Required)
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPATIBLE_BASE_URL": "http://localhost:11434/v1/chat/completions",
+  "CLAUDE_MEM_OPENAI_COMPATIBLE_MODEL": "llama3.2"
+}
+```
+
+Make sure Ollama is running (`ollama serve`) and the model is pulled (`ollama pull llama3.2`).
+
+### OpenAI
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPATIBLE_API_KEY": "sk-your-openai-key",
+  "CLAUDE_MEM_OPENAI_COMPATIBLE_BASE_URL": "https://api.openai.com/v1/chat/completions",
+  "CLAUDE_MEM_OPENAI_COMPATIBLE_MODEL": "gpt-4o-mini"
+}
+```
+
+## Environment Variable Configuration
+
+You can set the API key via environment variable instead of the settings file:
+
+```bash
+export OPENAI_API_KEY=sk-your-api-key
+```
+
+Priority order: settings file `CLAUDE_MEM_OPENAI_COMPATIBLE_API_KEY` → `OPENAI_API_KEY` env var → no key (for local endpoints).
+
+## Fallback Behavior
+
+If the OpenAI-compatible endpoint returns a `429 Too Many Requests` response, claude-mem automatically falls back to the Claude SDK provider to ensure your observations are not lost.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Error: CLAUDE_MEM_OPENAI_COMPATIBLE_BASE_URL is not configured">
+    The `CLAUDE_MEM_OPENAI_COMPATIBLE_BASE_URL` setting is required. Add the full chat completions endpoint URL to your `~/.claude-mem/settings.json`. Make sure the URL points to the `/v1/chat/completions` (or equivalent) path, not just the base domain.
+  </Accordion>
+
+  <Accordion title="Error: CLAUDE_MEM_OPENAI_COMPATIBLE_MODEL is not configured">
+    The `CLAUDE_MEM_OPENAI_COMPATIBLE_MODEL` setting is required. Set it to the exact model identifier your provider uses (e.g., `gpt-4o`, `deepseek-chat`, `qwen3.5-plus`).
+  </Accordion>
+
+  <Accordion title="Connection refused or timeout (Ollama)">
+    Make sure Ollama is running: `ollama serve`. Check the model is available: `ollama list`. The default Ollama port is `11434`.
+  </Accordion>
+
+  <Accordion title="401 Unauthorized">
+    Check that your API key is correct. For settings-file configuration, verify `CLAUDE_MEM_OPENAI_COMPATIBLE_API_KEY` in `~/.claude-mem/settings.json`. For env-var configuration, confirm `echo $OPENAI_API_KEY` returns your key.
+  </Accordion>
+
+  <Accordion title="Verifying the provider is active">
+    After saving settings, check the health endpoint:
+
+    ```bash
+    curl http://localhost:37777/api/health
+    ```
+
+    The response should show `"provider": "openai-compatible"`.
+
+    You can also check the worker logs:
+
+    ```bash
+    tail -f ~/.claude-mem/logs/worker-out.log | grep "OpenAI-Compatible"
+    ```
+  </Accordion>
+</AccordionGroup>

@@ -14,7 +14,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_MODEL`            | `sonnet`                        | AI model for processing observations (when using Claude) |
-| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, or `openrouter` |
+| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, `openrouter`, or `openai-compatible` |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
@@ -42,6 +42,18 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and free
 | `CLAUDE_MEM_OPENROUTER_APP_NAME`             | `claude-mem`                | Optional: App name for analytics      |
 
 See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
+
+### OpenAI-Compatible Provider Settings
+
+| Setting                                              | Default | Description                                                                 |
+|------------------------------------------------------|---------|-----------------------------------------------------------------------------|
+| `CLAUDE_MEM_OPENAI_COMPATIBLE_API_KEY`               | —       | API key (or set `OPENAI_API_KEY` env var; optional for local endpoints)     |
+| `CLAUDE_MEM_OPENAI_COMPATIBLE_BASE_URL`              | —       | Full chat completions endpoint URL (required)                               |
+| `CLAUDE_MEM_OPENAI_COMPATIBLE_MODEL`                 | —       | Model name, e.g. `gpt-4o`, `deepseek-chat`, `llama3.2` (required)          |
+| `CLAUDE_MEM_OPENAI_COMPATIBLE_MAX_CONTEXT_MESSAGES`  | `20`    | Max messages in conversation history                                        |
+| `CLAUDE_MEM_OPENAI_COMPATIBLE_MAX_TOKENS`            | `100000`| Token budget safety limit                                                   |
+
+See [OpenAI-Compatible Provider](usage/openai-compatible-provider) for setup guides.
 
 ### System Configuration
 
