@@ -227,7 +227,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
         session.generatorPromise = null;
         session.currentProvider = null;
-        this.workerService.broadcastProcessingStatus();
+        await this.workerService.broadcastProcessingStatus();
 
         // Crash recovery: If not aborted and still has work, restart (with limit)
         if (!wasAborted) {
