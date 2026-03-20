@@ -54,6 +54,9 @@ export interface SettingsDefaults {
   // Exclusion Settings
   CLAUDE_MEM_EXCLUDED_PROJECTS: string;  // Comma-separated glob patterns for excluded project paths
   CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;  // JSON array of folder paths to exclude from CLAUDE.md generation
+  // Reranking Configuration
+  CLAUDE_MEM_RERANK_ENABLED: string;  // 'true' | 'false' - enable Flashrank cross-encoder reranking (default: 'false')
+  CLAUDE_MEM_RERANK_URL: string;      // URL of the Flashrank reranker microservice (default: 'http://localhost:37778')
   // Chroma Vector Database Configuration
   CLAUDE_MEM_CHROMA_ENABLED: string;   // 'true' | 'false' - set to 'false' for SQLite-only mode
   CLAUDE_MEM_CHROMA_MODE: string;      // 'local' | 'remote'
@@ -113,6 +116,9 @@ export class SettingsDefaultsManager {
     // Exclusion Settings
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
+    // Reranking Configuration
+    CLAUDE_MEM_RERANK_ENABLED: 'false',        // Disabled by default; requires flashrank-service.py running
+    CLAUDE_MEM_RERANK_URL: 'http://localhost:37778',  // Default port for the Flashrank microservice
     // Chroma Vector Database Configuration
     CLAUDE_MEM_CHROMA_ENABLED: 'true',         // Set to 'false' to disable Chroma and use SQLite-only search
     CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' uses persistent chroma-mcp via uvx, 'remote' connects to existing server
