@@ -164,6 +164,7 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
                           const val = e.target.value.trim();
                           if (val && val !== config.model) updateAgent(name, { model: val });
                           if (!val) setCustomModelAgents(prev => { const s = new Set(prev); s.delete(name); return s; });
+                          setCustomModelValues(prev => { const p = { ...prev }; delete p[name]; return p; });
                         }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
