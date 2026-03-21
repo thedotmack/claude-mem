@@ -40,6 +40,21 @@ const MODEL_OPTIONS = [
   ]},
 ];
 
+const ALL_KNOWN_MODELS = new Set(MODEL_OPTIONS.flatMap(g => g.models));
+
+// Basic validation: model should look like a real model ID
+function validateModel(model: string): { valid: boolean; warning?: string } {
+  if (!model || model.length < 2) return { valid: false, warning: 'Model name is too short' };
+  if (model.length > 100) return { valid: false, warning: 'Model name is too long' };
+  if (/\s/.test(model)) return { valid: false, warning: 'Model name cannot contain spaces' };
+  if (ALL_KNOWN_MODELS.has(model)) return { valid: true };
+  // Check if it looks like a provider/model format (common for OpenRouter)
+  if (model.includes('/')) return { valid: true };
+  // Check if it matches common model patterns
+  if (/^(gpt|claude|gemini|llama|deepseek|qwen|mistral|o[0-9])/i.test(model)) return { valid: true };
+  return { valid: true, warning: `"${model}" is not a recognized model. Make sure the ID is correct.` };
+}
+
 const REASONING_OPTIONS = ['standard', 'extended', 'minimal'];
 const PERMISSION_OPTIONS = ['full', 'sandboxed', 'read-plan', 'supervised', 'off'];
 
@@ -168,17 +183,32 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
                   <div>
                     <div style={{ display: 'flex', gap: '4px' }}>
                       <input type="text" value={customModelValues[name] ?? config.model}
-                        onChange={(e) => setCustomModelValues(prev => ({ ...prev, [name]: e.target.value }))}
+                        onChange={(e) => {
+                          setCustomModelValues(prev => ({ ...prev, [name]: e.target.value }));
+                          // Clear any previous validation error while typing
+                          if (updateErrors[name]?.startsWith('"')) setUpdateErrors(prev => { const p = { ...prev }; delete p[name]; return p; });
+                        }}
                         onBlur={(e) => {
                           const val = e.target.value.trim();
-                          if (val && val !== config.model) updateAgent(name, { model: val });
+                          if (val && val !== config.model) {
+                            const v = validateModel(val);
+                            if (!v.valid) { setUpdateErrors(prev => ({ ...prev, [name]: v.warning || 'Invalid model' })); return; }
+                            if (v.warning) setUpdateErrors(prev => ({ ...prev, [name]: v.warning }));
+                            updateAgent(name, { model: val });
+                          }
                           if (!val) setCustomModelAgents(prev => { const s = new Set(prev); s.delete(name); return s; });
                           setCustomModelValues(prev => { const p = { ...prev }; delete p[name]; return p; });
                         }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
                             const val = (e.target as HTMLInputElement).value.trim();
-                            if (val) { updateAgent(name, { model: val }); setCustomModelValues(prev => { const p = { ...prev }; delete p[name]; return p; }); }
+                            if (val) {
+                              const v = validateModel(val);
+                              if (!v.valid) { setUpdateErrors(prev => ({ ...prev, [name]: v.warning || 'Invalid model' })); return; }
+                              if (v.warning) setUpdateErrors(prev => ({ ...prev, [name]: v.warning }));
+                              updateAgent(name, { model: val });
+                              setCustomModelValues(prev => { const p = { ...prev }; delete p[name]; return p; });
+                            }
                           }
                         }}
                         placeholder="e.g. openai/gpt-4o or nvidia/nemotron-3-super:free" autoFocus
