@@ -42,17 +42,19 @@ const MODEL_OPTIONS = [
 
 const ALL_KNOWN_MODELS = new Set(MODEL_OPTIONS.flatMap(g => g.models));
 
-// Basic validation: model should look like a real model ID
-function validateModel(model: string): { valid: boolean; warning?: string } {
-  if (!model || model.length < 2) return { valid: false, warning: 'Model name is too short' };
-  if (model.length > 100) return { valid: false, warning: 'Model name is too long' };
-  if (/\s/.test(model)) return { valid: false, warning: 'Model name cannot contain spaces' };
-  if (ALL_KNOWN_MODELS.has(model)) return { valid: true };
-  // Check if it looks like a provider/model format (common for OpenRouter)
-  if (model.includes('/')) return { valid: true };
-  // Check if it matches common model patterns
-  if (/^(gpt|claude|gemini|llama|deepseek|qwen|mistral|o[0-9])/i.test(model)) return { valid: true };
-  return { valid: true, warning: `"${model}" is not a recognized model. Make sure the ID is correct.` };
+// Validate model ID — returns error level: 'ok', 'warn', or 'block'
+function validateModel(model: string): { level: 'ok' | 'warn' | 'block'; message?: string } {
+  if (!model || model.length < 2) return { level: 'block', message: 'Model name is too short' };
+  if (model.length > 100) return { level: 'block', message: 'Model name is too long' };
+  if (/\s/.test(model)) return { level: 'block', message: 'Model name cannot contain spaces' };
+  if (/[^a-zA-Z0-9\-_./:]/.test(model)) return { level: 'block', message: 'Model name contains invalid characters' };
+  if (ALL_KNOWN_MODELS.has(model)) return { level: 'ok' };
+  // Provider/model format is valid for OpenRouter
+  if (model.includes('/')) return { level: 'ok' };
+  // Known prefixes
+  if (/^(gpt|claude|gemini|llama|deepseek|qwen|mistral|o[0-9]|phi|command)/i.test(model)) return { level: 'ok' };
+  // Anything else — warn but don't block
+  return { level: 'warn', message: `"${model}" is not a recognized model. It will be saved but may not work.` };
 }
 
 const REASONING_OPTIONS = ['standard', 'extended', 'minimal'];
@@ -79,9 +81,9 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
         const errText = await res.text();
         setUpdateErrors(prev => ({ ...prev, [agent]: `Failed (${res.status}): ${errText}` }));
       } else {
-        // Show brief success for model changes
-        if (patch.model) {
-          setUpdateErrors(prev => ({ ...prev, [agent]: `Model set to: ${patch.model}` }));
+        // Show brief success for model changes (unless a warning was already set by validation)
+        if (patch.model && !updateErrors[agent]?.includes('not a recognized')) {
+          setUpdateErrors(prev => ({ ...prev, [agent]: `OK: Model set to ${patch.model}` }));
           setTimeout(() => setUpdateErrors(prev => { const p = { ...prev }; delete p[agent]; return p; }), 3000);
         }
       }
@@ -192,8 +194,8 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
                           const val = e.target.value.trim();
                           if (val && val !== config.model) {
                             const v = validateModel(val);
-                            if (!v.valid) { setUpdateErrors(prev => ({ ...prev, [name]: v.warning || 'Invalid model' })); return; }
-                            if (v.warning) setUpdateErrors(prev => ({ ...prev, [name]: v.warning }));
+                            if (v.level === 'block') { setUpdateErrors(prev => ({ ...prev, [name]: v.message || 'Invalid model' })); return; }
+                            if (v.level === 'warn') { setUpdateErrors(prev => ({ ...prev, [name]: v.message! })); }
                             updateAgent(name, { model: val });
                           }
                           if (!val) setCustomModelAgents(prev => { const s = new Set(prev); s.delete(name); return s; });
@@ -204,8 +206,8 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
                             const val = (e.target as HTMLInputElement).value.trim();
                             if (val) {
                               const v = validateModel(val);
-                              if (!v.valid) { setUpdateErrors(prev => ({ ...prev, [name]: v.warning || 'Invalid model' })); return; }
-                              if (v.warning) setUpdateErrors(prev => ({ ...prev, [name]: v.warning }));
+                              if (v.level === 'block') { setUpdateErrors(prev => ({ ...prev, [name]: v.message || 'Invalid model' })); return; }
+                              if (v.level === 'warn') { setUpdateErrors(prev => ({ ...prev, [name]: v.message! })); }
                               updateAgent(name, { model: val });
                               setCustomModelValues(prev => { const p = { ...prev }; delete p[name]; return p; });
                             }
@@ -246,19 +248,21 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
               </div>
 
               {/* Debug/status message */}
-              {updateErrors[name] && (
-                <div style={{
-                  fontSize: '11px',
-                  padding: '4px 8px',
-                  marginBottom: '8px',
-                  borderRadius: '4px',
-                  background: updateErrors[name].startsWith('Model set to:') ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)',
-                  color: updateErrors[name].startsWith('Model set to:') ? '#4ade80' : '#f87171',
-                  border: `1px solid ${updateErrors[name].startsWith('Model set to:') ? 'rgba(74,222,128,0.2)' : 'rgba(248,113,113,0.2)'}`
-                }}>
-                  {updateErrors[name]}
-                </div>
-              )}
+              {updateErrors[name] && (() => {
+                const msg = updateErrors[name];
+                const isOk = msg.startsWith('OK:');
+                const isWarn = msg.includes('not a recognized');
+                const color = isOk ? '#4ade80' : isWarn ? '#facc15' : '#f87171';
+                const bg = isOk ? 'rgba(74,222,128,0.1)' : isWarn ? 'rgba(250,204,21,0.1)' : 'rgba(248,113,113,0.1)';
+                return (
+                  <div style={{
+                    fontSize: '11px', padding: '4px 8px', marginBottom: '8px', borderRadius: '4px',
+                    background: bg, color, border: `1px solid ${color}33`
+                  }}>
+                    {isWarn && '⚠ '}{msg}
+                  </div>
+                );
+              })()}
 
               {/* Reasoning + Permissions */}
               <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
