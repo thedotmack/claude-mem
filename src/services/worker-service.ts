@@ -653,25 +653,16 @@ export class WorkerService {
 
         // Do NOT restart after unrecoverable errors - prevents infinite loops
         if (hadUnrecoverableError) {
-          logger.warn('SYSTEM', 'Skipping restart due to unrecoverable error', {
-            sessionId: session.sessionDbId
-          });
-          this.broadcastProcessingStatus();
+          this.terminateSession(session.sessionDbId, 'unrecoverable_error');
           return;
         }
 
-        // Store for pending-count check below
-        const { PendingMessageStore } = require('./sqlite/PendingMessageStore.js');
-        const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+        const pendingStore = this.sessionManager.getPendingMessageStore();
 
         // Idle timeout means no new work arrived for 3 minutes - don't restart
-        // No need to reset stale processing messages here — claimNextMessage() self-heals
         if (session.idleTimedOut) {
-          logger.info('SYSTEM', 'Generator exited due to idle timeout, not restarting', {
-            sessionId: session.sessionDbId
-          });
           session.idleTimedOut = false; // Reset flag
-          this.broadcastProcessingStatus();
+          this.terminateSession(session.sessionDbId, 'idle_timeout');
           return;
         }
 
@@ -690,7 +681,7 @@ export class WorkerService {
               consecutiveRestarts: session.consecutiveRestarts
             });
             session.consecutiveRestarts = 0;
-            this.broadcastProcessingStatus();
+            this.terminateSession(session.sessionDbId, 'max_restarts_exceeded');
             return;
           }
 
@@ -704,8 +695,9 @@ export class WorkerService {
           // Restart processor
           this.startSessionProcessor(session, 'pending-work-restart');
         } else {
-          // Successful completion with no pending work — reset counter
+          // Successful completion with no pending work — clean up session
           session.consecutiveRestarts = 0;
+          this.sessionManager.removeSessionImmediate(session.sessionDbId);
         }
 
         this.broadcastProcessingStatus();
@@ -782,6 +774,30 @@ export class WorkerService {
     }
     this.sessionManager.removeSessionImmediate(sessionDbId);
     this.sessionEventBroadcaster.broadcastSessionCompleted(sessionDbId);
+  }
+
+  /**
+   * Terminate a session that will not restart.
+   * Enforces the restart-or-terminate invariant: every generator exit
+   * must either call startSessionProcessor() or terminateSession().
+   * No zombie sessions allowed.
+   *
+   * GENERATOR EXIT INVARIANT:
+   *   .finally() → restart? → startSessionProcessor()
+   *                    no?  → terminateSession()
+   */
+  private terminateSession(sessionDbId: number, reason: string): void {
+    const pendingStore = this.sessionManager.getPendingMessageStore();
+    const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+
+    logger.info('SYSTEM', 'Session terminated', {
+      sessionId: sessionDbId,
+      reason,
+      abandonedMessages: abandoned
+    });
+
+    // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
+    this.sessionManager.removeSessionImmediate(sessionDbId);
   }
 
   /**

@@ -350,7 +350,7 @@ export class SessionManager {
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
 
-    logger.info('SESSION', 'Session removed (orphaned after SDK termination)', {
+    logger.info('SESSION', 'Session removed from active sessions', {
       sessionId: sessionDbId,
       project: session.project
     });
@@ -402,10 +402,11 @@ export class SessionManager {
   }
 
   /**
-   * Check if any session has pending messages (for spinner tracking)
+   * Check if any active session has pending messages (for spinner tracking).
+   * Scoped to in-memory sessions only.
    */
   hasPendingMessages(): boolean {
-    return this.getPendingStore().hasAnyPendingWork();
+    return this.getTotalQueueDepth() > 0;
   }
 
   /**
@@ -437,12 +438,12 @@ export class SessionManager {
   }
 
   /**
-   * Check if any session is actively processing (has pending messages OR active generator)
-   * Used for activity indicator to prevent spinner from stopping while SDK is processing
+   * Check if any active session has pending work.
+   * Scoped to in-memory sessions only — orphaned DB messages from dead
+   * sessions must not keep the spinner spinning forever.
    */
   isAnySessionProcessing(): boolean {
-    // hasAnyPendingWork checks for 'pending' OR 'processing'
-    return this.getPendingStore().hasAnyPendingWork();
+    return this.getTotalQueueDepth() > 0;
   }
 
   /**
