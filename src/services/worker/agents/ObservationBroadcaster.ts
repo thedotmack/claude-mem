@@ -11,7 +11,7 @@
  * - SDKAgent used hardcoded `files_modified: JSON.stringify([])` - should use `obs.files_modified`
  */
 
-import type { WorkerRef, ObservationSSEPayload, SummarySSEPayload } from './types.js';
+import type { WorkerRef, ObservationSSEPayload, SummarySSEPayload, TokenUsageSSEPayload, AgentErrorSSEPayload, AgentActivitySSEPayload } from './types.js';
 import { logger } from '../../../utils/logger.js';
 
 /**
@@ -52,4 +52,37 @@ export function broadcastSummary(
     type: 'new_summary',
     summary: payload
   });
+}
+
+/**
+ * Broadcast token usage event to SSE clients
+ */
+export function broadcastTokenUsage(
+  worker: WorkerRef | undefined,
+  payload: TokenUsageSSEPayload
+): void {
+  if (!worker?.sseBroadcaster) return;
+  worker.sseBroadcaster.broadcast({ type: 'token_usage', data: payload });
+}
+
+/**
+ * Broadcast agent error event to SSE clients
+ */
+export function broadcastAgentError(
+  worker: WorkerRef | undefined,
+  payload: AgentErrorSSEPayload
+): void {
+  if (!worker?.sseBroadcaster) return;
+  worker.sseBroadcaster.broadcast({ type: 'agent_error', data: payload });
+}
+
+/**
+ * Broadcast agent activity status to SSE clients
+ */
+export function broadcastAgentActivity(
+  worker: WorkerRef | undefined,
+  payload: AgentActivitySSEPayload
+): void {
+  if (!worker?.sseBroadcaster) return;
+  worker.sseBroadcaster.broadcast({ type: 'agent_activity', data: payload });
 }

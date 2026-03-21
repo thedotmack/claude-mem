@@ -172,3 +172,38 @@ export interface Stats {
   worker?: WorkerStats;
   database?: DatabaseStats;
 }
+
+// Live coding view types
+export interface TokenUsageEvent {
+  sessionDbId: number;
+  provider: string;
+  model: string;
+  project: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cumulativeInputTokens: number;
+  cumulativeOutputTokens: number;
+  estimatedCostUsd: number;
+  timestamp: number;
+}
+
+export interface AgentErrorEvent {
+  sessionDbId: number;
+  provider: string;
+  model: string;
+  project: string;
+  errorMessage: string;
+  errorCode?: string;
+  promptSnippet?: string;
+  timestamp: number;
+}
+
+export interface AgentActivityEvent {
+  sessionDbId: number;
+  provider: string;
+  model: string;
+  project: string;
+  status: 'calling_api' | 'processing_response' | 'idle' | 'error';
+  timestamp: number;
+}

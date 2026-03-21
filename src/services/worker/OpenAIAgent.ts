@@ -25,6 +25,8 @@ import {
   isAbortError,
   processAgentResponse,
   shouldFallbackToClaude,
+  broadcastAgentError,
+  broadcastAgentActivity,
   type FallbackAgent,
   type WorkerRef
 } from './agents/index.js';
@@ -141,6 +143,25 @@ export class OpenAIAgent {
       logger.success('SDK', 'OpenAI agent completed', { sessionId: session.sessionDbId, model });
     } catch (error: unknown) {
       if (isAbortError(error)) { logger.warn('SDK', 'OpenAI agent aborted'); throw error; }
+
+      // Broadcast error to SSE clients for debug visibility
+      const { model: errModel } = this.getOpenAIConfig();
+      broadcastAgentError(worker, {
+        sessionDbId: session.sessionDbId,
+        provider: 'OpenAI',
+        model: errModel,
+        project: session.project,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        promptSnippet: session.userPrompt?.substring(0, 200)
+      });
+      broadcastAgentActivity(worker, {
+        sessionDbId: session.sessionDbId,
+        provider: 'OpenAI',
+        model: errModel,
+        project: session.project,
+        status: 'error'
+      });
+
       if (shouldFallbackToClaude(error) && this.fallbackAgent) {
         logger.warn('SDK', 'OpenAI API failed, falling back to Claude SDK', { error: error instanceof Error ? error.message : String(error) });
         return this.fallbackAgent.startSession(session, worker);

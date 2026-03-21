@@ -22,8 +22,9 @@ import type { ActiveSession } from '../../worker-types.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
-import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
+import { broadcastObservation, broadcastSummary, broadcastTokenUsage } from './ObservationBroadcaster.js';
 import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
+import { estimateCostUsd } from './TokenCostEstimator.js';
 
 /**
  * Process agent response text (parse XML, save to database, sync to Chroma, broadcast SSE)
@@ -110,6 +111,27 @@ export async function processAgentResponse(
     sessionId: session.sessionDbId,
     memorySessionId: session.memorySessionId
   });
+
+  // Broadcast token usage to SSE clients
+  if (discoveryTokens > 0) {
+    const inputTokens = Math.floor(discoveryTokens * 0.7);
+    const outputTokens = Math.floor(discoveryTokens * 0.3);
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const provider = settings.CLAUDE_MEM_PROVIDER || 'claude';
+    const model = settings.CLAUDE_MEM_MODEL || settings.CLAUDE_MEM_OPENROUTER_MODEL || settings.CLAUDE_MEM_OPENAI_MODEL || settings.CLAUDE_MEM_GEMINI_MODEL || 'unknown';
+    broadcastTokenUsage(worker, {
+      sessionDbId: session.sessionDbId,
+      provider: agentName,
+      model,
+      project: session.project,
+      inputTokens,
+      outputTokens,
+      totalTokens: discoveryTokens,
+      cumulativeInputTokens: session.cumulativeInputTokens,
+      cumulativeOutputTokens: session.cumulativeOutputTokens,
+      estimatedCostUsd: estimateCostUsd(provider, model, inputTokens, outputTokens)
+    });
+  }
 
   // CLAIM-CONFIRM: Now that storage succeeded, confirm all processing messages (delete from queue)
   // This is the critical step that prevents message loss on generator crash

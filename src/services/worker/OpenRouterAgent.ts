@@ -24,6 +24,8 @@ import {
   isAbortError,
   processAgentResponse,
   shouldFallbackToClaude,
+  broadcastAgentError,
+  broadcastAgentActivity,
   type FallbackAgent,
   type WorkerRef
 } from './agents/index.js';
@@ -264,16 +266,27 @@ export class OpenRouterAgent {
         throw error;
       }
 
-      // Check if we should fall back to Claude
+      // Broadcast error to SSE clients for debug visibility
+      const { model: errModel } = this.getOpenRouterConfig();
+      broadcastAgentError(worker, {
+        sessionDbId: session.sessionDbId,
+        provider: 'OpenRouter',
+        model: errModel,
+        project: session.project,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        promptSnippet: session.userPrompt?.substring(0, 200)
+      });
+      broadcastAgentActivity(worker, {
+        sessionDbId: session.sessionDbId, provider: 'OpenRouter', model: errModel,
+        project: session.project, status: 'error'
+      });
+
       if (shouldFallbackToClaude(error) && this.fallbackAgent) {
         logger.warn('SDK', 'OpenRouter API failed, falling back to Claude SDK', {
           sessionDbId: session.sessionDbId,
           error: error instanceof Error ? error.message : String(error),
           historyLength: session.conversationHistory.length
         });
-
-        // Fall back to Claude - it will use the same session with shared conversationHistory
-        // Note: With claim-and-delete queue pattern, messages are already deleted on claim
         return this.fallbackAgent.startSession(session, worker);
       }
 

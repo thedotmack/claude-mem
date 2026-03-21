@@ -16,6 +16,9 @@ export type {
   ObservationSSEPayload,
   SummarySSEPayload,
   SSEEventPayload,
+  TokenUsageSSEPayload,
+  AgentErrorSSEPayload,
+  AgentActivitySSEPayload,
   StorageResult,
   ResponseProcessingContext,
   ParsedResponse,
@@ -29,7 +32,7 @@ export { FALLBACK_ERROR_PATTERNS } from './types.js';
 export { processAgentResponse } from './ResponseProcessor.js';
 
 // SSE Broadcasting
-export { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
+export { broadcastObservation, broadcastSummary, broadcastTokenUsage, broadcastAgentError, broadcastAgentActivity } from './ObservationBroadcaster.js';
 
 // Session Cleanup
 export { cleanupProcessedMessages } from './SessionCleanupHelper.js';

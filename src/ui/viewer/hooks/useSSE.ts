@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { Observation, Summary, UserPrompt, StreamEvent } from '../types';
+import { Observation, Summary, UserPrompt, StreamEvent, TokenUsageEvent, AgentErrorEvent, AgentActivityEvent } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
+
+const MAX_TOKEN_EVENTS = 100;
+const MAX_ERROR_EVENTS = 50;
 
 export function useSSE() {
   const [observations, setObservations] = useState<Observation[]>([]);
@@ -11,6 +14,9 @@ export function useSSE() {
   const [isConnected, setIsConnected] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [queueDepth, setQueueDepth] = useState(0);
+  const [tokenEvents, setTokenEvents] = useState<TokenUsageEvent[]>([]);
+  const [agentErrors, setAgentErrors] = useState<AgentErrorEvent[]>([]);
+  const [agentActivity, setAgentActivity] = useState<Record<number, AgentActivityEvent>>({});
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
 
@@ -83,9 +89,29 @@ export function useSSE() {
 
           case 'processing_status':
             if (typeof data.isProcessing === 'boolean') {
-              console.log('[SSE] Processing status:', data.isProcessing, 'Queue depth:', data.queueDepth);
               setIsProcessing(data.isProcessing);
               setQueueDepth(data.queueDepth || 0);
+            }
+            break;
+
+          case 'token_usage':
+            if (data.data) {
+              const tokenEvent: TokenUsageEvent = { ...data.data, timestamp: data.timestamp || Date.now() };
+              setTokenEvents(prev => [tokenEvent, ...prev].slice(0, MAX_TOKEN_EVENTS));
+            }
+            break;
+
+          case 'agent_error':
+            if (data.data) {
+              const errorEvent: AgentErrorEvent = { ...data.data, timestamp: data.timestamp || Date.now() };
+              setAgentErrors(prev => [errorEvent, ...prev].slice(0, MAX_ERROR_EVENTS));
+            }
+            break;
+
+          case 'agent_activity':
+            if (data.data) {
+              const activityEvent: AgentActivityEvent = { ...data.data, timestamp: data.timestamp || Date.now() };
+              setAgentActivity(prev => ({ ...prev, [activityEvent.sessionDbId]: activityEvent }));
             }
             break;
         }
@@ -105,5 +131,8 @@ export function useSSE() {
     };
   }, []);
 
-  return { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected };
+  const clearErrors = () => setAgentErrors([]);
+
+  return { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected,
+    tokenEvents, agentErrors, agentActivity, clearErrors };
 }

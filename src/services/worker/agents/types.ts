@@ -61,9 +61,43 @@ export interface SummarySSEPayload {
   created_at_epoch: number;
 }
 
+export interface TokenUsageSSEPayload {
+  sessionDbId: number;
+  provider: string;
+  model: string;
+  project: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cumulativeInputTokens: number;
+  cumulativeOutputTokens: number;
+  estimatedCostUsd: number;
+}
+
+export interface AgentErrorSSEPayload {
+  sessionDbId: number;
+  provider: string;
+  model: string;
+  project: string;
+  errorMessage: string;
+  errorCode?: string;
+  promptSnippet?: string;
+}
+
+export interface AgentActivitySSEPayload {
+  sessionDbId: number;
+  provider: string;
+  model: string;
+  project: string;
+  status: 'calling_api' | 'processing_response' | 'idle' | 'error';
+}
+
 export type SSEEventPayload =
   | { type: 'new_observation'; observation: ObservationSSEPayload }
-  | { type: 'new_summary'; summary: SummarySSEPayload };
+  | { type: 'new_summary'; summary: SummarySSEPayload }
+  | { type: 'token_usage'; data: TokenUsageSSEPayload }
+  | { type: 'agent_error'; data: AgentErrorSSEPayload }
+  | { type: 'agent_activity'; data: AgentActivitySSEPayload };
 
 // ============================================================================
 // Response Processing Types

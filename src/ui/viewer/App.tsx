@@ -40,7 +40,8 @@ export function App() {
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
   const sseData = useSSE();
-  const { observations, summaries, prompts, isProcessing, queueDepth, isConnected } = sseData;
+  const { observations, summaries, prompts, isProcessing, queueDepth, isConnected,
+    tokenEvents, agentErrors, agentActivity, clearErrors } = sseData;
   const [extraProjects, setExtraProjects] = useState<string[]>([]);
   const projects = useMemo(() => {
     const all = [...sseData.projects, ...extraProjects];
@@ -185,6 +186,9 @@ export function App() {
             {tab.id === 'conflicts' && conflictCount > 0 && (
               <span className="collab-tab-badge collab-tab-badge-warn">{conflictCount}</span>
             )}
+            {tab.id === 'live' && agentErrors.length > 0 && (
+              <span className="collab-tab-badge" style={{ background: '#f87171' }}>{agentErrors.length}</span>
+            )}
           </button>
         ))}
       </div>
@@ -202,7 +206,13 @@ export function App() {
       )}
 
       {activeTab === 'live' && (
-        <LiveTerminal agentLogs={{}} />
+        <LiveTerminal
+          agentLogs={{}}
+          tokenEvents={tokenEvents}
+          agentErrors={agentErrors}
+          agentActivity={agentActivity}
+          onClearErrors={clearErrors}
+        />
       )}
 
       {activeTab === 'status' && (
