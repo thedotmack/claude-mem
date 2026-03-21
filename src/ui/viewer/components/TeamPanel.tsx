@@ -39,18 +39,31 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
   const [showAddAgent, setShowAddAgent] = useState(false);
   const [newAgentName, setNewAgentName] = useState('');
   const [customModelAgents, setCustomModelAgents] = useState<Set<string>>(new Set());
+  const [customModelValues, setCustomModelValues] = useState<Record<string, string>>({});
+  const [updateErrors, setUpdateErrors] = useState<Record<string, string>>({});
 
   const updateAgent = useCallback(async (agent: string, patch: Partial<AgentConfig>) => {
     setUpdating(agent);
+    setUpdateErrors(prev => { const p = { ...prev }; delete p[agent]; return p; });
     try {
-      await fetch(`${API_ENDPOINTS.CONTROLS}/${agent}`, {
+      const res = await fetch(`${API_ENDPOINTS.CONTROLS}/${agent}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch)
       });
+      if (!res.ok) {
+        const errText = await res.text();
+        setUpdateErrors(prev => ({ ...prev, [agent]: `Failed (${res.status}): ${errText}` }));
+      } else {
+        // Show brief success for model changes
+        if (patch.model) {
+          setUpdateErrors(prev => ({ ...prev, [agent]: `Model set to: ${patch.model}` }));
+          setTimeout(() => setUpdateErrors(prev => { const p = { ...prev }; delete p[agent]; return p; }), 3000);
+        }
+      }
       onRefresh();
-    } catch (err) {
-      console.error('Failed to update agent:', err);
+    } catch (err: any) {
+      setUpdateErrors(prev => ({ ...prev, [agent]: `Error: ${err.message}` }));
     }
     setUpdating(null);
   }, [onRefresh]);
@@ -143,18 +156,33 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
               <div style={{ marginBottom: '8px' }}>
                 <label style={{ fontSize: '11px', color: 'var(--text-secondary, #888)', display: 'block', marginBottom: '4px' }}>Model</label>
                 {customModelAgents.has(name) || !MODEL_OPTIONS.some(g => g.models.includes(config.model)) ? (
-                  <div style={{ display: 'flex', gap: '4px' }}>
-                    <input type="text" value={config.model === '__custom__' ? '' : config.model}
-                      onChange={(e) => updateAgent(name, { model: e.target.value })}
-                      onBlur={(e) => { if (!e.target.value.trim()) setCustomModelAgents(prev => { const s = new Set(prev); s.delete(name); return s; }); }}
-                      placeholder="e.g. openai/gpt-4o or deepseek/deepseek-v3" autoFocus
-                      style={{ flex: 1, background: 'var(--bg-primary, #1a1a2e)', color: 'var(--text-primary, #e0e0e0)',
-                        border: '1px solid var(--accent-color, #7c3aed)', borderRadius: '4px', padding: '5px 8px', fontSize: '12px' }} />
-                    <button onClick={() => setCustomModelAgents(prev => { const s = new Set(prev); s.delete(name); return s; })}
-                      style={{ background: 'var(--bg-primary, #1a1a2e)', color: 'var(--text-secondary, #888)',
-                        border: '1px solid var(--border-color, #444)', borderRadius: '4px', padding: '4px 8px', fontSize: '11px', cursor: 'pointer' }}>
-                      List
-                    </button>
+                  <div>
+                    <div style={{ display: 'flex', gap: '4px' }}>
+                      <input type="text" value={customModelValues[name] ?? config.model}
+                        onChange={(e) => setCustomModelValues(prev => ({ ...prev, [name]: e.target.value }))}
+                        onBlur={(e) => {
+                          const val = e.target.value.trim();
+                          if (val && val !== config.model) updateAgent(name, { model: val });
+                          if (!val) setCustomModelAgents(prev => { const s = new Set(prev); s.delete(name); return s; });
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            const val = (e.target as HTMLInputElement).value.trim();
+                            if (val) { updateAgent(name, { model: val }); setCustomModelValues(prev => { const p = { ...prev }; delete p[name]; return p; }); }
+                          }
+                        }}
+                        placeholder="e.g. openai/gpt-4o or deepseek/deepseek-v3" autoFocus
+                        style={{ flex: 1, background: 'var(--bg-primary, #1a1a2e)', color: 'var(--text-primary, #e0e0e0)',
+                          border: '1px solid var(--accent-color, #7c3aed)', borderRadius: '4px', padding: '5px 8px', fontSize: '12px' }} />
+                      <button onClick={() => { setCustomModelAgents(prev => { const s = new Set(prev); s.delete(name); return s; }); setCustomModelValues(prev => { const p = { ...prev }; delete p[name]; return p; }); }}
+                        style={{ background: 'var(--bg-primary, #1a1a2e)', color: 'var(--text-secondary, #888)',
+                          border: '1px solid var(--border-color, #444)', borderRadius: '4px', padding: '4px 8px', fontSize: '11px', cursor: 'pointer' }}>
+                        List
+                      </button>
+                    </div>
+                    <div style={{ fontSize: '10px', color: 'var(--text-secondary, #666)', marginTop: '4px' }}>
+                      Press Enter to save. Use format: model-name or provider/model-name
+                    </div>
                   </div>
                 ) : (
                   <select value={config.model}
@@ -173,6 +201,21 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
                   </select>
                 )}
               </div>
+
+              {/* Debug/status message */}
+              {updateErrors[name] && (
+                <div style={{
+                  fontSize: '11px',
+                  padding: '4px 8px',
+                  marginBottom: '8px',
+                  borderRadius: '4px',
+                  background: updateErrors[name].startsWith('Model set to:') ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)',
+                  color: updateErrors[name].startsWith('Model set to:') ? '#4ade80' : '#f87171',
+                  border: `1px solid ${updateErrors[name].startsWith('Model set to:') ? 'rgba(74,222,128,0.2)' : 'rgba(248,113,113,0.2)'}`
+                }}>
+                  {updateErrors[name]}
+                </div>
+              )}
 
               {/* Reasoning + Permissions */}
               <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
