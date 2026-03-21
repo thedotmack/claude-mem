@@ -28,6 +28,9 @@ export class SessionRoutes extends BaseRouteHandler {
   private spawnInProgress = new Map<number, boolean>();
   private crashRecoveryScheduled = new Set<number>();
   // Track sessions where SDK agent init failed to prevent infinite retry loops (#623)
+  // TODO: This Set is unbounded and only cleaned on session-complete, which may never fire
+  // for permanently broken sessions. Low risk in practice (failed inits are rare), but if
+  // long-running workers accumulate many failures, consider adding max-size eviction or TTL.
   private failedInitSessions = new Set<number>();
 
   constructor(

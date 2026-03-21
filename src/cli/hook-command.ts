@@ -103,7 +103,7 @@ export async function hookCommand(platform: string, event: string, options: Hook
     if (event === 'summarize' || event === 'session-complete') {
       logger.error('HOOK', `Stop hook error (non-blocking): ${error instanceof Error ? error.message : error}`, {}, error instanceof Error ? error : undefined);
       if (!options.skipExit) {
-        process.exit(HOOK_EXIT_CODES.FAILURE);  // = 1 (non-blocking)
+        process.exit(HOOK_EXIT_CODES.FAILURE);  // Exit 1, not 2 — exit 2 is a blocking error that can stall session exit
       }
       return HOOK_EXIT_CODES.FAILURE;
     }
