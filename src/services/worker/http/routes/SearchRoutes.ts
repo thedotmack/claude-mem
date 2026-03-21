@@ -185,7 +185,7 @@ export class SearchRoutes extends BaseRouteHandler {
         session_id: 'preview-' + Date.now(),
         cwd: cwd
       },
-      true  // useColors=true for ANSI terminal output
+      true  // forHuman=true for ANSI terminal output
     );
 
     // Return as plain text
@@ -207,7 +207,7 @@ export class SearchRoutes extends BaseRouteHandler {
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     // Support both legacy `project` and new `projects` parameter
     const projectsParam = (req.query.projects as string) || (req.query.project as string);
-    const useColors = req.query.colors === 'true';
+    const forHuman = req.query.colors === 'true';
     const full = req.query.full === 'true';
 
     if (!projectsParam) {
@@ -238,7 +238,7 @@ export class SearchRoutes extends BaseRouteHandler {
         projects: projects,
         full
       },
-      useColors
+      forHuman
     );
 
     // Return as plain text

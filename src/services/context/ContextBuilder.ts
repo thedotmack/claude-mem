@@ -29,8 +29,8 @@ import { renderHeader } from './sections/HeaderRenderer.js';
 import { renderTimeline } from './sections/TimelineRenderer.js';
 import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRenderer.js';
 import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
-import { renderMarkdownEmptyState } from './formatters/MarkdownFormatter.js';
-import { renderColorEmptyState } from './formatters/ColorFormatter.js';
+import { renderAgentEmptyState } from './formatters/AgentFormatter.js';
+import { renderHumanEmptyState } from './formatters/HumanFormatter.js';
 
 // Version marker path for native module error handling
 const VERSION_MARKER_PATH = path.join(
@@ -66,8 +66,8 @@ function initializeDatabase(): SessionStore | null {
 /**
  * Render empty state when no data exists
  */
-function renderEmptyState(project: string, useColors: boolean): string {
-  return useColors ? renderColorEmptyState(project) : renderMarkdownEmptyState(project);
+function renderEmptyState(project: string, forHuman: boolean): string {
+  return forHuman ? renderHumanEmptyState(project) : renderAgentEmptyState(project);
 }
 
 /**
@@ -80,7 +80,7 @@ function buildContextOutput(
   config: ContextConfig,
   cwd: string,
   sessionId: string | undefined,
-  useColors: boolean
+  forHuman: boolean
 ): string {
   const output: string[] = [];
 
@@ -88,7 +88,7 @@ function buildContextOutput(
   const economics = calculateTokenEconomics(observations);
 
   // Render header section
-  output.push(...renderHeader(project, economics, config, useColors));
+  output.push(...renderHeader(project, economics, config, forHuman));
 
   // Prepare timeline data
   const displaySummaries = summaries.slice(0, config.sessionCount);
@@ -97,22 +97,22 @@ function buildContextOutput(
   const fullObservationIds = getFullObservationIds(observations, config.fullObservationCount);
 
   // Render timeline
-  output.push(...renderTimeline(timeline, fullObservationIds, config, cwd, useColors));
+  output.push(...renderTimeline(timeline, fullObservationIds, config, cwd, forHuman));
 
   // Render most recent summary if applicable
   const mostRecentSummary = summaries[0];
   const mostRecentObservation = observations[0];
 
   if (shouldShowSummary(config, mostRecentSummary, mostRecentObservation)) {
-    output.push(...renderSummaryFields(mostRecentSummary, useColors));
+    output.push(...renderSummaryFields(mostRecentSummary, forHuman));
   }
 
   // Render previously section (prior assistant message)
   const priorMessages = getPriorSessionMessages(observations, config, sessionId, cwd);
-  output.push(...renderPreviouslySection(priorMessages, useColors));
+  output.push(...renderPreviouslySection(priorMessages, forHuman));
 
   // Render footer
-  output.push(...renderFooter(economics, config, useColors));
+  output.push(...renderFooter(economics, config, forHuman));
 
   return output.join('\n').trimEnd();
 }
@@ -125,7 +125,7 @@ function buildContextOutput(
  */
 export async function generateContext(
   input?: ContextInput,
-  useColors: boolean = false
+  forHuman: boolean = false
 ): Promise<string> {
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
@@ -157,7 +157,7 @@ export async function generateContext(
 
     // Handle empty state
     if (observations.length === 0 && summaries.length === 0) {
-      return renderEmptyState(project, useColors);
+      return renderEmptyState(project, forHuman);
     }
 
     // Build and return context
@@ -168,7 +168,7 @@ export async function generateContext(
       config,
       cwd,
       input?.session_id,
-      useColors
+      forHuman
     );
 
     return output;
