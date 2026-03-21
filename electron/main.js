@@ -8,6 +8,7 @@ const fs = require('fs');
 let mainWindow = null;
 let tray = null;
 let workerProcess = null;
+let agentDaemonProcess = null;
 let workerPort = null;
 let isQuitting = false;
 
@@ -215,12 +216,45 @@ function killWorker() {
   if (workerProcess && !workerProcess.killed) {
     console.log('[electron] Killing worker...');
     workerProcess.kill('SIGTERM');
-    // Force kill after 3s
     setTimeout(() => {
-      if (workerProcess && !workerProcess.killed) {
-        workerProcess.kill('SIGKILL');
-      }
+      if (workerProcess && !workerProcess.killed) workerProcess.kill('SIGKILL');
     }, 3000);
+  }
+}
+
+// ─── Agent Daemon ──────────────────────────────────────────
+function startAgentDaemon() {
+  // Find the daemon script
+  const daemonScript = path.join(__dirname, '..', 'scripts', 'agent-daemon.cjs');
+  const fallbackScript = path.join(process.env.USERPROFILE || '', 'claude-mem', 'scripts', 'agent-daemon.cjs');
+  const script = fs.existsSync(daemonScript) ? daemonScript : fallbackScript;
+
+  if (!fs.existsSync(script)) {
+    console.log('[electron] Agent daemon script not found, skipping');
+    return;
+  }
+
+  console.log('[electron] Starting agent daemon...');
+  agentDaemonProcess = spawn('node', [script], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+
+  agentDaemonProcess.stdout.on('data', (data) => {
+    console.log(`[agent-daemon] ${data.toString().trim()}`);
+  });
+  agentDaemonProcess.stderr.on('data', (data) => {
+    console.error(`[agent-daemon:err] ${data.toString().trim()}`);
+  });
+  agentDaemonProcess.on('exit', (code) => {
+    console.log(`[agent-daemon] Exited with code ${code}`);
+  });
+}
+
+function killAgentDaemon() {
+  if (agentDaemonProcess && !agentDaemonProcess.killed) {
+    console.log('[electron] Killing agent daemon...');
+    agentDaemonProcess.kill('SIGTERM');
   }
 }
 
@@ -302,6 +336,7 @@ app.whenReady().then(async () => {
 
     createWindow(port);
     createTray();
+    startAgentDaemon();
 
     // Update tray with actual port
     if (tray) {
@@ -323,6 +358,7 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  killAgentDaemon();
   killWorker();
 });
 
