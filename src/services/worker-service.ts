@@ -85,6 +85,7 @@ import {
 } from './infrastructure/ProcessManager.js';
 import {
   isPortInUse,
+  isTcpPortBound,
   waitForHealth,
   waitForReadiness,
   waitForPortFree,
@@ -109,6 +110,7 @@ import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from './worker/GeminiAgent.js';
 import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterAgent.js';
+import { OpenAIAgent, isOpenAISelected, isOpenAIAvailable } from './worker/OpenAIAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
@@ -124,6 +126,7 @@ import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { CollaborationRoutes } from './worker/http/routes/CollaborationRoutes.js';
 
 // Process management for zombie cleanup (Issue #737)
 import { startOrphanReaper, reapOrphanedProcesses, getProcessBySession, ensureProcessExit } from './worker/ProcessRegistry.js';
@@ -169,6 +172,7 @@ export class WorkerService {
   private sdkAgent: SDKAgent;
   private geminiAgent: GeminiAgent;
   private openRouterAgent: OpenRouterAgent;
+  private openAIAgent: OpenAIAgent;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -210,6 +214,7 @@ export class WorkerService {
     this.sdkAgent = new SDKAgent(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiAgent(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterAgent(this.dbManager, this.sessionManager);
+    this.openAIAgent = new OpenAIAgent(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
@@ -315,31 +320,63 @@ export class WorkerService {
 
     // Standard routes (registered AFTER guard middleware)
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
+    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.openAIAgent, this.sessionEventBroadcaster, this));
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
+    this.server.registerRoutes(new CollaborationRoutes(this.dbManager, this.sseBroadcaster));
   }
 
   /**
-   * Start the worker service
+   * Start the worker service.
+   * On Windows, if the configured port has a ghost socket (dead process left
+   * a LISTENING socket), tries up to 5 consecutive ports before giving up.
+   * The actual port used is written to the PID file so clients discover it.
    */
   async start(): Promise<void> {
-    const port = getWorkerPort();
+    const configuredPort = getWorkerPort();
     const host = getWorkerHost();
+    const maxRetries = process.platform === 'win32' ? 5 : 0;
 
     await startSupervisor();
 
-    // Start HTTP server FIRST - make it available immediately
-    await this.server.listen(port, host);
+    // Try configured port first, then fallback ports on Windows
+    let actualPort = configuredPort;
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const tryPort = configuredPort + attempt;
+      try {
+        await this.server.listen(tryPort, host);
+        actualPort = tryPort;
+        lastError = null;
+        if (attempt > 0) {
+          logger.warn('SYSTEM', `Port ${configuredPort} blocked (ghost socket), using fallback port ${tryPort}`, {
+            configuredPort, actualPort: tryPort, attempt
+          });
+        }
+        break;
+      } catch (error) {
+        lastError = error as Error;
+        if (attempt < maxRetries) {
+          logger.warn('SYSTEM', `Port ${tryPort} blocked, trying ${tryPort + 1}...`, {
+            error: (error as Error).message
+          });
+        }
+      }
+    }
+
+    if (lastError) {
+      throw new Error(`Failed to start server. Is port ${configuredPort} in use?`);
+    }
 
     // Worker writes its own PID - reliable on all platforms
     // This happens after listen() succeeds, ensuring the worker is actually ready
     // On Windows, the spawner's PID is cmd.exe (useless), so worker must write its own
     writePidFile({
       pid: process.pid,
-      port,
+      port: actualPort,
       startedAt: new Date().toISOString()
     });
 
@@ -349,7 +386,7 @@ export class WorkerService {
       startedAt: new Date().toISOString()
     });
 
-    logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
+    logger.info('SYSTEM', 'Worker started', { host, port: actualPort, pid: process.pid });
 
     // Do slow initialization in background (non-blocking)
     this.initializeBackground().catch((error) => {
@@ -523,7 +560,10 @@ export class WorkerService {
    * Get the appropriate agent based on provider settings.
    * Same logic as SessionRoutes.getActiveAgent() for consistency.
    */
-  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
+  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent | OpenAIAgent {
+    if (isOpenAISelected() && isOpenAIAvailable()) {
+      return this.openAIAgent;
+    }
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return this.openRouterAgent;
     }
@@ -1204,14 +1244,17 @@ async function main() {
         process.exit(0);
       }
 
-      // GUARD 2: Refuse to start if the port is already bound.
-      // Catches the race where two daemons start simultaneously before
-      // either writes a PID file. Must run BEFORE constructing WorkerService
-      // because the constructor registers signal handlers and timers that
-      // prevent the process from exiting even if listen() fails later.
-      if (await isPortInUse(port)) {
-        logger.info('SYSTEM', 'Port already in use, refusing to start duplicate', { port });
-        process.exit(0);
+      // GUARD 2: Refuse to start if a LIVE worker is already serving on any
+      // potential port (configured port + 5 fallback ports on Windows).
+      // Uses HTTP health check (with 3s timeout) so ghost sockets are ignored.
+      {
+        const maxFallback = process.platform === 'win32' ? 5 : 0;
+        for (let i = 0; i <= maxFallback; i++) {
+          if (await isPortInUse(port + i)) {
+            logger.info('SYSTEM', 'Port already in use by live worker, refusing to start duplicate', { port: port + i });
+            process.exit(0);
+          }
+        }
       }
 
       // Prevent daemon from dying silently on unhandled errors.

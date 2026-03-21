@@ -1,10 +1,12 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { StatusDashboard } from './components/StatusDashboard';
 import { Timeline } from './components/Timeline';
 import { PlanningBoard } from './components/PlanningBoard';
 import { ConflictResolution } from './components/ConflictResolution';
+import { PerformanceMetrics } from './components/PerformanceMetrics';
+import { ToastContainer, useToasts } from './components/Toast';
 import { LiveTerminal } from './components/LiveTerminal';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { LogsDrawer } from './components/LogsModal';
@@ -14,6 +16,7 @@ import { useStats } from './hooks/useStats';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
 import { useCollaboration } from './hooks/useCollaboration';
+import { PromptBar } from './components/PromptBar';
 import { Observation, Summary, UserPrompt, ViewerTab } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
 
@@ -24,6 +27,7 @@ const TABS: { id: ViewerTab; label: string }[] = [
   { id: 'timeline', label: 'Timeline' },
   { id: 'plans', label: 'Plans' },
   { id: 'conflicts', label: 'Conflicts' },
+  { id: 'metrics', label: 'Metrics' },
 ];
 
 export function App() {
@@ -35,12 +39,55 @@ export function App() {
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
-  const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected } = useSSE();
+  const sseData = useSSE();
+  const { observations, summaries, prompts, isProcessing, queueDepth, isConnected } = sseData;
+  const [extraProjects, setExtraProjects] = useState<string[]>([]);
+  const projects = useMemo(() => {
+    const all = [...sseData.projects, ...extraProjects];
+    return [...new Set(all)].sort();
+  }, [sseData.projects, extraProjects]);
+
+  const handleProjectCreated = useCallback((name: string) => {
+    setExtraProjects(prev => prev.includes(name) ? prev : [...prev, name]);
+  }, []);
+
+  const handleProjectRenamed = useCallback((oldName: string, newName: string) => {
+    setExtraProjects(prev => prev.filter(p => p !== oldName).concat(newName));
+  }, []);
+
+  const handleProjectDeleted = useCallback((name: string) => {
+    setExtraProjects(prev => prev.filter(p => p !== name));
+  }, []);
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats, refreshStats } = useStats();
   const { preference, resolvedTheme, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
   const collab = useCollaboration();
+  const { toasts, addToast, dismissToast } = useToasts();
+
+  // Watch for task completion observations from agents (especially codex)
+  const prevObsCountRef = useRef(observations.length);
+  useEffect(() => {
+    if (observations.length > prevObsCountRef.current) {
+      const newObs = observations.slice(0, observations.length - prevObsCountRef.current);
+      for (const obs of newObs) {
+        const title = obs.title || '';
+        const isTaskCompletion = obs.type === 'task' && (
+          title.toLowerCase().includes('completed') ||
+          title.toLowerCase().includes('finished') ||
+          title.toLowerCase().includes('done')
+        );
+        if (isTaskCompletion) {
+          addToast(
+            `Agent completed task`,
+            title,
+            'success'
+          );
+        }
+      }
+    }
+    prevObsCountRef.current = observations.length;
+  }, [observations, addToast]);
 
   // Merge SSE live data with paginated data, filtering by project when active
   const allObservations = useMemo(() => {
@@ -113,6 +160,9 @@ export function App() {
         projects={projects}
         currentFilter={currentFilter}
         onFilterChange={setCurrentFilter}
+        onProjectCreated={handleProjectCreated}
+        onProjectRenamed={handleProjectRenamed}
+        onProjectDeleted={handleProjectDeleted}
         isProcessing={isProcessing}
         queueDepth={queueDepth}
         themePreference={preference}
@@ -184,6 +234,14 @@ export function App() {
         />
       )}
 
+      {activeTab === 'metrics' && (
+        <PerformanceMetrics
+          stats={stats}
+          observations={allObservations}
+          status={collab.status}
+        />
+      )}
+
       <ContextSettingsModal
         isOpen={contextPreviewOpen}
         onClose={toggleContextPreview}
@@ -208,6 +266,20 @@ export function App() {
         isOpen={logsModalOpen}
         onClose={toggleLogsModal}
       />
+
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
+      <PromptBar
+        projects={projects}
+        agents={collab.status?.controls?.agents ? Object.keys(collab.status.controls.agents) : []}
+        onPromptSent={(taskId, agent) => {
+          addToast('Prompt dispatched', `Task #${taskId} sent to ${agent}`, 'success');
+          collab.refresh();
+        }}
+      />
+
+      {/* Spacer so content doesn't hide behind fixed prompt bar */}
+      <div style={{ height: '100px' }} />
     </>
   );
 }

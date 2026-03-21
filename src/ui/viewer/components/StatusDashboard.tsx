@@ -1,5 +1,7 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { CollabStatus, AgentMessage, FileLock } from '../types';
+import { TeamPanel } from './TeamPanel';
+import { DelegationView } from './DelegationView';
 
 interface StatusDashboardProps {
   status: CollabStatus | null;
@@ -62,6 +64,120 @@ function MessageRow({ msg }: { msg: AgentMessage }) {
   );
 }
 
+interface WorkerStats {
+  worker: { version: string; uptime: number; activeSessions: number; sseClients: number; port: number };
+  database: { path: string; size: number; observations: number; sessions: number; summaries: number };
+}
+
+interface DoctorInfo {
+  supervisor: { running: boolean; pid: number; uptime: string };
+  processes: Array<{ id: string; pid: number; type: string; status: string; startedAt: string }>;
+  health: { deadProcessPids: number[]; envClean: boolean };
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${h}h ${m}m`;
+}
+
+function PerformanceMetrics() {
+  const [stats, setStats] = useState<WorkerStats | null>(null);
+  const [doctor, setDoctor] = useState<DoctorInfo | null>(null);
+
+  useEffect(() => {
+    const fetchMetrics = async () => {
+      try {
+        const [statsRes, doctorRes] = await Promise.all([
+          fetch('/api/stats').then(r => r.ok ? r.json() : null),
+          fetch('/api/admin/doctor').then(r => r.ok ? r.json() : null)
+        ]);
+        if (statsRes) setStats(statsRes as WorkerStats);
+        if (doctorRes) setDoctor(doctorRes as DoctorInfo);
+      } catch { /* ignore */ }
+    };
+    fetchMetrics();
+    const interval = setInterval(fetchMetrics, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  if (!stats) return null;
+
+  return (
+    <div className="collab-section">
+      <h2 className="collab-section-title">Performance Metrics</h2>
+      <div className="collab-stats-grid">
+        <div className="collab-stat-card">
+          <div className="collab-stat-value">{formatUptime(stats.worker.uptime)}</div>
+          <div className="collab-stat-label">Worker Uptime</div>
+        </div>
+        <div className="collab-stat-card">
+          <div className="collab-stat-value">v{stats.worker.version}</div>
+          <div className="collab-stat-label">Version</div>
+        </div>
+        <div className="collab-stat-card">
+          <div className="collab-stat-value">{stats.worker.port}</div>
+          <div className="collab-stat-label">Port</div>
+        </div>
+        <div className="collab-stat-card">
+          <div className="collab-stat-value">{stats.worker.activeSessions}</div>
+          <div className="collab-stat-label">Active Sessions</div>
+        </div>
+        <div className="collab-stat-card">
+          <div className="collab-stat-value">{stats.worker.sseClients}</div>
+          <div className="collab-stat-label">SSE Clients</div>
+        </div>
+        <div className="collab-stat-card">
+          <div className="collab-stat-value">{formatBytes(stats.database.size)}</div>
+          <div className="collab-stat-label">Database Size</div>
+        </div>
+        <div className="collab-stat-card">
+          <div className="collab-stat-value">{stats.database.observations}</div>
+          <div className="collab-stat-label">Observations</div>
+        </div>
+        <div className="collab-stat-card">
+          <div className="collab-stat-value">{stats.database.sessions}</div>
+          <div className="collab-stat-label">Sessions</div>
+        </div>
+      </div>
+
+      {/* Process Health */}
+      {doctor && (
+        <div style={{ marginTop: '12px' }}>
+          <div className="collab-section-title" style={{ fontSize: '13px', marginBottom: '8px' }}>
+            Process Health
+            {doctor.health.deadProcessPids.length === 0
+              ? <span style={{ color: 'var(--color-accent-success)', marginLeft: '8px', fontSize: '11px' }}>ALL HEALTHY</span>
+              : <span style={{ color: 'var(--color-accent-error)', marginLeft: '8px', fontSize: '11px' }}>{doctor.health.deadProcessPids.length} DEAD</span>
+            }
+          </div>
+          <div className="collab-locks-list">
+            {doctor.processes.map(proc => (
+              <div key={proc.id} className="collab-lock-row">
+                <span className="collab-lock-path">{proc.id}</span>
+                <span className="collab-lock-agent">PID {proc.pid}</span>
+                <span className="collab-lock-expires" style={{
+                  color: proc.status === 'alive' ? 'var(--color-accent-success)' : 'var(--color-accent-error)'
+                }}>
+                  {proc.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function StatusDashboard({ status, messages, isLoading, error }: StatusDashboardProps) {
   if (isLoading && !status) {
     return <div className="collab-loading">Loading collaboration status...</div>;
@@ -77,20 +193,18 @@ export function StatusDashboard({ status, messages, isLoading, error }: StatusDa
 
   return (
     <div className="collab-dashboard">
-      {/* Agents Section */}
+      {/* Team Management */}
       <div className="collab-section">
-        <h2 className="collab-section-title">Agents</h2>
-        <div className="collab-agents-grid">
-          {Object.entries(controls.agents).map(([name, config]) => (
-            <AgentCard
-              key={name}
-              name={name}
-              config={config}
-              isLeader={controls.leader === name}
-              hasActiveLocks={locks.some(l => l.locked_by === name)}
-            />
-          ))}
-        </div>
+        <TeamPanel controls={controls} onRefresh={onRefresh || (() => {})} />
+      </div>
+
+      {/* Task Delegation */}
+      <div className="collab-section">
+        <DelegationView
+          controls={controls}
+          pendingTasks={status?.pending_tasks || []}
+          onRefresh={onRefresh || (() => {})}
+        />
       </div>
 
       {/* Active Locks Section */}
@@ -145,6 +259,9 @@ export function StatusDashboard({ status, messages, isLoading, error }: StatusDa
           </div>
         </div>
       </div>
+
+      {/* Performance Metrics */}
+      <PerformanceMetrics />
     </div>
   );
 }

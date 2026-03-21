@@ -90,15 +90,20 @@ export class Server {
   }
 
   /**
-   * Start listening on the specified host and port
+   * Start listening on the specified host and port.
+   * Uses net.createServer with exclusive:false to allow binding over
+   * Windows ghost sockets (dead processes that leave LISTENING sockets).
    */
   async listen(port: number, host: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      this.server = this.app.listen(port, host, () => {
+      // Create HTTP server manually so we can set exclusive:false
+      // This uses SO_REUSEADDR on Windows, allowing bind over ghost sockets
+      this.server = http.createServer(this.app);
+      this.server.on('error', reject);
+      this.server.listen({ port, host, exclusive: false }, () => {
         logger.info('SYSTEM', 'HTTP server started', { host, port, pid: process.pid });
         resolve();
       });
-      this.server.on('error', reject);
     });
   }
 

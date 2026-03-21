@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { ThemeToggle } from './ThemeToggle';
 import { ThemePreference } from '../hooks/useTheme';
 import { GitHubStarsButton } from './GitHubStarsButton';
@@ -9,6 +9,9 @@ interface HeaderProps {
   projects: string[];
   currentFilter: string;
   onFilterChange: (filter: string) => void;
+  onProjectCreated?: (name: string) => void;
+  onProjectRenamed?: (oldName: string, newName: string) => void;
+  onProjectDeleted?: (name: string) => void;
   isProcessing: boolean;
   queueDepth: number;
   themePreference: ThemePreference;
@@ -16,11 +19,16 @@ interface HeaderProps {
   onContextPreviewToggle: () => void;
 }
 
+type PopoverMode = 'none' | 'create' | 'menu' | 'rename';
+
 export function Header({
   isConnected,
   projects,
   currentFilter,
   onFilterChange,
+  onProjectCreated,
+  onProjectRenamed,
+  onProjectDeleted,
   isProcessing,
   queueDepth,
   themePreference,
@@ -28,6 +36,107 @@ export function Header({
   onContextPreviewToggle
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
+  const [popover, setPopover] = useState<PopoverMode>('none');
+  const [newProjectName, setNewProjectName] = useState('');
+  const [renameValue, setRenameValue] = useState('');
+  const [isBusy, setIsBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const renameRef = useRef<HTMLInputElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (popover === 'create' && inputRef.current) inputRef.current.focus();
+    if (popover === 'rename' && renameRef.current) renameRef.current.focus();
+  }, [popover]);
+
+  // Close popover on outside click
+  useEffect(() => {
+    if (popover === 'none') return;
+    const handler = (e: MouseEvent) => {
+      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
+        setPopover('none');
+        setNewProjectName('');
+        setRenameValue('');
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [popover]);
+
+  const handleCreateProject = async () => {
+    const name = newProjectName.trim();
+    if (!name) return;
+    setIsBusy(true);
+    try {
+      const res = await fetch('/api/memory/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: `Project "${name}" created from viewer`,
+          title: 'Project Created',
+          project: name
+        })
+      });
+      if (res.ok) {
+        onProjectCreated?.(name);
+        onFilterChange(name);
+        setNewProjectName('');
+        setPopover('none');
+      }
+    } catch (e) {
+      console.error('Failed to create project:', e);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleRenameProject = async () => {
+    const newName = renameValue.trim();
+    if (!newName || !currentFilter || newName === currentFilter) return;
+    setIsBusy(true);
+    try {
+      // Rename by updating all observations for the old project name
+      const res = await fetch('/api/projects/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ oldName: currentFilter, newName })
+      });
+      if (res.ok) {
+        onProjectRenamed?.(currentFilter, newName);
+        onFilterChange(newName);
+        setRenameValue('');
+        setPopover('none');
+      }
+    } catch (e) {
+      console.error('Failed to rename project:', e);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleDeleteProject = async () => {
+    if (!currentFilter) return;
+    if (!confirm(`Delete project "${currentFilter}" and all its data? This cannot be undone.`)) return;
+    setIsBusy(true);
+    try {
+      const res = await fetch('/api/projects/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: currentFilter })
+      });
+      if (res.ok) {
+        onProjectDeleted?.(currentFilter);
+        onFilterChange('');
+        setPopover('none');
+      }
+    } catch (e) {
+      console.error('Failed to delete project:', e);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const hasSelectedProject = currentFilter !== '';
 
   return (
     <div className="header">
@@ -78,15 +187,138 @@ export function Header({
           </svg>
         </a>
         <GitHubStarsButton username="thedotmack" repo="claude-mem" />
-        <select
-          value={currentFilter}
-          onChange={e => onFilterChange(e.target.value)}
-        >
-          <option value="">All Projects</option>
-          {projects.map(project => (
-            <option key={project} value={project}>{project}</option>
-          ))}
-        </select>
+        <div className="project-selector" ref={popoverRef}>
+          <select
+            value={currentFilter}
+            onChange={e => onFilterChange(e.target.value)}
+          >
+            <option value="">All Projects</option>
+            {projects.map(project => (
+              <option key={project} value={project}>{project}</option>
+            ))}
+          </select>
+          {/* Add project button */}
+          <button
+            className="project-add-btn"
+            onClick={() => setPopover(popover === 'create' ? 'none' : 'create')}
+            title="Create new project"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+          </button>
+          {/* Manage project button (dots menu) */}
+          <button
+            className="project-manage-btn"
+            onClick={() => setPopover(popover === 'menu' ? 'none' : 'menu')}
+            title={hasSelectedProject ? `Manage "${currentFilter}"` : 'Select a project first'}
+            disabled={!hasSelectedProject}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <circle cx="12" cy="5" r="2"></circle>
+              <circle cx="12" cy="12" r="2"></circle>
+              <circle cx="12" cy="19" r="2"></circle>
+            </svg>
+          </button>
+
+          {/* Create popover */}
+          {popover === 'create' && (
+            <div className="project-create-popover">
+              <div className="project-create-header">New Project</div>
+              <input
+                ref={inputRef}
+                type="text"
+                className="project-create-input"
+                placeholder="Project name..."
+                value={newProjectName}
+                onChange={e => setNewProjectName(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') handleCreateProject();
+                  if (e.key === 'Escape') { setPopover('none'); setNewProjectName(''); }
+                }}
+                disabled={isBusy}
+              />
+              <div className="project-create-actions">
+                <button
+                  className="project-create-cancel"
+                  onClick={() => { setPopover('none'); setNewProjectName(''); }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="project-create-submit"
+                  onClick={handleCreateProject}
+                  disabled={!newProjectName.trim() || isBusy}
+                >
+                  {isBusy ? 'Creating...' : 'Create'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Menu popover */}
+          {popover === 'menu' && (
+            <div className="project-menu-popover">
+              <button
+                className="project-menu-item"
+                onClick={() => { setRenameValue(currentFilter); setPopover('rename'); }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path>
+                </svg>
+                Rename
+              </button>
+              <div className="project-menu-divider"></div>
+              <button
+                className="project-menu-item danger"
+                onClick={handleDeleteProject}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 6h18"></path>
+                  <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                  <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+                </svg>
+                Delete Project
+              </button>
+            </div>
+          )}
+
+          {/* Rename popover */}
+          {popover === 'rename' && (
+            <div className="project-create-popover">
+              <div className="project-create-header">Rename "{currentFilter}"</div>
+              <input
+                ref={renameRef}
+                type="text"
+                className="project-create-input"
+                placeholder="New name..."
+                value={renameValue}
+                onChange={e => setRenameValue(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') handleRenameProject();
+                  if (e.key === 'Escape') { setPopover('none'); setRenameValue(''); }
+                }}
+                disabled={isBusy}
+              />
+              <div className="project-create-actions">
+                <button
+                  className="project-create-cancel"
+                  onClick={() => { setPopover('none'); setRenameValue(''); }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="project-create-submit"
+                  onClick={handleRenameProject}
+                  disabled={!renameValue.trim() || renameValue.trim() === currentFilter || isBusy}
+                >
+                  {isBusy ? 'Renaming...' : 'Rename'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
         <ThemeToggle
           preference={themePreference}
           onThemeChange={onThemeChange}

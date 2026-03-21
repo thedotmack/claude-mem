@@ -85,6 +85,10 @@ export class CollaborationRoutes extends BaseRouteHandler {
     app.get('/api/status', this.handleGetStatus.bind(this));
     app.patch('/api/status/:agent', this.handleAgentHeartbeat.bind(this));
 
+    // ===== Projects =====
+    app.post('/api/projects/rename', this.handleRenameProject.bind(this));
+    app.post('/api/projects/delete', this.handleDeleteProject.bind(this));
+
     // ===== Admin =====
     app.post('/api/admin/backup', this.handleCreateBackup.bind(this));
     app.get('/api/admin/export', this.handleExport.bind(this));
@@ -509,6 +513,89 @@ export class CollaborationRoutes extends BaseRouteHandler {
     }
 
     res.json({ backup_path: backupPath, timestamp });
+  });
+
+  // ==========================================
+  // Projects
+  // ==========================================
+
+  private handleRenameProject = this.wrapHandler((req: Request, res: Response): void => {
+    if (!this.validateRequired(req, res, ['oldName', 'newName'])) return;
+
+    const { oldName, newName } = req.body;
+    const db = this.dbManager.getConnection();
+
+    // Update project name across all tables
+    const tables = [
+      { table: 'observations', column: 'project' },
+      { table: 'session_summaries', column: 'project' },
+      { table: 'sdk_sessions', column: 'project' },
+    ];
+
+    let totalUpdated = 0;
+    for (const { table, column } of tables) {
+      try {
+        const result = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${column} = ?`).run(newName, oldName);
+        totalUpdated += result.changes;
+      } catch {
+        // Table may not exist in older schemas
+      }
+    }
+
+    // Update controls if active_project matches
+    const controls = loadControls();
+    if (controls.active_project === oldName) {
+      controls.active_project = newName;
+      saveControls(controls);
+    }
+
+    this.sseBroadcaster.broadcast({
+      type: 'project_renamed',
+      oldName,
+      newName,
+      timestamp: Date.now()
+    });
+
+    res.json({ success: true, oldName, newName, updated: totalUpdated });
+  });
+
+  private handleDeleteProject = this.wrapHandler((req: Request, res: Response): void => {
+    if (!this.validateRequired(req, res, ['name'])) return;
+
+    const { name } = req.body;
+    const db = this.dbManager.getConnection();
+
+    // Delete project data across all tables
+    const tables = [
+      { table: 'observations', column: 'project' },
+      { table: 'session_summaries', column: 'project' },
+      { table: 'sdk_sessions', column: 'project' },
+    ];
+
+    let totalDeleted = 0;
+    for (const { table, column } of tables) {
+      try {
+        const result = db.prepare(`DELETE FROM ${table} WHERE ${column} = ?`).run(name);
+        totalDeleted += result.changes;
+      } catch {
+        // Table may not exist in older schemas
+      }
+    }
+
+    // Clear active_project if it matches
+    const controls = loadControls();
+    if (controls.active_project === name) {
+      controls.active_project = null;
+      saveControls(controls);
+    }
+
+    this.sseBroadcaster.broadcast({
+      type: 'project_deleted',
+      name,
+      timestamp: Date.now()
+    });
+
+    res.json({ success: true, name, deleted: totalDeleted });
   });
 
   private handleExport = this.wrapHandler((_req: Request, res: Response): void => {

@@ -152,7 +152,7 @@ export interface CollabStatus {
   timestamp: number;
 }
 
-export type ViewerTab = 'feed' | 'live' | 'status' | 'timeline' | 'plans' | 'conflicts';
+export type ViewerTab = 'feed' | 'live' | 'status' | 'timeline' | 'plans' | 'conflicts' | 'metrics';
 
 export interface WorkerStats {
   version?: string;

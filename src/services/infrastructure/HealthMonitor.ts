@@ -9,6 +9,7 @@
  * - HTTP-based shutdown requests
  */
 
+import net from 'net';
 import path from 'path';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
@@ -17,13 +18,20 @@ import { MARKETPLACE_ROOT } from '../../shared/paths.js';
 /**
  * Make an HTTP request to the worker via TCP.
  * Returns { ok, statusCode, body } or throws on transport error.
+ * Uses a racing timeout to avoid hanging on Windows ghost sockets.
  */
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
-  method: string = 'GET'
+  method: string = 'GET',
+  timeoutMs: number = 5000
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://127.0.0.1:${port}${endpointPath}`, { method });
+  const response = await Promise.race([
+    fetch(`http://127.0.0.1:${port}${endpointPath}`, { method }),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`HTTP request timed out after ${timeoutMs}ms`)), timeoutMs)
+    )
+  ]);
   // Gracefully handle cases where response body isn't available (e.g., test mocks)
   let body = '';
   try {
@@ -35,17 +43,48 @@ async function httpRequestToWorker(
 }
 
 /**
- * Check if a port is in use by querying the health endpoint
+ * Check if a port is in use by a LIVE worker (responds to HTTP health check).
+ * Uses a racing timeout to avoid hanging on Windows ghost sockets — dead
+ * processes that keep LISTENING sockets alive and accept TCP handshakes
+ * but never send an HTTP response.
  */
 export async function isPortInUse(port: number): Promise<boolean> {
   try {
-    // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`);
-    return response.ok;
+    const result = await Promise.race([
+      fetch(`http://127.0.0.1:${port}/api/health`).then(r => r.ok),
+      new Promise<false>(resolve => setTimeout(() => resolve(false), 3000))
+    ]);
+    return result;
   } catch (error) {
     // [ANTI-PATTERN IGNORED]: Health check polls every 500ms, logging would flood
     return false;
   }
+}
+
+/**
+ * Check if a port is bound at the TCP level (including ghost sockets).
+ * Used to detect Windows ghost sockets that accept TCP but don't respond to HTTP.
+ * Returns true if TCP connect succeeds within timeoutMs.
+ */
+export function isTcpPortBound(port: number, timeoutMs: number = 1000): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const socket = new net.Socket();
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve(false);
+    }, timeoutMs);
+    socket.on('connect', () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(true);
+    });
+    socket.on('error', () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(false);
+    });
+    socket.connect(port, '127.0.0.1');
+  });
 }
 
 /**
