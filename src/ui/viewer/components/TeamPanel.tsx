@@ -48,13 +48,18 @@ function validateModel(model: string): { level: 'ok' | 'warn' | 'block'; message
   if (model.length > 100) return { level: 'block', message: 'Model name is too long' };
   if (/\s/.test(model)) return { level: 'block', message: 'Model name cannot contain spaces' };
   if (/[^a-zA-Z0-9\-_./:]/.test(model)) return { level: 'block', message: 'Model name contains invalid characters' };
+  // Must contain at least one letter (pure numbers like "123" are not model IDs)
+  if (!/[a-zA-Z]/.test(model)) return { level: 'block', message: 'Model name must contain letters (e.g. gpt-4o, claude-sonnet-4-6)' };
+  // Must be at least 3 chars
+  if (model.length < 3) return { level: 'block', message: 'Model name is too short' };
+  // Exact match in our known list
   if (ALL_KNOWN_MODELS.has(model)) return { level: 'ok' };
-  // Provider/model format is valid for OpenRouter
-  if (model.includes('/')) return { level: 'ok' };
-  // Known prefixes
-  if (/^(gpt|claude|gemini|llama|deepseek|qwen|mistral|o[0-9]|phi|command)/i.test(model)) return { level: 'ok' };
-  // Anything else — warn but don't block
-  return { level: 'warn', message: `"${model}" is not a recognized model. It will be saved but may not work.` };
+  // Provider/model format is valid for OpenRouter (e.g. openai/gpt-4o)
+  if (model.includes('/') && model.split('/').length === 2 && model.split('/')[1].length >= 2) return { level: 'ok' };
+  // Known prefixes from major providers
+  if (/^(gpt|claude|gemini|llama|deepseek|qwen|mistral|o[0-9]|phi|command|codex)/i.test(model)) return { level: 'ok' };
+  // Anything else — warn but don't block (could be a new model we don't know about)
+  return { level: 'warn', message: `"${model}" is not a recognized model. It will be saved but may not work. Use provider/model format for OpenRouter.` };
 }
 
 const REASONING_OPTIONS = ['standard', 'extended', 'minimal'];
