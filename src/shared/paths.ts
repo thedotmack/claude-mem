@@ -6,14 +6,19 @@ import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
 
-// Get __dirname that works in both ESM (hooks) and CJS (worker) contexts
+// Get __dirname that works in both ESM (hooks) and CJS (worker) contexts.
+// import.meta.url is preferred because esbuild inlines __dirname as a static
+// string from the build machine, which breaks path resolution on end-user
+// machines.  The CJS __dirname fallback is kept for environments where
+// import.meta.url is unavailable.
 function getDirname(): string {
-  // CJS context - __dirname exists
+  // Prefer import.meta.url — resolves correctly at runtime on any machine
+  try { return dirname(fileURLToPath(import.meta.url)); } catch {}
+  // CJS context fallback
   if (typeof __dirname !== 'undefined') {
     return __dirname;
   }
-  // ESM context - use import.meta.url
-  return dirname(fileURLToPath(import.meta.url));
+  return process.cwd();
 }
 
 const _dirname = getDirname();
