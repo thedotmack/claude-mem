@@ -76,9 +76,8 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
   const [customModelValues, setCustomModelValues] = useState<Record<string, string>>({});
   const [updateErrors, setUpdateErrors] = useState<Record<string, string>>({});
 
-  const updateAgent = useCallback(async (agent: string, patch: Partial<AgentConfig>) => {
+  const updateAgent = useCallback(async (agent: string, patch: Partial<AgentConfig>, validationWarning?: string) => {
     setUpdating(agent);
-    setUpdateErrors(prev => { const p = { ...prev }; delete p[agent]; return p; });
     try {
       const res = await fetch(`${API_ENDPOINTS.CONTROLS}/${agent}`, {
         method: 'PATCH',
@@ -88,9 +87,12 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
       if (!res.ok) {
         const errText = await res.text();
         setUpdateErrors(prev => ({ ...prev, [agent]: `Failed (${res.status}): ${errText}` }));
-      } else {
-        // Show brief success for model changes (unless a warning was already set by validation)
-        if (patch.model && !updateErrors[agent]?.includes('not a recognized')) {
+      } else if (patch.model) {
+        if (validationWarning) {
+          // Show the validation warning (yellow) — don't auto-dismiss
+          setUpdateErrors(prev => ({ ...prev, [agent]: validationWarning }));
+        } else {
+          // Show green success — auto-dismiss after 3s
           setUpdateErrors(prev => ({ ...prev, [agent]: `OK: Model set to ${patch.model}` }));
           setTimeout(() => setUpdateErrors(prev => { const p = { ...prev }; delete p[agent]; return p; }), 3000);
         }
@@ -203,8 +205,7 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
                           if (val && val !== config.model) {
                             const v = validateModel(val);
                             if (v.level === 'block') { setUpdateErrors(prev => ({ ...prev, [name]: v.message || 'Invalid model' })); return; }
-                            if (v.level === 'warn') { setUpdateErrors(prev => ({ ...prev, [name]: v.message! })); }
-                            updateAgent(name, { model: val });
+                            updateAgent(name, { model: val }, v.level === 'warn' ? v.message : undefined);
                           }
                           if (!val) setCustomModelAgents(prev => { const s = new Set(prev); s.delete(name); return s; });
                           setCustomModelValues(prev => { const p = { ...prev }; delete p[name]; return p; });
@@ -215,8 +216,7 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
                             if (val) {
                               const v = validateModel(val);
                               if (v.level === 'block') { setUpdateErrors(prev => ({ ...prev, [name]: v.message || 'Invalid model' })); return; }
-                              if (v.level === 'warn') { setUpdateErrors(prev => ({ ...prev, [name]: v.message! })); }
-                              updateAgent(name, { model: val });
+                              updateAgent(name, { model: val }, v.level === 'warn' ? v.message : undefined);
                               setCustomModelValues(prev => { const p = { ...prev }; delete p[name]; return p; });
                             }
                           }
@@ -259,7 +259,7 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
               {updateErrors[name] && (() => {
                 const msg = updateErrors[name];
                 const isOk = msg.startsWith('OK:');
-                const isWarn = msg.includes('not a recognized');
+                const isWarn = msg.includes('not ') && !msg.startsWith('OK:') && !msg.startsWith('Failed') && !msg.startsWith('Error');
                 const color = isOk ? '#4ade80' : isWarn ? '#facc15' : '#f87171';
                 const bg = isOk ? 'rgba(74,222,128,0.1)' : isWarn ? 'rgba(250,204,21,0.1)' : 'rgba(248,113,113,0.1)';
                 return (
