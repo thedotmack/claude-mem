@@ -416,7 +416,7 @@ export function ContextSettingsModal({
                 <>
                   <FormField
                     label="OpenRouter API Key"
-                    tooltip="Your OpenRouter API key from openrouter.ai (or set OPENROUTER_API_KEY env var)"
+                    tooltip="Your OpenRouter API key from openrouter.ai — one key gives access to all models. Select models per-agent in the Status tab."
                   >
                     <input
                       type="password"
@@ -425,39 +425,9 @@ export function ContextSettingsModal({
                       placeholder="Enter OpenRouter API key..."
                     />
                   </FormField>
-                  <FormField
-                    label="OpenRouter Model"
-                    tooltip="Model identifier from OpenRouter (e.g., anthropic/claude-3.5-sonnet, google/gemini-2.0-flash-thinking-exp)"
-                  >
-                    <input
-                      type="text"
-                      value={formState.CLAUDE_MEM_OPENROUTER_MODEL || 'deepseek/deepseek-chat-v3-0324:free'}
-                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_MODEL', e.target.value)}
-                      placeholder="e.g., deepseek/deepseek-chat-v3-0324:free"
-                    />
-                  </FormField>
-                  <FormField
-                    label="Site URL (Optional)"
-                    tooltip="Your site URL for OpenRouter analytics (optional)"
-                  >
-                    <input
-                      type="text"
-                      value={formState.CLAUDE_MEM_OPENROUTER_SITE_URL || ''}
-                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_SITE_URL', e.target.value)}
-                      placeholder="https://yoursite.com"
-                    />
-                  </FormField>
-                  <FormField
-                    label="App Name (Optional)"
-                    tooltip="Your app name for OpenRouter analytics (optional)"
-                  >
-                    <input
-                      type="text"
-                      value={formState.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem'}
-                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
-                      placeholder="claude-mem"
-                    />
-                  </FormField>
+                  <div style={{ fontSize: '11px', color: 'var(--color-text-secondary)', marginTop: '-4px', marginBottom: '8px' }}>
+                    Models are selected per-agent in the Status tab &gt; Team panel. No need to set a global model here.
+                  </div>
                 </>
               )}
 

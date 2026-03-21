@@ -733,111 +733,131 @@ export class CollaborationRoutes extends BaseRouteHandler {
     // Get agent config for model
     const controls = loadControls();
     const agentConfig = controls.agents?.[agent] || {};
-    const model = agentConfig.model || 'deepseek/deepseek-chat-v3-0324:free';
+    let model = agentConfig.model || 'deepseek/deepseek-chat-v3-0324:free';
 
-    // Get API key
-    const settings = (() => {
-      try {
-        const { SettingsDefaultsManager } = require('../../../../shared/SettingsDefaultsManager.js');
-        const { USER_SETTINGS_PATH } = require('../../../../shared/paths.js');
-        return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-      } catch { return {}; }
-    })();
+    // Map shorthand model names to OpenRouter provider/model format
+    const MODEL_MAP: Record<string, string> = {
+      'claude-opus-4-6': 'anthropic/claude-opus-4',
+      'claude-sonnet-4-6': 'anthropic/claude-sonnet-4',
+      'claude-haiku-4-5': 'anthropic/claude-haiku-4-5',
+      'gpt-5.4': 'openai/gpt-5.4',
+      'gpt-4.1': 'openai/gpt-4.1',
+      'gpt-4.1-mini': 'openai/gpt-4.1-mini',
+      'gpt-4.1-nano': 'openai/gpt-4.1-nano',
+      'gpt-4o': 'openai/gpt-4o',
+      'gpt-4o-mini': 'openai/gpt-4o-mini',
+      'o3-mini': 'openai/o3-mini',
+      'o3': 'openai/o3',
+      'o4-mini': 'openai/o4-mini',
+      'gemini-3-flash-preview': 'google/gemini-3-flash-preview',
+      'gemini-2.5-flash': 'google/gemini-2.5-flash',
+      'gemini-2.5-flash-lite': 'google/gemini-2.5-flash-lite',
+      'gemini-2.5-pro': 'google/gemini-2.5-pro',
+      'deepseek-v3.2': 'deepseek/deepseek-chat-v3-0324',
+      'deepseek-r1': 'deepseek/deepseek-r1',
+      'llama-4-scout': 'meta-llama/llama-4-scout',
+      'llama-4-maverick': 'meta-llama/llama-4-maverick',
+      'qwen-3-235b': 'qwen/qwen-3-235b',
+      'mistral-large-2': 'mistralai/mistral-large-2',
+    };
+    if (MODEL_MAP[model]) model = MODEL_MAP[model];
 
-    const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY || '';
+    // Get API key from settings file directly
+    const settingsPath = join(homedir(), '.claude-mem', 'settings.json');
+    let apiKey = process.env.OPENROUTER_API_KEY || '';
+    try {
+      if (existsSync(settingsPath)) {
+        const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY || apiKey;
+      }
+    } catch {}
+
     if (!apiKey) { res.status(400).json({ error: 'No OpenRouter API key configured. Add it in Settings > Advanced.' }); return; }
 
     // Build messages array
-    const messages = [
+    const chatMessages = [
       ...(history || []).map((m: any) => ({ role: m.role, content: m.content })),
       { role: 'user', content: message }
     ];
+
+    logger.info('HTTP', `Chat request: agent=${agent} model=${model} messages=${chatMessages.length}`);
 
     // Set up SSE streaming
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
     });
 
     try {
-      const https = require('https');
-      const postData = JSON.stringify({
-        model,
-        messages,
-        temperature: 0.7,
-        max_tokens: 4096,
-        stream: true,
-      });
-
-      const apiReq = https.request({
-        hostname: 'openrouter.ai',
-        path: '/api/v1/chat/completions',
+      // Use fetch with streaming (works in bun natively)
+      const apiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData),
           'X-Title': 'claude-mem-chat',
-        }
-      }, (apiRes: any) => {
-        let buffer = '';
-
-        apiRes.on('data', (chunk: Buffer) => {
-          buffer += chunk.toString();
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || ''; // Keep incomplete line
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6).trim();
-              if (data === '[DONE]') {
-                res.write('data: [DONE]\n\n');
-                res.end();
-                return;
-              }
-              try {
-                const parsed = JSON.parse(data);
-                const content = parsed.choices?.[0]?.delta?.content;
-                if (content) {
-                  res.write(`data: ${JSON.stringify({ content })}\n\n`);
-                }
-              } catch {} // Skip malformed chunks
-            }
-          }
-        });
-
-        apiRes.on('end', () => {
-          if (!res.writableEnded) {
-            res.write('data: [DONE]\n\n');
-            res.end();
-          }
-        });
-
-        apiRes.on('error', (err: Error) => {
-          res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
-          res.end();
-        });
+        },
+        body: JSON.stringify({
+          model,
+          messages: chatMessages,
+          temperature: 0.7,
+          max_tokens: 4096,
+          stream: true,
+        }),
       });
 
-      apiReq.on('error', (err: Error) => {
-        res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+      if (!apiRes.ok) {
+        const errText = await apiRes.text();
+        logger.error('HTTP', `Chat API error: ${apiRes.status} ${errText.substring(0, 200)}`);
+        res.write(`data: ${JSON.stringify({ error: `API error ${apiRes.status}: ${errText.substring(0, 200)}` })}\n\n`);
+        res.write('data: [DONE]\n\n');
         res.end();
-      });
+        return;
+      }
 
-      apiReq.setTimeout(120000);
-      apiReq.write(postData);
-      apiReq.end();
+      const reader = apiRes.body?.getReader();
+      if (!reader) { res.write('data: [DONE]\n\n'); res.end(); return; }
 
-      // Clean up on client disconnect
-      req.on('close', () => {
-        apiReq.destroy();
-      });
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6).trim();
+            if (data === '[DONE]') {
+              res.write('data: [DONE]\n\n');
+              continue;
+            }
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices?.[0]?.delta?.content;
+              if (content) {
+                res.write(`data: ${JSON.stringify({ content })}\n\n`);
+              }
+            } catch {}
+          }
+        }
+      }
+
+      if (!res.writableEnded) {
+        res.write('data: [DONE]\n\n');
+        res.end();
+      }
 
     } catch (err: any) {
+      logger.error('HTTP', `Chat error: ${err.message}`);
       res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
-      res.end();
+      res.write('data: [DONE]\n\n');
+      if (!res.writableEnded) res.end();
     }
   };
 

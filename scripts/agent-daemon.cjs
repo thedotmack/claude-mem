@@ -182,8 +182,17 @@ async function processAgent(baseUrl, agentName, agentConfig) {
       prompt = parsed.prompt || msg.body;
     } catch {} // body might be plain text
 
-    // Get model from agent config
-    const model = agentConfig.model || 'deepseek/deepseek-chat-v3-0324:free';
+    // Get model from agent config — map shorthand to OpenRouter format
+    let model = agentConfig.model || 'deepseek/deepseek-chat-v3-0324:free';
+    const MODEL_MAP = {
+      'claude-opus-4-6': 'anthropic/claude-opus-4', 'claude-sonnet-4-6': 'anthropic/claude-sonnet-4',
+      'claude-haiku-4-5': 'anthropic/claude-haiku-4-5', 'gpt-5.4': 'openai/gpt-5.4',
+      'gpt-4.1': 'openai/gpt-4.1', 'gpt-4.1-mini': 'openai/gpt-4.1-mini',
+      'gpt-4o': 'openai/gpt-4o', 'gpt-4o-mini': 'openai/gpt-4o-mini',
+      'o3-mini': 'openai/o3-mini', 'deepseek-v3.2': 'deepseek/deepseek-chat-v3-0324',
+      'deepseek-r1': 'deepseek/deepseek-r1', 'gemini-2.5-flash': 'google/gemini-2.5-flash',
+    };
+    if (MODEL_MAP[model]) model = MODEL_MAP[model];
 
     try {
       // Call LLM
