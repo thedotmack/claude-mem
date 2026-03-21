@@ -183,7 +183,7 @@ async function processAgent(baseUrl, agentName, agentConfig) {
     } catch {} // body might be plain text
 
     // Get model from agent config — map shorthand to OpenRouter format
-    let model = agentConfig.model || 'deepseek/deepseek-chat-v3-0324:free';
+    let model = agentConfig.model || 'nvidia/nemotron-3-super-120b-a12b:free';
     const MODEL_MAP = {
       'claude-opus-4-6': 'anthropic/claude-opus-4', 'claude-sonnet-4-6': 'anthropic/claude-sonnet-4',
       'claude-haiku-4-5': 'anthropic/claude-haiku-4-5', 'gpt-5.4': 'openai/gpt-5.4',

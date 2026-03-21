@@ -733,7 +733,7 @@ export class CollaborationRoutes extends BaseRouteHandler {
     // Get agent config for model
     const controls = loadControls();
     const agentConfig = controls.agents?.[agent] || {};
-    let model = agentConfig.model || 'deepseek/deepseek-chat-v3-0324:free';
+    let model = agentConfig.model || 'nvidia/nemotron-3-super-120b-a12b:free';
 
     // Map shorthand model names to OpenRouter provider/model format
     const MODEL_MAP: Record<string, string> = {

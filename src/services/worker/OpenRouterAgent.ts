@@ -457,7 +457,7 @@ export class OpenRouterAgent {
     const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY') || '';
 
     // Model: from settings or default
-    const model = settings.CLAUDE_MEM_OPENROUTER_MODEL || 'deepseek/deepseek-chat-v3-0324:free';
+    const model = settings.CLAUDE_MEM_OPENROUTER_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free';
 
     // Optional analytics headers
     const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';

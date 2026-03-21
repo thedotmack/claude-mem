@@ -24,19 +24,23 @@ interface TeamPanelProps {
 }
 
 const MODEL_OPTIONS = [
-  { group: 'Claude', models: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'] },
-  { group: 'OpenAI', models: ['gpt-5.4', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano', 'gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o3', 'o4-mini'] },
-  { group: 'Gemini', models: ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro'] },
-  { group: 'Open Source', models: ['deepseek-v3.2', 'deepseek-r1', 'llama-4-scout', 'llama-4-maverick', 'qwen-3-235b', 'mistral-large-2'] },
-  { group: 'OpenRouter (free)', models: [
-    'xiaomi/mimo-v2-flash:free', 'stepfun/step-3.5-flash:free', 'deepseek/deepseek-chat-v3-0324:free',
-    'nvidia/nemotron-3-super:free', 'moonshotai/kimi-k2.5:free', 'minimax/minimax-m2.7:free',
-    'deepseek/deepseek-v3.2-speciale:free', 'qwen/qwen-3-235b:free'
+  { group: 'Claude (via OpenRouter)', models: ['anthropic/claude-sonnet-4', 'anthropic/claude-opus-4', 'anthropic/claude-haiku-4-5'] },
+  { group: 'OpenAI (via OpenRouter)', models: ['openai/gpt-4.1', 'openai/gpt-4.1-mini', 'openai/gpt-4o', 'openai/gpt-4o-mini', 'openai/o3-mini', 'openai/o4-mini'] },
+  { group: 'Google (via OpenRouter)', models: ['google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'google/gemma-3n-e4b-it:free'] },
+  { group: 'Free models', models: [
+    'nvidia/nemotron-3-super-120b-a12b:free',
+    'minimax/minimax-m2.5:free',
+    'stepfun/step-3.5-flash:free',
+    'qwen/qwen3-coder:free',
+    'qwen/qwen3-next-80b-a3b-instruct:free',
+    'openai/gpt-oss-120b:free',
+    'openai/gpt-oss-20b:free',
+    'nvidia/nemotron-nano-9b-v2:free',
+    'z-ai/glm-4.5-air:free',
   ]},
-  { group: 'OpenRouter (paid)', models: [
-    'anthropic/claude-sonnet-4', 'anthropic/claude-opus-4', 'openai/gpt-4.1', 'openai/gpt-4o',
-    'google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'deepseek/deepseek-r1',
-    'meta-llama/llama-4-maverick', 'mistralai/mistral-large-2'
+  { group: 'Paid models', models: [
+    'deepseek/deepseek-r1', 'deepseek/deepseek-chat-v3-0324',
+    'meta-llama/llama-4-maverick', 'mistralai/mistral-large-2',
   ]},
 ];
 

@@ -43,7 +43,7 @@ export function ChatView({ controls }: ChatViewProps) {
 
   const getModel = useCallback(() => {
     if (!controls || !selectedAgent) return 'unknown';
-    return controls.agents[selectedAgent]?.model || 'deepseek/deepseek-chat-v3-0324:free';
+    return controls.agents[selectedAgent]?.model || 'nvidia/nemotron-3-super-120b-a12b:free';
   }, [controls, selectedAgent]);
 
   const sendMessage = useCallback(async () => {
