@@ -183,7 +183,7 @@ async function processAgent(baseUrl, agentName, agentConfig) {
     } catch {} // body might be plain text
 
     // Get model from agent config
-    const model = agentConfig.model || 'xiaomi/mimo-v2-flash:free';
+    const model = agentConfig.model || 'deepseek/deepseek-chat-v3-0324:free';
 
     try {
       // Call LLM
