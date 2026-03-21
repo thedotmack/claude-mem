@@ -211,6 +211,7 @@ export function App() {
           messages={collab.messages}
           isLoading={collab.isLoading}
           error={collab.error}
+          onRefresh={collab.refresh}
         />
       )}
 

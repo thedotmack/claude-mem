@@ -8,6 +8,7 @@ interface StatusDashboardProps {
   messages: AgentMessage[];
   isLoading: boolean;
   error: string | null;
+  onRefresh?: () => void;
 }
 
 function AgentCard({ name, config, isLeader, hasActiveLocks }: { name: string; config: any; isLeader: boolean; hasActiveLocks: boolean }) {
@@ -178,7 +179,7 @@ function PerformanceMetrics() {
   );
 }
 
-export function StatusDashboard({ status, messages, isLoading, error }: StatusDashboardProps) {
+export function StatusDashboard({ status, messages, isLoading, error, onRefresh }: StatusDashboardProps) {
   if (isLoading && !status) {
     return <div className="collab-loading">Loading collaboration status...</div>;
   }
