@@ -39,14 +39,8 @@ export function TokenCounter({ tokenEvents }: TokenCounterProps) {
     return { totalInput, totalOutput, totalCost, byProvider };
   }, [tokenEvents]);
 
-  if (tokenEvents.length === 0) {
-    return (
-      <div style={{ display: 'flex', gap: '16px', padding: '8px 16px', background: 'var(--bg-secondary, #16213e)',
-        borderRadius: '8px', fontSize: '12px', color: 'var(--text-secondary, #888)', alignItems: 'center' }}>
-        <span>No token usage yet this session</span>
-      </div>
-    );
-  }
+  // Don't render anything when empty — saves space
+  if (tokenEvents.length === 0) return null;
 
   return (
     <div style={{ padding: '10px 16px', background: 'var(--bg-secondary, #16213e)',

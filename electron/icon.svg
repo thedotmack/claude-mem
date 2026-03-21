@@ -1,5 +1,42 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <rect width="256" height="256" rx="40" fill="#1a1a2e"/>
-  <text x="128" y="160" font-family="monospace" font-size="120" font-weight="bold" fill="#7c3aed" text-anchor="middle">CM</text>
-  <circle cx="128" cy="50" r="12" fill="#4ade80"/>
+  <!-- Background -->
+  <rect width="256" height="256" rx="48" fill="#1a1a2e"/>
+
+  <!-- Neural network nodes -->
+  <!-- Left column -->
+  <circle cx="70" cy="80" r="12" fill="#7c3aed" opacity="0.9"/>
+  <circle cx="70" cy="128" r="14" fill="#7c3aed"/>
+  <circle cx="70" cy="176" r="12" fill="#7c3aed" opacity="0.9"/>
+
+  <!-- Center column -->
+  <circle cx="128" cy="96" r="13" fill="#4ade80"/>
+  <circle cx="128" cy="160" r="13" fill="#4ade80"/>
+
+  <!-- Right column -->
+  <circle cx="186" cy="80" r="12" fill="#60a5fa" opacity="0.9"/>
+  <circle cx="186" cy="128" r="14" fill="#60a5fa"/>
+  <circle cx="186" cy="176" r="12" fill="#60a5fa" opacity="0.9"/>
+
+  <!-- Connections left to center -->
+  <line x1="82" y1="80" x2="116" y2="96" stroke="#7c3aed" stroke-width="2" opacity="0.4"/>
+  <line x1="82" y1="128" x2="116" y2="96" stroke="#7c3aed" stroke-width="2" opacity="0.4"/>
+  <line x1="82" y1="128" x2="116" y2="160" stroke="#7c3aed" stroke-width="2" opacity="0.4"/>
+  <line x1="82" y1="176" x2="116" y2="160" stroke="#7c3aed" stroke-width="2" opacity="0.4"/>
+
+  <!-- Connections center to right -->
+  <line x1="140" y1="96" x2="174" y2="80" stroke="#4ade80" stroke-width="2" opacity="0.4"/>
+  <line x1="140" y1="96" x2="174" y2="128" stroke="#4ade80" stroke-width="2" opacity="0.4"/>
+  <line x1="140" y1="160" x2="174" y2="128" stroke="#4ade80" stroke-width="2" opacity="0.4"/>
+  <line x1="140" y1="160" x2="174" y2="176" stroke="#4ade80" stroke-width="2" opacity="0.4"/>
+
+  <!-- Cross connections -->
+  <line x1="82" y1="80" x2="116" y2="160" stroke="#7c3aed" stroke-width="1" opacity="0.2"/>
+  <line x1="140" y1="96" x2="174" y2="176" stroke="#60a5fa" stroke-width="1" opacity="0.2"/>
+
+  <!-- Pulse rings on active nodes -->
+  <circle cx="128" cy="96" r="18" fill="none" stroke="#4ade80" stroke-width="1.5" opacity="0.3"/>
+  <circle cx="128" cy="160" r="18" fill="none" stroke="#4ade80" stroke-width="1.5" opacity="0.3"/>
+
+  <!-- "CM" text at bottom -->
+  <text x="128" y="236" font-family="monospace" font-size="24" font-weight="bold" fill="#666" text-anchor="middle" opacity="0.5">claude-mem</text>
 </svg>
