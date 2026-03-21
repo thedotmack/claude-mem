@@ -89,6 +89,12 @@ export class CollaborationRoutes extends BaseRouteHandler {
     app.post('/api/projects/rename', this.handleRenameProject.bind(this));
     app.post('/api/projects/delete', this.handleDeleteProject.bind(this));
 
+    // ===== Prompt & Dispatch =====
+    app.post('/api/prompt', this.handlePrompt.bind(this));
+    app.post('/api/projects/browse', this.handleBrowseProjects.bind(this));
+    app.post('/api/delegate', this.handleDelegate.bind(this));
+    app.patch('/api/tasks/:id/status', this.handleUpdateTaskStatus.bind(this));
+
     // ===== Admin =====
     app.post('/api/admin/backup', this.handleCreateBackup.bind(this));
     app.get('/api/admin/export', this.handleExport.bind(this));
@@ -616,5 +622,99 @@ export class CollaborationRoutes extends BaseRouteHandler {
       summaries,
       controls
     });
+  });
+
+  // ==========================================
+  // Prompt & Dispatch
+  // ==========================================
+
+  private handlePrompt = this.wrapHandler((req: Request, res: Response): void => {
+    const { prompt, agent, project, cwd } = req.body;
+    if (!prompt) { res.status(400).json({ error: 'prompt is required' }); return; }
+
+    const controls = loadControls();
+    const targetAgent = agent === 'auto' ? controls.leader : agent;
+    const db = this.dbManager.getConnection();
+    const now = Date.now();
+
+    // Send mailbox message (no FK constraints)
+    const msgResult = db.prepare(
+      `INSERT INTO messages (from_agent, to_agent, subject, body, urgent, read, created_at, created_at_epoch)
+       VALUES (?, ?, ?, ?, 0, 0, ?, ?)`
+    ).run('user', targetAgent, `Prompt: ${prompt.substring(0, 100)}`, JSON.stringify({ prompt, project, cwd }), new Date(now).toISOString(), now);
+
+    // Broadcast SSE
+    this.sseBroadcaster.broadcast({ type: 'new_prompt', prompt: { id: msgResult.lastInsertRowid, text: prompt, agent: targetAgent, project: project || 'default' } });
+
+    logger.info('HTTP', `Prompt dispatched to ${targetAgent}: ${prompt.substring(0, 80)}`);
+
+    res.json({
+      task_id: Number(msgResult.lastInsertRowid),
+      message_id: Number(msgResult.lastInsertRowid),
+      dispatched_to: targetAgent
+    });
+  });
+
+  private handleBrowseProjects = this.wrapHandler((req: Request, res: Response): void => {
+    const { path: browsePath } = req.body;
+    const targetPath = browsePath || 'C:\\Projects';
+
+    try {
+      const { readdirSync, statSync } = require('fs');
+      const entries = readdirSync(targetPath, { withFileTypes: true })
+        .filter((e: any) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules' && e.name !== '$Recycle.Bin' && e.name !== 'System Volume Information')
+        .map((e: any) => ({
+          name: e.name,
+          path: require('path').join(targetPath, e.name),
+          isDirectory: true
+        }))
+        .sort((a: any, b: any) => a.name.localeCompare(b.name));
+
+      res.json({ path: targetPath, entries });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message, path: targetPath, entries: [] });
+    }
+  });
+
+  private handleDelegate = this.wrapHandler((req: Request, res: Response): void => {
+    const { from, to, title, description, project, urgent } = req.body;
+    if (!to || !title) { res.status(400).json({ error: 'to and title are required' }); return; }
+
+    const db = this.dbManager.getConnection();
+    const controls = loadControls();
+
+    const now = Date.now();
+
+    // Send mailbox message with task details
+    const msgResult = db.prepare(
+      `INSERT INTO messages (from_agent, to_agent, subject, body, urgent, read, created_at, created_at_epoch)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?)`
+    ).run(from || 'user', to, title, JSON.stringify({ description, project, delegated_by: from || 'user' }), urgent ? 1 : 0, new Date(now).toISOString(), now);
+
+    this.sseBroadcaster.broadcast({ type: 'message_created', message: { id: msgResult.lastInsertRowid, from_agent: from || 'user', to_agent: to, subject: title } });
+
+    logger.info('HTTP', `Task delegated to ${to}: ${title}`);
+
+    res.json({ task_id: Number(msgResult.lastInsertRowid), message_id: Number(msgResult.lastInsertRowid) });
+  });
+
+  private handleUpdateTaskStatus = this.wrapHandler((req: Request, res: Response): void => {
+    const id = parseInt(req.params.id);
+    const { status } = req.body;
+    if (!status || !['pending', 'in_progress', 'completed', 'failed'].includes(status)) {
+      res.status(400).json({ error: 'status must be pending, in_progress, completed, or failed' });
+      return;
+    }
+
+    const db = this.dbManager.getConnection();
+    const obs = db.prepare('SELECT metadata FROM observations WHERE id = ?').get(id) as any;
+    if (!obs) { res.status(404).json({ error: 'task not found' }); return; }
+
+    let metadata = {};
+    try { metadata = JSON.parse(obs.metadata || '{}'); } catch {}
+    (metadata as any).task_status = status;
+
+    db.prepare('UPDATE observations SET metadata = ? WHERE id = ?').run(JSON.stringify(metadata), id);
+    res.json({ id, status });
   });
 }
