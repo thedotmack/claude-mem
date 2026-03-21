@@ -20,4 +20,6 @@ export const API_ENDPOINTS = {
   BROWSE: '/api/projects/browse',
   DELEGATE: '/api/delegate',
   TASKS: '/api/tasks',
+  CHAT: '/api/chat',
+  CHAT_HISTORY: '/api/chat/history',
 } as const;

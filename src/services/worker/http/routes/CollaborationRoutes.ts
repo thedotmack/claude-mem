@@ -95,6 +95,10 @@ export class CollaborationRoutes extends BaseRouteHandler {
     app.post('/api/delegate', this.handleDelegate.bind(this));
     app.patch('/api/tasks/:id/status', this.handleUpdateTaskStatus.bind(this));
 
+    // ===== Chat =====
+    app.post('/api/chat', this.handleChat.bind(this));
+    app.get('/api/chat/history/:agent', this.handleChatHistory.bind(this));
+
     // ===== Admin =====
     app.post('/api/admin/backup', this.handleCreateBackup.bind(this));
     app.get('/api/admin/export', this.handleExport.bind(this));
@@ -716,5 +720,141 @@ export class CollaborationRoutes extends BaseRouteHandler {
 
     db.prepare('UPDATE observations SET metadata = ? WHERE id = ?').run(JSON.stringify(metadata), id);
     res.json({ id, status });
+  });
+
+  // ==========================================
+  // Chat (streaming LLM responses)
+  // ==========================================
+
+  private handleChat = async (req: Request, res: Response): Promise<void> => {
+    const { message, agent, history } = req.body;
+    if (!message) { res.status(400).json({ error: 'message is required' }); return; }
+
+    // Get agent config for model
+    const controls = loadControls();
+    const agentConfig = controls.agents?.[agent] || {};
+    const model = agentConfig.model || 'deepseek/deepseek-chat-v3-0324:free';
+
+    // Get API key
+    const settings = (() => {
+      try {
+        const { SettingsDefaultsManager } = require('../../../../shared/SettingsDefaultsManager.js');
+        const { USER_SETTINGS_PATH } = require('../../../../shared/paths.js');
+        return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      } catch { return {}; }
+    })();
+
+    const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY || '';
+    if (!apiKey) { res.status(400).json({ error: 'No OpenRouter API key configured. Add it in Settings > Advanced.' }); return; }
+
+    // Build messages array
+    const messages = [
+      ...(history || []).map((m: any) => ({ role: m.role, content: m.content })),
+      { role: 'user', content: message }
+    ];
+
+    // Set up SSE streaming
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    });
+
+    try {
+      const https = require('https');
+      const postData = JSON.stringify({
+        model,
+        messages,
+        temperature: 0.7,
+        max_tokens: 4096,
+        stream: true,
+      });
+
+      const apiReq = https.request({
+        hostname: 'openrouter.ai',
+        path: '/api/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData),
+          'X-Title': 'claude-mem-chat',
+        }
+      }, (apiRes: any) => {
+        let buffer = '';
+
+        apiRes.on('data', (chunk: Buffer) => {
+          buffer += chunk.toString();
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // Keep incomplete line
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6).trim();
+              if (data === '[DONE]') {
+                res.write('data: [DONE]\n\n');
+                res.end();
+                return;
+              }
+              try {
+                const parsed = JSON.parse(data);
+                const content = parsed.choices?.[0]?.delta?.content;
+                if (content) {
+                  res.write(`data: ${JSON.stringify({ content })}\n\n`);
+                }
+              } catch {} // Skip malformed chunks
+            }
+          }
+        });
+
+        apiRes.on('end', () => {
+          if (!res.writableEnded) {
+            res.write('data: [DONE]\n\n');
+            res.end();
+          }
+        });
+
+        apiRes.on('error', (err: Error) => {
+          res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+          res.end();
+        });
+      });
+
+      apiReq.on('error', (err: Error) => {
+        res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+        res.end();
+      });
+
+      apiReq.setTimeout(120000);
+      apiReq.write(postData);
+      apiReq.end();
+
+      // Clean up on client disconnect
+      req.on('close', () => {
+        apiReq.destroy();
+      });
+
+    } catch (err: any) {
+      res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+      res.end();
+    }
+  };
+
+  private handleChatHistory = this.wrapHandler((req: Request, res: Response): void => {
+    const agent = req.params.agent;
+    const db = this.dbManager.getConnection();
+
+    // Get chat messages from messages table (from/to this agent with 'Re:' pattern)
+    const messages = db.prepare(
+      `SELECT id, from_agent, to_agent, subject, body, created_at_epoch
+       FROM messages
+       WHERE (from_agent = ? OR to_agent = ?)
+       AND (subject LIKE 'Prompt:%' OR subject LIKE 'Re:%' OR subject LIKE 'Chat:%')
+       ORDER BY created_at_epoch ASC
+       LIMIT 100`
+    ).all(agent, agent);
+
+    res.json({ messages });
   });
 }

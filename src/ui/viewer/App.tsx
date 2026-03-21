@@ -17,11 +17,13 @@ import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
 import { useCollaboration } from './hooks/useCollaboration';
 import { PromptBar } from './components/PromptBar';
+import { ChatView } from './components/ChatView';
 import { Observation, Summary, UserPrompt, ViewerTab } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
 
 const TABS: { id: ViewerTab; label: string }[] = [
   { id: 'feed', label: 'Feed' },
+  { id: 'chat', label: 'Chat' },
   { id: 'live', label: 'Live' },
   { id: 'status', label: 'Status' },
   { id: 'timeline', label: 'Timeline' },
@@ -203,6 +205,10 @@ export function App() {
           isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
           hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
         />
+      )}
+
+      {activeTab === 'chat' && (
+        <ChatView controls={collab.status?.controls || null} />
       )}
 
       {activeTab === 'live' && (
