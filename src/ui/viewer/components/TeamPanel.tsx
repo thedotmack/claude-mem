@@ -52,14 +52,17 @@ function validateModel(model: string): { level: 'ok' | 'warn' | 'block'; message
   if (!/[a-zA-Z]/.test(model)) return { level: 'block', message: 'Model name must contain letters (e.g. gpt-4o, claude-sonnet-4-6)' };
   // Must be at least 3 chars
   if (model.length < 3) return { level: 'block', message: 'Model name is too short' };
-  // Exact match in our known list
+  // Exact match in our known dropdown list — always OK
   if (ALL_KNOWN_MODELS.has(model)) return { level: 'ok' };
-  // Provider/model format is valid for OpenRouter (e.g. openai/gpt-4o)
-  if (model.includes('/') && model.split('/').length === 2 && model.split('/')[1].length >= 2) return { level: 'ok' };
-  // Known prefixes from major providers
-  if (/^(gpt|claude|gemini|llama|deepseek|qwen|mistral|o[0-9]|phi|command|codex)/i.test(model)) return { level: 'ok' };
-  // Anything else — warn but don't block (could be a new model we don't know about)
-  return { level: 'warn', message: `"${model}" is not a recognized model. It will be saved but may not work. Use provider/model format for OpenRouter.` };
+  // Provider/model format for OpenRouter (e.g. openai/gpt-4o) — check the model part too
+  if (model.includes('/') && model.split('/').length === 2) {
+    const modelPart = model.split('/')[1];
+    if (modelPart.length >= 3 && modelPart.includes('-')) return { level: 'ok' };
+    if (modelPart.endsWith(':free')) return { level: 'ok' };
+    return { level: 'warn', message: `"${modelPart}" after the provider doesn't look like a real model ID. Check the exact model name on the provider's website.` };
+  }
+  // NOT in our known list and not provider/model format — always warn
+  return { level: 'warn', message: `"${model}" is not in the known models list. Use the List button to pick a valid model, or use provider/model format (e.g. openai/gpt-4o) for OpenRouter.` };
 }
 
 const REASONING_OPTIONS = ['standard', 'extended', 'minimal'];
