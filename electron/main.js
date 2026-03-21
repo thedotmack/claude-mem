@@ -95,10 +95,21 @@ async function startWorker() {
   const port = await findFreePort();
   console.log(`[electron] Starting worker on port ${port} with bun: ${bun}`);
 
-  const workerScript = path.join(__dirname, 'plugin', 'scripts', 'worker-service.cjs');
+  // Try installed marketplace plugin first (has node_modules), fallback to local
+  const marketplaceDir = path.join(process.env.USERPROFILE || '', '.claude', 'plugins', 'marketplaces', 'thedotmack');
+  const localDir = path.join(__dirname, 'plugin');
+
+  let workerScript = path.join(marketplaceDir, 'plugin', 'scripts', 'worker-service.cjs');
+  let workerCwdBase = marketplaceDir;
+
+  if (!fs.existsSync(workerScript)) {
+    workerScript = path.join(localDir, 'scripts', 'worker-service.cjs');
+    workerCwdBase = localDir;
+  }
+
   if (!fs.existsSync(workerScript)) {
     dialog.showErrorBox('Worker not found',
-      `Cannot find worker-service.cjs at:\n${workerScript}\n\nRun 'npm run build' first.`);
+      `Cannot find worker-service.cjs.\n\nRun 'npm run build && npm run sync-marketplace:force' first.`);
     app.quit();
     return null;
   }
@@ -108,10 +119,19 @@ async function startWorker() {
     CLAUDE_MEM_WORKER_PORT: String(port),
   };
 
+  // Delete stale PID file so the worker doesn't think another instance is running
+  const pidFile = path.join(process.env.USERPROFILE || '', '.claude-mem', 'worker.pid');
+  try { if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile); } catch {}
+
+  console.log(`[electron] Worker script: ${workerScript}`);
+  console.log(`[electron] Worker cwd: ${workerCwdBase}`);
+
   workerProcess = spawn(bun, [workerScript], {
     env,
+    cwd: workerCwdBase,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
+    shell: false,
   });
 
   workerProcess.stdout.on('data', (data) => {
