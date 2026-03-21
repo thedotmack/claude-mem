@@ -1,0 +1,40 @@
+{
+  "name": "claude-mem",
+  "version": "10.5.6",
+  "description": "Multi-agent collaboration dashboard — desktop app",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win"
+  },
+  "build": {
+    "appId": "com.thedotmack.claude-mem",
+    "productName": "claude-mem",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "icon.png"
+    },
+    "nsis": {
+      "shortcutName": "claude-mem",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "menuCategory": "Development"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "icon.png",
+      "plugin/**/*"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}

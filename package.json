@@ -56,6 +56,8 @@
     "worker:tail": "tail -f 50 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log",
     "changelog:generate": "node scripts/generate-changelog.js",
     "discord:notify": "node scripts/discord-release-notify.js",
+    "electron:dev": "node scripts/build-electron.cjs && cd electron && npm start",
+    "electron:build": "node scripts/build-electron.cjs --dist",
     "worker:start": "bun plugin/scripts/worker-service.cjs start",
     "worker:stop": "bun plugin/scripts/worker-service.cjs stop",
     "worker:restart": "bun plugin/scripts/worker-service.cjs restart",
