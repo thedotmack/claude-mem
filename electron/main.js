@@ -11,6 +11,42 @@ let workerProcess = null;
 let workerPort = null;
 let isQuitting = false;
 
+const FIXED_PORT = 37777;
+
+// ─── Kill Ghost Processes ──────────────────────────────────
+async function killGhostProcesses() {
+  console.log('[electron] Killing ghost processes on port range 37777-37800...');
+  try {
+    // Get all PIDs listening on our port range
+    const result = execSync('netstat -ano 2>nul', { encoding: 'utf8', timeout: 5000 });
+    const pidsToKill = new Set();
+
+    for (const line of result.split('\n')) {
+      const match = line.match(/127\.0\.0\.1:(377[7-9]\d|3780[0-9])\s+.*LISTENING\s+(\d+)/);
+      if (match) {
+        const pid = parseInt(match[2]);
+        if (pid > 0 && pid !== process.pid) pidsToKill.add(pid);
+      }
+    }
+
+    for (const pid of pidsToKill) {
+      try {
+        console.log(`[electron] Killing ghost PID ${pid}`);
+        execSync(`taskkill /F /PID ${pid} 2>nul`, { timeout: 3000 });
+      } catch {} // Ignore if already dead
+    }
+
+    if (pidsToKill.size > 0) {
+      console.log(`[electron] Killed ${pidsToKill.size} ghost process(es). Waiting for ports to free...`);
+      await new Promise(r => setTimeout(r, 2000)); // Wait for OS to release ports
+    } else {
+      console.log('[electron] No ghost processes found');
+    }
+  } catch (err) {
+    console.error('[electron] Ghost cleanup failed:', err.message);
+  }
+}
+
 // ─── Port Discovery ────────────────────────────────────────
 function isPortFree(port) {
   return new Promise((resolve) => {
@@ -22,11 +58,28 @@ function isPortFree(port) {
 }
 
 async function findFreePort() {
-  // Try preferred port first
-  for (let port = 37777; port <= 37800; port++) {
-    if (await isPortFree(port)) return port;
+  // Always try the fixed port first
+  if (await isPortFree(FIXED_PORT)) return FIXED_PORT;
+
+  // Port taken — kill ghost processes and retry
+  console.log(`[electron] Port ${FIXED_PORT} is taken. Attempting ghost cleanup...`);
+  await killGhostProcesses();
+
+  // Retry fixed port after cleanup
+  if (await isPortFree(FIXED_PORT)) {
+    console.log(`[electron] Port ${FIXED_PORT} freed after ghost cleanup`);
+    return FIXED_PORT;
   }
-  // Fallback: random port
+
+  // Still taken — try a small range
+  for (let port = FIXED_PORT + 1; port <= FIXED_PORT + 10; port++) {
+    if (await isPortFree(port)) {
+      console.log(`[electron] Using fallback port ${port}`);
+      return port;
+    }
+  }
+
+  // Last resort: random port
   return new Promise((resolve, reject) => {
     const server = net.createServer();
     server.listen(0, '127.0.0.1', () => {
