@@ -15,6 +15,14 @@ interface ChatViewProps {
   } | null;
 }
 
+// Persist chat per agent in localStorage
+function loadChat(agent: string): ChatMessage[] {
+  try { return JSON.parse(localStorage.getItem(`chat_${agent}`) || '[]'); } catch { return []; }
+}
+function saveChat(agent: string, msgs: ChatMessage[]) {
+  try { localStorage.setItem(`chat_${agent}`, JSON.stringify(msgs.slice(-100))); } catch {}
+}
+
 export function ChatView({ controls }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -32,9 +40,16 @@ export function ChatView({ controls }: ChatViewProps) {
   useEffect(() => {
     if (!selectedAgent && agents.length > 0) {
       const custom = agents.find(a => !['claude-code', 'codex', 'claude-app'].includes(a));
-      setSelectedAgent(custom || agents[0]);
+      const agent = custom || agents[0];
+      setSelectedAgent(agent);
+      setMessages(loadChat(agent));
     }
   }, [agents, selectedAgent]);
+
+  // Load chat when agent changes
+  useEffect(() => {
+    if (selectedAgent) setMessages(loadChat(selectedAgent));
+  }, [selectedAgent]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -52,6 +67,7 @@ export function ChatView({ controls }: ChatViewProps) {
     const userMsg: ChatMessage = { role: 'user', content: input.trim(), timestamp: Date.now() };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
+    saveChat(selectedAgent, newMessages);
     setInput('');
     setIsStreaming(true);
     setStreamingContent('');
@@ -110,12 +126,12 @@ export function ChatView({ controls }: ChatViewProps) {
       }
 
       if (fullContent) {
-        setMessages(prev => [...prev, {
-          role: 'assistant',
-          content: fullContent,
-          timestamp: Date.now(),
-          model: getModel()
-        }]);
+        const assistantMsg: ChatMessage = { role: 'assistant', content: fullContent, timestamp: Date.now(), model: getModel() };
+        setMessages(prev => {
+          const updated = [...prev, assistantMsg];
+          saveChat(selectedAgent, updated);
+          return updated;
+        });
       }
     } catch (err: any) {
       if (err.name !== 'AbortError') {
@@ -139,7 +155,8 @@ export function ChatView({ controls }: ChatViewProps) {
     setMessages([]);
     setStreamingContent('');
     setError(null);
-  }, []);
+    if (selectedAgent) saveChat(selectedAgent, []);
+  }, [selectedAgent]);
 
   const stopStreaming = useCallback(() => {
     abortRef.current?.abort();
