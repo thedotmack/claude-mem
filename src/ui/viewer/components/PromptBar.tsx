@@ -105,15 +105,16 @@ export function PromptBar({ projects, agents, onPromptSent }: PromptBarProps) {
     <>
       <div style={{
         position: 'fixed', bottom: 0, left: 0, right: 0,
-        background: 'var(--bg-primary, #1a1a2e)',
-        borderTop: '1px solid var(--border-color, #333)',
-        padding: '12px 20px', zIndex: 1000,
+        background: 'var(--color-bg-primary, #1a1a2e)',
+        borderTop: '1px solid var(--color-border-primary, #333)',
+        padding: '12px 20px', zIndex: 500,
+        boxShadow: '0 -2px 10px rgba(0,0,0,0.3)',
         display: 'flex', flexDirection: 'column', gap: '8px'
       }}>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
           <select value={selectedAgent} onChange={(e) => setSelectedAgent(e.target.value)}
-            style={{ background: 'var(--bg-secondary, #16213e)', color: 'var(--text-primary, #e0e0e0)',
-              border: '1px solid var(--border-color, #444)', borderRadius: '6px', padding: '4px 8px', fontSize: '12px', cursor: 'pointer' }}>
+            style={{ background: 'var(--color-bg-card, #16213e)', color: 'var(--color-text-primary, #e0e0e0)',
+              border: '1px solid var(--color-border-primary, #444)', borderRadius: '6px', padding: '4px 8px', fontSize: '12px', cursor: 'pointer' }}>
             <option value="auto">Auto (Leader)</option>
             {availableAgents.map(a => <option key={a} value={a}>{a}</option>)}
           </select>
@@ -123,15 +124,15 @@ export function PromptBar({ projects, agents, onPromptSent }: PromptBarProps) {
               setSelectedProject(e.target.value);
               if (e.target.value === '__browse__') { handleBrowseOpen(); setSelectedProject(''); }
             }}
-            style={{ background: 'var(--bg-secondary, #16213e)', color: 'var(--text-primary, #e0e0e0)',
-              border: '1px solid var(--border-color, #444)', borderRadius: '6px', padding: '4px 8px', fontSize: '12px', cursor: 'pointer', maxWidth: '200px' }}>
+            style={{ background: 'var(--color-bg-card, #16213e)', color: 'var(--color-text-primary, #e0e0e0)',
+              border: '1px solid var(--color-border-primary, #444)', borderRadius: '6px', padding: '4px 8px', fontSize: '12px', cursor: 'pointer', maxWidth: '200px' }}>
             <option value="">No project</option>
             {projects.map(p => <option key={p} value={p}>{p}</option>)}
             <option value="__browse__">Browse C: drive...</option>
           </select>
 
           {customCwd && (
-            <span style={{ fontSize: '11px', color: 'var(--text-secondary, #888)', background: 'var(--bg-tertiary, #1e1e3a)',
+            <span style={{ fontSize: '11px', color: 'var(--color-text-secondary, #888)', background: 'var(--color-bg-card-hover, #1e1e3a)',
               padding: '2px 8px', borderRadius: '4px', maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {customCwd}
             </span>
@@ -147,8 +148,8 @@ export function PromptBar({ projects, agents, onPromptSent }: PromptBarProps) {
         <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
           <textarea ref={textareaRef} value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={handleKeyDown}
             placeholder="Type a prompt for the AI agents... (Ctrl+Enter to send)" rows={1}
-            style={{ flex: 1, background: 'var(--bg-secondary, #16213e)', color: 'var(--text-primary, #e0e0e0)',
-              border: '1px solid var(--border-color, #444)', borderRadius: '8px', padding: '10px 14px', fontSize: '14px',
+            style={{ flex: 1, background: 'var(--color-bg-card, #16213e)', color: 'var(--color-text-primary, #e0e0e0)',
+              border: '1px solid var(--color-border-primary, #444)', borderRadius: '8px', padding: '10px 14px', fontSize: '14px',
               resize: 'none', fontFamily: 'inherit', lineHeight: '1.4', outline: 'none', minHeight: '40px', maxHeight: '120px' }} />
           <button onClick={handleSubmit} disabled={!prompt.trim() || isSending}
             style={{ background: prompt.trim() && !isSending ? 'var(--accent-color, #7c3aed)' : 'var(--bg-tertiary, #333)',
@@ -164,14 +165,14 @@ export function PromptBar({ projects, agents, onPromptSent }: PromptBarProps) {
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)',
           zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           onClick={() => setShowBrowser(false)}>
-          <div style={{ background: 'var(--bg-primary, #1a1a2e)', border: '1px solid var(--border-color, #444)',
+          <div style={{ background: 'var(--bg-primary, #1a1a2e)', border: '1px solid var(--color-border-primary, #444)',
             borderRadius: '12px', padding: '20px', width: '500px', maxHeight: '60vh', display: 'flex', flexDirection: 'column' }}
             onClick={e => e.stopPropagation()}>
-            <h3 style={{ margin: '0 0 12px 0', color: 'var(--text-primary, #e0e0e0)' }}>Browse Project Directory</h3>
+            <h3 style={{ margin: '0 0 12px 0', color: 'var(--color-text-primary, #e0e0e0)' }}>Browse Project Directory</h3>
             <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', alignItems: 'center' }}>
               <button onClick={() => { const parent = browserPath.split(/[/\\]/).slice(0, -1).join('\\') || 'C:\\'; browseDirectory(parent); }}
-                style={{ background: 'var(--bg-secondary, #16213e)', color: 'var(--text-primary, #e0e0e0)',
-                  border: '1px solid var(--border-color, #444)', borderRadius: '4px', padding: '4px 10px', cursor: 'pointer', fontSize: '13px' }}>
+                style={{ background: 'var(--color-bg-card, #16213e)', color: 'var(--color-text-primary, #e0e0e0)',
+                  border: '1px solid var(--color-border-primary, #444)', borderRadius: '4px', padding: '4px 10px', cursor: 'pointer', fontSize: '13px' }}>
                 Up
               </button>
               <span style={{ fontSize: '13px', color: 'var(--text-secondary, #999)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -180,18 +181,18 @@ export function PromptBar({ projects, agents, onPromptSent }: PromptBarProps) {
             </div>
             <div style={{ overflowY: 'auto', flex: 1, border: '1px solid var(--border-color, #333)', borderRadius: '6px' }}>
               {browserLoading ? (
-                <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-secondary, #888)' }}>Loading...</div>
+                <div style={{ padding: '20px', textAlign: 'center', color: 'var(--color-text-secondary, #888)' }}>Loading...</div>
               ) : browserEntries.length === 0 ? (
-                <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-secondary, #888)' }}>No subdirectories</div>
+                <div style={{ padding: '20px', textAlign: 'center', color: 'var(--color-text-secondary, #888)' }}>No subdirectories</div>
               ) : browserEntries.map(entry => (
                 <div key={entry.path} style={{ padding: '8px 14px', borderBottom: '1px solid var(--border-color, #222)',
                   display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', transition: 'background 0.1s' }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-secondary, #16213e)')}
                   onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
-                  <span style={{ color: 'var(--text-primary, #e0e0e0)', fontSize: '13px', flex: 1 }}
+                  <span style={{ color: 'var(--color-text-primary, #e0e0e0)', fontSize: '13px', flex: 1 }}
                     onClick={() => browseDirectory(entry.path)}>{entry.name}/</span>
                   <button onClick={() => handleSelectDir(entry)}
-                    style={{ background: 'var(--accent-color, #7c3aed)', color: '#fff', border: 'none',
+                    style={{ background: 'var(--color-accent-primary, #7c3aed)', color: '#fff', border: 'none',
                       borderRadius: '4px', padding: '3px 10px', fontSize: '11px', cursor: 'pointer' }}>Select</button>
                 </div>
               ))}

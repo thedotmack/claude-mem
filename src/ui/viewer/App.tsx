@@ -290,7 +290,7 @@ export function App() {
       />
 
       {/* Spacer so content doesn't hide behind fixed prompt bar */}
-      <div style={{ height: '100px' }} />
+      <div style={{ height: '130px' }} />
     </>
   );
 }

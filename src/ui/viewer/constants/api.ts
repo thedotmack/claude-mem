@@ -16,4 +16,8 @@ export const API_ENDPOINTS = {
   CONTROLS: '/api/controls',
   PLANS: '/api/plans',
   LOCKS: '/api/locks',
+  PROMPT: '/api/prompt',
+  BROWSE: '/api/projects/browse',
+  DELEGATE: '/api/delegate',
+  TASKS: '/api/tasks',
 } as const;

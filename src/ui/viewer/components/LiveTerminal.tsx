@@ -49,7 +49,7 @@ export function LiveTerminal({ agentLogs, tokenEvents, agentErrors, agentActivit
   const [claudeLogs, setClaudeLogs] = useState<string[]>([]);
   const [codexLogs, setCodexLogs] = useState<string[]>([]);
   const [isPolling, setIsPolling] = useState(true);
-  const [activeTab, setActiveTab] = useState<LiveTab>('activity');
+  const [activeTab, setActiveTab] = useState<LiveTab>('terminals');
 
   const fetchLogs = useCallback(async () => {
     try {
