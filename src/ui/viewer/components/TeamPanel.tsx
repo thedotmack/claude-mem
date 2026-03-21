@@ -292,13 +292,49 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
                 </div>
               </div>
 
-              <div style={{ fontSize: '11px', color: 'var(--text-secondary, #888)', marginTop: '8px' }}>
+              {/* Token usage & status */}
+              <div style={{ fontSize: '11px', color: 'var(--text-secondary, #888)', marginTop: '8px',
+                padding: '8px', background: 'var(--bg-primary, #1a1a2e)', borderRadius: '6px' }}>
                 {config.current_task && (
-                  <div style={{ marginBottom: '4px' }}>Task: <span style={{ color: 'var(--text-primary, #e0e0e0)' }}>{config.current_task}</span></div>
+                  <div style={{ marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <span style={{ color: '#60a5fa' }}>&#9654;</span>
+                    <span style={{ color: 'var(--text-primary, #e0e0e0)' }}>{config.current_task}</span>
+                  </div>
                 )}
-                {config.tokens_used_today != null && config.tokens_used_today > 0 && (
-                  <span>Tokens today: {config.tokens_used_today.toLocaleString()}</span>
-                )}
+                <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                  <div>
+                    <span style={{ color: 'var(--text-secondary, #666)' }}>Tokens today: </span>
+                    <span style={{ color: '#facc15', fontFamily: 'monospace', fontWeight: 600 }}>
+                      {config.tokens_used_today != null && config.tokens_used_today > 0
+                        ? config.tokens_used_today.toLocaleString()
+                        : '0'}
+                    </span>
+                  </div>
+                  {config.context_window_pct != null && config.context_window_pct > 0 && (
+                    <div>
+                      <span style={{ color: 'var(--text-secondary, #666)' }}>Context: </span>
+                      <span style={{
+                        fontFamily: 'monospace', fontWeight: 600,
+                        color: config.context_window_pct > 80 ? '#f87171' : config.context_window_pct > 50 ? '#facc15' : '#4ade80'
+                      }}>
+                        {config.context_window_pct}%
+                      </span>
+                    </div>
+                  )}
+                  {config.last_heartbeat && (
+                    <div>
+                      <span style={{ color: 'var(--text-secondary, #666)' }}>Last seen: </span>
+                      <span style={{ fontFamily: 'monospace' }}>
+                        {(() => {
+                          const ago = Math.floor((Date.now() - config.last_heartbeat!) / 1000);
+                          if (ago < 60) return `${ago}s ago`;
+                          if (ago < 3600) return `${Math.floor(ago / 60)}m ago`;
+                          return `${Math.floor(ago / 3600)}h ago`;
+                        })()}
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
 
               {!isLeader && (
