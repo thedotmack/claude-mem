@@ -139,12 +139,12 @@ function collectStdin() {
       resolve(null);
     });
 
-    // Safety: if no data arrives within 5s, proceed without stdin
+    // Safety: if no data arrives within 500ms, proceed without stdin
     setTimeout(() => {
       process.stdin.removeAllListeners();
       process.stdin.pause();
       resolve(chunks.length > 0 ? Buffer.concat(chunks) : null);
-    }, 5000);
+    }, 500);
   });
 }
 

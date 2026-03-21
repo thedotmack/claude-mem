@@ -475,7 +475,7 @@ export async function aggressiveStartupCleanup(): Promise<void> {
 
       for (const proc of processList) {
         const pid = proc.ProcessId;
-        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid || pid === process.ppid) continue;
 
         const commandLine = proc.CommandLine || '';
         const isAggressive = AGGRESSIVE_CLEANUP_PATTERNS.some(p => commandLine.includes(p));
@@ -518,7 +518,7 @@ export async function aggressiveStartupCleanup(): Promise<void> {
         const etime = match[2];
         const command = match[3];
 
-        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid || pid === process.ppid) continue;
 
         const isAggressive = AGGRESSIVE_CLEANUP_PATTERNS.some(p => command.includes(p));
 

@@ -1164,10 +1164,8 @@ async function main() {
       // sandbox kills. Instead, ensureWorkerStarted() spawns a fully detached
       // daemon (detached: true, stdio: 'ignore', child.unref()) that survives
       // the hook process's exit and is invisible to Claude Code's sandbox.
-      const workerReady = await ensureWorkerStarted(port);
-      if (!workerReady) {
-        logger.warn('SYSTEM', 'Worker failed to start before hook, handler will proceed gracefully');
-      }
+      await ensureWorkerStarted(port) || logger.warn("SYSTEM", "Worker failed to start...");
+      await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT)) || logger.warn("SYSTEM", "Worker readiness timed out before hook, proceeding anyway");
 
       const { hookCommand } = await import('../cli/hook-command.js');
       await hookCommand(platform, event);

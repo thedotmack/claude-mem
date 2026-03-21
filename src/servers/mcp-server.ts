@@ -438,9 +438,7 @@ async function main() {
   setTimeout(async () => {
     const workerAvailable = await verifyWorkerConnection();
     if (!workerAvailable) {
-      logger.error('SYSTEM', 'Worker not available', undefined, {});
-      logger.error('SYSTEM', 'Tools will fail until Worker is started');
-      logger.error('SYSTEM', 'Start Worker with: npm run worker:restart');
+      logger.info('SYSTEM', 'Worker not yet available, will connect when ready', undefined, {});
     } else {
       logger.info('SYSTEM', 'Worker available', undefined, {});
     }
