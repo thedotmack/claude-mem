@@ -27,8 +27,17 @@ const MODEL_OPTIONS = [
   { group: 'Claude', models: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'] },
   { group: 'OpenAI', models: ['gpt-5.4', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano', 'gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o3', 'o4-mini'] },
   { group: 'Gemini', models: ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro'] },
-  { group: 'Open Source', models: ['deepseek-v3.2', 'llama-4-scout', 'llama-4-maverick', 'qwen-3-235b'] },
-  { group: 'OpenRouter (free)', models: ['xiaomi/mimo-v2-flash:free', 'stepfun/step-3.5-flash:free', 'deepseek/deepseek-chat-v3-0324:free'] },
+  { group: 'Open Source', models: ['deepseek-v3.2', 'deepseek-r1', 'llama-4-scout', 'llama-4-maverick', 'qwen-3-235b', 'mistral-large-2'] },
+  { group: 'OpenRouter (free)', models: [
+    'xiaomi/mimo-v2-flash:free', 'stepfun/step-3.5-flash:free', 'deepseek/deepseek-chat-v3-0324:free',
+    'nvidia/nemotron-3-super:free', 'moonshotai/kimi-k2.5:free', 'minimax/minimax-m2.7:free',
+    'deepseek/deepseek-v3.2-speciale:free', 'qwen/qwen-3-235b:free'
+  ]},
+  { group: 'OpenRouter (paid)', models: [
+    'anthropic/claude-sonnet-4', 'anthropic/claude-opus-4', 'openai/gpt-4.1', 'openai/gpt-4o',
+    'google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'deepseek/deepseek-r1',
+    'meta-llama/llama-4-maverick', 'mistralai/mistral-large-2'
+  ]},
 ];
 
 const REASONING_OPTIONS = ['standard', 'extended', 'minimal'];
@@ -155,7 +164,7 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
               {/* Model selector */}
               <div style={{ marginBottom: '8px' }}>
                 <label style={{ fontSize: '11px', color: 'var(--text-secondary, #888)', display: 'block', marginBottom: '4px' }}>Model</label>
-                {customModelAgents.has(name) || !MODEL_OPTIONS.some(g => g.models.includes(config.model)) ? (
+                {customModelAgents.has(name) ? (
                   <div>
                     <div style={{ display: 'flex', gap: '4px' }}>
                       <input type="text" value={customModelValues[name] ?? config.model}
@@ -172,7 +181,7 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
                             if (val) { updateAgent(name, { model: val }); setCustomModelValues(prev => { const p = { ...prev }; delete p[name]; return p; }); }
                           }
                         }}
-                        placeholder="e.g. openai/gpt-4o or deepseek/deepseek-v3" autoFocus
+                        placeholder="e.g. openai/gpt-4o or nvidia/nemotron-3-super:free" autoFocus
                         style={{ flex: 1, background: 'var(--bg-primary, #1a1a2e)', color: 'var(--text-primary, #e0e0e0)',
                           border: '1px solid var(--accent-color, #7c3aed)', borderRadius: '4px', padding: '5px 8px', fontSize: '12px' }} />
                       <button onClick={() => { setCustomModelAgents(prev => { const s = new Set(prev); s.delete(name); return s; }); setCustomModelValues(prev => { const p = { ...prev }; delete p[name]; return p; }); }}
@@ -186,13 +195,16 @@ export function TeamPanel({ controls, onRefresh }: TeamPanelProps) {
                     </div>
                   </div>
                 ) : (
-                  <select value={config.model}
+                  <select value={MODEL_OPTIONS.some(g => g.models.includes(config.model)) ? config.model : '__current__'}
                     onChange={(e) => {
                       if (e.target.value === '__custom__') { setCustomModelAgents(prev => new Set(prev).add(name)); }
-                      else { updateAgent(name, { model: e.target.value }); }
+                      else if (e.target.value !== '__current__') { updateAgent(name, { model: e.target.value }); }
                     }}
                     style={{ width: '100%', background: 'var(--bg-primary, #1a1a2e)', color: 'var(--text-primary, #e0e0e0)',
                       border: '1px solid var(--border-color, #444)', borderRadius: '4px', padding: '5px 8px', fontSize: '12px' }}>
+                    {!MODEL_OPTIONS.some(g => g.models.includes(config.model)) && (
+                      <option value="__current__">{config.model} (current)</option>
+                    )}
                     {MODEL_OPTIONS.map(group => (
                       <optgroup key={group.group} label={group.group}>
                         {group.models.map(m => <option key={m} value={m}>{m}</option>)}
