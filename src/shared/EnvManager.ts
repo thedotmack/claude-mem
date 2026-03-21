@@ -42,6 +42,8 @@ export interface ClaudeMemEnv {
   ANTHROPIC_API_KEY?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
+  // Configuration (optional - for corporate LLM gateways and custom endpoints)
+  ANTHROPIC_BASE_URL?: string;
 }
 
 /**
@@ -82,9 +84,10 @@ function parseEnvFile(content: string): Record<string, string> {
  */
 function serializeEnvFile(env: Record<string, string>): string {
   const lines: string[] = [
-    '# claude-mem credentials',
-    '# This file stores API keys for claude-mem memory agent',
+    '# claude-mem credentials and configuration',
+    '# This file stores API keys and endpoint settings for claude-mem',
     '# Edit this file or use claude-mem settings to configure',
+    '# Set ANTHROPIC_BASE_URL here if using a corporate LLM gateway or proxy',
     '',
   ];
 
@@ -112,11 +115,12 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
     const content = readFileSync(ENV_FILE_PATH, 'utf-8');
     const parsed = parseEnvFile(content);
 
-    // Only return managed credential keys
+    // Only return managed keys (credentials + configuration)
     const result: ClaudeMemEnv = {};
     if (parsed.ANTHROPIC_API_KEY) result.ANTHROPIC_API_KEY = parsed.ANTHROPIC_API_KEY;
     if (parsed.GEMINI_API_KEY) result.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
     if (parsed.OPENROUTER_API_KEY) result.OPENROUTER_API_KEY = parsed.OPENROUTER_API_KEY;
+    if (parsed.ANTHROPIC_BASE_URL) result.ANTHROPIC_BASE_URL = parsed.ANTHROPIC_BASE_URL;
 
     return result;
   } catch (error) {
@@ -163,6 +167,13 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
         updated.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
       } else {
         delete updated.OPENROUTER_API_KEY;
+      }
+    }
+    if (env.ANTHROPIC_BASE_URL !== undefined) {
+      if (env.ANTHROPIC_BASE_URL) {
+        updated.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL;
+      } else {
+        delete updated.ANTHROPIC_BASE_URL;
       }
     }
 
@@ -219,7 +230,17 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
       isolatedEnv.OPENROUTER_API_KEY = credentials.OPENROUTER_API_KEY;
     }
 
-    // 4. Pass through Claude CLI's OAuth token if available (fallback for CLI subscription billing)
+    // 4. Re-inject ANTHROPIC_BASE_URL from managed .env if configured.
+    // Corporate environments commonly route API calls through an LLM gateway
+    // or proxy, requiring a custom base URL. While ANTHROPIC_BASE_URL passes
+    // through from process.env (it's not in BLOCKED_ENV_VARS), the worker
+    // daemon may have been started in a shell context that lacked this variable.
+    // Persisting it in ~/.claude-mem/.env ensures it survives daemon restarts.
+    if (credentials.ANTHROPIC_BASE_URL) {
+      isolatedEnv.ANTHROPIC_BASE_URL = credentials.ANTHROPIC_BASE_URL;
+    }
+
+    // 5. Pass through Claude CLI's OAuth token if available (fallback for CLI subscription billing)
     // When no ANTHROPIC_API_KEY is configured, the spawned CLI uses subscription billing
     // which requires either ~/.claude/.credentials.json or CLAUDE_CODE_OAUTH_TOKEN.
     // The worker inherits this token from the Claude Code session that started it.

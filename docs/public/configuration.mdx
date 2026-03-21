@@ -52,6 +52,23 @@ See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration,
 | `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows) |
 
+## Custom Gateway / Proxy Configuration
+
+Corporate environments commonly route Anthropic API calls through an internal LLM gateway or proxy. Claude-mem supports this via `ANTHROPIC_BASE_URL` in `~/.claude-mem/.env`.
+
+Edit `~/.claude-mem/.env`:
+
+```bash
+ANTHROPIC_API_KEY=your-gateway-api-key
+ANTHROPIC_BASE_URL=https://your-gateway.example.com/v1
+```
+
+Both values are persisted in this file so they survive worker daemon restarts, regardless of which shell context started the daemon. The gateway must be compatible with the Anthropic Messages API format (`POST /v1/messages`).
+
+<Note>
+`ANTHROPIC_BASE_URL` also passes through from the shell environment, but persisting it in `~/.claude-mem/.env` is more reliable for long-running worker daemons that may outlive the original shell session.
+</Note>
+
 ## Model Configuration
 
 Configure which AI model processes your observations.
