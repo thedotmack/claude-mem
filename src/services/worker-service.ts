@@ -659,15 +659,20 @@ export class WorkerService {
 
         const pendingStore = this.sessionManager.getPendingMessageStore();
 
-        // Idle timeout means no new work arrived for 3 minutes - don't restart
-        if (session.idleTimedOut) {
-          session.idleTimedOut = false; // Reset flag
-          this.terminateSession(session.sessionDbId, 'idle_timeout');
-          return;
-        }
-
         // Check if there's pending work that needs processing with a fresh AbortController
         const pendingCount = pendingStore.getPendingCount(session.sessionDbId);
+
+        // Idle timeout means no new work arrived for 3 minutes - don't restart
+        // But check pendingCount first: a message may have arrived between idle
+        // abort and .finally(), and we must not abandon it
+        if (session.idleTimedOut) {
+          session.idleTimedOut = false; // Reset flag
+          if (pendingCount === 0) {
+            this.terminateSession(session.sessionDbId, 'idle_timeout');
+            return;
+          }
+          // Fall through to pending-work restart below
+        }
         const MAX_PENDING_RESTARTS = 3;
 
         if (pendingCount > 0) {
@@ -694,13 +699,13 @@ export class WorkerService {
           session.abortController = new AbortController();
           // Restart processor
           this.startSessionProcessor(session, 'pending-work-restart');
+          this.broadcastProcessingStatus();
         } else {
           // Successful completion with no pending work — clean up session
+          // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
           session.consecutiveRestarts = 0;
           this.sessionManager.removeSessionImmediate(session.sessionDbId);
         }
-
-        this.broadcastProcessingStatus();
       });
   }
 
@@ -923,8 +928,8 @@ export class WorkerService {
    * Broadcast processing status change to SSE clients
    */
   broadcastProcessingStatus(): void {
-    const isProcessing = this.sessionManager.isAnySessionProcessing();
     const queueDepth = this.sessionManager.getTotalActiveWork();
+    const isProcessing = queueDepth > 0;
     const activeSessions = this.sessionManager.getActiveSessionCount();
 
     logger.info('WORKER', 'Broadcasting processing status', {
