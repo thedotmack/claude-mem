@@ -91,6 +91,26 @@ describe('Summarize handler error resilience', () => {
     });
   });
 
+  it('skips workerHttpRequest when extractLastMessage returns empty string', async () => {
+    mockExtractLastMessage.mockImplementation(() => '');
+    mockWorkerHttpRequest.mockClear();
+
+    const result = await summarizeHandler.execute({
+      sessionId: 'test-session-123',
+      transcriptPath: '/tmp/test-transcript.jsonl',
+      hookEvent: 'summarize',
+      platform: 'claude-code',
+      promptNumber: 1,
+    });
+
+    expect(result).toEqual({
+      continue: true,
+      suppressOutput: true,
+      exitCode: HOOK_EXIT_CODES.SUCCESS,
+    });
+    expect(mockWorkerHttpRequest).not.toHaveBeenCalled();
+  });
+
   it('does not throw when extractLastMessage throws SyntaxError', async () => {
     mockExtractLastMessage.mockImplementation(() => { throw new SyntaxError('Unexpected token'); });
 

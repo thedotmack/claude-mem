@@ -312,6 +312,10 @@ export class SessionRoutes extends BaseRouteHandler {
       });
   }
 
+  private clearFailedInitTracking(sessionDbId: number): void {
+    this.failedInitSessions.delete(sessionDbId);
+  }
+
   setupRoutes(app: express.Application): void {
     // Legacy session endpoints (use sessionDbId)
     app.post('/sessions/:sessionDbId/init', this.handleSessionInit.bind(this));
@@ -488,6 +492,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
+    this.clearFailedInitTracking(sessionDbId);
     await this.completionHandler.completeByDbId(sessionDbId);
 
     res.json({ status: 'deleted' });
@@ -501,6 +506,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
+    this.clearFailedInitTracking(sessionDbId);
     await this.completionHandler.completeByDbId(sessionDbId);
 
     res.json({ success: true });
@@ -672,8 +678,7 @@ export class SessionRoutes extends BaseRouteHandler {
     // Pass empty strings - we only need the ID lookup, not to create a new session
     const sessionDbId = store.createSDKSession(contentSessionId, '', '');
 
-    // Clean up failed-init tracking (#623)
-    this.failedInitSessions.delete(sessionDbId);
+    this.clearFailedInitTracking(sessionDbId);
 
     // Check if session is in the active sessions map
     const activeSession = this.sessionManager.getSession(sessionDbId);

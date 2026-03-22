@@ -38,6 +38,11 @@ export const summarizeHandler: EventHandler = {
       // The user's original request is already stored in user_prompts table.
       const lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
 
+      if (!lastAssistantMessage) {
+        logger.debug('HOOK', `Empty assistant message from transcript for session ${sessionId} - skipping summary`);
+        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      }
+
       logger.dataIn('HOOK', 'Stop: Requesting summary', {
         hasLastAssistantMessage: !!lastAssistantMessage
       });
