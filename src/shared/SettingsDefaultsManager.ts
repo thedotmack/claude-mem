@@ -64,6 +64,11 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_API_KEY: string;
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
+  // Principles System
+  CLAUDE_MEM_PRINCIPLES_ENABLED: string;         // Master toggle for principles feature
+  CLAUDE_MEM_PRINCIPLES_AUTO_EXTRACT: string;    // Auto-extract principles from summaries via SDK
+  CLAUDE_MEM_PRINCIPLES_PROMOTION_THRESHOLD: string; // Correction count before auto-promotion
+  CLAUDE_MEM_PRINCIPLES_MAX_INJECT: string;      // Max principles in context injection
 }
 
 export class SettingsDefaultsManager {
@@ -123,6 +128,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_API_KEY: '',
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
+    // Principles System
+    CLAUDE_MEM_PRINCIPLES_ENABLED: 'true',
+    CLAUDE_MEM_PRINCIPLES_AUTO_EXTRACT: 'true',
+    CLAUDE_MEM_PRINCIPLES_PROMOTION_THRESHOLD: '3',
+    CLAUDE_MEM_PRINCIPLES_MAX_INJECT: '5',
   };
 
   /**

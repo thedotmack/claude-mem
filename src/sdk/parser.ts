@@ -165,6 +165,42 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
 }
 
 /**
+ * Parse principles XML blocks from SDK response
+ * Returns extracted principles for storage
+ */
+export function parsePrinciples(text: string): Array<{ rule: string; confidence: number; category: string }> {
+  const principles: Array<{ rule: string; confidence: number; category: string }> = [];
+
+  const principlesRegex = /<principles>([\s\S]*?)<\/principles>/;
+  const principlesMatch = principlesRegex.exec(text);
+
+  if (!principlesMatch) {
+    return principles;
+  }
+
+  const principlesContent = principlesMatch[1];
+
+  const principleRegex = /<principle>([\s\S]*?)<\/principle>/g;
+  let match;
+  while ((match = principleRegex.exec(principlesContent)) !== null) {
+    const content = match[1];
+    const rule = extractField(content, 'rule');
+    const confidenceStr = extractField(content, 'confidence');
+    const category = extractField(content, 'category');
+
+    if (rule) {
+      principles.push({
+        rule,
+        confidence: confidenceStr ? parseFloat(confidenceStr) : 0.5,
+        category: category || 'general',
+      });
+    }
+  }
+
+  return principles;
+}
+
+/**
  * Extract a simple field value from XML content
  * Returns null for missing or empty/whitespace-only fields
  *

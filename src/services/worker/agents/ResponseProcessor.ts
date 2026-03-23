@@ -12,7 +12,8 @@
  */
 
 import { logger } from '../../../utils/logger.js';
-import { parseObservations, parseSummary, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
+import { parseObservations, parseSummary, parsePrinciples, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
+import { storeExtractedPrinciples, shouldExtractPrinciples, consumeForcedExtraction } from '../../principles/principleExtractor.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
@@ -122,6 +123,32 @@ export async function processAgentResponse(
   }
   // Clear the tracking array after confirmation
   session.processingMessageIds = [];
+
+  // Extract and store principles from SDK response (conditional, feature-flag gated)
+  // Inspired by self-evolving-skill: only extract when there's a genuine learning signal
+  // OR when forced by a 'reflect' trigger
+  const forcedExtraction = consumeForcedExtraction(session.sessionDbId);
+  if (summary && SettingsDefaultsManager.getBool('CLAUDE_MEM_PRINCIPLES_ENABLED') && (forcedExtraction || SettingsDefaultsManager.getBool('CLAUDE_MEM_PRINCIPLES_AUTO_EXTRACT'))) {
+    const summaryLearned = summaryForStore?.learned;
+    // Check if any user message in this batch was a correction
+    const hasCorrection = session.conversationHistory.some(
+      m => m.role === 'user' && /\b(no|wrong|don't|never|stop|should be|always use|prefer)\b/i.test(m.content)
+    );
+
+    if (forcedExtraction || shouldExtractPrinciples(summaryLearned, hasCorrection)) {
+      try {
+        const extractedPrinciples = parsePrinciples(text);
+        if (extractedPrinciples.length > 0) {
+          storeExtractedPrinciples(sessionStore.db, extractedPrinciples);
+          logger.info('PRINCIPLES', `Extracted ${extractedPrinciples.length} principles from summary`, { sessionDbId: session.sessionDbId });
+        }
+      } catch (error) {
+        logger.debug('PRINCIPLES', 'Principle extraction failed (non-blocking)', {}, error as Error);
+      }
+    } else {
+      logger.debug('PRINCIPLES', 'Skipped extraction: no learning signal in this response');
+    }
+  }
 
   // AFTER transaction commits - async operations (can fail safely without data loss)
   await syncAndBroadcastObservations(

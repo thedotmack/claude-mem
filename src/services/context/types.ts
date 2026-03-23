@@ -41,6 +41,10 @@ export interface ContextConfig {
   fullObservationField: 'narrative' | 'facts';
   showLastSummary: boolean;
   showLastMessage: boolean;
+
+  // Principles
+  principlesEnabled: boolean;
+  principlesMaxInject: number;
 }
 
 /**

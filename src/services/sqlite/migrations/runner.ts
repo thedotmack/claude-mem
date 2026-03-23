@@ -34,6 +34,7 @@ export class MigrationRunner {
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
+    this.createCorrectionsAndPrinciplesTables();
   }
 
   /**
@@ -862,5 +863,59 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
+  }
+
+  /**
+   * Create corrections and principles tables for the Principles system (migration 24)
+   * Corrections store user feedback/corrections. Principles store extracted rules.
+   * Both tables are feature-flag gated at query time, but created unconditionally
+   * so the schema is ready when the feature is enabled.
+   */
+  private createCorrectionsAndPrinciplesTables(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // Check if tables already exist (idempotency)
+    const corrTable = this.db.query('PRAGMA table_info(corrections)').all() as TableColumnInfo[];
+    const prinTable = this.db.query('PRAGMA table_info(principles)').all() as TableColumnInfo[];
+
+    if (corrTable.length === 0) {
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS corrections (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          user_message TEXT NOT NULL,
+          detected_pattern TEXT,
+          category TEXT DEFAULT 'general',
+          created_at TEXT DEFAULT (datetime('now')),
+          promoted_to_principle_id INTEGER
+        )
+      `);
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_corrections_session ON corrections(session_id)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_corrections_pattern ON corrections(detected_pattern)');
+      logger.debug('DB', 'Created corrections table');
+    }
+
+    if (prinTable.length === 0) {
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS principles (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          rule TEXT NOT NULL UNIQUE,
+          source TEXT DEFAULT 'correction',
+          confidence REAL DEFAULT 0.5,
+          frequency INTEGER DEFAULT 1,
+          status TEXT DEFAULT 'candidate',
+          category TEXT DEFAULT 'general',
+          created_at TEXT DEFAULT (datetime('now')),
+          updated_at TEXT DEFAULT (datetime('now'))
+        )
+      `);
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_principles_status ON principles(status)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_principles_rule ON principles(rule)');
+      logger.debug('DB', 'Created principles table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
+    logger.debug('DB', 'Migration 24 complete: corrections and principles tables');
   }
 }

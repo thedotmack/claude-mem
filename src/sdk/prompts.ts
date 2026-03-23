@@ -5,6 +5,7 @@
 
 import { logger } from '../utils/logger.js';
 import type { ModeConfig } from '../services/domain/types.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 
 export interface Observation {
   id: number;
@@ -130,7 +131,7 @@ export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): strin
     return '';
   })();
 
-  return `--- MODE SWITCH: PROGRESS SUMMARY ---
+  let prompt = `--- MODE SWITCH: PROGRESS SUMMARY ---
 Do NOT output <observation> tags. This is a summary request, not an observation request.
 Your response MUST use <summary> tags ONLY. Any <observation> output will be discarded.
 
@@ -151,6 +152,19 @@ ${mode.prompts.summary_format_instruction}
 </summary>
 
 ${mode.prompts.summary_footer}`;
+
+  // Conditionally add principles extraction when auto-extract is enabled
+  if (SettingsDefaultsManager.getBool('CLAUDE_MEM_PRINCIPLES_AUTO_EXTRACT')) {
+    prompt += `
+
+Also extract any general principles or rules the user has expressed or implied during this session.
+Output them after the </summary> tag in:
+<principles>
+<principle><rule>The specific rule or preference</rule><confidence>0.0-1.0</confidence><category>behavioral|tool_usage|code_style|workflow|general</category></principle>
+</principles>`;
+  }
+
+  return prompt;
 }
 
 /**

@@ -31,6 +31,7 @@ import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRender
 import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
 import { renderMarkdownEmptyState } from './formatters/MarkdownFormatter.js';
 import { renderColorEmptyState } from './formatters/ColorFormatter.js';
+import { renderPrinciples } from './sections/PrinciplesRenderer.js';
 
 // Version marker path for native module error handling
 const VERSION_MARKER_PATH = path.join(
@@ -89,6 +90,9 @@ function buildContextOutput(
 
   // Render header section
   output.push(...renderHeader(project, economics, config, useColors));
+
+  // Render principles section (if enabled)
+  output.push(...renderPrinciples(config, useColors));
 
   // Prepare timeline data
   const displaySummaries = summaries.slice(0, config.sessionCount);

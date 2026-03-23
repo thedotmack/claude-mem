@@ -36,5 +36,8 @@ export function loadContextConfig(): ContextConfig {
     fullObservationField: settings.CLAUDE_MEM_CONTEXT_FULL_FIELD as 'narrative' | 'facts',
     showLastSummary: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true',
     showLastMessage: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
+    // Principles
+    principlesEnabled: settings.CLAUDE_MEM_PRINCIPLES_ENABLED === 'true',
+    principlesMaxInject: parseInt(settings.CLAUDE_MEM_PRINCIPLES_MAX_INJECT, 10),
   };
 }

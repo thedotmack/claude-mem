@@ -12,6 +12,7 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { isProjectExcluded } from '../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { detectCorrection, detectTriggerPhrase, isDuplicateInSession, buildCorrectionFingerprint } from '../../services/principles/correctionDetector.js';
 
 export const sessionInitHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -40,6 +41,64 @@ export const sessionInitHandler: EventHandler = {
     // Handle image-only prompts (where text prompt is empty/undefined)
     // Use placeholder so sessions still get created and tracked for memory
     const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
+
+    // Principles: detect user corrections and trigger phrases (feature-flag gated)
+    if (SettingsDefaultsManager.getBool('CLAUDE_MEM_PRINCIPLES_ENABLED') && rawPrompt) {
+      // Trigger phrase detection (3 modes: direct, reflect, review)
+      const trigger = detectTriggerPhrase(rawPrompt);
+      if (trigger.isTriggered) {
+        if (trigger.mode === 'direct' && trigger.rule) {
+          // Direct: store the user-provided rule as a principle
+          workerHttpRequest('/api/principles/manage', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'trigger',
+              rule: trigger.rule,
+              category: trigger.category,
+            })
+          }).catch(err => {
+            logger.debug('HOOK', 'Failed to store trigger principle (non-blocking)', {}, err as Error);
+          });
+        } else if (trigger.mode === 'reflect') {
+          // Reflect: mark session for forced extraction on next agent response.
+          // The model will naturally extract principles from current conversation context.
+          // We POST after session init below (need sessionDbId).
+          // Store flag to POST after init completes.
+          (input as any)._reflectTrigger = true;
+        } else if (trigger.mode === 'review') {
+          // Review: batch-process recent corrections into principles
+          workerHttpRequest('/api/principles/review', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ limit: 50 })
+          }).catch(err => {
+            logger.debug('HOOK', 'Failed to review corrections (non-blocking)', {}, err as Error);
+          });
+        }
+      }
+
+      // Path 2: Correction detection with session-level dedup
+      const detection = detectCorrection(rawPrompt);
+      if (detection.isCorrection) {
+        const fingerprint = buildCorrectionFingerprint(detection.patterns);
+        if (!isDuplicateInSession(sessionId, fingerprint)) {
+          // Fire-and-forget: don't block user prompt for correction storage
+          workerHttpRequest('/api/corrections', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sessionId: sessionId,
+              userMessage: rawPrompt,
+              detectedPattern: detection.patterns[0] || null,
+              category: detection.category,
+            })
+          }).catch(err => {
+            logger.debug('HOOK', 'Failed to store correction (non-blocking)', {}, err as Error);
+          });
+        }
+      }
+    }
 
     const project = getProjectName(cwd);
 
@@ -73,6 +132,17 @@ export const sessionInitHandler: EventHandler = {
     const promptNumber = initResult.promptNumber;
 
     logger.debug('HOOK', 'session-init: Received from /api/sessions/init', { sessionDbId, promptNumber, skipped: initResult.skipped, contextInjected: initResult.contextInjected });
+
+    // Reflect mode: now that we have sessionDbId, mark session for forced extraction
+    if ((input as any)._reflectTrigger && sessionDbId) {
+      workerHttpRequest('/api/principles/reflect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionDbId })
+      }).catch(err => {
+        logger.debug('HOOK', 'Failed to set reflect flag (non-blocking)', {}, err as Error);
+      });
+    }
 
     // Debug-level alignment log for detailed tracing
     logger.debug('HOOK', `[ALIGNMENT] Hook Entry | contentSessionId=${sessionId} | prompt#=${promptNumber} | sessionDbId=${sessionDbId}`);

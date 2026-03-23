@@ -339,6 +339,37 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         }]
       };
     }
+  },
+  {
+    name: 'list_principles',
+    description: 'List user-confirmed principles/rules. Params: status (optional: candidate|confirmed|promoted|archived), limit (optional, default 50)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', description: 'Filter by status: candidate, confirmed, promoted, archived' },
+        limit: { type: 'number', description: 'Max results (default: 50)' }
+      }
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPI('/api/principles', args);
+    }
+  },
+  {
+    name: 'manage_principle',
+    description: "Manage principles: promote, archive, delete, or add new ones. Actions: 'promote'|'archive'|'delete' require principleId; 'add' requires rule",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', description: "Action: 'promote' | 'archive' | 'delete' | 'add'" },
+        principleId: { type: 'number', description: 'Principle ID (for promote/archive/delete)' },
+        rule: { type: 'string', description: 'Rule text (for add action)' },
+        category: { type: 'string', description: 'Category (for add action, default: general)' }
+      },
+      required: ['action']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/principles/manage', args);
+    }
   }
 ];
 
