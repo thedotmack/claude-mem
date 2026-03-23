@@ -139,6 +139,53 @@ export class PendingMessageStore {
   }
 
   /**
+   * Atomically claim up to `limit` pending messages by marking them as 'processing'.
+   * Self-healing: resets any stale 'processing' messages (>60s) back to 'pending' first.
+   * Used by OpenRouterAgent for batch-parallel LLM calls.
+   */
+  claimBatch(sessionDbId: number, limit: number): PersistentPendingMessage[] {
+    const claimTx = this.db.transaction((sessionId: number, batchLimit: number) => {
+      const now = Date.now();
+      // Self-healing: reset stale 'processing' messages back to 'pending'
+      const staleCutoff = now - STALE_PROCESSING_THRESHOLD_MS;
+      const resetStmt = this.db.prepare(`
+        UPDATE pending_messages
+        SET status = 'pending', started_processing_at_epoch = NULL
+        WHERE session_db_id = ? AND status = 'processing'
+          AND started_processing_at_epoch < ?
+      `);
+      const resetResult = resetStmt.run(sessionId, staleCutoff);
+      if (resetResult.changes > 0) {
+        logger.info('QUEUE', `SELF_HEAL | sessionDbId=${sessionId} | recovered ${resetResult.changes} stale processing message(s)`);
+      }
+
+      const peekStmt = this.db.prepare(`
+        SELECT * FROM pending_messages
+        WHERE session_db_id = ? AND status = 'pending'
+        ORDER BY id ASC
+        LIMIT ?
+      `);
+      const msgs = peekStmt.all(sessionId, batchLimit) as PersistentPendingMessage[];
+
+      if (msgs.length > 0) {
+        const ids = msgs.map(m => m.id);
+        const placeholders = ids.map(() => '?').join(',');
+        const updateStmt = this.db.prepare(`
+          UPDATE pending_messages
+          SET status = 'processing', started_processing_at_epoch = ?
+          WHERE id IN (${placeholders})
+        `);
+        updateStmt.run(now, ...ids);
+
+        logger.info('QUEUE', `CLAIMED_BATCH | sessionDbId=${sessionId} | count=${msgs.length} | ids=[${ids.join(',')}]`);
+      }
+      return msgs;
+    });
+
+    return claimTx(sessionDbId, limit) as PersistentPendingMessage[];
+  }
+
+  /**
    * Confirm a message was successfully processed - DELETE it from the queue.
    * CRITICAL: Only call this AFTER the observation/summary has been stored to DB.
    * This prevents message loss on generator crash.

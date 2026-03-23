@@ -17,7 +17,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { ModeManager } from '../domain/ModeManager.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import {
@@ -28,8 +28,7 @@ import {
   type WorkerRef
 } from './agents/index.js';
 
-// OpenRouter API endpoint
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+// Default OpenRouter API endpoint (overridable via CLAUDE_MEM_OPENROUTER_BASE_URL for local LLMs like Ollama)
 
 // Context window management constants (defaults, overridable via settings)
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  // Maximum messages to keep in conversation history
@@ -86,9 +85,11 @@ export class OpenRouterAgent {
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     try {
       // Get OpenRouter configuration
-      const { apiKey, model, siteUrl, appName } = this.getOpenRouterConfig();
+      const { apiKey, baseUrl, model, siteUrl, appName } = this.getOpenRouterConfig();
 
-      if (!apiKey) {
+      // API key is required for remote endpoints, optional for local LLMs
+      const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
+      if (!apiKey && !isLocal) {
         throw new Error('OpenRouter API key not configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
       }
 
@@ -110,7 +111,7 @@ export class OpenRouterAgent {
 
       // Add to conversation history and query OpenRouter with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+      const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, baseUrl, model, siteUrl, appName);
 
       if (initResponse.content) {
         // Add response to conversation history
@@ -143,110 +144,132 @@ export class OpenRouterAgent {
       // Track lastCwd from messages for CLAUDE.md generation
       let lastCwd: string | undefined;
 
-      // Process pending messages
-      for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-        // CLAIM-CONFIRM: Track message ID for confirmProcessed() after successful storage
-        // The message is now in 'processing' status in DB until ResponseProcessor calls confirmProcessed()
-        session.processingMessageIds.push(message._persistentId);
+      // Read batch size from settings
+      const batchSize = Math.max(1, parseInt(
+        SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OPENROUTER_BATCH_SIZE
+      ) || 4);
 
-        // Capture cwd from messages for proper worktree support
-        if (message.cwd) {
-          lastCwd = message.cwd;
+      // Process pending messages in batches for parallel LLM utilization
+      for await (const firstMessage of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+        // Build batch: first message from iterator + additional from DB
+        const batchMessages: PendingMessageWithId[] = [firstMessage];
+
+        if (batchSize > 1) {
+          const pendingStore = this.sessionManager.getPendingMessageStore();
+          const additional = pendingStore.claimBatch(session.sessionDbId, batchSize - 1);
+          for (const pm of additional) {
+            const msg = pendingStore.toPendingMessage(pm);
+            batchMessages.push({ ...msg, _persistentId: pm.id } as PendingMessageWithId);
+          }
         }
-        // Capture earliest timestamp BEFORE processing (will be cleared after)
-        const originalTimestamp = session.earliestPendingTimestamp;
 
-        if (message.type === 'observation') {
-          // Update last prompt number
-          if (message.prompt_number !== undefined) {
-            session.lastPromptNumber = message.prompt_number;
+        logger.info('SDK', `BATCH_START | sessionDbId=${session.sessionDbId} | size=${batchMessages.length} | ids=[${batchMessages.map(m => m._persistentId).join(',')}]`);
+
+        // Phase 1: Build batch items with independent history snapshots
+        interface BatchItem {
+          message: PendingMessageWithId;
+          historySnapshot: ConversationMessage[];
+          prompt: string;
+          originalTimestamp: number | null;
+          promptType: 'observation' | 'summarize';
+        }
+
+        const batchItems: BatchItem[] = [];
+        for (const message of batchMessages) {
+          if (message.cwd) {
+            lastCwd = message.cwd;
+          }
+          const originalTimestamp = session.earliestPendingTimestamp;
+
+          if (message.type === 'observation') {
+            if (message.prompt_number !== undefined) {
+              session.lastPromptNumber = message.prompt_number;
+            }
+            if (!session.memorySessionId) {
+              throw new Error('Cannot process observations: memorySessionId not yet captured.');
+            }
+
+            const obsPrompt = buildObservationPrompt({
+              id: 0,
+              tool_name: message.tool_name!,
+              tool_input: JSON.stringify(message.tool_input),
+              tool_output: JSON.stringify(message.tool_response),
+              created_at_epoch: originalTimestamp ?? Date.now(),
+              cwd: message.cwd
+            });
+
+            // Snapshot history + this prompt for independent LLM call
+            const historySnapshot = [...session.conversationHistory, { role: 'user' as const, content: obsPrompt }];
+            batchItems.push({ message, historySnapshot, prompt: obsPrompt, originalTimestamp, promptType: 'observation' });
+
+          } else if (message.type === 'summarize') {
+            if (!session.memorySessionId) {
+              throw new Error('Cannot process summary: memorySessionId not yet captured.');
+            }
+
+            const summaryPrompt = buildSummaryPrompt({
+              id: session.sessionDbId,
+              memory_session_id: session.memorySessionId,
+              project: session.project,
+              user_prompt: session.userPrompt,
+              last_assistant_message: message.last_assistant_message || ''
+            }, mode);
+
+            const historySnapshot = [...session.conversationHistory, { role: 'user' as const, content: summaryPrompt }];
+            batchItems.push({ message, historySnapshot, prompt: summaryPrompt, originalTimestamp, promptType: 'summarize' });
+          }
+        }
+
+        // Phase 2: Fire parallel LLM calls via Promise.all
+        const llmResults = await Promise.all(
+          batchItems.map(async (item) => {
+            try {
+              const response = await this.queryOpenRouterMultiTurn(
+                item.historySnapshot, apiKey, baseUrl, model, siteUrl, appName
+              );
+              return { success: true as const, response, item };
+            } catch (error) {
+              return { success: false as const, error, item };
+            }
+          })
+        );
+
+        // Phase 3: Process results SEQUENTIALLY to protect shared session state
+        const pendingStore = this.sessionManager.getPendingMessageStore();
+        for (const result of llmResults) {
+          const { item } = result;
+
+          if (!result.success) {
+            logger.warn('SDK', `BATCH_ITEM_FAILED | messageId=${item.message._persistentId} | error=${result.error instanceof Error ? result.error.message : String(result.error)}`);
+            pendingStore.markFailed(item.message._persistentId);
+            continue;
           }
 
-          // CRITICAL: Check memorySessionId BEFORE making expensive LLM call
-          // This prevents wasting tokens when we won't be able to store the result anyway
-          if (!session.memorySessionId) {
-            throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
-          }
+          const { response } = result;
+          const tokensUsed = response.tokensUsed || 0;
+          session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
+          session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
 
-          // Build observation prompt
-          const obsPrompt = buildObservationPrompt({
-            id: 0,
-            tool_name: message.tool_name!,
-            tool_input: JSON.stringify(message.tool_input),
-            tool_output: JSON.stringify(message.tool_response),
-            created_at_epoch: originalTimestamp ?? Date.now(),
-            cwd: message.cwd
-          });
+          // Push prompt to real conversation history (sequential, so order is preserved)
+          session.conversationHistory.push({ role: 'user', content: item.prompt });
 
-          // Add to conversation history and query OpenRouter with full context
-          session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+          // Set processingMessageIds to just this item before calling processAgentResponse
+          session.processingMessageIds = [item.message._persistentId];
 
-          let tokensUsed = 0;
-          if (obsResponse.content) {
-            // Add response to conversation history
-            // session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
-
-            tokensUsed = obsResponse.tokensUsed || 0;
-            session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-            session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-          }
-
-          // Process response using shared ResponseProcessor
           await processAgentResponse(
-            obsResponse.content || '',
+            response.content || '',
             session,
             this.dbManager,
             this.sessionManager,
             worker,
             tokensUsed,
-            originalTimestamp,
-            'OpenRouter',
-            lastCwd
-          );
-
-        } else if (message.type === 'summarize') {
-          // CRITICAL: Check memorySessionId BEFORE making expensive LLM call
-          if (!session.memorySessionId) {
-            throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
-          }
-
-          // Build summary prompt
-          const summaryPrompt = buildSummaryPrompt({
-            id: session.sessionDbId,
-            memory_session_id: session.memorySessionId,
-            project: session.project,
-            user_prompt: session.userPrompt,
-            last_assistant_message: message.last_assistant_message || ''
-          }, mode);
-
-          // Add to conversation history and query OpenRouter with full context
-          session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
-
-          let tokensUsed = 0;
-          if (summaryResponse.content) {
-            // Add response to conversation history
-            // session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
-
-            tokensUsed = summaryResponse.tokensUsed || 0;
-            session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-            session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-          }
-
-          // Process response using shared ResponseProcessor
-          await processAgentResponse(
-            summaryResponse.content || '',
-            session,
-            this.dbManager,
-            this.sessionManager,
-            worker,
-            tokensUsed,
-            originalTimestamp,
+            item.originalTimestamp,
             'OpenRouter',
             lastCwd
           );
         }
+
+        logger.info('SDK', `BATCH_COMPLETE | sessionDbId=${session.sessionDbId} | total=${batchItems.length} | succeeded=${llmResults.filter(r => r.success).length} | failed=${llmResults.filter(r => !r.success).length}`);
       }
 
       // Mark session complete
@@ -351,6 +374,7 @@ export class OpenRouterAgent {
   private async queryOpenRouterMultiTurn(
     history: ConversationMessage[],
     apiKey: string,
+    baseUrl: string,
     model: string,
     siteUrl?: string,
     appName?: string
@@ -367,14 +391,19 @@ export class OpenRouterAgent {
       estimatedTokens
     });
 
-    const response = await fetch(OPENROUTER_API_URL, {
+    // Build headers - skip auth for local LLMs (Ollama, LM Studio, etc.)
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+      headers['HTTP-Referer'] = siteUrl || 'https://github.com/thedotmack/claude-mem';
+      headers['X-Title'] = appName || 'claude-mem';
+    }
+
+    const response = await fetch(baseUrl, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
-        'X-Title': appName || 'claude-mem',
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         model,
         messages,
@@ -435,9 +464,12 @@ export class OpenRouterAgent {
    * Get OpenRouter configuration from settings or environment
    * Issue #733: Uses centralized ~/.claude-mem/.env for credentials, not random project .env files
    */
-  private getOpenRouterConfig(): { apiKey: string; model: string; siteUrl?: string; appName?: string } {
+  private getOpenRouterConfig(): { apiKey: string; baseUrl: string; model: string; siteUrl?: string; appName?: string } {
     const settingsPath = USER_SETTINGS_PATH;
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+    // Base URL: configurable for local LLMs (Ollama, LM Studio, etc.)
+    const baseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1/chat/completions';
 
     // API key: check settings first, then centralized claude-mem .env (NOT process.env)
     // This prevents Issue #733 where random project .env files could interfere
@@ -450,7 +482,7 @@ export class OpenRouterAgent {
     const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
     const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
 
-    return { apiKey, model, siteUrl, appName };
+    return { apiKey, baseUrl, model, siteUrl, appName };
   }
 }
 
@@ -461,7 +493,10 @@ export class OpenRouterAgent {
 export function isOpenRouterAvailable(): boolean {
   const settingsPath = USER_SETTINGS_PATH;
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return !!(settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY'));
+  const baseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL || '';
+  const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
+  // Local LLMs don't need an API key; remote OpenRouter does
+  return isLocal || !!(settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY'));
 }
 
 /**
