@@ -9,6 +9,7 @@ import { createMemoryClient } from '../client-factory.js';
 import { detectOutputMode, outputJSON, outputError } from '../output.js';
 import { getTypeIcon } from '../formatters/icons.js';
 import { CLIError, ExitCode } from '../errors.js';
+import { validateLimit, validateOffset } from '../utils/validate.js';
 
 export function registerObservationsCommand(program: Command): void {
   program
@@ -20,11 +21,12 @@ export function registerObservationsCommand(program: Command): void {
     .option('--json', 'Output as JSON')
     .action(async (opts: { limit: string; offset: string; project?: string; json?: boolean }) => {
       const mode = detectOutputMode(opts);
-      const client = createMemoryClient(loadConfig());
 
       try {
-        const limit = parseInt(opts.limit, 10) || 20;
-        const offset = parseInt(opts.offset, 10) || 0;
+        const config = loadConfig();
+        const client = createMemoryClient(config);
+        const limit = validateLimit(opts.limit);
+        const offset = validateOffset(opts.offset);
 
         const result = await client.listObservations({
           limit,

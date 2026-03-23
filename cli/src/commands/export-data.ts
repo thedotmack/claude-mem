@@ -31,7 +31,7 @@ async function paginateAll<T>(
     const page = await fetcher({ limit: pageSize, offset });
     all.push(...page.items);
     if (!page.hasMore) break;
-    offset += pageSize;
+    offset += page.items.length;
   }
 
   return all;

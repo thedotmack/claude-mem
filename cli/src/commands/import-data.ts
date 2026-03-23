@@ -31,9 +31,15 @@ export function registerImportDataCommand(program: Command): void {
           throw validationError(`File not found: ${file}`);
         }
 
+        let raw: string;
+        try {
+          raw = readFileSync(file, 'utf-8');
+        } catch {
+          throw validationError(`Could not read file: ${file}`);
+        }
+
         let payload: ImportPayload;
         try {
-          const raw = readFileSync(file, 'utf-8');
           const parsed: unknown = JSON.parse(raw);
           if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
             throw validationError(`${file} must contain a JSON object`);

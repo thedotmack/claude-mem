@@ -63,21 +63,22 @@ export function registerSearchCommand(program: Command): void {
 
         // --count: emit just the number and exit — ideal for agent if-branches
         if (opts.count) {
+          const total = response.total ?? response.results.length;
           if (mode === 'agent') {
             outputJSON([], {
-              count: response.results.length,
+              count: total,
               query,
               project: opts.project,
             });
           } else {
-            outputText(String(response.results.length));
+            outputText(String(total));
           }
           return;
         }
 
         if (mode === 'agent') {
           outputJSON(response.results, {
-            count: response.results.length,
+            count: response.total ?? response.results.length,
             query,
             project: opts.project,
           });
