@@ -258,4 +258,94 @@ describe('createAuthMiddleware', () => {
       expect(statusCode()).toBe(403);
     });
   });
+
+  describe('onAuthRejected callback', () => {
+    it('should invoke onAuthRejected when no auth token is configured', () => {
+      const rejected: Array<{ ip: string; path: string }> = [];
+      const middleware = createAuthMiddleware(() => '', {
+        onAuthRejected: (ip, path) => rejected.push({ ip, path }),
+      });
+      const req = mockReq({ ip: '192.168.1.100', path: '/api/foo' });
+      const { res } = mockRes();
+
+      middleware(req, res, mock(() => {}) as unknown as NextFunction);
+
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0].ip).toBe('192.168.1.100');
+      expect(rejected[0].path).toBe('/api/foo');
+    });
+
+    it('should invoke onAuthRejected when Authorization header is missing', () => {
+      const rejected: Array<{ ip: string; path: string }> = [];
+      const middleware = createAuthMiddleware(() => 'secret', {
+        onAuthRejected: (ip, path) => rejected.push({ ip, path }),
+      });
+      const req = mockReq({ ip: '10.0.0.1', headers: {} });
+      const { res } = mockRes();
+
+      middleware(req, res, mock(() => {}) as unknown as NextFunction);
+
+      expect(rejected).toHaveLength(1);
+    });
+
+    it('should invoke onAuthRejected when token is invalid', () => {
+      const rejected: Array<{ ip: string; path: string }> = [];
+      const middleware = createAuthMiddleware(() => 'correct-token', {
+        onAuthRejected: (ip, path) => rejected.push({ ip, path }),
+      });
+      const req = mockReq({
+        ip: '10.0.0.1',
+        headers: { authorization: 'Bearer wrong-token' },
+      });
+      const { res } = mockRes();
+
+      middleware(req, res, mock(() => {}) as unknown as NextFunction);
+
+      expect(rejected).toHaveLength(1);
+    });
+
+    it('should NOT invoke onAuthRejected when localhost bypasses auth', () => {
+      const rejected: Array<{ ip: string; path: string }> = [];
+      const middleware = createAuthMiddleware(() => '', {
+        onAuthRejected: (ip, path) => rejected.push({ ip, path }),
+      });
+      const req = mockReq({ ip: '127.0.0.1' });
+      const { res } = mockRes();
+      const next = mock(() => {});
+
+      middleware(req, res, next as unknown as NextFunction);
+
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(rejected).toHaveLength(0);
+    });
+
+    it('should NOT invoke onAuthRejected when a valid token is provided', () => {
+      const rejected: Array<{ ip: string; path: string }> = [];
+      const TOKEN = 'valid-token';
+      const middleware = createAuthMiddleware(() => TOKEN, {
+        onAuthRejected: (ip, path) => rejected.push({ ip, path }),
+      });
+      const req = mockReq({
+        ip: '10.0.0.1',
+        headers: { authorization: `Bearer ${TOKEN}` },
+      });
+      const { res } = mockRes();
+      const next = mock(() => {});
+
+      middleware(req, res, next as unknown as NextFunction);
+
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(rejected).toHaveLength(0);
+    });
+
+    it('should work without onAuthRejected option (no callback — no throw)', () => {
+      const middleware = createAuthMiddleware(() => '');
+      const req = mockReq({ ip: '10.0.0.5' });
+      const { res } = mockRes();
+
+      expect(() => {
+        middleware(req, res, mock(() => {}) as unknown as NextFunction);
+      }).not.toThrow();
+    });
+  });
 });

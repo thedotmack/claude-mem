@@ -15,8 +15,20 @@ export interface ClientInfo {
   requestCount: number;
 }
 
+export type ClientRegistryEvent =
+  | { type: 'client_connected'; node: string; ip: string; mode: string; instance: string }
+  | { type: 'client_heartbeat'; node: string; ip: string }
+  | { type: 'client_disconnected'; node: string; ip: string };
+
+export type ClientRegistryEventHandler = (event: ClientRegistryEvent) => void;
+
 export class ClientRegistry {
   private clients = new Map<string, ClientInfo>();
+  private onEvent?: ClientRegistryEventHandler;
+
+  constructor(onEvent?: ClientRegistryEventHandler) {
+    this.onEvent = onEvent;
+  }
 
   /**
    * Record or update a client's presence.
@@ -35,16 +47,34 @@ export class ClientRegistry {
       existing.instance = instance ?? existing.instance;
       existing.lastSeen = now;
       existing.requestCount += 1;
+      this.onEvent?.({ type: 'client_heartbeat', node, ip });
     } else {
+      const resolvedMode = mode ?? 'direct';
+      const resolvedInstance = instance ?? '';
       this.clients.set(node, {
         node,
         ip,
-        mode: mode ?? 'direct',
-        instance: instance ?? '',
+        mode: resolvedMode,
+        instance: resolvedInstance,
         firstSeen: now,
         lastSeen: now,
         requestCount: 1,
       });
+      this.onEvent?.({ type: 'client_connected', node, ip, mode: resolvedMode, instance: resolvedInstance });
+    }
+  }
+
+  /**
+   * Check for clients that have not been seen in `timeoutMs` milliseconds,
+   * emit `client_disconnected` for each, and remove them from the map.
+   */
+  checkDisconnected(timeoutMs: number): void {
+    const cutoff = Date.now() - timeoutMs;
+    for (const [key, client] of this.clients) {
+      if (new Date(client.lastSeen).getTime() < cutoff) {
+        this.onEvent?.({ type: 'client_disconnected', node: client.node, ip: client.ip });
+        this.clients.delete(key);
+      }
     }
   }
 

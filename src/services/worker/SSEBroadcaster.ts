@@ -12,6 +12,49 @@ import type { Response } from 'express';
 import { logger } from '../../utils/logger.js';
 import type { SSEEvent, SSEClient } from '../worker-types.js';
 
+// ============================================================================
+// Network Event Types
+// ============================================================================
+
+export interface NetworkClientConnectedEvent extends SSEEvent {
+  type: 'client_connected';
+  node: string;
+  ip: string;
+  mode?: string;
+  instance?: string;
+}
+
+export interface NetworkClientHeartbeatEvent extends SSEEvent {
+  type: 'client_heartbeat';
+  node: string;
+  ip: string;
+}
+
+export interface NetworkClientDisconnectedEvent extends SSEEvent {
+  type: 'client_disconnected';
+  node: string;
+  ip: string;
+}
+
+export interface NetworkBufferReplayEvent extends SSEEvent {
+  type: 'buffer_replay';
+  node: string;
+  count: number;
+}
+
+export interface NetworkAuthRejectedEvent extends SSEEvent {
+  type: 'auth_rejected';
+  ip: string;
+  path: string;
+}
+
+export type NetworkEvent =
+  | NetworkClientConnectedEvent
+  | NetworkClientHeartbeatEvent
+  | NetworkClientDisconnectedEvent
+  | NetworkBufferReplayEvent
+  | NetworkAuthRejectedEvent;
+
 export class SSEBroadcaster {
   private sseClients: Set<SSEClient> = new Set();
 

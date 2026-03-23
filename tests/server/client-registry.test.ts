@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
-import { ClientRegistry } from '../../src/services/server/ClientRegistry.js';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { ClientRegistry, type ClientRegistryEvent } from '../../src/services/server/ClientRegistry.js';
 
 describe('ClientRegistry', () => {
   let registry: ClientRegistry;
@@ -194,6 +194,121 @@ describe('ClientRegistry', () => {
       // (edge case — mostly documents the boundary behaviour)
       const disconnected = registry.getDisconnected(0);
       expect(disconnected.length).toBeGreaterThanOrEqual(0); // timing-sensitive, just no throw
+    });
+  });
+
+  describe('onEvent callback', () => {
+    it('should emit client_connected on first touch', () => {
+      const events: ClientRegistryEvent[] = [];
+      const reg = new ClientRegistry(e => events.push(e));
+
+      reg.touch('MSM4M', '169.254.1.3', 'direct', 'my-instance');
+
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe('client_connected');
+      expect((events[0] as any).node).toBe('MSM4M');
+      expect((events[0] as any).ip).toBe('169.254.1.3');
+      expect((events[0] as any).mode).toBe('direct');
+      expect((events[0] as any).instance).toBe('my-instance');
+    });
+
+    it('should emit client_heartbeat on subsequent touches', () => {
+      const events: ClientRegistryEvent[] = [];
+      const reg = new ClientRegistry(e => events.push(e));
+
+      reg.touch('MSM4M', '169.254.1.3');
+      reg.touch('MSM4M', '169.254.1.3');
+      reg.touch('MSM4M', '169.254.1.3');
+
+      expect(events).toHaveLength(3);
+      expect(events[0].type).toBe('client_connected');
+      expect(events[1].type).toBe('client_heartbeat');
+      expect(events[2].type).toBe('client_heartbeat');
+    });
+
+    it('should emit client_heartbeat with updated ip', () => {
+      const events: ClientRegistryEvent[] = [];
+      const reg = new ClientRegistry(e => events.push(e));
+
+      reg.touch('MSM4M', '169.254.1.3');
+      reg.touch('MSM4M', '10.0.0.5');
+
+      const heartbeat = events[1] as any;
+      expect(heartbeat.type).toBe('client_heartbeat');
+      expect(heartbeat.ip).toBe('10.0.0.5');
+    });
+
+    it('should work without onEvent (no callback — no throw)', () => {
+      const reg = new ClientRegistry(); // no callback
+      expect(() => {
+        reg.touch('MSM4M', '169.254.1.3');
+        reg.touch('MSM4M', '169.254.1.3');
+      }).not.toThrow();
+    });
+  });
+
+  describe('checkDisconnected()', () => {
+    it('should do nothing when no clients are present', () => {
+      const events: ClientRegistryEvent[] = [];
+      const reg = new ClientRegistry(e => events.push(e));
+
+      reg.checkDisconnected(5_000);
+
+      expect(events).toHaveLength(0);
+      expect(reg.getClientCount()).toBe(0);
+    });
+
+    it('should not emit or remove recent clients', () => {
+      const events: ClientRegistryEvent[] = [];
+      const reg = new ClientRegistry(e => events.push(e));
+
+      reg.touch('MSM4M', '169.254.1.3');
+      events.length = 0; // clear the connected event
+
+      reg.checkDisconnected(60_000);
+
+      expect(events).toHaveLength(0);
+      expect(reg.getClientCount()).toBe(1);
+    });
+
+    it('should emit client_disconnected and remove stale clients', () => {
+      const events: ClientRegistryEvent[] = [];
+      const reg = new ClientRegistry(e => events.push(e));
+
+      reg.touch('MSM4M', '169.254.1.3');
+      events.length = 0; // clear connect event
+
+      // Backdate lastSeen
+      const clients = reg['clients'] as Map<string, any>;
+      clients.get('MSM4M')!.lastSeen = new Date(Date.now() - 10_000).toISOString();
+
+      reg.checkDisconnected(5_000);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe('client_disconnected');
+      expect((events[0] as any).node).toBe('MSM4M');
+      // Client should be removed from the map
+      expect(reg.getClientCount()).toBe(0);
+    });
+
+    it('should only remove stale clients, leaving recent ones intact', () => {
+      const events: ClientRegistryEvent[] = [];
+      const reg = new ClientRegistry(e => events.push(e));
+
+      reg.touch('recent-node', '1.1.1.1');
+      reg.touch('old-node', '1.1.1.2');
+      events.length = 0;
+
+      const clients = reg['clients'] as Map<string, any>;
+      clients.get('old-node')!.lastSeen = new Date(Date.now() - 20_000).toISOString();
+
+      reg.checkDisconnected(10_000);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe('client_disconnected');
+      expect((events[0] as any).node).toBe('old-node');
+      expect(reg.getClientCount()).toBe(1);
+      expect(reg.getClients()[0].node).toBe('recent-node');
     });
   });
 });
