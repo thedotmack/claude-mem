@@ -62,6 +62,7 @@ export interface PendingMessage {
 export interface PendingMessageWithId extends PendingMessage {
   _persistentId: number;
   _originalTimestamp: number;
+  _createdAtEpoch?: number;  // Per-message enqueue timestamp from DB (used by batch processing)
 }
 
 export interface ObservationData {

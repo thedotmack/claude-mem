@@ -190,8 +190,7 @@ export class OpenRouterAgent {
             lastCwd = message.cwd;
           }
           const itemCwd = message.cwd || lastCwd;
-          // Use per-message created_at_epoch when available (from claimBatch), fall back to session timestamp
-          const originalTimestamp = (message as any)._createdAtEpoch ?? session.earliestPendingTimestamp;
+          const originalTimestamp = message._createdAtEpoch ?? session.earliestPendingTimestamp;
 
           if (message.type === 'observation') {
             if (message.prompt_number !== undefined) {
