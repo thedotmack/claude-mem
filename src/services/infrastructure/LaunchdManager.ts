@@ -44,6 +44,20 @@ export function generatePlist(config: LaunchdConfig): string {
   const stdoutLog = path.join(dataDir, 'logs', 'worker-stdout.log');
   const stderrLog = path.join(dataDir, 'logs', 'worker-stderr.log');
 
+  // Build PATH that includes Homebrew and bun — launchd starts with a
+  // minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) so tools like node, bun,
+  // and claude are invisible without this.
+  const homeDir = homedir();
+  const launchdPath = [
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+    '/usr/sbin',
+    '/sbin',
+    path.join(homeDir, '.bun', 'bin'),
+  ].join(':');
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -62,6 +76,8 @@ export function generatePlist(config: LaunchdConfig): string {
   <key>EnvironmentVariables</key>
   <dict>
     <key>CLAUDE_MEM_WORKER_PORT</key><string>${port}</string>
+    <key>PATH</key><string>${launchdPath}</string>
+    <key>HOME</key><string>${homeDir}</string>
   </dict>
 </dict>
 </plist>
