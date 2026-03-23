@@ -4,6 +4,8 @@ import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT } from "./paths.js";
+import { OfflineBuffer } from "../services/infrastructure/OfflineBuffer.js";
+import { getNodeName, getNetworkMode } from "./node-identity.js";
 
 // Named constants for health checks
 // Allow env var override for users on slow systems (e.g., CLAUDE_MEM_HEALTH_TIMEOUT_MS=10000)
@@ -227,4 +229,46 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   // Return false but don't throw - let caller decide how to handle
   logger.warn('SYSTEM', 'Worker not healthy, hook will proceed gracefully');
   return false;
+}
+
+/**
+ * POST to the worker with offline buffering as a safety net (layer 2).
+ *
+ * In client mode the local process is a ProxyServer. If even the proxy is down
+ * (e.g., not yet started, crash), this function buffers the request to a local
+ * JSONL file so it can be replayed once the proxy/server comes back.
+ *
+ * In standalone or server mode the fallback is disabled — errors propagate
+ * normally so the caller can decide how to handle them.
+ */
+export async function bufferedPostRequest(
+  apiPath: string,
+  body: string,
+  headers?: Record<string, string>
+): Promise<Response> {
+  try {
+    return await workerHttpRequest(apiPath, { method: 'POST', body, headers });
+  } catch (error) {
+    // Only buffer in client mode — standalone/server let errors propagate
+    if (getNetworkMode() !== 'client') throw error;
+
+    // Buffer the request for later replay when proxy/server recovers
+    const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+    const buffer = new OfflineBuffer(dataDir);
+    buffer.append({
+      ts: new Date().toISOString(),
+      method: 'POST',
+      path: apiPath,
+      body: JSON.parse(body),
+      node: getNodeName()
+    });
+
+    logger.info('SYSTEM', 'bufferedPostRequest: request buffered (proxy unreachable)', { path: apiPath });
+
+    // Return a synthetic 202 so the hook doesn't error out
+    return new Response(JSON.stringify({ buffered: true }), {
+      status: 202,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
 }

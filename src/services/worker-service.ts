@@ -1092,8 +1092,31 @@ async function main() {
 
   switch (command) {
     case 'start': {
-      // Server mode: auto-provision token, bind address, and launchd before starting worker
       const networkMode = getNetworkMode();
+
+      // Client mode: proxy instead of full worker
+      if (networkMode === 'client') {
+        const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+        const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+        const serverHost = settings.CLAUDE_MEM_SERVER_HOST;
+
+        if (!serverHost) {
+          exitWithStatus('error', 'Client mode requires CLAUDE_MEM_SERVER_HOST in settings.json');
+        }
+
+        // Use ensureWorkerStarted to spawn/check a daemon (same pattern as standalone).
+        // The daemon will enter the default '--daemon' case, detect client mode, and
+        // start ProxyServer instead of WorkerService.
+        const success = await ensureWorkerStarted(port);
+        if (success) {
+          exitWithStatus('ready');
+        } else {
+          exitWithStatus('error', 'Failed to start client proxy');
+        }
+        break;
+      }
+
+      // Server mode: auto-provision token, bind address, and launchd before starting worker
       if (networkMode === 'server') {
         try {
           await ensureServerModeReady();
@@ -1260,6 +1283,40 @@ async function main() {
         logger.error('SYSTEM', 'Uncaught exception in daemon', {}, error as Error);
         // Don't exit — keep the HTTP server running
       });
+
+      // Client mode: start ProxyServer instead of WorkerService
+      if (getNetworkMode() === 'client') {
+        const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+        const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+        const serverHost = settings.CLAUDE_MEM_SERVER_HOST;
+
+        if (!serverHost) {
+          logger.error('SYSTEM', 'Client mode requires CLAUDE_MEM_SERVER_HOST in settings.json');
+          process.exit(1);
+        }
+
+        const serverPort = parseInt(settings.CLAUDE_MEM_SERVER_PORT || '37777', 10);
+        const authToken = settings.CLAUDE_MEM_AUTH_TOKEN || '';
+        const dataDir = settings.CLAUDE_MEM_DATA_DIR || SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+
+        // Import ProxyServer dynamically (only needed in client mode)
+        const { ProxyServer } = await import('./proxy/ProxyServer.js');
+        const proxy = new ProxyServer(serverHost, serverPort, authToken, dataDir);
+
+        proxy.start(port).then(() => {
+          writePidFile({ pid: process.pid, port, startedAt: new Date().toISOString() });
+          logger.info('SYSTEM', 'Client mode: proxy started', {
+            target: `${serverHost}:${serverPort}`,
+            localPort: port
+          });
+        }).catch((error) => {
+          logger.error('SYSTEM', 'Client mode proxy failed to start', {}, error as Error);
+          process.exit(0);
+        });
+
+        // Keep process alive — proxy IS the daemon, don't fall through to WorkerService
+        return;
+      }
 
       const worker = new WorkerService();
       worker.start().catch((error) => {
