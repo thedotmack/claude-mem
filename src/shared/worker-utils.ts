@@ -260,7 +260,11 @@ export async function bufferedPostRequest(
       method: 'POST',
       path: apiPath,
       body: JSON.parse(body),
-      node: getNodeName()
+      node: getNodeName(),
+      headers: {
+        ...headers,
+        'X-Claude-Mem-Node': getNodeName(),
+      }
     });
 
     logger.info('SYSTEM', 'bufferedPostRequest: request buffered (proxy unreachable)', { path: apiPath });

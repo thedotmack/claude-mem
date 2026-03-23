@@ -24,7 +24,6 @@ import { clientRegistry as defaultClientRegistry } from './ClientRegistry.js';
 import type { ClientRegistry } from './ClientRegistry.js';
 import { getNetworkMode, getNodeName } from '../../shared/node-identity.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import path from 'path';
 import { homedir } from 'os';
 
 // Build-time injected version constant (set by esbuild define)
@@ -174,7 +173,8 @@ export class Server {
         const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
         const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
         return settings.CLAUDE_MEM_AUTH_TOKEN ?? '';
-      } catch {
+      } catch (error) {
+        logger.warn('SECURITY', 'Failed to read auth token from settings', {}, error as Error);
         return '';
       }
     });

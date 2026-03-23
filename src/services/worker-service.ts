@@ -1119,7 +1119,7 @@ async function main() {
       // Server mode: auto-provision token, bind address, and launchd before starting worker
       if (networkMode === 'server') {
         try {
-          await ensureServerModeReady();
+          await ensureServerModeReady(undefined, __filename);
         } catch (error) {
           logger.error('SYSTEM', 'Server mode setup failed', {}, error as Error);
           exitWithStatus('error', `Server mode setup failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1311,7 +1311,7 @@ async function main() {
           });
         }).catch((error) => {
           logger.error('SYSTEM', 'Client mode proxy failed to start', {}, error as Error);
-          process.exit(0);
+          process.exit(1);
         });
 
         // Keep process alive — proxy IS the daemon, don't fall through to WorkerService

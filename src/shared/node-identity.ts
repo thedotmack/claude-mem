@@ -8,6 +8,7 @@
 import { hostname } from 'os';
 import path from 'path';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * Get the node name for this machine.
@@ -21,8 +22,8 @@ export function getNodeName(): string {
     const settingsPath = path.join(dataDir, 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     if (settings.CLAUDE_MEM_NODE_NAME) return settings.CLAUDE_MEM_NODE_NAME;
-  } catch {
-    // settings file missing or corrupt — fall through
+  } catch (error) {
+    logger.debug('SYSTEM', 'Failed to load node name from settings', { error: error instanceof Error ? error.message : String(error) });
   }
 
   return hostname();
@@ -40,8 +41,8 @@ export function getInstanceName(): string {
     const settingsPath = path.join(dataDir, 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     return settings.CLAUDE_MEM_INSTANCE_NAME || '';
-  } catch {
-    // settings file missing or corrupt — fall through
+  } catch (error) {
+    logger.debug('SYSTEM', 'Failed to load instance name from settings', { error: error instanceof Error ? error.message : String(error) });
   }
 
   return '';
@@ -63,8 +64,8 @@ export function getNetworkMode(): 'standalone' | 'server' | 'client' {
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     const mode = settings.CLAUDE_MEM_NETWORK_MODE;
     if (mode === 'server' || mode === 'client') return mode;
-  } catch {
-    // settings file missing or corrupt — fall through
+  } catch (error) {
+    logger.debug('SYSTEM', 'Failed to load network mode from settings', { error: error instanceof Error ? error.message : String(error) });
   }
 
   return 'standalone';

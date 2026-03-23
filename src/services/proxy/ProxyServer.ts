@@ -77,7 +77,7 @@ export class ProxyServer {
   }
 
   private async handleRequest(req: express.Request, res: express.Response): Promise<void> {
-    const queryString = req.url.includes('?') ? '?' + req.url.split('?')[1] : '';
+    const queryString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
     const targetUrl = `http://${this.serverHost}:${this.serverPort}${req.path}${queryString}`;
 
     const headers: Record<string, string> = {
@@ -102,23 +102,33 @@ export class ProxyServer {
       const response = await fetch(targetUrl, fetchOptions);
       this.serverReachable = true;
 
-      // Forward status and body
+      // Forward status
       res.status(response.status);
-      const text = await response.text();
-      res.send(text);
+      // Forward important headers
+      const contentType = response.headers.get('content-type');
+      if (contentType) res.setHeader('content-type', contentType);
+      const cacheControl = response.headers.get('cache-control');
+      if (cacheControl) res.setHeader('cache-control', cacheControl);
+      // Forward body
+      const body = await response.text();
+      res.send(body);
     } catch (error) {
       this.serverReachable = false;
 
       // POST/PUT/PATCH requests -> buffer
       if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
-        this.buffer.append({
-          ts: new Date().toISOString(),
-          method: req.method,
-          path: req.path,
-          body: req.body,
-          node: getNodeName(),
-          headers,
-        });
+        try {
+          this.buffer.append({
+            ts: new Date().toISOString(),
+            method: req.method,
+            path: req.path,
+            body: req.body,
+            node: getNodeName(),
+            headers,
+          });
+        } catch (bufferError) {
+          logger.error('PROXY', 'Failed to buffer request', { path: req.path }, bufferError as Error);
+        }
         res.status(202).json({ buffered: true, path: req.path });
       } else {
         // GET requests -> 503
@@ -156,7 +166,7 @@ export class ProxyServer {
           },
           body: JSON.stringify(entry.body),
         });
-        return resp.ok || resp.status < 500; // 4xx = don't retry (bad request)
+        return resp.ok; // Only 2xx is success. 4xx and 5xx both stop replay.
       } catch {
         return false;
       }

@@ -26,8 +26,8 @@ import { ensureLaunchdService } from './LaunchdManager.js';
  *
  * @param settingsPath  Override for the settings file path (used in tests).
  *                      Defaults to ~/.claude-mem/settings.json.
- * @param workerScript  Override for the worker script path (used in tests).
- *                      Defaults to the calling module's __filename.
+ * @param workerScript  The worker script path for launchd registration.
+ *                      Required on macOS for launchd service setup.
  */
 export async function ensureServerModeReady(
   settingsPath?: string,
@@ -43,8 +43,8 @@ export async function ensureServerModeReady(
     settings.CLAUDE_MEM_AUTH_TOKEN = randomBytes(32).toString('hex');
     changed = true;
     logger.info('SYSTEM', 'Auto-generated auth token for server mode', {
-      token: settings.CLAUDE_MEM_AUTH_TOKEN,
-      note: 'Copy this token to client machines settings.json'
+      tokenPreview: settings.CLAUDE_MEM_AUTH_TOKEN.substring(0, 8) + '...',
+      note: 'Full token saved in settings.json — copy to client machines'
     });
   }
 
@@ -62,7 +62,11 @@ export async function ensureServerModeReady(
 
   // Setup launchd on macOS
   if (process.platform === 'darwin') {
-    const scriptPath = workerScript ?? __filename;
+    if (!workerScript) {
+      logger.warn('SYSTEM', 'workerScript not provided — skipping launchd setup');
+      return;
+    }
+    const scriptPath = workerScript;
     await ensureLaunchdService({
       label: 'com.claude-mem.worker',
       executablePath: process.execPath,

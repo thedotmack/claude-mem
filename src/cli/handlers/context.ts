@@ -17,9 +17,8 @@ import { getNetworkMode, getNodeName } from '../../shared/node-identity.js';
 function getDashboardUrl(port: number, settings: ReturnType<typeof SettingsDefaultsManager.loadFromFile>): string {
   const mode = getNetworkMode();
   if (mode === 'client') {
-    const serverHost = settings.CLAUDE_MEM_SERVER_HOST;
-    const serverPort = settings.CLAUDE_MEM_SERVER_PORT || String(port);
-    return `http://${serverHost}:${serverPort}`;
+    // In client mode, the proxy runs locally and forwards the viewer UI
+    return `http://localhost:${port}`;
   }
   return `http://localhost:${port}`;
 }

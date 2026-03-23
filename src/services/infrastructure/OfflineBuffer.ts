@@ -48,7 +48,7 @@ export class OfflineBuffer {
     if (!existsSync(this.bufferPath)) return 0;
     const content = readFileSync(this.bufferPath, 'utf-8').trim();
     if (!content) return 0;
-    return content.split('\n').length;
+    return content.split('\n').filter(line => line.trim().length > 0).length;
   }
 
   /**
