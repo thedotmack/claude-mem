@@ -35,4 +35,4 @@ src/ui/viewer.html
 .claude-octopus/
 .claude/session-intent.md
 .claude/session-plan.md
-.octo/
+.octo/.local/
