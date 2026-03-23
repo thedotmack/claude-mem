@@ -7,6 +7,7 @@ import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
 import { useHealth } from './hooks/useHealth';
+import { useClients } from './hooks/useClients';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
 import { Observation, Summary, UserPrompt } from './types';
@@ -24,6 +25,7 @@ export function App() {
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats, refreshStats } = useStats();
   const { health } = useHealth();
+  const { clients } = useClients(health.mode);
   const { preference, resolvedTheme, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
 
@@ -106,6 +108,9 @@ export function App() {
         version={stats.worker?.version}
         mode={health.mode}
         connectedClients={health.connectedClients}
+        health={health}
+        clients={clients}
+        authToken={settings.CLAUDE_MEM_AUTH_TOKEN}
       />
 
       <Feed

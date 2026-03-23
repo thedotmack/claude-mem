@@ -30,6 +30,25 @@ function stripProjectRoot(filePath: string): string {
   return parts.length > 3 ? parts.slice(-3).join('/') : filePath;
 }
 
+// Shorten long hostnames: "macstudio-m4max-regis" -> "m4max-regis"
+function shortenHostname(hostname: string): string {
+  if (hostname.length > 16) {
+    const parts = hostname.split('-');
+    if (parts.length >= 3) {
+      return parts.slice(-2).join('-');
+    }
+  }
+  return hostname;
+}
+
+// Return a CSS class for platform-specific coloring
+function platformColorClass(platform: string): string {
+  const p = platform.toLowerCase();
+  if (p.includes('claude')) return 'badge-platform--claude';
+  if (p.includes('cursor')) return 'badge-platform--cursor';
+  return 'badge-platform--raw';
+}
+
 export function ObservationCard({ observation }: ObservationCardProps) {
   const [showFacts, setShowFacts] = useState(false);
   const [showNarrative, setShowNarrative] = useState(false);
@@ -43,6 +62,8 @@ export function ObservationCard({ observation }: ObservationCardProps) {
 
   // Show facts toggle if there are facts, concepts, or files
   const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;
+
+  const hasProvenance = observation.node || observation.platform || observation.instance;
 
   return (
     <div className="card">
@@ -116,28 +137,29 @@ export function ObservationCard({ observation }: ObservationCardProps) {
       <div className="card-meta">
         <span className="meta-date">
           #{observation.id} • {date}
-          {observation.node && (
-            <span style={{
-              marginLeft: '8px',
-              fontSize: '10px',
-              padding: '1px 6px',
-              borderRadius: '3px',
-              background: 'var(--color-type-badge-bg)',
-              color: 'var(--color-text-muted, #888)',
-              fontWeight: '400'
-            }}>
-              {observation.node}
-            </span>
-          )}
-          {observation.platform && (
-            <span style={{ marginLeft: '4px', fontSize: '10px', padding: '1px 6px', borderRadius: '3px', background: 'rgba(139, 92, 246, 0.1)', color: 'var(--color-text-muted, #888)', fontWeight: '400' }}>
-              {observation.platform}
-            </span>
-          )}
-          {observation.instance && (
-            <span style={{ marginLeft: '4px', fontSize: '10px', padding: '1px 6px', borderRadius: '3px', background: 'rgba(245, 158, 11, 0.1)', color: 'var(--color-text-muted, #888)', fontWeight: '400', fontStyle: 'italic' }}>
-              {observation.instance}
-            </span>
+          {hasProvenance && (
+            <>
+              <span className="meta-separator"> · </span>
+              {observation.node && (
+                <span className="badge-node" title={observation.node}>
+                  <svg className="badge-node-icon" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                    <circle cx="12" cy="10" r="3" />
+                  </svg>
+                  {shortenHostname(observation.node)}
+                </span>
+              )}
+              {observation.platform && (
+                <span className={`badge-platform ${platformColorClass(observation.platform)}`}>
+                  {observation.platform}
+                </span>
+              )}
+              {observation.instance && (
+                <span className="badge-instance" title={`Instance: ${observation.instance}`}>
+                  {observation.instance}
+                </span>
+              )}
+            </>
           )}
         </span>
         {showFacts && (concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (

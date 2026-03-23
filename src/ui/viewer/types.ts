@@ -122,3 +122,13 @@ export interface HealthData {
   node?: string;
   status?: string;
 }
+
+export interface ClientInfo {
+  node: string;
+  ip: string;
+  mode: string;
+  instance: string;
+  firstSeen: string;
+  lastSeen: string;
+  requestCount: number;
+}
