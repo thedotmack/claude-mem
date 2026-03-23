@@ -331,6 +331,79 @@ describe('SettingsDefaultsManager', () => {
     });
   });
 
+  describe('network mode settings defaults', () => {
+    it('should default CLAUDE_MEM_NETWORK_MODE to standalone', () => {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+      expect(defaults.CLAUDE_MEM_NETWORK_MODE).toBe('standalone');
+    });
+
+    it('should default CLAUDE_MEM_SERVER_HOST to empty string', () => {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+      expect(defaults.CLAUDE_MEM_SERVER_HOST).toBe('');
+    });
+
+    it('should default CLAUDE_MEM_SERVER_PORT to 37777', () => {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+      expect(defaults.CLAUDE_MEM_SERVER_PORT).toBe('37777');
+    });
+
+    it('should default CLAUDE_MEM_NODE_NAME to empty string', () => {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+      expect(defaults.CLAUDE_MEM_NODE_NAME).toBe('');
+    });
+
+    it('should default CLAUDE_MEM_INSTANCE_NAME to empty string', () => {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+      expect(defaults.CLAUDE_MEM_INSTANCE_NAME).toBe('');
+    });
+
+    it('should default CLAUDE_MEM_AUTH_TOKEN to empty string', () => {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+      expect(defaults.CLAUDE_MEM_AUTH_TOKEN).toBe('');
+    });
+
+    it('should include all network mode keys in getAllDefaults', () => {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+      expect(defaults).toHaveProperty('CLAUDE_MEM_NETWORK_MODE');
+      expect(defaults).toHaveProperty('CLAUDE_MEM_SERVER_HOST');
+      expect(defaults).toHaveProperty('CLAUDE_MEM_SERVER_PORT');
+      expect(defaults).toHaveProperty('CLAUDE_MEM_NODE_NAME');
+      expect(defaults).toHaveProperty('CLAUDE_MEM_INSTANCE_NAME');
+      expect(defaults).toHaveProperty('CLAUDE_MEM_AUTH_TOKEN');
+    });
+
+    it('should persist network mode settings through loadFromFile', () => {
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+      expect(result.CLAUDE_MEM_NETWORK_MODE).toBe('standalone');
+      expect(result.CLAUDE_MEM_SERVER_HOST).toBe('');
+      expect(result.CLAUDE_MEM_SERVER_PORT).toBe('37777');
+      expect(result.CLAUDE_MEM_NODE_NAME).toBe('');
+      expect(result.CLAUDE_MEM_INSTANCE_NAME).toBe('');
+      expect(result.CLAUDE_MEM_AUTH_TOKEN).toBe('');
+    });
+
+    it('should load custom network mode settings from file', () => {
+      const customSettings = {
+        CLAUDE_MEM_NETWORK_MODE: 'client',
+        CLAUDE_MEM_SERVER_HOST: '192.168.1.100',
+        CLAUDE_MEM_SERVER_PORT: '38000',
+        CLAUDE_MEM_NODE_NAME: 'my-macbook',
+        CLAUDE_MEM_INSTANCE_NAME: 'work-instance',
+        CLAUDE_MEM_AUTH_TOKEN: 'secret123',
+      };
+      writeFileSync(settingsPath, JSON.stringify(customSettings));
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_NETWORK_MODE).toBe('client');
+      expect(result.CLAUDE_MEM_SERVER_HOST).toBe('192.168.1.100');
+      expect(result.CLAUDE_MEM_SERVER_PORT).toBe('38000');
+      expect(result.CLAUDE_MEM_NODE_NAME).toBe('my-macbook');
+      expect(result.CLAUDE_MEM_INSTANCE_NAME).toBe('work-instance');
+      expect(result.CLAUDE_MEM_AUTH_TOKEN).toBe('secret123');
+    });
+  });
+
   describe('environment variable overrides', () => {
     const originalEnv: Record<string, string | undefined> = {};
 

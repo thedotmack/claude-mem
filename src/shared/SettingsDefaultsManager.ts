@@ -64,6 +64,15 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_API_KEY: string;
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
+  // Network Mode Configuration
+  // NOTE: CLAUDE_MEM_NETWORK_MODE controls multi-machine networking (standalone/server/client).
+  // This is distinct from CLAUDE_MEM_MODE which controls feature profiles (code/local/etc).
+  CLAUDE_MEM_NETWORK_MODE: string;
+  CLAUDE_MEM_SERVER_HOST: string;
+  CLAUDE_MEM_SERVER_PORT: string;
+  CLAUDE_MEM_NODE_NAME: string;
+  CLAUDE_MEM_INSTANCE_NAME: string;
+  CLAUDE_MEM_AUTH_TOKEN: string;
 }
 
 export class SettingsDefaultsManager {
@@ -123,6 +132,13 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_API_KEY: '',
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
+    // Network Mode Configuration
+    CLAUDE_MEM_NETWORK_MODE: 'standalone',  // 'standalone' | 'server' | 'client'
+    CLAUDE_MEM_SERVER_HOST: '',             // Server hostname (required in client mode)
+    CLAUDE_MEM_SERVER_PORT: '37777',        // Server port if different from local
+    CLAUDE_MEM_NODE_NAME: '',               // Machine identity override. Fallback: os.hostname()
+    CLAUDE_MEM_INSTANCE_NAME: '',           // Instance identity (e.g., 'openclaw-legal')
+    CLAUDE_MEM_AUTH_TOKEN: '',              // Shared secret for remote auth
   };
 
   /**
