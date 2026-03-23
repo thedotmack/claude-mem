@@ -139,7 +139,8 @@ export class PaginationHelper {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `
-      SELECT up.id, up.content_session_id, s.project, up.prompt_number, up.prompt_text, up.created_at, up.created_at_epoch
+      SELECT up.id, up.content_session_id, s.project, up.prompt_number, up.prompt_text, up.created_at, up.created_at_epoch,
+             up.node, up.platform, up.instance
       FROM user_prompts up
       JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
     `;

@@ -771,6 +771,14 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    // Set origin tracking on the store so saveUserPrompt includes node/platform/instance
+    const node = (req.headers['x-claude-mem-node'] as string) || getNodeName();
+    const platform = req.body.platform || null;
+    const instance = (req.headers['x-claude-mem-instance'] as string) || null;
+    store._currentNode = node;
+    store._currentPlatform = platform;
+    store._currentInstance = instance;
+
     // Step 5: Save cleaned user prompt
     store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt);
 

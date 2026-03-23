@@ -22,6 +22,11 @@ import { computeObservationContentHash, findDuplicateObservation } from './obser
 export class SessionStore {
   public db: Database;
 
+  // Origin tracking — set by the worker when processing requests
+  _currentNode: string | null = null;
+  _currentPlatform: string | null = null;
+  _currentInstance: string | null = null;
+
   constructor(dbPath: string = DB_PATH) {
     if (dbPath !== ':memory:') {
       ensureDir(DATA_DIR);
@@ -881,24 +886,24 @@ export class SessionStore {
    * Add node, platform, instance columns to observations for multi-machine provenance (migration 24)
    */
   private addObservationProvenanceColumns(): void {
-    const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    const hasNode = tableInfo.some(col => col.name === 'node');
-
-    if (hasNode) {
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
-      return;
+    // Add provenance to all content tables: observations, sdk_sessions, user_prompts
+    for (const table of ['observations', 'sdk_sessions', 'user_prompts']) {
+      const tableInfo = this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[];
+      const cols = new Set(tableInfo.map(c => c.name));
+      for (const col of ['node', 'platform', 'instance']) {
+        if (!cols.has(col)) {
+          this.db.run(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`);
+        }
+      }
     }
-
-    this.db.run('ALTER TABLE observations ADD COLUMN node TEXT');
-    this.db.run('ALTER TABLE observations ADD COLUMN platform TEXT');
-    this.db.run('ALTER TABLE observations ADD COLUMN instance TEXT');
-    logger.debug('DB', 'Added node, platform, instance columns to observations table');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_node ON observations(node)');
+    logger.debug('DB', 'Added node/platform/instance origin tracking to observations, sdk_sessions, user_prompts');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
   }
 
   /**
-   * Add node, platform, instance columns to session_summaries for multi-machine provenance (migration 25)
+   * Add node, platform, instance columns to session_summaries for multi-node origin tracking (migration 25)
    */
   private addSummaryProvenanceColumns(): void {
     const tableInfo = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
@@ -1515,11 +1520,12 @@ export class SessionStore {
 
     const stmt = this.db.prepare(`
       INSERT INTO user_prompts
-      (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?)
+      (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch, node, platform, instance)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(contentSessionId, promptNumber, promptText, now.toISOString(), nowEpoch);
+    const result = stmt.run(contentSessionId, promptNumber, promptText, now.toISOString(), nowEpoch,
+      this._currentNode ?? null, this._currentPlatform ?? null, this._currentInstance ?? null);
     return result.lastInsertRowid as number;
   }
 
