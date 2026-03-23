@@ -102,7 +102,16 @@ function resolveGrammarPath(language: string): string | null {
 // --- Query patterns (declarative symbol extraction) ---
 
 const QUERIES: Record<string, string> = {
-  jsts: `
+  jsts_js: `
+(function_declaration name: (identifier) @name) @func
+(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
+(class_declaration name: (type_identifier) @name) @cls
+(method_definition name: (property_identifier) @name) @method
+(import_statement) @imp
+(export_statement) @exp
+`,
+
+  jsts_ts: `
 (function_declaration name: (identifier) @name) @func
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
 (class_declaration name: (type_identifier) @name) @cls
@@ -165,9 +174,10 @@ const QUERIES: Record<string, string> = {
 function getQueryKey(language: string): string {
   switch (language) {
     case "javascript":
+      return "jsts_js";
     case "typescript":
     case "tsx":
-      return "jsts";
+      return "jsts_ts";
     case "python": return "python";
     case "go": return "go";
     case "rust": return "rust";

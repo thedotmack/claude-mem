@@ -333,9 +333,11 @@ export function ContextSettingsModal({
                 >
                   <select
                     value={
-                      ['haiku', 'sonnet', 'opus'].includes(formState.CLAUDE_MEM_MODEL || 'haiku')
-                        ? (formState.CLAUDE_MEM_MODEL || 'haiku')
-                        : 'custom'
+                      formState.CLAUDE_MEM_MODEL === ''
+                        ? 'custom'
+                        : ['haiku', 'sonnet', 'opus'].includes(formState.CLAUDE_MEM_MODEL ?? 'haiku')
+                          ? (formState.CLAUDE_MEM_MODEL ?? 'haiku')
+                          : 'custom'
                     }
                     onChange={(e) => {
                       if (e.target.value === 'custom') {
@@ -350,7 +352,9 @@ export function ContextSettingsModal({
                     <option value="opus">opus (highest quality)</option>
                     <option value="custom">Custom model ID...</option>
                   </select>
-                  {!['haiku', 'sonnet', 'opus'].includes(formState.CLAUDE_MEM_MODEL || 'haiku') && (
+                  {(formState.CLAUDE_MEM_MODEL === '' ||
+                    (!!formState.CLAUDE_MEM_MODEL &&
+                      !['haiku', 'sonnet', 'opus'].includes(formState.CLAUDE_MEM_MODEL))) && (
                     <input
                       type="text"
                       value={formState.CLAUDE_MEM_MODEL || ''}

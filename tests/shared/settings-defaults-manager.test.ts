@@ -309,8 +309,18 @@ describe('SettingsDefaultsManager', () => {
 
   describe('get', () => {
     it('should return default value for key', () => {
-      expect(SettingsDefaultsManager.get('CLAUDE_MEM_MODEL')).toBe('haiku');
-      expect(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT')).toBe('37777');
+      const originalModel = process.env.CLAUDE_MEM_MODEL;
+      delete process.env.CLAUDE_MEM_MODEL;
+      try {
+        expect(SettingsDefaultsManager.get('CLAUDE_MEM_MODEL')).toBe('haiku');
+        expect(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT')).toBe('37777');
+      } finally {
+        if (originalModel === undefined) {
+          delete process.env.CLAUDE_MEM_MODEL;
+        } else {
+          process.env.CLAUDE_MEM_MODEL = originalModel;
+        }
+      }
     });
   });
 
