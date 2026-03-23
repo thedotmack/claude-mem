@@ -43,6 +43,9 @@ export type StoreAndMarkCompleteResult = StoreObservationsResult;
  * @param promptNumber - Optional prompt number
  * @param discoveryTokens - Discovery tokens count
  * @param overrideTimestampEpoch - Optional override timestamp
+ * @param node - Optional node name (multi-machine provenance)
+ * @param platform - Optional platform (darwin/win32/linux)
+ * @param instance - Optional instance name
  * @returns Object with observation IDs, optional summary ID, and timestamp
  */
 export function storeObservationsAndMarkComplete(
@@ -54,7 +57,10 @@ export function storeObservationsAndMarkComplete(
   messageId: number,
   promptNumber?: number,
   discoveryTokens: number = 0,
-  overrideTimestampEpoch?: number
+  overrideTimestampEpoch?: number,
+  node?: string,
+  platform?: string,
+  instance?: string
 ): StoreAndMarkCompleteResult {
   // Use override timestamp if provided
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -68,8 +74,9 @@ export function storeObservationsAndMarkComplete(
     const obsStmt = db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+       node, platform, instance)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const observation of observations) {
@@ -95,7 +102,10 @@ export function storeObservationsAndMarkComplete(
         discoveryTokens,
         contentHash,
         timestampIso,
-        timestampEpoch
+        timestampEpoch,
+        node ?? null,
+        platform ?? null,
+        instance ?? null
       );
       observationIds.push(Number(result.lastInsertRowid));
     }
@@ -163,6 +173,9 @@ export function storeObservationsAndMarkComplete(
  * @param promptNumber - Optional prompt number
  * @param discoveryTokens - Discovery tokens count
  * @param overrideTimestampEpoch - Optional override timestamp
+ * @param node - Optional node name (multi-machine provenance)
+ * @param platform - Optional platform (darwin/win32/linux)
+ * @param instance - Optional instance name
  * @returns Object with observation IDs, optional summary ID, and timestamp
  */
 export function storeObservations(
@@ -173,7 +186,10 @@ export function storeObservations(
   summary: SummaryInput | null,
   promptNumber?: number,
   discoveryTokens: number = 0,
-  overrideTimestampEpoch?: number
+  overrideTimestampEpoch?: number,
+  node?: string,
+  platform?: string,
+  instance?: string
 ): StoreObservationsResult {
   // Use override timestamp if provided
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -187,8 +203,9 @@ export function storeObservations(
     const obsStmt = db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+       node, platform, instance)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const observation of observations) {
@@ -214,7 +231,10 @@ export function storeObservations(
         discoveryTokens,
         contentHash,
         timestampIso,
-        timestampEpoch
+        timestampEpoch,
+        node ?? null,
+        platform ?? null,
+        instance ?? null
       );
       observationIds.push(Number(result.lastInsertRowid));
     }

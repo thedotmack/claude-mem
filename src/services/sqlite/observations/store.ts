@@ -55,7 +55,10 @@ export function storeObservation(
   observation: ObservationInput,
   promptNumber?: number,
   discoveryTokens: number = 0,
-  overrideTimestampEpoch?: number
+  overrideTimestampEpoch?: number,
+  node?: string,
+  platform?: string,
+  instance?: string
 ): StoreObservationResult {
   // Use override timestamp if provided (for processing backlog messages with original timestamps)
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -75,8 +78,9 @@ export function storeObservation(
   const stmt = db.prepare(`
     INSERT INTO observations
     (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-     files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+     node, platform, instance)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const result = stmt.run(
@@ -94,7 +98,10 @@ export function storeObservation(
     discoveryTokens,
     contentHash,
     timestampIso,
-    timestampEpoch
+    timestampEpoch,
+    node ?? null,
+    platform ?? null,
+    instance ?? null
   );
 
   return {

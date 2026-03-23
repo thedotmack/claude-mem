@@ -40,6 +40,10 @@ export interface ActiveSession {
   // CLAIM-CONFIRM FIX: Track IDs of messages currently being processed
   // These IDs will be confirmed (deleted) after successful storage
   processingMessageIds: number[];
+  // Multi-machine provenance (optional, set from request headers/body)
+  node?: string;
+  platform?: string;
+  instance?: string;
 }
 
 export interface PendingMessage {

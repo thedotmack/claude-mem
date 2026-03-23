@@ -1626,6 +1626,9 @@ export class SessionStore {
    * @param promptNumber - Optional prompt number
    * @param discoveryTokens - Discovery tokens count
    * @param overrideTimestampEpoch - Optional override timestamp
+   * @param node - Optional node name (multi-machine provenance)
+   * @param platform - Optional platform (darwin/win32/linux)
+   * @param instance - Optional instance name
    * @returns Object with observation IDs, optional summary ID, and timestamp
    */
   storeObservations(
@@ -1651,7 +1654,10 @@ export class SessionStore {
     } | null,
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    node?: string,
+    platform?: string,
+    instance?: string
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     // Use override timestamp if provided
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1665,8 +1671,9 @@ export class SessionStore {
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-         files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+         node, platform, instance)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
@@ -1693,7 +1700,10 @@ export class SessionStore {
           discoveryTokens,
           contentHash,
           timestampIso,
-          timestampEpoch
+          timestampEpoch,
+          node ?? null,
+          platform ?? null,
+          instance ?? null
         );
         observationIds.push(Number(result.lastInsertRowid));
       }
@@ -1780,7 +1790,10 @@ export class SessionStore {
     _pendingStore: PendingMessageStore,
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    node?: string,
+    platform?: string,
+    instance?: string
   ): { observationIds: number[]; summaryId?: number; createdAtEpoch: number } {
     // Use override timestamp if provided
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1794,8 +1807,9 @@ export class SessionStore {
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-         files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+         node, platform, instance)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
@@ -1822,7 +1836,10 @@ export class SessionStore {
           discoveryTokens,
           contentHash,
           timestampIso,
-          timestampEpoch
+          timestampEpoch,
+          node ?? null,
+          platform ?? null,
+          instance ?? null
         );
         observationIds.push(Number(result.lastInsertRowid));
       }

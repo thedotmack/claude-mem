@@ -22,6 +22,7 @@ import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProcessBySession, ensureProcessExit } from '../../ProcessRegistry.js';
+import { getNodeName } from '../../../../shared/node-identity.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -493,10 +494,16 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Queue observations by contentSessionId (post-tool-use-hook uses this)
    * POST /api/sessions/observations
-   * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
+   * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd, platform? }
+   * Headers: x-claude-mem-node, x-claude-mem-instance
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
+
+    // Extract provenance from headers and body
+    const node = (req.headers['x-claude-mem-node'] as string) || getNodeName();
+    const platform = req.body.platform || null;
+    const instance = (req.headers['x-claude-mem-instance'] as string) || null;
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');
@@ -571,6 +578,14 @@ export class SessionRoutes extends BaseRouteHandler {
           return '';
         })()
       });
+
+      // Store provenance on the active session (for use when writing observations to DB)
+      const activeSession = this.sessionManager.getSession(sessionDbId);
+      if (activeSession) {
+        activeSession.node = node;
+        if (platform) activeSession.platform = platform;
+        if (instance) activeSession.instance = instance;
+      }
 
       // Ensure SDK agent is running
       this.ensureGeneratorRunning(sessionDbId, 'observation');
