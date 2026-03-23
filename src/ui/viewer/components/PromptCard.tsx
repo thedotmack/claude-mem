@@ -1,6 +1,7 @@
 import React from 'react';
 import { UserPrompt } from '../types';
 import { formatDate } from '../utils/formatters';
+import { MetadataFooter } from './MetadataFooter';
 
 interface PromptCardProps {
   prompt: UserPrompt;
@@ -21,7 +22,13 @@ export function PromptCard({ prompt }: PromptCardProps) {
         {prompt.prompt_text}
       </div>
       <div className="card-meta">
-        <span className="meta-date">#{prompt.id} • {date}</span>
+        <MetadataFooter
+          id={prompt.id}
+          date={date}
+          node={prompt.node}
+          platform={prompt.platform}
+          instance={prompt.instance}
+        />
       </div>
     </div>
   );

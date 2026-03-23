@@ -1,14 +1,7 @@
 import React from "react";
 import { Summary } from "../types";
 import { formatDate } from "../utils/formatters";
-
-// Return a CSS class for platform-specific coloring
-function platformColorClass(platform: string): string {
-  const p = platform.toLowerCase();
-  if (p.includes('claude')) return 'badge-platform--claude';
-  if (p.includes('cursor')) return 'badge-platform--cursor';
-  return 'badge-platform--raw';
-}
+import { MetadataFooter } from "./MetadataFooter";
 
 interface SummaryCardProps {
   summary: Summary;
@@ -16,7 +9,6 @@ interface SummaryCardProps {
 
 export function SummaryCard({ summary }: SummaryCardProps) {
   const date = formatDate(summary.created_at_epoch);
-  const hasProvenance = summary.node || summary.platform || summary.instance;
 
   const sections = [
     { key: "investigated", label: "Investigated", content: summary.investigated, icon: "/icon-thick-investigated.svg" },
@@ -60,35 +52,14 @@ export function SummaryCard({ summary }: SummaryCardProps) {
       </div>
 
       <footer className="summary-card-footer">
-        <span className="summary-meta-id">Session #{summary.id}</span>
-        <span className="summary-meta-divider">•</span>
-        <time className="summary-meta-date" dateTime={new Date(summary.created_at_epoch).toISOString()}>
-          {date}
-        </time>
-        {hasProvenance && (
-          <>
-            <span className="summary-meta-divider">·</span>
-            {summary.node && (
-              <span className="badge-node" title={summary.node}>
-                <svg className="badge-node-icon" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
-                  <circle cx="12" cy="10" r="3" />
-                </svg>
-                {summary.node}
-              </span>
-            )}
-            {summary.platform && (
-              <span className={`badge-platform ${platformColorClass(summary.platform)}`}>
-                {summary.platform}
-              </span>
-            )}
-            {summary.instance && (
-              <span className="badge-instance" title={`Instance: ${summary.instance}`}>
-                {summary.instance}
-              </span>
-            )}
-          </>
-        )}
+        <MetadataFooter
+          id={summary.id}
+          date={date}
+          node={summary.node}
+          platform={summary.platform}
+          instance={summary.instance}
+          sessionId={summary.session_id}
+        />
       </footer>
     </article>
   );

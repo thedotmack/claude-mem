@@ -1,7 +1,13 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Observation, Summary, UserPrompt, StreamEvent } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
+
+export type ClientSSEEvent = StreamEvent & {
+  type: 'client_connected' | 'client_heartbeat' | 'client_disconnected';
+};
+
+type ClientEventHandler = (event: ClientSSEEvent) => void;
 
 export function useSSE() {
   const [observations, setObservations] = useState<Observation[]>([]);
@@ -13,6 +19,12 @@ export function useSSE() {
   const [queueDepth, setQueueDepth] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
+  const clientEventHandlerRef = useRef<ClientEventHandler | null>(null);
+
+  /** Register a handler for client SSE events (connect/heartbeat/disconnect) */
+  const onClientEvent = useCallback((handler: ClientEventHandler) => {
+    clientEventHandlerRef.current = handler;
+  }, []);
 
   useEffect(() => {
     const connect = () => {
@@ -88,6 +100,15 @@ export function useSSE() {
               setQueueDepth(data.queueDepth || 0);
             }
             break;
+
+          case 'client_connected':
+          case 'client_heartbeat':
+          case 'client_disconnected':
+            console.log('[SSE] Client event:', data.type, data.node);
+            if (clientEventHandlerRef.current) {
+              clientEventHandlerRef.current(data as ClientSSEEvent);
+            }
+            break;
         }
       };
     };
@@ -105,5 +126,5 @@ export function useSSE() {
     };
   }, []);
 
-  return { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected };
+  return { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected, onClientEvent };
 }

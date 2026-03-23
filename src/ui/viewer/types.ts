@@ -41,6 +41,9 @@ export interface UserPrompt {
   prompt_number: number;
   prompt_text: string;
   created_at_epoch: number;
+  node?: string | null;
+  platform?: string | null;
+  instance?: string | null;
 }
 
 export type FeedItem =
@@ -49,7 +52,8 @@ export type FeedItem =
   | (UserPrompt & { itemType: 'prompt' });
 
 export interface StreamEvent {
-  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status';
+  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status'
+    | 'client_connected' | 'client_heartbeat' | 'client_disconnected';
   observations?: Observation[];
   summaries?: Summary[];
   prompts?: UserPrompt[];
@@ -58,6 +62,13 @@ export interface StreamEvent {
   summary?: Summary;
   prompt?: UserPrompt;
   isProcessing?: boolean;
+  queueDepth?: number;
+  // Network client event fields
+  node?: string;
+  ip?: string;
+  mode?: string;
+  instance?: string;
+  timestamp?: number;
 }
 
 export interface Settings {
@@ -134,4 +145,8 @@ export interface ClientInfo {
   firstSeen: string;
   lastSeen: string;
   requestCount: number;
+}
+
+export interface TrackedClient extends ClientInfo {
+  active: boolean;
 }

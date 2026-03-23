@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Observation } from '../types';
 import { formatDate } from '../utils/formatters';
+import { MetadataFooter } from './MetadataFooter';
 
 interface ObservationCardProps {
   observation: Observation;
@@ -30,14 +31,6 @@ function stripProjectRoot(filePath: string): string {
   return parts.length > 3 ? parts.slice(-3).join('/') : filePath;
 }
 
-// Return a CSS class for platform-specific coloring
-function platformColorClass(platform: string): string {
-  const p = platform.toLowerCase();
-  if (p.includes('claude')) return 'badge-platform--claude';
-  if (p.includes('cursor')) return 'badge-platform--cursor';
-  return 'badge-platform--raw';
-}
-
 export function ObservationCard({ observation }: ObservationCardProps) {
   const [showFacts, setShowFacts] = useState(false);
   const [showNarrative, setShowNarrative] = useState(false);
@@ -51,8 +44,6 @@ export function ObservationCard({ observation }: ObservationCardProps) {
 
   // Show facts toggle if there are facts, concepts, or files
   const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;
-
-  const hasProvenance = observation.node || observation.platform || observation.instance;
 
   return (
     <div className="card">
@@ -122,35 +113,16 @@ export function ObservationCard({ observation }: ObservationCardProps) {
         )}
       </div>
 
-      {/* Metadata footer - id, date, and conditionally concepts/files when facts toggle is on */}
+      {/* Metadata footer */}
       <div className="card-meta">
-        <span className="meta-date">
-          #{observation.id} • {date}
-          {hasProvenance && (
-            <>
-              <span className="meta-separator"> · </span>
-              {observation.node && (
-                <span className="badge-node" title={observation.node}>
-                  <svg className="badge-node-icon" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
-                    <circle cx="12" cy="10" r="3" />
-                  </svg>
-                  {observation.node}
-                </span>
-              )}
-              {observation.platform && (
-                <span className={`badge-platform ${platformColorClass(observation.platform)}`}>
-                  {observation.platform}
-                </span>
-              )}
-              {observation.instance && (
-                <span className="badge-instance" title={`Instance: ${observation.instance}`}>
-                  {observation.instance}
-                </span>
-              )}
-            </>
-          )}
-        </span>
+        <MetadataFooter
+          id={observation.id}
+          date={date}
+          node={observation.node}
+          platform={observation.platform}
+          instance={observation.instance}
+          sessionId={observation.memory_session_id}
+        />
         {showFacts && (concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
             {concepts.map((concept: string, i: number) => (
