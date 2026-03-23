@@ -45,6 +45,9 @@ export interface ObservationSSEPayload {
   project: string;
   prompt_number: number;
   created_at_epoch: number;
+  node: string | null;
+  platform: string | null;
+  instance: string | null;
 }
 
 export interface SummarySSEPayload {
@@ -59,6 +62,9 @@ export interface SummarySSEPayload {
   project: string;
   prompt_number: number;
   created_at_epoch: number;
+  node: string | null;
+  platform: string | null;
+  instance: string | null;
 }
 
 export type SSEEventPayload =

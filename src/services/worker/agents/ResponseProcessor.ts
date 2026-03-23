@@ -237,7 +237,10 @@ async function syncAndBroadcastObservations(
       files_modified: JSON.stringify(obs.files_modified || []),
       project: session.project,
       prompt_number: session.lastPromptNumber,
-      created_at_epoch: result.createdAtEpoch
+      created_at_epoch: result.createdAtEpoch,
+      node: session.node ?? null,
+      platform: session.platform ?? null,
+      instance: session.instance ?? null
     });
   }
 
@@ -323,7 +326,10 @@ async function syncAndBroadcastSummary(
     notes: summary!.notes,
     project: session.project,
     prompt_number: session.lastPromptNumber,
-    created_at_epoch: result.createdAtEpoch
+    created_at_epoch: result.createdAtEpoch,
+    node: session.node ?? null,
+    platform: session.platform ?? null,
+    instance: session.instance ?? null
   });
 
   // Update Cursor context file for registered projects (fire-and-forget)

@@ -86,6 +86,9 @@ export interface FullSummary {
   prompt_number: number | null;
   created_at: string;
   created_at_epoch: number;
+  node: string | null;
+  platform: string | null;
+  instance: string | null;
 }
 
 /**

@@ -1599,7 +1599,10 @@ export class SessionStore {
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    node?: string,
+    platform?: string,
+    instance?: string
   ): { id: number; createdAtEpoch: number } {
     // Use override timestamp if provided (for processing backlog messages with original timestamps)
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1608,8 +1611,9 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries
       (memory_session_id, project, request, investigated, learned, completed,
-       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+       node, platform, instance)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1624,7 +1628,10 @@ export class SessionStore {
       promptNumber || null,
       discoveryTokens,
       timestampIso,
-      timestampEpoch
+      timestampEpoch,
+      node ?? null,
+      platform ?? null,
+      instance ?? null
     );
 
     return {
@@ -1735,8 +1742,9 @@ export class SessionStore {
         const summaryStmt = this.db.prepare(`
           INSERT INTO session_summaries
           (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+           node, platform, instance)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = summaryStmt.run(
@@ -1751,7 +1759,10 @@ export class SessionStore {
           promptNumber || null,
           discoveryTokens,
           timestampIso,
-          timestampEpoch
+          timestampEpoch,
+          node ?? null,
+          platform ?? null,
+          instance ?? null
         );
         summaryId = Number(result.lastInsertRowid);
       }
@@ -1871,8 +1882,9 @@ export class SessionStore {
         const summaryStmt = this.db.prepare(`
           INSERT INTO session_summaries
           (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+           node, platform, instance)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = summaryStmt.run(
@@ -1887,7 +1899,10 @@ export class SessionStore {
           promptNumber || null,
           discoveryTokens,
           timestampIso,
-          timestampEpoch
+          timestampEpoch,
+          node ?? null,
+          platform ?? null,
+          instance ?? null
         );
         summaryId = Number(result.lastInsertRowid);
       }

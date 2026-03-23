@@ -30,17 +30,6 @@ function stripProjectRoot(filePath: string): string {
   return parts.length > 3 ? parts.slice(-3).join('/') : filePath;
 }
 
-// Shorten long hostnames: "macstudio-m4max-regis" -> "m4max-regis"
-function shortenHostname(hostname: string): string {
-  if (hostname.length > 16) {
-    const parts = hostname.split('-');
-    if (parts.length >= 3) {
-      return parts.slice(-2).join('-');
-    }
-  }
-  return hostname;
-}
-
 // Return a CSS class for platform-specific coloring
 function platformColorClass(platform: string): string {
   const p = platform.toLowerCase();
@@ -146,7 +135,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
                     <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
                     <circle cx="12" cy="10" r="3" />
                   </svg>
-                  {shortenHostname(observation.node)}
+                  {observation.node}
                 </span>
               )}
               {observation.platform && (

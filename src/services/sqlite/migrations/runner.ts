@@ -35,6 +35,7 @@ export class MigrationRunner {
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
     this.addProvenanceColumns();
+    this.addSummaryProvenanceColumns();
   }
 
   /**
@@ -895,5 +896,28 @@ export class MigrationRunner {
     logger.debug('DB', 'Added provenance columns (node, platform, instance) to observations and sdk_sessions');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
+  }
+
+  /**
+   * Add provenance columns to session_summaries (migration 25)
+   * Tracks which machine/platform/instance created each summary for multi-machine networking.
+   */
+  private addSummaryProvenanceColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(25) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const summaryColumns = new Set(
+      (this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[]).map(c => c.name)
+    );
+
+    for (const col of ['node', 'platform', 'instance']) {
+      if (!summaryColumns.has(col)) {
+        this.db.run(`ALTER TABLE session_summaries ADD COLUMN ${col} TEXT`);
+      }
+    }
+
+    logger.debug('DB', 'Added provenance columns (node, platform, instance) to session_summaries');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
   }
 }

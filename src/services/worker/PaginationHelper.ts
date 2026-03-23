@@ -104,7 +104,10 @@ export class PaginationHelper {
         ss.next_steps,
         ss.project,
         ss.created_at,
-        ss.created_at_epoch
+        ss.created_at_epoch,
+        ss.node,
+        ss.platform,
+        ss.instance
       FROM session_summaries ss
       JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
     `;

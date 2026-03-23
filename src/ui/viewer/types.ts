@@ -29,6 +29,9 @@ export interface Summary {
   completed?: string;
   next_steps?: string;
   created_at_epoch: number;
+  node?: string | null;
+  platform?: string | null;
+  instance?: string | null;
 }
 
 export interface UserPrompt {

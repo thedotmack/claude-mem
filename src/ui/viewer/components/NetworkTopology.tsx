@@ -25,16 +25,6 @@ function maskToken(token: string): string {
   return token.slice(0, 4) + '\u2022'.repeat(8);
 }
 
-function shortenNodeName(name: string): string {
-  // e.g., "macstudio-m3ultra-regis" -> "m3ultra-regis"
-  if (name.length > 20) {
-    const parts = name.split('-');
-    if (parts.length >= 3) {
-      return parts.slice(-2).join('-');
-    }
-  }
-  return name;
-}
 
 export function NetworkTopology({ mode, health, clients, authToken }: NetworkTopologyProps) {
   if (mode === 'server') {
@@ -68,7 +58,7 @@ export function NetworkTopology({ mode, health, clients, authToken }: NetworkTop
             {clients.map((client) => (
               <div key={client.node} className="topology-client-chip">
                 <span className="topology-client-dot" />
-                <span className="topology-client-name">{shortenNodeName(client.node)}</span>
+                <span className="topology-client-name">{client.node}</span>
                 <span className="topology-client-stats">
                   {client.requestCount} req{client.requestCount !== 1 ? 's' : ''}
                 </span>
@@ -79,7 +69,7 @@ export function NetworkTopology({ mode, health, clients, authToken }: NetworkTop
         )}
 
         {clients.length === 0 && (
-          <div className="topology-empty">No client nodes connected</div>
+          <div className="topology-empty">No client nodes connected recently</div>
         )}
       </div>
     );
