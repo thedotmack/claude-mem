@@ -33,12 +33,6 @@ export class SessionEventBroadcaster {
       prompt
     });
 
-    // Start activity indicator (work is about to begin)
-    this.sseBroadcaster.broadcast({
-      type: 'processing_status',
-      isProcessing: true
-    });
-
     // Update processing status based on queue depth
     this.workerService.broadcastProcessingStatus();
   }

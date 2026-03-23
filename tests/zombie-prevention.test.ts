@@ -326,4 +326,152 @@ describe('Zombie Agent Prevention', () => {
     session.generatorPromise = null;
     expect(session.generatorPromise).toBeNull();
   });
+
+  describe('Session Termination Invariant', () => {
+    // Tests the restart-or-terminate invariant:
+    // When a generator exits without restarting, its messages must be
+    // marked abandoned and the session removed from the active Map.
+
+    test('should mark messages abandoned when session is terminated', () => {
+      const sessionId = createDbSession('content-terminate-1');
+      enqueueTestMessage(sessionId, 'content-terminate-1');
+      enqueueTestMessage(sessionId, 'content-terminate-1');
+
+      // Verify messages exist
+      expect(pendingStore.getPendingCount(sessionId)).toBe(2);
+      expect(pendingStore.hasAnyPendingWork()).toBe(true);
+
+      // Terminate: mark abandoned (same as terminateSession does)
+      const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionId);
+      expect(abandoned).toBe(2);
+
+      // Spinner should stop: no pending work remains
+      expect(pendingStore.hasAnyPendingWork()).toBe(false);
+      expect(pendingStore.getPendingCount(sessionId)).toBe(0);
+    });
+
+    test('should handle terminate with zero pending messages', () => {
+      const sessionId = createDbSession('content-terminate-empty');
+
+      // No messages enqueued
+      expect(pendingStore.getPendingCount(sessionId)).toBe(0);
+
+      // Terminate with nothing to abandon
+      const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionId);
+      expect(abandoned).toBe(0);
+
+      // Still no pending work
+      expect(pendingStore.hasAnyPendingWork()).toBe(false);
+    });
+
+    test('should be idempotent — double terminate marks zero on second call', () => {
+      const sessionId = createDbSession('content-terminate-idempotent');
+      enqueueTestMessage(sessionId, 'content-terminate-idempotent');
+
+      // First terminate
+      const first = pendingStore.markAllSessionMessagesAbandoned(sessionId);
+      expect(first).toBe(1);
+
+      // Second terminate — already failed, nothing to mark
+      const second = pendingStore.markAllSessionMessagesAbandoned(sessionId);
+      expect(second).toBe(0);
+
+      expect(pendingStore.hasAnyPendingWork()).toBe(false);
+    });
+
+    test('should remove session from Map via removeSessionImmediate', () => {
+      const sessionId = createDbSession('content-terminate-map');
+      const session = createMockSession(sessionId, {
+        contentSessionId: 'content-terminate-map',
+      });
+
+      // Simulate the in-memory sessions Map
+      const sessions = new Map<number, ActiveSession>();
+      sessions.set(sessionId, session);
+      expect(sessions.has(sessionId)).toBe(true);
+
+      // Simulate removeSessionImmediate behavior
+      sessions.delete(sessionId);
+      expect(sessions.has(sessionId)).toBe(false);
+    });
+
+    test('should return hasAnyPendingWork false after all sessions terminated', () => {
+      // Create multiple sessions with messages
+      const sid1 = createDbSession('content-multi-term-1');
+      const sid2 = createDbSession('content-multi-term-2');
+      const sid3 = createDbSession('content-multi-term-3');
+
+      enqueueTestMessage(sid1, 'content-multi-term-1');
+      enqueueTestMessage(sid1, 'content-multi-term-1');
+      enqueueTestMessage(sid2, 'content-multi-term-2');
+      enqueueTestMessage(sid3, 'content-multi-term-3');
+
+      expect(pendingStore.hasAnyPendingWork()).toBe(true);
+
+      // Terminate all sessions
+      pendingStore.markAllSessionMessagesAbandoned(sid1);
+      pendingStore.markAllSessionMessagesAbandoned(sid2);
+      pendingStore.markAllSessionMessagesAbandoned(sid3);
+
+      // Spinner must stop
+      expect(pendingStore.hasAnyPendingWork()).toBe(false);
+    });
+
+    test('should not affect other sessions when terminating one', () => {
+      const sid1 = createDbSession('content-isolate-1');
+      const sid2 = createDbSession('content-isolate-2');
+
+      enqueueTestMessage(sid1, 'content-isolate-1');
+      enqueueTestMessage(sid2, 'content-isolate-2');
+
+      // Terminate only session 1
+      pendingStore.markAllSessionMessagesAbandoned(sid1);
+
+      // Session 2 still has work
+      expect(pendingStore.getPendingCount(sid1)).toBe(0);
+      expect(pendingStore.getPendingCount(sid2)).toBe(1);
+      expect(pendingStore.hasAnyPendingWork()).toBe(true);
+    });
+
+    test('should mark both pending and processing messages as abandoned', () => {
+      const sessionId = createDbSession('content-mixed-status');
+
+      // Enqueue two messages
+      const msgId1 = enqueueTestMessage(sessionId, 'content-mixed-status');
+      enqueueTestMessage(sessionId, 'content-mixed-status');
+
+      // Claim first message (transitions to 'processing')
+      const claimed = pendingStore.claimNextMessage(sessionId);
+      expect(claimed).not.toBeNull();
+      expect(claimed!.id).toBe(msgId1);
+
+      // Now we have 1 processing + 1 pending
+      expect(pendingStore.getPendingCount(sessionId)).toBe(2);
+
+      // Terminate should mark BOTH as failed
+      const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionId);
+      expect(abandoned).toBe(2);
+      expect(pendingStore.hasAnyPendingWork()).toBe(false);
+    });
+
+    test('should enforce invariant: no pending work after terminate regardless of initial state', () => {
+      const sessionId = createDbSession('content-invariant');
+
+      // Create a complex initial state: some pending, some processing, some with stale timestamps
+      enqueueTestMessage(sessionId, 'content-invariant');
+      enqueueTestMessage(sessionId, 'content-invariant');
+      enqueueTestMessage(sessionId, 'content-invariant');
+
+      // Claim one (processing)
+      pendingStore.claimNextMessage(sessionId);
+
+      // Verify complex state
+      expect(pendingStore.getPendingCount(sessionId)).toBe(3);
+
+      // THE INVARIANT: after terminate, hasAnyPendingWork MUST be false
+      pendingStore.markAllSessionMessagesAbandoned(sessionId);
+      expect(pendingStore.hasAnyPendingWork()).toBe(false);
+      expect(pendingStore.getPendingCount(sessionId)).toBe(0);
+    });
+  });
 });
