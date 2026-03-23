@@ -52,6 +52,7 @@ export class SessionStore {
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
     this.addObservationProvenanceColumns();
+    this.addSummaryProvenanceColumns();
   }
 
   /**
@@ -894,6 +895,26 @@ export class SessionStore {
     logger.debug('DB', 'Added node, platform, instance columns to observations table');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
+  }
+
+  /**
+   * Add node, platform, instance columns to session_summaries for multi-machine provenance (migration 25)
+   */
+  private addSummaryProvenanceColumns(): void {
+    const tableInfo = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
+    const hasNode = tableInfo.some(col => col.name === 'node');
+
+    if (hasNode) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
+      return;
+    }
+
+    this.db.run('ALTER TABLE session_summaries ADD COLUMN node TEXT');
+    this.db.run('ALTER TABLE session_summaries ADD COLUMN platform TEXT');
+    this.db.run('ALTER TABLE session_summaries ADD COLUMN instance TEXT');
+    logger.debug('DB', 'Added node, platform, instance columns to session_summaries table');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
   }
 
   /**
