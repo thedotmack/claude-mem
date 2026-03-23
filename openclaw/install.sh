@@ -80,17 +80,18 @@ setup_tty() {
   if [[ -t 0 ]]; then
     # stdin IS a terminal — use it directly
     TTY_FD=0
-  elif [[ -e /dev/tty ]]; then
-    # stdin is piped (curl | bash) but /dev/tty is available
+  elif [[ "$NON_INTERACTIVE" == "true" ]]; then
+    # In non-interactive mode, do not require /dev/tty
+    TTY_FD=0
+  elif [[ -r /dev/tty ]]; then
+    # stdin is piped (curl | bash) but /dev/tty is available and readable
     exec 3</dev/tty
     TTY_FD=3
   else
     # No terminal available at all
-    if [[ "$NON_INTERACTIVE" != "true" ]]; then
-      echo "Error: No terminal available for interactive prompts." >&2
-      echo "Use --non-interactive or run directly: bash install.sh" >&2
-      exit 1
-    fi
+    echo "Error: No terminal available for interactive prompts." >&2
+    echo "Use --non-interactive or run directly: bash install.sh" >&2
+    exit 1
   fi
 }
 
@@ -787,11 +788,16 @@ install_plugin() {
       const configPath = process.env.INSTALLER_CONFIG_FILE;
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       const entry = config?.plugins?.entries?.['claude-mem'];
-      if (entry || config?.plugins?.slots?.memory === 'claude-mem') {
+      const allowHasClaudeMem = Array.isArray(config?.plugins?.allow) && config.plugins.allow.includes('claude-mem');
+      if (entry || config?.plugins?.slots?.memory === 'claude-mem' || allowHasClaudeMem) {
         // Save the config block so we can restore it after install
         process.stdout.write(JSON.stringify(entry?.config || {}));
         // Remove the stale entry so OpenClaw CLI can run
         if (entry) delete config.plugins.entries['claude-mem'];
+        // Also remove stale allowlist reference — this alone can block ALL CLI commands
+        if (Array.isArray(config?.plugins?.allow)) {
+          config.plugins.allow = config.plugins.allow.filter((x) => x !== 'claude-mem');
+        }
         // Also remove the slot reference — if the slot points to a plugin
         // that isn't in entries, OpenClaw's config validator rejects ALL commands
         if (config?.plugins?.slots?.memory === 'claude-mem') {
@@ -816,6 +822,22 @@ install_plugin() {
     error "Failed to enable claude-mem plugin"
     error "Try manually: ${OPENCLAW_PATH} plugins enable claude-mem"
     exit 1
+  fi
+
+  # Ensure claude-mem is present in plugins.allow after successful install+enable.
+  # Some OpenClaw environments require explicit allowlisting for local plugins.
+  if [[ -f "$oc_config" ]]; then
+    INSTALLER_CONFIG_FILE="$oc_config" node -e "
+      const fs = require('fs');
+      const configPath = process.env.INSTALLER_CONFIG_FILE;
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (!config.plugins) config.plugins = {};
+      if (!Array.isArray(config.plugins.allow)) config.plugins.allow = [];
+      if (!config.plugins.allow.includes('claude-mem')) {
+        config.plugins.allow.push('claude-mem');
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      }
+    " 2>/dev/null || true
   fi
 
   # Restore saved plugin config (workerPort, syncMemoryFile, observationFeed, etc.)
