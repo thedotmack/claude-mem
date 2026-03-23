@@ -77,6 +77,24 @@ export class ProxyServer {
   }
 
   private async handleRequest(req: express.Request, res: express.Response): Promise<void> {
+    // Health/readiness endpoints must always respond locally so ensureWorkerRunning()
+    // sees the proxy as healthy regardless of whether the remote server is reachable.
+    if (req.method === 'GET' && req.path === '/api/health') {
+      res.status(200).json({
+        status: 'ok',
+        mode: 'client',
+        proxy: true,
+        serverReachable: this.serverReachable,
+        serverHost: this.serverHost,
+        pendingBuffer: this.buffer.pendingCount(),
+      });
+      return;
+    }
+    if (req.method === 'GET' && req.path === '/api/readiness') {
+      res.status(200).json({ status: 'ready', proxy: true });
+      return;
+    }
+
     const queryString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
     const targetUrl = `http://${this.serverHost}:${this.serverPort}${req.path}${queryString}`;
 

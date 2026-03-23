@@ -91,6 +91,13 @@ export class Server {
     this.app = express();
     this.setupMiddleware();
     this.setupCoreRoutes();
+
+    // Periodically evict clients that have stopped sending requests.
+    // 60 s interval matches the proxy health-check cadence so a dead client
+    // is detected within ~2 intervals (~2 min worst case).
+    setInterval(() => {
+      this.registry.checkDisconnected(60_000);
+    }, 60_000).unref();
   }
 
   /**

@@ -74,7 +74,7 @@ export class PaginationHelper {
   getObservations(offset: number, limit: number, project?: string): PaginatedResult<Observation> {
     const result = this.paginate<Observation>(
       'observations',
-      'id, memory_session_id, project, type, title, subtitle, narrative, text, facts, concepts, files_read, files_modified, prompt_number, created_at, created_at_epoch',
+      'id, memory_session_id, project, type, title, subtitle, narrative, text, facts, concepts, files_read, files_modified, prompt_number, created_at, created_at_epoch, node, platform, instance',
       offset,
       limit,
       project

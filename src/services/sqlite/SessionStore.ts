@@ -51,6 +51,7 @@ export class SessionStore {
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
+    this.addObservationProvenanceColumns();
   }
 
   /**
@@ -873,6 +874,26 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
+  }
+
+  /**
+   * Add node, platform, instance columns to observations for multi-machine provenance (migration 24)
+   */
+  private addObservationProvenanceColumns(): void {
+    const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasNode = tableInfo.some(col => col.name === 'node');
+
+    if (hasNode) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
+      return;
+    }
+
+    this.db.run('ALTER TABLE observations ADD COLUMN node TEXT');
+    this.db.run('ALTER TABLE observations ADD COLUMN platform TEXT');
+    this.db.run('ALTER TABLE observations ADD COLUMN instance TEXT');
+    logger.debug('DB', 'Added node, platform, instance columns to observations table');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
   }
 
   /**

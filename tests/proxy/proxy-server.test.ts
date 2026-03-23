@@ -90,19 +90,34 @@ describe('ProxyServer', () => {
       mockPort = mock.port;
       mockApp = mock.app;
 
-      mockApp.get('/api/health', (_req, res) => {
+      mockApp.get('/api/status', (_req, res) => {
         res.status(200).json({ status: 'ok', uptime: 12345 });
       });
 
       proxy = new ProxyServer('127.0.0.1', mockPort, 'test-token', tmpDir);
       await proxy.start(proxyPort);
 
-      const response = await fetch(`http://127.0.0.1:${proxyPort}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${proxyPort}/api/status`);
       expect(response.status).toBe(200);
 
       const body = await response.json();
       expect(body.status).toBe('ok');
       expect(body.uptime).toBe(12345);
+    });
+
+    it('GET /api/health should always return 200 locally (proxy-handled)', async () => {
+      // /api/health is intercepted by the proxy and always returns 200 locally
+      // so ensureWorkerRunning() stays happy even when the remote server is down.
+      const deadPort = randomPort() + 100;
+      proxy = new ProxyServer('127.0.0.1', deadPort, 'test-token', tmpDir);
+      await proxy.start(proxyPort);
+
+      const response = await fetch(`http://127.0.0.1:${proxyPort}/api/health`);
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.status).toBe('ok');
+      expect(body.mode).toBe('client');
+      expect(body.proxy).toBe(true);
     });
 
     it('should forward GET with query string', async () => {
@@ -243,12 +258,13 @@ describe('ProxyServer', () => {
   });
 
   describe('server down — GET returns 503', () => {
-    it('should return 503 when server is unreachable for GET', async () => {
+    it('should return 503 when server is unreachable for non-health GET', async () => {
       const deadPort = randomPort() + 100;
       proxy = new ProxyServer('127.0.0.1', deadPort, 'test-token', tmpDir);
       await proxy.start(proxyPort);
 
-      const response = await fetch(`http://127.0.0.1:${proxyPort}/api/health`);
+      // /api/observations is a regular GET — not intercepted — should 503 when server down
+      const response = await fetch(`http://127.0.0.1:${proxyPort}/api/observations`);
 
       expect(response.status).toBe(503);
       const body = await response.json();
@@ -258,13 +274,14 @@ describe('ProxyServer', () => {
   });
 
   describe('serverReachable state', () => {
-    it('should report server as reachable after successful forward', async () => {
+    it('should report server as reachable after successful forwarded request', async () => {
       const mock = await createMockServer();
       mockServer = mock.server;
       mockPort = mock.port;
       mockApp = mock.app;
 
-      mockApp.get('/api/health', (_req, res) => {
+      // Use a regular (non-intercepted) endpoint to verify forwarding updates serverReachable
+      mockApp.get('/api/status', (_req, res) => {
         res.status(200).json({ status: 'ok' });
       });
 
@@ -274,8 +291,8 @@ describe('ProxyServer', () => {
       // Initially not marked reachable (no requests yet)
       expect(proxy.isServerReachable()).toBe(false);
 
-      // Make a request
-      await fetch(`http://127.0.0.1:${proxyPort}/api/health`);
+      // Make a request to a non-intercepted endpoint
+      await fetch(`http://127.0.0.1:${proxyPort}/api/status`);
 
       expect(proxy.isServerReachable()).toBe(true);
     });

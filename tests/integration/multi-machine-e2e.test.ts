@@ -320,8 +320,8 @@ describe('Multi-machine E2E', () => {
         body: JSON.stringify({ data: 'test' }),
       });
 
-      // GET through proxy
-      await fetch(`http://127.0.0.1:${proxyPort}/api/health`);
+      // GET through proxy (use /api/version — not a proxy-intercepted endpoint)
+      await fetch(`http://127.0.0.1:${proxyPort}/api/version`);
 
       // Both requests should have received the Bearer token injected by the proxy
       expect(receivedAuthHeaders.length).toBe(2);
@@ -350,7 +350,8 @@ describe('Multi-machine E2E', () => {
       });
       await proxy.start(proxyPort);
 
-      await fetch(`http://127.0.0.1:${proxyPort}/api/health`);
+      // Use /api/version (non-intercepted GET) + POST to verify node header forwarding
+      await fetch(`http://127.0.0.1:${proxyPort}/api/version`);
       await fetch(`http://127.0.0.1:${proxyPort}/api/sessions/observations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
