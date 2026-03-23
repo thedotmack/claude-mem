@@ -15,7 +15,7 @@ import * as fs from 'fs';
 import path from 'path';
 import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
-import { createMiddleware, summarizeRequestBody, requireLocalhost } from './Middleware.js';
+import { createMiddleware, createAuthMiddleware, summarizeRequestBody, requireLocalhost } from './Middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
@@ -23,6 +23,9 @@ import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.
 import { clientRegistry as defaultClientRegistry } from './ClientRegistry.js';
 import type { ClientRegistry } from './ClientRegistry.js';
 import { getNetworkMode, getNodeName } from '../../shared/node-identity.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import path from 'path';
+import { homedir } from 'os';
 
 // Build-time injected version constant (set by esbuild define)
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -163,6 +166,20 @@ export class Server {
    * Setup Express middleware
    */
   private setupMiddleware(): void {
+    // Auth middleware: validates Bearer token for non-localhost requests.
+    // Token is read lazily per-request so that auto-generated tokens (server mode)
+    // are picked up without restarting the server.
+    const authMiddleware = createAuthMiddleware(() => {
+      try {
+        const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+        const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+        return settings.CLAUDE_MEM_AUTH_TOKEN ?? '';
+      } catch {
+        return '';
+      }
+    });
+    this.app.use(authMiddleware);
+
     const middlewares = createMiddleware(summarizeRequestBody, this.registry);
     middlewares.forEach(mw => this.app.use(mw));
   }

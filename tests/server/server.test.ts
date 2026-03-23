@@ -1,12 +1,17 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import { logger } from '../../src/utils/logger.js';
 
-// Mock middleware to avoid complex dependencies
-mock.module('../../src/services/worker/http/middleware.js', () => ({
+// Mock middleware to avoid complex dependencies (express not installed in test env)
+const noopMiddleware = (_req: any, _res: any, next: any) => next();
+const middlewareMock = {
   createMiddleware: () => [],
-  requireLocalhost: (_req: any, _res: any, next: any) => next(),
+  createAuthMiddleware: () => noopMiddleware,
+  createClientTrackingMiddleware: () => noopMiddleware,
+  requireLocalhost: noopMiddleware,
   summarizeRequestBody: () => 'test body',
-}));
+};
+mock.module('../../src/services/worker/http/middleware.js', () => middlewareMock);
+mock.module('../../src/services/server/Middleware.js', () => middlewareMock);
 
 // Import after mocks
 import { Server } from '../../src/services/server/Server.js';

@@ -18,6 +18,9 @@ import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
+import { getNetworkMode } from '../shared/node-identity.js';
+import { ensureServerModeReady } from './infrastructure/ServerModeSetup.js';
+export { ensureServerModeReady } from './infrastructure/ServerModeSetup.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
@@ -1089,6 +1092,17 @@ async function main() {
 
   switch (command) {
     case 'start': {
+      // Server mode: auto-provision token, bind address, and launchd before starting worker
+      const networkMode = getNetworkMode();
+      if (networkMode === 'server') {
+        try {
+          await ensureServerModeReady();
+        } catch (error) {
+          logger.error('SYSTEM', 'Server mode setup failed', {}, error as Error);
+          exitWithStatus('error', `Server mode setup failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+
       const success = await ensureWorkerStarted(port);
       if (success) {
         exitWithStatus('ready');
