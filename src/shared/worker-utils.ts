@@ -255,6 +255,9 @@ export async function bufferedPostRequest(
     // Buffer the request for later replay when proxy/server recovers
     const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
     const buffer = new OfflineBuffer(dataDir);
+    const settingsPath = path.join(dataDir, 'settings.json');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    const authToken = settings.CLAUDE_MEM_AUTH_TOKEN;
     buffer.append({
       ts: new Date().toISOString(),
       method: 'POST',
@@ -264,6 +267,7 @@ export async function bufferedPostRequest(
       headers: {
         ...headers,
         'X-Claude-Mem-Node': getNodeName(),
+        ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {}),
       }
     });
 

@@ -12,11 +12,11 @@
 
 import path from 'path';
 import { readFileSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
 import { randomBytes } from 'crypto';
 import { logger } from '../../utils/logger.js';
 import { clearPortCache, getWorkerPort } from '../../shared/worker-utils.js';
 import { ensureLaunchdService } from './LaunchdManager.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 
 /**
  * Prepare settings for server mode:
@@ -33,7 +33,7 @@ export async function ensureServerModeReady(
   settingsPath?: string,
   workerScript?: string
 ): Promise<void> {
-  const resolvedPath = settingsPath ?? path.join(homedir(), '.claude-mem', 'settings.json');
+  const resolvedPath = settingsPath ?? path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
   const raw = readFileSync(resolvedPath, 'utf-8');
   const settings = JSON.parse(raw);
   let changed = false;
@@ -72,7 +72,7 @@ export async function ensureServerModeReady(
       executablePath: process.execPath,
       scriptPath,
       port: getWorkerPort(),
-      dataDir: path.join(homedir(), '.claude-mem')
+      dataDir: SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR')
     });
   }
 }

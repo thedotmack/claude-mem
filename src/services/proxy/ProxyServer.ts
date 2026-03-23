@@ -140,7 +140,14 @@ export class ProxyServer {
   private startHealthCheck(): void {
     this.healthCheckInterval = setInterval(async () => {
       try {
-        const resp = await fetch(`http://${this.serverHost}:${this.serverPort}/api/health`);
+        const headers: Record<string, string> = {};
+        if (this.authToken) {
+          headers['Authorization'] = `Bearer ${this.authToken}`;
+        }
+        const resp = await fetch(
+          `http://${this.serverHost}:${this.serverPort}/api/health`,
+          { headers }
+        );
         const wasUnreachable = !this.serverReachable;
         this.serverReachable = resp.ok;
 
@@ -157,13 +164,17 @@ export class ProxyServer {
   private async replayBuffer(): Promise<void> {
     const result = await this.buffer.replay(async (entry) => {
       try {
+        const replayHeaders: Record<string, string> = {
+          'Content-Type': 'application/json',
+          ...(entry.headers || {}),
+          'X-Claude-Mem-Replayed': 'true',
+        };
+        if (this.authToken && !replayHeaders['Authorization']) {
+          replayHeaders['Authorization'] = `Bearer ${this.authToken}`;
+        }
         const resp = await fetch(`http://${this.serverHost}:${this.serverPort}${entry.path}`, {
           method: entry.method,
-          headers: {
-            'Content-Type': 'application/json',
-            ...(entry.headers || {}),
-            'X-Claude-Mem-Replayed': 'true',
-          },
+          headers: replayHeaders,
           body: JSON.stringify(entry.body),
         });
         return resp.ok; // Only 2xx is success. 4xx and 5xx both stop replay.
