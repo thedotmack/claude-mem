@@ -20,6 +20,9 @@ import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
 import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.js';
+import { clientRegistry as defaultClientRegistry } from './ClientRegistry.js';
+import type { ClientRegistry } from './ClientRegistry.js';
+import { getNetworkMode, getNodeName } from '../../shared/node-identity.js';
 
 // Build-time injected version constant (set by esbuild define)
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -63,6 +66,11 @@ export interface ServerOptions {
   workerPath: string;
   /** Callback to get current AI provider status */
   getAiStatus: () => AiStatus;
+  /**
+   * Registry for tracking connected client machines.
+   * Defaults to the process-wide singleton when not provided.
+   */
+  clientRegistry?: ClientRegistry;
 }
 
 /**
@@ -74,9 +82,11 @@ export class Server {
   private server: http.Server | null = null;
   private readonly options: ServerOptions;
   private readonly startTime: number = Date.now();
+  private readonly registry: ClientRegistry;
 
   constructor(options: ServerOptions) {
     this.options = options;
+    this.registry = options.clientRegistry ?? defaultClientRegistry;
     this.app = express();
     this.setupMiddleware();
     this.setupCoreRoutes();
@@ -153,7 +163,7 @@ export class Server {
    * Setup Express middleware
    */
   private setupMiddleware(): void {
-    const middlewares = createMiddleware(summarizeRequestBody);
+    const middlewares = createMiddleware(summarizeRequestBody, this.registry);
     middlewares.forEach(mw => this.app.use(mw));
   }
 
@@ -175,6 +185,19 @@ export class Server {
         initialized: this.options.getInitializationComplete(),
         mcpReady: this.options.getMcpReady(),
         ai: this.options.getAiStatus(),
+        // Multi-machine awareness fields
+        mode: getNetworkMode(),
+        node: getNodeName(),
+        connectedClients: this.registry.getClientCount(),
+      });
+    });
+
+    // Connected clients endpoint — list machines that have recently called this server
+    this.app.get('/api/clients', (_req: Request, res: Response) => {
+      res.status(200).json({
+        clients: this.registry.getClients(),
+        mode: getNetworkMode(),
+        uptime: Date.now() - this.startTime,
       });
     });
 

@@ -9,6 +9,7 @@
 // Re-export all middleware from the existing location
 export {
   createMiddleware,
+  createClientTrackingMiddleware,
   requireLocalhost,
   createAuthMiddleware,
   summarizeRequestBody

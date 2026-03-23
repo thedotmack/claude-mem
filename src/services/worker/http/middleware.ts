@@ -10,20 +10,46 @@ import cors from 'cors';
 import path from 'path';
 import { getPackageRoot } from '../../../shared/paths.js';
 import { logger } from '../../../utils/logger.js';
+import type { ClientRegistry } from '../../server/ClientRegistry.js';
 export { createAuthMiddleware } from './auth-middleware.js';
+
+/**
+ * Create client-tracking middleware that records the calling machine via
+ * the x-claude-mem-node header.  A no-op when the header is absent (e.g.
+ * direct localhost requests from hooks).
+ */
+export function createClientTrackingMiddleware(registry: ClientRegistry): RequestHandler {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    const node = req.headers['x-claude-mem-node'] as string | undefined;
+    if (node) {
+      const ip = req.ip || req.socket?.remoteAddress || '';
+      const mode = req.headers['x-claude-mem-mode'] as string | undefined;
+      const instance = req.headers['x-claude-mem-instance'] as string | undefined;
+      registry.touch(node, ip, mode, instance);
+    }
+    next();
+  };
+}
 
 /**
  * Create all middleware for the worker service
  * @param summarizeRequestBody - Function to summarize request bodies for logging
+ * @param clientRegistry - Optional ClientRegistry for tracking remote clients
  * @returns Array of middleware functions
  */
 export function createMiddleware(
-  summarizeRequestBody: (method: string, path: string, body: any) => string
+  summarizeRequestBody: (method: string, path: string, body: any) => string,
+  clientRegistry?: ClientRegistry
 ): RequestHandler[] {
   const middlewares: RequestHandler[] = [];
 
   // JSON parsing with 50mb limit
   middlewares.push(express.json({ limit: '50mb' }));
+
+  // Client tracking — record x-claude-mem-node header when present
+  if (clientRegistry) {
+    middlewares.push(createClientTrackingMiddleware(clientRegistry));
+  }
 
   // CORS - restrict to localhost origins only
   middlewares.push(cors({
