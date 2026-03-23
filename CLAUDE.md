@@ -37,6 +37,39 @@ npm run build-and-sync        # Build, sync to marketplace, restart worker
 
 Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
 
+## Multi-Machine Network Mode
+
+claude-mem supports sharing a single instance across multiple machines via three network modes.
+
+### Modes
+
+| Mode | Behavior |
+|------|----------|
+| `standalone` | Default. Single-machine operation. No changes from standard behavior. |
+| `server` | Accepts remote connections from client machines. Auto-configures launchd on macOS for headless operation. |
+| `client` | Runs a local HTTP proxy that forwards requests to a remote server. Includes offline buffering for resilience. |
+
+### Configuration
+
+Settings in `~/.claude-mem/settings.json`:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_NETWORK_MODE` | `standalone` | Network mode |
+| `CLAUDE_MEM_SERVER_HOST` | `""` | Server hostname (required for client mode) |
+| `CLAUDE_MEM_SERVER_PORT` | `37777` | Server port |
+| `CLAUDE_MEM_NODE_NAME` | `""` | Machine identity override (fallback: `os.hostname()`) |
+| `CLAUDE_MEM_INSTANCE_NAME` | `""` | Instance identity for multi-instance setups |
+| `CLAUDE_MEM_AUTH_TOKEN` | `""` | Bearer token for remote auth (auto-generated in server mode) |
+
+### Security
+
+All non-localhost requests require Bearer token authentication regardless of mode. This protects against unauthorized access when the worker binds to `0.0.0.0`.
+
+### Provenance
+
+Observations track `node` (machine), `platform` (tool), and `instance` (specific agent) for full provenance in multi-machine setups.
+
 ## File Locations
 
 - **Source**: `<project-root>/src/`
