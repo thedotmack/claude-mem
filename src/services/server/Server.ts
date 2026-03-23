@@ -24,7 +24,6 @@ import { clientRegistry as defaultClientRegistry } from './ClientRegistry.js';
 import type { ClientRegistry } from './ClientRegistry.js';
 import { getNetworkMode, getNodeName } from '../../shared/node-identity.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { homedir } from 'os';
 
 // Build-time injected version constant (set by esbuild define)
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -170,7 +169,7 @@ export class Server {
     // are picked up without restarting the server.
     const authMiddleware = createAuthMiddleware(() => {
       try {
-        const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+        const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
         const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
         return settings.CLAUDE_MEM_AUTH_TOKEN ?? '';
       } catch (error) {

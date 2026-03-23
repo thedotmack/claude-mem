@@ -72,10 +72,14 @@ export class OfflineBuffer {
         replayed++;
       }
 
-      // Atomic rewrite: keep only unreplayed entries
-      const remaining = entries.slice(replayed);
+      // Atomic rewrite: keep unreplayed entries + any entries appended during replay.
+      // Re-read the file to capture appends that arrived while we were replaying.
+      const currentEntries = this.readAll();
+      // The first `entries.length` lines are the ones we started with.
+      // We replayed `replayed` of them. Keep the rest + anything appended after.
+      const remaining = currentEntries.slice(replayed);
       if (remaining.length === 0) {
-        // All replayed — delete buffer
+        // All replayed, no new appends — delete buffer
         try { unlinkSync(this.bufferPath); } catch {}
       } else {
         // Atomic: write temp -> rename

@@ -35,9 +35,9 @@ export class ProxyServer {
   ) {
     if (typeof hostOrOptions === 'string') {
       this.serverHost = hostOrOptions;
-      this.serverPort = serverPort!;
-      this.authToken = authToken!;
-      this.buffer = new OfflineBuffer(dataDir!);
+      this.serverPort = serverPort ?? 37777;
+      this.authToken = authToken ?? '';
+      this.buffer = new OfflineBuffer(dataDir ?? '');
       this.healthCheckIntervalMs = 10_000;
     } else {
       this.serverHost = hostOrOptions.serverHost;
