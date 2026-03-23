@@ -873,19 +873,26 @@ export class MigrationRunner {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
     if (applied) return;
 
-    const obsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    const hasNode = obsInfo.some((c: TableColumnInfo) => c.name === 'node');
+    // Check each table independently — after corruption/repair, one table may
+    // already have the columns while the other doesn't.
+    const obsColumns = new Set(
+      (this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[]).map(c => c.name)
+    );
+    const sdkColumns = new Set(
+      (this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[]).map(c => c.name)
+    );
 
-    if (!hasNode) {
-      this.db.run('ALTER TABLE observations ADD COLUMN node TEXT');
-      this.db.run('ALTER TABLE observations ADD COLUMN platform TEXT');
-      this.db.run('ALTER TABLE observations ADD COLUMN instance TEXT');
-      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN node TEXT');
-      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN platform TEXT');
-      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN instance TEXT');
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_node ON observations(node)');
-      logger.debug('DB', 'Added provenance columns (node, platform, instance) to observations and sdk_sessions');
+    for (const col of ['node', 'platform', 'instance']) {
+      if (!obsColumns.has(col)) {
+        this.db.run(`ALTER TABLE observations ADD COLUMN ${col} TEXT`);
+      }
+      if (!sdkColumns.has(col)) {
+        this.db.run(`ALTER TABLE sdk_sessions ADD COLUMN ${col} TEXT`);
+      }
     }
+
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_node ON observations(node)');
+    logger.debug('DB', 'Added provenance columns (node, platform, instance) to observations and sdk_sessions');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
   }
