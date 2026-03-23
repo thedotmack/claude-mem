@@ -2,8 +2,9 @@ import { Database } from './sqlite-compat.js';
 import type { PendingMessage } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
-/** Messages processing longer than this are considered stale and reset to pending by self-healing */
-const STALE_PROCESSING_THRESHOLD_MS = 60_000;
+/** Messages processing longer than this are considered stale and reset to pending by self-healing.
+ *  Must exceed the longest expected batch duration (batch of 8 can take ~2-3 min with local LLMs). */
+const STALE_PROCESSING_THRESHOLD_MS = 300_000;
 
 /**
  * Persistent pending message record from database

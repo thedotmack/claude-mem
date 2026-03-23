@@ -30,6 +30,16 @@ import {
 
 // Default OpenRouter API endpoint (overridable via CLAUDE_MEM_OPENROUTER_BASE_URL for local LLMs like Ollama)
 
+/** Check if a base URL points to a local LLM (Ollama, LM Studio, etc.) by parsed hostname */
+function isLocalEndpoint(baseUrl: string): boolean {
+  try {
+    const { hostname } = new URL(baseUrl);
+    return hostname === 'localhost' || hostname === '127.0.0.1';
+  } catch {
+    return false;
+  }
+}
+
 // Context window management constants (defaults, overridable via settings)
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  // Maximum messages to keep in conversation history
 const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  // ~100k tokens max context (safety limit)
@@ -88,8 +98,7 @@ export class OpenRouterAgent {
       const { apiKey, baseUrl, model, siteUrl, appName } = this.getOpenRouterConfig();
 
       // API key is required for remote endpoints, optional for local LLMs
-      const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
-      if (!apiKey && !isLocal) {
+      if (!apiKey && !isLocalEndpoint(baseUrl)) {
         throw new Error('OpenRouter API key not configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
       }
 
@@ -159,7 +168,7 @@ export class OpenRouterAgent {
           const additional = pendingStore.claimBatch(session.sessionDbId, batchSize - 1);
           for (const pm of additional) {
             const msg = pendingStore.toPendingMessage(pm);
-            batchMessages.push({ ...msg, _persistentId: pm.id } as PendingMessageWithId);
+            batchMessages.push({ ...msg, _persistentId: pm.id, _createdAtEpoch: pm.created_at_epoch } as PendingMessageWithId);
           }
         }
 
@@ -171,6 +180,7 @@ export class OpenRouterAgent {
           historySnapshot: ConversationMessage[];
           prompt: string;
           originalTimestamp: number | null;
+          cwd: string | undefined;
           promptType: 'observation' | 'summarize';
         }
 
@@ -179,7 +189,9 @@ export class OpenRouterAgent {
           if (message.cwd) {
             lastCwd = message.cwd;
           }
-          const originalTimestamp = session.earliestPendingTimestamp;
+          const itemCwd = message.cwd || lastCwd;
+          // Use per-message created_at_epoch when available (from claimBatch), fall back to session timestamp
+          const originalTimestamp = (message as any)._createdAtEpoch ?? session.earliestPendingTimestamp;
 
           if (message.type === 'observation') {
             if (message.prompt_number !== undefined) {
@@ -200,7 +212,7 @@ export class OpenRouterAgent {
 
             // Snapshot history + this prompt for independent LLM call
             const historySnapshot = [...session.conversationHistory, { role: 'user' as const, content: obsPrompt }];
-            batchItems.push({ message, historySnapshot, prompt: obsPrompt, originalTimestamp, promptType: 'observation' });
+            batchItems.push({ message, historySnapshot, prompt: obsPrompt, originalTimestamp, cwd: itemCwd, promptType: 'observation' });
 
           } else if (message.type === 'summarize') {
             if (!session.memorySessionId) {
@@ -216,7 +228,7 @@ export class OpenRouterAgent {
             }, mode);
 
             const historySnapshot = [...session.conversationHistory, { role: 'user' as const, content: summaryPrompt }];
-            batchItems.push({ message, historySnapshot, prompt: summaryPrompt, originalTimestamp, promptType: 'summarize' });
+            batchItems.push({ message, historySnapshot, prompt: summaryPrompt, originalTimestamp, cwd: itemCwd, promptType: 'summarize' });
           }
         }
 
@@ -229,6 +241,8 @@ export class OpenRouterAgent {
               );
               return { success: true as const, response, item };
             } catch (error) {
+              // APPROVED OVERRIDE: Convert request exceptions to result objects so
+              // other batch items can proceed. Failed items are retried via markFailed().
               return { success: false as const, error, item };
             }
           })
@@ -265,7 +279,7 @@ export class OpenRouterAgent {
             tokensUsed,
             item.originalTimestamp,
             'OpenRouter',
-            lastCwd
+            item.cwd
           );
         }
 
@@ -395,7 +409,7 @@ export class OpenRouterAgent {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
-    if (apiKey) {
+    if (apiKey && !isLocalEndpoint(baseUrl)) {
       headers['Authorization'] = `Bearer ${apiKey}`;
       headers['HTTP-Referer'] = siteUrl || 'https://github.com/thedotmack/claude-mem';
       headers['X-Title'] = appName || 'claude-mem';
@@ -494,9 +508,8 @@ export function isOpenRouterAvailable(): boolean {
   const settingsPath = USER_SETTINGS_PATH;
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
   const baseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL || '';
-  const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
   // Local LLMs don't need an API key; remote OpenRouter does
-  return isLocal || !!(settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY'));
+  return isLocalEndpoint(baseUrl) || !!(settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY'));
 }
 
 /**
