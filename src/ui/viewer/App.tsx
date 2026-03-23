@@ -6,6 +6,7 @@ import { LogsDrawer } from './components/LogsModal';
 import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
+import { useHealth } from './hooks/useHealth';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
 import { Observation, Summary, UserPrompt } from './types';
@@ -22,6 +23,7 @@ export function App() {
   const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats, refreshStats } = useStats();
+  const { health } = useHealth();
   const { preference, resolvedTheme, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
 
@@ -101,6 +103,9 @@ export function App() {
         themePreference={preference}
         onThemeChange={setThemePreference}
         onContextPreviewToggle={toggleContextPreview}
+        version={stats.worker?.version}
+        mode={health.mode}
+        connectedClients={health.connectedClients}
       />
 
       <Feed

@@ -14,6 +14,9 @@ interface HeaderProps {
   themePreference: ThemePreference;
   onThemeChange: (theme: ThemePreference) => void;
   onContextPreviewToggle: () => void;
+  version?: string;
+  mode?: 'standalone' | 'server' | 'client';
+  connectedClients?: number;
 }
 
 export function Header({
@@ -25,7 +28,10 @@ export function Header({
   queueDepth,
   themePreference,
   onThemeChange,
-  onContextPreviewToggle
+  onContextPreviewToggle,
+  version,
+  mode,
+  connectedClients
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
 
@@ -41,6 +47,27 @@ export function Header({
           )}
         </div>
         <span className="logo-text">claude-mem</span>
+        {version && (
+          <span style={{
+            fontSize: '10px',
+            color: 'var(--color-text-muted, #888)',
+            fontWeight: '400'
+          }}>
+            v{version}
+          </span>
+        )}
+        {mode && mode !== 'standalone' && (
+          <span style={{
+            fontSize: '10px',
+            padding: '1px 6px',
+            borderRadius: '3px',
+            fontWeight: '500',
+            background: mode === 'server' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(59, 130, 246, 0.15)',
+            color: mode === 'server' ? '#16a34a' : '#2563eb'
+          }}>
+            {mode}{mode === 'server' && connectedClients && connectedClients > 0 ? ` · ${connectedClients}` : ''}
+          </span>
+        )}
       </h1>
       <div className="status">
         <a

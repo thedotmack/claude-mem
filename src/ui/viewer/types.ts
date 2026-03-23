@@ -14,6 +14,7 @@ export interface Observation {
   prompt_number: number | null;
   created_at: string;
   created_at_epoch: number;
+  node: string | null;
 }
 
 export interface Summary {
@@ -103,4 +104,11 @@ export interface DatabaseStats {
 export interface Stats {
   worker?: WorkerStats;
   database?: DatabaseStats;
+}
+
+export interface HealthData {
+  mode?: 'standalone' | 'server' | 'client';
+  connectedClients?: number;
+  node?: string;
+  status?: string;
 }

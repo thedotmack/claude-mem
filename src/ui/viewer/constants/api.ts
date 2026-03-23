@@ -8,6 +8,7 @@ export const API_ENDPOINTS = {
   PROMPTS: '/api/prompts',
   SETTINGS: '/api/settings',
   STATS: '/api/stats',
+  HEALTH: '/api/health',
   PROCESSING_STATUS: '/api/processing-status',
   STREAM: '/stream',
 } as const;
