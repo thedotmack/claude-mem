@@ -86,9 +86,8 @@ export function registerSearchCommand(program: Command): void {
           outputText(renderSearchIndex(response.results));
         }
       } catch (err) {
-        const cliErr = err instanceof CLIError
-          ? err
-          : new CLIError((err as Error).message, ExitCode.INTERNAL_ERROR);
+        const msg = err instanceof Error ? err.message : String(err ?? 'Unknown error');
+        const cliErr = err instanceof CLIError ? err : new CLIError(msg, ExitCode.INTERNAL_ERROR);
         outputError(cliErr, mode);
         process.exit(cliErr.code);
       }

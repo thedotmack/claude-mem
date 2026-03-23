@@ -64,16 +64,17 @@ export function registerObservationsCommand(program: Command): void {
               : `${result.items.length} results`;
             process.stdout.write(`\n${countLabel}\n`);
             if (result.hasMore) {
+              const nextOffset = (result.offset ?? 0) + (result.limit ?? 20);
+              const pageLimit = result.limit ?? 20;
               process.stdout.write(
-                `  Next: cmem observations --offset ${(result.offset ?? 0) + (result.limit ?? 20)}\n`,
+                `  Next: cmem observations --offset ${nextOffset} --limit ${pageLimit}\n`,
               );
             }
           }
         }
       } catch (err) {
-        const cliErr = err instanceof CLIError
-          ? err
-          : new CLIError((err as Error).message, ExitCode.INTERNAL_ERROR);
+        const msg = err instanceof Error ? err.message : String(err ?? 'Unknown error');
+        const cliErr = err instanceof CLIError ? err : new CLIError(msg, ExitCode.INTERNAL_ERROR);
         outputError(cliErr, mode);
         process.exit(cliErr.code);
       }
