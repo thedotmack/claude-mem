@@ -1,7 +1,25 @@
 #!/usr/bin/env node
 /**
  * cmem — CLI for persistent AI agent memory.
- * Entry point: registers all commands and parses argv.
+ *
+ * cmem connects to a running memory worker (default: http://localhost:37777)
+ * and exposes its capabilities as a structured command-line interface. It is
+ * designed to be consumed both by humans (formatted tables, timelines) and by
+ * other AI agents (--json output with structured CLIResponse envelopes).
+ *
+ * Command groups:
+ *   Search & browse  — search, timeline, get, observations, sessions
+ *   Summaries        — stats, projects, context
+ *   Write            — remember
+ *   Infrastructure   — settings, logs, worker, queue
+ *   Live stream      — stream, endless
+ *   Curated lists    — decisions, changes, how
+ *   Data portability — export-data, import-data
+ *
+ * Configuration is read from ~/.cmem/config.json (or the path set by
+ * CMEM_CONFIG env var). Run `cmem settings` to inspect or edit it.
+ *
+ * Entry point: registers all commands via Commander and parses process.argv.
  */
 
 import { Command } from 'commander';

@@ -1,6 +1,6 @@
 {
   "name": "cmem-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Context Memory CLI — search, stream, and manage persistent AI agent memory from the terminal",
   "type": "module",
   "bin": {

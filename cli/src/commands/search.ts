@@ -21,6 +21,8 @@ interface SearchOpts {
   offset?: string;
   order?: string;
   json?: boolean;
+  /** When true, output only the result count and exit — useful for agents. */
+  count?: boolean;
 }
 
 export function registerSearchCommand(program: Command): void {
@@ -36,6 +38,7 @@ export function registerSearchCommand(program: Command): void {
     .option('--offset <n>', 'pagination offset', '0')
     .option('--order <field>', 'sort order (relevance|date)')
     .option('--json', 'output as JSON for agent use')
+    .option('--count', 'output only the result count (useful for agents that just need "how many")')
     .action(async (query: string, opts: SearchOpts) => {
       const mode = detectOutputMode({ json: opts.json });
       try {
@@ -57,6 +60,20 @@ export function registerSearchCommand(program: Command): void {
           dateEnd: opts.dateEnd,
           order: opts.order,
         });
+
+        // --count: emit just the number and exit — ideal for agent if-branches
+        if (opts.count) {
+          if (mode === 'agent') {
+            outputJSON([], {
+              count: response.results.length,
+              query,
+              project: opts.project,
+            });
+          } else {
+            outputText(String(response.results.length));
+          }
+          return;
+        }
 
         if (mode === 'agent') {
           outputJSON(response.results, {

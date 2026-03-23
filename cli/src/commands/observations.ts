@@ -8,7 +8,7 @@ import { loadConfig } from '../config.js';
 import { createMemoryClient } from '../client-factory.js';
 import { detectOutputMode, outputJSON, outputError } from '../output.js';
 import { getTypeIcon } from '../formatters/icons.js';
-import { ExitCode } from '../errors.js';
+import { CLIError, ExitCode } from '../errors.js';
 
 export function registerObservationsCommand(program: Command): void {
   program
@@ -69,8 +69,11 @@ export function registerObservationsCommand(program: Command): void {
           }
         }
       } catch (err) {
-        outputError(err as Error, mode);
-        process.exit(ExitCode.WORKER_ERROR);
+        const cliErr = err instanceof CLIError
+          ? err
+          : new CLIError((err as Error).message, ExitCode.INTERNAL_ERROR);
+        outputError(cliErr, mode);
+        process.exit(cliErr.code);
       }
     });
 }

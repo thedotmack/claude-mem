@@ -29,16 +29,19 @@ export function registerEndlessCommand(program: Command): void {
     .option('--json', 'output SSE events as newline-delimited JSON')
     .action(async (opts: EndlessOpts) => {
       const mode = detectOutputMode({ json: opts.json });
-      const retryMs = Math.min(
-        opts.retryMs ? parseInt(opts.retryMs, 10) : DEFAULT_RETRY_MS,
-        MAX_RETRY_MS,
-      );
+      let retryMs = opts.retryMs ? parseInt(opts.retryMs, 10) : DEFAULT_RETRY_MS;
+      if (isNaN(retryMs) || retryMs < DEFAULT_RETRY_MS) retryMs = DEFAULT_RETRY_MS;
+      if (retryMs > MAX_RETRY_MS) retryMs = MAX_RETRY_MS;
 
       const config = loadConfig();
       const client = createMemoryClient(config);
 
       const controller = new AbortController();
-      process.on('SIGINT', () => controller.abort());
+      let activeReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      process.on('SIGINT', () => {
+        controller.abort();
+        activeReader?.cancel().catch(() => {});
+      });
 
       if (mode === 'human') {
         process.stdout.write(`Watching stream at ${config.baseUrl} (Ctrl-C to quit)\n\n`);
@@ -46,8 +49,9 @@ export function registerEndlessCommand(program: Command): void {
 
       while (!controller.signal.aborted) {
         try {
-          const res = await client.connectStream();
+          const res = await client.connectStream(controller.signal);
           const reader = res.body?.getReader();
+          activeReader = reader;
           if (!reader) {
             throw new CLIError('No response body from stream endpoint', ExitCode.CONNECTION_ERROR);
           }

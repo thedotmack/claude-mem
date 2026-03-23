@@ -108,6 +108,12 @@ export interface ProjectsResponse {
   projects: string[];
 }
 
+/** A project name paired with its observation count, for richer listings. */
+export interface ProjectWithCount {
+  name: string;
+  observationCount: number;
+}
+
 // --- Processing Status ---
 
 export interface ProcessingStatus {

@@ -49,8 +49,8 @@ src/
     decisions.ts        decisions — semantic shortcut for decision observations
     changes.ts          changes — semantic shortcut for change observations
     how.ts              how <query> — how-it-works explanations
-    export.ts           export-data — export memories to file
-    import.ts           import-data <file> — import memories from file
+    export-data.ts      export-data — export memories to file
+    import-data.ts      import-data <file> — import memories from file
 
   formatters/
     table.ts            Human-readable tables (cli-table3 + chalk)

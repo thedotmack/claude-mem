@@ -65,5 +65,5 @@ export interface IMemoryClient {
   searchHelp(): Promise<Record<string, unknown>>;
 
   // Live stream
-  connectStream(): Promise<Response>;
+  connectStream(signal?: AbortSignal): Promise<Response>;
 }

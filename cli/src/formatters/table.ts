@@ -5,8 +5,9 @@
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import { getTypeIcon } from './icons.js';
-import type { SearchResult, TimelineItem, Observation, WorkerStats } from '../types.js';
+import type { SearchResult, TimelineItem, Observation, WorkerStats, ProjectWithCount } from '../types.js';
 import { terminalWidth } from '../utils/detect.js';
+import { formatBytes, formatUptime, formatTimestamp } from '../utils/format.js';
 
 /** Safely coerce a field that may be a JSON string, array, or undefined into a string[]. */
 function safeArray(value: string[] | string | undefined | null): string[] {
@@ -16,25 +17,6 @@ function safeArray(value: string[] | string | undefined | null): string[] {
     try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
   }
   return [];
-}
-
-function formatTimestamp(epoch: number): string {
-  const d = new Date(epoch);
-  const now = new Date();
-  const isToday = d.toDateString() === now.toDateString();
-
-  if (isToday) {
-    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-  }
-
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (d.toDateString() === yesterday.toDateString()) {
-    return 'Yesterday ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-  }
-
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
-    d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 }
 
 function truncate(text: string, maxLen: number): string {
@@ -160,18 +142,39 @@ export function renderProjects(projects: string[]): string {
   return projects.map(p => `  ${p}`).join('\n');
 }
 
-function formatUptime(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  return `${h}h ${m}m`;
-}
+/**
+ * Render a list of projects alongside their observation counts.
+ *
+ * Useful when the worker returns aggregated project statistics — e.g. after a
+ * future `/projects?counts=true` endpoint lands. The count column is
+ * right-aligned and colour-coded: dim for empty projects, normal for active
+ * ones with a few observations, bold-green for busy ones (>=100).
+ */
+export function renderProjectList(projects: ProjectWithCount[]): string {
+  if (projects.length === 0) return chalk.dim('No projects found.');
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  // Determine column widths from actual data
+  const maxNameLen = Math.max(...projects.map(p => p.name.length), 'Project'.length);
+  const header =
+    chalk.dim('Project'.padEnd(maxNameLen + 2)) +
+    chalk.dim('Observations'.padStart(14));
+  const divider = chalk.dim('\u2500'.repeat(maxNameLen + 16));
+
+  const rows = projects.map(p => {
+    const name = p.name.padEnd(maxNameLen + 2);
+    const count = p.observationCount;
+    let countStr: string;
+    if (count === 0) {
+      countStr = chalk.dim(String(count).padStart(14));
+    } else if (count >= 100) {
+      countStr = chalk.bold.green(String(count).padStart(14));
+    } else {
+      countStr = String(count).padStart(14);
+    }
+    return `  ${name}${countStr}`;
+  });
+
+  return [header, divider, ...rows].join('\n');
 }
 
 function wordWrap(text: string, width: number): string {

@@ -11,10 +11,30 @@ import { createMemoryClient } from '../client-factory.js';
 import { detectOutputMode, outputJSON, outputError } from '../output.js';
 import { CLIError, ExitCode } from '../errors.js';
 import { writeFileSync } from 'fs';
+import type { IMemoryClient } from '../memory-client.js';
+import type { Observation, SessionSummary, ListParams } from '../types.js';
 
 interface ExportOpts {
   output?: string;
   json?: boolean;
+}
+
+/** Fetch all pages of a paginated endpoint until hasMore is false. */
+async function paginateAll<T>(
+  fetcher: (params: ListParams) => Promise<{ items: T[]; hasMore: boolean }>,
+  pageSize = 500,
+): Promise<T[]> {
+  const all: T[] = [];
+  let offset = 0;
+
+  while (true) {
+    const page = await fetcher({ limit: pageSize, offset });
+    all.push(...page.items);
+    if (!page.hasMore) break;
+    offset += pageSize;
+  }
+
+  return all;
 }
 
 export function registerExportDataCommand(program: Command): void {
@@ -27,27 +47,27 @@ export function registerExportDataCommand(program: Command): void {
       const mode = detectOutputMode({ json: opts.json });
       try {
         const config = loadConfig();
-        const client = createMemoryClient(config);
+        const client = createMemoryClient(config) as IMemoryClient;
 
-        // Export collects observations and sessions via paginated listing
+        // Paginate all entity types to avoid truncation
         const [observations, summaries] = await Promise.all([
-          client.listObservations({ limit: 10000 }),
-          client.listSummaries({ limit: 10000 }),
+          paginateAll<Observation>(p => client.listObservations(p)),
+          paginateAll<SessionSummary>(p => client.listSummaries(p)),
         ]);
 
         const exportPayload = {
           exported_at: new Date().toISOString(),
-          observations: observations.items,
-          summaries: summaries.items,
+          observations,
+          summaries,
         };
 
         if (opts.output) {
           writeFileSync(opts.output, JSON.stringify(exportPayload, null, 2), 'utf-8');
           if (mode === 'human') {
             process.stdout.write(`Exported to ${opts.output}\n`);
-            process.stdout.write(`  ${observations.items.length} observations, ${summaries.items.length} sessions\n`);
+            process.stdout.write(`  ${observations.length} observations, ${summaries.length} sessions\n`);
           } else {
-            outputJSON({ file: opts.output, observations: observations.total, summaries: summaries.total });
+            outputJSON({ file: opts.output, observations: observations.length, summaries: summaries.length });
           }
         } else {
           if (mode === 'agent') {

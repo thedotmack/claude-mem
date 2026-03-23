@@ -228,10 +228,11 @@ export class WorkerClient implements IMemoryClient {
 
   // --- SSE Stream ---
 
-  async connectStream(): Promise<Response> {
+  async connectStream(signal?: AbortSignal): Promise<Response> {
     const res = await this.rawFetch('/stream', {
       headers: { 'Accept': 'text/event-stream' },
       timeout: 0, // no timeout for SSE
+      signal,
     });
     if (!res.ok) {
       throw workerError(`Stream connection failed: ${res.status}`);
@@ -245,11 +246,20 @@ export class WorkerClient implements IMemoryClient {
     path: string,
     options: RequestInit & { timeout?: number } = {},
   ): Promise<Response> {
-    const { timeout, ...fetchOptions } = options;
+    const { timeout, signal: externalSignal, ...fetchOptions } = options;
     const url = path.startsWith('http') ? path : `${this.baseUrl}${path}`;
 
     const controller = new AbortController();
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    // Forward abort from the external signal (e.g. SIGINT from endless.ts)
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        controller.abort();
+      } else {
+        externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+      }
+    }
 
     if (timeout && timeout > 0) {
       timeoutId = setTimeout(() => controller.abort(), timeout);

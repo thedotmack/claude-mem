@@ -34,8 +34,19 @@ export function registerImportDataCommand(program: Command): void {
         let payload: ImportPayload;
         try {
           const raw = readFileSync(file, 'utf-8');
-          payload = JSON.parse(raw) as ImportPayload;
-        } catch {
+          const parsed: unknown = JSON.parse(raw);
+          if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            throw validationError(`${file} must contain a JSON object`);
+          }
+          const obj = parsed as Record<string, unknown>;
+          for (const key of ['sessions', 'summaries', 'observations', 'prompts'] as const) {
+            if (obj[key] !== undefined && !Array.isArray(obj[key])) {
+              throw validationError(`${file}: "${key}" must be an array if present`);
+            }
+          }
+          payload = obj as ImportPayload;
+        } catch (err) {
+          if (err instanceof CLIError) throw err;
           throw validationError(`Could not parse ${file} as JSON`);
         }
 

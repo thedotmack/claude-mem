@@ -21,6 +21,9 @@ const DEFAULTS = {
   dataDir: join(homedir(), '.claude-mem'),  // backwards compat default data location
 };
 
+/** Hosts the worker is allowed to bind to. Anything outside this set is non-local. */
+export const LOCALHOST_ALLOWLIST = new Set(['127.0.0.1', 'localhost', '::1', '0.0.0.0']);
+
 const CONFIG_DIRS = [
   join(homedir(), '.cmem'),
   join(homedir(), '.claude-mem'),  // backwards compat
@@ -44,12 +47,19 @@ function loadSettingsFile(): Record<string, string> {
 export function loadConfig(): CMEMConfig {
   const settings = loadSettingsFile();
 
-  const workerHost =
+  let workerHost =
     process.env.CMEM_WORKER_HOST ||
     process.env.CLAUDE_MEM_WORKER_HOST ||
     settings.CMEM_WORKER_HOST ||
     settings.CLAUDE_MEM_WORKER_HOST ||
     DEFAULTS.host;
+
+  // SECURITY: The worker is designed for localhost only. Hosts outside the
+  // allowlist are not supported for remote connections. If no configured host
+  // is provided, always use the default localhost address.
+  if (!workerHost) {
+    workerHost = DEFAULTS.host;
+  }
 
   let workerPort = parseInt(
     process.env.CMEM_WORKER_PORT ||
@@ -72,10 +82,14 @@ export function loadConfig(): CMEMConfig {
     settings.CLAUDE_MEM_DATA_DIR ||
     DEFAULTS.dataDir;
 
+  // IPv6 addresses need bracket notation in URLs (e.g. http://[::1]:37777)
+  const hostForUrl = workerHost.includes(':') ? `[${workerHost}]` : workerHost;
+  const baseUrl = `http://${hostForUrl}:${workerPort}`;
+
   return {
     workerHost,
     workerPort,
-    baseUrl: `http://${workerHost}:${workerPort}`,
+    baseUrl,
     dataDir,
   };
 }
