@@ -15,6 +15,8 @@ export interface Observation {
   created_at: string;
   created_at_epoch: number;
   node: string | null;
+  platform: string | null;
+  instance: string | null;
 }
 
 export interface Summary {
@@ -85,6 +87,14 @@ export interface Settings {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY?: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
+
+  // Network Mode
+  CLAUDE_MEM_NETWORK_MODE?: string;  // 'standalone' | 'server' | 'client'
+  CLAUDE_MEM_SERVER_HOST?: string;
+  CLAUDE_MEM_SERVER_PORT?: string;
+  CLAUDE_MEM_NODE_NAME?: string;
+  CLAUDE_MEM_INSTANCE_NAME?: string;
+  CLAUDE_MEM_AUTH_TOKEN?: string;
 }
 
 export interface WorkerStats {

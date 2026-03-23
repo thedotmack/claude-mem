@@ -122,6 +122,13 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
+      // Network Mode
+      'CLAUDE_MEM_NETWORK_MODE',
+      'CLAUDE_MEM_SERVER_HOST',
+      'CLAUDE_MEM_SERVER_PORT',
+      'CLAUDE_MEM_NODE_NAME',
+      'CLAUDE_MEM_INSTANCE_NAME',
+      'CLAUDE_MEM_AUTH_TOKEN',
     ];
 
     for (const key of settingKeys) {

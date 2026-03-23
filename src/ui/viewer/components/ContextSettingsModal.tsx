@@ -306,7 +306,78 @@ export function ContextSettingsModal({
               </div>
             </CollapsibleSection>
 
-            {/* Section 4: Advanced */}
+            {/* Section 4: Network */}
+            <CollapsibleSection
+              title="Network"
+              description="Multi-machine network mode"
+              defaultOpen={false}
+            >
+              <FormField
+                label="Network Mode"
+                tooltip="standalone: single machine; server: accept remote connections; client: forward to remote server"
+              >
+                <select
+                  value={formState.CLAUDE_MEM_NETWORK_MODE || 'standalone'}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_NETWORK_MODE', e.target.value)}
+                >
+                  <option value="standalone">Standalone (default)</option>
+                  <option value="server">Server (accept remote connections)</option>
+                  <option value="client">Client (forward to remote server)</option>
+                </select>
+              </FormField>
+
+              {formState.CLAUDE_MEM_NETWORK_MODE === 'client' && (
+                <FormField
+                  label="Server Host"
+                  tooltip="Hostname or IP of the remote server to forward requests to"
+                >
+                  <input
+                    type="text"
+                    value={formState.CLAUDE_MEM_SERVER_HOST || ''}
+                    onChange={(e) => updateSetting('CLAUDE_MEM_SERVER_HOST', e.target.value)}
+                    placeholder="e.g., 169.254.1.1"
+                  />
+                </FormField>
+              )}
+
+              <FormField
+                label="Node Name"
+                tooltip="Override the machine identity (defaults to system hostname)"
+              >
+                <input
+                  type="text"
+                  value={formState.CLAUDE_MEM_NODE_NAME || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_NODE_NAME', e.target.value)}
+                  placeholder="e.g., MSM3U"
+                />
+              </FormField>
+
+              <FormField
+                label="Instance Name"
+                tooltip="Identity for multi-instance setups on the same machine"
+              >
+                <input
+                  type="text"
+                  value={formState.CLAUDE_MEM_INSTANCE_NAME || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_INSTANCE_NAME', e.target.value)}
+                  placeholder="e.g., main"
+                />
+              </FormField>
+
+              <FormField
+                label="Auth Token"
+                tooltip="Bearer token for remote authentication (auto-generated in server mode)"
+              >
+                <input
+                  type="password"
+                  value={formState.CLAUDE_MEM_AUTH_TOKEN || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_AUTH_TOKEN', e.target.value)}
+                  placeholder="Auto-generated in server mode"
+                />
+              </FormField>
+            </CollapsibleSection>
+
+            {/* Section 5: Advanced */}
             <CollapsibleSection
               title="Advanced"
               description="AI provider and model selection"

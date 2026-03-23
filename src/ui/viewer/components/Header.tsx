@@ -57,14 +57,17 @@ export function Header({
           </span>
         )}
         {mode && mode !== 'standalone' && (
-          <span style={{
-            fontSize: '10px',
-            padding: '1px 6px',
-            borderRadius: '3px',
-            fontWeight: '500',
-            background: mode === 'server' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(59, 130, 246, 0.15)',
-            color: mode === 'server' ? '#16a34a' : '#2563eb'
-          }}>
+          <span
+            style={{
+              fontSize: '10px',
+              padding: '1px 6px',
+              borderRadius: '3px',
+              fontWeight: '500',
+              background: mode === 'server' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(59, 130, 246, 0.15)',
+              color: mode === 'server' ? '#16a34a' : '#2563eb'
+            }}
+            title={mode === 'server' && connectedClients ? `${connectedClients} client node(s) connected` : undefined}
+          >
             {mode}{mode === 'server' && connectedClients && connectedClients > 0 ? ` · ${connectedClients}` : ''}
           </span>
         )}

@@ -129,6 +129,16 @@ export function ObservationCard({ observation }: ObservationCardProps) {
               {observation.node}
             </span>
           )}
+          {observation.platform && (
+            <span style={{ marginLeft: '4px', fontSize: '10px', padding: '1px 6px', borderRadius: '3px', background: 'rgba(139, 92, 246, 0.1)', color: 'var(--color-text-muted, #888)', fontWeight: '400' }}>
+              {observation.platform}
+            </span>
+          )}
+          {observation.instance && (
+            <span style={{ marginLeft: '4px', fontSize: '10px', padding: '1px 6px', borderRadius: '3px', background: 'rgba(245, 158, 11, 0.1)', color: 'var(--color-text-muted, #888)', fontWeight: '400', fontStyle: 'italic' }}>
+              {observation.instance}
+            </span>
+          )}
         </span>
         {showFacts && (concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
