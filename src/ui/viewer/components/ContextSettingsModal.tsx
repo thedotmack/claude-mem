@@ -329,16 +329,36 @@ export function ContextSettingsModal({
               {formState.CLAUDE_MEM_PROVIDER === 'claude' && (
                 <FormField
                   label="Claude Model"
-                  tooltip="Claude model used for generating observations"
+                  tooltip="Model for generating observations. Tier aliases (haiku, sonnet, opus) auto-resolve across all providers (Bedrock, Vertex, Azure). Use 'Custom' for specific model IDs or ARNs."
                 >
                   <select
-                    value={formState.CLAUDE_MEM_MODEL || 'haiku'}
-                    onChange={(e) => updateSetting('CLAUDE_MEM_MODEL', e.target.value)}
+                    value={
+                      ['haiku', 'sonnet', 'opus'].includes(formState.CLAUDE_MEM_MODEL || 'haiku')
+                        ? (formState.CLAUDE_MEM_MODEL || 'haiku')
+                        : 'custom'
+                    }
+                    onChange={(e) => {
+                      if (e.target.value === 'custom') {
+                        updateSetting('CLAUDE_MEM_MODEL', '');
+                      } else {
+                        updateSetting('CLAUDE_MEM_MODEL', e.target.value);
+                      }
+                    }}
                   >
-                    <option value="haiku">haiku (fastest)</option>
+                    <option value="haiku">haiku (fastest, recommended)</option>
                     <option value="sonnet">sonnet (balanced)</option>
                     <option value="opus">opus (highest quality)</option>
+                    <option value="custom">Custom model ID...</option>
                   </select>
+                  {!['haiku', 'sonnet', 'opus'].includes(formState.CLAUDE_MEM_MODEL || 'haiku') && (
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_MODEL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_MODEL', e.target.value)}
+                      placeholder="e.g. eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      style={{ marginTop: '4px' }}
+                    />
+                  )}
                 </FormField>
               )}
 

@@ -51,6 +51,14 @@ export class SDKAgent {
 
     // Get model ID and disallowed tools
     const modelId = this.getModelId();
+
+    // Log cloud provider context for debugging model resolution issues
+    const cloudProvider = process.env.CLAUDE_CODE_USE_BEDROCK === '1' ? 'Bedrock'
+      : process.env.CLAUDE_CODE_USE_VERTEX === '1' ? 'Vertex'
+      : process.env.CLAUDE_CODE_USE_AZURE === '1' ? 'Azure'
+      : 'Direct API';
+    logger.info('SDK', `Cloud provider: ${cloudProvider}, model: ${modelId}`);
+
     // Memory agent is OBSERVER ONLY - no tools allowed
     const disallowedTools = [
       'Bash',           // Prevent infinite loops
@@ -479,11 +487,28 @@ export class SDKAgent {
   }
 
   /**
-   * Get model ID from settings or environment
+   * Get model ID from settings or environment.
+   * Tier aliases (haiku, sonnet, opus) are resolved by Claude Code CLI for all providers.
+   * Provider-specific IDs (Bedrock ARNs, cross-region profiles) are passed through as-is.
    */
   private getModelId(): string {
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    return settings.CLAUDE_MEM_MODEL;
+    const modelId = settings.CLAUDE_MEM_MODEL;
+
+    // Warn about version-specific aliases that may not resolve on cloud providers
+    const tierAliases = ['haiku', 'sonnet', 'opus'];
+    const isProviderSpecific = modelId.includes('anthropic.') || modelId.includes('arn:');
+    if (!tierAliases.includes(modelId) && !isProviderSpecific) {
+      const provider = process.env.CLAUDE_CODE_USE_BEDROCK === '1' ? 'Bedrock'
+        : process.env.CLAUDE_CODE_USE_VERTEX === '1' ? 'Vertex'
+        : process.env.CLAUDE_CODE_USE_AZURE === '1' ? 'Azure'
+        : null;
+      if (provider) {
+        logger.warn('SDK', `Model "${modelId}" may not resolve on ${provider}. Consider using a tier alias (haiku, sonnet, opus) or a full provider-specific model ID.`);
+      }
+    }
+
+    return modelId;
   }
 }
