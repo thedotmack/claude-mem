@@ -56,6 +56,7 @@ export function generatePlist(config: LaunchdConfig): string {
     '/usr/sbin',
     '/sbin',
     path.join(homeDir, '.bun', 'bin'),
+    path.join(homeDir, '.local', 'bin'),
   ].join(':');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
