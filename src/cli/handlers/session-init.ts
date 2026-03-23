@@ -52,7 +52,8 @@ export const sessionInitHandler: EventHandler = {
       body: JSON.stringify({
         contentSessionId: sessionId,
         project,
-        prompt
+        prompt,
+        platform: input.platform
       })
     });
 
@@ -108,7 +109,7 @@ export const sessionInitHandler: EventHandler = {
       const response = await workerHttpRequest(`/sessions/${sessionDbId}/init`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber })
+        body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber, platform: input.platform })
       });
 
       if (!response.ok) {

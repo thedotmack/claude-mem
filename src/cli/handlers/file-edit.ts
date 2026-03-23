@@ -45,7 +45,8 @@ export const fileEditHandler: EventHandler = {
           tool_name: 'write_file',
           tool_input: { filePath, edits },
           tool_response: { success: true },
-          cwd
+          cwd,
+          platform: input.platform
         })
       });
 
