@@ -10,6 +10,7 @@ import cors from 'cors';
 import path from 'path';
 import { getPackageRoot } from '../../../shared/paths.js';
 import { logger } from '../../../utils/logger.js';
+export { createAuthMiddleware } from './auth-middleware.js';
 
 /**
  * Create all middleware for the worker service
@@ -38,7 +39,7 @@ export function createMiddleware(
       }
     },
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Claude-Mem-Node', 'X-Claude-Mem-Instance', 'X-Claude-Mem-Mode'],
     credentials: false
   }));
 

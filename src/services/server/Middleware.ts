@@ -10,5 +10,6 @@
 export {
   createMiddleware,
   requireLocalhost,
+  createAuthMiddleware,
   summarizeRequestBody
 } from '../worker/http/middleware.js';
