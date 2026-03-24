@@ -503,7 +503,7 @@ export class SessionRoutes extends BaseRouteHandler {
     // Extract provenance from headers and body
     const node = (req.headers['x-claude-mem-node'] as string) || getNodeName();
     // Platform: body field > infer from proxy mode > null
-    const platform = req.body.platform || null;
+    const platform = req.body.platform || (req.headers['x-claude-mem-platform'] as string) || null;
     // Instance: explicit header > contentSessionId (auto per-session traceability)
     const instance = (req.headers['x-claude-mem-instance'] as string) || contentSessionId || null;
 
@@ -775,7 +775,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Set origin tracking on the store so saveUserPrompt includes node/platform/instance
     const node = (req.headers['x-claude-mem-node'] as string) || getNodeName();
-    const platform = req.body.platform || null;
+    const platform = req.body.platform || (req.headers['x-claude-mem-platform'] as string) || null;
     const instance = (req.headers['x-claude-mem-instance'] as string) || contentSessionId || null;
     store._currentNode = node;
     store._currentPlatform = platform;
