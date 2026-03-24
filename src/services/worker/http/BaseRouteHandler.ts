@@ -11,6 +11,7 @@
 
 import { Request, Response } from 'express';
 import { logger } from '../../../utils/logger.js';
+import { AppError } from '../../server/ErrorHandler.js';
 
 export abstract class BaseRouteHandler {
   /**
@@ -80,7 +81,18 @@ export abstract class BaseRouteHandler {
   protected handleError(res: Response, error: Error, context?: string): void {
     logger.failure('WORKER', context || 'Request failed', {}, error);
     if (!res.headersSent) {
-      res.status(500).json({ error: error.message });
+      const statusCode = error instanceof AppError ? error.statusCode : 500;
+      const response: Record<string, unknown> = { error: error.message };
+
+      if (error instanceof AppError && error.code) {
+        response.code = error.code;
+      }
+
+      if (error instanceof AppError && error.details !== undefined) {
+        response.details = error.details;
+      }
+
+      res.status(statusCode).json(response);
     }
   }
 }

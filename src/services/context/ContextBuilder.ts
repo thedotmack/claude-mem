@@ -130,6 +130,7 @@ export async function generateContext(
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
   const project = getProjectName(cwd);
+  const platformSource = input?.platform_source;
 
   // Use provided projects array (for worktree support) or fall back to single project
   const projects = input?.projects || [project];
@@ -149,11 +150,11 @@ export async function generateContext(
   try {
     // Query data for all projects (supports worktree: parent + worktree combined)
     const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config)
-      : queryObservations(db, project, config);
+      ? queryObservationsMulti(db, projects, config, platformSource)
+      : queryObservations(db, project, config, platformSource);
     const summaries = projects.length > 1
-      ? querySummariesMulti(db, projects, config)
-      : querySummaries(db, project, config);
+      ? querySummariesMulti(db, projects, config, platformSource)
+      : querySummaries(db, project, config, platformSource);
 
     // Handle empty state
     if (observations.length === 0 && summaries.length === 0) {

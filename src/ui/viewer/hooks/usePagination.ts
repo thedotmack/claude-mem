@@ -14,7 +14,7 @@ type DataItem = Observation | Summary | UserPrompt;
 /**
  * Generic pagination hook for observations, summaries, and prompts
  */
-function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: string) {
+function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: string, currentSource: string) {
   const [state, setState] = useState<PaginationState>({
     isLoading: false,
     hasMore: true
@@ -22,7 +22,7 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
 
   // Track offset and filter in refs to handle synchronous resets
   const offsetRef = useRef(0);
-  const lastFilterRef = useRef(currentFilter);
+  const lastSelectionRef = useRef(`${currentSource}::${currentFilter}`);
   const stateRef = useRef(state);
 
   /**
@@ -31,16 +31,17 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
    */
   const loadMore = useCallback(async (): Promise<DataItem[]> => {
     // Check if filter changed - if so, reset pagination synchronously
-    const filterChanged = lastFilterRef.current !== currentFilter;
+    const selectionKey = `${currentSource}::${currentFilter}`;
+    const filterChanged = lastSelectionRef.current !== selectionKey;
 
     if (filterChanged) {
       offsetRef.current = 0;
-      lastFilterRef.current = currentFilter;
+      lastSelectionRef.current = selectionKey;
 
       // Reset state both in React state and ref synchronously
       const newState = { isLoading: false, hasMore: true };
       setState(newState);
-      stateRef.current = newState;  // Update ref immediately to avoid stale checks
+      stateRef.current = newState; // Update ref immediately to avoid stale checks
     }
 
     // Prevent concurrent requests using ref (always current)
@@ -49,6 +50,7 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
       return [];
     }
 
+    stateRef.current = { ...stateRef.current, isLoading: true };
     setState(prev => ({ ...prev, isLoading: true }));
 
     // Build query params using current offset from ref
@@ -62,6 +64,10 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
       params.append('project', currentFilter);
     }
 
+    if (currentSource && currentSource !== 'all') {
+      params.append('platformSource', currentSource);
+    }
+
     const response = await fetch(`${endpoint}?${params}`);
 
     if (!response.ok) {
@@ -69,6 +75,13 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
     }
 
     const data = await response.json() as { items: DataItem[], hasMore: boolean };
+
+    const nextState = {
+      ...stateRef.current,
+      isLoading: false,
+      hasMore: data.hasMore
+    };
+    stateRef.current = nextState;
 
     setState(prev => ({
       ...prev,
@@ -80,7 +93,7 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
     offsetRef.current += UI.PAGINATION_PAGE_SIZE;
 
     return data.items;
-  }, [currentFilter, endpoint, dataType]);
+  }, [currentFilter, currentSource, endpoint, dataType]);
 
   return {
     ...state,
@@ -91,10 +104,10 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
 /**
  * Hook for paginating observations
  */
-export function usePagination(currentFilter: string) {
-  const observations = usePaginationFor(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter);
-  const summaries = usePaginationFor(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter);
-  const prompts = usePaginationFor(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter);
+export function usePagination(currentFilter: string, currentSource: string) {
+  const observations = usePaginationFor(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter, currentSource);
+  const summaries = usePaginationFor(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter, currentSource);
+  const prompts = usePaginationFor(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter, currentSource);
 
   return {
     observations,

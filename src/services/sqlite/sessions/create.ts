@@ -5,6 +5,17 @@
 
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
+import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../../shared/platform-source.js';
+
+function resolveCreateSessionArgs(
+  customTitle?: string,
+  platformSource?: string
+): { customTitle?: string; platformSource: string } {
+  return {
+    customTitle,
+    platformSource: platformSource ?? DEFAULT_PLATFORM_SOURCE
+  };
+}
 
 /**
  * Create a new SDK session (idempotent - returns existing session ID if already exists)
@@ -22,10 +33,13 @@ export function createSDKSession(
   contentSessionId: string,
   project: string,
   userPrompt: string,
-  customTitle?: string
+  customTitle?: string,
+  platformSource?: string
 ): number {
   const now = new Date();
   const nowEpoch = now.getTime();
+  const resolved = resolveCreateSessionArgs(customTitle, platformSource);
+  const normalizedPlatformSource = normalizePlatformSource(resolved.platformSource);
 
   // Check for existing session
   const existing = db.prepare(`
@@ -41,12 +55,17 @@ export function createSDKSession(
       `).run(project, contentSessionId);
     }
     // Backfill custom_title if provided and not yet set
-    if (customTitle) {
+    if (resolved.customTitle) {
       db.prepare(`
         UPDATE sdk_sessions SET custom_title = ?
         WHERE content_session_id = ? AND custom_title IS NULL
-      `).run(customTitle, contentSessionId);
+      `).run(resolved.customTitle, contentSessionId);
     }
+    db.prepare(`
+      UPDATE sdk_sessions SET platform_source = ?
+      WHERE content_session_id = ?
+        AND COALESCE(platform_source, '') != ?
+    `).run(normalizedPlatformSource, contentSessionId, normalizedPlatformSource);
     return existing.id;
   }
 
@@ -56,9 +75,9 @@ export function createSDKSession(
   // must NEVER equal contentSessionId - that would inject memory messages into the user's transcript!
   db.prepare(`
     INSERT INTO sdk_sessions
-    (content_session_id, memory_session_id, project, user_prompt, custom_title, started_at, started_at_epoch, status)
-    VALUES (?, NULL, ?, ?, ?, ?, ?, 'active')
-  `).run(contentSessionId, project, userPrompt, customTitle || null, now.toISOString(), nowEpoch);
+    (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status)
+    VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
+  `).run(contentSessionId, project, normalizedPlatformSource, userPrompt, resolved.customTitle || null, now.toISOString(), nowEpoch);
 
   // Return new ID
   const row = db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')

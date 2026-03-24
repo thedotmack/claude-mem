@@ -6,6 +6,7 @@ import {
   TableNameRow,
   SchemaVersion
 } from '../../../types/database.js';
+import { DEFAULT_PLATFORM_SOURCE } from '../../../shared/platform-source.js';
 
 /**
  * MigrationRunner handles all database schema migrations
@@ -34,6 +35,7 @@ export class MigrationRunner {
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
+    this.addSessionPlatformSourceColumn();
   }
 
   /**
@@ -61,6 +63,7 @@ export class MigrationRunner {
         content_session_id TEXT UNIQUE NOT NULL,
         memory_session_id TEXT UNIQUE,
         project TEXT NOT NULL,
+        platform_source TEXT NOT NULL DEFAULT 'claude',
         user_prompt TEXT,
         started_at TEXT NOT NULL,
         started_at_epoch INTEGER NOT NULL,
@@ -862,5 +865,30 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
+  }
+
+  /**
+   * Add platform_source column to sdk_sessions for Claude/Codex isolation (migration 24)
+   */
+  private addSessionPlatformSourceColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'platform_source');
+
+    if (!hasColumn) {
+      this.db.run(`ALTER TABLE sdk_sessions ADD COLUMN platform_source TEXT NOT NULL DEFAULT '${DEFAULT_PLATFORM_SOURCE}'`);
+      logger.debug('DB', 'Added platform_source column to sdk_sessions table');
+    }
+
+    this.db.run(`
+      UPDATE sdk_sessions
+      SET platform_source = '${DEFAULT_PLATFORM_SOURCE}'
+      WHERE platform_source IS NULL OR platform_source = ''
+    `);
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
   }
 }

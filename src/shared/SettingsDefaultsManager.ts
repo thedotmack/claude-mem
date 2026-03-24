@@ -49,6 +49,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
   CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: string;
   CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: string;
+  CLAUDE_MEM_TRANSCRIPTS_ENABLED: string;  // 'true' | 'false' - enable transcript watcher ingestion for Codex and other transcript-based clients
+  CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: string;  // Path to transcript watcher config JSON
   // Process Management
   CLAUDE_MEM_MAX_CONCURRENT_AGENTS: string;  // Max concurrent Claude SDK agent subprocesses (default: 2)
   // Exclusion Settings
@@ -108,6 +110,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true',
     CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
+    CLAUDE_MEM_TRANSCRIPTS_ENABLED: 'true',
+    CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join(homedir(), '.claude-mem', 'transcript-watch.json'),
     // Process Management
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
     // Exclusion Settings
