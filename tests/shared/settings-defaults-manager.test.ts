@@ -343,7 +343,9 @@ describe('SettingsDefaultsManager', () => {
   describe('get', () => {
     it('should return default value for key', () => {
       const originalModel = process.env.CLAUDE_MEM_MODEL;
+      const originalWorkerPort = process.env.CLAUDE_MEM_WORKER_PORT;
       delete process.env.CLAUDE_MEM_MODEL;
+      delete process.env.CLAUDE_MEM_WORKER_PORT;
       try {
         expect(SettingsDefaultsManager.get('CLAUDE_MEM_MODEL')).toBe('haiku');
         expect(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT')).toBe('37777');
@@ -353,24 +355,66 @@ describe('SettingsDefaultsManager', () => {
         } else {
           process.env.CLAUDE_MEM_MODEL = originalModel;
         }
+        if (originalWorkerPort === undefined) {
+          delete process.env.CLAUDE_MEM_WORKER_PORT;
+        } else {
+          process.env.CLAUDE_MEM_WORKER_PORT = originalWorkerPort;
+        }
       }
     });
   });
 
   describe('getInt', () => {
     it('should return integer value for numeric string', () => {
-      expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_WORKER_PORT')).toBe(37777);
-      expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_CONTEXT_OBSERVATIONS')).toBe(50);
+      const originalWorkerPort = process.env.CLAUDE_MEM_WORKER_PORT;
+      const originalObservations = process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS;
+      delete process.env.CLAUDE_MEM_WORKER_PORT;
+      delete process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS;
+      try {
+        expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_WORKER_PORT')).toBe(37777);
+        expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_CONTEXT_OBSERVATIONS')).toBe(50);
+      } finally {
+        if (originalWorkerPort === undefined) {
+          delete process.env.CLAUDE_MEM_WORKER_PORT;
+        } else {
+          process.env.CLAUDE_MEM_WORKER_PORT = originalWorkerPort;
+        }
+        if (originalObservations === undefined) {
+          delete process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS;
+        } else {
+          process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS = originalObservations;
+        }
+      }
     });
   });
 
   describe('getBool', () => {
     it('should return true for "true" string', () => {
-      expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT')).toBe(true);
+      const originalSavingsPercent = process.env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT;
+      delete process.env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT;
+      try {
+        expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT')).toBe(true);
+      } finally {
+        if (originalSavingsPercent === undefined) {
+          delete process.env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT;
+        } else {
+          process.env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT = originalSavingsPercent;
+        }
+      }
     });
 
     it('should return false for non-"true" string', () => {
-      expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE')).toBe(false);
+      const originalLastMessage = process.env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE;
+      delete process.env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE;
+      try {
+        expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE')).toBe(false);
+      } finally {
+        if (originalLastMessage === undefined) {
+          delete process.env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE;
+        } else {
+          process.env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE = originalLastMessage;
+        }
+      }
     });
   });
 
