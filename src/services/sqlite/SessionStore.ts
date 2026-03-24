@@ -19,10 +19,10 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources }
 function resolveCreateSessionArgs(
   customTitle?: string,
   platformSource?: string
-): { customTitle?: string; platformSource: string } {
+): { customTitle?: string; platformSource?: string } {
   return {
     customTitle,
-    platformSource: platformSource ?? DEFAULT_PLATFORM_SOURCE
+    platformSource: platformSource ? normalizePlatformSource(platformSource) : undefined
   };
 }
 
@@ -892,11 +892,13 @@ export class SessionStore {
    * Add platform_source column to sdk_sessions for Claude/Codex isolation (migration 24)
    */
   private addSessionPlatformSourceColumn(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
-    if (applied) return;
-
     const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
     const hasColumn = tableInfo.some(col => col.name === 'platform_source');
+    const indexInfo = this.db.query('PRAGMA index_list(sdk_sessions)').all() as IndexInfo[];
+    const hasIndex = indexInfo.some(index => index.name === 'idx_sdk_sessions_platform_source');
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
+
+    if (applied && hasColumn && hasIndex) return;
 
     if (!hasColumn) {
       this.db.run(`ALTER TABLE sdk_sessions ADD COLUMN platform_source TEXT NOT NULL DEFAULT '${DEFAULT_PLATFORM_SOURCE}'`);
@@ -908,7 +910,10 @@ export class SessionStore {
       SET platform_source = '${DEFAULT_PLATFORM_SOURCE}'
       WHERE platform_source IS NULL OR platform_source = ''
     `);
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
+
+    if (!hasIndex) {
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
+    }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
   }
@@ -1558,12 +1563,12 @@ export class SessionStore {
     const now = new Date();
     const nowEpoch = now.getTime();
     const resolved = resolveCreateSessionArgs(customTitle, platformSource);
-    const normalizedPlatformSource = normalizePlatformSource(resolved.platformSource);
+    const normalizedPlatformSource = resolved.platformSource ?? DEFAULT_PLATFORM_SOURCE;
 
     // Session reuse: Return existing session ID if already created for this contentSessionId.
     const existing = this.db.prepare(`
-      SELECT id FROM sdk_sessions WHERE content_session_id = ?
-    `).get(contentSessionId) as { id: number } | undefined;
+      SELECT id, platform_source FROM sdk_sessions WHERE content_session_id = ?
+    `).get(contentSessionId) as { id: number; platform_source: string | null } | undefined;
 
     if (existing) {
       // Backfill project if session was created by another hook with empty project
@@ -1580,11 +1585,24 @@ export class SessionStore {
           WHERE content_session_id = ? AND custom_title IS NULL
         `).run(resolved.customTitle, contentSessionId);
       }
-      this.db.prepare(`
-        UPDATE sdk_sessions SET platform_source = ?
-        WHERE content_session_id = ?
-          AND COALESCE(platform_source, '') != ?
-      `).run(normalizedPlatformSource, contentSessionId, normalizedPlatformSource);
+
+      if (resolved.platformSource) {
+        const storedPlatformSource = existing.platform_source?.trim()
+          ? normalizePlatformSource(existing.platform_source)
+          : undefined;
+
+        if (!storedPlatformSource) {
+          this.db.prepare(`
+            UPDATE sdk_sessions SET platform_source = ?
+            WHERE content_session_id = ?
+              AND COALESCE(platform_source, '') = ''
+          `).run(resolved.platformSource, contentSessionId);
+        } else if (storedPlatformSource !== resolved.platformSource) {
+          throw new Error(
+            `Platform source conflict for session ${contentSessionId}: existing=${storedPlatformSource}, received=${resolved.platformSource}`
+          );
+        }
+      }
       return existing.id;
     }
 

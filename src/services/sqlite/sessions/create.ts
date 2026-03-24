@@ -10,10 +10,10 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../../share
 function resolveCreateSessionArgs(
   customTitle?: string,
   platformSource?: string
-): { customTitle?: string; platformSource: string } {
+): { customTitle?: string; platformSource?: string } {
   return {
     customTitle,
-    platformSource: platformSource ?? DEFAULT_PLATFORM_SOURCE
+    platformSource: platformSource ? normalizePlatformSource(platformSource) : undefined
   };
 }
 
@@ -39,12 +39,12 @@ export function createSDKSession(
   const now = new Date();
   const nowEpoch = now.getTime();
   const resolved = resolveCreateSessionArgs(customTitle, platformSource);
-  const normalizedPlatformSource = normalizePlatformSource(resolved.platformSource);
+  const normalizedPlatformSource = resolved.platformSource ?? DEFAULT_PLATFORM_SOURCE;
 
   // Check for existing session
   const existing = db.prepare(`
-    SELECT id FROM sdk_sessions WHERE content_session_id = ?
-  `).get(contentSessionId) as { id: number } | undefined;
+    SELECT id, platform_source FROM sdk_sessions WHERE content_session_id = ?
+  `).get(contentSessionId) as { id: number; platform_source: string | null } | undefined;
 
   if (existing) {
     // Backfill project if session was created by another hook with empty project
@@ -61,11 +61,24 @@ export function createSDKSession(
         WHERE content_session_id = ? AND custom_title IS NULL
       `).run(resolved.customTitle, contentSessionId);
     }
-    db.prepare(`
-      UPDATE sdk_sessions SET platform_source = ?
-      WHERE content_session_id = ?
-        AND COALESCE(platform_source, '') != ?
-    `).run(normalizedPlatformSource, contentSessionId, normalizedPlatformSource);
+
+    if (resolved.platformSource) {
+      const storedPlatformSource = existing.platform_source?.trim()
+        ? normalizePlatformSource(existing.platform_source)
+        : undefined;
+
+      if (!storedPlatformSource) {
+        db.prepare(`
+          UPDATE sdk_sessions SET platform_source = ?
+          WHERE content_session_id = ?
+            AND COALESCE(platform_source, '') = ''
+        `).run(resolved.platformSource, contentSessionId);
+      } else if (storedPlatformSource !== resolved.platformSource) {
+        throw new Error(
+          `Platform source conflict for session ${contentSessionId}: existing=${storedPlatformSource}, received=${resolved.platformSource}`
+        );
+      }
+    }
     return existing.id;
   }
 

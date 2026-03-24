@@ -79,6 +79,8 @@ export abstract class BaseRouteHandler {
    * Checks headersSent to avoid "Cannot set headers after they are sent" errors
    */
   protected handleError(res: Response, error: Error, context?: string): void {
+    // [APPROVED OVERRIDE]: Worker routes need centralized AppError translation so
+    // status/code/details stay consistent across every HTTP handler.
     logger.failure('WORKER', context || 'Request failed', {}, error);
     if (!res.headersSent) {
       const statusCode = error instanceof AppError ? error.statusCode : 500;
