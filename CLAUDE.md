@@ -37,17 +37,17 @@ npm run build-and-sync        # Build, sync to marketplace, restart worker
 
 Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
 
-## Multi-Machine Network Mode
+## Multi-Node Network Mode
 
-claude-mem supports sharing a single instance across multiple machines via three network modes.
+claude-mem supports sharing a single instance across multiple nodes via three network modes.
 
 ### Modes
 
 | Mode | Behavior |
 |------|----------|
-| `standalone` | Default. Single-machine operation. No changes from standard behavior. |
-| `server` | Accepts remote connections from client machines. Auto-configures launchd on macOS for headless operation. |
-| `client` | Runs a local HTTP proxy that forwards requests to a remote server. Includes offline buffering for resilience. |
+| `standalone` | Default. Single-node operation. No changes from standard behavior. |
+| `server` | Accepts remote connections from client nodes. Auto-configures launchd on macOS for headless operation. |
+| `client` | Runs a local HTTP proxy (`http.createServer`, no Express) that forwards requests to a remote server. Includes offline buffering for resilience. |
 
 ### Configuration
 
@@ -58,8 +58,8 @@ Settings in `~/.claude-mem/settings.json`:
 | `CLAUDE_MEM_NETWORK_MODE` | `standalone` | Network mode |
 | `CLAUDE_MEM_SERVER_HOST` | `""` | Server hostname (required for client mode) |
 | `CLAUDE_MEM_SERVER_PORT` | `37777` | Server port |
-| `CLAUDE_MEM_NODE_NAME` | `""` | Machine identity override (fallback: `os.hostname()`) |
-| `CLAUDE_MEM_INSTANCE_NAME` | `""` | Instance identity for multi-instance setups |
+| `CLAUDE_MEM_NODE_NAME` | `""` | Node identity override (fallback: `os.hostname()`) |
+| `CLAUDE_MEM_INSTANCE_NAME` | `""` | Instance identity for multi-instance setups (e.g., `openclaw-legal`) |
 | `CLAUDE_MEM_AUTH_TOKEN` | `""` | Bearer token for remote auth (auto-generated in server mode) |
 
 ### Security
@@ -68,7 +68,20 @@ All non-localhost requests require Bearer token authentication regardless of mod
 
 ### Provenance
 
-Observations track `node` (machine), `platform` (tool), and `instance` (specific agent) for full provenance in multi-machine setups.
+Observations track three orthogonal dimensions:
+- **`node`** — which physical machine (property of the node, via `os.hostname()`)
+- **`platform`** — which tool made the request (property of the request: `claude-code`, `cursor`, `raw`)
+- **`instance`** — which specific session/agent (auto: `contentSessionId`, or explicit: `openclaw-legal`)
+
+A single node can run multiple platforms simultaneously. The proxy does not declare the platform — only the hook or the caller knows it.
+
+### Proxy Architecture
+
+The client proxy uses `http.createServer` + `http.request` (not Express/fetch). This avoids Bun networking issues in daemon mode on macOS. The proxy:
+- Serves local settings (not the server's) via `/api/settings`
+- Serves static UI assets locally (images, fonts, HTML)
+- Pipes SSE `/stream` endpoint for real-time viewer updates
+- Buffers POST requests offline when server is unreachable (JSONL, FIFO replay)
 
 ## File Locations
 
