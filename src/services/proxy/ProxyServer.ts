@@ -1,6 +1,8 @@
 import express from 'express';
 import http from 'http';
+import path from 'path';
 import { getNodeName, getInstanceName } from '../../shared/node-identity.js';
+import { getPackageRoot } from '../../shared/paths.js';
 import { OfflineBuffer, type BufferedRequest } from '../infrastructure/OfflineBuffer.js';
 import { logger } from '../../utils/logger.js';
 
@@ -47,10 +49,16 @@ export class ProxyServer {
       this.healthCheckIntervalMs = hostOrOptions.healthCheckIntervalMs ?? 10_000;
     }
 
-    // Parse JSON bodies
+    // Serve static UI assets locally (images, fonts, HTML, JS, CSS)
+    // This avoids binary corruption when proxying through Express text handling
+    const packageRoot = getPackageRoot();
+    const uiDir = path.join(packageRoot, 'plugin', 'ui');
+    this.app.use(express.static(uiDir));
+
+    // Parse JSON bodies for API requests
     this.app.use(express.json({ limit: '50mb' }));
 
-    // Catch-all: forward everything
+    // Forward all API requests to the remote server
     this.app.all('*', this.handleRequest.bind(this));
   }
 
@@ -134,7 +142,8 @@ export class ProxyServer {
       const acceptRanges = response.headers.get('accept-ranges');
       if (acceptRanges) res.setHeader('accept-ranges', acceptRanges);
 
-      // Forward body — use arrayBuffer for binary content (images, fonts, etc.)
+      // Forward body — use arrayBuffer + res.end() for binary content
+      // res.send() adds charset=utf-8 and may reencode, res.end() sends raw bytes
       const isText = contentType && (
         contentType.includes('json') ||
         contentType.includes('text') ||
@@ -147,7 +156,7 @@ export class ProxyServer {
         res.send(await response.text());
       } else {
         const buf = Buffer.from(await response.arrayBuffer());
-        res.send(buf);
+        res.end(buf);
       }
     } catch (error) {
       this.serverReachable = false;
