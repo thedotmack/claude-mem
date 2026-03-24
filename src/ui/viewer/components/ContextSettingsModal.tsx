@@ -402,7 +402,7 @@ export function ContextSettingsModal({
                     type="text"
                     value={formState.CLAUDE_MEM_SERVER_HOST || ''}
                     onChange={(e) => updateSetting('CLAUDE_MEM_SERVER_HOST', e.target.value)}
-                    placeholder="e.g., 169.254.1.1"
+                    placeholder="server-hostname"
                   />
                 </FormField>
               )}
@@ -416,7 +416,7 @@ export function ContextSettingsModal({
                   type="text"
                   value={formState.CLAUDE_MEM_NODE_NAME || ''}
                   onChange={(e) => updateSetting('CLAUDE_MEM_NODE_NAME', e.target.value)}
-                  placeholder="e.g., MSM3U"
+                  placeholder="Override hostname (leave empty for auto)"
                 />
               </FormField>
 
@@ -428,7 +428,7 @@ export function ContextSettingsModal({
                   type="text"
                   value={formState.CLAUDE_MEM_INSTANCE_NAME || ''}
                   onChange={(e) => updateSetting('CLAUDE_MEM_INSTANCE_NAME', e.target.value)}
-                  placeholder="e.g., main"
+                  placeholder="Auto: session ID (or set for OpenClaw)"
                 />
               </FormField>
 
