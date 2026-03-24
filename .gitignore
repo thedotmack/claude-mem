@@ -37,3 +37,5 @@ src/ui/viewer.html
 .claude/session-plan.md
 .octo/.local/
 .superpowers/
+.local/
+docs/superpowers/
