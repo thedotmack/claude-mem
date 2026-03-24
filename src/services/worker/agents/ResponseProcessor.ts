@@ -16,6 +16,7 @@ import { parseObservations, parseSummary, type ParsedObservation, type ParsedSum
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
+import { getNodeName } from '../../../shared/node-identity.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import type { ActiveSession } from '../../worker-types.js';
@@ -103,9 +104,9 @@ export async function processAgentResponse(
     session.lastPromptNumber,
     discoveryTokens,
     originalTimestamp ?? undefined,
-    session.node,
-    session.platform,
-    session.instance
+    session.node || getNodeName(),
+    session.platform || null,
+    session.instance || session.contentSessionId || null
   );
 
   // Log storage result with IDs for end-to-end traceability
@@ -238,9 +239,9 @@ async function syncAndBroadcastObservations(
       project: session.project,
       prompt_number: session.lastPromptNumber,
       created_at_epoch: result.createdAtEpoch,
-      node: session.node ?? null,
-      platform: session.platform ?? null,
-      instance: session.instance ?? null
+      node: session.node || getNodeName(),
+      platform: session.platform || null,
+      instance: session.instance || session.contentSessionId || null
     });
   }
 
@@ -327,9 +328,9 @@ async function syncAndBroadcastSummary(
     project: session.project,
     prompt_number: session.lastPromptNumber,
     created_at_epoch: result.createdAtEpoch,
-    node: session.node ?? null,
-    platform: session.platform ?? null,
-    instance: session.instance ?? null
+    node: session.node || getNodeName(),
+    platform: session.platform || null,
+    instance: session.instance || session.contentSessionId || null
   });
 
   // Update Cursor context file for registered projects (fire-and-forget)
