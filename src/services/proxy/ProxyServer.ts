@@ -1,7 +1,13 @@
+/**
+ * ProxyServer — HTTP forwarding proxy for client mode.
+ *
+ * Uses Node's http.request() instead of fetch() for all outbound calls.
+ * Bun's fetch() loses network connectivity after a few calls in setInterval
+ * on some macOS machines (confirmed on MBPM4M). http.request is stable.
+ */
+
 import express from 'express';
 import http from 'http';
-import path from 'path';
-import { existsSync } from 'fs';
 import { getNodeName, getInstanceName } from '../../shared/node-identity.js';
 import { OfflineBuffer, type BufferedRequest } from '../infrastructure/OfflineBuffer.js';
 import { logger } from '../../utils/logger.js';
@@ -11,8 +17,36 @@ export interface ProxyServerOptions {
   serverPort: number;
   authToken: string;
   dataDir: string;
-  /** Health check interval in ms. Default: 10_000 */
   healthCheckIntervalMs?: number;
+}
+
+/**
+ * Make an HTTP request using Node's http module (not fetch).
+ * Returns { statusCode, headers, body } or throws on error.
+ */
+function httpRequest(
+  options: { host: string; port: number; path: string; method: string; headers?: Record<string, string>; body?: string; timeout?: number }
+): Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: options.host,
+      port: options.port,
+      path: options.path,
+      method: options.method,
+      headers: options.headers || {},
+      timeout: options.timeout || 10000,
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk: Buffer) => { data += chunk; });
+      res.on('end', () => {
+        resolve({ statusCode: res.statusCode || 0, headers: res.headers, body: data });
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    if (options.body) req.write(options.body);
+    req.end();
+  });
 }
 
 export class ProxyServer {
@@ -49,11 +83,12 @@ export class ProxyServer {
       this.healthCheckIntervalMs = hostOrOptions.healthCheckIntervalMs ?? 10_000;
     }
 
-    // Parse JSON bodies for API requests
     this.app.use(express.json({ limit: '50mb' }));
 
-    // Forward all API requests to the remote server
-    this.app.all('*', this.handleRequest.bind(this));
+    // Forward requests — non-async handler (Bun compatibility)
+    this.app.use((req: express.Request, res: express.Response) => {
+      this.handleRequest(req, res);
+    });
   }
 
   async start(localPort: number): Promise<void> {
@@ -65,7 +100,6 @@ export class ProxyServer {
       this.server.on('error', reject);
     });
 
-    // Start background health check (after listen resolves)
     this.startHealthCheck();
   }
 
@@ -78,9 +112,8 @@ export class ProxyServer {
     }
   }
 
-  private async handleRequest(req: express.Request, res: express.Response): Promise<void> {
-    // Health/readiness endpoints must always respond locally so ensureWorkerRunning()
-    // sees the proxy as healthy regardless of whether the remote server is reachable.
+  private handleRequest(req: express.Request, res: express.Response): void {
+    // Local health/readiness
     if (req.method === 'GET' && req.path === '/api/health') {
       res.status(200).json({
         status: 'ok',
@@ -98,62 +131,35 @@ export class ProxyServer {
       return;
     }
 
-    // SSE stream — pipe directly instead of buffering the entire response
+    // SSE stream — pipe via raw http
     if (req.method === 'GET' && req.path === '/stream') {
-      try {
-        const sseHeaders: Record<string, string> = {};
-        if (this.authToken) {
-          sseHeaders['Authorization'] = `Bearer ${this.authToken}`;
-        }
-        sseHeaders['X-Claude-Mem-Node'] = getNodeName();
-        sseHeaders['X-Claude-Mem-Mode'] = 'proxy';
-
-        const sseUrl = `http://${this.serverHost}:${this.serverPort}/stream`;
-        const sseResponse = await fetch(sseUrl, { headers: sseHeaders });
-
-        if (!sseResponse.ok || !sseResponse.body) {
-          res.status(502).json({ error: 'SSE connection failed' });
-          return;
-        }
-
-        // Forward SSE headers
+      const sseReq = http.request({
+        hostname: this.serverHost,
+        port: this.serverPort,
+        path: '/stream',
+        method: 'GET',
+        headers: {
+          ...(this.authToken ? { 'Authorization': `Bearer ${this.authToken}` } : {}),
+          'X-Claude-Mem-Node': getNodeName(),
+          'X-Claude-Mem-Mode': 'proxy',
+        },
+      }, (sseRes) => {
+        if (sseRes.statusCode !== 200) { res.status(502).end(); return; }
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
         res.setHeader('X-Accel-Buffering', 'no');
         res.flushHeaders();
-
-        // Pipe the stream
-        const reader = sseResponse.body.getReader();
-        const pump = async () => {
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              res.write(value);
-            }
-          } catch {
-            // Stream closed (client disconnect or server restart)
-          } finally {
-            res.end();
-          }
-        };
-        pump();
-
-        // Clean up if client disconnects
-        req.on('close', () => {
-          reader.cancel().catch(() => {});
-        });
-        return;
-      } catch {
-        res.status(502).json({ error: 'SSE connection failed' });
-        return;
-      }
+        sseRes.pipe(res);
+      });
+      sseReq.on('error', () => res.status(502).end());
+      req.on('close', () => sseReq.destroy());
+      sseReq.end();
+      return;
     }
 
+    // Forward all other requests
     const queryString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
-    const targetUrl = `http://${this.serverHost}:${this.serverPort}${req.path}${queryString}`;
-
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'X-Claude-Mem-Node': getNodeName(),
@@ -164,51 +170,26 @@ export class ProxyServer {
       headers['Authorization'] = `Bearer ${this.authToken}`;
     }
 
-    try {
-      const fetchOptions: RequestInit = {
-        method: req.method,
-        headers,
-      };
-      if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body) {
-        fetchOptions.body = JSON.stringify(req.body);
-      }
+    const body = ['POST', 'PUT', 'PATCH'].includes(req.method) && req.body
+      ? JSON.stringify(req.body) : undefined;
 
-      const response = await fetch(targetUrl, fetchOptions);
+    httpRequest({
+      host: this.serverHost,
+      port: this.serverPort,
+      path: req.path + queryString,
+      method: req.method,
+      headers,
+      body,
+    }).then((response) => {
       this.serverReachable = true;
-
-      // Forward status and headers
-      res.status(response.status);
-      const contentType = response.headers.get('content-type');
-      if (contentType) res.setHeader('content-type', contentType);
-      const cacheControl = response.headers.get('cache-control');
-      if (cacheControl) res.setHeader('cache-control', cacheControl);
-      const contentLength = response.headers.get('content-length');
-      if (contentLength) res.setHeader('content-length', contentLength);
-      const lastModified = response.headers.get('last-modified');
-      if (lastModified) res.setHeader('last-modified', lastModified);
-      const acceptRanges = response.headers.get('accept-ranges');
-      if (acceptRanges) res.setHeader('accept-ranges', acceptRanges);
-
-      // Forward body — use arrayBuffer + res.end() for binary content
-      // res.send() adds charset=utf-8 and may reencode, res.end() sends raw bytes
-      const isText = contentType && (
-        contentType.includes('json') ||
-        contentType.includes('text') ||
-        contentType.includes('javascript') ||
-        contentType.includes('html') ||
-        contentType.includes('css') ||
-        contentType.includes('xml')
-      );
-      if (isText) {
-        res.send(await response.text());
-      } else {
-        const buf = Buffer.from(await response.arrayBuffer());
-        res.end(buf);
-      }
-    } catch (error) {
+      res.status(response.statusCode);
+      const ct = response.headers['content-type'];
+      if (ct) res.setHeader('content-type', ct);
+      const cc = response.headers['cache-control'];
+      if (cc) res.setHeader('cache-control', cc);
+      res.send(response.body);
+    }).catch(() => {
       this.serverReachable = false;
-
-      // POST/PUT/PATCH requests -> buffer
       if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
         try {
           this.buffer.append({
@@ -224,10 +205,9 @@ export class ProxyServer {
         }
         res.status(202).json({ buffered: true, path: req.path });
       } else {
-        // GET requests -> 503
         res.status(503).json({ error: 'server_unreachable', serverHost: this.serverHost });
       }
-    }
+    });
   }
 
   private startHealthCheck(): void {
@@ -236,40 +216,41 @@ export class ProxyServer {
       target: `${this.serverHost}:${this.serverPort}`,
       hasToken: !!this.authToken
     });
-    this.healthCheckInterval = setInterval(async () => {
-      try {
-        const headers: Record<string, string> = {};
-        if (this.authToken) {
-          headers['Authorization'] = `Bearer ${this.authToken}`;
-        }
-        const resp = await fetch(
-          `http://${this.serverHost}:${this.serverPort}/api/health`,
-          { headers }
-        );
-        const wasUnreachable = !this.serverReachable;
-        this.serverReachable = resp.ok;
 
-        if (!resp.ok) {
-          logger.warn('PROXY', 'Health check returned non-ok', { status: resp.status });
-        }
+    this.healthCheckInterval = setInterval(() => {
+      const headers: Record<string, string> = {};
+      if (this.authToken) {
+        headers['Authorization'] = `Bearer ${this.authToken}`;
+      }
+
+      httpRequest({
+        host: this.serverHost,
+        port: this.serverPort,
+        path: '/api/health',
+        method: 'GET',
+        headers,
+        timeout: 5000,
+      }).then((response) => {
+        const wasUnreachable = !this.serverReachable;
+        this.serverReachable = response.statusCode === 200;
 
         if (wasUnreachable && this.serverReachable) {
           logger.info('PROXY', 'Server is back online, starting buffer replay');
           this.replayBuffer();
         }
-      } catch (error) {
+      }).catch((error) => {
         this.serverReachable = false;
         logger.warn('PROXY', 'Health check failed', {
           target: `${this.serverHost}:${this.serverPort}`,
           error: error instanceof Error ? error.message : String(error)
         });
-      }
+      });
     }, this.healthCheckIntervalMs);
   }
 
-  private async replayBuffer(): Promise<void> {
-    const result = await this.buffer.replay(async (entry) => {
-      try {
+  private replayBuffer(): void {
+    this.buffer.replay((entry) => {
+      return new Promise<boolean>((resolve) => {
         const replayHeaders: Record<string, string> = {
           'Content-Type': 'application/json',
           ...(entry.headers || {}),
@@ -278,20 +259,25 @@ export class ProxyServer {
         if (this.authToken && !replayHeaders['Authorization']) {
           replayHeaders['Authorization'] = `Bearer ${this.authToken}`;
         }
-        const resp = await fetch(`http://${this.serverHost}:${this.serverPort}${entry.path}`, {
+
+        httpRequest({
+          host: this.serverHost,
+          port: this.serverPort,
+          path: entry.path,
           method: entry.method,
           headers: replayHeaders,
           body: JSON.stringify(entry.body),
+        }).then((response) => {
+          resolve(response.statusCode >= 200 && response.statusCode < 300);
+        }).catch(() => {
+          resolve(false);
         });
-        return resp.ok; // Only 2xx is success. 4xx and 5xx both stop replay.
-      } catch {
-        return false;
+      });
+    }).then((result) => {
+      if (result.replayed > 0) {
+        logger.info('PROXY', 'Buffer replay', { replayed: result.replayed, remaining: result.remaining });
       }
     });
-
-    if (result.replayed > 0) {
-      logger.info('PROXY', 'Buffer replay', { replayed: result.replayed, remaining: result.remaining });
-    }
   }
 
   getPendingCount(): number {
