@@ -156,6 +156,11 @@ export class ProxyServer {
   }
 
   private startHealthCheck(): void {
+    logger.info('PROXY', 'Health check started', {
+      intervalMs: this.healthCheckIntervalMs,
+      target: `${this.serverHost}:${this.serverPort}`,
+      hasToken: !!this.authToken
+    });
     this.healthCheckInterval = setInterval(async () => {
       try {
         const headers: Record<string, string> = {};
@@ -169,12 +174,20 @@ export class ProxyServer {
         const wasUnreachable = !this.serverReachable;
         this.serverReachable = resp.ok;
 
+        if (!resp.ok) {
+          logger.warn('PROXY', 'Health check returned non-ok', { status: resp.status });
+        }
+
         if (wasUnreachable && this.serverReachable) {
           logger.info('PROXY', 'Server is back online, starting buffer replay');
           this.replayBuffer();
         }
-      } catch {
+      } catch (error) {
         this.serverReachable = false;
+        logger.warn('PROXY', 'Health check failed', {
+          target: `${this.serverHost}:${this.serverPort}`,
+          error: error instanceof Error ? error.message : String(error)
+        });
       }
     }, this.healthCheckIntervalMs);
   }

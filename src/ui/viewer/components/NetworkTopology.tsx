@@ -93,16 +93,23 @@ export function NetworkTopology({ mode, health, clients, authToken }: NetworkTop
             </svg>
           </span>
           <span className="topology-connect-label">Connected to</span>
-          <span className="topology-node-name">{health.node || 'unknown'}</span>
+          <span className="topology-node-name">{health.serverHost || health.node || 'unknown'}</span>
         </div>
 
         {/* Reachable indicator */}
         <div className="topology-segment">
-          <span className={`topology-reachable-dot ${health.status === 'ok' ? 'reachable' : 'unreachable'}`} />
+          <span className={`topology-reachable-dot ${health.serverReachable ? 'reachable' : 'unreachable'}`} />
           <span className="topology-reachable-text">
-            {health.status === 'ok' ? 'Server reachable' : 'Server unreachable'}
+            {health.serverReachable ? 'Server reachable' : 'Server unreachable'}
           </span>
         </div>
+
+        {/* Buffer status */}
+        {(health.pendingBuffer ?? 0) > 0 && (
+          <div className="topology-segment">
+            <span className="topology-buffer-warning">⚠ Buffer: {health.pendingBuffer} pending</span>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -135,6 +135,11 @@ export interface HealthData {
   connectedClients?: number;
   node?: string;
   status?: string;
+  // Client proxy fields
+  proxy?: boolean;
+  serverReachable?: boolean;
+  serverHost?: string;
+  pendingBuffer?: number;
 }
 
 export interface ClientInfo {
