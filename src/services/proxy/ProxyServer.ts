@@ -283,8 +283,13 @@ export class ProxyServer {
       }).then((response) => {
         const wasUnreachable = !this.serverReachable;
         this.serverReachable = response.statusCode === 200;
-        if (wasUnreachable && this.serverReachable) {
-          logger.info('PROXY', 'Server is back online, starting buffer replay');
+
+        if (this.serverReachable && (wasUnreachable || this.buffer.pendingCount() > 0)) {
+          // Replay on reconnection OR if buffer has stale entries from a previous run
+          logger.info('PROXY', 'Server reachable, replaying buffer', {
+            wasUnreachable,
+            pending: this.buffer.pendingCount()
+          });
           this.replayBuffer();
         }
       }).catch((error) => {
