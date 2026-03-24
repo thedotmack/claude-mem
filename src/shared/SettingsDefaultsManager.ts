@@ -223,6 +223,17 @@ export class SettingsDefaultsManager {
         }
       }
 
+      // MIGRATION: Upgrade old default model value
+      if (flatSettings.CLAUDE_MEM_MODEL === 'claude-sonnet-4-5') {
+        flatSettings.CLAUDE_MEM_MODEL = this.DEFAULTS.CLAUDE_MEM_MODEL;
+        try {
+          writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
+          console.log('[SETTINGS] Migrated CLAUDE_MEM_MODEL to', this.DEFAULTS.CLAUDE_MEM_MODEL);
+        } catch (error) {
+          console.warn('[SETTINGS] Failed to persist model migration:', error);
+        }
+      }
+
       // Merge file settings with defaults (flat schema)
       const result: SettingsDefaults = { ...this.DEFAULTS };
       for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {

@@ -105,7 +105,7 @@ const QUERIES: Record<string, string> = {
   jsts_js: `
 (function_declaration name: (identifier) @name) @func
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
-(class_declaration name: (type_identifier) @name) @cls
+(class_declaration name: (identifier) @name) @cls
 (method_definition name: (property_identifier) @name) @method
 (import_statement) @imp
 (export_statement) @exp

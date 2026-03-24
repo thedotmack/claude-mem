@@ -240,6 +240,39 @@ describe('SettingsDefaultsManager', () => {
       });
     });
 
+    describe('model value migration', () => {
+      it('should migrate claude-sonnet-4-5 to current default model', () => {
+        const oldSettings = { CLAUDE_MEM_MODEL: 'claude-sonnet-4-5' };
+        writeFileSync(settingsPath, JSON.stringify(oldSettings));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+        const defaults = SettingsDefaultsManager.getAllDefaults();
+
+        expect(result.CLAUDE_MEM_MODEL).toBe(defaults.CLAUDE_MEM_MODEL);
+      });
+
+      it('should persist migrated model value to file', () => {
+        const oldSettings = { CLAUDE_MEM_MODEL: 'claude-sonnet-4-5' };
+        writeFileSync(settingsPath, JSON.stringify(oldSettings));
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        const defaults = SettingsDefaultsManager.getAllDefaults();
+
+        expect(parsed.CLAUDE_MEM_MODEL).toBe(defaults.CLAUDE_MEM_MODEL);
+      });
+
+      it('should not migrate non-old-default model values', () => {
+        const settings = { CLAUDE_MEM_MODEL: 'custom-model' };
+        writeFileSync(settingsPath, JSON.stringify(settings));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_MODEL).toBe('custom-model');
+      });
+    });
+
     describe('edge cases', () => {
       it('should handle empty object in file', () => {
         writeFileSync(settingsPath, '{}');
