@@ -39,8 +39,10 @@ export class ClientRegistry {
    */
   touch(node: string, ip: string, mode?: string, instance?: string): void {
     const now = new Date().toISOString();
-    // Key by node:instance to distinguish multiple instances on the same node
-    const key = instance ? `${node}:${instance}` : node;
+    // Key by node + instance to distinguish multiple instances on the same node.
+    // Null byte (\0) is used as delimiter — it cannot appear in hostnames or instance names,
+    // which prevents ambiguous keys like "a:b" vs "a" + instance "b:c".
+    const key = instance ? `${node}\0${instance}` : node;
     const existing = this.clients.get(key);
 
     if (existing) {

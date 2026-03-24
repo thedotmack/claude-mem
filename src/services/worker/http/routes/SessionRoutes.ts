@@ -24,6 +24,12 @@ import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProcessBySession, ensureProcessExit } from '../../ProcessRegistry.js';
 import { getNodeName } from '../../../../shared/node-identity.js';
 
+/** Safely extract a single string value from an HTTP header that may be multi-valued. */
+function headerString(h: string | string[] | undefined): string | null {
+  if (!h) return null;
+  return Array.isArray(h) ? (h[0] ?? null) : h;
+}
+
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
   private spawnInProgress = new Map<number, boolean>();
@@ -501,11 +507,11 @@ export class SessionRoutes extends BaseRouteHandler {
     const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
 
     // Extract provenance from headers and body
-    const node = (req.headers['x-claude-mem-node'] as string) || getNodeName();
+    const node = headerString(req.headers['x-claude-mem-node']) || getNodeName();
     // Platform: body field > infer from proxy mode > null
-    const platform = req.body.platform || (req.headers['x-claude-mem-platform'] as string) || null;
+    const platform = req.body.platform || headerString(req.headers['x-claude-mem-platform']) || null;
     // Instance: explicit header > contentSessionId (auto per-session traceability)
-    const instance = (req.headers['x-claude-mem-instance'] as string) || contentSessionId || null;
+    const instance = headerString(req.headers['x-claude-mem-instance']) || contentSessionId || null;
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');
@@ -774,9 +780,9 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Set origin tracking on the store so saveUserPrompt includes node/platform/instance
-    const node = (req.headers['x-claude-mem-node'] as string) || getNodeName();
-    const platform = req.body.platform || (req.headers['x-claude-mem-platform'] as string) || null;
-    const instance = (req.headers['x-claude-mem-instance'] as string) || contentSessionId || null;
+    const node = headerString(req.headers['x-claude-mem-node']) || getNodeName();
+    const platform = req.body.platform || headerString(req.headers['x-claude-mem-platform']) || null;
+    const instance = headerString(req.headers['x-claude-mem-instance']) || contentSessionId || null;
     store._currentNode = node;
     store._currentPlatform = platform;
     store._currentInstance = instance;

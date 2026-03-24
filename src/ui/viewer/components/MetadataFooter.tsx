@@ -6,7 +6,6 @@ interface MetadataFooterProps {
   node?: string | null;
   platform?: string | null;
   instance?: string | null;
-  sessionId?: string;
 }
 
 /**

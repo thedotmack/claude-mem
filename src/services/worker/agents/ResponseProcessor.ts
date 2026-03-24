@@ -191,6 +191,7 @@ async function syncAndBroadcastObservations(
   agentName: string,
   projectRoot?: string
 ): Promise<void> {
+  const nodeName = getNodeName();
   for (let i = 0; i < observations.length; i++) {
     const obsId = result.observationIds[i];
     const obs = observations[i];
@@ -239,7 +240,7 @@ async function syncAndBroadcastObservations(
       project: session.project,
       prompt_number: session.lastPromptNumber,
       created_at_epoch: result.createdAtEpoch,
-      node: session.node || getNodeName(),
+      node: session.node || nodeName,
       platform: session.platform || null,
       instance: session.instance || session.contentSessionId || null
     });
@@ -290,6 +291,7 @@ async function syncAndBroadcastSummary(
     return;
   }
 
+  const nodeName = getNodeName();
   const chromaStart = Date.now();
 
   // Sync to Chroma (fire-and-forget, skipped if Chroma is disabled)
@@ -328,7 +330,7 @@ async function syncAndBroadcastSummary(
     project: session.project,
     prompt_number: session.lastPromptNumber,
     created_at_epoch: result.createdAtEpoch,
-    node: session.node || getNodeName(),
+    node: session.node || nodeName,
     platform: session.platform || null,
     instance: session.instance || session.contentSessionId || null
   });

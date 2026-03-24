@@ -154,7 +154,9 @@ export class ProxyServer {
       return;
     }
 
-    // Local settings — serve THIS node's settings, not the server's
+    // Local settings — serve THIS node's settings, not the server's.
+    // Write access is safe here: the proxy listens on 127.0.0.1 only (see start()),
+    // so only processes on this machine can reach this endpoint.
     if (pathname === '/api/settings') {
       if (method === 'GET') {
         try {
@@ -184,8 +186,16 @@ export class ProxyServer {
     // ── Static UI files ──
 
     if (method === 'GET' && this.uiDir && !pathname.startsWith('/api/') && pathname !== '/stream') {
-      const filePath = path.join(this.uiDir, pathname === '/' ? 'viewer.html' : pathname);
-      if (existsSync(filePath) && !filePath.includes('..')) {
+      const requestedPath = pathname === '/' ? 'viewer.html' : pathname;
+      // Use path.resolve to expand any ".." segments before checking containment.
+      // path.join does NOT protect against traversal; resolve + startsWith does.
+      const filePath = path.resolve(this.uiDir, '.' + requestedPath);
+      const isWithinUiDir = filePath.startsWith(this.uiDir + path.sep) || filePath === this.uiDir;
+      if (!isWithinUiDir) {
+        this.jsonResponse(res, 403, { error: 'forbidden' });
+        return;
+      }
+      if (existsSync(filePath)) {
         const ext = path.extname(filePath);
         const contentType = MIME_TYPES[ext] || 'application/octet-stream';
         res.writeHead(200, { 'Content-Type': contentType });
@@ -285,11 +295,15 @@ export class ProxyServer {
         this.serverReachable = response.statusCode === 200;
 
         if (this.serverReachable && (wasUnreachable || this.buffer.pendingCount() > 0)) {
-          // Replay on reconnection OR if buffer has stale entries from a previous run
-          logger.info('PROXY', 'Server reachable, replaying buffer', {
-            wasUnreachable,
-            pending: this.buffer.pendingCount()
-          });
+          // Only log on reconnection transition (not on every tick with stale buffer entries)
+          if (wasUnreachable) {
+            logger.info('PROXY', 'Server is back online, replaying buffer', {
+              pending: this.buffer.pendingCount()
+            });
+          }
+          // OfflineBuffer.replay() has its own internal `replaying` guard that prevents
+          // concurrent replays, so calling this on every tick is safe — it will no-op
+          // if a replay is already in progress.
           this.replayBuffer();
         }
       }).catch((error) => {
@@ -329,6 +343,8 @@ export class ProxyServer {
       if (result.replayed > 0) {
         logger.info('PROXY', 'Buffer replay', { replayed: result.replayed, remaining: result.remaining });
       }
+    }).catch((error) => {
+      logger.warn('PROXY', 'Buffer replay error', { error: error instanceof Error ? error.message : String(error) });
     });
   }
 
@@ -353,6 +369,7 @@ export class ProxyServer {
     let body = '';
     req.on('data', (chunk: Buffer) => { body += chunk; });
     req.on('end', () => callback(body));
+    req.on('error', () => callback(''));  // Graceful on connection drop
   }
 
   getPendingCount(): number {
