@@ -334,7 +334,6 @@ export class ProxyServer {
       'X-Claude-Mem-Node': getNodeName(),
       'X-Claude-Mem-Instance': getInstanceName(),
       'X-Claude-Mem-Mode': 'proxy',
-      'X-Claude-Mem-Platform': 'claude-code',
     };
     if (this.authToken) h['Authorization'] = `Bearer ${this.authToken}`;
     return h;
