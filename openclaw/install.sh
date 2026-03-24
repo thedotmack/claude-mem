@@ -826,8 +826,9 @@ install_plugin() {
 
   # Ensure claude-mem is present in plugins.allow after successful install+enable.
   # Some OpenClaw environments require explicit allowlisting for local plugins.
+  # This write is guaranteed: if config doesn't exist, configure_memory_slot() will create it.
   if [[ -f "$oc_config" ]]; then
-    INSTALLER_CONFIG_FILE="$oc_config" node -e "
+    if ! INSTALLER_CONFIG_FILE="$oc_config" node -e "
       const fs = require('fs');
       const configPath = process.env.INSTALLER_CONFIG_FILE;
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -836,8 +837,34 @@ install_plugin() {
       if (!config.plugins.allow.includes('claude-mem')) {
         config.plugins.allow.push('claude-mem');
         fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        console.log('Added claude-mem to plugins.allow');
+      } else {
+        console.log('claude-mem already in plugins.allow');
       }
-    " 2>/dev/null || true
+    " 2>&1; then
+      warn "Failed to write plugins.allow — claude-mem may need manual allowlisting"
+    fi
+  else
+    # Config doesn't exist yet; configure_memory_slot() will create it with plugins.allow
+    # We'll add claude-mem to the allowlist in a follow-up step after config is materialized
+    info "OpenClaw config not yet materialized; will ensure allowlist in post-install"
+    # Force config materialization by running a harmless OpenClaw command
+    if run_openclaw status --json >/dev/null 2>&1 && [[ -f "$oc_config" ]]; then
+      if ! INSTALLER_CONFIG_FILE="$oc_config" node -e "
+        const fs = require('fs');
+        const configPath = process.env.INSTALLER_CONFIG_FILE;
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (!config.plugins) config.plugins = {};
+        if (!Array.isArray(config.plugins.allow)) config.plugins.allow = [];
+        if (!config.plugins.allow.includes('claude-mem')) {
+          config.plugins.allow.push('claude-mem');
+          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+          console.log('Added claude-mem to plugins.allow (post-materialization)');
+        }
+      " 2>&1; then
+        warn "Failed to write plugins.allow after materialization — configure manually"
+      fi
+    fi
   fi
 
   # Restore saved plugin config (workerPort, syncMemoryFile, observationFeed, etc.)
