@@ -1098,8 +1098,10 @@
       color: var(--color-text-tertiary);
     }
     .pill--instance {
-      background: rgba(251,191,36,0.10);
-      color: #fbbf24;
+      background: rgba(148,163,184,0.06);
+      color: var(--color-text-muted);
+      font-size: 10px;
+      opacity: 0.7;
     }
     .pill--muted {
       background: rgba(148,163,184,0.06);
@@ -1112,12 +1114,12 @@
       :root:not([data-theme="dark"]) .pill--node { background: rgba(22,163,74,0.08); color: #15803d; }
       :root:not([data-theme="dark"]) .pill--platform-claude { background: rgba(37,99,235,0.08); color: #2563eb; }
       :root:not([data-theme="dark"]) .pill--platform-cursor { background: rgba(124,58,237,0.08); color: #7c3aed; }
-      :root:not([data-theme="dark"]) .pill--instance { background: rgba(217,119,6,0.08); color: #b45309; }
+      :root:not([data-theme="dark"]) .pill--instance { background: rgba(148,163,184,0.06); color: var(--color-text-muted); }
     }
     [data-theme="light"] .pill--node { background: rgba(22,163,74,0.08); color: #15803d; }
     [data-theme="light"] .pill--platform-claude { background: rgba(37,99,235,0.08); color: #2563eb; }
     [data-theme="light"] .pill--platform-cursor { background: rgba(124,58,237,0.08); color: #7c3aed; }
-    [data-theme="light"] .pill--instance { background: rgba(217,119,6,0.08); color: #b45309; }
+    [data-theme="light"] .pill--instance { background: rgba(148,163,184,0.06); color: var(--color-text-muted); }
 
     .summary-card {
       border-color: var(--color-border-summary);

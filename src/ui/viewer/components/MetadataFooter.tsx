@@ -39,13 +39,6 @@ function shortDate(dateStr: string): string {
  * Used by ObservationCard, SummaryCard, and PromptCard.
  */
 export function MetadataFooter({ id, date, node, platform, instance }: MetadataFooterProps) {
-  // Shorten UUIDs (e.g., "659a57b8-148c-..." → "659a57b8")
-  // Keep named instances as-is (e.g., "openclaw-legal")
-  const isUuid = instance && /^[0-9a-f]{8}-/.test(instance);
-  const shortInstance = instance
-    ? (isUuid ? instance.substring(0, 8) : instance)
-    : null;
-
   return (
     <div className="meta-pills">
       <span className="pill pill--id">
@@ -64,12 +57,9 @@ export function MetadataFooter({ id, date, node, platform, instance }: MetadataF
           <span className="pill-ico">⚙</span>{platform}
         </span>
       )}
-      {shortInstance && (
-        <span
-          className="pill pill--instance"
-          title={instance || ''}
-        >
-          <span className="pill-ico">⧈</span>{shortInstance}
+      {instance && (
+        <span className="pill pill--instance" title={instance}>
+          <span className="pill-ico">⧈</span>{instance}
         </span>
       )}
     </div>
