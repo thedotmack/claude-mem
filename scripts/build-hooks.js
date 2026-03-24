@@ -182,6 +182,29 @@ async function buildHooks() {
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
 
+    // Build standalone proxy service (lightweight — no DB, Chroma, or MCP dependencies)
+    console.log(`\n🔧 Building proxy service...`);
+    await build({
+      entryPoints: ['src/services/proxy/proxy-main.ts'],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/proxy-service.cjs`,
+      minify: true,
+      logLevel: 'error',
+      external: ['bun:sqlite'],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      },
+      banner: {
+        js: '#!/usr/bin/env bun'
+      }
+    });
+    fs.chmodSync(`${hooksDir}/proxy-service.cjs`, 0o755);
+    const proxyStats = fs.statSync(`${hooksDir}/proxy-service.cjs`);
+    console.log(`✓ proxy-service built (${(proxyStats.size / 1024).toFixed(2)} KB)`);
+
     // Verify critical distribution files exist (skills are source files, not build outputs)
     console.log('\n📋 Verifying distribution files...');
     const requiredDistributionFiles = [

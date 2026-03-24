@@ -1,8 +1,8 @@
 import express from 'express';
 import http from 'http';
 import path from 'path';
+import { existsSync } from 'fs';
 import { getNodeName, getInstanceName } from '../../shared/node-identity.js';
-import { getPackageRoot } from '../../shared/paths.js';
 import { OfflineBuffer, type BufferedRequest } from '../infrastructure/OfflineBuffer.js';
 import { logger } from '../../utils/logger.js';
 
@@ -48,12 +48,6 @@ export class ProxyServer {
       this.buffer = new OfflineBuffer(hostOrOptions.dataDir);
       this.healthCheckIntervalMs = hostOrOptions.healthCheckIntervalMs ?? 10_000;
     }
-
-    // Serve static UI assets locally (images, fonts, HTML, JS, CSS)
-    // This avoids binary corruption when proxying through Express text handling
-    const packageRoot = getPackageRoot();
-    const uiDir = path.join(packageRoot, 'plugin', 'ui');
-    this.app.use(express.static(uiDir));
 
     // Parse JSON bodies for API requests
     this.app.use(express.json({ limit: '50mb' }));
