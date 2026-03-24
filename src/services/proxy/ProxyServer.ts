@@ -121,16 +121,34 @@ export class ProxyServer {
       const response = await fetch(targetUrl, fetchOptions);
       this.serverReachable = true;
 
-      // Forward status
+      // Forward status and headers
       res.status(response.status);
-      // Forward important headers
       const contentType = response.headers.get('content-type');
       if (contentType) res.setHeader('content-type', contentType);
       const cacheControl = response.headers.get('cache-control');
       if (cacheControl) res.setHeader('cache-control', cacheControl);
-      // Forward body
-      const body = await response.text();
-      res.send(body);
+      const contentLength = response.headers.get('content-length');
+      if (contentLength) res.setHeader('content-length', contentLength);
+      const lastModified = response.headers.get('last-modified');
+      if (lastModified) res.setHeader('last-modified', lastModified);
+      const acceptRanges = response.headers.get('accept-ranges');
+      if (acceptRanges) res.setHeader('accept-ranges', acceptRanges);
+
+      // Forward body — use arrayBuffer for binary content (images, fonts, etc.)
+      const isText = contentType && (
+        contentType.includes('json') ||
+        contentType.includes('text') ||
+        contentType.includes('javascript') ||
+        contentType.includes('html') ||
+        contentType.includes('css') ||
+        contentType.includes('xml')
+      );
+      if (isText) {
+        res.send(await response.text());
+      } else {
+        const buf = Buffer.from(await response.arrayBuffer());
+        res.send(buf);
+      }
     } catch (error) {
       this.serverReachable = false;
 
