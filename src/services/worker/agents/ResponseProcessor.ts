@@ -64,8 +64,13 @@ export async function processAgentResponse(
     session.conversationHistory.push({ role: 'assistant', content: text });
   }
 
-  // Parse observations and summary
-  const observations = parseObservations(text, session.contentSessionId);
+  // Parse observations with per-session mode (for GStack auto-detection)
+  const { ModeManager } = await import('../../domain/ModeManager.js');
+  const modeOverrideId = sessionManager.getModeOverride(session.sessionDbId);
+  const sessionMode = modeOverrideId
+    ? ModeManager.getInstance().resolveMode(modeOverrideId)
+    : undefined;
+  const observations = parseObservations(text, session.contentSessionId, sessionMode);
   const summary = parseSummary(text, session.sessionDbId);
 
   // Convert nullable fields to empty strings for storeSummary (if summary exists)

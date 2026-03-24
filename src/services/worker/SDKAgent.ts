@@ -334,8 +334,11 @@ export class SDKAgent {
     session: ActiveSession,
     cwdTracker: { lastCwd: string | undefined }
   ): AsyncIterableIterator<SDKUserMessage> {
-    // Load active mode
-    const mode = ModeManager.getInstance().getActiveMode();
+    // Load mode: use per-session override if set (e.g., GStack auto-detection), else global mode
+    const modeOverride = this.sessionManager.getModeOverride(session.sessionDbId);
+    const mode = modeOverride
+      ? ModeManager.getInstance().resolveMode(modeOverride)
+      : ModeManager.getInstance().getActiveMode();
 
     // Build initial prompt
     const isInitPrompt = session.lastPromptNumber === 1;

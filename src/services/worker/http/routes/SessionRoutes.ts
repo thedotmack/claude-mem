@@ -534,6 +534,25 @@ export class SessionRoutes extends BaseRouteHandler {
       const sessionDbId = store.createSDKSession(contentSessionId, '', '');
       const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
+      // GStack auto-detection: detect GStack preamble in Bash commands
+      // Every GStack skill runs a preamble that contains 'gstack-update-check' or 'gstack-config'.
+      // When detected, upgrade this session's mode to code--gstack for strategic observations.
+      if (tool_name === 'Bash' && !this.sessionManager.getModeOverride(sessionDbId)) {
+        const commandText = typeof tool_input === 'string' ? tool_input : tool_input?.command || '';
+        if (commandText.includes('gstack-update-check') || commandText.includes('gstack-config')) {
+          this.sessionManager.setModeOverride(sessionDbId, 'code--gstack');
+          // If the observer agent is already running with the old mode, restart it
+          const session = this.sessionManager.getSession(sessionDbId);
+          if (session?.generatorPromise) {
+            logger.info('SESSION', 'GStack detected mid-session — restarting observer with code--gstack mode', { sessionDbId });
+            session.abortController.abort();
+            session.generatorPromise = null;
+            session.abortController = new AbortController();
+            session.lastGeneratorActivity = Date.now();
+          }
+        }
+      }
+
       // Privacy check: skip if user prompt was entirely private
       const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
         store,

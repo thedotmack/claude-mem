@@ -145,8 +145,11 @@ export class GeminiAgent {
         logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=Gemini`);
       }
 
-      // Load active mode
-      const mode = ModeManager.getInstance().getActiveMode();
+      // Load mode: use per-session override if set (e.g., GStack auto-detection), else global mode
+      const modeOverride = this.sessionManager.getModeOverride(session.sessionDbId);
+      const mode = modeOverride
+        ? ModeManager.getInstance().resolveMode(modeOverride)
+        : ModeManager.getInstance().getActiveMode();
 
       // Build initial prompt
       const initPrompt = session.lastPromptNumber === 1
