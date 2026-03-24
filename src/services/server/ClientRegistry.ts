@@ -39,19 +39,20 @@ export class ClientRegistry {
    */
   touch(node: string, ip: string, mode?: string, instance?: string): void {
     const now = new Date().toISOString();
-    const existing = this.clients.get(node);
+    // Key by node:instance to distinguish multiple instances on the same node
+    const key = instance ? `${node}:${instance}` : node;
+    const existing = this.clients.get(key);
 
     if (existing) {
       existing.ip = ip;
       existing.mode = mode ?? existing.mode;
-      existing.instance = instance ?? existing.instance;
       existing.lastSeen = now;
       existing.requestCount += 1;
       this.onEvent?.({ type: 'client_heartbeat', node, ip });
     } else {
       const resolvedMode = mode ?? 'direct';
       const resolvedInstance = instance ?? '';
-      this.clients.set(node, {
+      this.clients.set(key, {
         node,
         ip,
         mode: resolvedMode,
