@@ -18,13 +18,19 @@ export { createAuthMiddleware } from './auth-middleware.js';
  * the x-claude-mem-node header.  A no-op when the header is absent (e.g.
  * direct localhost requests from hooks).
  */
+/** Safely extract a single string value from a header that may be multi-valued. */
+function headerString(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value[0];
+  return value;
+}
+
 export function createClientTrackingMiddleware(registry: ClientRegistry): RequestHandler {
   return (req: Request, _res: Response, next: NextFunction) => {
-    const node = req.headers['x-claude-mem-node'] as string | undefined;
+    const node = headerString(req.headers['x-claude-mem-node']);
     if (node) {
       const ip = req.ip || req.socket?.remoteAddress || '';
-      const mode = req.headers['x-claude-mem-mode'] as string | undefined;
-      const instance = req.headers['x-claude-mem-instance'] as string | undefined;
+      const mode = headerString(req.headers['x-claude-mem-mode']);
+      const instance = headerString(req.headers['x-claude-mem-instance']);
       registry.touch(node, ip, mode, instance);
     }
     next();

@@ -17,8 +17,8 @@ export interface ClientInfo {
 
 export type ClientRegistryEvent =
   | { type: 'client_connected'; node: string; ip: string; mode: string; instance: string }
-  | { type: 'client_heartbeat'; node: string; ip: string }
-  | { type: 'client_disconnected'; node: string; ip: string };
+  | { type: 'client_heartbeat'; node: string; ip: string; instance: string }
+  | { type: 'client_disconnected'; node: string; ip: string; instance: string };
 
 export type ClientRegistryEventHandler = (event: ClientRegistryEvent) => void;
 
@@ -50,7 +50,7 @@ export class ClientRegistry {
       existing.mode = mode ?? existing.mode;
       existing.lastSeen = now;
       existing.requestCount += 1;
-      this.onEvent?.({ type: 'client_heartbeat', node, ip });
+      this.onEvent?.({ type: 'client_heartbeat', node, ip, instance: existing.instance });
     } else {
       const resolvedMode = mode ?? 'direct';
       const resolvedInstance = instance ?? '';
@@ -75,7 +75,7 @@ export class ClientRegistry {
     const cutoff = Date.now() - timeoutMs;
     for (const [key, client] of this.clients) {
       if (new Date(client.lastSeen).getTime() < cutoff) {
-        this.onEvent?.({ type: 'client_disconnected', node: client.node, ip: client.ip });
+        this.onEvent?.({ type: 'client_disconnected', node: client.node, ip: client.ip, instance: client.instance });
         this.clients.delete(key);
       }
     }

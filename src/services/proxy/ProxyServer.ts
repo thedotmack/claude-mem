@@ -89,21 +89,25 @@ export class ProxyServer {
     authToken?: string,
     dataDir?: string,
   ) {
+    const effectiveDataDir = typeof hostOrOptions === 'string'
+      ? (dataDir || SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'))
+      : (hostOrOptions.dataDir || SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'));
+
     if (typeof hostOrOptions === 'string') {
       this.serverHost = hostOrOptions;
       this.serverPort = serverPort ?? 37777;
       this.authToken = authToken ?? '';
-      this.buffer = new OfflineBuffer(dataDir ?? '');
+      this.buffer = new OfflineBuffer(effectiveDataDir);
       this.healthCheckIntervalMs = 10_000;
     } else {
       this.serverHost = hostOrOptions.serverHost;
       this.serverPort = hostOrOptions.serverPort;
       this.authToken = hostOrOptions.authToken;
-      this.buffer = new OfflineBuffer(hostOrOptions.dataDir);
+      this.buffer = new OfflineBuffer(effectiveDataDir);
       this.healthCheckIntervalMs = hostOrOptions.healthCheckIntervalMs ?? 10_000;
     }
     this.uiDir = resolveUiDir();
-    this.settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+    this.settingsPath = path.join(effectiveDataDir, 'settings.json');
   }
 
   async start(localPort: number): Promise<void> {
@@ -171,7 +175,12 @@ export class ProxyServer {
         this.readBody(req, (body) => {
           try {
             const updates = JSON.parse(body);
-            const current = JSON.parse(readFileSync(this.settingsPath, 'utf-8'));
+            let current: Record<string, unknown> = {};
+            try {
+              current = JSON.parse(readFileSync(this.settingsPath, 'utf-8'));
+            } catch {
+              // File doesn't exist yet — start fresh
+            }
             const merged = { ...current, ...updates };
             writeFileSync(this.settingsPath, JSON.stringify(merged, null, 2));
             this.jsonResponse(res, 200, { success: true });

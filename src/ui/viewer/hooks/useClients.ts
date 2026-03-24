@@ -15,23 +15,29 @@ function isActive(lastSeen: string): boolean {
  * Existing entries are updated; new ones are added.
  * Entries never removed — they go inactive instead.
  */
+/** Composite key matching ClientRegistry's node\0instance strategy, using | as the viewer-safe delimiter. */
+function clientKey(node: string, instance: string): string {
+  return `${node}|${instance}`;
+}
+
 function mergeClients(
   current: Map<string, TrackedClient>,
   incoming: ClientInfo[]
 ): Map<string, TrackedClient> {
   const next = new Map(current);
   for (const c of incoming) {
-    const existing = next.get(c.node);
+    const key = clientKey(c.node, c.instance);
+    const existing = next.get(key);
     if (existing) {
       // Update with latest data, keep whichever firstSeen is earlier
-      next.set(c.node, {
+      next.set(key, {
         ...existing,
         ...c,
         firstSeen: existing.firstSeen < c.firstSeen ? existing.firstSeen : c.firstSeen,
         active: isActive(c.lastSeen),
       });
     } else {
-      next.set(c.node, { ...c, active: isActive(c.lastSeen) });
+      next.set(key, { ...c, active: isActive(c.lastSeen) });
     }
   }
   return next;
@@ -62,27 +68,29 @@ export function useClients(mode?: string) {
     const now = new Date().toISOString();
     setClientMap(prev => {
       const next = new Map(prev);
-      const existing = next.get(event.node || '');
       const nodeName = event.node || '';
+      const instanceName = event.instance || '';
+      const key = clientKey(nodeName, instanceName);
+      const existing = next.get(key);
 
       switch (event.type) {
         case 'client_connected': {
           if (existing) {
-            next.set(nodeName, {
+            next.set(key, {
               ...existing,
               ip: event.ip || existing.ip,
               mode: event.mode || existing.mode,
-              instance: event.instance || existing.instance,
+              instance: instanceName || existing.instance,
               lastSeen: now,
               requestCount: existing.requestCount + 1,
               active: true,
             });
           } else {
-            next.set(nodeName, {
+            next.set(key, {
               node: nodeName,
               ip: event.ip || '',
               mode: event.mode || 'direct',
-              instance: event.instance || 'default',
+              instance: instanceName,
               firstSeen: now,
               lastSeen: now,
               requestCount: 1,
@@ -93,7 +101,7 @@ export function useClients(mode?: string) {
         }
         case 'client_heartbeat': {
           if (existing) {
-            next.set(nodeName, {
+            next.set(key, {
               ...existing,
               lastSeen: now,
               requestCount: existing.requestCount + 1,
@@ -104,7 +112,7 @@ export function useClients(mode?: string) {
         }
         case 'client_disconnected': {
           if (existing) {
-            next.set(nodeName, {
+            next.set(key, {
               ...existing,
               active: false,
             });

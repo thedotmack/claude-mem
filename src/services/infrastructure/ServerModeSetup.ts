@@ -34,8 +34,13 @@ export async function ensureServerModeReady(
   workerScript?: string
 ): Promise<void> {
   const resolvedPath = settingsPath ?? path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
-  const raw = readFileSync(resolvedPath, 'utf-8');
-  const settings = JSON.parse(raw);
+  let settings: Record<string, unknown>;
+  try {
+    settings = JSON.parse(readFileSync(resolvedPath, 'utf-8'));
+  } catch {
+    // File doesn't exist yet — SettingsDefaultsManager.loadFromFile will create it with defaults
+    settings = { ...SettingsDefaultsManager.loadFromFile(resolvedPath) };
+  }
   let changed = false;
 
   // Auto-generate auth token if empty
