@@ -104,6 +104,59 @@ export class ProxyServer {
       return;
     }
 
+    // SSE stream — pipe directly instead of buffering the entire response
+    if (req.method === 'GET' && req.path === '/stream') {
+      try {
+        const sseHeaders: Record<string, string> = {};
+        if (this.authToken) {
+          sseHeaders['Authorization'] = `Bearer ${this.authToken}`;
+        }
+        sseHeaders['X-Claude-Mem-Node'] = getNodeName();
+        sseHeaders['X-Claude-Mem-Mode'] = 'proxy';
+
+        const sseUrl = `http://${this.serverHost}:${this.serverPort}/stream`;
+        const sseResponse = await fetch(sseUrl, { headers: sseHeaders });
+
+        if (!sseResponse.ok || !sseResponse.body) {
+          res.status(502).json({ error: 'SSE connection failed' });
+          return;
+        }
+
+        // Forward SSE headers
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.flushHeaders();
+
+        // Pipe the stream
+        const reader = sseResponse.body.getReader();
+        const pump = async () => {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              res.write(value);
+            }
+          } catch {
+            // Stream closed (client disconnect or server restart)
+          } finally {
+            res.end();
+          }
+        };
+        pump();
+
+        // Clean up if client disconnects
+        req.on('close', () => {
+          reader.cancel().catch(() => {});
+        });
+        return;
+      } catch {
+        res.status(502).json({ error: 'SSE connection failed' });
+        return;
+      }
+    }
+
     const queryString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
     const targetUrl = `http://${this.serverHost}:${this.serverPort}${req.path}${queryString}`;
 
