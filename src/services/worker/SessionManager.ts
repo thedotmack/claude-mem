@@ -23,9 +23,25 @@ export class SessionManager {
   private sessionQueues: Map<number, EventEmitter> = new Map();
   private onSessionDeletedCallback?: () => void;
   private pendingStore: PendingMessageStore | null = null;
+  private sessionModeOverrides: Map<number, string> = new Map();
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
+  }
+
+  /**
+   * Set a per-session mode override (e.g., when GStack skill is detected)
+   */
+  setModeOverride(sessionDbId: number, modeId: string): void {
+    this.sessionModeOverrides.set(sessionDbId, modeId);
+    logger.info('SESSION', `Mode override set for session ${sessionDbId}: ${modeId}`);
+  }
+
+  /**
+   * Get per-session mode override, if any
+   */
+  getModeOverride(sessionDbId: number): string | undefined {
+    return this.sessionModeOverrides.get(sessionDbId);
   }
 
   /**
@@ -325,6 +341,7 @@ export class SessionManager {
     // 4. Cleanup
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
+    this.sessionModeOverrides.delete(sessionDbId);
 
     logger.info('SESSION', 'Session deleted', {
       sessionId: sessionDbId,
@@ -349,6 +366,7 @@ export class SessionManager {
 
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
+    this.sessionModeOverrides.delete(sessionDbId);
 
     logger.info('SESSION', 'Session removed from active sessions', {
       sessionId: sessionDbId,

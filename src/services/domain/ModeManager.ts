@@ -16,6 +16,7 @@ export class ModeManager {
   private static instance: ModeManager | null = null;
   private activeMode: ModeConfig | null = null;
   private modesDir: string;
+  private resolvedModes: Map<string, ModeConfig> = new Map();
 
   private constructor() {
     // Modes are in plugin/modes/
@@ -205,6 +206,23 @@ export class ModeManager {
       throw new Error('No mode loaded. Call loadMode() first.');
     }
     return this.activeMode;
+  }
+
+  /**
+   * Resolve a mode by ID without changing the global active mode.
+   * Used for per-session mode overrides (e.g., GStack auto-detection).
+   * Caches results to avoid re-reading files on every prompt.
+   */
+  resolveMode(modeId: string): ModeConfig {
+    const cached = this.resolvedModes.get(modeId);
+    if (cached) return cached;
+
+    // Temporarily save and restore activeMode since loadMode() sets it as a side effect
+    const previousActive = this.activeMode;
+    const resolved = this.loadMode(modeId);
+    this.activeMode = previousActive;
+    this.resolvedModes.set(modeId, resolved);
+    return resolved;
   }
 
   /**
