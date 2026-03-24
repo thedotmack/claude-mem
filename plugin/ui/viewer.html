@@ -1041,7 +1041,83 @@
     /* Project badge styling */
     .card-project {
       color: var(--color-text-muted);
+      background: var(--color-bg-tertiary);
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 11px;
     }
+
+    /* ── MetadataFooter pills ── */
+    .meta-pills {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px solid var(--color-border-primary);
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 9px;
+      font-size: 11px;
+      font-family: var(--font-terminal);
+      font-weight: 500;
+      white-space: nowrap;
+      line-height: 1.4;
+    }
+    .pill-ico {
+      font-size: 9px;
+      opacity: 0.65;
+    }
+    .pill--id {
+      background: rgba(148,163,184,0.12);
+      color: var(--color-text-tertiary);
+    }
+    .pill--date {
+      background: rgba(148,163,184,0.08);
+      color: var(--color-text-tertiary);
+    }
+    .pill--node {
+      background: rgba(34,197,94,0.10);
+      color: #4ade80;
+    }
+    .pill--platform-claude {
+      background: rgba(96,165,250,0.10);
+      color: #60a5fa;
+    }
+    .pill--platform-cursor {
+      background: rgba(167,139,250,0.10);
+      color: #a78bfa;
+    }
+    .pill--platform-raw {
+      background: rgba(148,163,184,0.10);
+      color: var(--color-text-tertiary);
+    }
+    .pill--instance {
+      background: rgba(251,191,36,0.10);
+      color: #fbbf24;
+    }
+    .pill--muted {
+      background: rgba(148,163,184,0.06);
+      color: var(--color-text-muted);
+      font-style: italic;
+    }
+
+    /* Light mode pill adjustments */
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme="dark"]) .pill--node { background: rgba(22,163,74,0.08); color: #15803d; }
+      :root:not([data-theme="dark"]) .pill--platform-claude { background: rgba(37,99,235,0.08); color: #2563eb; }
+      :root:not([data-theme="dark"]) .pill--platform-cursor { background: rgba(124,58,237,0.08); color: #7c3aed; }
+      :root:not([data-theme="dark"]) .pill--instance { background: rgba(217,119,6,0.08); color: #b45309; }
+    }
+    [data-theme="light"] .pill--node { background: rgba(22,163,74,0.08); color: #15803d; }
+    [data-theme="light"] .pill--platform-claude { background: rgba(37,99,235,0.08); color: #2563eb; }
+    [data-theme="light"] .pill--platform-cursor { background: rgba(124,58,237,0.08); color: #7c3aed; }
+    [data-theme="light"] .pill--instance { background: rgba(217,119,6,0.08); color: #b45309; }
 
     .summary-card {
       border-color: var(--color-border-summary);
