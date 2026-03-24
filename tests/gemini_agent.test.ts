@@ -119,7 +119,8 @@ describe('GeminiAgent', () => {
 
     mockSessionManager = {
       getMessageIterator: async function* () { yield* []; },
-      getPendingMessageStore: () => mockPendingMessageStore
+      getPendingMessageStore: () => mockPendingMessageStore,
+      getModeOverride: mock(() => undefined)
     } as unknown as SessionManager;
 
     agent = new GeminiAgent(mockDbManager, mockSessionManager);

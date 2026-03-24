@@ -91,6 +91,7 @@ describe('ResponseProcessor', () => {
         cleanupProcessed: mock(() => 0),
         resetStuckMessages: mock(() => 0),
       }),
+      getModeOverride: mock(() => undefined),
     } as unknown as SessionManager;
 
     mockBroadcast = mock(() => {});
