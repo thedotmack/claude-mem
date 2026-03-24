@@ -84,6 +84,14 @@ export function NetworkTopology({ mode, health, clients, authToken }: NetworkTop
   return (
     <div className="topology-bar">
       <div className="topology-row">
+        {/* Local node identity */}
+        {health.node && (
+          <div className="topology-segment">
+            <span className="topology-serving-label">Running as</span>
+            <span className="topology-node-name">{health.node}</span>
+          </div>
+        )}
+
         {/* Connection target */}
         <div className="topology-segment">
           <span className="topology-arrow">
@@ -93,7 +101,7 @@ export function NetworkTopology({ mode, health, clients, authToken }: NetworkTop
             </svg>
           </span>
           <span className="topology-connect-label">Connected to</span>
-          <span className="topology-node-name">{health.serverHost || health.node || 'unknown'}</span>
+          <span className="topology-node-name">{health.serverHost || 'unknown'}</span>
         </div>
 
         {/* Reachable indicator */}

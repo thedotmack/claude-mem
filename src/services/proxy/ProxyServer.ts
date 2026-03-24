@@ -84,6 +84,7 @@ export class ProxyServer {
         status: 'ok',
         mode: 'client',
         proxy: true,
+        node: getNodeName(),
         serverReachable: this.serverReachable,
         serverHost: this.serverHost,
         pendingBuffer: this.buffer.pendingCount(),
