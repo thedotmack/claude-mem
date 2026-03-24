@@ -3142,12 +3142,24 @@
       width: 6px;
       height: 6px;
       border-radius: 50%;
-      background: #16a34a;
       flex-shrink: 0;
     }
-
-    [data-theme="dark"] .topology-client-dot {
+    .topology-client-dot--active {
+      background: #16a34a;
+      box-shadow: 0 0 4px rgba(34,197,94,0.4);
+    }
+    .topology-client-dot--inactive {
+      background: #94a3b8;
+    }
+    [data-theme="dark"] .topology-client-dot--active {
       background: #4ade80;
+      box-shadow: 0 0 4px rgba(74,222,128,0.3);
+    }
+    [data-theme="dark"] .topology-client-dot--inactive {
+      background: #64748b;
+    }
+    .topology-client-chip--inactive {
+      opacity: 0.55;
     }
 
     .topology-client-name {

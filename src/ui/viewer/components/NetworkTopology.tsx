@@ -1,10 +1,10 @@
 import React from 'react';
-import { HealthData, ClientInfo } from '../types';
+import { HealthData, TrackedClient } from '../types';
 
 interface NetworkTopologyProps {
   mode: 'server' | 'client';
   health: HealthData;
-  clients: ClientInfo[];
+  clients: TrackedClient[];
   authToken?: string;
 }
 
@@ -28,6 +28,8 @@ function maskToken(token: string): string {
 
 export function NetworkTopology({ mode, health, clients, authToken }: NetworkTopologyProps) {
   if (mode === 'server') {
+    const activeCount = clients.filter(c => c.active).length;
+
     return (
       <div className="topology-bar">
         <div className="topology-row">
@@ -56,8 +58,11 @@ export function NetworkTopology({ mode, health, clients, authToken }: NetworkTop
         {clients.length > 0 && (
           <div className="topology-clients">
             {clients.map((client) => (
-              <div key={client.node} className="topology-client-chip">
-                <span className="topology-client-dot" />
+              <div
+                key={client.node}
+                className={`topology-client-chip ${client.active ? '' : 'topology-client-chip--inactive'}`}
+              >
+                <span className={`topology-client-dot ${client.active ? 'topology-client-dot--active' : 'topology-client-dot--inactive'}`} />
                 <span className="topology-client-name">{client.node}</span>
                 <span className="topology-client-stats">
                   {client.requestCount} req{client.requestCount !== 1 ? 's' : ''}
