@@ -5,6 +5,8 @@
  * Each request carrying x-claude-mem-node header calls touch() to update the map.
  */
 
+import { logger } from '../../utils/logger.js';
+
 export interface ClientInfo {
   node: string;
   ip: string;
@@ -107,4 +109,9 @@ export class ClientRegistry {
 }
 
 /** Singleton instance shared across the process */
-export const clientRegistry = new ClientRegistry();
+export const clientRegistry = new ClientRegistry((event) => {
+  // NOTE: SSE broadcasting of client events requires WorkerService integration (v2).
+  // The events are typed and ready; wiring to SSEBroadcaster is deferred because
+  // ClientRegistry is a singleton that doesn't have access to SSEBroadcaster.
+  logger.debug('NETWORK', `Client ${event.type}`, { node: event.node });
+});

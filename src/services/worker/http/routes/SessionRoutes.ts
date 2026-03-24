@@ -780,6 +780,10 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Set origin tracking on the store so saveUserPrompt includes node/platform/instance
+    // KNOWN LIMITATION: _currentNode/_currentPlatform/_currentInstance are mutable on the
+    // shared SessionStore. Concurrent requests from different nodes may stomp each other.
+    // Proper fix: pass these as parameters to saveUserPrompt(). Deferred to avoid changing
+    // the SessionStore API in this feature branch.
     const node = headerString(req.headers['x-claude-mem-node']) || getNodeName();
     const platform = req.body.platform || headerString(req.headers['x-claude-mem-platform']) || null;
     const instance = headerString(req.headers['x-claude-mem-instance']) || contentSessionId || null;

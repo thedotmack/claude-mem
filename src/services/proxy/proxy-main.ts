@@ -9,7 +9,6 @@
  */
 
 import path from 'path';
-import { homedir } from 'os';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { getNodeName, getNetworkMode } from '../../shared/node-identity.js';
 import { writePidFile, readPidFile, removePidFile, isProcessAlive } from '../infrastructure/ProcessManager.js';
@@ -47,6 +46,9 @@ async function main() {
   process.on('unhandledRejection', (reason) => {
     logger.error('PROXY', 'Unhandled rejection', { reason: reason instanceof Error ? reason.message : String(reason) });
   });
+
+  process.on('SIGTERM', () => { removePidFile(); process.exit(0); });
+  process.on('SIGINT', () => { removePidFile(); process.exit(0); });
 
   const proxy = new ProxyServer(serverHost, serverPort, authToken, dataDir);
   await proxy.start(port);

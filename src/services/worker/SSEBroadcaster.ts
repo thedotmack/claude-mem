@@ -28,12 +28,14 @@ export interface NetworkClientHeartbeatEvent extends SSEEvent {
   type: 'client_heartbeat';
   node: string;
   ip: string;
+  instance?: string;
 }
 
 export interface NetworkClientDisconnectedEvent extends SSEEvent {
   type: 'client_disconnected';
   node: string;
   ip: string;
+  instance?: string;
 }
 
 export interface NetworkBufferReplayEvent extends SSEEvent {

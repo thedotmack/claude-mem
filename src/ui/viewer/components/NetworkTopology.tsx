@@ -59,7 +59,7 @@ export function NetworkTopology({ mode, health, clients, authToken }: NetworkTop
           <div className="topology-clients">
             {clients.map((client) => (
               <div
-                key={client.node}
+                key={client.node + '|' + client.instance}
                 className={`topology-client-chip ${client.active ? '' : 'topology-client-chip--inactive'}`}
               >
                 <span className={`topology-client-dot ${client.active ? 'topology-client-dot--active' : 'topology-client-dot--inactive'}`} />

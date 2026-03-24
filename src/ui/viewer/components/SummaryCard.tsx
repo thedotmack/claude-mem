@@ -58,7 +58,6 @@ export function SummaryCard({ summary }: SummaryCardProps) {
           node={summary.node}
           platform={summary.platform}
           instance={summary.instance}
-          sessionId={summary.session_id}
         />
       </footer>
     </article>

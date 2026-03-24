@@ -258,11 +258,17 @@ export async function bufferedPostRequest(
     const settingsPath = path.join(dataDir, 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     const authToken = settings.CLAUDE_MEM_AUTH_TOKEN;
+    let parsedBody: any;
+    try {
+      parsedBody = JSON.parse(body);
+    } catch {
+      parsedBody = body;
+    }
     buffer.append({
       ts: new Date().toISOString(),
       method: 'POST',
       path: apiPath,
-      body: JSON.parse(body),
+      body: parsedBody,
       node: getNodeName(),
       headers: {
         ...headers,

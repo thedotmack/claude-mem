@@ -121,7 +121,6 @@ export function ObservationCard({ observation }: ObservationCardProps) {
           node={observation.node}
           platform={observation.platform}
           instance={observation.instance}
-          sessionId={observation.memory_session_id}
         />
         {showFacts && (concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>

@@ -29,7 +29,7 @@ export function createAuthMiddleware(
   const { onAuthRejected } = options;
 
   return (req: Request, res: Response, next: NextFunction) => {
-    const clientIp = req.ip || req.connection.remoteAddress || '';
+    const clientIp = req.ip || req.socket?.remoteAddress || '';
     const isLocal = clientIp === '127.0.0.1' || clientIp === '::1'
       || clientIp === '::ffff:127.0.0.1' || clientIp === 'localhost';
     if (isLocal) return next();

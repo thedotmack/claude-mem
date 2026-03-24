@@ -17,6 +17,8 @@ export function useHealth() {
 
   useEffect(() => {
     loadHealth();
+    const interval = setInterval(loadHealth, 15_000);
+    return () => clearInterval(interval);
   }, [loadHealth]);
 
   return { health, refreshHealth: loadHealth };

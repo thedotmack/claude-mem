@@ -35,12 +35,15 @@ export class OfflineBuffer {
     } catch {}
   }
 
-  /** Read all buffered requests (FIFO order). */
+  /** Read all buffered requests (FIFO order). Skips corrupt lines silently. */
   readAll(): BufferedRequest[] {
     if (!existsSync(this.bufferPath)) return [];
     const content = readFileSync(this.bufferPath, 'utf-8').trim();
     if (!content) return [];
-    return content.split('\n').map(line => JSON.parse(line));
+    return content.split('\n')
+      .filter(line => line.trim())
+      .map(line => { try { return JSON.parse(line); } catch { return null; } })
+      .filter(Boolean) as BufferedRequest[];
   }
 
   /** Get number of pending requests. */

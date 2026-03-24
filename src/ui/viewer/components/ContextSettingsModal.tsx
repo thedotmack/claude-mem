@@ -137,10 +137,6 @@ function TokenField({
 }) {
   const [revealed, setRevealed] = useState(false);
 
-  const maskedValue = value
-    ? value.slice(0, 4) + '\u2022'.repeat(Math.min(value.length - 4, 8))
-    : '';
-
   return (
     <div className="token-field-wrapper">
       <input

@@ -71,7 +71,7 @@ export function createMiddleware(
       }
     },
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Claude-Mem-Node', 'X-Claude-Mem-Instance', 'X-Claude-Mem-Mode'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Claude-Mem-Node', 'X-Claude-Mem-Instance', 'X-Claude-Mem-Mode', 'X-Claude-Mem-Platform'],
     credentials: false
   }));
 
@@ -116,7 +116,7 @@ export function createMiddleware(
  * Used for admin endpoints that should not be exposed when binding to 0.0.0.0
  */
 export function requireLocalhost(req: Request, res: Response, next: NextFunction): void {
-  const clientIp = req.ip || req.connection.remoteAddress || '';
+  const clientIp = req.ip || req.socket?.remoteAddress || '';
   const isLocalhost =
     clientIp === '127.0.0.1' ||
     clientIp === '::1' ||

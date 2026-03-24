@@ -18,7 +18,6 @@ interface HeaderProps {
   onContextPreviewToggle: () => void;
   version?: string;
   mode?: 'standalone' | 'server' | 'client';
-  connectedClients?: number;
   activeClients?: number;
   totalClients?: number;
   health: HealthData;
@@ -38,7 +37,6 @@ export function Header({
   onContextPreviewToggle,
   version,
   mode,
-  connectedClients,
   activeClients,
   totalClients,
   health,

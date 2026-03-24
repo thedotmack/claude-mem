@@ -10,23 +10,40 @@ import path from 'path';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
 
+let cachedNodeName: string | null = null;
+
 /**
  * Get the node name for this machine.
  * Priority: CLAUDE_MEM_NODE_NAME env var > settings file > os.hostname()
+ * Result is cached after first call (same pattern as getWorkerPort()).
  */
 export function getNodeName(): string {
-  if (process.env.CLAUDE_MEM_NODE_NAME) return process.env.CLAUDE_MEM_NODE_NAME;
+  if (cachedNodeName !== null) return cachedNodeName;
+
+  if (process.env.CLAUDE_MEM_NODE_NAME) {
+    cachedNodeName = process.env.CLAUDE_MEM_NODE_NAME;
+    return cachedNodeName;
+  }
 
   try {
     const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
     const settingsPath = path.join(dataDir, 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    if (settings.CLAUDE_MEM_NODE_NAME) return settings.CLAUDE_MEM_NODE_NAME;
+    if (settings.CLAUDE_MEM_NODE_NAME) {
+      cachedNodeName = settings.CLAUDE_MEM_NODE_NAME;
+      return cachedNodeName;
+    }
   } catch (error) {
     logger.debug('SYSTEM', 'Failed to load node name from settings', { error: error instanceof Error ? error.message : String(error) });
   }
 
-  return hostname();
+  cachedNodeName = hostname();
+  return cachedNodeName;
+}
+
+/** Clear the cached node name. Call this when settings are updated. */
+export function clearNodeNameCache(): void {
+  cachedNodeName = null;
 }
 
 /**
