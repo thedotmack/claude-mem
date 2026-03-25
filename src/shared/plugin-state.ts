@@ -10,6 +10,15 @@ import { homedir } from 'os';
 const PLUGIN_SETTINGS_KEY = 'claude-mem@thedotmack';
 
 /**
+ * Check if claude-mem is disabled via CLAUDE_MEM_DISABLED env var (#1484).
+ * Intended for orchestration platforms (e.g. Paperclip) that need to disable
+ * claude-mem per-session without affecting auth or global plugin state.
+ */
+export function isDisabledByEnvVar(): boolean {
+  return process.env.CLAUDE_MEM_DISABLED === '1';
+}
+
+/**
  * Check if claude-mem is disabled in Claude Code's settings (#781).
  * Sync read + JSON parse for speed — called before any async work.
  * Returns true only if the plugin is explicitly disabled (enabledPlugins[key] === false).

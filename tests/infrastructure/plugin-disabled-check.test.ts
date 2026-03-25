@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { isPluginDisabledInClaudeSettings } from '../../src/shared/plugin-state.js';
+import { isPluginDisabledInClaudeSettings, isDisabledByEnvVar } from '../../src/shared/plugin-state.js';
 
 /**
  * Tests for isPluginDisabledInClaudeSettings() (#781).
@@ -87,5 +87,46 @@ describe('isPluginDisabledInClaudeSettings (#781)', () => {
   it('should return false when settings.json is empty', () => {
     writeFileSync(join(tempDir, 'settings.json'), '');
     expect(isPluginDisabledInClaudeSettings()).toBe(false);
+  });
+});
+
+describe('isDisabledByEnvVar (#1484)', () => {
+  let originalValue: string | undefined;
+
+  beforeEach(() => {
+    originalValue = process.env.CLAUDE_MEM_DISABLED;
+  });
+
+  afterEach(() => {
+    if (originalValue !== undefined) {
+      process.env.CLAUDE_MEM_DISABLED = originalValue;
+    } else {
+      delete process.env.CLAUDE_MEM_DISABLED;
+    }
+  });
+
+  it('should return true when CLAUDE_MEM_DISABLED is "1"', () => {
+    process.env.CLAUDE_MEM_DISABLED = '1';
+    expect(isDisabledByEnvVar()).toBe(true);
+  });
+
+  it('should return false when CLAUDE_MEM_DISABLED is not set', () => {
+    delete process.env.CLAUDE_MEM_DISABLED;
+    expect(isDisabledByEnvVar()).toBe(false);
+  });
+
+  it('should return false when CLAUDE_MEM_DISABLED is "0"', () => {
+    process.env.CLAUDE_MEM_DISABLED = '0';
+    expect(isDisabledByEnvVar()).toBe(false);
+  });
+
+  it('should return false when CLAUDE_MEM_DISABLED is "true"', () => {
+    process.env.CLAUDE_MEM_DISABLED = 'true';
+    expect(isDisabledByEnvVar()).toBe(false);
+  });
+
+  it('should return false when CLAUDE_MEM_DISABLED is empty string', () => {
+    process.env.CLAUDE_MEM_DISABLED = '';
+    expect(isDisabledByEnvVar()).toBe(false);
   });
 });

@@ -79,6 +79,13 @@ function findBun() {
   return null;
 }
 
+// Early exit if disabled via environment variable (#1484).
+// Allows orchestration platforms (e.g. Paperclip) to disable claude-mem
+// per-session without affecting auth or global plugin state.
+if (process.env.CLAUDE_MEM_DISABLED === '1') {
+  process.exit(0);
+}
+
 // Early exit if plugin is disabled in Claude Code settings (#781).
 // Sync read + JSON parse — fastest possible check before spawning Bun.
 function isPluginDisabledInClaudeSettings() {

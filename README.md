@@ -287,6 +287,21 @@ Settings are managed in `~/.claude-mem/settings.json` (auto-created with default
 
 See the **[Configuration Guide](https://docs.claude-mem.ai/configuration)** for all available settings and examples.
 
+### Disabling for Headless/Agent Sessions
+
+If you run Claude Code in headless or multi-agent setups (e.g. Paperclip, CI pipelines), you can disable claude-mem per-session with an environment variable:
+
+```bash
+CLAUDE_MEM_DISABLED=1 claude --print "your prompt here"
+```
+
+This is useful when:
+- Agent sessions should not inject or record observations
+- You want to avoid token waste from context injection in automated pipelines
+- Cross-contamination between agent and user sessions is a concern
+
+Unlike `CLAUDE_CONFIG_DIR` overrides, this does not break OAuth authentication.
+
 ---
 
 ## Development
