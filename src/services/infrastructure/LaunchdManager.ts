@@ -23,6 +23,16 @@ export interface LaunchdConfig {
 
 const LAUNCH_AGENTS_DIR = path.join(homedir(), 'Library', 'LaunchAgents');
 
+/** Escape XML special characters for safe plist value interpolation. */
+function escapeXml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 /**
  * Resolve the plist file path for a given service label.
  */
@@ -63,22 +73,22 @@ export function generatePlist(config: LaunchdConfig): string {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>${label}</string>
+  <key>Label</key><string>${escapeXml(label)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${executablePath}</string>
-    <string>${scriptPath}</string>
+    <string>${escapeXml(executablePath)}</string>
+    <string>${escapeXml(scriptPath)}</string>
     <string>--daemon</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>${stdoutLog}</string>
-  <key>StandardErrorPath</key><string>${stderrLog}</string>
+  <key>StandardOutPath</key><string>${escapeXml(stdoutLog)}</string>
+  <key>StandardErrorPath</key><string>${escapeXml(stderrLog)}</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>CLAUDE_MEM_WORKER_PORT</key><string>${port}</string>
-    <key>PATH</key><string>${launchdPath}</string>
-    <key>HOME</key><string>${homeDir}</string>
+    <key>PATH</key><string>${escapeXml(launchdPath)}</string>
+    <key>HOME</key><string>${escapeXml(homeDir)}</string>
   </dict>
 </dict>
 </plist>

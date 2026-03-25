@@ -83,33 +83,40 @@ export function getTimelineAroundObservation(
   let endEpoch: number;
 
   if (anchorObservationId !== null) {
-    // Get boundary observations by ID offset
+    // Resolve the anchor observation's timestamp first, then window by time.
+    // With OfflineBuffer replay, older events can be inserted with newer IDs,
+    // so ID ordering is not a reliable proxy for chronology.
+    const anchorRow = db.prepare(
+      `SELECT created_at_epoch FROM observations WHERE id = ?`
+    ).get(anchorObservationId) as { created_at_epoch: number } | null;
+
+    const resolvedEpoch = anchorRow?.created_at_epoch ?? anchorEpoch;
+
     const beforeQuery = `
-      SELECT id, created_at_epoch
+      SELECT created_at_epoch
       FROM observations
-      WHERE id <= ? ${projectFilter}
-      ORDER BY id DESC
+      WHERE created_at_epoch <= ? ${projectFilter}
+      ORDER BY created_at_epoch DESC
       LIMIT ?
     `;
     const afterQuery = `
-      SELECT id, created_at_epoch
+      SELECT created_at_epoch
       FROM observations
-      WHERE id >= ? ${projectFilter}
-      ORDER BY id ASC
+      WHERE created_at_epoch >= ? ${projectFilter}
+      ORDER BY created_at_epoch ASC
       LIMIT ?
     `;
 
     try {
-      const beforeRecords = db.prepare(beforeQuery).all(anchorObservationId, ...projectParams, depthBefore + 1) as Array<{id: number; created_at_epoch: number}>;
-      const afterRecords = db.prepare(afterQuery).all(anchorObservationId, ...projectParams, depthAfter + 1) as Array<{id: number; created_at_epoch: number}>;
+      const beforeRecords = db.prepare(beforeQuery).all(resolvedEpoch, ...projectParams, depthBefore + 1) as Array<{created_at_epoch: number}>;
+      const afterRecords = db.prepare(afterQuery).all(resolvedEpoch, ...projectParams, depthAfter + 1) as Array<{created_at_epoch: number}>;
 
-      // Get the earliest and latest timestamps from boundary observations
       if (beforeRecords.length === 0 && afterRecords.length === 0) {
         return { observations: [], sessions: [], prompts: [] };
       }
 
-      startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
-      endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
+      startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : resolvedEpoch;
+      endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : resolvedEpoch;
     } catch (err: any) {
       logger.error('DB', 'Error getting boundary observations', undefined, { error: err, project });
       return { observations: [], sessions: [], prompts: [] };

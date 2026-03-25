@@ -106,7 +106,7 @@ export async function processAgentResponse(
     originalTimestamp ?? undefined,
     session.node || getNodeName(),
     session.platform || null,
-    session.instance || session.contentSessionId || null
+    session.instance ?? null
   );
 
   // Log storage result with IDs for end-to-end traceability
@@ -242,7 +242,7 @@ async function syncAndBroadcastObservations(
       created_at_epoch: result.createdAtEpoch,
       node: session.node || nodeName,
       platform: session.platform || null,
-      instance: session.instance || session.contentSessionId || null
+      instance: session.instance ?? null
     });
   }
 
@@ -332,7 +332,7 @@ async function syncAndBroadcastSummary(
     created_at_epoch: result.createdAtEpoch,
     node: session.node || nodeName,
     platform: session.platform || null,
-    instance: session.instance || session.contentSessionId || null
+    instance: session.instance ?? null
   });
 
   // Update Cursor context file for registered projects (fire-and-forget)

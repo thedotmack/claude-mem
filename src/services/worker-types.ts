@@ -151,6 +151,10 @@ export interface Summary {
   notes: string | null;
   created_at: string;
   created_at_epoch: number;
+  // Multi-machine provenance (nullable — populated only in network mode)
+  node: string | null;
+  platform: string | null;
+  instance: string | null;
 }
 
 export interface UserPrompt {

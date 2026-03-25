@@ -1284,6 +1284,17 @@ async function main() {
         // Don't exit — keep the HTTP server running
       });
 
+      // Server mode: ensure provisioning even when first entry is via --daemon
+      // (e.g., spawned by hook/restart rather than explicit 'start' command)
+      if (getNetworkMode() === 'server') {
+        try {
+          await ensureServerModeReady(undefined, __filename);
+        } catch (error) {
+          logger.error('SYSTEM', 'Server mode setup failed in daemon path', {}, error as Error);
+          process.exit(1);
+        }
+      }
+
       // Client mode: start ProxyServer instead of WorkerService
       if (getNetworkMode() === 'client') {
         const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
@@ -1298,6 +1309,10 @@ async function main() {
         const serverPort = parseInt(settings.CLAUDE_MEM_SERVER_PORT || '37777', 10);
         const authToken = settings.CLAUDE_MEM_AUTH_TOKEN || '';
         const dataDir = settings.CLAUDE_MEM_DATA_DIR || SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+
+        if (!authToken) {
+          logger.warn('SYSTEM', 'Client mode: no CLAUDE_MEM_AUTH_TOKEN configured — remote requests will be rejected by the server (401)');
+        }
 
         // Import ProxyServer dynamically (only needed in client mode)
         const { ProxyServer } = await import('./proxy/ProxyServer.js');

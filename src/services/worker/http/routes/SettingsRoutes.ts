@@ -336,6 +336,31 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    // Validate CLAUDE_MEM_NETWORK_MODE
+    if (settings.CLAUDE_MEM_NETWORK_MODE) {
+      const validModes = ['standalone', 'server', 'client'];
+      if (!validModes.includes(settings.CLAUDE_MEM_NETWORK_MODE)) {
+        return { valid: false, error: 'CLAUDE_MEM_NETWORK_MODE must be "standalone", "server", or "client"' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_SERVER_PORT
+    if (settings.CLAUDE_MEM_SERVER_PORT) {
+      const port = parseInt(settings.CLAUDE_MEM_SERVER_PORT, 10);
+      if (isNaN(port) || port < 1024 || port > 65535) {
+        return { valid: false, error: 'CLAUDE_MEM_SERVER_PORT must be between 1024 and 65535' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_SERVER_HOST (IP address or hostname)
+    if (settings.CLAUDE_MEM_SERVER_HOST) {
+      const host = settings.CLAUDE_MEM_SERVER_HOST;
+      const validHostPattern = /^(localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*)$/;
+      if (!validHostPattern.test(host)) {
+        return { valid: false, error: 'CLAUDE_MEM_SERVER_HOST must be a valid IP address or hostname' };
+      }
+    }
+
     // Validate CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES
     if (settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES) {
       const count = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES, 10);
