@@ -145,6 +145,9 @@ export class PendingMessageStore {
    * Used by OpenRouterAgent for batch-parallel LLM calls.
    */
   claimBatch(sessionDbId: number, limit: number): PersistentPendingMessage[] {
+    if (!Number.isFinite(limit) || !Number.isInteger(limit) || limit <= 0) {
+      throw new RangeError(`claimBatch: limit must be a positive integer, got ${limit}`);
+    }
     const claimTx = this.db.transaction((sessionId: number, batchLimit: number) => {
       const now = Date.now();
       // Self-healing: reset stale 'processing' messages back to 'pending'
