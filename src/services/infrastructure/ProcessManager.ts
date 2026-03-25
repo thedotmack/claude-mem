@@ -50,7 +50,15 @@ function isBunExecutablePath(executablePath: string | undefined | null): boolean
   return /(^|[\\/])bun(\.exe)?$/i.test(executablePath.trim());
 }
 
-function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): string | null {
+/**
+ * Look up a binary in the system PATH
+ * Uses 'where' on Windows, 'which' on Unix-like systems
+ *
+ * @param binaryName - Name of the binary to find
+ * @param platform - Target platform (usually process.platform)
+ * @returns Full path to the binary or null if not found
+ */
+export function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): string | null {
   const command = platform === 'win32' ? `where ${binaryName}` : `which ${binaryName}`;
 
   try {

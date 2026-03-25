@@ -17,6 +17,7 @@ import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import { getWorkerPort, workerHttpRequest } from '../../shared/worker-utils.js';
 import { DATA_DIR, MARKETPLACE_ROOT, CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { lookupBinaryInPath } from '../infrastructure/ProcessManager.js';
 import {
   readCursorRegistry as readCursorRegistryFromFile,
   writeCursorRegistry as writeCursorRegistryToFile,
@@ -597,20 +598,17 @@ export function checkCursorHooksStatus(): number {
  * Checks for the Claude Code CLI and plugin directory
  */
 export async function detectClaudeCode(): Promise<boolean> {
-  try {
-    // Check for Claude Code CLI
-    const { stdout } = await execAsync('which claude || where claude', { timeout: 5000 });
-    if (stdout.trim()) {
-      return true;
-    }
-  } catch (error) {
-    // [ANTI-PATTERN IGNORED]: Fallback behavior - CLI not found, continue to directory check
-    logger.debug('SYSTEM', 'Claude CLI not in PATH', {}, error as Error);
+  // Check for Claude Code CLI using platform-appropriate command lookup
+  const claudePath = lookupBinaryInPath('claude', process.platform);
+  if (claudePath) {
+    logger.debug('SYSTEM', 'Found Claude Code CLI', { path: claudePath });
+    return true;
   }
 
   // Check for Claude Code plugin directory (respects CLAUDE_CONFIG_DIR)
   const pluginDir = path.join(CLAUDE_CONFIG_DIR, 'plugins');
   if (existsSync(pluginDir)) {
+    logger.debug('SYSTEM', 'Found Claude Code plugin directory', { path: pluginDir });
     return true;
   }
 
