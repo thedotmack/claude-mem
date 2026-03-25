@@ -453,16 +453,17 @@ export async function aggressiveStartupCleanup(): Promise<void> {
   const pidsToKill: number[] = [];
   const allPatterns = [...AGGRESSIVE_CLEANUP_PATTERNS, ...AGE_GATED_CLEANUP_PATTERNS];
 
-  // Protect parent process (the hook that spawned us) and the PID-file-registered
-  // worker from being killed. Without this, a new daemon kills its own parent hook
-  // process (#1426) and any already-running worker the PID file points to.
+  // Protect parent process (the hook that spawned us) from being killed.
+  // Without this, a new daemon kills its own parent hook process (#1426).
+  //
+  // Note: readPidFile() is not used here because start() writes the new PID
+  // before initializeBackground() calls this function, so readPidFile() would
+  // just return process.pid (already protected). If a pre-existing worker needs
+  // protection, ensureWorkerStarted() handles that by returning early when a
+  // healthy worker is detected — we never reach this code in that case.
   const protectedPids = new Set<number>([currentPid]);
   if (process.ppid && process.ppid > 0) {
     protectedPids.add(process.ppid);
-  }
-  const pidFileInfo = readPidFile();
-  if (pidFileInfo?.pid && pidFileInfo.pid > 0) {
-    protectedPids.add(pidFileInfo.pid);
   }
 
   try {

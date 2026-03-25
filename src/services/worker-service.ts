@@ -985,6 +985,11 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   // than a dead worker. Users must manually restart after genuine plugin updates.
   // See also: #566, #665, #667, #669, #689, #1124, #1145 (same pattern across 8+ releases).
   if (await waitForHealth(port, 1000)) {
+    // Health passed — worker is listening. Also wait for readiness in case
+    // another hook just spawned it and background init is still running.
+    // This mirrors the fresh-spawn path (line ~1025) so concurrent hooks
+    // don't race past a cold-starting worker's initialization guard.
+    await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     logger.info('SYSTEM', 'Worker already running and healthy');
     return true;
   }
