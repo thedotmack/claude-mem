@@ -87,7 +87,7 @@ export class PendingMessageStore {
 
   /**
    * Atomically claim the next pending message by marking it as 'processing'.
-   * Self-healing: resets any stale 'processing' messages (>60s) back to 'pending' first.
+   * Self-healing: resets any stale 'processing' messages (>300s / 5 minutes) back to 'pending' first.
    * Message stays in DB until confirmProcessed() is called.
    * Uses a transaction to prevent race conditions.
    */
@@ -141,7 +141,7 @@ export class PendingMessageStore {
 
   /**
    * Atomically claim up to `limit` pending messages by marking them as 'processing'.
-   * Self-healing: resets any stale 'processing' messages (>60s) back to 'pending' first.
+   * Self-healing: resets any stale 'processing' messages (>300s / 5 minutes) back to 'pending' first.
    * Used by OpenRouterAgent for batch-parallel LLM calls.
    */
   claimBatch(sessionDbId: number, limit: number): PersistentPendingMessage[] {
