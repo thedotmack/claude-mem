@@ -989,7 +989,10 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
     // another hook just spawned it and background init is still running.
     // This mirrors the fresh-spawn path (line ~1025) so concurrent hooks
     // don't race past a cold-starting worker's initialization guard.
-    await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+    const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+    if (!ready) {
+      logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
+    }
     logger.info('SYSTEM', 'Worker already running and healthy');
     return true;
   }
