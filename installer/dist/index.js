@@ -25,6 +25,62 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
+// node_modules/sisteransi/src/index.js
+var require_src = __commonJS({
+  "node_modules/sisteransi/src/index.js"(exports, module) {
+    "use strict";
+    var ESC = "\x1B";
+    var CSI = `${ESC}[`;
+    var beep = "\x07";
+    var cursor = {
+      to(x3, y2) {
+        if (!y2) return `${CSI}${x3 + 1}G`;
+        return `${CSI}${y2 + 1};${x3 + 1}H`;
+      },
+      move(x3, y2) {
+        let ret = "";
+        if (x3 < 0) ret += `${CSI}${-x3}D`;
+        else if (x3 > 0) ret += `${CSI}${x3}C`;
+        if (y2 < 0) ret += `${CSI}${-y2}A`;
+        else if (y2 > 0) ret += `${CSI}${y2}B`;
+        return ret;
+      },
+      up: (count = 1) => `${CSI}${count}A`,
+      down: (count = 1) => `${CSI}${count}B`,
+      forward: (count = 1) => `${CSI}${count}C`,
+      backward: (count = 1) => `${CSI}${count}D`,
+      nextLine: (count = 1) => `${CSI}E`.repeat(count),
+      prevLine: (count = 1) => `${CSI}F`.repeat(count),
+      left: `${CSI}G`,
+      hide: `${CSI}?25l`,
+      show: `${CSI}?25h`,
+      save: `${ESC}7`,
+      restore: `${ESC}8`
+    };
+    var scroll = {
+      up: (count = 1) => `${CSI}S`.repeat(count),
+      down: (count = 1) => `${CSI}T`.repeat(count)
+    };
+    var erase = {
+      screen: `${CSI}2J`,
+      up: (count = 1) => `${CSI}1J`.repeat(count),
+      down: (count = 1) => `${CSI}J`.repeat(count),
+      line: `${CSI}2K`,
+      lineEnd: `${CSI}K`,
+      lineStart: `${CSI}1K`,
+      lines(count) {
+        let clear = "";
+        for (let i = 0; i < count; i++)
+          clear += this.line + (i < count - 1 ? cursor.up() : "");
+        if (count)
+          clear += cursor.left;
+        return clear;
+      }
+    };
+    module.exports = { cursor, scroll, erase, beep };
+  }
+});
+
 // node_modules/picocolors/picocolors.js
 var require_picocolors = __commonJS({
   "node_modules/picocolors/picocolors.js"(exports, module) {
@@ -97,77 +153,21 @@ var require_picocolors = __commonJS({
   }
 });
 
-// node_modules/sisteransi/src/index.js
-var require_src = __commonJS({
-  "node_modules/sisteransi/src/index.js"(exports, module) {
-    "use strict";
-    var ESC = "\x1B";
-    var CSI = `${ESC}[`;
-    var beep = "\x07";
-    var cursor = {
-      to(x3, y2) {
-        if (!y2) return `${CSI}${x3 + 1}G`;
-        return `${CSI}${y2 + 1};${x3 + 1}H`;
-      },
-      move(x3, y2) {
-        let ret = "";
-        if (x3 < 0) ret += `${CSI}${-x3}D`;
-        else if (x3 > 0) ret += `${CSI}${x3}C`;
-        if (y2 < 0) ret += `${CSI}${-y2}A`;
-        else if (y2 > 0) ret += `${CSI}${y2}B`;
-        return ret;
-      },
-      up: (count = 1) => `${CSI}${count}A`,
-      down: (count = 1) => `${CSI}${count}B`,
-      forward: (count = 1) => `${CSI}${count}C`,
-      backward: (count = 1) => `${CSI}${count}D`,
-      nextLine: (count = 1) => `${CSI}E`.repeat(count),
-      prevLine: (count = 1) => `${CSI}F`.repeat(count),
-      left: `${CSI}G`,
-      hide: `${CSI}?25l`,
-      show: `${CSI}?25h`,
-      save: `${ESC}7`,
-      restore: `${ESC}8`
-    };
-    var scroll = {
-      up: (count = 1) => `${CSI}S`.repeat(count),
-      down: (count = 1) => `${CSI}T`.repeat(count)
-    };
-    var erase = {
-      screen: `${CSI}2J`,
-      up: (count = 1) => `${CSI}1J`.repeat(count),
-      down: (count = 1) => `${CSI}J`.repeat(count),
-      line: `${CSI}2K`,
-      lineEnd: `${CSI}K`,
-      lineStart: `${CSI}1K`,
-      lines(count) {
-        let clear = "";
-        for (let i = 0; i < count; i++)
-          clear += this.line + (i < count - 1 ? cursor.up() : "");
-        if (count)
-          clear += cursor.left;
-        return clear;
-      }
-    };
-    module.exports = { cursor, scroll, erase, beep };
-  }
-});
-
 // node_modules/@clack/core/dist/index.mjs
-var import_picocolors = __toESM(require_picocolors(), 1);
 var import_sisteransi = __toESM(require_src(), 1);
+import { styleText as D } from "node:util";
 import { stdout as R, stdin as q } from "node:process";
 import * as k from "node:readline";
 import ot from "node:readline";
 import { ReadStream as J } from "node:tty";
-function B(t, e2, s) {
-  if (!s.some((u) => !u.disabled)) return t;
-  const i = t + e2, r = Math.max(s.length - 1, 0), n = i < 0 ? r : i > r ? 0 : i;
-  return s[n].disabled ? B(n, e2 < 0 ? -1 : 1, s) : n;
+function x(t2, e, s) {
+  if (!s.some((u) => !u.disabled)) return t2;
+  const i = t2 + e, r = Math.max(s.length - 1, 0), n = i < 0 ? r : i > r ? 0 : i;
+  return s[n].disabled ? x(n, e < 0 ? -1 : 1, s) : n;
 }
-var at = (t) => t === 161 || t === 164 || t === 167 || t === 168 || t === 170 || t === 173 || t === 174 || t >= 176 && t <= 180 || t >= 182 && t <= 186 || t >= 188 && t <= 191 || t === 198 || t === 208 || t === 215 || t === 216 || t >= 222 && t <= 225 || t === 230 || t >= 232 && t <= 234 || t === 236 || t === 237 || t === 240 || t === 242 || t === 243 || t >= 247 && t <= 250 || t === 252 || t === 254 || t === 257 || t === 273 || t === 275 || t === 283 || t === 294 || t === 295 || t === 299 || t >= 305 && t <= 307 || t === 312 || t >= 319 && t <= 322 || t === 324 || t >= 328 && t <= 331 || t === 333 || t === 338 || t === 339 || t === 358 || t === 359 || t === 363 || t === 462 || t === 464 || t === 466 || t === 468 || t === 470 || t === 472 || t === 474 || t === 476 || t === 593 || t === 609 || t === 708 || t === 711 || t >= 713 && t <= 715 || t === 717 || t === 720 || t >= 728 && t <= 731 || t === 733 || t === 735 || t >= 768 && t <= 879 || t >= 913 && t <= 929 || t >= 931 && t <= 937 || t >= 945 && t <= 961 || t >= 963 && t <= 969 || t === 1025 || t >= 1040 && t <= 1103 || t === 1105 || t === 8208 || t >= 8211 && t <= 8214 || t === 8216 || t === 8217 || t === 8220 || t === 8221 || t >= 8224 && t <= 8226 || t >= 8228 && t <= 8231 || t === 8240 || t === 8242 || t === 8243 || t === 8245 || t === 8251 || t === 8254 || t === 8308 || t === 8319 || t >= 8321 && t <= 8324 || t === 8364 || t === 8451 || t === 8453 || t === 8457 || t === 8467 || t === 8470 || t === 8481 || t === 8482 || t === 8486 || t === 8491 || t === 8531 || t === 8532 || t >= 8539 && t <= 8542 || t >= 8544 && t <= 8555 || t >= 8560 && t <= 8569 || t === 8585 || t >= 8592 && t <= 8601 || t === 8632 || t === 8633 || t === 8658 || t === 8660 || t === 8679 || t === 8704 || t === 8706 || t === 8707 || t === 8711 || t === 8712 || t === 8715 || t === 8719 || t === 8721 || t === 8725 || t === 8730 || t >= 8733 && t <= 8736 || t === 8739 || t === 8741 || t >= 8743 && t <= 8748 || t === 8750 || t >= 8756 && t <= 8759 || t === 8764 || t === 8765 || t === 8776 || t === 8780 || t === 8786 || t === 8800 || t === 8801 || t >= 8804 && t <= 8807 || t === 8810 || t === 8811 || t === 8814 || t === 8815 || t === 8834 || t === 8835 || t === 8838 || t === 8839 || t === 8853 || t === 8857 || t === 8869 || t === 8895 || t === 8978 || t >= 9312 && t <= 9449 || t >= 9451 && t <= 9547 || t >= 9552 && t <= 9587 || t >= 9600 && t <= 9615 || t >= 9618 && t <= 9621 || t === 9632 || t === 9633 || t >= 9635 && t <= 9641 || t === 9650 || t === 9651 || t === 9654 || t === 9655 || t === 9660 || t === 9661 || t === 9664 || t === 9665 || t >= 9670 && t <= 9672 || t === 9675 || t >= 9678 && t <= 9681 || t >= 9698 && t <= 9701 || t === 9711 || t === 9733 || t === 9734 || t === 9737 || t === 9742 || t === 9743 || t === 9756 || t === 9758 || t === 9792 || t === 9794 || t === 9824 || t === 9825 || t >= 9827 && t <= 9829 || t >= 9831 && t <= 9834 || t === 9836 || t === 9837 || t === 9839 || t === 9886 || t === 9887 || t === 9919 || t >= 9926 && t <= 9933 || t >= 9935 && t <= 9939 || t >= 9941 && t <= 9953 || t === 9955 || t === 9960 || t === 9961 || t >= 9963 && t <= 9969 || t === 9972 || t >= 9974 && t <= 9977 || t === 9979 || t === 9980 || t === 9982 || t === 9983 || t === 10045 || t >= 10102 && t <= 10111 || t >= 11094 && t <= 11097 || t >= 12872 && t <= 12879 || t >= 57344 && t <= 63743 || t >= 65024 && t <= 65039 || t === 65533 || t >= 127232 && t <= 127242 || t >= 127248 && t <= 127277 || t >= 127280 && t <= 127337 || t >= 127344 && t <= 127373 || t === 127375 || t === 127376 || t >= 127387 && t <= 127404 || t >= 917760 && t <= 917999 || t >= 983040 && t <= 1048573 || t >= 1048576 && t <= 1114109;
-var lt = (t) => t === 12288 || t >= 65281 && t <= 65376 || t >= 65504 && t <= 65510;
-var ht = (t) => t >= 4352 && t <= 4447 || t === 8986 || t === 8987 || t === 9001 || t === 9002 || t >= 9193 && t <= 9196 || t === 9200 || t === 9203 || t === 9725 || t === 9726 || t === 9748 || t === 9749 || t >= 9800 && t <= 9811 || t === 9855 || t === 9875 || t === 9889 || t === 9898 || t === 9899 || t === 9917 || t === 9918 || t === 9924 || t === 9925 || t === 9934 || t === 9940 || t === 9962 || t === 9970 || t === 9971 || t === 9973 || t === 9978 || t === 9981 || t === 9989 || t === 9994 || t === 9995 || t === 10024 || t === 10060 || t === 10062 || t >= 10067 && t <= 10069 || t === 10071 || t >= 10133 && t <= 10135 || t === 10160 || t === 10175 || t === 11035 || t === 11036 || t === 11088 || t === 11093 || t >= 11904 && t <= 11929 || t >= 11931 && t <= 12019 || t >= 12032 && t <= 12245 || t >= 12272 && t <= 12287 || t >= 12289 && t <= 12350 || t >= 12353 && t <= 12438 || t >= 12441 && t <= 12543 || t >= 12549 && t <= 12591 || t >= 12593 && t <= 12686 || t >= 12688 && t <= 12771 || t >= 12783 && t <= 12830 || t >= 12832 && t <= 12871 || t >= 12880 && t <= 19903 || t >= 19968 && t <= 42124 || t >= 42128 && t <= 42182 || t >= 43360 && t <= 43388 || t >= 44032 && t <= 55203 || t >= 63744 && t <= 64255 || t >= 65040 && t <= 65049 || t >= 65072 && t <= 65106 || t >= 65108 && t <= 65126 || t >= 65128 && t <= 65131 || t >= 94176 && t <= 94180 || t === 94192 || t === 94193 || t >= 94208 && t <= 100343 || t >= 100352 && t <= 101589 || t >= 101632 && t <= 101640 || t >= 110576 && t <= 110579 || t >= 110581 && t <= 110587 || t === 110589 || t === 110590 || t >= 110592 && t <= 110882 || t === 110898 || t >= 110928 && t <= 110930 || t === 110933 || t >= 110948 && t <= 110951 || t >= 110960 && t <= 111355 || t === 126980 || t === 127183 || t === 127374 || t >= 127377 && t <= 127386 || t >= 127488 && t <= 127490 || t >= 127504 && t <= 127547 || t >= 127552 && t <= 127560 || t === 127568 || t === 127569 || t >= 127584 && t <= 127589 || t >= 127744 && t <= 127776 || t >= 127789 && t <= 127797 || t >= 127799 && t <= 127868 || t >= 127870 && t <= 127891 || t >= 127904 && t <= 127946 || t >= 127951 && t <= 127955 || t >= 127968 && t <= 127984 || t === 127988 || t >= 127992 && t <= 128062 || t === 128064 || t >= 128066 && t <= 128252 || t >= 128255 && t <= 128317 || t >= 128331 && t <= 128334 || t >= 128336 && t <= 128359 || t === 128378 || t === 128405 || t === 128406 || t === 128420 || t >= 128507 && t <= 128591 || t >= 128640 && t <= 128709 || t === 128716 || t >= 128720 && t <= 128722 || t >= 128725 && t <= 128727 || t >= 128732 && t <= 128735 || t === 128747 || t === 128748 || t >= 128756 && t <= 128764 || t >= 128992 && t <= 129003 || t === 129008 || t >= 129292 && t <= 129338 || t >= 129340 && t <= 129349 || t >= 129351 && t <= 129535 || t >= 129648 && t <= 129660 || t >= 129664 && t <= 129672 || t >= 129680 && t <= 129725 || t >= 129727 && t <= 129733 || t >= 129742 && t <= 129755 || t >= 129760 && t <= 129768 || t >= 129776 && t <= 129784 || t >= 131072 && t <= 196605 || t >= 196608 && t <= 262141;
+var at = (t2) => t2 === 161 || t2 === 164 || t2 === 167 || t2 === 168 || t2 === 170 || t2 === 173 || t2 === 174 || t2 >= 176 && t2 <= 180 || t2 >= 182 && t2 <= 186 || t2 >= 188 && t2 <= 191 || t2 === 198 || t2 === 208 || t2 === 215 || t2 === 216 || t2 >= 222 && t2 <= 225 || t2 === 230 || t2 >= 232 && t2 <= 234 || t2 === 236 || t2 === 237 || t2 === 240 || t2 === 242 || t2 === 243 || t2 >= 247 && t2 <= 250 || t2 === 252 || t2 === 254 || t2 === 257 || t2 === 273 || t2 === 275 || t2 === 283 || t2 === 294 || t2 === 295 || t2 === 299 || t2 >= 305 && t2 <= 307 || t2 === 312 || t2 >= 319 && t2 <= 322 || t2 === 324 || t2 >= 328 && t2 <= 331 || t2 === 333 || t2 === 338 || t2 === 339 || t2 === 358 || t2 === 359 || t2 === 363 || t2 === 462 || t2 === 464 || t2 === 466 || t2 === 468 || t2 === 470 || t2 === 472 || t2 === 474 || t2 === 476 || t2 === 593 || t2 === 609 || t2 === 708 || t2 === 711 || t2 >= 713 && t2 <= 715 || t2 === 717 || t2 === 720 || t2 >= 728 && t2 <= 731 || t2 === 733 || t2 === 735 || t2 >= 768 && t2 <= 879 || t2 >= 913 && t2 <= 929 || t2 >= 931 && t2 <= 937 || t2 >= 945 && t2 <= 961 || t2 >= 963 && t2 <= 969 || t2 === 1025 || t2 >= 1040 && t2 <= 1103 || t2 === 1105 || t2 === 8208 || t2 >= 8211 && t2 <= 8214 || t2 === 8216 || t2 === 8217 || t2 === 8220 || t2 === 8221 || t2 >= 8224 && t2 <= 8226 || t2 >= 8228 && t2 <= 8231 || t2 === 8240 || t2 === 8242 || t2 === 8243 || t2 === 8245 || t2 === 8251 || t2 === 8254 || t2 === 8308 || t2 === 8319 || t2 >= 8321 && t2 <= 8324 || t2 === 8364 || t2 === 8451 || t2 === 8453 || t2 === 8457 || t2 === 8467 || t2 === 8470 || t2 === 8481 || t2 === 8482 || t2 === 8486 || t2 === 8491 || t2 === 8531 || t2 === 8532 || t2 >= 8539 && t2 <= 8542 || t2 >= 8544 && t2 <= 8555 || t2 >= 8560 && t2 <= 8569 || t2 === 8585 || t2 >= 8592 && t2 <= 8601 || t2 === 8632 || t2 === 8633 || t2 === 8658 || t2 === 8660 || t2 === 8679 || t2 === 8704 || t2 === 8706 || t2 === 8707 || t2 === 8711 || t2 === 8712 || t2 === 8715 || t2 === 8719 || t2 === 8721 || t2 === 8725 || t2 === 8730 || t2 >= 8733 && t2 <= 8736 || t2 === 8739 || t2 === 8741 || t2 >= 8743 && t2 <= 8748 || t2 === 8750 || t2 >= 8756 && t2 <= 8759 || t2 === 8764 || t2 === 8765 || t2 === 8776 || t2 === 8780 || t2 === 8786 || t2 === 8800 || t2 === 8801 || t2 >= 8804 && t2 <= 8807 || t2 === 8810 || t2 === 8811 || t2 === 8814 || t2 === 8815 || t2 === 8834 || t2 === 8835 || t2 === 8838 || t2 === 8839 || t2 === 8853 || t2 === 8857 || t2 === 8869 || t2 === 8895 || t2 === 8978 || t2 >= 9312 && t2 <= 9449 || t2 >= 9451 && t2 <= 9547 || t2 >= 9552 && t2 <= 9587 || t2 >= 9600 && t2 <= 9615 || t2 >= 9618 && t2 <= 9621 || t2 === 9632 || t2 === 9633 || t2 >= 9635 && t2 <= 9641 || t2 === 9650 || t2 === 9651 || t2 === 9654 || t2 === 9655 || t2 === 9660 || t2 === 9661 || t2 === 9664 || t2 === 9665 || t2 >= 9670 && t2 <= 9672 || t2 === 9675 || t2 >= 9678 && t2 <= 9681 || t2 >= 9698 && t2 <= 9701 || t2 === 9711 || t2 === 9733 || t2 === 9734 || t2 === 9737 || t2 === 9742 || t2 === 9743 || t2 === 9756 || t2 === 9758 || t2 === 9792 || t2 === 9794 || t2 === 9824 || t2 === 9825 || t2 >= 9827 && t2 <= 9829 || t2 >= 9831 && t2 <= 9834 || t2 === 9836 || t2 === 9837 || t2 === 9839 || t2 === 9886 || t2 === 9887 || t2 === 9919 || t2 >= 9926 && t2 <= 9933 || t2 >= 9935 && t2 <= 9939 || t2 >= 9941 && t2 <= 9953 || t2 === 9955 || t2 === 9960 || t2 === 9961 || t2 >= 9963 && t2 <= 9969 || t2 === 9972 || t2 >= 9974 && t2 <= 9977 || t2 === 9979 || t2 === 9980 || t2 === 9982 || t2 === 9983 || t2 === 10045 || t2 >= 10102 && t2 <= 10111 || t2 >= 11094 && t2 <= 11097 || t2 >= 12872 && t2 <= 12879 || t2 >= 57344 && t2 <= 63743 || t2 >= 65024 && t2 <= 65039 || t2 === 65533 || t2 >= 127232 && t2 <= 127242 || t2 >= 127248 && t2 <= 127277 || t2 >= 127280 && t2 <= 127337 || t2 >= 127344 && t2 <= 127373 || t2 === 127375 || t2 === 127376 || t2 >= 127387 && t2 <= 127404 || t2 >= 917760 && t2 <= 917999 || t2 >= 983040 && t2 <= 1048573 || t2 >= 1048576 && t2 <= 1114109;
+var lt = (t2) => t2 === 12288 || t2 >= 65281 && t2 <= 65376 || t2 >= 65504 && t2 <= 65510;
+var ht = (t2) => t2 >= 4352 && t2 <= 4447 || t2 === 8986 || t2 === 8987 || t2 === 9001 || t2 === 9002 || t2 >= 9193 && t2 <= 9196 || t2 === 9200 || t2 === 9203 || t2 === 9725 || t2 === 9726 || t2 === 9748 || t2 === 9749 || t2 >= 9800 && t2 <= 9811 || t2 === 9855 || t2 === 9875 || t2 === 9889 || t2 === 9898 || t2 === 9899 || t2 === 9917 || t2 === 9918 || t2 === 9924 || t2 === 9925 || t2 === 9934 || t2 === 9940 || t2 === 9962 || t2 === 9970 || t2 === 9971 || t2 === 9973 || t2 === 9978 || t2 === 9981 || t2 === 9989 || t2 === 9994 || t2 === 9995 || t2 === 10024 || t2 === 10060 || t2 === 10062 || t2 >= 10067 && t2 <= 10069 || t2 === 10071 || t2 >= 10133 && t2 <= 10135 || t2 === 10160 || t2 === 10175 || t2 === 11035 || t2 === 11036 || t2 === 11088 || t2 === 11093 || t2 >= 11904 && t2 <= 11929 || t2 >= 11931 && t2 <= 12019 || t2 >= 12032 && t2 <= 12245 || t2 >= 12272 && t2 <= 12287 || t2 >= 12289 && t2 <= 12350 || t2 >= 12353 && t2 <= 12438 || t2 >= 12441 && t2 <= 12543 || t2 >= 12549 && t2 <= 12591 || t2 >= 12593 && t2 <= 12686 || t2 >= 12688 && t2 <= 12771 || t2 >= 12783 && t2 <= 12830 || t2 >= 12832 && t2 <= 12871 || t2 >= 12880 && t2 <= 19903 || t2 >= 19968 && t2 <= 42124 || t2 >= 42128 && t2 <= 42182 || t2 >= 43360 && t2 <= 43388 || t2 >= 44032 && t2 <= 55203 || t2 >= 63744 && t2 <= 64255 || t2 >= 65040 && t2 <= 65049 || t2 >= 65072 && t2 <= 65106 || t2 >= 65108 && t2 <= 65126 || t2 >= 65128 && t2 <= 65131 || t2 >= 94176 && t2 <= 94180 || t2 === 94192 || t2 === 94193 || t2 >= 94208 && t2 <= 100343 || t2 >= 100352 && t2 <= 101589 || t2 >= 101632 && t2 <= 101640 || t2 >= 110576 && t2 <= 110579 || t2 >= 110581 && t2 <= 110587 || t2 === 110589 || t2 === 110590 || t2 >= 110592 && t2 <= 110882 || t2 === 110898 || t2 >= 110928 && t2 <= 110930 || t2 === 110933 || t2 >= 110948 && t2 <= 110951 || t2 >= 110960 && t2 <= 111355 || t2 === 126980 || t2 === 127183 || t2 === 127374 || t2 >= 127377 && t2 <= 127386 || t2 >= 127488 && t2 <= 127490 || t2 >= 127504 && t2 <= 127547 || t2 >= 127552 && t2 <= 127560 || t2 === 127568 || t2 === 127569 || t2 >= 127584 && t2 <= 127589 || t2 >= 127744 && t2 <= 127776 || t2 >= 127789 && t2 <= 127797 || t2 >= 127799 && t2 <= 127868 || t2 >= 127870 && t2 <= 127891 || t2 >= 127904 && t2 <= 127946 || t2 >= 127951 && t2 <= 127955 || t2 >= 127968 && t2 <= 127984 || t2 === 127988 || t2 >= 127992 && t2 <= 128062 || t2 === 128064 || t2 >= 128066 && t2 <= 128252 || t2 >= 128255 && t2 <= 128317 || t2 >= 128331 && t2 <= 128334 || t2 >= 128336 && t2 <= 128359 || t2 === 128378 || t2 === 128405 || t2 === 128406 || t2 === 128420 || t2 >= 128507 && t2 <= 128591 || t2 >= 128640 && t2 <= 128709 || t2 === 128716 || t2 >= 128720 && t2 <= 128722 || t2 >= 128725 && t2 <= 128727 || t2 >= 128732 && t2 <= 128735 || t2 === 128747 || t2 === 128748 || t2 >= 128756 && t2 <= 128764 || t2 >= 128992 && t2 <= 129003 || t2 === 129008 || t2 >= 129292 && t2 <= 129338 || t2 >= 129340 && t2 <= 129349 || t2 >= 129351 && t2 <= 129535 || t2 >= 129648 && t2 <= 129660 || t2 >= 129664 && t2 <= 129672 || t2 >= 129680 && t2 <= 129725 || t2 >= 129727 && t2 <= 129733 || t2 >= 129742 && t2 <= 129755 || t2 >= 129760 && t2 <= 129768 || t2 >= 129776 && t2 <= 129784 || t2 >= 131072 && t2 <= 196605 || t2 >= 196608 && t2 <= 262141;
 var O = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/y;
 var y = /[\x00-\x08\x0A-\x1F\x7F-\x9F]{1,1000}/y;
 var L = /\t{1,1000}/y;
@@ -175,71 +175,71 @@ var P = new RegExp("[\\u{1F1E6}-\\u{1F1FF}]{2}|\\u{1F3F4}[\\u{E0061}-\\u{E007A}]
 var M = /(?:[\x20-\x7E\xA0-\xFF](?!\uFE0F)){1,1000}/y;
 var ct = new RegExp("\\p{M}+", "gu");
 var ft = { limit: 1 / 0, ellipsis: "" };
-var X = (t, e2 = {}, s = {}) => {
-  const i = e2.limit ?? 1 / 0, r = e2.ellipsis ?? "", n = e2?.ellipsisWidth ?? (r ? X(r, ft, s).width : 0), u = s.ansiWidth ?? 0, a = s.controlWidth ?? 0, l = s.tabWidth ?? 8, E = s.ambiguousWidth ?? 1, g = s.emojiWidth ?? 2, m = s.fullWidthWidth ?? 2, A = s.regularWidth ?? 1, V2 = s.wideWidth ?? 2;
-  let h = 0, o = 0, p = t.length, v = 0, F = false, d2 = p, b = Math.max(0, i - n), C2 = 0, w = 0, c = 0, f = 0;
+var X = (t2, e = {}, s = {}) => {
+  const i = e.limit ?? 1 / 0, r = e.ellipsis ?? "", n = e?.ellipsisWidth ?? (r ? X(r, ft, s).width : 0), u = s.ansiWidth ?? 0, a = s.controlWidth ?? 0, l = s.tabWidth ?? 8, E = s.ambiguousWidth ?? 1, g = s.emojiWidth ?? 2, m = s.fullWidthWidth ?? 2, A = s.regularWidth ?? 1, V2 = s.wideWidth ?? 2;
+  let h2 = 0, o = 0, p = t2.length, v = 0, F = false, d = p, b = Math.max(0, i - n), C = 0, w = 0, c = 0, f = 0;
   t: for (; ; ) {
-    if (w > C2 || o >= p && o > h) {
-      const ut = t.slice(C2, w) || t.slice(h, o);
+    if (w > C || o >= p && o > h2) {
+      const ut = t2.slice(C, w) || t2.slice(h2, o);
       v = 0;
       for (const Y of ut.replaceAll(ct, "")) {
         const $ = Y.codePointAt(0) || 0;
-        if (lt($) ? f = m : ht($) ? f = V2 : E !== A && at($) ? f = E : f = A, c + f > b && (d2 = Math.min(d2, Math.max(C2, h) + v)), c + f > i) {
+        if (lt($) ? f = m : ht($) ? f = V2 : E !== A && at($) ? f = E : f = A, c + f > b && (d = Math.min(d, Math.max(C, h2) + v)), c + f > i) {
           F = true;
           break t;
         }
         v += Y.length, c += f;
       }
-      C2 = w = 0;
+      C = w = 0;
     }
     if (o >= p) break;
-    if (M.lastIndex = o, M.test(t)) {
-      if (v = M.lastIndex - o, f = v * A, c + f > b && (d2 = Math.min(d2, o + Math.floor((b - c) / A))), c + f > i) {
+    if (M.lastIndex = o, M.test(t2)) {
+      if (v = M.lastIndex - o, f = v * A, c + f > b && (d = Math.min(d, o + Math.floor((b - c) / A))), c + f > i) {
         F = true;
         break;
       }
-      c += f, C2 = h, w = o, o = h = M.lastIndex;
+      c += f, C = h2, w = o, o = h2 = M.lastIndex;
       continue;
     }
-    if (O.lastIndex = o, O.test(t)) {
-      if (c + u > b && (d2 = Math.min(d2, o)), c + u > i) {
+    if (O.lastIndex = o, O.test(t2)) {
+      if (c + u > b && (d = Math.min(d, o)), c + u > i) {
         F = true;
         break;
       }
-      c += u, C2 = h, w = o, o = h = O.lastIndex;
+      c += u, C = h2, w = o, o = h2 = O.lastIndex;
       continue;
     }
-    if (y.lastIndex = o, y.test(t)) {
-      if (v = y.lastIndex - o, f = v * a, c + f > b && (d2 = Math.min(d2, o + Math.floor((b - c) / a))), c + f > i) {
+    if (y.lastIndex = o, y.test(t2)) {
+      if (v = y.lastIndex - o, f = v * a, c + f > b && (d = Math.min(d, o + Math.floor((b - c) / a))), c + f > i) {
         F = true;
         break;
       }
-      c += f, C2 = h, w = o, o = h = y.lastIndex;
+      c += f, C = h2, w = o, o = h2 = y.lastIndex;
       continue;
     }
-    if (L.lastIndex = o, L.test(t)) {
-      if (v = L.lastIndex - o, f = v * l, c + f > b && (d2 = Math.min(d2, o + Math.floor((b - c) / l))), c + f > i) {
+    if (L.lastIndex = o, L.test(t2)) {
+      if (v = L.lastIndex - o, f = v * l, c + f > b && (d = Math.min(d, o + Math.floor((b - c) / l))), c + f > i) {
         F = true;
         break;
       }
-      c += f, C2 = h, w = o, o = h = L.lastIndex;
+      c += f, C = h2, w = o, o = h2 = L.lastIndex;
       continue;
     }
-    if (P.lastIndex = o, P.test(t)) {
-      if (c + g > b && (d2 = Math.min(d2, o)), c + g > i) {
+    if (P.lastIndex = o, P.test(t2)) {
+      if (c + g > b && (d = Math.min(d, o)), c + g > i) {
         F = true;
         break;
       }
-      c += g, C2 = h, w = o, o = h = P.lastIndex;
+      c += g, C = h2, w = o, o = h2 = P.lastIndex;
       continue;
     }
     o += 1;
   }
-  return { width: F ? b : c, index: F ? d2 : p, truncated: F, ellipsed: F && i >= n };
+  return { width: F ? b : c, index: F ? d : p, truncated: F, ellipsed: F && i >= n };
 };
 var pt = { limit: 1 / 0, ellipsis: "", ellipsisWidth: 0 };
-var S = (t, e2 = {}) => X(t, pt, e2).width;
-var W = "\x1B";
+var S = (t2, e = {}) => X(t2, pt, e).width;
+var T = "\x1B";
 var Z = "\x9B";
 var Ft = 39;
 var j = "\x07";
@@ -248,143 +248,143 @@ var dt = "]";
 var tt = "m";
 var U = `${dt}8;;`;
 var et = new RegExp(`(?:\\${Q}(?<code>\\d+)m|\\${U}(?<uri>.*)${j})`, "y");
-var mt = (t) => {
-  if (t >= 30 && t <= 37 || t >= 90 && t <= 97) return 39;
-  if (t >= 40 && t <= 47 || t >= 100 && t <= 107) return 49;
-  if (t === 1 || t === 2) return 22;
-  if (t === 3) return 23;
-  if (t === 4) return 24;
-  if (t === 7) return 27;
-  if (t === 8) return 28;
-  if (t === 9) return 29;
-  if (t === 0) return 0;
+var mt = (t2) => {
+  if (t2 >= 30 && t2 <= 37 || t2 >= 90 && t2 <= 97) return 39;
+  if (t2 >= 40 && t2 <= 47 || t2 >= 100 && t2 <= 107) return 49;
+  if (t2 === 1 || t2 === 2) return 22;
+  if (t2 === 3) return 23;
+  if (t2 === 4) return 24;
+  if (t2 === 7) return 27;
+  if (t2 === 8) return 28;
+  if (t2 === 9) return 29;
+  if (t2 === 0) return 0;
 };
-var st = (t) => `${W}${Q}${t}${tt}`;
-var it = (t) => `${W}${U}${t}${j}`;
-var gt = (t) => t.map((e2) => S(e2));
-var G = (t, e2, s) => {
-  const i = e2[Symbol.iterator]();
-  let r = false, n = false, u = t.at(-1), a = u === void 0 ? 0 : S(u), l = i.next(), E = i.next(), g = 0;
+var st = (t2) => `${T}${Q}${t2}${tt}`;
+var it = (t2) => `${T}${U}${t2}${j}`;
+var gt = (t2) => t2.map((e) => S(e));
+var G = (t2, e, s) => {
+  const i = e[Symbol.iterator]();
+  let r = false, n = false, u = t2.at(-1), a = u === void 0 ? 0 : S(u), l = i.next(), E = i.next(), g = 0;
   for (; !l.done; ) {
     const m = l.value, A = S(m);
-    a + A <= s ? t[t.length - 1] += m : (t.push(m), a = 0), (m === W || m === Z) && (r = true, n = e2.startsWith(U, g + 1)), r ? n ? m === j && (r = false, n = false) : m === tt && (r = false) : (a += A, a === s && !E.done && (t.push(""), a = 0)), l = E, E = i.next(), g += m.length;
+    a + A <= s ? t2[t2.length - 1] += m : (t2.push(m), a = 0), (m === T || m === Z) && (r = true, n = e.startsWith(U, g + 1)), r ? n ? m === j && (r = false, n = false) : m === tt && (r = false) : (a += A, a === s && !E.done && (t2.push(""), a = 0)), l = E, E = i.next(), g += m.length;
   }
-  u = t.at(-1), !a && u !== void 0 && u.length > 0 && t.length > 1 && (t[t.length - 2] += t.pop());
+  u = t2.at(-1), !a && u !== void 0 && u.length > 0 && t2.length > 1 && (t2[t2.length - 2] += t2.pop());
 };
-var vt = (t) => {
-  const e2 = t.split(" ");
-  let s = e2.length;
-  for (; s > 0 && !(S(e2[s - 1]) > 0); ) s--;
-  return s === e2.length ? t : e2.slice(0, s).join(" ") + e2.slice(s).join("");
+var vt = (t2) => {
+  const e = t2.split(" ");
+  let s = e.length;
+  for (; s > 0 && !(S(e[s - 1]) > 0); ) s--;
+  return s === e.length ? t2 : e.slice(0, s).join(" ") + e.slice(s).join("");
 };
-var Et = (t, e2, s = {}) => {
-  if (s.trim !== false && t.trim() === "") return "";
+var Et = (t2, e, s = {}) => {
+  if (s.trim !== false && t2.trim() === "") return "";
   let i = "", r, n;
-  const u = t.split(" "), a = gt(u);
+  const u = t2.split(" "), a = gt(u);
   let l = [""];
-  for (const [h, o] of u.entries()) {
+  for (const [h2, o] of u.entries()) {
     s.trim !== false && (l[l.length - 1] = (l.at(-1) ?? "").trimStart());
     let p = S(l.at(-1) ?? "");
-    if (h !== 0 && (p >= e2 && (s.wordWrap === false || s.trim === false) && (l.push(""), p = 0), (p > 0 || s.trim === false) && (l[l.length - 1] += " ", p++)), s.hard && a[h] > e2) {
-      const v = e2 - p, F = 1 + Math.floor((a[h] - v - 1) / e2);
-      Math.floor((a[h] - 1) / e2) < F && l.push(""), G(l, o, e2);
+    if (h2 !== 0 && (p >= e && (s.wordWrap === false || s.trim === false) && (l.push(""), p = 0), (p > 0 || s.trim === false) && (l[l.length - 1] += " ", p++)), s.hard && a[h2] > e) {
+      const v = e - p, F = 1 + Math.floor((a[h2] - v - 1) / e);
+      Math.floor((a[h2] - 1) / e) < F && l.push(""), G(l, o, e);
       continue;
     }
-    if (p + a[h] > e2 && p > 0 && a[h] > 0) {
-      if (s.wordWrap === false && p < e2) {
-        G(l, o, e2);
+    if (p + a[h2] > e && p > 0 && a[h2] > 0) {
+      if (s.wordWrap === false && p < e) {
+        G(l, o, e);
         continue;
       }
       l.push("");
     }
-    if (p + a[h] > e2 && s.wordWrap === false) {
-      G(l, o, e2);
+    if (p + a[h2] > e && s.wordWrap === false) {
+      G(l, o, e);
       continue;
     }
     l[l.length - 1] += o;
   }
-  s.trim !== false && (l = l.map((h) => vt(h)));
+  s.trim !== false && (l = l.map((h2) => vt(h2)));
   const E = l.join(`
 `), g = E[Symbol.iterator]();
   let m = g.next(), A = g.next(), V2 = 0;
   for (; !m.done; ) {
-    const h = m.value, o = A.value;
-    if (i += h, h === W || h === Z) {
+    const h2 = m.value, o = A.value;
+    if (i += h2, h2 === T || h2 === Z) {
       et.lastIndex = V2 + 1;
       const F = et.exec(E)?.groups;
       if (F?.code !== void 0) {
-        const d2 = Number.parseFloat(F.code);
-        r = d2 === Ft ? void 0 : d2;
+        const d = Number.parseFloat(F.code);
+        r = d === Ft ? void 0 : d;
       } else F?.uri !== void 0 && (n = F.uri.length === 0 ? void 0 : F.uri);
     }
     const p = r ? mt(r) : void 0;
     o === `
-` ? (n && (i += it("")), r && p && (i += st(p))) : h === `
-` && (r && p && (i += st(r)), n && (i += it(n))), V2 += h.length, m = A, A = g.next();
+` ? (n && (i += it("")), r && p && (i += st(p))) : h2 === `
+` && (r && p && (i += st(r)), n && (i += it(n))), V2 += h2.length, m = A, A = g.next();
   }
   return i;
 };
-function K(t, e2, s) {
-  return String(t).normalize().replaceAll(`\r
+function K(t2, e, s) {
+  return String(t2).normalize().replaceAll(`\r
 `, `
 `).split(`
-`).map((i) => Et(i, e2, s)).join(`
+`).map((i) => Et(i, e, s)).join(`
 `);
 }
 var At = ["up", "down", "left", "right", "space", "enter", "cancel"];
 var _ = { actions: new Set(At), aliases: /* @__PURE__ */ new Map([["k", "up"], ["j", "down"], ["h", "left"], ["l", "right"], ["", "cancel"], ["escape", "cancel"]]), messages: { cancel: "Canceled", error: "Something went wrong" }, withGuide: true };
-function H(t, e2) {
-  if (typeof t == "string") return _.aliases.get(t) === e2;
-  for (const s of t) if (s !== void 0 && H(s, e2)) return true;
+function H(t2, e) {
+  if (typeof t2 == "string") return _.aliases.get(t2) === e;
+  for (const s of t2) if (s !== void 0 && H(s, e)) return true;
   return false;
 }
-function _t(t, e2) {
-  if (t === e2) return;
-  const s = t.split(`
-`), i = e2.split(`
+function _t(t2, e) {
+  if (t2 === e) return;
+  const s = t2.split(`
+`), i = e.split(`
 `), r = Math.max(s.length, i.length), n = [];
   for (let u = 0; u < r; u++) s[u] !== i[u] && n.push(u);
   return { lines: n, numLinesBefore: s.length, numLinesAfter: i.length, numLines: r };
 }
 var bt = globalThis.process.platform.startsWith("win");
 var z = Symbol("clack:cancel");
-function Ct(t) {
-  return t === z;
+function Ct(t2) {
+  return t2 === z;
 }
-function T(t, e2) {
-  const s = t;
-  s.isTTY && s.setRawMode(e2);
+function W(t2, e) {
+  const s = t2;
+  s.isTTY && s.setRawMode(e);
 }
-function Bt({ input: t = q, output: e2 = R, overwrite: s = true, hideCursor: i = true } = {}) {
-  const r = k.createInterface({ input: t, output: e2, prompt: "", tabSize: 1 });
-  k.emitKeypressEvents(t, r), t instanceof J && t.isTTY && t.setRawMode(true);
+function xt({ input: t2 = q, output: e = R, overwrite: s = true, hideCursor: i = true } = {}) {
+  const r = k.createInterface({ input: t2, output: e, prompt: "", tabSize: 1 });
+  k.emitKeypressEvents(t2, r), t2 instanceof J && t2.isTTY && t2.setRawMode(true);
   const n = (u, { name: a, sequence: l }) => {
     const E = String(u);
     if (H([E, a, l], "cancel")) {
-      i && e2.write(import_sisteransi.cursor.show), process.exit(0);
+      i && e.write(import_sisteransi.cursor.show), process.exit(0);
       return;
     }
     if (!s) return;
     const g = a === "return" ? 0 : -1, m = a === "return" ? -1 : 0;
-    k.moveCursor(e2, g, m, () => {
-      k.clearLine(e2, 1, () => {
-        t.once("keypress", n);
+    k.moveCursor(e, g, m, () => {
+      k.clearLine(e, 1, () => {
+        t2.once("keypress", n);
       });
     });
   };
-  return i && e2.write(import_sisteransi.cursor.hide), t.once("keypress", n), () => {
-    t.off("keypress", n), i && e2.write(import_sisteransi.cursor.show), t instanceof J && t.isTTY && !bt && t.setRawMode(false), r.terminal = false, r.close();
+  return i && e.write(import_sisteransi.cursor.hide), t2.once("keypress", n), () => {
+    t2.off("keypress", n), i && e.write(import_sisteransi.cursor.show), t2 instanceof J && t2.isTTY && !bt && t2.setRawMode(false), r.terminal = false, r.close();
   };
 }
-var rt = (t) => "columns" in t && typeof t.columns == "number" ? t.columns : 80;
-var nt = (t) => "rows" in t && typeof t.rows == "number" ? t.rows : 20;
-function xt(t, e2, s, i = s) {
-  const r = rt(t ?? R);
-  return K(e2, r - s.length, { hard: true, trim: false }).split(`
+var rt = (t2) => "columns" in t2 && typeof t2.columns == "number" ? t2.columns : 80;
+var nt = (t2) => "rows" in t2 && typeof t2.rows == "number" ? t2.rows : 20;
+function Bt(t2, e, s, i = s) {
+  const r = rt(t2 ?? R);
+  return K(e, r - s.length, { hard: true, trim: false }).split(`
 `).map((n, u) => `${u === 0 ? i : s}${n}`).join(`
 `);
 }
-var x = class {
+var B = class {
   input;
   output;
   _abortSignal;
@@ -399,92 +399,92 @@ var x = class {
   error = "";
   value;
   userInput = "";
-  constructor(e2, s = true) {
-    const { input: i = q, output: r = R, render: n, signal: u, ...a } = e2;
+  constructor(e, s = true) {
+    const { input: i = q, output: r = R, render: n, signal: u, ...a } = e;
     this.opts = a, this.onKeypress = this.onKeypress.bind(this), this.close = this.close.bind(this), this.render = this.render.bind(this), this._render = n.bind(this), this._track = s, this._abortSignal = u, this.input = i, this.output = r;
   }
   unsubscribe() {
     this._subscribers.clear();
   }
-  setSubscriber(e2, s) {
-    const i = this._subscribers.get(e2) ?? [];
-    i.push(s), this._subscribers.set(e2, i);
+  setSubscriber(e, s) {
+    const i = this._subscribers.get(e) ?? [];
+    i.push(s), this._subscribers.set(e, i);
   }
-  on(e2, s) {
-    this.setSubscriber(e2, { cb: s });
+  on(e, s) {
+    this.setSubscriber(e, { cb: s });
   }
-  once(e2, s) {
-    this.setSubscriber(e2, { cb: s, once: true });
+  once(e, s) {
+    this.setSubscriber(e, { cb: s, once: true });
   }
-  emit(e2, ...s) {
-    const i = this._subscribers.get(e2) ?? [], r = [];
+  emit(e, ...s) {
+    const i = this._subscribers.get(e) ?? [], r = [];
     for (const n of i) n.cb(...s), n.once && r.push(() => i.splice(i.indexOf(n), 1));
     for (const n of r) n();
   }
   prompt() {
-    return new Promise((e2) => {
+    return new Promise((e) => {
       if (this._abortSignal) {
-        if (this._abortSignal.aborted) return this.state = "cancel", this.close(), e2(z);
+        if (this._abortSignal.aborted) return this.state = "cancel", this.close(), e(z);
         this._abortSignal.addEventListener("abort", () => {
           this.state = "cancel", this.close();
         }, { once: true });
       }
-      this.rl = ot.createInterface({ input: this.input, tabSize: 2, prompt: "", escapeCodeTimeout: 50, terminal: true }), this.rl.prompt(), this.opts.initialUserInput !== void 0 && this._setUserInput(this.opts.initialUserInput, true), this.input.on("keypress", this.onKeypress), T(this.input, true), this.output.on("resize", this.render), this.render(), this.once("submit", () => {
-        this.output.write(import_sisteransi.cursor.show), this.output.off("resize", this.render), T(this.input, false), e2(this.value);
+      this.rl = ot.createInterface({ input: this.input, tabSize: 2, prompt: "", escapeCodeTimeout: 50, terminal: true }), this.rl.prompt(), this.opts.initialUserInput !== void 0 && this._setUserInput(this.opts.initialUserInput, true), this.input.on("keypress", this.onKeypress), W(this.input, true), this.output.on("resize", this.render), this.render(), this.once("submit", () => {
+        this.output.write(import_sisteransi.cursor.show), this.output.off("resize", this.render), W(this.input, false), e(this.value);
       }), this.once("cancel", () => {
-        this.output.write(import_sisteransi.cursor.show), this.output.off("resize", this.render), T(this.input, false), e2(z);
+        this.output.write(import_sisteransi.cursor.show), this.output.off("resize", this.render), W(this.input, false), e(z);
       });
     });
   }
-  _isActionKey(e2, s) {
-    return e2 === "	";
+  _isActionKey(e, s) {
+    return e === "	";
   }
-  _setValue(e2) {
-    this.value = e2, this.emit("value", this.value);
+  _setValue(e) {
+    this.value = e, this.emit("value", this.value);
   }
-  _setUserInput(e2, s) {
-    this.userInput = e2 ?? "", this.emit("userInput", this.userInput), s && this._track && this.rl && (this.rl.write(this.userInput), this._cursor = this.rl.cursor);
+  _setUserInput(e, s) {
+    this.userInput = e ?? "", this.emit("userInput", this.userInput), s && this._track && this.rl && (this.rl.write(this.userInput), this._cursor = this.rl.cursor);
   }
   _clearUserInput() {
     this.rl?.write(null, { ctrl: true, name: "u" }), this._setUserInput("");
   }
-  onKeypress(e2, s) {
-    if (this._track && s.name !== "return" && (s.name && this._isActionKey(e2, s) && this.rl?.write(null, { ctrl: true, name: "h" }), this._cursor = this.rl?.cursor ?? 0, this._setUserInput(this.rl?.line)), this.state === "error" && (this.state = "active"), s?.name && (!this._track && _.aliases.has(s.name) && this.emit("cursor", _.aliases.get(s.name)), _.actions.has(s.name) && this.emit("cursor", s.name)), e2 && (e2.toLowerCase() === "y" || e2.toLowerCase() === "n") && this.emit("confirm", e2.toLowerCase() === "y"), this.emit("key", e2?.toLowerCase(), s), s?.name === "return") {
+  onKeypress(e, s) {
+    if (this._track && s.name !== "return" && (s.name && this._isActionKey(e, s) && this.rl?.write(null, { ctrl: true, name: "h" }), this._cursor = this.rl?.cursor ?? 0, this._setUserInput(this.rl?.line)), this.state === "error" && (this.state = "active"), s?.name && (!this._track && _.aliases.has(s.name) && this.emit("cursor", _.aliases.get(s.name)), _.actions.has(s.name) && this.emit("cursor", s.name)), e && (e.toLowerCase() === "y" || e.toLowerCase() === "n") && this.emit("confirm", e.toLowerCase() === "y"), this.emit("key", e?.toLowerCase(), s), s?.name === "return") {
       if (this.opts.validate) {
         const i = this.opts.validate(this.value);
         i && (this.error = i instanceof Error ? i.message : i, this.state = "error", this.rl?.write(this.userInput));
       }
       this.state !== "error" && (this.state = "submit");
     }
-    H([e2, s?.name, s?.sequence], "cancel") && (this.state = "cancel"), (this.state === "submit" || this.state === "cancel") && this.emit("finalize"), this.render(), (this.state === "submit" || this.state === "cancel") && this.close();
+    H([e, s?.name, s?.sequence], "cancel") && (this.state = "cancel"), (this.state === "submit" || this.state === "cancel") && this.emit("finalize"), this.render(), (this.state === "submit" || this.state === "cancel") && this.close();
   }
   close() {
     this.input.unpipe(), this.input.removeListener("keypress", this.onKeypress), this.output.write(`
-`), T(this.input, false), this.rl?.close(), this.rl = void 0, this.emit(`${this.state}`, this.value), this.unsubscribe();
+`), W(this.input, false), this.rl?.close(), this.rl = void 0, this.emit(`${this.state}`, this.value), this.unsubscribe();
   }
   restoreCursor() {
-    const e2 = K(this._prevFrame, process.stdout.columns, { hard: true, trim: false }).split(`
+    const e = K(this._prevFrame, process.stdout.columns, { hard: true, trim: false }).split(`
 `).length - 1;
-    this.output.write(import_sisteransi.cursor.move(-999, e2 * -1));
+    this.output.write(import_sisteransi.cursor.move(-999, e * -1));
   }
   render() {
-    const e2 = K(this._render(this) ?? "", process.stdout.columns, { hard: true, trim: false });
-    if (e2 !== this._prevFrame) {
+    const e = K(this._render(this) ?? "", process.stdout.columns, { hard: true, trim: false });
+    if (e !== this._prevFrame) {
       if (this.state === "initial") this.output.write(import_sisteransi.cursor.hide);
       else {
-        const s = _t(this._prevFrame, e2), i = nt(this.output);
+        const s = _t(this._prevFrame, e), i = nt(this.output);
         if (this.restoreCursor(), s) {
           const r = Math.max(0, s.numLinesAfter - i), n = Math.max(0, s.numLinesBefore - i);
           let u = s.lines.find((a) => a >= r);
           if (u === void 0) {
-            this._prevFrame = e2;
+            this._prevFrame = e;
             return;
           }
           if (s.lines.length === 1) {
             this.output.write(import_sisteransi.cursor.move(0, u - n)), this.output.write(import_sisteransi.erase.lines(1));
-            const a = e2.split(`
+            const a = e.split(`
 `);
-            this.output.write(a[u]), this._prevFrame = e2, this.output.write(import_sisteransi.cursor.move(0, a.length - u - 1));
+            this.output.write(a[u]), this._prevFrame = e, this.output.write(import_sisteransi.cursor.move(0, a.length - u - 1));
             return;
           } else if (s.lines.length > 1) {
             if (r < n) u = r;
@@ -493,28 +493,28 @@ var x = class {
               l > 0 && this.output.write(import_sisteransi.cursor.move(0, l));
             }
             this.output.write(import_sisteransi.erase.down());
-            const a = e2.split(`
+            const a = e.split(`
 `).slice(u);
             this.output.write(a.join(`
-`)), this._prevFrame = e2;
+`)), this._prevFrame = e;
             return;
           }
         }
         this.output.write(import_sisteransi.erase.down());
       }
-      this.output.write(e2), this.state === "initial" && (this.state = "active"), this._prevFrame = e2;
+      this.output.write(e), this.state === "initial" && (this.state = "active"), this._prevFrame = e;
     }
   }
 };
-var kt = class extends x {
+var kt = class extends B {
   get cursor() {
     return this.value ? 0 : 1;
   }
   get _value() {
     return this.cursor === 0;
   }
-  constructor(e2) {
-    super(e2, false), this.value = !!e2.initialValue, this.on("userInput", () => {
+  constructor(e) {
+    super(e, false), this.value = !!e.initialValue, this.on("userInput", () => {
       this.value = this._value;
     }), this.on("confirm", (s) => {
       this.output.write(import_sisteransi.cursor.move(0, -1)), this.value = s, this.state = "submit", this.close();
@@ -523,44 +523,44 @@ var kt = class extends x {
     });
   }
 };
-var Lt = class extends x {
+var Lt = class extends B {
   options;
   cursor = 0;
   get _value() {
     return this.options[this.cursor].value;
   }
   get _enabledOptions() {
-    return this.options.filter((e2) => e2.disabled !== true);
+    return this.options.filter((e) => e.disabled !== true);
   }
   toggleAll() {
-    const e2 = this._enabledOptions, s = this.value !== void 0 && this.value.length === e2.length;
-    this.value = s ? [] : e2.map((i) => i.value);
+    const e = this._enabledOptions, s = this.value !== void 0 && this.value.length === e.length;
+    this.value = s ? [] : e.map((i) => i.value);
   }
   toggleInvert() {
-    const e2 = this.value;
-    if (!e2) return;
-    const s = this._enabledOptions.filter((i) => !e2.includes(i.value));
+    const e = this.value;
+    if (!e) return;
+    const s = this._enabledOptions.filter((i) => !e.includes(i.value));
     this.value = s.map((i) => i.value);
   }
   toggleValue() {
     this.value === void 0 && (this.value = []);
-    const e2 = this.value.includes(this._value);
-    this.value = e2 ? this.value.filter((s) => s !== this._value) : [...this.value, this._value];
+    const e = this.value.includes(this._value);
+    this.value = e ? this.value.filter((s) => s !== this._value) : [...this.value, this._value];
   }
-  constructor(e2) {
-    super(e2, false), this.options = e2.options, this.value = [...e2.initialValues ?? []];
-    const s = Math.max(this.options.findIndex(({ value: i }) => i === e2.cursorAt), 0);
-    this.cursor = this.options[s].disabled ? B(s, 1, this.options) : s, this.on("key", (i) => {
+  constructor(e) {
+    super(e, false), this.options = e.options, this.value = [...e.initialValues ?? []];
+    const s = Math.max(this.options.findIndex(({ value: i }) => i === e.cursorAt), 0);
+    this.cursor = this.options[s].disabled ? x(s, 1, this.options) : s, this.on("key", (i) => {
       i === "a" && this.toggleAll(), i === "i" && this.toggleInvert();
     }), this.on("cursor", (i) => {
       switch (i) {
         case "left":
         case "up":
-          this.cursor = B(this.cursor, -1, this.options);
+          this.cursor = x(this.cursor, -1, this.options);
           break;
         case "down":
         case "right":
-          this.cursor = B(this.cursor, 1, this.options);
+          this.cursor = x(this.cursor, 1, this.options);
           break;
         case "space":
           this.toggleValue();
@@ -569,7 +569,7 @@ var Lt = class extends x {
     });
   }
 };
-var Mt = class extends x {
+var Mt = class extends B {
   _mask = "\u2022";
   get cursor() {
     return this._cursor;
@@ -579,21 +579,21 @@ var Mt = class extends x {
   }
   get userInputWithCursor() {
     if (this.state === "submit" || this.state === "cancel") return this.masked;
-    const e2 = this.userInput;
-    if (this.cursor >= e2.length) return `${this.masked}${import_picocolors.default.inverse(import_picocolors.default.hidden("_"))}`;
+    const e = this.userInput;
+    if (this.cursor >= e.length) return `${this.masked}${D(["inverse", "hidden"], "_")}`;
     const s = this.masked, i = s.slice(0, this.cursor), r = s.slice(this.cursor);
-    return `${i}${import_picocolors.default.inverse(r[0])}${r.slice(1)}`;
+    return `${i}${D("inverse", r[0])}${r.slice(1)}`;
   }
   clear() {
     this._clearUserInput();
   }
-  constructor({ mask: e2, ...s }) {
-    super(s), this._mask = e2 ?? "\u2022", this.on("userInput", (i) => {
+  constructor({ mask: e, ...s }) {
+    super(s), this._mask = e ?? "\u2022", this.on("userInput", (i) => {
       this._setValue(i);
     });
   }
 };
-var Wt = class extends x {
+var Tt = class extends B {
   options;
   cursor = 0;
   get _selectedValue() {
@@ -602,384 +602,387 @@ var Wt = class extends x {
   changeValue() {
     this.value = this._selectedValue.value;
   }
-  constructor(e2) {
-    super(e2, false), this.options = e2.options;
-    const s = this.options.findIndex(({ value: r }) => r === e2.initialValue), i = s === -1 ? 0 : s;
-    this.cursor = this.options[i].disabled ? B(i, 1, this.options) : i, this.changeValue(), this.on("cursor", (r) => {
+  constructor(e) {
+    super(e, false), this.options = e.options;
+    const s = this.options.findIndex(({ value: r }) => r === e.initialValue), i = s === -1 ? 0 : s;
+    this.cursor = this.options[i].disabled ? x(i, 1, this.options) : i, this.changeValue(), this.on("cursor", (r) => {
       switch (r) {
         case "left":
         case "up":
-          this.cursor = B(this.cursor, -1, this.options);
+          this.cursor = x(this.cursor, -1, this.options);
           break;
         case "down":
         case "right":
-          this.cursor = B(this.cursor, 1, this.options);
+          this.cursor = x(this.cursor, 1, this.options);
           break;
       }
       this.changeValue();
     });
   }
 };
-var $t = class extends x {
+var $t = class extends B {
   get userInputWithCursor() {
     if (this.state === "submit") return this.userInput;
-    const e2 = this.userInput;
-    if (this.cursor >= e2.length) return `${this.userInput}\u2588`;
-    const s = e2.slice(0, this.cursor), [i, ...r] = e2.slice(this.cursor);
-    return `${s}${import_picocolors.default.inverse(i)}${r.join("")}`;
+    const e = this.userInput;
+    if (this.cursor >= e.length) return `${this.userInput}\u2588`;
+    const s = e.slice(0, this.cursor), [i, ...r] = e.slice(this.cursor);
+    return `${s}${D("inverse", i)}${r.join("")}`;
   }
   get cursor() {
     return this._cursor;
   }
-  constructor(e2) {
-    super({ ...e2, initialUserInput: e2.initialUserInput ?? e2.initialValue }), this.on("userInput", (s) => {
+  constructor(e) {
+    super({ ...e, initialUserInput: e.initialUserInput ?? e.initialValue }), this.on("userInput", (s) => {
       this._setValue(s);
     }), this.on("finalize", () => {
-      this.value || (this.value = e2.defaultValue), this.value === void 0 && (this.value = "");
+      this.value || (this.value = e.defaultValue), this.value === void 0 && (this.value = "");
     });
   }
 };
 
 // node_modules/@clack/prompts/dist/index.mjs
-var import_picocolors2 = __toESM(require_picocolors(), 1);
+import { styleText as t, stripVTControlCharacters as ue } from "node:util";
 import N2 from "node:process";
 var import_sisteransi2 = __toESM(require_src(), 1);
-function me() {
+function pt2() {
   return N2.platform !== "win32" ? N2.env.TERM !== "linux" : !!N2.env.CI || !!N2.env.WT_SESSION || !!N2.env.TERMINUS_SUBLIME || N2.env.ConEmuTask === "{cmd::Cmder}" || N2.env.TERM_PROGRAM === "Terminus-Sublime" || N2.env.TERM_PROGRAM === "vscode" || N2.env.TERM === "xterm-256color" || N2.env.TERM === "alacritty" || N2.env.TERMINAL_EMULATOR === "JetBrains-JediTerm";
 }
-var et2 = me();
-var ct2 = () => process.env.CI === "true";
-var C = (t, r) => et2 ? t : r;
-var Rt = C("\u25C6", "*");
-var dt2 = C("\u25A0", "x");
-var $t2 = C("\u25B2", "x");
-var V = C("\u25C7", "o");
-var ht2 = C("\u250C", "T");
-var d = C("\u2502", "|");
-var x2 = C("\u2514", "\u2014");
-var Ot = C("\u2510", "T");
-var Pt = C("\u2518", "\u2014");
-var Q2 = C("\u25CF", ">");
-var H2 = C("\u25CB", " ");
-var st2 = C("\u25FB", "[\u2022]");
-var U2 = C("\u25FC", "[+]");
-var q2 = C("\u25FB", "[ ]");
-var Nt = C("\u25AA", "\u2022");
-var rt2 = C("\u2500", "-");
-var mt2 = C("\u256E", "+");
-var Wt2 = C("\u251C", "+");
-var pt2 = C("\u256F", "+");
-var gt2 = C("\u2570", "+");
-var Lt2 = C("\u256D", "+");
-var ft2 = C("\u25CF", "\u2022");
-var Ft2 = C("\u25C6", "*");
-var yt2 = C("\u25B2", "!");
-var Et2 = C("\u25A0", "x");
-var W2 = (t) => {
-  switch (t) {
+var ee = pt2();
+var ce = () => process.env.CI === "true";
+var I2 = (e, r) => ee ? e : r;
+var Re = I2("\u25C6", "*");
+var $e = I2("\u25A0", "x");
+var de = I2("\u25B2", "x");
+var V = I2("\u25C7", "o");
+var he = I2("\u250C", "T");
+var h = I2("\u2502", "|");
+var x2 = I2("\u2514", "\u2014");
+var Oe = I2("\u2510", "T");
+var Pe = I2("\u2518", "\u2014");
+var z2 = I2("\u25CF", ">");
+var H2 = I2("\u25CB", " ");
+var te = I2("\u25FB", "[\u2022]");
+var U2 = I2("\u25FC", "[+]");
+var q2 = I2("\u25FB", "[ ]");
+var Ne = I2("\u25AA", "\u2022");
+var se = I2("\u2500", "-");
+var pe = I2("\u256E", "+");
+var We = I2("\u251C", "+");
+var me = I2("\u256F", "+");
+var ge = I2("\u2570", "+");
+var Ge = I2("\u256D", "+");
+var fe = I2("\u25CF", "\u2022");
+var Fe = I2("\u25C6", "*");
+var ye = I2("\u25B2", "!");
+var Ee = I2("\u25A0", "x");
+var W2 = (e) => {
+  switch (e) {
     case "initial":
     case "active":
-      return import_picocolors2.default.cyan(Rt);
+      return t("cyan", Re);
     case "cancel":
-      return import_picocolors2.default.red(dt2);
+      return t("red", $e);
     case "error":
-      return import_picocolors2.default.yellow($t2);
+      return t("yellow", de);
     case "submit":
-      return import_picocolors2.default.green(V);
+      return t("green", V);
   }
 };
-var vt2 = (t) => {
-  switch (t) {
+var ve = (e) => {
+  switch (e) {
     case "initial":
     case "active":
-      return import_picocolors2.default.cyan(d);
+      return t("cyan", h);
     case "cancel":
-      return import_picocolors2.default.red(d);
+      return t("red", h);
     case "error":
-      return import_picocolors2.default.yellow(d);
+      return t("yellow", h);
     case "submit":
-      return import_picocolors2.default.green(d);
+      return t("green", h);
   }
 };
-var pe = (t) => t === 161 || t === 164 || t === 167 || t === 168 || t === 170 || t === 173 || t === 174 || t >= 176 && t <= 180 || t >= 182 && t <= 186 || t >= 188 && t <= 191 || t === 198 || t === 208 || t === 215 || t === 216 || t >= 222 && t <= 225 || t === 230 || t >= 232 && t <= 234 || t === 236 || t === 237 || t === 240 || t === 242 || t === 243 || t >= 247 && t <= 250 || t === 252 || t === 254 || t === 257 || t === 273 || t === 275 || t === 283 || t === 294 || t === 295 || t === 299 || t >= 305 && t <= 307 || t === 312 || t >= 319 && t <= 322 || t === 324 || t >= 328 && t <= 331 || t === 333 || t === 338 || t === 339 || t === 358 || t === 359 || t === 363 || t === 462 || t === 464 || t === 466 || t === 468 || t === 470 || t === 472 || t === 474 || t === 476 || t === 593 || t === 609 || t === 708 || t === 711 || t >= 713 && t <= 715 || t === 717 || t === 720 || t >= 728 && t <= 731 || t === 733 || t === 735 || t >= 768 && t <= 879 || t >= 913 && t <= 929 || t >= 931 && t <= 937 || t >= 945 && t <= 961 || t >= 963 && t <= 969 || t === 1025 || t >= 1040 && t <= 1103 || t === 1105 || t === 8208 || t >= 8211 && t <= 8214 || t === 8216 || t === 8217 || t === 8220 || t === 8221 || t >= 8224 && t <= 8226 || t >= 8228 && t <= 8231 || t === 8240 || t === 8242 || t === 8243 || t === 8245 || t === 8251 || t === 8254 || t === 8308 || t === 8319 || t >= 8321 && t <= 8324 || t === 8364 || t === 8451 || t === 8453 || t === 8457 || t === 8467 || t === 8470 || t === 8481 || t === 8482 || t === 8486 || t === 8491 || t === 8531 || t === 8532 || t >= 8539 && t <= 8542 || t >= 8544 && t <= 8555 || t >= 8560 && t <= 8569 || t === 8585 || t >= 8592 && t <= 8601 || t === 8632 || t === 8633 || t === 8658 || t === 8660 || t === 8679 || t === 8704 || t === 8706 || t === 8707 || t === 8711 || t === 8712 || t === 8715 || t === 8719 || t === 8721 || t === 8725 || t === 8730 || t >= 8733 && t <= 8736 || t === 8739 || t === 8741 || t >= 8743 && t <= 8748 || t === 8750 || t >= 8756 && t <= 8759 || t === 8764 || t === 8765 || t === 8776 || t === 8780 || t === 8786 || t === 8800 || t === 8801 || t >= 8804 && t <= 8807 || t === 8810 || t === 8811 || t === 8814 || t === 8815 || t === 8834 || t === 8835 || t === 8838 || t === 8839 || t === 8853 || t === 8857 || t === 8869 || t === 8895 || t === 8978 || t >= 9312 && t <= 9449 || t >= 9451 && t <= 9547 || t >= 9552 && t <= 9587 || t >= 9600 && t <= 9615 || t >= 9618 && t <= 9621 || t === 9632 || t === 9633 || t >= 9635 && t <= 9641 || t === 9650 || t === 9651 || t === 9654 || t === 9655 || t === 9660 || t === 9661 || t === 9664 || t === 9665 || t >= 9670 && t <= 9672 || t === 9675 || t >= 9678 && t <= 9681 || t >= 9698 && t <= 9701 || t === 9711 || t === 9733 || t === 9734 || t === 9737 || t === 9742 || t === 9743 || t === 9756 || t === 9758 || t === 9792 || t === 9794 || t === 9824 || t === 9825 || t >= 9827 && t <= 9829 || t >= 9831 && t <= 9834 || t === 9836 || t === 9837 || t === 9839 || t === 9886 || t === 9887 || t === 9919 || t >= 9926 && t <= 9933 || t >= 9935 && t <= 9939 || t >= 9941 && t <= 9953 || t === 9955 || t === 9960 || t === 9961 || t >= 9963 && t <= 9969 || t === 9972 || t >= 9974 && t <= 9977 || t === 9979 || t === 9980 || t === 9982 || t === 9983 || t === 10045 || t >= 10102 && t <= 10111 || t >= 11094 && t <= 11097 || t >= 12872 && t <= 12879 || t >= 57344 && t <= 63743 || t >= 65024 && t <= 65039 || t === 65533 || t >= 127232 && t <= 127242 || t >= 127248 && t <= 127277 || t >= 127280 && t <= 127337 || t >= 127344 && t <= 127373 || t === 127375 || t === 127376 || t >= 127387 && t <= 127404 || t >= 917760 && t <= 917999 || t >= 983040 && t <= 1048573 || t >= 1048576 && t <= 1114109;
-var ge = (t) => t === 12288 || t >= 65281 && t <= 65376 || t >= 65504 && t <= 65510;
-var fe = (t) => t >= 4352 && t <= 4447 || t === 8986 || t === 8987 || t === 9001 || t === 9002 || t >= 9193 && t <= 9196 || t === 9200 || t === 9203 || t === 9725 || t === 9726 || t === 9748 || t === 9749 || t >= 9800 && t <= 9811 || t === 9855 || t === 9875 || t === 9889 || t === 9898 || t === 9899 || t === 9917 || t === 9918 || t === 9924 || t === 9925 || t === 9934 || t === 9940 || t === 9962 || t === 9970 || t === 9971 || t === 9973 || t === 9978 || t === 9981 || t === 9989 || t === 9994 || t === 9995 || t === 10024 || t === 10060 || t === 10062 || t >= 10067 && t <= 10069 || t === 10071 || t >= 10133 && t <= 10135 || t === 10160 || t === 10175 || t === 11035 || t === 11036 || t === 11088 || t === 11093 || t >= 11904 && t <= 11929 || t >= 11931 && t <= 12019 || t >= 12032 && t <= 12245 || t >= 12272 && t <= 12287 || t >= 12289 && t <= 12350 || t >= 12353 && t <= 12438 || t >= 12441 && t <= 12543 || t >= 12549 && t <= 12591 || t >= 12593 && t <= 12686 || t >= 12688 && t <= 12771 || t >= 12783 && t <= 12830 || t >= 12832 && t <= 12871 || t >= 12880 && t <= 19903 || t >= 19968 && t <= 42124 || t >= 42128 && t <= 42182 || t >= 43360 && t <= 43388 || t >= 44032 && t <= 55203 || t >= 63744 && t <= 64255 || t >= 65040 && t <= 65049 || t >= 65072 && t <= 65106 || t >= 65108 && t <= 65126 || t >= 65128 && t <= 65131 || t >= 94176 && t <= 94180 || t === 94192 || t === 94193 || t >= 94208 && t <= 100343 || t >= 100352 && t <= 101589 || t >= 101632 && t <= 101640 || t >= 110576 && t <= 110579 || t >= 110581 && t <= 110587 || t === 110589 || t === 110590 || t >= 110592 && t <= 110882 || t === 110898 || t >= 110928 && t <= 110930 || t === 110933 || t >= 110948 && t <= 110951 || t >= 110960 && t <= 111355 || t === 126980 || t === 127183 || t === 127374 || t >= 127377 && t <= 127386 || t >= 127488 && t <= 127490 || t >= 127504 && t <= 127547 || t >= 127552 && t <= 127560 || t === 127568 || t === 127569 || t >= 127584 && t <= 127589 || t >= 127744 && t <= 127776 || t >= 127789 && t <= 127797 || t >= 127799 && t <= 127868 || t >= 127870 && t <= 127891 || t >= 127904 && t <= 127946 || t >= 127951 && t <= 127955 || t >= 127968 && t <= 127984 || t === 127988 || t >= 127992 && t <= 128062 || t === 128064 || t >= 128066 && t <= 128252 || t >= 128255 && t <= 128317 || t >= 128331 && t <= 128334 || t >= 128336 && t <= 128359 || t === 128378 || t === 128405 || t === 128406 || t === 128420 || t >= 128507 && t <= 128591 || t >= 128640 && t <= 128709 || t === 128716 || t >= 128720 && t <= 128722 || t >= 128725 && t <= 128727 || t >= 128732 && t <= 128735 || t === 128747 || t === 128748 || t >= 128756 && t <= 128764 || t >= 128992 && t <= 129003 || t === 129008 || t >= 129292 && t <= 129338 || t >= 129340 && t <= 129349 || t >= 129351 && t <= 129535 || t >= 129648 && t <= 129660 || t >= 129664 && t <= 129672 || t >= 129680 && t <= 129725 || t >= 129727 && t <= 129733 || t >= 129742 && t <= 129755 || t >= 129760 && t <= 129768 || t >= 129776 && t <= 129784 || t >= 131072 && t <= 196605 || t >= 196608 && t <= 262141;
-var At2 = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/y;
-var it2 = /[\x00-\x08\x0A-\x1F\x7F-\x9F]{1,1000}/y;
-var nt2 = /\t{1,1000}/y;
-var wt = new RegExp("[\\u{1F1E6}-\\u{1F1FF}]{2}|\\u{1F3F4}[\\u{E0061}-\\u{E007A}]{2}[\\u{E0030}-\\u{E0039}\\u{E0061}-\\u{E007A}]{1,3}\\u{E007F}|(?:\\p{Emoji}\\uFE0F\\u20E3?|\\p{Emoji_Modifier_Base}\\p{Emoji_Modifier}?|\\p{Emoji_Presentation})(?:\\u200D(?:\\p{Emoji_Modifier_Base}\\p{Emoji_Modifier}?|\\p{Emoji_Presentation}|\\p{Emoji}\\uFE0F\\u20E3?))*", "yu");
-var at2 = /(?:[\x20-\x7E\xA0-\xFF](?!\uFE0F)){1,1000}/y;
-var Fe = new RegExp("\\p{M}+", "gu");
-var ye = { limit: 1 / 0, ellipsis: "" };
-var jt = (t, r = {}, s = {}) => {
-  const i = r.limit ?? 1 / 0, a = r.ellipsis ?? "", o = r?.ellipsisWidth ?? (a ? jt(a, ye, s).width : 0), u = s.ansiWidth ?? 0, l = s.controlWidth ?? 0, n = s.tabWidth ?? 8, c = s.ambiguousWidth ?? 1, g = s.emojiWidth ?? 2, F = s.fullWidthWidth ?? 2, p = s.regularWidth ?? 1, E = s.wideWidth ?? 2;
-  let $ = 0, m = 0, h = t.length, y2 = 0, f = false, v = h, S2 = Math.max(0, i - o), I2 = 0, B2 = 0, A = 0, w = 0;
-  t: for (; ; ) {
-    if (B2 > I2 || m >= h && m > $) {
-      const _2 = t.slice(I2, B2) || t.slice($, m);
-      y2 = 0;
-      for (const D2 of _2.replaceAll(Fe, "")) {
-        const T2 = D2.codePointAt(0) || 0;
-        if (ge(T2) ? w = F : fe(T2) ? w = E : c !== p && pe(T2) ? w = c : w = p, A + w > S2 && (v = Math.min(v, Math.max(I2, $) + y2)), A + w > i) {
-          f = true;
-          break t;
+var mt2 = (e) => e === 161 || e === 164 || e === 167 || e === 168 || e === 170 || e === 173 || e === 174 || e >= 176 && e <= 180 || e >= 182 && e <= 186 || e >= 188 && e <= 191 || e === 198 || e === 208 || e === 215 || e === 216 || e >= 222 && e <= 225 || e === 230 || e >= 232 && e <= 234 || e === 236 || e === 237 || e === 240 || e === 242 || e === 243 || e >= 247 && e <= 250 || e === 252 || e === 254 || e === 257 || e === 273 || e === 275 || e === 283 || e === 294 || e === 295 || e === 299 || e >= 305 && e <= 307 || e === 312 || e >= 319 && e <= 322 || e === 324 || e >= 328 && e <= 331 || e === 333 || e === 338 || e === 339 || e === 358 || e === 359 || e === 363 || e === 462 || e === 464 || e === 466 || e === 468 || e === 470 || e === 472 || e === 474 || e === 476 || e === 593 || e === 609 || e === 708 || e === 711 || e >= 713 && e <= 715 || e === 717 || e === 720 || e >= 728 && e <= 731 || e === 733 || e === 735 || e >= 768 && e <= 879 || e >= 913 && e <= 929 || e >= 931 && e <= 937 || e >= 945 && e <= 961 || e >= 963 && e <= 969 || e === 1025 || e >= 1040 && e <= 1103 || e === 1105 || e === 8208 || e >= 8211 && e <= 8214 || e === 8216 || e === 8217 || e === 8220 || e === 8221 || e >= 8224 && e <= 8226 || e >= 8228 && e <= 8231 || e === 8240 || e === 8242 || e === 8243 || e === 8245 || e === 8251 || e === 8254 || e === 8308 || e === 8319 || e >= 8321 && e <= 8324 || e === 8364 || e === 8451 || e === 8453 || e === 8457 || e === 8467 || e === 8470 || e === 8481 || e === 8482 || e === 8486 || e === 8491 || e === 8531 || e === 8532 || e >= 8539 && e <= 8542 || e >= 8544 && e <= 8555 || e >= 8560 && e <= 8569 || e === 8585 || e >= 8592 && e <= 8601 || e === 8632 || e === 8633 || e === 8658 || e === 8660 || e === 8679 || e === 8704 || e === 8706 || e === 8707 || e === 8711 || e === 8712 || e === 8715 || e === 8719 || e === 8721 || e === 8725 || e === 8730 || e >= 8733 && e <= 8736 || e === 8739 || e === 8741 || e >= 8743 && e <= 8748 || e === 8750 || e >= 8756 && e <= 8759 || e === 8764 || e === 8765 || e === 8776 || e === 8780 || e === 8786 || e === 8800 || e === 8801 || e >= 8804 && e <= 8807 || e === 8810 || e === 8811 || e === 8814 || e === 8815 || e === 8834 || e === 8835 || e === 8838 || e === 8839 || e === 8853 || e === 8857 || e === 8869 || e === 8895 || e === 8978 || e >= 9312 && e <= 9449 || e >= 9451 && e <= 9547 || e >= 9552 && e <= 9587 || e >= 9600 && e <= 9615 || e >= 9618 && e <= 9621 || e === 9632 || e === 9633 || e >= 9635 && e <= 9641 || e === 9650 || e === 9651 || e === 9654 || e === 9655 || e === 9660 || e === 9661 || e === 9664 || e === 9665 || e >= 9670 && e <= 9672 || e === 9675 || e >= 9678 && e <= 9681 || e >= 9698 && e <= 9701 || e === 9711 || e === 9733 || e === 9734 || e === 9737 || e === 9742 || e === 9743 || e === 9756 || e === 9758 || e === 9792 || e === 9794 || e === 9824 || e === 9825 || e >= 9827 && e <= 9829 || e >= 9831 && e <= 9834 || e === 9836 || e === 9837 || e === 9839 || e === 9886 || e === 9887 || e === 9919 || e >= 9926 && e <= 9933 || e >= 9935 && e <= 9939 || e >= 9941 && e <= 9953 || e === 9955 || e === 9960 || e === 9961 || e >= 9963 && e <= 9969 || e === 9972 || e >= 9974 && e <= 9977 || e === 9979 || e === 9980 || e === 9982 || e === 9983 || e === 10045 || e >= 10102 && e <= 10111 || e >= 11094 && e <= 11097 || e >= 12872 && e <= 12879 || e >= 57344 && e <= 63743 || e >= 65024 && e <= 65039 || e === 65533 || e >= 127232 && e <= 127242 || e >= 127248 && e <= 127277 || e >= 127280 && e <= 127337 || e >= 127344 && e <= 127373 || e === 127375 || e === 127376 || e >= 127387 && e <= 127404 || e >= 917760 && e <= 917999 || e >= 983040 && e <= 1048573 || e >= 1048576 && e <= 1114109;
+var gt2 = (e) => e === 12288 || e >= 65281 && e <= 65376 || e >= 65504 && e <= 65510;
+var ft2 = (e) => e >= 4352 && e <= 4447 || e === 8986 || e === 8987 || e === 9001 || e === 9002 || e >= 9193 && e <= 9196 || e === 9200 || e === 9203 || e === 9725 || e === 9726 || e === 9748 || e === 9749 || e >= 9800 && e <= 9811 || e === 9855 || e === 9875 || e === 9889 || e === 9898 || e === 9899 || e === 9917 || e === 9918 || e === 9924 || e === 9925 || e === 9934 || e === 9940 || e === 9962 || e === 9970 || e === 9971 || e === 9973 || e === 9978 || e === 9981 || e === 9989 || e === 9994 || e === 9995 || e === 10024 || e === 10060 || e === 10062 || e >= 10067 && e <= 10069 || e === 10071 || e >= 10133 && e <= 10135 || e === 10160 || e === 10175 || e === 11035 || e === 11036 || e === 11088 || e === 11093 || e >= 11904 && e <= 11929 || e >= 11931 && e <= 12019 || e >= 12032 && e <= 12245 || e >= 12272 && e <= 12287 || e >= 12289 && e <= 12350 || e >= 12353 && e <= 12438 || e >= 12441 && e <= 12543 || e >= 12549 && e <= 12591 || e >= 12593 && e <= 12686 || e >= 12688 && e <= 12771 || e >= 12783 && e <= 12830 || e >= 12832 && e <= 12871 || e >= 12880 && e <= 19903 || e >= 19968 && e <= 42124 || e >= 42128 && e <= 42182 || e >= 43360 && e <= 43388 || e >= 44032 && e <= 55203 || e >= 63744 && e <= 64255 || e >= 65040 && e <= 65049 || e >= 65072 && e <= 65106 || e >= 65108 && e <= 65126 || e >= 65128 && e <= 65131 || e >= 94176 && e <= 94180 || e === 94192 || e === 94193 || e >= 94208 && e <= 100343 || e >= 100352 && e <= 101589 || e >= 101632 && e <= 101640 || e >= 110576 && e <= 110579 || e >= 110581 && e <= 110587 || e === 110589 || e === 110590 || e >= 110592 && e <= 110882 || e === 110898 || e >= 110928 && e <= 110930 || e === 110933 || e >= 110948 && e <= 110951 || e >= 110960 && e <= 111355 || e === 126980 || e === 127183 || e === 127374 || e >= 127377 && e <= 127386 || e >= 127488 && e <= 127490 || e >= 127504 && e <= 127547 || e >= 127552 && e <= 127560 || e === 127568 || e === 127569 || e >= 127584 && e <= 127589 || e >= 127744 && e <= 127776 || e >= 127789 && e <= 127797 || e >= 127799 && e <= 127868 || e >= 127870 && e <= 127891 || e >= 127904 && e <= 127946 || e >= 127951 && e <= 127955 || e >= 127968 && e <= 127984 || e === 127988 || e >= 127992 && e <= 128062 || e === 128064 || e >= 128066 && e <= 128252 || e >= 128255 && e <= 128317 || e >= 128331 && e <= 128334 || e >= 128336 && e <= 128359 || e === 128378 || e === 128405 || e === 128406 || e === 128420 || e >= 128507 && e <= 128591 || e >= 128640 && e <= 128709 || e === 128716 || e >= 128720 && e <= 128722 || e >= 128725 && e <= 128727 || e >= 128732 && e <= 128735 || e === 128747 || e === 128748 || e >= 128756 && e <= 128764 || e >= 128992 && e <= 129003 || e === 129008 || e >= 129292 && e <= 129338 || e >= 129340 && e <= 129349 || e >= 129351 && e <= 129535 || e >= 129648 && e <= 129660 || e >= 129664 && e <= 129672 || e >= 129680 && e <= 129725 || e >= 129727 && e <= 129733 || e >= 129742 && e <= 129755 || e >= 129760 && e <= 129768 || e >= 129776 && e <= 129784 || e >= 131072 && e <= 196605 || e >= 196608 && e <= 262141;
+var we = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/y;
+var re = /[\x00-\x08\x0A-\x1F\x7F-\x9F]{1,1000}/y;
+var ie = /\t{1,1000}/y;
+var Ae = new RegExp("[\\u{1F1E6}-\\u{1F1FF}]{2}|\\u{1F3F4}[\\u{E0061}-\\u{E007A}]{2}[\\u{E0030}-\\u{E0039}\\u{E0061}-\\u{E007A}]{1,3}\\u{E007F}|(?:\\p{Emoji}\\uFE0F\\u20E3?|\\p{Emoji_Modifier_Base}\\p{Emoji_Modifier}?|\\p{Emoji_Presentation})(?:\\u200D(?:\\p{Emoji_Modifier_Base}\\p{Emoji_Modifier}?|\\p{Emoji_Presentation}|\\p{Emoji}\\uFE0F\\u20E3?))*", "yu");
+var ne = /(?:[\x20-\x7E\xA0-\xFF](?!\uFE0F)){1,1000}/y;
+var Ft2 = new RegExp("\\p{M}+", "gu");
+var yt2 = { limit: 1 / 0, ellipsis: "" };
+var Le = (e, r = {}, s = {}) => {
+  const i = r.limit ?? 1 / 0, a = r.ellipsis ?? "", o = r?.ellipsisWidth ?? (a ? Le(a, yt2, s).width : 0), u = s.ansiWidth ?? 0, l = s.controlWidth ?? 0, n = s.tabWidth ?? 8, c = s.ambiguousWidth ?? 1, p = s.emojiWidth ?? 2, f = s.fullWidthWidth ?? 2, g = s.regularWidth ?? 1, E = s.wideWidth ?? 2;
+  let $ = 0, m = 0, d = e.length, F = 0, y2 = false, v = d, C = Math.max(0, i - o), A = 0, b = 0, w = 0, S2 = 0;
+  e: for (; ; ) {
+    if (b > A || m >= d && m > $) {
+      const T2 = e.slice(A, b) || e.slice($, m);
+      F = 0;
+      for (const M2 of T2.replaceAll(Ft2, "")) {
+        const O2 = M2.codePointAt(0) || 0;
+        if (gt2(O2) ? S2 = f : ft2(O2) ? S2 = E : c !== g && mt2(O2) ? S2 = c : S2 = g, w + S2 > C && (v = Math.min(v, Math.max(A, $) + F)), w + S2 > i) {
+          y2 = true;
+          break e;
         }
-        y2 += D2.length, A += w;
+        F += M2.length, w += S2;
       }
-      I2 = B2 = 0;
+      A = b = 0;
     }
-    if (m >= h) break;
-    if (at2.lastIndex = m, at2.test(t)) {
-      if (y2 = at2.lastIndex - m, w = y2 * p, A + w > S2 && (v = Math.min(v, m + Math.floor((S2 - A) / p))), A + w > i) {
-        f = true;
+    if (m >= d) break;
+    if (ne.lastIndex = m, ne.test(e)) {
+      if (F = ne.lastIndex - m, S2 = F * g, w + S2 > C && (v = Math.min(v, m + Math.floor((C - w) / g))), w + S2 > i) {
+        y2 = true;
         break;
       }
-      A += w, I2 = $, B2 = m, m = $ = at2.lastIndex;
+      w += S2, A = $, b = m, m = $ = ne.lastIndex;
       continue;
     }
-    if (At2.lastIndex = m, At2.test(t)) {
-      if (A + u > S2 && (v = Math.min(v, m)), A + u > i) {
-        f = true;
+    if (we.lastIndex = m, we.test(e)) {
+      if (w + u > C && (v = Math.min(v, m)), w + u > i) {
+        y2 = true;
         break;
       }
-      A += u, I2 = $, B2 = m, m = $ = At2.lastIndex;
+      w += u, A = $, b = m, m = $ = we.lastIndex;
       continue;
     }
-    if (it2.lastIndex = m, it2.test(t)) {
-      if (y2 = it2.lastIndex - m, w = y2 * l, A + w > S2 && (v = Math.min(v, m + Math.floor((S2 - A) / l))), A + w > i) {
-        f = true;
+    if (re.lastIndex = m, re.test(e)) {
+      if (F = re.lastIndex - m, S2 = F * l, w + S2 > C && (v = Math.min(v, m + Math.floor((C - w) / l))), w + S2 > i) {
+        y2 = true;
         break;
       }
-      A += w, I2 = $, B2 = m, m = $ = it2.lastIndex;
+      w += S2, A = $, b = m, m = $ = re.lastIndex;
       continue;
     }
-    if (nt2.lastIndex = m, nt2.test(t)) {
-      if (y2 = nt2.lastIndex - m, w = y2 * n, A + w > S2 && (v = Math.min(v, m + Math.floor((S2 - A) / n))), A + w > i) {
-        f = true;
+    if (ie.lastIndex = m, ie.test(e)) {
+      if (F = ie.lastIndex - m, S2 = F * n, w + S2 > C && (v = Math.min(v, m + Math.floor((C - w) / n))), w + S2 > i) {
+        y2 = true;
         break;
       }
-      A += w, I2 = $, B2 = m, m = $ = nt2.lastIndex;
+      w += S2, A = $, b = m, m = $ = ie.lastIndex;
       continue;
     }
-    if (wt.lastIndex = m, wt.test(t)) {
-      if (A + g > S2 && (v = Math.min(v, m)), A + g > i) {
-        f = true;
+    if (Ae.lastIndex = m, Ae.test(e)) {
+      if (w + p > C && (v = Math.min(v, m)), w + p > i) {
+        y2 = true;
         break;
       }
-      A += g, I2 = $, B2 = m, m = $ = wt.lastIndex;
+      w += p, A = $, b = m, m = $ = Ae.lastIndex;
       continue;
     }
     m += 1;
   }
-  return { width: f ? S2 : A, index: f ? v : h, truncated: f, ellipsed: f && i >= o };
+  return { width: y2 ? C : w, index: y2 ? v : d, truncated: y2, ellipsed: y2 && i >= o };
 };
-var Ee = { limit: 1 / 0, ellipsis: "", ellipsisWidth: 0 };
-var M2 = (t, r = {}) => jt(t, Ee, r).width;
-var ot2 = "\x1B";
-var Gt = "\x9B";
-var ve = 39;
-var Ct2 = "\x07";
-var kt2 = "[";
-var Ae = "]";
-var Vt2 = "m";
-var St = `${Ae}8;;`;
-var Ht = new RegExp(`(?:\\${kt2}(?<code>\\d+)m|\\${St}(?<uri>.*)${Ct2})`, "y");
-var we = (t) => {
-  if (t >= 30 && t <= 37 || t >= 90 && t <= 97) return 39;
-  if (t >= 40 && t <= 47 || t >= 100 && t <= 107) return 49;
-  if (t === 1 || t === 2) return 22;
-  if (t === 3) return 23;
-  if (t === 4) return 24;
-  if (t === 7) return 27;
-  if (t === 8) return 28;
-  if (t === 9) return 29;
-  if (t === 0) return 0;
+var Et2 = { limit: 1 / 0, ellipsis: "", ellipsisWidth: 0 };
+var D2 = (e, r = {}) => Le(e, Et2, r).width;
+var ae = "\x1B";
+var je = "\x9B";
+var vt2 = 39;
+var Ce = "\x07";
+var ke = "[";
+var wt = "]";
+var Ve = "m";
+var Se = `${wt}8;;`;
+var He = new RegExp(`(?:\\${ke}(?<code>\\d+)m|\\${Se}(?<uri>.*)${Ce})`, "y");
+var At2 = (e) => {
+  if (e >= 30 && e <= 37 || e >= 90 && e <= 97) return 39;
+  if (e >= 40 && e <= 47 || e >= 100 && e <= 107) return 49;
+  if (e === 1 || e === 2) return 22;
+  if (e === 3) return 23;
+  if (e === 4) return 24;
+  if (e === 7) return 27;
+  if (e === 8) return 28;
+  if (e === 9) return 29;
+  if (e === 0) return 0;
 };
-var Ut = (t) => `${ot2}${kt2}${t}${Vt2}`;
-var Kt = (t) => `${ot2}${St}${t}${Ct2}`;
-var Ce = (t) => t.map((r) => M2(r));
-var It2 = (t, r, s) => {
+var Ue = (e) => `${ae}${ke}${e}${Ve}`;
+var Ke = (e) => `${ae}${Se}${e}${Ce}`;
+var Ct2 = (e) => e.map((r) => D2(r));
+var Ie = (e, r, s) => {
   const i = r[Symbol.iterator]();
-  let a = false, o = false, u = t.at(-1), l = u === void 0 ? 0 : M2(u), n = i.next(), c = i.next(), g = 0;
+  let a = false, o = false, u = e.at(-1), l = u === void 0 ? 0 : D2(u), n = i.next(), c = i.next(), p = 0;
   for (; !n.done; ) {
-    const F = n.value, p = M2(F);
-    l + p <= s ? t[t.length - 1] += F : (t.push(F), l = 0), (F === ot2 || F === Gt) && (a = true, o = r.startsWith(St, g + 1)), a ? o ? F === Ct2 && (a = false, o = false) : F === Vt2 && (a = false) : (l += p, l === s && !c.done && (t.push(""), l = 0)), n = c, c = i.next(), g += F.length;
+    const f = n.value, g = D2(f);
+    l + g <= s ? e[e.length - 1] += f : (e.push(f), l = 0), (f === ae || f === je) && (a = true, o = r.startsWith(Se, p + 1)), a ? o ? f === Ce && (a = false, o = false) : f === Ve && (a = false) : (l += g, l === s && !c.done && (e.push(""), l = 0)), n = c, c = i.next(), p += f.length;
   }
-  u = t.at(-1), !l && u !== void 0 && u.length > 0 && t.length > 1 && (t[t.length - 2] += t.pop());
+  u = e.at(-1), !l && u !== void 0 && u.length > 0 && e.length > 1 && (e[e.length - 2] += e.pop());
 };
-var Se = (t) => {
-  const r = t.split(" ");
+var St = (e) => {
+  const r = e.split(" ");
   let s = r.length;
-  for (; s > 0 && !(M2(r[s - 1]) > 0); ) s--;
-  return s === r.length ? t : r.slice(0, s).join(" ") + r.slice(s).join("");
+  for (; s > 0 && !(D2(r[s - 1]) > 0); ) s--;
+  return s === r.length ? e : r.slice(0, s).join(" ") + r.slice(s).join("");
 };
-var Ie = (t, r, s = {}) => {
-  if (s.trim !== false && t.trim() === "") return "";
+var It2 = (e, r, s = {}) => {
+  if (s.trim !== false && e.trim() === "") return "";
   let i = "", a, o;
-  const u = t.split(" "), l = Ce(u);
+  const u = e.split(" "), l = Ct2(u);
   let n = [""];
   for (const [$, m] of u.entries()) {
     s.trim !== false && (n[n.length - 1] = (n.at(-1) ?? "").trimStart());
-    let h = M2(n.at(-1) ?? "");
-    if ($ !== 0 && (h >= r && (s.wordWrap === false || s.trim === false) && (n.push(""), h = 0), (h > 0 || s.trim === false) && (n[n.length - 1] += " ", h++)), s.hard && l[$] > r) {
-      const y2 = r - h, f = 1 + Math.floor((l[$] - y2 - 1) / r);
-      Math.floor((l[$] - 1) / r) < f && n.push(""), It2(n, m, r);
+    let d = D2(n.at(-1) ?? "");
+    if ($ !== 0 && (d >= r && (s.wordWrap === false || s.trim === false) && (n.push(""), d = 0), (d > 0 || s.trim === false) && (n[n.length - 1] += " ", d++)), s.hard && l[$] > r) {
+      const F = r - d, y2 = 1 + Math.floor((l[$] - F - 1) / r);
+      Math.floor((l[$] - 1) / r) < y2 && n.push(""), Ie(n, m, r);
       continue;
     }
-    if (h + l[$] > r && h > 0 && l[$] > 0) {
-      if (s.wordWrap === false && h < r) {
-        It2(n, m, r);
+    if (d + l[$] > r && d > 0 && l[$] > 0) {
+      if (s.wordWrap === false && d < r) {
+        Ie(n, m, r);
         continue;
       }
       n.push("");
     }
-    if (h + l[$] > r && s.wordWrap === false) {
-      It2(n, m, r);
+    if (d + l[$] > r && s.wordWrap === false) {
+      Ie(n, m, r);
       continue;
     }
     n[n.length - 1] += m;
   }
-  s.trim !== false && (n = n.map(($) => Se($)));
+  s.trim !== false && (n = n.map(($) => St($)));
   const c = n.join(`
-`), g = c[Symbol.iterator]();
-  let F = g.next(), p = g.next(), E = 0;
-  for (; !F.done; ) {
-    const $ = F.value, m = p.value;
-    if (i += $, $ === ot2 || $ === Gt) {
-      Ht.lastIndex = E + 1;
-      const f = Ht.exec(c)?.groups;
-      if (f?.code !== void 0) {
-        const v = Number.parseFloat(f.code);
-        a = v === ve ? void 0 : v;
-      } else f?.uri !== void 0 && (o = f.uri.length === 0 ? void 0 : f.uri);
+`), p = c[Symbol.iterator]();
+  let f = p.next(), g = p.next(), E = 0;
+  for (; !f.done; ) {
+    const $ = f.value, m = g.value;
+    if (i += $, $ === ae || $ === je) {
+      He.lastIndex = E + 1;
+      const y2 = He.exec(c)?.groups;
+      if (y2?.code !== void 0) {
+        const v = Number.parseFloat(y2.code);
+        a = v === vt2 ? void 0 : v;
+      } else y2?.uri !== void 0 && (o = y2.uri.length === 0 ? void 0 : y2.uri);
     }
-    const h = a ? we(a) : void 0;
+    const d = a ? At2(a) : void 0;
     m === `
-` ? (o && (i += Kt("")), a && h && (i += Ut(h))) : $ === `
-` && (a && h && (i += Ut(a)), o && (i += Kt(o))), E += $.length, F = p, p = g.next();
+` ? (o && (i += Ke("")), a && d && (i += Ue(d))) : $ === `
+` && (a && d && (i += Ue(a)), o && (i += Ke(o))), E += $.length, f = g, g = p.next();
   }
   return i;
 };
-function J2(t, r, s) {
-  return String(t).normalize().replaceAll(`\r
+function J2(e, r, s) {
+  return String(e).normalize().replaceAll(`\r
 `, `
 `).split(`
-`).map((i) => Ie(i, r, s)).join(`
+`).map((i) => It2(i, r, s)).join(`
 `);
 }
-var be = (t, r, s, i, a) => {
+var bt2 = (e, r, s, i, a) => {
   let o = r, u = 0;
   for (let l = s; l < i; l++) {
-    const n = t[l];
+    const n = e[l];
     if (o = o - n.length, u++, o <= a) break;
   }
   return { lineCount: o, removals: u };
 };
-var X2 = (t) => {
-  const { cursor: r, options: s, style: i } = t, a = t.output ?? process.stdout, o = rt(a), u = t.columnPadding ?? 0, l = t.rowPadding ?? 4, n = o - u, c = nt(a), g = import_picocolors2.default.dim("..."), F = t.maxItems ?? Number.POSITIVE_INFINITY, p = Math.max(c - l, 0), E = Math.max(Math.min(F, p), 5);
-  let $ = 0;
-  r >= E - 3 && ($ = Math.max(Math.min(r - E + 3, s.length - E), 0));
-  let m = E < s.length && $ > 0, h = E < s.length && $ + E < s.length;
-  const y2 = Math.min($ + E, s.length), f = [];
-  let v = 0;
-  m && v++, h && v++;
-  const S2 = $ + (m ? 1 : 0), I2 = y2 - (h ? 1 : 0);
-  for (let A = S2; A < I2; A++) {
-    const w = J2(i(s[A], A === r), n, { hard: true, trim: false }).split(`
+var X2 = ({ cursor: e, options: r, style: s, output: i = process.stdout, maxItems: a = Number.POSITIVE_INFINITY, columnPadding: o = 0, rowPadding: u = 4 }) => {
+  const l = rt(i) - o, n = nt(i), c = t("dim", "..."), p = Math.max(n - u, 0), f = Math.max(Math.min(a, p), 5);
+  let g = 0;
+  e >= f - 3 && (g = Math.max(Math.min(e - f + 3, r.length - f), 0));
+  let E = f < r.length && g > 0, $ = f < r.length && g + f < r.length;
+  const m = Math.min(g + f, r.length), d = [];
+  let F = 0;
+  E && F++, $ && F++;
+  const y2 = g + (E ? 1 : 0), v = m - ($ ? 1 : 0);
+  for (let A = y2; A < v; A++) {
+    const b = J2(s(r[A], A === e), l, { hard: true, trim: false }).split(`
 `);
-    f.push(w), v += w.length;
+    d.push(b), F += b.length;
   }
-  if (v > p) {
-    let A = 0, w = 0, _2 = v;
-    const D2 = r - S2, T2 = (Y, L2) => be(f, _2, Y, L2, p);
-    m ? ({ lineCount: _2, removals: A } = T2(0, D2), _2 > p && ({ lineCount: _2, removals: w } = T2(D2 + 1, f.length))) : ({ lineCount: _2, removals: w } = T2(D2 + 1, f.length), _2 > p && ({ lineCount: _2, removals: A } = T2(0, D2))), A > 0 && (m = true, f.splice(0, A)), w > 0 && (h = true, f.splice(f.length - w, w));
+  if (F > p) {
+    let A = 0, b = 0, w = F;
+    const S2 = e - y2, T2 = (M2, O2) => bt2(d, w, M2, O2, p);
+    E ? ({ lineCount: w, removals: A } = T2(0, S2), w > p && ({ lineCount: w, removals: b } = T2(S2 + 1, d.length))) : ({ lineCount: w, removals: b } = T2(S2 + 1, d.length), w > p && ({ lineCount: w, removals: A } = T2(0, S2))), A > 0 && (E = true, d.splice(0, A)), b > 0 && ($ = true, d.splice(d.length - b, b));
   }
-  const B2 = [];
-  m && B2.push(g);
-  for (const A of f) for (const w of A) B2.push(w);
-  return h && B2.push(g), B2;
+  const C = [];
+  E && C.push(c);
+  for (const A of d) for (const b of A) C.push(b);
+  return $ && C.push(c), C;
 };
-var Re = (t) => {
-  const r = t.active ?? "Yes", s = t.inactive ?? "No";
-  return new kt({ active: r, inactive: s, signal: t.signal, input: t.input, output: t.output, initialValue: t.initialValue ?? true, render() {
-    const i = t.withGuide ?? _.withGuide, a = `${i ? `${import_picocolors2.default.gray(d)}
-` : ""}${W2(this.state)}  ${t.message}
+var Rt = (e) => {
+  const r = e.active ?? "Yes", s = e.inactive ?? "No";
+  return new kt({ active: r, inactive: s, signal: e.signal, input: e.input, output: e.output, initialValue: e.initialValue ?? true, render() {
+    const i = e.withGuide ?? _.withGuide, a = `${i ? `${t("gray", h)}
+` : ""}${W2(this.state)}  ${e.message}
 `, o = this.value ? r : s;
     switch (this.state) {
       case "submit": {
-        const u = i ? `${import_picocolors2.default.gray(d)}  ` : "";
-        return `${a}${u}${import_picocolors2.default.dim(o)}`;
+        const u = i ? `${t("gray", h)}  ` : "";
+        return `${a}${u}${t("dim", o)}`;
       }
       case "cancel": {
-        const u = i ? `${import_picocolors2.default.gray(d)}  ` : "";
-        return `${a}${u}${import_picocolors2.default.strikethrough(import_picocolors2.default.dim(o))}${i ? `
-${import_picocolors2.default.gray(d)}` : ""}`;
+        const u = i ? `${t("gray", h)}  ` : "";
+        return `${a}${u}${t(["strikethrough", "dim"], o)}${i ? `
+${t("gray", h)}` : ""}`;
       }
       default: {
-        const u = i ? `${import_picocolors2.default.cyan(d)}  ` : "", l = i ? import_picocolors2.default.cyan(x2) : "";
-        return `${a}${u}${this.value ? `${import_picocolors2.default.green(Q2)} ${r}` : `${import_picocolors2.default.dim(H2)} ${import_picocolors2.default.dim(r)}`}${t.vertical ? i ? `
-${import_picocolors2.default.cyan(d)}  ` : `
-` : ` ${import_picocolors2.default.dim("/")} `}${this.value ? `${import_picocolors2.default.dim(H2)} ${import_picocolors2.default.dim(s)}` : `${import_picocolors2.default.green(Q2)} ${s}`}
+        const u = i ? `${t("cyan", h)}  ` : "", l = i ? t("cyan", x2) : "";
+        return `${a}${u}${this.value ? `${t("green", z2)} ${r}` : `${t("dim", H2)} ${t("dim", r)}`}${e.vertical ? i ? `
+${t("cyan", h)}  ` : `
+` : ` ${t("dim", "/")} `}${this.value ? `${t("dim", H2)} ${t("dim", s)}` : `${t("green", z2)} ${s}`}
 ${l}
 `;
       }
     }
   } }).prompt();
 };
-var R2 = { message: (t = [], { symbol: r = import_picocolors2.default.gray(d), secondarySymbol: s = import_picocolors2.default.gray(d), output: i = process.stdout, spacing: a = 1, withGuide: o } = {}) => {
-  const u = [], l = o ?? _.withGuide, n = l ? s : "", c = l ? `${r}  ` : "", g = l ? `${s}  ` : "";
-  for (let p = 0; p < a; p++) u.push(n);
-  const F = Array.isArray(t) ? t : t.split(`
+var R2 = { message: (e = [], { symbol: r = t("gray", h), secondarySymbol: s = t("gray", h), output: i = process.stdout, spacing: a = 1, withGuide: o } = {}) => {
+  const u = [], l = o ?? _.withGuide, n = l ? s : "", c = l ? `${r}  ` : "", p = l ? `${s}  ` : "";
+  for (let g = 0; g < a; g++) u.push(n);
+  const f = Array.isArray(e) ? e : e.split(`
 `);
-  if (F.length > 0) {
-    const [p, ...E] = F;
-    p.length > 0 ? u.push(`${c}${p}`) : u.push(l ? r : "");
-    for (const $ of E) $.length > 0 ? u.push(`${g}${$}`) : u.push(l ? s : "");
+  if (f.length > 0) {
+    const [g, ...E] = f;
+    g.length > 0 ? u.push(`${c}${g}`) : u.push(l ? r : "");
+    for (const $ of E) $.length > 0 ? u.push(`${p}${$}`) : u.push(l ? s : "");
   }
   i.write(`${u.join(`
 `)}
 `);
-}, info: (t, r) => {
-  R2.message(t, { ...r, symbol: import_picocolors2.default.blue(ft2) });
-}, success: (t, r) => {
-  R2.message(t, { ...r, symbol: import_picocolors2.default.green(Ft2) });
-}, step: (t, r) => {
-  R2.message(t, { ...r, symbol: import_picocolors2.default.green(V) });
-}, warn: (t, r) => {
-  R2.message(t, { ...r, symbol: import_picocolors2.default.yellow(yt2) });
-}, warning: (t, r) => {
-  R2.warn(t, r);
-}, error: (t, r) => {
-  R2.message(t, { ...r, symbol: import_picocolors2.default.red(Et2) });
+}, info: (e, r) => {
+  R2.message(e, { ...r, symbol: t("blue", fe) });
+}, success: (e, r) => {
+  R2.message(e, { ...r, symbol: t("green", Fe) });
+}, step: (e, r) => {
+  R2.message(e, { ...r, symbol: t("green", V) });
+}, warn: (e, r) => {
+  R2.message(e, { ...r, symbol: t("yellow", ye) });
+}, warning: (e, r) => {
+  R2.warn(e, r);
+}, error: (e, r) => {
+  R2.message(e, { ...r, symbol: t("red", Ee) });
 } };
-var Ne = (t = "", r) => {
-  (r?.output ?? process.stdout).write(`${import_picocolors2.default.gray(x2)}  ${import_picocolors2.default.red(t)}
+var Nt = (e = "", r) => {
+  const s = r?.output ?? process.stdout, i = r?.withGuide ?? _.withGuide ? `${t("gray", x2)}  ` : "";
+  s.write(`${i}${t("red", e)}
 
 `);
 };
-var We = (t = "", r) => {
-  (r?.output ?? process.stdout).write(`${import_picocolors2.default.gray(ht2)}  ${t}
+var Wt2 = (e = "", r) => {
+  const s = r?.output ?? process.stdout, i = r?.withGuide ?? _.withGuide ? `${t("gray", he)}  ` : "";
+  s.write(`${i}${e}
 `);
 };
-var Le = (t = "", r) => {
-  (r?.output ?? process.stdout).write(`${import_picocolors2.default.gray(d)}
-${import_picocolors2.default.gray(x2)}  ${t}
+var Gt = (e = "", r) => {
+  const s = r?.output ?? process.stdout, i = r?.withGuide ?? _.withGuide ? `${t("gray", h)}
+${t("gray", x2)}  ` : "";
+  s.write(`${i}${e}
 
 `);
 };
-var Z2 = (t, r) => t.split(`
+var Q2 = (e, r) => e.split(`
 `).map((s) => r(s)).join(`
 `);
-var je = (t) => {
+var Lt2 = (e) => {
   const r = (i, a) => {
     const o = i.label ?? String(i.value);
-    return a === "disabled" ? `${import_picocolors2.default.gray(q2)} ${Z2(o, (u) => import_picocolors2.default.strikethrough(import_picocolors2.default.gray(u)))}${i.hint ? ` ${import_picocolors2.default.dim(`(${i.hint ?? "disabled"})`)}` : ""}` : a === "active" ? `${import_picocolors2.default.cyan(st2)} ${o}${i.hint ? ` ${import_picocolors2.default.dim(`(${i.hint})`)}` : ""}` : a === "selected" ? `${import_picocolors2.default.green(U2)} ${Z2(o, import_picocolors2.default.dim)}${i.hint ? ` ${import_picocolors2.default.dim(`(${i.hint})`)}` : ""}` : a === "cancelled" ? `${Z2(o, (u) => import_picocolors2.default.strikethrough(import_picocolors2.default.dim(u)))}` : a === "active-selected" ? `${import_picocolors2.default.green(U2)} ${o}${i.hint ? ` ${import_picocolors2.default.dim(`(${i.hint})`)}` : ""}` : a === "submitted" ? `${Z2(o, import_picocolors2.default.dim)}` : `${import_picocolors2.default.dim(q2)} ${Z2(o, import_picocolors2.default.dim)}`;
-  }, s = t.required ?? true;
-  return new Lt({ options: t.options, signal: t.signal, input: t.input, output: t.output, initialValues: t.initialValues, required: s, cursorAt: t.cursorAt, validate(i) {
+    return a === "disabled" ? `${t("gray", q2)} ${Q2(o, (u) => t(["strikethrough", "gray"], u))}${i.hint ? ` ${t("dim", `(${i.hint ?? "disabled"})`)}` : ""}` : a === "active" ? `${t("cyan", te)} ${o}${i.hint ? ` ${t("dim", `(${i.hint})`)}` : ""}` : a === "selected" ? `${t("green", U2)} ${Q2(o, (u) => t("dim", u))}${i.hint ? ` ${t("dim", `(${i.hint})`)}` : ""}` : a === "cancelled" ? `${Q2(o, (u) => t(["strikethrough", "dim"], u))}` : a === "active-selected" ? `${t("green", U2)} ${o}${i.hint ? ` ${t("dim", `(${i.hint})`)}` : ""}` : a === "submitted" ? `${Q2(o, (u) => t("dim", u))}` : `${t("dim", q2)} ${Q2(o, (u) => t("dim", u))}`;
+  }, s = e.required ?? true;
+  return new Lt({ options: e.options, signal: e.signal, input: e.input, output: e.output, initialValues: e.initialValues, required: s, cursorAt: e.cursorAt, validate(i) {
     if (s && (i === void 0 || i.length === 0)) return `Please select at least one option.
-${import_picocolors2.default.reset(import_picocolors2.default.dim(`Press ${import_picocolors2.default.gray(import_picocolors2.default.bgWhite(import_picocolors2.default.inverse(" space ")))} to select, ${import_picocolors2.default.gray(import_picocolors2.default.bgWhite(import_picocolors2.default.inverse(" enter ")))} to submit`))}`;
+${t("reset", t("dim", `Press ${t(["gray", "bgWhite", "inverse"], " space ")} to select, ${t("gray", t("bgWhite", t("inverse", " enter ")))} to submit`))}`;
   }, render() {
-    const i = xt(t.output, t.message, `${vt2(this.state)}  `, `${W2(this.state)}  `), a = `${import_picocolors2.default.gray(d)}
+    const i = Bt(e.output, e.message, `${ve(this.state)}  `, `${W2(this.state)}  `), a = `${t("gray", h)}
 ${i}
 `, o = this.value ?? [], u = (l, n) => {
       if (l.disabled) return r(l, "disabled");
@@ -988,178 +991,178 @@ ${i}
     };
     switch (this.state) {
       case "submit": {
-        const l = this.options.filter(({ value: c }) => o.includes(c)).map((c) => r(c, "submitted")).join(import_picocolors2.default.dim(", ")) || import_picocolors2.default.dim("none"), n = xt(t.output, l, `${import_picocolors2.default.gray(d)}  `);
+        const l = this.options.filter(({ value: c }) => o.includes(c)).map((c) => r(c, "submitted")).join(t("dim", ", ")) || t("dim", "none"), n = Bt(e.output, l, `${t("gray", h)}  `);
         return `${a}${n}`;
       }
       case "cancel": {
-        const l = this.options.filter(({ value: c }) => o.includes(c)).map((c) => r(c, "cancelled")).join(import_picocolors2.default.dim(", "));
-        if (l.trim() === "") return `${a}${import_picocolors2.default.gray(d)}`;
-        const n = xt(t.output, l, `${import_picocolors2.default.gray(d)}  `);
+        const l = this.options.filter(({ value: c }) => o.includes(c)).map((c) => r(c, "cancelled")).join(t("dim", ", "));
+        if (l.trim() === "") return `${a}${t("gray", h)}`;
+        const n = Bt(e.output, l, `${t("gray", h)}  `);
         return `${a}${n}
-${import_picocolors2.default.gray(d)}`;
+${t("gray", h)}`;
       }
       case "error": {
-        const l = `${import_picocolors2.default.yellow(d)}  `, n = this.error.split(`
-`).map((F, p) => p === 0 ? `${import_picocolors2.default.yellow(x2)}  ${import_picocolors2.default.yellow(F)}` : `   ${F}`).join(`
+        const l = `${t("yellow", h)}  `, n = this.error.split(`
+`).map((f, g) => g === 0 ? `${t("yellow", x2)}  ${t("yellow", f)}` : `   ${f}`).join(`
 `), c = a.split(`
-`).length, g = n.split(`
+`).length, p = n.split(`
 `).length + 1;
-        return `${a}${l}${X2({ output: t.output, options: this.options, cursor: this.cursor, maxItems: t.maxItems, columnPadding: l.length, rowPadding: c + g, style: u }).join(`
+        return `${a}${l}${X2({ output: e.output, options: this.options, cursor: this.cursor, maxItems: e.maxItems, columnPadding: l.length, rowPadding: c + p, style: u }).join(`
 ${l}`)}
 ${n}
 `;
       }
       default: {
-        const l = `${import_picocolors2.default.cyan(d)}  `, n = a.split(`
+        const l = `${t("cyan", h)}  `, n = a.split(`
 `).length;
-        return `${a}${l}${X2({ output: t.output, options: this.options, cursor: this.cursor, maxItems: t.maxItems, columnPadding: l.length, rowPadding: n + 2, style: u }).join(`
+        return `${a}${l}${X2({ output: e.output, options: this.options, cursor: this.cursor, maxItems: e.maxItems, columnPadding: l.length, rowPadding: n + 2, style: u }).join(`
 ${l}`)}
-${import_picocolors2.default.cyan(x2)}
+${t("cyan", x2)}
 `;
       }
     }
   } }).prompt();
 };
-var Ge = (t) => import_picocolors2.default.dim(t);
-var ke = (t, r, s) => {
-  const i = { hard: true, trim: false }, a = J2(t, r, i).split(`
-`), o = a.reduce((n, c) => Math.max(M2(c), n), 0), u = a.map(s).reduce((n, c) => Math.max(M2(c), n), 0), l = r - (u - o);
-  return J2(t, l, i);
+var jt = (e) => t("dim", e);
+var kt2 = (e, r, s) => {
+  const i = { hard: true, trim: false }, a = J2(e, r, i).split(`
+`), o = a.reduce((n, c) => Math.max(D2(c), n), 0), u = a.map(s).reduce((n, c) => Math.max(D2(c), n), 0), l = r - (u - o);
+  return J2(e, l, i);
 };
-var Ve = (t = "", r = "", s) => {
-  const i = s?.output ?? N2.stdout, a = s?.withGuide ?? _.withGuide, o = s?.format ?? Ge, u = ["", ...ke(t, rt(i) - 6, o).split(`
-`).map(o), ""], l = M2(r), n = Math.max(u.reduce((p, E) => {
-    const $ = M2(E);
-    return $ > p ? $ : p;
-  }, 0), l) + 2, c = u.map((p) => `${import_picocolors2.default.gray(d)}  ${p}${" ".repeat(n - M2(p))}${import_picocolors2.default.gray(d)}`).join(`
-`), g = a ? `${import_picocolors2.default.gray(d)}
-` : "", F = a ? Wt2 : gt2;
-  i.write(`${g}${import_picocolors2.default.green(V)}  ${import_picocolors2.default.reset(r)} ${import_picocolors2.default.gray(rt2.repeat(Math.max(n - l - 1, 1)) + mt2)}
+var Vt2 = (e = "", r = "", s) => {
+  const i = s?.output ?? N2.stdout, a = s?.withGuide ?? _.withGuide, o = s?.format ?? jt, u = ["", ...kt2(e, rt(i) - 6, o).split(`
+`).map(o), ""], l = D2(r), n = Math.max(u.reduce((g, E) => {
+    const $ = D2(E);
+    return $ > g ? $ : g;
+  }, 0), l) + 2, c = u.map((g) => `${t("gray", h)}  ${g}${" ".repeat(n - D2(g))}${t("gray", h)}`).join(`
+`), p = a ? `${t("gray", h)}
+` : "", f = a ? We : ge;
+  i.write(`${p}${t("green", V)}  ${t("reset", r)} ${t("gray", se.repeat(Math.max(n - l - 1, 1)) + pe)}
 ${c}
-${import_picocolors2.default.gray(F + rt2.repeat(n + 2) + pt2)}
+${t("gray", f + se.repeat(n + 2) + me)}
 `);
 };
-var He = (t) => new Mt({ validate: t.validate, mask: t.mask ?? Nt, signal: t.signal, input: t.input, output: t.output, render() {
-  const r = t.withGuide ?? _.withGuide, s = `${r ? `${import_picocolors2.default.gray(d)}
-` : ""}${W2(this.state)}  ${t.message}
+var Ht = (e) => new Mt({ validate: e.validate, mask: e.mask ?? Ne, signal: e.signal, input: e.input, output: e.output, render() {
+  const r = e.withGuide ?? _.withGuide, s = `${r ? `${t("gray", h)}
+` : ""}${W2(this.state)}  ${e.message}
 `, i = this.userInputWithCursor, a = this.masked;
   switch (this.state) {
     case "error": {
-      const o = r ? `${import_picocolors2.default.yellow(d)}  ` : "", u = r ? `${import_picocolors2.default.yellow(x2)}  ` : "", l = a ?? "";
-      return t.clearOnError && this.clear(), `${s.trim()}
+      const o = r ? `${t("yellow", h)}  ` : "", u = r ? `${t("yellow", x2)}  ` : "", l = a ?? "";
+      return e.clearOnError && this.clear(), `${s.trim()}
 ${o}${l}
-${u}${import_picocolors2.default.yellow(this.error)}
+${u}${t("yellow", this.error)}
 `;
     }
     case "submit": {
-      const o = r ? `${import_picocolors2.default.gray(d)}  ` : "", u = a ? import_picocolors2.default.dim(a) : "";
+      const o = r ? `${t("gray", h)}  ` : "", u = a ? t("dim", a) : "";
       return `${s}${o}${u}`;
     }
     case "cancel": {
-      const o = r ? `${import_picocolors2.default.gray(d)}  ` : "", u = a ? import_picocolors2.default.strikethrough(import_picocolors2.default.dim(a)) : "";
+      const o = r ? `${t("gray", h)}  ` : "", u = a ? t(["strikethrough", "dim"], a) : "";
       return `${s}${o}${u}${a && r ? `
-${import_picocolors2.default.gray(d)}` : ""}`;
+${t("gray", h)}` : ""}`;
     }
     default: {
-      const o = r ? `${import_picocolors2.default.cyan(d)}  ` : "", u = r ? import_picocolors2.default.cyan(x2) : "";
+      const o = r ? `${t("cyan", h)}  ` : "", u = r ? t("cyan", x2) : "";
       return `${s}${o}${i}
 ${u}
 `;
     }
   }
 } }).prompt();
-var Ke = import_picocolors2.default.magenta;
-var bt2 = ({ indicator: t = "dots", onCancel: r, output: s = process.stdout, cancelMessage: i, errorMessage: a, frames: o = et2 ? ["\u25D2", "\u25D0", "\u25D3", "\u25D1"] : ["\u2022", "o", "O", "0"], delay: u = et2 ? 80 : 120, signal: l, ...n } = {}) => {
-  const c = ct2();
-  let g, F, p = false, E = false, $ = "", m, h = performance.now();
-  const y2 = rt(s), f = n?.styleFrame ?? Ke, v = (b) => {
-    const O2 = b > 1 ? a ?? _.messages.error : i ?? _.messages.cancel;
-    E = b === 1, p && (L2(O2, b), E && typeof r == "function" && r());
-  }, S2 = () => v(2), I2 = () => v(1), B2 = () => {
-    process.on("uncaughtExceptionMonitor", S2), process.on("unhandledRejection", S2), process.on("SIGINT", I2), process.on("SIGTERM", I2), process.on("exit", v), l && l.addEventListener("abort", I2);
-  }, A = () => {
-    process.removeListener("uncaughtExceptionMonitor", S2), process.removeListener("unhandledRejection", S2), process.removeListener("SIGINT", I2), process.removeListener("SIGTERM", I2), process.removeListener("exit", v), l && l.removeEventListener("abort", I2);
+var Kt = (e) => t("magenta", e);
+var be = ({ indicator: e = "dots", onCancel: r, output: s = process.stdout, cancelMessage: i, errorMessage: a, frames: o = ee ? ["\u25D2", "\u25D0", "\u25D3", "\u25D1"] : ["\u2022", "o", "O", "0"], delay: u = ee ? 80 : 120, signal: l, ...n } = {}) => {
+  const c = ce();
+  let p, f, g = false, E = false, $ = "", m, d = performance.now();
+  const F = rt(s), y2 = n?.styleFrame ?? Kt, v = (B2) => {
+    const P2 = B2 > 1 ? a ?? _.messages.error : i ?? _.messages.cancel;
+    E = B2 === 1, g && (k2(P2, B2), E && typeof r == "function" && r());
+  }, C = () => v(2), A = () => v(1), b = () => {
+    process.on("uncaughtExceptionMonitor", C), process.on("unhandledRejection", C), process.on("SIGINT", A), process.on("SIGTERM", A), process.on("exit", v), l && l.addEventListener("abort", A);
   }, w = () => {
+    process.removeListener("uncaughtExceptionMonitor", C), process.removeListener("unhandledRejection", C), process.removeListener("SIGINT", A), process.removeListener("SIGTERM", A), process.removeListener("exit", v), l && l.removeEventListener("abort", A);
+  }, S2 = () => {
     if (m === void 0) return;
     c && s.write(`
 `);
-    const b = J2(m, y2, { hard: true, trim: false }).split(`
+    const B2 = J2(m, F, { hard: true, trim: false }).split(`
 `);
-    b.length > 1 && s.write(import_sisteransi2.cursor.up(b.length - 1)), s.write(import_sisteransi2.cursor.to(0)), s.write(import_sisteransi2.erase.down());
-  }, _2 = (b) => b.replace(/\.+$/, ""), D2 = (b) => {
-    const O2 = (performance.now() - b) / 1e3, j2 = Math.floor(O2 / 60), G2 = Math.floor(O2 % 60);
-    return j2 > 0 ? `[${j2}m ${G2}s]` : `[${G2}s]`;
-  }, T2 = n.withGuide ?? _.withGuide, Y = (b = "") => {
-    p = true, g = Bt({ output: s }), $ = _2(b), h = performance.now(), T2 && s.write(`${import_picocolors2.default.gray(d)}
+    B2.length > 1 && s.write(import_sisteransi2.cursor.up(B2.length - 1)), s.write(import_sisteransi2.cursor.to(0)), s.write(import_sisteransi2.erase.down());
+  }, T2 = (B2) => B2.replace(/\.+$/, ""), M2 = (B2) => {
+    const P2 = (performance.now() - B2) / 1e3, G2 = Math.floor(P2 / 60), L2 = Math.floor(P2 % 60);
+    return G2 > 0 ? `[${G2}m ${L2}s]` : `[${L2}s]`;
+  }, O2 = n.withGuide ?? _.withGuide, le = (B2 = "") => {
+    g = true, p = xt({ output: s }), $ = T2(B2), d = performance.now(), O2 && s.write(`${t("gray", h)}
 `);
-    let O2 = 0, j2 = 0;
-    B2(), F = setInterval(() => {
+    let P2 = 0, G2 = 0;
+    b(), f = setInterval(() => {
       if (c && $ === m) return;
-      w(), m = $;
-      const G2 = f(o[O2]);
-      let tt2;
-      if (c) tt2 = `${G2}  ${$}...`;
-      else if (t === "timer") tt2 = `${G2}  ${$} ${D2(h)}`;
+      S2(), m = $;
+      const L2 = y2(o[P2]);
+      let Z2;
+      if (c) Z2 = `${L2}  ${$}...`;
+      else if (e === "timer") Z2 = `${L2}  ${$} ${M2(d)}`;
       else {
-        const te = ".".repeat(Math.floor(j2)).slice(0, 3);
-        tt2 = `${G2}  ${$}${te}`;
+        const et2 = ".".repeat(Math.floor(G2)).slice(0, 3);
+        Z2 = `${L2}  ${$}${et2}`;
       }
-      const Zt = J2(tt2, y2, { hard: true, trim: false });
-      s.write(Zt), O2 = O2 + 1 < o.length ? O2 + 1 : 0, j2 = j2 < 4 ? j2 + 0.125 : 0;
+      const Ze = J2(Z2, F, { hard: true, trim: false });
+      s.write(Ze), P2 = P2 + 1 < o.length ? P2 + 1 : 0, G2 = G2 < 4 ? G2 + 0.125 : 0;
     }, u);
-  }, L2 = (b = "", O2 = 0, j2 = false) => {
-    if (!p) return;
-    p = false, clearInterval(F), w();
-    const G2 = O2 === 0 ? import_picocolors2.default.green(V) : O2 === 1 ? import_picocolors2.default.red(dt2) : import_picocolors2.default.red($t2);
-    $ = b ?? $, j2 || (t === "timer" ? s.write(`${G2}  ${$} ${D2(h)}
-`) : s.write(`${G2}  ${$}
-`)), A(), g();
+  }, k2 = (B2 = "", P2 = 0, G2 = false) => {
+    if (!g) return;
+    g = false, clearInterval(f), S2();
+    const L2 = P2 === 0 ? t("green", V) : P2 === 1 ? t("red", $e) : t("red", de);
+    $ = B2 ?? $, G2 || (e === "timer" ? s.write(`${L2}  ${$} ${M2(d)}
+`) : s.write(`${L2}  ${$}
+`)), w(), p();
   };
-  return { start: Y, stop: (b = "") => L2(b, 0), message: (b = "") => {
-    $ = _2(b ?? $);
-  }, cancel: (b = "") => L2(b, 1), error: (b = "") => L2(b, 2), clear: () => L2("", 0, true), get isCancelled() {
+  return { start: le, stop: (B2 = "") => k2(B2, 0), message: (B2 = "") => {
+    $ = T2(B2 ?? $);
+  }, cancel: (B2 = "") => k2(B2, 1), error: (B2 = "") => k2(B2, 2), clear: () => k2("", 0, true), get isCancelled() {
     return E;
   } };
 };
-var zt = { light: C("\u2500", "-"), heavy: C("\u2501", "="), block: C("\u2588", "#") };
-var lt2 = (t, r) => t.includes(`
-`) ? t.split(`
+var ze = { light: I2("\u2500", "-"), heavy: I2("\u2501", "="), block: I2("\u2588", "#") };
+var oe = (e, r) => e.includes(`
+`) ? e.split(`
 `).map((s) => r(s)).join(`
-`) : r(t);
-var Je = (t) => {
+`) : r(e);
+var Jt = (e) => {
   const r = (s, i) => {
     const a = s.label ?? String(s.value);
     switch (i) {
       case "disabled":
-        return `${import_picocolors2.default.gray(H2)} ${lt2(a, import_picocolors2.default.gray)}${s.hint ? ` ${import_picocolors2.default.dim(`(${s.hint ?? "disabled"})`)}` : ""}`;
+        return `${t("gray", H2)} ${oe(a, (o) => t("gray", o))}${s.hint ? ` ${t("dim", `(${s.hint ?? "disabled"})`)}` : ""}`;
       case "selected":
-        return `${lt2(a, import_picocolors2.default.dim)}`;
+        return `${oe(a, (o) => t("dim", o))}`;
       case "active":
-        return `${import_picocolors2.default.green(Q2)} ${a}${s.hint ? ` ${import_picocolors2.default.dim(`(${s.hint})`)}` : ""}`;
+        return `${t("green", z2)} ${a}${s.hint ? ` ${t("dim", `(${s.hint})`)}` : ""}`;
       case "cancelled":
-        return `${lt2(a, (o) => import_picocolors2.default.strikethrough(import_picocolors2.default.dim(o)))}`;
+        return `${oe(a, (o) => t(["strikethrough", "dim"], o))}`;
       default:
-        return `${import_picocolors2.default.dim(H2)} ${lt2(a, import_picocolors2.default.dim)}`;
+        return `${t("dim", H2)} ${oe(a, (o) => t("dim", o))}`;
     }
   };
-  return new Wt({ options: t.options, signal: t.signal, input: t.input, output: t.output, initialValue: t.initialValue, render() {
-    const s = t.withGuide ?? _.withGuide, i = `${W2(this.state)}  `, a = `${vt2(this.state)}  `, o = xt(t.output, t.message, a, i), u = `${s ? `${import_picocolors2.default.gray(d)}
+  return new Tt({ options: e.options, signal: e.signal, input: e.input, output: e.output, initialValue: e.initialValue, render() {
+    const s = e.withGuide ?? _.withGuide, i = `${W2(this.state)}  `, a = `${ve(this.state)}  `, o = Bt(e.output, e.message, a, i), u = `${s ? `${t("gray", h)}
 ` : ""}${o}
 `;
     switch (this.state) {
       case "submit": {
-        const l = s ? `${import_picocolors2.default.gray(d)}  ` : "", n = xt(t.output, r(this.options[this.cursor], "selected"), l);
+        const l = s ? `${t("gray", h)}  ` : "", n = Bt(e.output, r(this.options[this.cursor], "selected"), l);
         return `${u}${n}`;
       }
       case "cancel": {
-        const l = s ? `${import_picocolors2.default.gray(d)}  ` : "", n = xt(t.output, r(this.options[this.cursor], "cancelled"), l);
+        const l = s ? `${t("gray", h)}  ` : "", n = Bt(e.output, r(this.options[this.cursor], "cancelled"), l);
         return `${u}${n}${s ? `
-${import_picocolors2.default.gray(d)}` : ""}`;
+${t("gray", h)}` : ""}`;
       }
       default: {
-        const l = s ? `${import_picocolors2.default.cyan(d)}  ` : "", n = s ? import_picocolors2.default.cyan(x2) : "", c = u.split(`
-`).length, g = s ? 2 : 1;
-        return `${u}${l}${X2({ output: t.output, cursor: this.cursor, options: this.options, maxItems: t.maxItems, columnPadding: l.length, rowPadding: c + g, style: (F, p) => r(F, F.disabled ? "disabled" : p ? "active" : "inactive") }).join(`
+        const l = s ? `${t("cyan", h)}  ` : "", n = s ? t("cyan", x2) : "", c = u.split(`
+`).length, p = s ? 2 : 1;
+        return `${u}${l}${X2({ output: e.output, cursor: this.cursor, options: this.options, maxItems: e.maxItems, columnPadding: l.length, rowPadding: c + p, style: (f, g) => r(f, f.disabled ? "disabled" : g ? "active" : "inactive") }).join(`
 ${l}`)}
 ${n}
 `;
@@ -1167,39 +1170,39 @@ ${n}
     }
   } }).prompt();
 };
-var Qt = `${import_picocolors2.default.gray(d)}  `;
-var Ye = async (t, r) => {
-  for (const s of t) {
+var Qe = `${t("gray", h)}  `;
+var Yt = async (e, r) => {
+  for (const s of e) {
     if (s.enabled === false) continue;
-    const i = bt2(r);
+    const i = be(r);
     i.start(s.title);
     const a = await s.task(i.message);
     i.stop(a || s.title);
   }
 };
-var Ze = (t) => new $t({ validate: t.validate, placeholder: t.placeholder, defaultValue: t.defaultValue, initialValue: t.initialValue, output: t.output, signal: t.signal, input: t.input, render() {
-  const r = t?.withGuide ?? _.withGuide, s = `${`${r ? `${import_picocolors2.default.gray(d)}
-` : ""}${W2(this.state)}  `}${t.message}
-`, i = t.placeholder ? import_picocolors2.default.inverse(t.placeholder[0]) + import_picocolors2.default.dim(t.placeholder.slice(1)) : import_picocolors2.default.inverse(import_picocolors2.default.hidden("_")), a = this.userInput ? this.userInputWithCursor : i, o = this.value ?? "";
+var Zt = (e) => new $t({ validate: e.validate, placeholder: e.placeholder, defaultValue: e.defaultValue, initialValue: e.initialValue, output: e.output, signal: e.signal, input: e.input, render() {
+  const r = e?.withGuide ?? _.withGuide, s = `${`${r ? `${t("gray", h)}
+` : ""}${W2(this.state)}  `}${e.message}
+`, i = e.placeholder ? t("inverse", e.placeholder[0]) + t("dim", e.placeholder.slice(1)) : t(["inverse", "hidden"], "_"), a = this.userInput ? this.userInputWithCursor : i, o = this.value ?? "";
   switch (this.state) {
     case "error": {
-      const u = this.error ? `  ${import_picocolors2.default.yellow(this.error)}` : "", l = r ? `${import_picocolors2.default.yellow(d)}  ` : "", n = r ? import_picocolors2.default.yellow(x2) : "";
+      const u = this.error ? `  ${t("yellow", this.error)}` : "", l = r ? `${t("yellow", h)}  ` : "", n = r ? t("yellow", x2) : "";
       return `${s.trim()}
 ${l}${a}
 ${n}${u}
 `;
     }
     case "submit": {
-      const u = o ? `  ${import_picocolors2.default.dim(o)}` : "", l = r ? import_picocolors2.default.gray(d) : "";
+      const u = o ? `  ${t("dim", o)}` : "", l = r ? t("gray", h) : "";
       return `${s}${l}${u}`;
     }
     case "cancel": {
-      const u = o ? `  ${import_picocolors2.default.strikethrough(import_picocolors2.default.dim(o))}` : "", l = r ? import_picocolors2.default.gray(d) : "";
+      const u = o ? `  ${t(["strikethrough", "dim"], o)}` : "", l = r ? t("gray", h) : "";
       return `${s}${l}${u}${o.trim() ? `
 ${l}` : ""}`;
     }
     default: {
-      const u = r ? `${import_picocolors2.default.cyan(d)}  ` : "", l = r ? import_picocolors2.default.cyan(x2) : "";
+      const u = r ? `${t("cyan", h)}  ` : "", l = r ? t("cyan", x2) : "";
       return `${s}${u}${a}
 ${l}
 `;
@@ -1208,7 +1211,7 @@ ${l}
 } }).prompt();
 
 // src/steps/welcome.ts
-var import_picocolors3 = __toESM(require_picocolors(), 1);
+var import_picocolors = __toESM(require_picocolors(), 1);
 import { existsSync } from "fs";
 
 // src/utils/system.ts
@@ -1227,7 +1230,9 @@ function detectOS() {
 }
 function commandExists(command) {
   try {
-    execSync(`which ${command}`, { stdio: "pipe" });
+    const isWindows = process.platform === "win32";
+    const checkCmd = isWindows ? "where" : "which";
+    execSync(`${checkCmd} ${command}`, { stdio: "pipe" });
     return true;
   } catch {
     return false;
@@ -1255,7 +1260,7 @@ function expandHome(filepath) {
 
 // src/steps/welcome.ts
 async function runWelcome() {
-  We(import_picocolors3.default.bgCyan(import_picocolors3.default.black(" claude-mem installer ")));
+  Wt2(import_picocolors.default.bgCyan(import_picocolors.default.black(" claude-mem installer ")));
   R2.info(`Version: 1.0.0`);
   R2.info(`Platform: ${process.platform} (${process.arch})`);
   const settingsExist = existsSync(expandHome("~/.claude-mem/settings.json"));
@@ -1264,33 +1269,36 @@ async function runWelcome() {
   if (alreadyInstalled) {
     R2.warn("Existing claude-mem installation detected.");
   }
-  const installMode = await Je({
+  const installMode = await Jt({
     message: "What would you like to do?",
     options: alreadyInstalled ? [
       { value: "upgrade", label: "Upgrade", hint: "update to latest version" },
       { value: "configure", label: "Configure", hint: "change settings only" },
-      { value: "fresh", label: "Fresh Install", hint: "reinstall from scratch" }
+      { value: "fresh", label: "Fresh Install", hint: "reinstall from scratch" },
+      { value: "uninstall", label: "Uninstall", hint: "remove claude-mem" }
     ] : [
       { value: "fresh", label: "Fresh Install", hint: "recommended" },
       { value: "configure", label: "Configure Only", hint: "set up settings without installing" }
     ]
   });
   if (Ct(installMode)) {
-    Ne("Installation cancelled.");
+    Nt("Installation cancelled.");
     process.exit(0);
   }
   return installMode;
 }
 
 // src/steps/dependencies.ts
-var import_picocolors4 = __toESM(require_picocolors(), 1);
+var import_picocolors2 = __toESM(require_picocolors(), 1);
 
 // src/utils/dependencies.ts
 import { existsSync as existsSync2 } from "fs";
 import { execSync as execSync2 } from "child_process";
 function findBinary(name, extraPaths = []) {
   if (commandExists(name)) {
-    const result = runCommand("which", [name]);
+    const isWindows = detectOS() === "windows";
+    const checkCmd = isWindows ? "where" : "which";
+    const result = runCommand(checkCmd, [name]);
     const versionResult = runCommand(name, ["--version"]);
     return {
       found: true,
@@ -1330,7 +1338,7 @@ function compareVersions(current, minimum) {
 function installBun() {
   const os = detectOS();
   if (os === "windows") {
-    execSync2('powershell -c "irm bun.sh/install.ps1 | iex"', { stdio: "inherit" });
+    execSync2('powershell -Command "iex \\"& {$(irm https://bun.com/install.ps1)} -Version 1.3.3\\""', { stdio: "inherit" });
   } else {
     execSync2("curl -fsSL https://bun.sh/install | bash", { stdio: "inherit" });
   }
@@ -1356,16 +1364,16 @@ async function runDependencyChecks() {
     bunPath: null,
     uvPath: null
   };
-  await Ye([
+  await Yt([
     {
       title: "Checking Node.js",
       task: async () => {
         const version = process.version.slice(1);
         if (compareVersions(version, "18.0.0")) {
           status.nodeOk = true;
-          return `Node.js ${process.version} ${import_picocolors4.default.green("\u2713")}`;
+          return `Node.js ${process.version} ${import_picocolors2.default.green("\u2713")}`;
         }
-        return `Node.js ${process.version} \u2014 requires >= 18.0.0 ${import_picocolors4.default.red("\u2717")}`;
+        return `Node.js ${process.version} \u2014 requires >= 18.0.0 ${import_picocolors2.default.red("\u2717")}`;
       }
     },
     {
@@ -1374,9 +1382,9 @@ async function runDependencyChecks() {
         const info = findBinary("git");
         if (info.found) {
           status.gitOk = true;
-          return `git ${info.version ?? ""} ${import_picocolors4.default.green("\u2713")}`;
+          return `git ${info.version ?? ""} ${import_picocolors2.default.green("\u2713")}`;
         }
-        return `git not found ${import_picocolors4.default.red("\u2717")}`;
+        return `git not found ${import_picocolors2.default.red("\u2717")}`;
       }
     },
     {
@@ -1386,12 +1394,12 @@ async function runDependencyChecks() {
         if (info.found && info.version && compareVersions(info.version, "1.1.14")) {
           status.bunOk = true;
           status.bunPath = info.path;
-          return `Bun ${info.version} ${import_picocolors4.default.green("\u2713")}`;
+          return `Bun ${info.version} ${import_picocolors2.default.green("\u2713")}`;
         }
         if (info.found && info.version) {
-          return `Bun ${info.version} \u2014 requires >= 1.1.14 ${import_picocolors4.default.yellow("\u26A0")}`;
+          return `Bun ${info.version} \u2014 requires >= 1.1.14 ${import_picocolors2.default.yellow("\u26A0")}`;
         }
-        return `Bun not found ${import_picocolors4.default.yellow("\u26A0")}`;
+        return `Bun not found ${import_picocolors2.default.yellow("\u26A0")}`;
       }
     },
     {
@@ -1401,9 +1409,9 @@ async function runDependencyChecks() {
         if (info.found) {
           status.uvOk = true;
           status.uvPath = info.path;
-          return `uv ${info.version ?? ""} ${import_picocolors4.default.green("\u2713")}`;
+          return `uv ${info.version ?? ""} ${import_picocolors2.default.green("\u2713")}`;
         }
-        return `uv not found ${import_picocolors4.default.yellow("\u26A0")}`;
+        return `uv not found ${import_picocolors2.default.yellow("\u26A0")}`;
       }
     }
   ]);
@@ -1417,25 +1425,25 @@ async function runDependencyChecks() {
     } else {
       R2.info("Download from: https://git-scm.com/downloads");
     }
-    Ne("Please install git and try again.");
+    Nt("Please install git and try again.");
     process.exit(1);
   }
   if (!status.nodeOk) {
     R2.error(`Node.js >= 18.0.0 is required. Current: ${process.version}`);
-    Ne("Please upgrade Node.js and try again.");
+    Nt("Please upgrade Node.js and try again.");
     process.exit(1);
   }
   if (!status.bunOk) {
-    const shouldInstall = await Re({
+    const shouldInstall = await Rt({
       message: "Bun is required but not found. Install it now?",
       initialValue: true
     });
     if (Ct(shouldInstall)) {
-      Ne("Installation cancelled.");
+      Nt("Installation cancelled.");
       process.exit(0);
     }
     if (shouldInstall) {
-      const s = bt2();
+      const s = be();
       s.start("Installing Bun...");
       try {
         installBun();
@@ -1443,30 +1451,34 @@ async function runDependencyChecks() {
         if (recheck.found) {
           status.bunOk = true;
           status.bunPath = recheck.path;
-          s.stop(`Bun installed ${import_picocolors4.default.green("\u2713")}`);
+          s.stop(`Bun installed ${import_picocolors2.default.green("\u2713")}`);
         } else {
           s.stop(`Bun installed but not found in PATH. You may need to restart your shell.`);
         }
       } catch {
-        s.stop(`Bun installation failed. Install manually: curl -fsSL https://bun.sh/install | bash`);
+        const os = detectOS();
+        const installCmd = os === "windows" ? 'iex "& {$(irm https://bun.com/install.ps1)} -Version 1.3.3"' : "curl -fsSL https://bun.sh/install | bash";
+        s.stop(`Bun installation failed. Install manually: ${installCmd}`);
       }
     } else {
-      R2.warn("Bun is required for claude-mem. Install manually: curl -fsSL https://bun.sh/install | bash");
-      Ne("Cannot continue without Bun.");
+      const os = detectOS();
+      const installCmd = os === "windows" ? 'iex "& {$(irm https://bun.com/install.ps1)} -Version 1.3.3"' : "curl -fsSL https://bun.sh/install | bash";
+      R2.warn(`Bun is required for claude-mem. Install manually: ${installCmd}`);
+      Nt("Cannot continue without Bun.");
       process.exit(1);
     }
   }
   if (!status.uvOk) {
-    const shouldInstall = await Re({
+    const shouldInstall = await Rt({
       message: "uv (Python package manager) is recommended for Chroma. Install it now?",
       initialValue: true
     });
     if (Ct(shouldInstall)) {
-      Ne("Installation cancelled.");
+      Nt("Installation cancelled.");
       process.exit(0);
     }
     if (shouldInstall) {
-      const s = bt2();
+      const s = be();
       s.start("Installing uv...");
       try {
         installUv();
@@ -1474,12 +1486,14 @@ async function runDependencyChecks() {
         if (recheck.found) {
           status.uvOk = true;
           status.uvPath = recheck.path;
-          s.stop(`uv installed ${import_picocolors4.default.green("\u2713")}`);
+          s.stop(`uv installed ${import_picocolors2.default.green("\u2713")}`);
         } else {
           s.stop("uv installed but not found in PATH. You may need to restart your shell.");
         }
       } catch {
-        s.stop("uv installation failed. Install manually: curl -fsSL https://astral.sh/uv/install.sh | sh");
+        const os = detectOS();
+        const installCmd = os === "windows" ? "irm https://astral.sh/uv/install.ps1 | iex" : "curl -fsSL https://astral.sh/uv/install.sh | sh";
+        s.stop(`uv installation failed. Install manually: ${installCmd}`);
       }
     } else {
       R2.warn("Skipping uv \u2014 Chroma vector search will not be available.");
@@ -1490,7 +1504,7 @@ async function runDependencyChecks() {
 
 // src/steps/ide-selection.ts
 async function runIdeSelection() {
-  const result = await je({
+  const result = await Lt2({
     message: "Which IDEs do you use?",
     options: [
       { value: "claude-code", label: "Claude Code", hint: "recommended" },
@@ -1501,7 +1515,7 @@ async function runIdeSelection() {
     required: true
   });
   if (Ct(result)) {
-    Ne("Installation cancelled.");
+    Nt("Installation cancelled.");
     process.exit(0);
   }
   const selectedIDEs = result;
@@ -1516,7 +1530,7 @@ async function runIdeSelection() {
 
 // src/steps/provider.ts
 async function runProviderConfiguration() {
-  const provider = await Je({
+  const provider = await Jt({
     message: "Which AI provider should claude-mem use for memory compression?",
     options: [
       { value: "claude", label: "Claude", hint: "uses your Claude subscription" },
@@ -1525,12 +1539,12 @@ async function runProviderConfiguration() {
     ]
   });
   if (Ct(provider)) {
-    Ne("Installation cancelled.");
+    Nt("Installation cancelled.");
     process.exit(0);
   }
   const config = { provider };
   if (provider === "claude") {
-    const authMethod = await Je({
+    const authMethod = await Jt({
       message: "How should Claude authenticate?",
       options: [
         { value: "cli", label: "CLI (Max Plan subscription)", hint: "no API key needed" },
@@ -1538,12 +1552,12 @@ async function runProviderConfiguration() {
       ]
     });
     if (Ct(authMethod)) {
-      Ne("Installation cancelled.");
+      Nt("Installation cancelled.");
       process.exit(0);
     }
     config.claudeAuthMethod = authMethod;
     if (authMethod === "api") {
-      const apiKey = await He({
+      const apiKey = await Ht({
         message: "Enter your Anthropic API key:",
         validate: (value) => {
           if (!value || value.trim().length === 0) return "API key is required";
@@ -1551,25 +1565,25 @@ async function runProviderConfiguration() {
         }
       });
       if (Ct(apiKey)) {
-        Ne("Installation cancelled.");
+        Nt("Installation cancelled.");
         process.exit(0);
       }
       config.apiKey = apiKey;
     }
   }
   if (provider === "gemini") {
-    const apiKey = await He({
+    const apiKey = await Ht({
       message: "Enter your Gemini API key:",
       validate: (value) => {
         if (!value || value.trim().length === 0) return "API key is required";
       }
     });
     if (Ct(apiKey)) {
-      Ne("Installation cancelled.");
+      Nt("Installation cancelled.");
       process.exit(0);
     }
     config.apiKey = apiKey;
-    const model = await Je({
+    const model = await Jt({
       message: "Which Gemini model?",
       options: [
         { value: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite", hint: "fastest, highest free RPM" },
@@ -1578,39 +1592,39 @@ async function runProviderConfiguration() {
       ]
     });
     if (Ct(model)) {
-      Ne("Installation cancelled.");
+      Nt("Installation cancelled.");
       process.exit(0);
     }
     config.model = model;
-    const rateLimiting = await Re({
+    const rateLimiting = await Rt({
       message: "Enable rate limiting? (recommended for free tier)",
       initialValue: true
     });
     if (Ct(rateLimiting)) {
-      Ne("Installation cancelled.");
+      Nt("Installation cancelled.");
       process.exit(0);
     }
     config.rateLimitingEnabled = rateLimiting;
   }
   if (provider === "openrouter") {
-    const apiKey = await He({
+    const apiKey = await Ht({
       message: "Enter your OpenRouter API key:",
       validate: (value) => {
         if (!value || value.trim().length === 0) return "API key is required";
       }
     });
     if (Ct(apiKey)) {
-      Ne("Installation cancelled.");
+      Nt("Installation cancelled.");
       process.exit(0);
     }
     config.apiKey = apiKey;
-    const model = await Ze({
+    const model = await Zt({
       message: "Which OpenRouter model?",
       defaultValue: "xiaomi/mimo-v2-flash:free",
       placeholder: "xiaomi/mimo-v2-flash:free"
     });
     if (Ct(model)) {
-      Ne("Installation cancelled.");
+      Nt("Installation cancelled.");
       process.exit(0);
     }
     config.model = model;
@@ -1619,14 +1633,14 @@ async function runProviderConfiguration() {
 }
 
 // src/steps/settings.ts
-var import_picocolors5 = __toESM(require_picocolors(), 1);
+var import_picocolors3 = __toESM(require_picocolors(), 1);
 async function runSettingsConfiguration() {
-  const useDefaults = await Re({
+  const useDefaults = await Rt({
     message: "Use default settings? (recommended for most users)",
     initialValue: true
   });
   if (Ct(useDefaults)) {
-    Ne("Installation cancelled.");
+    Nt("Installation cancelled.");
     process.exit(0);
   }
   if (useDefaults) {
@@ -1640,7 +1654,7 @@ async function runSettingsConfiguration() {
       chromaMode: "local"
     };
   }
-  const workerPort = await Ze({
+  const workerPort = await Zt({
     message: "Worker service port:",
     defaultValue: "37777",
     placeholder: "37777",
@@ -1652,19 +1666,19 @@ async function runSettingsConfiguration() {
     }
   });
   if (Ct(workerPort)) {
-    Ne("Installation cancelled.");
+    Nt("Installation cancelled.");
     process.exit(0);
   }
-  const dataDir = await Ze({
+  const dataDir = await Zt({
     message: "Data directory:",
     defaultValue: "~/.claude-mem",
     placeholder: "~/.claude-mem"
   });
   if (Ct(dataDir)) {
-    Ne("Installation cancelled.");
+    Nt("Installation cancelled.");
     process.exit(0);
   }
-  const contextObservations = await Ze({
+  const contextObservations = await Zt({
     message: "Number of context observations per session:",
     defaultValue: "50",
     placeholder: "50",
@@ -1676,10 +1690,10 @@ async function runSettingsConfiguration() {
     }
   });
   if (Ct(contextObservations)) {
-    Ne("Installation cancelled.");
+    Nt("Installation cancelled.");
     process.exit(0);
   }
-  const logLevel = await Je({
+  const logLevel = await Jt({
     message: "Log level:",
     options: [
       { value: "DEBUG", label: "DEBUG", hint: "verbose" },
@@ -1690,24 +1704,24 @@ async function runSettingsConfiguration() {
     initialValue: "INFO"
   });
   if (Ct(logLevel)) {
-    Ne("Installation cancelled.");
+    Nt("Installation cancelled.");
     process.exit(0);
   }
-  const pythonVersion = await Ze({
+  const pythonVersion = await Zt({
     message: "Python version (for Chroma):",
     defaultValue: "3.13",
     placeholder: "3.13"
   });
   if (Ct(pythonVersion)) {
-    Ne("Installation cancelled.");
+    Nt("Installation cancelled.");
     process.exit(0);
   }
-  const chromaEnabled = await Re({
+  const chromaEnabled = await Rt({
     message: "Enable Chroma vector search?",
     initialValue: true
   });
   if (Ct(chromaEnabled)) {
-    Ne("Installation cancelled.");
+    Nt("Installation cancelled.");
     process.exit(0);
   }
   let chromaMode;
@@ -1715,7 +1729,7 @@ async function runSettingsConfiguration() {
   let chromaPort;
   let chromaSsl;
   if (chromaEnabled) {
-    const mode = await Je({
+    const mode = await Jt({
       message: "Chroma mode:",
       options: [
         { value: "local", label: "Local", hint: "starts local Chroma server" },
@@ -1723,22 +1737,22 @@ async function runSettingsConfiguration() {
       ]
     });
     if (Ct(mode)) {
-      Ne("Installation cancelled.");
+      Nt("Installation cancelled.");
       process.exit(0);
     }
     chromaMode = mode;
     if (mode === "remote") {
-      const host = await Ze({
+      const host = await Zt({
         message: "Chroma host:",
         defaultValue: "127.0.0.1",
         placeholder: "127.0.0.1"
       });
       if (Ct(host)) {
-        Ne("Installation cancelled.");
+        Nt("Installation cancelled.");
         process.exit(0);
       }
       chromaHost = host;
-      const port = await Ze({
+      const port = await Zt({
         message: "Chroma port:",
         defaultValue: "8000",
         placeholder: "8000",
@@ -1748,16 +1762,16 @@ async function runSettingsConfiguration() {
         }
       });
       if (Ct(port)) {
-        Ne("Installation cancelled.");
+        Nt("Installation cancelled.");
         process.exit(0);
       }
       chromaPort = port;
-      const ssl = await Re({
+      const ssl = await Rt({
         message: "Use SSL for Chroma connection?",
         initialValue: false
       });
       if (Ct(ssl)) {
-        Ne("Installation cancelled.");
+        Nt("Installation cancelled.");
         process.exit(0);
       }
       chromaSsl = ssl;
@@ -1776,17 +1790,17 @@ async function runSettingsConfiguration() {
     chromaSsl
   };
   const summaryLines = [
-    `Worker port: ${import_picocolors5.default.cyan(workerPort)}`,
-    `Data directory: ${import_picocolors5.default.cyan(dataDir)}`,
-    `Context observations: ${import_picocolors5.default.cyan(contextObservations)}`,
-    `Log level: ${import_picocolors5.default.cyan(logLevel)}`,
-    `Python version: ${import_picocolors5.default.cyan(pythonVersion)}`,
-    `Chroma: ${chromaEnabled ? import_picocolors5.default.green("enabled") : import_picocolors5.default.dim("disabled")}`
+    `Worker port: ${import_picocolors3.default.cyan(workerPort)}`,
+    `Data directory: ${import_picocolors3.default.cyan(dataDir)}`,
+    `Context observations: ${import_picocolors3.default.cyan(contextObservations)}`,
+    `Log level: ${import_picocolors3.default.cyan(logLevel)}`,
+    `Python version: ${import_picocolors3.default.cyan(pythonVersion)}`,
+    `Chroma: ${chromaEnabled ? import_picocolors3.default.green("enabled") : import_picocolors3.default.dim("disabled")}`
   ];
   if (chromaEnabled && chromaMode) {
-    summaryLines.push(`Chroma mode: ${import_picocolors5.default.cyan(chromaMode)}`);
+    summaryLines.push(`Chroma mode: ${import_picocolors3.default.cyan(chromaMode)}`);
   }
-  Ve(summaryLines.join("\n"), "Settings Summary");
+  Vt2(summaryLines.join("\n"), "Settings Summary");
   return config;
 }
 
@@ -1849,9 +1863,9 @@ function writeSettings(providerConfig, settingsConfig) {
 }
 
 // src/steps/install.ts
-var import_picocolors6 = __toESM(require_picocolors(), 1);
+var import_picocolors4 = __toESM(require_picocolors(), 1);
 import { execSync as execSync3 } from "child_process";
-import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2, cpSync } from "fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2, cpSync, rmSync, readdirSync } from "fs";
 import { join as join3 } from "path";
 import { homedir as homedir3, tmpdir } from "os";
 var MARKETPLACE_DIR = join3(homedir3(), ".claude", "plugins", "marketplaces", "thedotmack");
@@ -1861,6 +1875,29 @@ function ensureDir(directoryPath) {
   if (!existsSync4(directoryPath)) {
     mkdirSync2(directoryPath, { recursive: true });
   }
+}
+function copyDirWithExclusions(src, dest, excludes) {
+  ensureDir(dest);
+  const existing = readdirSync(dest);
+  for (const file of existing) {
+    const path = join3(dest, file);
+    rmSync(path, { recursive: true, force: true });
+  }
+  function copyRecursive(srcPath, destPath) {
+    ensureDir(destPath);
+    const items = readdirSync(srcPath, { withFileTypes: true });
+    for (const item of items) {
+      if (excludes.includes(item.name)) continue;
+      const srcItem = join3(srcPath, item.name);
+      const destItem = join3(destPath, item.name);
+      if (item.isDirectory()) {
+        copyRecursive(srcItem, destItem);
+      } else {
+        cpSync(srcItem, destItem);
+      }
+    }
+  }
+  copyRecursive(src, dest);
 }
 function readJsonFile(filepath) {
   if (!existsSync4(filepath)) return {};
@@ -1924,7 +1961,7 @@ function getPluginVersion() {
 }
 async function runInstallation(selectedIDEs) {
   const tempDir = join3(tmpdir(), `claude-mem-install-${Date.now()}`);
-  await Ye([
+  await Yt([
     {
       title: "Cloning claude-mem repository",
       task: async (message) => {
@@ -1933,7 +1970,7 @@ async function runInstallation(selectedIDEs) {
           `git clone --depth 1 https://github.com/thedotmack/claude-mem.git "${tempDir}"`,
           { stdio: "pipe" }
         );
-        return `Repository cloned ${import_picocolors6.default.green("OK")}`;
+        return `Repository cloned ${import_picocolors4.default.green("OK")}`;
       }
     },
     {
@@ -1941,7 +1978,7 @@ async function runInstallation(selectedIDEs) {
       task: async (message) => {
         message("Running npm install...");
         execSync3("npm install", { cwd: tempDir, stdio: "pipe" });
-        return `Dependencies installed ${import_picocolors6.default.green("OK")}`;
+        return `Dependencies installed ${import_picocolors4.default.green("OK")}`;
       }
     },
     {
@@ -1949,7 +1986,7 @@ async function runInstallation(selectedIDEs) {
       task: async (message) => {
         message("Compiling TypeScript and bundling...");
         execSync3("npm run build", { cwd: tempDir, stdio: "pipe" });
-        return `Plugin built ${import_picocolors6.default.green("OK")}`;
+        return `Plugin built ${import_picocolors4.default.green("OK")}`;
       }
     },
     {
@@ -1957,10 +1994,7 @@ async function runInstallation(selectedIDEs) {
       task: async (message) => {
         message("Copying files to marketplace directory...");
         ensureDir(MARKETPLACE_DIR);
-        execSync3(
-          `rsync -a --delete --exclude=.git --exclude=package-lock.json --exclude=bun.lock "${tempDir}/" "${MARKETPLACE_DIR}/"`,
-          { stdio: "pipe" }
-        );
+        copyDirWithExclusions(tempDir, MARKETPLACE_DIR, [".git", "package-lock.json", "bun.lock"]);
         message("Registering marketplace...");
         registerMarketplace();
         message("Installing marketplace dependencies...");
@@ -1970,12 +2004,12 @@ async function runInstallation(selectedIDEs) {
         registerPlugin(version);
         message("Enabling plugin...");
         enablePluginInClaudeSettings();
-        return `Plugin registered (v${getPluginVersion()}) ${import_picocolors6.default.green("OK")}`;
+        return `Plugin registered (v${getPluginVersion()}) ${import_picocolors4.default.green("OK")}`;
       }
     }
   ]);
   try {
-    execSync3(`rm -rf "${tempDir}"`, { stdio: "pipe" });
+    rmSync(tempDir, { recursive: true, force: true });
   } catch {
   }
   if (selectedIDEs.includes("cursor")) {
@@ -1983,9 +2017,68 @@ async function runInstallation(selectedIDEs) {
     R2.info("Run: claude-mem cursor-setup (coming soon)");
   }
 }
+async function runUninstall() {
+  const confirm = await Rt({
+    message: "Are you sure you want to uninstall claude-mem? This action cannot be undone.",
+    initialValue: false
+  });
+  if (Ct(confirm) || !confirm) {
+    Nt("Uninstall cancelled.");
+    return;
+  }
+  await Yt([
+    {
+      title: "Disabling plugin",
+      task: async (message) => {
+        message("Removing from Claude Code...");
+        const settings = readJsonFile(CLAUDE_SETTINGS_PATH);
+        if (settings.enabledPlugins) {
+          delete settings.enabledPlugins["claude-mem@thedotmack"];
+        }
+        writeJsonFile(CLAUDE_SETTINGS_PATH, settings);
+        return `Plugin disabled ${import_picocolors4.default.green("OK")}`;
+      }
+    },
+    {
+      title: "Removing plugin files",
+      task: async (message) => {
+        message("Cleaning up marketplace directory...");
+        if (existsSync4(MARKETPLACE_DIR)) {
+          rmSync(MARKETPLACE_DIR, { recursive: true, force: true });
+        }
+        return `Plugin files removed ${import_picocolors4.default.green("OK")}`;
+      }
+    },
+    {
+      title: "Removing plugin cache",
+      task: async (message) => {
+        message("Cleaning up cache...");
+        const pluginCacheDir = join3(PLUGINS_DIR, "cache", "thedotmack", "claude-mem");
+        if (existsSync4(pluginCacheDir)) {
+          rmSync(pluginCacheDir, { recursive: true, force: true });
+        }
+        return `Cache cleaned ${import_picocolors4.default.green("OK")}`;
+      }
+    },
+    {
+      title: "Removing plugin registration",
+      task: async (message) => {
+        message("Unregistering from Claude Code...");
+        const installedPluginsPath = join3(PLUGINS_DIR, "installed_plugins.json");
+        const installedPlugins = readJsonFile(installedPluginsPath);
+        if (installedPlugins.plugins) {
+          delete installedPlugins.plugins["claude-mem@thedotmack"];
+        }
+        writeJsonFile(installedPluginsPath, installedPlugins);
+        return `Plugin unregistered ${import_picocolors4.default.green("OK")}`;
+      }
+    }
+  ]);
+  Gt(import_picocolors4.default.green("\u2713 claude-mem has been uninstalled successfully."));
+}
 
 // src/steps/worker.ts
-var import_picocolors7 = __toESM(require_picocolors(), 1);
+var import_picocolors5 = __toESM(require_picocolors(), 1);
 import { spawn } from "child_process";
 import { join as join4 } from "path";
 import { homedir as homedir4 } from "os";
@@ -2013,7 +2106,7 @@ async function runWorkerStartup(workerPort, dataDir) {
   const workerScript = join4(MARKETPLACE_DIR2, "plugin", "scripts", "worker-service.cjs");
   const expandedDataDir = expandHome(dataDir);
   const logPath = join4(expandedDataDir, "logs");
-  const s = bt2();
+  const s = be();
   s.start("Starting worker service...");
   const child = spawn(bunInfo.path, [workerScript], {
     cwd: MARKETPLACE_DIR2,
@@ -2028,7 +2121,7 @@ async function runWorkerStartup(workerPort, dataDir) {
   child.unref();
   const workerIsHealthy = await pollHealthEndpoint(workerPort);
   if (workerIsHealthy) {
-    s.stop(`Worker running on port ${import_picocolors7.default.cyan(workerPort)} ${import_picocolors7.default.green("OK")}`);
+    s.stop(`Worker running on port ${import_picocolors5.default.cyan(workerPort)} ${import_picocolors5.default.green("OK")}`);
   } else {
     s.stop(`Worker may still be starting. Check logs at: ${logPath}`);
     R2.warn("Health check timed out. The worker might need more time to initialize.");
@@ -2037,7 +2130,7 @@ async function runWorkerStartup(workerPort, dataDir) {
 }
 
 // src/steps/complete.ts
-var import_picocolors8 = __toESM(require_picocolors(), 1);
+var import_picocolors6 = __toESM(require_picocolors(), 1);
 function getProviderLabel(config) {
   switch (config.provider) {
     case "claude":
@@ -2060,13 +2153,13 @@ function getIDELabels(ides) {
 }
 function runCompletion(providerConfig, settingsConfig, selectedIDEs) {
   const summaryLines = [
-    `Provider:   ${import_picocolors8.default.cyan(getProviderLabel(providerConfig))}`,
-    `IDEs:       ${import_picocolors8.default.cyan(getIDELabels(selectedIDEs))}`,
-    `Data dir:   ${import_picocolors8.default.cyan(settingsConfig.dataDir)}`,
-    `Port:       ${import_picocolors8.default.cyan(settingsConfig.workerPort)}`,
-    `Chroma:     ${settingsConfig.chromaEnabled ? import_picocolors8.default.green("enabled") : import_picocolors8.default.dim("disabled")}`
+    `Provider:   ${import_picocolors6.default.cyan(getProviderLabel(providerConfig))}`,
+    `IDEs:       ${import_picocolors6.default.cyan(getIDELabels(selectedIDEs))}`,
+    `Data dir:   ${import_picocolors6.default.cyan(settingsConfig.dataDir)}`,
+    `Port:       ${import_picocolors6.default.cyan(settingsConfig.workerPort)}`,
+    `Chroma:     ${settingsConfig.chromaEnabled ? import_picocolors6.default.green("enabled") : import_picocolors6.default.dim("disabled")}`
   ];
-  Ve(summaryLines.join("\n"), "Configuration Summary");
+  Vt2(summaryLines.join("\n"), "Configuration Summary");
   const nextStepsLines = [];
   if (selectedIDEs.includes("claude-code")) {
     nextStepsLines.push("Open Claude Code and start a conversation \u2014 memory is automatic!");
@@ -2074,10 +2167,10 @@ function runCompletion(providerConfig, settingsConfig, selectedIDEs) {
   if (selectedIDEs.includes("cursor")) {
     nextStepsLines.push("Open Cursor \u2014 hooks are active in your projects.");
   }
-  nextStepsLines.push(`View your memories: ${import_picocolors8.default.underline(`http://localhost:${settingsConfig.workerPort}`)}`);
-  nextStepsLines.push(`Search past work: use ${import_picocolors8.default.bold("/mem-search")} in Claude Code`);
-  Ve(nextStepsLines.join("\n"), "Next Steps");
-  Le(import_picocolors8.default.green("claude-mem installed successfully!"));
+  nextStepsLines.push(`View your memories: ${import_picocolors6.default.underline(`http://localhost:${settingsConfig.workerPort}`)}`);
+  nextStepsLines.push(`Search past work: use ${import_picocolors6.default.bold("/mem-search")} in Claude Code`);
+  Vt2(nextStepsLines.join("\n"), "Next Steps");
+  Gt(import_picocolors6.default.green("claude-mem installed successfully!"));
 }
 
 // src/index.ts
@@ -2088,6 +2181,10 @@ async function runInstaller() {
     process.exit(1);
   }
   const installMode = await runWelcome();
+  if (installMode === "uninstall") {
+    await runUninstall();
+    process.exit(0);
+  }
   await runDependencyChecks();
   const selectedIDEs = await runIdeSelection();
   const providerConfig = await runProviderConfiguration();
@@ -2101,7 +2198,7 @@ async function runInstaller() {
   runCompletion(providerConfig, settingsConfig, selectedIDEs);
 }
 runInstaller().catch((error) => {
-  Ne("Installation failed.");
+  Nt("Installation failed.");
   console.error(error);
   process.exit(1);
 });

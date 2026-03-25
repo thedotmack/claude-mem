@@ -11,7 +11,9 @@ export interface BinaryInfo {
 export function findBinary(name: string, extraPaths: string[] = []): BinaryInfo {
   // Check PATH first
   if (commandExists(name)) {
-    const result = runCommand('which', [name]);
+    const isWindows = detectOS() === 'windows';
+    const checkCmd = isWindows ? 'where' : 'which';
+    const result = runCommand(checkCmd, [name]);
     const versionResult = runCommand(name, ['--version']);
     return {
       found: true,
@@ -58,7 +60,7 @@ export function compareVersions(current: string, minimum: string): boolean {
 export function installBun(): void {
   const os = detectOS();
   if (os === 'windows') {
-    execSync('powershell -c "irm bun.sh/install.ps1 | iex"', { stdio: 'inherit' });
+    execSync('powershell -Command "iex \\"& {$(irm https://bun.com/install.ps1)} -Version 1.3.3\\""', { stdio: 'inherit' });
   } else {
     execSync('curl -fsSL https://bun.sh/install | bash', { stdio: 'inherit' });
   }

@@ -5,7 +5,7 @@ import { runIdeSelection } from './steps/ide-selection.js';
 import { runProviderConfiguration } from './steps/provider.js';
 import { runSettingsConfiguration } from './steps/settings.js';
 import { writeSettings } from './utils/settings-writer.js';
-import { runInstallation } from './steps/install.js';
+import { runInstallation, runUninstall } from './steps/install.js';
 import { runWorkerStartup } from './steps/worker.js';
 import { runCompletion } from './steps/complete.js';
 
@@ -18,7 +18,13 @@ async function runInstaller(): Promise<void> {
 
   const installMode = await runWelcome();
 
-  // Dependency checks (all modes)
+  // Handle uninstall separately
+  if (installMode === 'uninstall') {
+    await runUninstall();
+    process.exit(0);
+  }
+
+  // Dependency checks (all modes except uninstall)
   await runDependencyChecks();
 
   // IDE and provider selection

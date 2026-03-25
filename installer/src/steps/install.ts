@@ -1,7 +1,7 @@
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, rmSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import type { IDE } from './ide-selection.js';
@@ -14,6 +14,39 @@ function ensureDir(directoryPath: string): void {
   if (!existsSync(directoryPath)) {
     mkdirSync(directoryPath, { recursive: true });
   }
+}
+
+function copyDirWithExclusions(src: string, dest: string, excludes: string[]): void {
+  // Ensure destination exists
+  ensureDir(dest);
+
+  // Clear destination directory
+  const existing = readdirSync(dest);
+  for (const file of existing) {
+    const path = join(dest, file);
+    rmSync(path, { recursive: true, force: true });
+  }
+
+  // Copy with exclusions
+  function copyRecursive(srcPath: string, destPath: string) {
+    ensureDir(destPath);
+    const items = readdirSync(srcPath, { withFileTypes: true });
+
+    for (const item of items) {
+      if (excludes.includes(item.name)) continue;
+
+      const srcItem = join(srcPath, item.name);
+      const destItem = join(destPath, item.name);
+
+      if (item.isDirectory()) {
+        copyRecursive(srcItem, destItem);
+      } else {
+        cpSync(srcItem, destItem);
+      }
+    }
+  }
+
+  copyRecursive(src, dest);
 }
 
 function readJsonFile(filepath: string): any {
@@ -129,11 +162,8 @@ export async function runInstallation(selectedIDEs: IDE[]): Promise<void> {
         message('Copying files to marketplace directory...');
         ensureDir(MARKETPLACE_DIR);
 
-        // Sync from cloned repo to marketplace dir, excluding .git and lock files
-        execSync(
-          `rsync -a --delete --exclude=.git --exclude=package-lock.json --exclude=bun.lock "${tempDir}/" "${MARKETPLACE_DIR}/"`,
-          { stdio: 'pipe' },
-        );
+        // Copy from cloned repo to marketplace dir, excluding .git and lock files
+        copyDirWithExclusions(tempDir, MARKETPLACE_DIR, ['.git', 'package-lock.json', 'bun.lock']);
 
         message('Registering marketplace...');
         registerMarketplace();
@@ -155,7 +185,7 @@ export async function runInstallation(selectedIDEs: IDE[]): Promise<void> {
 
   // Cleanup temp directory (non-critical if it fails)
   try {
-    execSync(`rm -rf "${tempDir}"`, { stdio: 'pipe' });
+    rmSync(tempDir, { recursive: true, force: true });
   } catch {
     // Temp dir will be cleaned by OS eventually
   }
@@ -164,4 +194,77 @@ export async function runInstallation(selectedIDEs: IDE[]): Promise<void> {
     p.log.info('Cursor hook configuration will be available after first launch.');
     p.log.info('Run: claude-mem cursor-setup (coming soon)');
   }
+}
+
+export async function runUninstall(): Promise<void> {
+  const confirm = await p.confirm({
+    message: 'Are you sure you want to uninstall claude-mem? This action cannot be undone.',
+    initialValue: false,
+  });
+
+  if (p.isCancel(confirm) || !confirm) {
+    p.cancel('Uninstall cancelled.');
+    return;
+  }
+
+  await p.tasks([
+    {
+      title: 'Disabling plugin',
+      task: async (message) => {
+        message('Removing from Claude Code...');
+        const settings = readJsonFile(CLAUDE_SETTINGS_PATH);
+
+        if (settings.enabledPlugins) {
+          delete settings.enabledPlugins['claude-mem@thedotmack'];
+        }
+
+        writeJsonFile(CLAUDE_SETTINGS_PATH, settings);
+        return `Plugin disabled ${pc.green('OK')}`;
+      },
+    },
+    {
+      title: 'Removing plugin files',
+      task: async (message) => {
+        message('Cleaning up marketplace directory...');
+
+        if (existsSync(MARKETPLACE_DIR)) {
+          rmSync(MARKETPLACE_DIR, { recursive: true, force: true });
+        }
+
+        return `Plugin files removed ${pc.green('OK')}`;
+      },
+    },
+    {
+      title: 'Removing plugin cache',
+      task: async (message) => {
+        message('Cleaning up cache...');
+
+        const pluginCacheDir = join(PLUGINS_DIR, 'cache', 'thedotmack', 'claude-mem');
+        if (existsSync(pluginCacheDir)) {
+          rmSync(pluginCacheDir, { recursive: true, force: true });
+        }
+
+        return `Cache cleaned ${pc.green('OK')}`;
+      },
+    },
+    {
+      title: 'Removing plugin registration',
+      task: async (message) => {
+        message('Unregistering from Claude Code...');
+
+        const installedPluginsPath = join(PLUGINS_DIR, 'installed_plugins.json');
+        const installedPlugins = readJsonFile(installedPluginsPath);
+
+        if (installedPlugins.plugins) {
+          delete installedPlugins.plugins['claude-mem@thedotmack'];
+        }
+
+        writeJsonFile(installedPluginsPath, installedPlugins);
+
+        return `Plugin unregistered ${pc.green('OK')}`;
+      },
+    },
+  ]);
+
+  p.outro(pc.green('✓ claude-mem has been uninstalled successfully.'));
 }

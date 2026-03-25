@@ -123,10 +123,18 @@ export async function runDependencyChecks(): Promise<DependencyStatus> {
           s.stop(`Bun installed but not found in PATH. You may need to restart your shell.`);
         }
       } catch {
-        s.stop(`Bun installation failed. Install manually: curl -fsSL https://bun.sh/install | bash`);
+        const os = detectOS();
+        const installCmd = os === 'windows'
+          ? 'iex "& {$(irm https://bun.com/install.ps1)} -Version 1.3.3"'
+          : 'curl -fsSL https://bun.sh/install | bash';
+        s.stop(`Bun installation failed. Install manually: ${installCmd}`);
       }
     } else {
-      p.log.warn('Bun is required for claude-mem. Install manually: curl -fsSL https://bun.sh/install | bash');
+      const os = detectOS();
+      const installCmd = os === 'windows'
+        ? 'iex "& {$(irm https://bun.com/install.ps1)} -Version 1.3.3"'
+        : 'curl -fsSL https://bun.sh/install | bash';
+      p.log.warn(`Bun is required for claude-mem. Install manually: ${installCmd}`);
       p.cancel('Cannot continue without Bun.');
       process.exit(1);
     }
@@ -157,7 +165,11 @@ export async function runDependencyChecks(): Promise<DependencyStatus> {
           s.stop('uv installed but not found in PATH. You may need to restart your shell.');
         }
       } catch {
-        s.stop('uv installation failed. Install manually: curl -fsSL https://astral.sh/uv/install.sh | sh');
+        const os = detectOS();
+        const installCmd = os === 'windows'
+          ? 'irm https://astral.sh/uv/install.ps1 | iex'
+          : 'curl -fsSL https://astral.sh/uv/install.sh | sh';
+        s.stop(`uv installation failed. Install manually: ${installCmd}`);
       }
     } else {
       p.log.warn('Skipping uv — Chroma vector search will not be available.');

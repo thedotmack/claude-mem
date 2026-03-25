@@ -3,30 +3,30 @@
   "hooks": {
     "beforeSubmitPrompt": [
       {
-        "command": "./cursor-hooks/session-init.sh"
+        "command": "node ./cursor-hooks/hook-runner.js session-init"
       },
       {
-        "command": "./cursor-hooks/context-inject.sh"
+        "command": "node ./cursor-hooks/hook-runner.js context-inject"
       }
     ],
     "afterMCPExecution": [
       {
-        "command": "./cursor-hooks/save-observation.sh"
+        "command": "node ./cursor-hooks/hook-runner.js save-observation"
       }
     ],
     "afterShellExecution": [
       {
-        "command": "./cursor-hooks/save-observation.sh"
+        "command": "node ./cursor-hooks/hook-runner.js save-observation"
       }
     ],
     "afterFileEdit": [
       {
-        "command": "./cursor-hooks/save-file-edit.sh"
+        "command": "node ./cursor-hooks/hook-runner.js save-file-edit"
       }
     ],
     "stop": [
       {
-        "command": "./cursor-hooks/session-summary.sh"
+        "command": "node ./cursor-hooks/hook-runner.js session-summary"
       }
     ]
   }

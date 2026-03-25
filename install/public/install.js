@@ -80,13 +80,13 @@ function checkNodeVersion() {
  */
 function findInstaller() {
   const possiblePaths = [
-    // 1. Local in same directory
-    resolve(__dirname, 'installer.js'),
-    // 2. From project root installer/dist
+    // 1. From project root installer/dist (primary)
     resolve(__dirname, '../..', 'installer/dist/index.js'),
-    // 3. From current working directory
-    resolve(process.cwd(), 'installer.js'),
+    // 2. From current working directory
     resolve(process.cwd(), 'installer/dist/index.js'),
+    // 3. Local in same directory (fallback)
+    resolve(__dirname, 'installer.js'),
+    resolve(process.cwd(), 'installer.js'),
   ];
 
   for (const path of possiblePaths) {
