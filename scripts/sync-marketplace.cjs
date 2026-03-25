@@ -71,6 +71,14 @@ function getPluginVersion() {
 
 // Normal rsync for main branch or fresh install
 console.log('Syncing to marketplace...');
+
+// Skip rsync on Windows (rsync not available)
+if (os.platform() === 'win32') {
+  console.log('\x1b[33m%s\x1b[0m', 'ℹ Skipping rsync sync on Windows (rsync not available)');
+  console.log('ℹ Plugin will use local plugin/scripts on next Claude Code session');
+  process.exit(0);
+}
+
 try {
   const rootDir = path.join(__dirname, '..');
   const gitignoreExcludes = getGitignoreExcludes(rootDir);
