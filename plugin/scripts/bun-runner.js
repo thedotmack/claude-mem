@@ -47,22 +47,16 @@ function fixBrokenScriptPath(argPath) {
  * Find Bun executable - checks PATH first, then common install locations
  */
 function findBun() {
-  // Try PATH first
-  const pathCheck = spawnSync(IS_WINDOWS ? 'where' : 'which', ['bun'], {
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    shell: IS_WINDOWS
-  });
-
-  if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
-    return 'bun'; // Found in PATH
-  }
-
-  // Check common installation paths (handles fresh installs before PATH reload)
-  // Windows: Bun installs to ~/.bun/bin/bun.exe (same as smart-install.js)
+  // Check common installation paths first (more reliable than where/which wrappers)
+  // Windows: Bun installs to ~/.bun/bin/bun.exe (official) or npm/node_modules/bun/bin/bun.exe (npm)
   // Unix: Check default location plus common package manager paths
   const bunPaths = IS_WINDOWS
-    ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
+    ? [
+        join(homedir(), '.bun', 'bin', 'bun.exe'),
+        // npm global install location: %APPDATA%/npm/node_modules/bun/bin/bun.exe
+        join(homedir(), 'AppData', 'Roaming', 'npm', 'node_modules', 'bun', 'bin', 'bun.exe'),
+        join(process.env.APPDATA || '', 'npm', 'node_modules', 'bun', 'bin', 'bun.exe'),
+      ]
     : [
         join(homedir(), '.bun', 'bin', 'bun'),
         '/usr/local/bin/bun',
@@ -71,9 +65,41 @@ function findBun() {
       ];
 
   for (const bunPath of bunPaths) {
-    if (existsSync(bunPath)) {
+    if (bunPath && existsSync(bunPath)) {
       return bunPath;
     }
+  }
+
+  // Try PATH as fallback (where/which may return wrapper scripts on Windows)
+  const pathCheck = spawnSync(IS_WINDOWS ? 'where' : 'which', ['bun'], {
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+    shell: IS_WINDOWS
+  });
+
+  if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
+    // On Windows, where/where returns wrapper scripts (.cmd files) that spawn()
+    // can't execute without shell: true. Try to find the actual executable.
+    if (IS_WINDOWS) {
+      const lines = pathCheck.stdout.trim().split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        // Skip wrapper scripts, look for .exe
+        if (trimmed.endsWith('.exe') && existsSync(trimmed)) {
+          return trimmed;
+        }
+      }
+      // If we found npm bun.cmd, derive the actual bun.exe path
+      const npmBunCmd = lines.find(l => l.includes('npm\\bun'));
+      if (npmBunCmd) {
+        const npmDir = join(dirname(npmBunCmd.trim()), 'node_modules', 'bun', 'bin', 'bun.exe');
+        if (existsSync(npmDir)) {
+          return npmDir;
+        }
+      }
+    }
+    // On Unix, just use the first result
+    return pathCheck.stdout.trim().split('\n')[0].trim();
   }
 
   return null;
