@@ -1,4 +1,4 @@
-import { Database } from './sqlite-compat.js';
+import type { Database } from './Database.js';
 import type { PendingMessage } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
