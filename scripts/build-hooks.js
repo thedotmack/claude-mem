@@ -182,12 +182,38 @@ async function buildHooks() {
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
 
+    // Deploy platform-specific hooks
+    console.log('\n🔧 Deploying platform-specific hooks...');
+    const hooksDirPath = 'plugin/hooks';
+    if (!fs.existsSync(hooksDirPath)) {
+      fs.mkdirSync(hooksDirPath, { recursive: true });
+    }
+
+    // Ensure both Unix and Windows hooks exist
+    const unixHooksPath = 'plugin/hooks/hooks-unix.json';
+    const windowsHooksPath = 'plugin/hooks/hooks-windows.json';
+
+    if (!fs.existsSync(unixHooksPath)) {
+      throw new Error(`Missing hooks file: ${unixHooksPath}`);
+    }
+    if (!fs.existsSync(windowsHooksPath)) {
+      throw new Error(`Missing hooks file: ${windowsHooksPath}`);
+    }
+
+    // Deploy appropriate hooks.json based on platform
+    const deployHooksPath = 'plugin/hooks/hooks.json';
+    const sourceHooks = process.platform === 'win32' ? windowsHooksPath : unixHooksPath;
+    fs.copyFileSync(sourceHooks, deployHooksPath);
+    console.log(`✓ Deployed ${process.platform === 'win32' ? 'Windows' : 'Unix'} hooks to hooks.json`);
+
     // Verify critical distribution files exist (skills are source files, not build outputs)
     console.log('\n📋 Verifying distribution files...');
     const requiredDistributionFiles = [
       'plugin/skills/mem-search/SKILL.md',
       'plugin/skills/smart-explore/SKILL.md',
       'plugin/hooks/hooks.json',
+      'plugin/hooks/hooks-unix.json',
+      'plugin/hooks/hooks-windows.json',
       'plugin/.claude-plugin/plugin.json',
     ];
     for (const filePath of requiredDistributionFiles) {
@@ -202,6 +228,7 @@ async function buildHooks() {
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Context Generator: context-generator.cjs`);
+    console.log(`   - Hooks: hooks.json (platform-specific), hooks-unix.json, hooks-windows.json`);
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);
