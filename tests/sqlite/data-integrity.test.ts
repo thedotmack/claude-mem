@@ -69,6 +69,16 @@ describe('TRIAGE-03: Data Integrity', () => {
       expect(hash.length).toBe(16);
     });
 
+    it('computeObservationContentHash avoids collision from field boundary ambiguity', () => {
+      // These tuples would collide without a delimiter between fields
+      const hash1 = computeObservationContentHash('session-abc', 'debug log', '');
+      const hash2 = computeObservationContentHash('session-ab', 'cdebug log', '');
+      const hash3 = computeObservationContentHash('session-', 'abcdebug log', '');
+      const hash4 = computeObservationContentHash('', 'session-abcdebug log', '');
+      const hashes = new Set([hash1, hash2, hash3, hash4]);
+      expect(hashes.size).toBe(4);
+    });
+
     it('storeObservation deduplicates identical observations within 30s window', () => {
       const memId = createSessionWithMemoryId(db, 'content-dedup-1', 'mem-dedup-1');
       const obs = createObservationInput({ title: 'Same Title', narrative: 'Same Narrative' });
