@@ -59,7 +59,7 @@ export interface ProjectContext {
   parent: string | null;
   /** True if currently in a worktree */
   isWorktree: boolean;
-  /** All projects to query: always [primary] (worktrees resolve to parent repo name) */
+  /** All projects to query: [primary] plus worktree alias if applicable (for reading legacy data) */
   allProjects: string[];
 }
 
@@ -82,10 +82,17 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   const worktreeInfo = detectWorktree(cwd);
   const primary = getProjectName(cwd, worktreeInfo);
 
+  // Include worktree dir name as alias so reads pick up legacy data stored
+  // under the old (pre-fix) worktree-scoped project name
+  const worktreeAlias = worktreeInfo.isWorktree ? path.basename(cwd) : null;
+  const allProjects = worktreeAlias && worktreeAlias !== primary
+    ? [primary, worktreeAlias]
+    : [primary];
+
   return {
     primary,
     parent: null,
     isWorktree: worktreeInfo.isWorktree,
-    allProjects: [primary]
+    allProjects
   };
 }

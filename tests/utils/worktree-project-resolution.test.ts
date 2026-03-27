@@ -106,7 +106,8 @@ describe('Worktree Project Resolution (#1500)', () => {
       expect(context.primary).toBe('rewrite');
       expect(context.parent).toBeNull();
       expect(context.isWorktree).toBe(true);
-      expect(context.allProjects).toEqual(['rewrite']);
+      // allProjects includes worktree alias for reading legacy data
+      expect(context.allProjects).toEqual(['rewrite', 'noble-hare']);
     });
 
     it('returns repo name as primary when NOT in worktree', () => {
