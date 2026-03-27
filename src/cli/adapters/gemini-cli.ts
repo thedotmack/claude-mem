@@ -1,27 +1,39 @@
-import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
+import type { PlatformAdapter } from '../types.js';
 
 /**
  * Gemini CLI Platform Adapter
  *
  * Normalizes Gemini CLI's hook JSON to NormalizedHookInput.
- * Gemini CLI has 11 lifecycle hooks; we map 6 of them:
- *   SessionStart  → session-init
- *   BeforeAgent   → user-message (captures prompt)
- *   AfterAgent    → observation (full response)
- *   AfterTool     → observation (tool result)
- *   PreCompress   → summarize
+ * Gemini CLI supports 11 lifecycle hooks; we register 8:
+ *
+ * Lifecycle:
+ *   SessionStart  → context     (inject memory context)
  *   SessionEnd    → session-complete
+ *   PreCompress   → summarize
+ *   Notification  → observation (system events like ToolPermission)
+ *
+ * Agent:
+ *   BeforeAgent   → user-message (captures user prompt)
+ *   AfterAgent    → observation  (full agent response)
+ *
+ * Tool:
+ *   BeforeTool    → observation  (tool intent before execution)
+ *   AfterTool     → observation  (tool result after execution)
+ *
+ * Unmapped (not useful for memory):
+ *   BeforeModel, AfterModel, BeforeToolSelection — model-level events
+ *   that fire per-LLM-call, too chatty for observation capture.
  *
  * Base fields (all events): session_id, transcript_path, cwd, hook_event_name, timestamp
  *
- * Output format: { continue, stopReason, suppressOutput, systemMessage, decision, reason }
- * Advisory hooks (SessionStart, SessionEnd, PreCompress) ignore `continue` and `decision`.
+ * Output format: { continue, stopReason, suppressOutput, systemMessage, decision, reason, hookSpecificOutput }
+ * Advisory hooks (SessionStart, SessionEnd, PreCompress, Notification) ignore flow-control fields.
  */
 export const geminiCliAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
 
-    // Use GEMINI_CWD, GEMINI_PROJECT_DIR, or the JSON cwd field
+    // CWD resolution chain: JSON field → env vars → process.cwd()
     const cwd = r.cwd
       ?? process.env.GEMINI_CWD
       ?? process.env.GEMINI_PROJECT_DIR
@@ -32,22 +44,46 @@ export const geminiCliAdapter: PlatformAdapter = {
       ?? process.env.GEMINI_SESSION_ID
       ?? undefined;
 
-    // Map event-specific fields into normalized shape
-    // AfterTool provides tool_name, tool_input, tool_response
-    // BeforeAgent/AfterAgent provide prompt (and prompt_response for AfterAgent)
     const hookEventName: string | undefined = r.hook_event_name;
 
-    // For AfterAgent, treat the full response as an observation by packing it
-    // into toolResponse so the observation handler can process it
+    // Tool fields — present in BeforeTool, AfterTool
     let toolName: string | undefined = r.tool_name;
     let toolInput: unknown = r.tool_input;
     let toolResponse: unknown = r.tool_response;
 
+    // AfterAgent: synthesize observation shape from the full agent response
     if (hookEventName === 'AfterAgent' && r.prompt_response) {
       toolName = toolName ?? 'GeminiAgent';
       toolInput = toolInput ?? { prompt: r.prompt };
       toolResponse = toolResponse ?? { response: r.prompt_response };
     }
+
+    // BeforeTool: has tool_name and tool_input but no tool_response yet
+    // Synthesize a marker so observation handler knows this is pre-execution
+    if (hookEventName === 'BeforeTool' && toolName && !toolResponse) {
+      toolResponse = { _preExecution: true };
+    }
+
+    // Notification: capture as an observation with notification details
+    if (hookEventName === 'Notification') {
+      toolName = toolName ?? 'GeminiNotification';
+      toolInput = toolInput ?? {
+        notification_type: r.notification_type,
+        message: r.message,
+      };
+      toolResponse = toolResponse ?? { details: r.details };
+    }
+
+    // Collect platform-specific metadata
+    const metadata: Record<string, unknown> = {};
+    if (r.source) metadata.source = r.source;                     // SessionStart: startup|resume|clear
+    if (r.reason) metadata.reason = r.reason;                     // SessionEnd: exit|clear|logout|...
+    if (r.trigger) metadata.trigger = r.trigger;                  // PreCompress: auto|manual
+    if (r.mcp_context) metadata.mcp_context = r.mcp_context;     // Tool hooks: MCP server context
+    if (r.notification_type) metadata.notification_type = r.notification_type;
+    if (r.stop_hook_active !== undefined) metadata.stop_hook_active = r.stop_hook_active;
+    if (r.original_request_name) metadata.original_request_name = r.original_request_name;
+    if (hookEventName) metadata.hook_event_name = hookEventName;
 
     return {
       sessionId,
@@ -57,14 +93,15 @@ export const geminiCliAdapter: PlatformAdapter = {
       toolInput,
       toolResponse,
       transcriptPath: r.transcript_path,
+      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     };
   },
 
   formatOutput(result) {
-    // Gemini CLI expects: { continue, stopReason, suppressOutput, systemMessage, decision, reason }
+    // Gemini CLI expects: { continue, stopReason, suppressOutput, systemMessage, decision, reason, hookSpecificOutput }
     const output: Record<string, unknown> = {};
 
-    // Always include continue — controls whether the agent proceeds
+    // Flow control — always include `continue` to prevent accidental agent termination
     output.continue = result.continue ?? true;
 
     if (result.suppressOutput !== undefined) {
@@ -75,9 +112,12 @@ export const geminiCliAdapter: PlatformAdapter = {
       output.systemMessage = result.systemMessage;
     }
 
-    // hookSpecificOutput carries context injection data
+    // hookSpecificOutput is a first-class Gemini CLI field — pass through directly
+    // This includes additionalContext for context injection in SessionStart, BeforeAgent, AfterTool
     if (result.hookSpecificOutput) {
-      output.systemMessage = result.hookSpecificOutput.additionalContext || output.systemMessage;
+      output.hookSpecificOutput = {
+        additionalContext: result.hookSpecificOutput.additionalContext,
+      };
     }
 
     return output;

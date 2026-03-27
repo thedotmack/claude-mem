@@ -1,5 +1,5 @@
 /**
- * GeminiCliHooksInstaller - Gemini CLI integration for claude-mem
+ * GeminiCliHooksInstaller - First-class Gemini CLI integration for claude-mem
  *
  * Installs claude-mem hooks into ~/.gemini/settings.json using deep merge
  * to preserve any existing user configuration.
@@ -9,18 +9,23 @@
  *   "hooks": {
  *     "AfterTool": [{
  *       "matcher": "*",
- *       "hooks": [{ "name": "claude-mem", "type": "command", "command": "...", "timeout": 5000 }]
+ *       "hooks": [{ "name": "claude-mem", "type": "command", "command": "...", "timeout": 5000, "description": "..." }]
  *     }]
  *   }
  * }
  *
- * Events registered:
- *   SessionStart  — session init
+ * Registers 8 of 11 Gemini CLI hooks:
+ *   SessionStart  — inject memory context (via hookSpecificOutput.additionalContext)
  *   BeforeAgent   — capture user prompt
- *   AfterAgent    — capture full response
+ *   AfterAgent    — capture full agent response
+ *   BeforeTool    — capture tool intent before execution
  *   AfterTool     — capture all tool results (matcher: "*")
- *   PreCompress   — trigger summary
+ *   Notification  — capture system events (ToolPermission, etc.)
+ *   PreCompress   — trigger summary generation
  *   SessionEnd    — finalize session
+ *
+ * Skipped (model-level, too chatty):
+ *   BeforeModel, AfterModel, BeforeToolSelection
  */
 
 import path from 'path';
@@ -39,6 +44,7 @@ interface GeminiHookEntry {
   type: 'command';
   command: string;
   timeout: number;
+  description?: string;
 }
 
 interface GeminiHookMatcher {
@@ -62,15 +68,25 @@ const HOOK_NAME = 'claude-mem';
 const HOOK_TIMEOUT_MS = 5000;
 
 /**
- * The Gemini CLI events we register hooks for, mapped to our internal event names.
+ * Gemini CLI events → claude-mem internal events.
+ *
+ * We register 8 of 11 hooks. Skipped: BeforeModel, AfterModel, BeforeToolSelection
+ * (model-level events fire per-LLM-call — too chatty for observation capture).
  */
-const GEMINI_EVENT_TO_CLAUDE_MEM_EVENT: Record<string, string> = {
-  'SessionStart': 'session-init',
-  'BeforeAgent': 'user-message',
-  'AfterAgent': 'observation',
-  'AfterTool': 'observation',
-  'PreCompress': 'summarize',
-  'SessionEnd': 'session-complete',
+interface GeminiEventConfig {
+  claudeMemEvent: string;
+  description: string;
+}
+
+const GEMINI_EVENTS: Record<string, GeminiEventConfig> = {
+  'SessionStart': { claudeMemEvent: 'context', description: 'Inject memory context from past sessions' },
+  'BeforeAgent': { claudeMemEvent: 'session-init', description: 'Initialize session and capture user prompt' },
+  'AfterAgent': { claudeMemEvent: 'observation', description: 'Capture full agent response' },
+  'BeforeTool': { claudeMemEvent: 'observation', description: 'Capture tool intent before execution' },
+  'AfterTool': { claudeMemEvent: 'observation', description: 'Capture tool results after execution' },
+  'Notification': { claudeMemEvent: 'observation', description: 'Capture system events (permissions, etc.)' },
+  'PreCompress': { claudeMemEvent: 'summarize', description: 'Generate session summary before compression' },
+  'SessionEnd': { claudeMemEvent: 'session-complete', description: 'Finalize session and persist memory' },
 };
 
 // ---------------------------------------------------------------------------
@@ -170,19 +186,17 @@ export async function installGeminiCliHooks(): Promise<number> {
     }
 
     // Register each event
-    for (const [geminiEvent, claudeMemEvent] of Object.entries(GEMINI_EVENT_TO_CLAUDE_MEM_EVENT)) {
-      const command = buildHookCommand(bunPath, workerServicePath, claudeMemEvent);
-
-      // AfterTool uses matcher: "*" to capture all tool results
-      const matcherValue = geminiEvent === 'AfterTool' ? '*' : '*';
+    for (const [geminiEvent, config] of Object.entries(GEMINI_EVENTS)) {
+      const command = buildHookCommand(bunPath, workerServicePath, config.claudeMemEvent);
 
       const newMatcher: GeminiHookMatcher = {
-        matcher: matcherValue,
+        matcher: '*',
         hooks: [{
           name: HOOK_NAME,
           type: 'command',
           command,
           timeout: HOOK_TIMEOUT_MS,
+          description: config.description,
         }],
       };
 
@@ -193,25 +207,35 @@ export async function installGeminiCliHooks(): Promise<number> {
     // Write merged settings
     writeFileSync(GEMINI_SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
     console.log(`  Updated ${GEMINI_SETTINGS_PATH}`);
-    console.log(`  Registered hooks for: ${Object.keys(GEMINI_EVENT_TO_CLAUDE_MEM_EVENT).join(', ')}`);
+    console.log(`  Registered hooks for: ${Object.keys(GEMINI_EVENTS).join(', ')}`);
 
     // Inject context into GEMINI.md
     injectGeminiMdContext();
 
     console.log(`
-Installation complete!
+Installation complete! (8 hooks registered)
 
 Hooks installed to: ${GEMINI_SETTINGS_PATH}
 Using unified CLI: bun worker-service.cjs hook gemini-cli <event>
 
+Registered hooks:
+  SessionStart  → Inject memory context from past sessions
+  BeforeAgent   → Capture user prompt for memory
+  AfterAgent    → Capture full agent response
+  BeforeTool    → Capture tool intent before execution
+  AfterTool     → Capture tool results after execution
+  Notification  → Capture system events (permissions, etc.)
+  PreCompress   → Generate session summary before compression
+  SessionEnd    → Finalize session and persist memory
+
 Next steps:
-  1. Start claude-mem worker: claude-mem start
+  1. Start claude-mem worker: npx claude-mem start
   2. Restart Gemini CLI to load the hooks
   3. Memory capture is now automatic!
 
 Context Injection:
-  Context from past sessions is injected via ${GEMINI_MD_PATH}
-  and automatically included in every Gemini CLI session.
+  Memory from past sessions is injected via hookSpecificOutput.additionalContext
+  on SessionStart, and persisted in ${GEMINI_MD_PATH} for static context.
 `);
 
     return 0;
@@ -429,7 +453,7 @@ export function checkGeminiCliHooksStatus(): number {
       }
 
       // Check expected vs actual events
-      const expectedEvents = Object.keys(GEMINI_EVENT_TO_CLAUDE_MEM_EVENT);
+      const expectedEvents = Object.keys(GEMINI_EVENTS);
       const missingEvents = expectedEvents.filter((e) => !installedEvents.includes(e));
       if (missingEvents.length > 0) {
         console.log(`  Warning: Missing events: ${missingEvents.join(', ')}`);
