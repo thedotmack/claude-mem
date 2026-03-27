@@ -1,22 +1,26 @@
 import path from 'path';
 import { logger } from './logger.js';
-import { detectWorktree } from './worktree.js';
+import { detectWorktree, type WorktreeInfo } from './worktree.js';
 
 /**
  * Extract project name from working directory path
  * Handles edge cases: null/undefined cwd, drive roots, trailing slashes
  *
  * @param cwd - Current working directory (absolute path)
+ * @param precomputedWorktreeInfo - Optional pre-computed worktree info to avoid duplicate detectWorktree() calls
  * @returns Project name or "unknown-project" if extraction fails
  */
-export function getProjectName(cwd: string | null | undefined): string {
+export function getProjectName(
+  cwd: string | null | undefined,
+  precomputedWorktreeInfo?: WorktreeInfo
+): string {
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
     return 'unknown-project';
   }
 
   // Check if this is a worktree — if so, use the parent repo name
-  const worktreeInfo = detectWorktree(cwd);
+  const worktreeInfo = precomputedWorktreeInfo ?? detectWorktree(cwd);
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
     return worktreeInfo.parentProjectName;
   }
@@ -74,12 +78,9 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
     return { primary, parent: null, isWorktree: false, allProjects: [primary] };
   }
 
-  // Single detectWorktree() call — getProjectName() would call it again internally,
-  // so we inline the resolution here to avoid duplicate filesystem I/O.
+  // Single detectWorktree() call, passed to getProjectName() to avoid duplicate I/O
   const worktreeInfo = detectWorktree(cwd);
-  const primary = worktreeInfo.isWorktree && worktreeInfo.parentProjectName
-    ? worktreeInfo.parentProjectName
-    : path.basename(cwd) || 'unknown-project';
+  const primary = getProjectName(cwd, worktreeInfo);
 
   return {
     primary,
