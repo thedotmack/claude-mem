@@ -5,8 +5,8 @@
  * Uses exit code 0 (SUCCESS) - stderr is not shown to Claude with exit 0.
  */
 
-import { basename } from 'path';
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
+import { getProjectName } from '../../utils/project-name.js';
 import { ensureWorkerRunning, getWorkerPort, workerHttpRequest } from '../../shared/worker-utils.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 
@@ -20,7 +20,7 @@ export const userMessageHandler: EventHandler = {
     }
 
     const port = getWorkerPort();
-    const project = basename(input.cwd ?? process.cwd());
+    const project = getProjectName(input.cwd ?? process.cwd());
 
     // Fetch formatted context directly from worker API
     try {

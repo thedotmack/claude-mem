@@ -62,8 +62,8 @@ export interface ProjectContext {
 /**
  * Get project context with worktree detection.
  *
- * When in a worktree, returns both the worktree project name and parent project name
- * for unified timeline queries.
+ * When in a worktree, primary resolves to the parent repo name so all
+ * worktrees share a single project identity.
  *
  * @param cwd - Current working directory (absolute path)
  * @returns ProjectContext with worktree info
