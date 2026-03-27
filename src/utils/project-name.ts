@@ -15,6 +15,12 @@ export function getProjectName(cwd: string | null | undefined): string {
     return 'unknown-project';
   }
 
+  // Check if this is a worktree — if so, use the parent repo name
+  const worktreeInfo = detectWorktree(cwd);
+  if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
+    return worktreeInfo.parentProjectName;
+  }
+
   // Extract basename (handles trailing slashes automatically)
   const basename = path.basename(cwd);
 
@@ -72,12 +78,13 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   const worktreeInfo = detectWorktree(cwd);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
-    // In a worktree: include parent first for chronological ordering
+    // In a worktree: primary is already the parent repo name (getProjectName resolves it).
+    // No separate parent needed — all worktrees share one project name.
     return {
       primary,
-      parent: worktreeInfo.parentProjectName,
+      parent: null,
       isWorktree: true,
-      allProjects: [worktreeInfo.parentProjectName, primary]
+      allProjects: [primary]
     };
   }
 

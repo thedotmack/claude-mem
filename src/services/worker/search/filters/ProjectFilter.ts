@@ -4,14 +4,15 @@
  * Provides utilities for filtering search results by project.
  */
 
-import { basename } from 'path';
 import { logger } from '../../../../utils/logger.js';
+import { getProjectName } from '../../../../utils/project-name.js';
 
 /**
- * Get the current project name from cwd
+ * Get the current project name from cwd.
+ * Worktree-aware: resolves to parent repo name when in a worktree. (#1500)
  */
 export function getCurrentProject(): string {
-  return basename(process.cwd());
+  return getProjectName(process.cwd());
 }
 
 /**
