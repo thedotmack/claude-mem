@@ -14,6 +14,7 @@ import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { getProjectName } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
 import { getWorkerPort, workerHttpRequest } from '../../shared/worker-utils.js';
 import { DATA_DIR, MARKETPLACE_ROOT, CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
@@ -398,7 +399,7 @@ async function setupProjectContext(targetDir: string, workspaceRoot: string): Pr
   const rulesDir = path.join(targetDir, 'rules');
   mkdirSync(rulesDir, { recursive: true });
 
-  const projectName = path.basename(workspaceRoot);
+  const projectName = getProjectName(workspaceRoot);
   let contextGenerated = false;
 
   console.log(`  Generating initial context...`);
@@ -495,7 +496,7 @@ export function uninstallCursorHooks(target: CursorInstallTarget): number {
       }
 
       // Unregister from auto-context updates
-      const projectName = path.basename(process.cwd());
+      const projectName = getProjectName(process.cwd());
       unregisterCursorProject(projectName);
       console.log(`  Unregistered from auto-context updates`);
     }

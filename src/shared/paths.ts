@@ -1,4 +1,4 @@
-import { join, dirname, basename, sep } from 'path';
+import { join, dirname, basename, sep, resolve } from 'path';
 import { homedir } from 'os';
 import { existsSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
@@ -149,7 +149,6 @@ export function getCurrentProjectName(): string {
 
     // gitCommonDir is either ".git" (main repo) or an absolute path like
     // "/Users/me/git/myproject/.git" (from worktree). Resolve to repo root.
-    const { resolve } = require('path');
     const absoluteGitDir = resolve(process.cwd(), gitCommonDir);
     // Strip trailing .git to get repo root
     const repoRoot = dirname(absoluteGitDir);

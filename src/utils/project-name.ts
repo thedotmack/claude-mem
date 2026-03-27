@@ -55,7 +55,7 @@ export interface ProjectContext {
   parent: string | null;
   /** True if currently in a worktree */
   isWorktree: boolean;
-  /** All projects to query: [primary] for main repo, [parent, primary] for worktree */
+  /** All projects to query: always [primary] (worktrees resolve to parent repo name) */
   allProjects: string[];
 }
 

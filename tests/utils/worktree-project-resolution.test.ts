@@ -42,21 +42,27 @@ describe('Worktree Project Resolution (#1500)', () => {
    *     └── noble-hare/          ← worktree checkout
    *         └── .git             ← file: "gitdir: .../myproject/.git/worktrees/noble-hare"
    */
-  function createWorktreeLayout(repoName: string, worktreeName: string) {
-    const repoPath = join(tempDir, repoName);
+  /** Add a worktree checkout to an existing repo directory */
+  function addWorktree(repoPath: string, worktreeName: string): string {
     const worktreePath = join(repoPath, '.worktrees', worktreeName);
     const gitWorktreeMetaPath = join(repoPath, '.git', 'worktrees', worktreeName);
 
-    // Main repo .git directory
-    mkdirSync(join(repoPath, '.git', 'worktrees', worktreeName), { recursive: true });
-
-    // Worktree checkout with .git file pointing back to main repo
+    mkdirSync(gitWorktreeMetaPath, { recursive: true });
     mkdirSync(worktreePath, { recursive: true });
     writeFileSync(
       join(worktreePath, '.git'),
       `gitdir: ${gitWorktreeMetaPath}\n`
     );
 
+    return worktreePath;
+  }
+
+  /** Create a main repo with one worktree */
+  function createWorktreeLayout(repoName: string, worktreeName: string) {
+    const repoPath = join(tempDir, repoName);
+    mkdirSync(join(repoPath, '.git'), { recursive: true });
+
+    const worktreePath = addWorktree(repoPath, worktreeName);
     return { repoPath, worktreePath };
   }
 
@@ -116,15 +122,8 @@ describe('Worktree Project Resolution (#1500)', () => {
 
     it('all worktrees of same repo resolve to same primary project', () => {
       const repoName = 'rewrite';
-      const { worktreePath: wt1 } = createWorktreeLayout(repoName, 'noble-hare');
-
-      // Create a second worktree in the same repo
-      const repoPath = join(tempDir, repoName);
-      const wt2Path = join(repoPath, '.worktrees', 'jolly-condor');
-      const gitWt2Meta = join(repoPath, '.git', 'worktrees', 'jolly-condor');
-      mkdirSync(gitWt2Meta, { recursive: true });
-      mkdirSync(wt2Path, { recursive: true });
-      writeFileSync(join(wt2Path, '.git'), `gitdir: ${gitWt2Meta}\n`);
+      const { repoPath, worktreePath: wt1 } = createWorktreeLayout(repoName, 'noble-hare');
+      const wt2Path = addWorktree(repoPath, 'jolly-condor');
 
       const ctx1 = getProjectContext(wt1);
       const ctx2 = getProjectContext(wt2Path);

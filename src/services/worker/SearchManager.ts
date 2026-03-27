@@ -13,7 +13,7 @@
  * - TimelineBuilder: Timeline construction
  */
 
-import { basename } from 'path';
+import { getProjectName } from '../../utils/project-name.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
@@ -1317,7 +1317,7 @@ export class SearchManager {
    * Tool handler: get_recent_context
    */
   async getRecentContext(args: any): Promise<any> {
-    const project = args.project || basename(process.cwd());
+    const project = args.project || getProjectName(process.cwd());
     const limit = args.limit || 3;
 
     const sessions = this.sessionStore.getRecentSessionsWithStatus(project, limit);
