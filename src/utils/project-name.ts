@@ -49,9 +49,9 @@ export function getProjectName(cwd: string | null | undefined): string {
  * Project context with worktree awareness
  */
 export interface ProjectContext {
-  /** The current project name (worktree or main repo) */
+  /** The project name (worktrees resolve to parent repo name) */
   primary: string;
-  /** Parent project name if in a worktree, null otherwise */
+  /** Always null (retained for backward compatibility; worktrees resolve primary to parent repo name) */
   parent: string | null;
   /** True if currently in a worktree */
   isWorktree: boolean;
@@ -69,24 +69,22 @@ export interface ProjectContext {
  * @returns ProjectContext with worktree info
  */
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {
-  const primary = getProjectName(cwd);
-
-  if (!cwd) {
+  if (!cwd || cwd.trim() === '') {
+    const primary = getProjectName(cwd);
     return { primary, parent: null, isWorktree: false, allProjects: [primary] };
   }
 
+  // Single detectWorktree() call — getProjectName() would call it again internally,
+  // so we inline the resolution here to avoid duplicate filesystem I/O.
   const worktreeInfo = detectWorktree(cwd);
+  const primary = worktreeInfo.isWorktree && worktreeInfo.parentProjectName
+    ? worktreeInfo.parentProjectName
+    : path.basename(cwd) || 'unknown-project';
 
-  if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
-    // In a worktree: primary is already the parent repo name (getProjectName resolves it).
-    // No separate parent needed — all worktrees share one project name.
-    return {
-      primary,
-      parent: null,
-      isWorktree: true,
-      allProjects: [primary]
-    };
-  }
-
-  return { primary, parent: null, isWorktree: false, allProjects: [primary] };
+  return {
+    primary,
+    parent: null,
+    isWorktree: worktreeInfo.isWorktree,
+    allProjects: [primary]
+  };
 }
