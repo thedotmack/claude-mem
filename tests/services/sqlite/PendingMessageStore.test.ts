@@ -35,10 +35,10 @@ describe('PendingMessageStore - Self-Healing claimNextMessage', () => {
 
   /**
    * Helper to simulate a stuck processing message by directly updating the DB
-   * to set started_processing_at_epoch to a time in the past (>60s ago)
+   * to set started_processing_at_epoch to a time in the past (past 5-min threshold)
    */
   function makeMessageStaleProcessing(messageId: number): void {
-    const staleTimestamp = Date.now() - 120_000; // 2 minutes ago (well past 60s threshold)
+    const staleTimestamp = Date.now() - 360_000; // 6 minutes ago (past 5-min threshold)
     db.run(
       `UPDATE pending_messages SET status = 'processing', started_processing_at_epoch = ? WHERE id = ?`,
       [staleTimestamp, messageId]
