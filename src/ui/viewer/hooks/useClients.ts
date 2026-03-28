@@ -55,6 +55,10 @@ export function useClients(mode?: string) {
 
     try {
       const response = await fetch(API_ENDPOINTS.CLIENTS);
+      if (!response.ok) {
+        console.error('Failed to load clients:', response.status);
+        return;
+      }
       const data = await response.json();
       const incoming: ClientInfo[] = data.clients || [];
       setClientMap(prev => mergeClients(prev, incoming));

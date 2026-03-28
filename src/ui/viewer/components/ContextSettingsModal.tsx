@@ -151,6 +151,8 @@ function TokenField({
         className="token-reveal-btn"
         onClick={() => setRevealed(!revealed)}
         title={revealed ? 'Hide token' : 'Reveal token'}
+        aria-label={revealed ? 'Hide token' : 'Reveal token'}
+        aria-pressed={revealed}
       >
         {revealed ? (
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -389,18 +391,34 @@ export function ContextSettingsModal({
               </FormField>
 
               {formState.CLAUDE_MEM_NETWORK_MODE === 'client' && (
-                <FormField
-                  label="Server Host"
-                  tooltip="Hostname or IP of the remote server to forward requests to"
-                  helpText="Hostname of the server node (DNS resolution handles transport)"
-                >
-                  <input
-                    type="text"
-                    value={formState.CLAUDE_MEM_SERVER_HOST || ''}
-                    onChange={(e) => updateSetting('CLAUDE_MEM_SERVER_HOST', e.target.value)}
-                    placeholder="server-hostname"
-                  />
-                </FormField>
+                <>
+                  <FormField
+                    label="Server Host"
+                    tooltip="Hostname or IP of the remote server to forward requests to"
+                    helpText="Hostname of the server node (DNS resolution handles transport)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_SERVER_HOST || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_SERVER_HOST', e.target.value)}
+                      placeholder="server-hostname"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Server Port"
+                    tooltip="Port of the remote server (default: 37777)"
+                    helpText="Must match the server's CLAUDE_MEM_WORKER_PORT"
+                  >
+                    <input
+                      type="number"
+                      value={formState.CLAUDE_MEM_SERVER_PORT || '37777'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_SERVER_PORT', e.target.value)}
+                      min="1024"
+                      max="65535"
+                      placeholder="37777"
+                    />
+                  </FormField>
+                </>
               )}
 
               <FormField

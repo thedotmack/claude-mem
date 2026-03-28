@@ -49,7 +49,7 @@ claude-mem supports sharing a single instance across multiple nodes via three ne
 | `server` | Accepts remote connections from client nodes. Auto-configures launchd on macOS for headless operation. |
 | `client` | Runs a local HTTP proxy (`http.createServer`, no Express) that forwards requests to a remote server. Includes offline buffering for resilience. |
 
-### Configuration
+### Network Settings
 
 Settings in `~/.claude-mem/settings.json`:
 

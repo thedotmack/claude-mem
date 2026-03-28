@@ -267,10 +267,11 @@ export class ProxyServer {
               node: getNodeName(),
               headers: this.proxyHeaders(),
             });
+            this.jsonResponse(res, 202, { buffered: true, path: pathname });
           } catch (e) {
             logger.error('PROXY', 'Buffer failed', { path: pathname }, e as Error);
+            this.jsonResponse(res, 502, { error: 'buffer_failed', path: pathname });
           }
-          this.jsonResponse(res, 202, { buffered: true, path: pathname });
         } else {
           this.jsonResponse(res, 503, { error: 'server_unreachable', serverHost: this.serverHost });
         }
