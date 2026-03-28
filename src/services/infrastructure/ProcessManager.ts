@@ -646,12 +646,12 @@ export function spawnDaemon(
       return undefined;
     }
 
-    const escapedRuntimePath = runtimePath.replace(/'/g, "''");
-    const escapedScriptPath = scriptPath.replace(/'/g, "''");
-    const psCommand = `Start-Process -FilePath '${escapedRuntimePath}' -ArgumentList '${escapedScriptPath}','--daemon' -WindowStyle Hidden`;
+    // Use -EncodedCommand to avoid all shell quoting issues with spaces in paths
+    const psScript = `Start-Process -FilePath '${runtimePath.replace(/'/g, "''")}' -ArgumentList @('${scriptPath.replace(/'/g, "''")}','--daemon') -WindowStyle Hidden`;
+    const encodedCommand = Buffer.from(psScript, 'utf16le').toString('base64');
 
     try {
-      execSync(`powershell -NoProfile -Command "${psCommand}"`, {
+      execSync(`powershell -NoProfile -EncodedCommand ${encodedCommand}`, {
         stdio: 'ignore',
         windowsHide: true,
         env

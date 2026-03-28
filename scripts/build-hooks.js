@@ -116,7 +116,11 @@ async function buildHooks() {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
       banner: {
-        js: '#!/usr/bin/env bun'
+        js: [
+          '#!/usr/bin/env bun',
+          'var __filename = require("node:url").fileURLToPath(import.meta.url);',
+          'var __dirname = require("node:path").dirname(__filename);'
+        ].join('\n')
       }
     });
 
@@ -153,7 +157,11 @@ async function buildHooks() {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
       banner: {
-        js: '#!/usr/bin/env node'
+        js: [
+          '#!/usr/bin/env node',
+          'var __filename = require("node:url").fileURLToPath(import.meta.url);',
+          'var __dirname = require("node:path").dirname(__filename);'
+        ].join('\n')
       }
     });
 
@@ -176,6 +184,12 @@ async function buildHooks() {
       external: ['bun:sqlite'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      },
+      banner: {
+        js: [
+          'var __filename = require("node:url").fileURLToPath(import.meta.url);',
+          'var __dirname = require("node:path").dirname(__filename);'
+        ].join('\n')
       }
     });
 
