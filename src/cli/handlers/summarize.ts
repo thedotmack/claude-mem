@@ -39,7 +39,7 @@ export const summarizeHandler: EventHandler = {
     try {
       lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
     } catch (err) {
-      logger.warn('HOOK', `Failed to extract last assistant message: ${err instanceof Error ? err.message : err}`);
+      logger.warn('HOOK', `Stop hook: failed to extract last assistant message for session ${sessionId}: ${err instanceof Error ? err.message : err}`);
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 

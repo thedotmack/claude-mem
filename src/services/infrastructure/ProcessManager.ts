@@ -658,6 +658,7 @@ export function spawnDaemon(
       });
       return 0;
     } catch (error) {
+      // APPROVED OVERRIDE: Windows daemon spawn is best-effort; log and let callers fall back to health checks/retry flow.
       logger.error('SYSTEM', 'Failed to spawn worker daemon on Windows', { runtimePath }, error as Error);
       return undefined;
     }
