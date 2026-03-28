@@ -19,6 +19,10 @@ async function main() {
   const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
   const port = parseInt(settings.CLAUDE_MEM_WORKER_PORT || '37777', 10);
+  if (isNaN(port) || port < 1024 || port > 65535) {
+    logger.error('PROXY', 'Invalid CLAUDE_MEM_WORKER_PORT — must be 1024-65535', { raw: settings.CLAUDE_MEM_WORKER_PORT });
+    process.exit(1);
+  }
 
   const mode = getNetworkMode();
   if (mode !== 'client') {
@@ -40,6 +44,10 @@ async function main() {
   }
 
   const serverPort = parseInt(settings.CLAUDE_MEM_SERVER_PORT || '37777', 10);
+  if (isNaN(serverPort) || serverPort < 1024 || serverPort > 65535) {
+    logger.error('PROXY', 'Invalid CLAUDE_MEM_SERVER_PORT — must be 1024-65535', { raw: settings.CLAUDE_MEM_SERVER_PORT });
+    process.exit(1);
+  }
   const authToken = settings.CLAUDE_MEM_AUTH_TOKEN || '';
   const dataDir = settings.CLAUDE_MEM_DATA_DIR || SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
 

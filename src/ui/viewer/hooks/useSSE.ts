@@ -37,7 +37,7 @@ export function useSSE() {
       eventSourceRef.current = eventSource;
 
       eventSource.onopen = () => {
-        console.log('[SSE] Connected');
+        // SSE connected
         setIsConnected(true);
         // Clear any pending reconnect
         if (reconnectTimeoutRef.current) {
@@ -53,7 +53,7 @@ export function useSSE() {
         // Reconnect after delay
         reconnectTimeoutRef.current = setTimeout(() => {
           reconnectTimeoutRef.current = undefined; // Clear before reconnecting
-          console.log('[SSE] Attempting to reconnect...');
+          // SSE reconnecting
           connect();
         }, TIMING.SSE_RECONNECT_DELAY_MS);
       };
@@ -63,16 +63,14 @@ export function useSSE() {
 
         switch (data.type) {
           case 'initial_load':
-            console.log('[SSE] Initial load:', {
-              projects: data.projects?.length || 0
-            });
+            // Initial load
             // Only load projects list - data will come via pagination
             setProjects(data.projects || []);
             break;
 
           case 'new_observation':
             if (data.observation) {
-              console.log('[SSE] New observation:', data.observation.id);
+              // New observation received
               setObservations(prev => [data.observation, ...prev]);
             }
             break;
@@ -80,7 +78,7 @@ export function useSSE() {
           case 'new_summary':
             if (data.summary) {
               const summary = data.summary;
-              console.log('[SSE] New summary:', summary.id);
+              // New summary received
               setSummaries(prev => [summary, ...prev]);
             }
             break;
@@ -88,14 +86,14 @@ export function useSSE() {
           case 'new_prompt':
             if (data.prompt) {
               const prompt = data.prompt;
-              console.log('[SSE] New prompt:', prompt.id);
+              // New prompt received
               setPrompts(prev => [prompt, ...prev]);
             }
             break;
 
           case 'processing_status':
             if (typeof data.isProcessing === 'boolean') {
-              console.log('[SSE] Processing status:', data.isProcessing, 'Queue depth:', data.queueDepth);
+              // Processing status update
               setIsProcessing(data.isProcessing);
               setQueueDepth(data.queueDepth || 0);
             }
@@ -104,7 +102,7 @@ export function useSSE() {
           case 'client_connected':
           case 'client_heartbeat':
           case 'client_disconnected':
-            console.log('[SSE] Client event:', data.type, data.node);
+            // Client SSE event
             if (clientEventHandlerRef.current) {
               clientEventHandlerRef.current(data as ClientSSEEvent);
             }

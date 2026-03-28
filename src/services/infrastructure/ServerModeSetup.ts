@@ -48,7 +48,7 @@ export async function ensureServerModeReady(
     settings.CLAUDE_MEM_AUTH_TOKEN = randomBytes(32).toString('hex');
     changed = true;
     logger.info('SYSTEM', 'Auto-generated auth token for server mode', {
-      tokenPreview: settings.CLAUDE_MEM_AUTH_TOKEN.substring(0, 8) + '...',
+      tokenPreview: String(settings.CLAUDE_MEM_AUTH_TOKEN).substring(0, 8) + '...',
       note: 'Full token saved in settings.json — copy to client machines'
     });
   }

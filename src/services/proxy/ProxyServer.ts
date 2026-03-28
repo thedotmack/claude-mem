@@ -259,13 +259,15 @@ export class ProxyServer {
         this.serverReachable = false;
         if (['POST', 'PUT', 'PATCH'].includes(method)) {
           try {
+            // Strip auth token before persisting to disk — re-added on replay
+            const { Authorization: _, ...safeHeaders } = this.proxyHeaders();
             this.buffer.append({
               ts: new Date().toISOString(),
               method,
-              path: pathname,
+              path: pathname + url.search,
               body: body ? JSON.parse(body) : {},
               node: getNodeName(),
-              headers: this.proxyHeaders(),
+              headers: safeHeaders,
             });
             this.jsonResponse(res, 202, { buffered: true, path: pathname });
           } catch (e) {

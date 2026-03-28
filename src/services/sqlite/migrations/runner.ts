@@ -883,6 +883,10 @@ export class MigrationRunner {
       (this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[]).map(c => c.name)
     );
 
+    const promptColumns = new Set(
+      (this.db.query('PRAGMA table_info(user_prompts)').all() as TableColumnInfo[]).map(c => c.name)
+    );
+
     for (const col of ['node', 'platform', 'instance']) {
       if (!obsColumns.has(col)) {
         this.db.run(`ALTER TABLE observations ADD COLUMN ${col} TEXT`);
@@ -890,10 +894,13 @@ export class MigrationRunner {
       if (!sdkColumns.has(col)) {
         this.db.run(`ALTER TABLE sdk_sessions ADD COLUMN ${col} TEXT`);
       }
+      if (!promptColumns.has(col)) {
+        this.db.run(`ALTER TABLE user_prompts ADD COLUMN ${col} TEXT`);
+      }
     }
 
     this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_node ON observations(node)');
-    logger.debug('DB', 'Added provenance columns (node, platform, instance) to observations and sdk_sessions');
+    logger.debug('DB', 'Added provenance columns (node, platform, instance) to observations, sdk_sessions, and user_prompts');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
   }

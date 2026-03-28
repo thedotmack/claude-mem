@@ -8,6 +8,10 @@ export function useHealth() {
   const loadHealth = useCallback(async () => {
     try {
       const response = await fetch(API_ENDPOINTS.HEALTH);
+      if (!response.ok) {
+        console.error('Health check failed:', response.status);
+        return;
+      }
       const data = await response.json();
       setHealth(data);
     } catch (error) {

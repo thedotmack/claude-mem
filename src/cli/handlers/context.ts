@@ -14,12 +14,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { getNetworkMode, getNodeName } from '../../shared/node-identity.js';
 
-function getDashboardUrl(port: number, settings: ReturnType<typeof SettingsDefaultsManager.loadFromFile>): string {
-  const mode = getNetworkMode();
-  if (mode === 'client') {
-    // In client mode, the proxy runs locally and forwards the viewer UI
-    return `http://localhost:${port}`;
-  }
+function getDashboardUrl(port: number): string {
   return `http://localhost:${port}`;
 }
 
@@ -96,7 +91,7 @@ export const contextHandler: EventHandler = {
       // where we want to ensure visibility even if colors aren't fetched).
       const displayContent = coloredTimeline || (platform === 'gemini-cli' || platform === 'gemini' ? additionalContext : '');
 
-      const dashboardUrl = getDashboardUrl(port, settings);
+      const dashboardUrl = getDashboardUrl(port);
       const networkStatus = getNetworkStatusLine(port, settings);
       const systemMessage = showTerminalOutput && displayContent
         ? `${displayContent}\n\nView Observations Live @ ${dashboardUrl}${networkStatus}`

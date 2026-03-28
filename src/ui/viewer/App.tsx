@@ -115,7 +115,6 @@ export function App() {
         onContextPreviewToggle={toggleContextPreview}
         version={stats.worker?.version}
         mode={health.mode}
-        connectedClients={health.connectedClients}
         activeClients={activeCount}
         totalClients={totalCount}
         health={health}
