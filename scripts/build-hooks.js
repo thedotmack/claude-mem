@@ -113,7 +113,12 @@ async function buildHooks() {
         'onnxruntime-node'
       ],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        // Prevent esbuild from transforming __dirname/__filename in CJS output.
+        // In CJS modules, these are runtime globals provided by Node/Bun.
+        // Explicit identity defines guard against future esbuild behavior changes. (issue #1410)
+        '__dirname': '__dirname',
+        '__filename': '__filename'
       },
       banner: {
         js: '#!/usr/bin/env bun'
@@ -150,7 +155,9 @@ async function buildHooks() {
         'tree-sitter-cpp',
       ],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        '__dirname': '__dirname',
+        '__filename': '__filename'
       },
       banner: {
         js: '#!/usr/bin/env node'
@@ -175,7 +182,9 @@ async function buildHooks() {
       logLevel: 'error',
       external: ['bun:sqlite'],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        '__dirname': '__dirname',
+        '__filename': '__filename'
       }
     });
 
