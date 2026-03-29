@@ -130,21 +130,24 @@ function collectStdin() {
     }
 
     const chunks = [];
-    process.stdin.on('data', (chunk) => chunks.push(chunk));
-    process.stdin.on('end', () => {
-      resolve(chunks.length > 0 ? Buffer.concat(chunks) : null);
-    });
-    process.stdin.on('error', () => {
-      // stdin may not be readable (e.g. already closed), treat as no data
-      resolve(null);
-    });
 
     // Safety: if no data arrives within 5s, proceed without stdin
-    setTimeout(() => {
+    const safetyTimer = setTimeout(() => {
       process.stdin.removeAllListeners();
       process.stdin.pause();
       resolve(chunks.length > 0 ? Buffer.concat(chunks) : null);
     }, 5000);
+
+    process.stdin.on('data', (chunk) => chunks.push(chunk));
+    process.stdin.on('end', () => {
+      clearTimeout(safetyTimer);
+      resolve(chunks.length > 0 ? Buffer.concat(chunks) : null);
+    });
+    process.stdin.on('error', () => {
+      clearTimeout(safetyTimer);
+      // stdin may not be readable (e.g. already closed), treat as no data
+      resolve(null);
+    });
   });
 }
 
@@ -166,11 +169,39 @@ if (stdinData && child.stdin) {
   child.stdin.end();
 }
 
+// Hard process-level timeout: if the child Bun process hangs (e.g., AbortSignal.timeout
+// libuv assertion crash on Windows, or infinite loop), kill it and exit cleanly.
+// Exit code 0 prevents Windows Terminal tab accumulation per exit code strategy.
+const PROCESS_TIMEOUT_MS = (() => {
+  const envVal = process.env.CLAUDE_MEM_HOOK_TIMEOUT_MS;
+  if (envVal) {
+    const parsed = parseInt(envVal, 10);
+    if (Number.isFinite(parsed) && parsed >= 5000 && parsed <= 300000) {
+      return parsed;
+    }
+  }
+  return 30000; // 30 seconds default
+})();
+
+const processTimer = setTimeout(() => {
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    // Process may have already exited
+  }
+  process.exit(0);
+}, PROCESS_TIMEOUT_MS);
+
+// Unref the timer so it doesn't keep the event loop alive if child exits normally
+processTimer.unref();
+
 child.on('error', (err) => {
+  clearTimeout(processTimer);
   console.error(`Failed to start Bun: ${err.message}`);
   process.exit(1);
 });
 
 child.on('close', (code) => {
+  clearTimeout(processTimer);
   process.exit(code || 0);
 });
