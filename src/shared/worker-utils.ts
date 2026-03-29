@@ -1,9 +1,9 @@
 import path from "path";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync, statSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
-import { MARKETPLACE_ROOT } from "./paths.js";
+import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 
 // Named constants for health checks
 // Allow env var override for users on slow systems (e.g., CLAUDE_MEM_HEALTH_TIMEOUT_MS=10000)
@@ -204,27 +204,100 @@ async function checkWorkerVersion(): Promise<void> {
 }
 
 
+// PID file path — matches ProcessManager.ts constant
+const WORKER_PID_FILE = path.join(DATA_DIR, 'worker.pid');
+
+// Threshold for considering PID file "recent" (worker likely still starting)
+const PID_FILE_RECENT_THRESHOLD_MS = 30000;
+
 /**
- * Ensure worker service is running
- * Quick health check - returns false if worker not healthy (doesn't block)
- * Port might be in use by another process, or worker might not be started yet
+ * Check if the worker appears to be starting up.
+ * Returns true if a PID file exists and was modified recently,
+ * indicating a spawn is in progress and retrying health checks is worthwhile.
+ * Returns false if no PID file exists (worker needs spawn, not retry)
+ * or PID file is stale (worker likely dead).
+ */
+function isWorkerStartingUp(): boolean {
+  try {
+    if (!existsSync(WORKER_PID_FILE)) return false;
+    const stats = statSync(WORKER_PID_FILE);
+    return (Date.now() - stats.mtimeMs) < PID_FILE_RECENT_THRESHOLD_MS;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ensure worker service is running.
+ *
+ * Makes up to 3 health check attempts within the HEALTH_CHECK_TIMEOUT_MS budget.
+ * On first failure, checks whether a PID file exists and is recent:
+ * - Recent PID file → worker is starting up, retry with 1s intervals
+ * - No PID file or stale → worker needs spawn, return false immediately
+ *
+ * Total wall-clock time never exceeds HEALTH_CHECK_TIMEOUT_MS (default 3s).
  */
 export async function ensureWorkerRunning(): Promise<boolean> {
-  // Quick health check (single attempt, no polling)
+  const startTime = Date.now();
+  const maxAttempts = 3;
+  const retryIntervalMs = 1000;
+  const perAttemptTimeoutMs = Math.min(800, Math.floor(HEALTH_CHECK_TIMEOUT_MS / maxAttempts));
+
+  // First attempt — quick health check
   try {
-    if (await isWorkerHealthy()) {
-      await checkWorkerVersion();  // logs warning on mismatch, doesn't restart
-      return true;  // Worker healthy
+    const response = await workerHttpRequest('/api/health', { timeoutMs: perAttemptTimeoutMs });
+    if (response.ok) {
+      await checkWorkerVersion();
+      return true;
     }
   } catch (e) {
-    // Not healthy - log for debugging
     logger.debug('SYSTEM', 'Worker health check failed', {
       error: e instanceof Error ? e.message : String(e)
     });
   }
 
-  // Port might be in use by something else, or worker not started
-  // Return false but don't throw - let caller decide how to handle
-  logger.warn('SYSTEM', 'Worker not healthy, hook will proceed gracefully');
+  // Check if worker is starting up (PID file recent) — worth retrying
+  // If no PID file or stale, worker needs spawn, not retry
+  if (!isWorkerStartingUp()) {
+    logger.warn('SYSTEM', 'Worker not healthy and no recent PID file, hook will proceed gracefully');
+    return false;
+  }
+
+  // Worker appears to be starting up — retry within remaining budget
+  logger.debug('SYSTEM', 'Worker starting up (recent PID file), retrying health check');
+
+  for (let attempt = 1; attempt < maxAttempts; attempt++) {
+    const elapsed = Date.now() - startTime;
+    const remaining = HEALTH_CHECK_TIMEOUT_MS - elapsed;
+
+    if (remaining < perAttemptTimeoutMs) {
+      break; // Not enough budget for another attempt
+    }
+
+    // Wait before retry (capped to leave room for the health check)
+    const sleepTime = Math.min(retryIntervalMs, remaining - perAttemptTimeoutMs);
+    if (sleepTime > 0) {
+      await new Promise(resolve => setTimeout(resolve, sleepTime));
+    }
+
+    try {
+      const attemptTimeout = Math.min(perAttemptTimeoutMs, HEALTH_CHECK_TIMEOUT_MS - (Date.now() - startTime));
+      if (attemptTimeout <= 0) break;
+
+      const response = await workerHttpRequest('/api/health', { timeoutMs: attemptTimeout });
+      if (response.ok) {
+        logger.debug('SYSTEM', 'Worker became healthy on retry', { attempt, elapsedMs: Date.now() - startTime });
+        await checkWorkerVersion();
+        return true;
+      }
+    } catch (e) {
+      logger.debug('SYSTEM', `Worker health retry ${attempt} failed`, {
+        error: e instanceof Error ? e.message : String(e),
+        elapsedMs: Date.now() - startTime
+      });
+    }
+  }
+
+  logger.warn('SYSTEM', 'Worker not healthy after startup retries, hook will proceed gracefully');
   return false;
 }

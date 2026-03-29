@@ -1259,10 +1259,12 @@ async function main() {
   }
 }
 
-// Check if running as main module in both ESM and CommonJS
+// Check if running as main module (always CJS in bundled output).
+// IMPORTANT: Do NOT use import.meta.url — esbuild's CJS polyfill injects
+// `var __dirname` with the build machine's path. See issue #1410.
 const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefined'
   ? require.main === module || !module.parent
-  : import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('worker-service');
+  : process.argv[1]?.endsWith('worker-service');
 
 if (isMainModule) {
   main().catch((error) => {

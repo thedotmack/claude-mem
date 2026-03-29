@@ -2,18 +2,22 @@ import { join, dirname, basename, sep } from 'path';
 import { homedir } from 'os';
 import { existsSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
-import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
 
-// Get __dirname that works in both ESM (hooks) and CJS (worker) contexts
+// Get __dirname that works in CJS (worker) context.
+// IMPORTANT: Do NOT use import.meta.url here — esbuild's CJS polyfill for
+// import.meta injects `var __dirname = "/build/machine/path"` which shadows
+// the native CJS __dirname global, breaking path resolution on end-user
+// machines. See: github.com/thedotmack/claude-mem/issues/1410
 function getDirname(): string {
-  // CJS context - __dirname exists
   if (typeof __dirname !== 'undefined') {
     return __dirname;
   }
-  // ESM context - use import.meta.url
-  return dirname(fileURLToPath(import.meta.url));
+  if (typeof __filename !== 'undefined') {
+    return dirname(__filename);
+  }
+  throw new Error('Cannot determine __dirname: CJS globals unavailable');
 }
 
 const _dirname = getDirname();

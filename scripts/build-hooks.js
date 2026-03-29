@@ -102,7 +102,7 @@ async function buildHooks() {
       format: 'cjs',
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
       minify: true,
-      logLevel: 'error', // Suppress warnings (import.meta warning is benign)
+      logLevel: 'error', // Suppress info-level noise; import.meta references removed (issue #1410)
       external: [
         'bun:sqlite',
         // Optional chromadb embedding providers

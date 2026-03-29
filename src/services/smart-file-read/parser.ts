@@ -15,11 +15,10 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 
 // CJS-safe require for resolving external packages at runtime.
-// In ESM: import.meta.url works. In CJS bundle (esbuild): __filename works.
-// typeof check avoids ReferenceError in ESM where __filename doesn't exist.
-const _require = typeof __filename !== 'undefined'
-  ? createRequire(__filename)
-  : createRequire(import.meta.url);
+// This file is always bundled into CJS by esbuild, so __filename is available.
+// IMPORTANT: Do NOT use import.meta.url as fallback — esbuild's CJS polyfill
+// injects `var __dirname` with the build machine's path. See issue #1410.
+const _require = createRequire(__filename);
 
 // --- Types ---
 
