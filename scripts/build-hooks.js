@@ -157,11 +157,7 @@ async function buildHooks() {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
       banner: {
-        js: [
-          '#!/usr/bin/env node',
-          'var __filename = require("node:url").fileURLToPath(import.meta.url);',
-          'var __dirname = require("node:path").dirname(__filename);'
-        ].join('\n')
+        js: '#!/usr/bin/env node'
       }
     });
 
@@ -185,12 +181,7 @@ async function buildHooks() {
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
-      banner: {
-        js: [
-          'var __filename = require("node:url").fileURLToPath(import.meta.url);',
-          'var __dirname = require("node:path").dirname(__filename);'
-        ].join('\n')
-      }
+      // No banner needed: CJS files under Node.js have __dirname/__filename natively
     });
 
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
