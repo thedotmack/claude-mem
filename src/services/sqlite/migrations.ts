@@ -509,6 +509,63 @@ export const migration007: Migration = {
 };
 
 
+
+/**
+ * Migration 008 - Add Storyline content ingestion tables
+ * Creates storyline_runs and storyline_files for tracking file-by-file ingestion
+ */
+export const migration008: Migration = {
+  version: 8,
+  up: (db: Database) => {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS storyline_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL UNIQUE,
+        project TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        mode_config TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'running'
+          CHECK(status IN ('running', 'completed', 'cancelled', 'error')),
+        total_files INTEGER NOT NULL,
+        files_processed INTEGER NOT NULL DEFAULT 0,
+        observations_generated INTEGER NOT NULL DEFAULT 0,
+        started_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        error_message TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS storyline_files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK(status IN ('pending', 'reading', 'completed', 'failed', 'skipped')),
+        error_message TEXT,
+        observations_count INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (run_id) REFERENCES storyline_runs(run_id) ON DELETE CASCADE
+      )
+    `);
+
+    db.run(`
+      CREATE INDEX IF NOT EXISTS idx_storyline_runs_status ON storyline_runs(status);
+      CREATE INDEX IF NOT EXISTS idx_storyline_files_run ON storyline_files(run_id);
+    `);
+
+    console.log('Created Storyline content ingestion tables');
+  },
+
+  down: (db: Database) => {
+    db.run(`
+      DROP TABLE IF EXISTS storyline_files;
+      DROP TABLE IF EXISTS storyline_runs;
+    `);
+  }
+};
+
 /**
  * All migrations in order
  */
@@ -519,5 +576,6 @@ export const migrations: Migration[] = [
   migration004,
   migration005,
   migration006,
-  migration007
+  migration007,
+  migration008
 ];
