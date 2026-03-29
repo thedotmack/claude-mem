@@ -108,6 +108,30 @@ describe('Server', () => {
         expect(httpServer.listening).toBe(false);
       }
     });
+
+    it('should still reject EADDRINUSE on non-Windows (no retry)', async () => {
+      // On macOS/Linux, maxRetries is 0 so it should fail immediately
+      if (process.platform === 'win32') return; // skip on Windows
+
+      server = new Server(mockOptions);
+      const server2 = new Server(mockOptions);
+      const testPort = 40000 + Math.floor(Math.random() * 10000);
+
+      await server.listen(testPort, '127.0.0.1');
+
+      const start = Date.now();
+      await expect(server2.listen(testPort, '127.0.0.1')).rejects.toThrow();
+      const elapsed = Date.now() - start;
+
+      // Should fail fast (no retry delay) — under 500ms
+      expect(elapsed).toBeLessThan(500);
+
+      // Clean up server2's dangling http server
+      const httpServer = server2.getHttpServer();
+      if (httpServer) {
+        expect(httpServer.listening).toBe(false);
+      }
+    });
   });
 
   describe('close', () => {

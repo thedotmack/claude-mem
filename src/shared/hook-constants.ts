@@ -3,7 +3,7 @@ export const HOOK_TIMEOUTS = {
   HEALTH_CHECK: 3000,         // Worker health check (3s — healthy worker responds in <100ms)
   POST_SPAWN_WAIT: 5000,      // Wait for daemon to start after spawn (starts in <1s on Linux)
   READINESS_WAIT: 30000,      // Wait for DB + search init after spawn (typically <5s)
-  PORT_IN_USE_WAIT: 3000,     // Wait when port occupied but health failing
+  PORT_IN_USE_WAIT: 6000,     // Wait when port occupied but health failing (Windows gets 12s via 2.0x multiplier)
   WORKER_STARTUP_WAIT: 1000,
   PRE_RESTART_SETTLE_DELAY: 2000,  // Give files time to sync before restart
   POWERSHELL_COMMAND: 10000,     // PowerShell process enumeration (10s - typically completes in <1s)

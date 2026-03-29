@@ -97,9 +97,10 @@ async function closeHttpServer(server: http.Server): Promise<void> {
   // Close all active connections
   server.closeAllConnections();
 
-  // Give Windows time to close connections before closing server (prevents zombie ports)
+  // Give Windows time to close connections before closing server.
+  // Windows TCP stack needs longer for TIME_WAIT on localhost (up to 4s).
   if (process.platform === 'win32') {
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 1500));
   }
 
   // Close the server
@@ -109,7 +110,7 @@ async function closeHttpServer(server: http.Server): Promise<void> {
 
   // Extra delay on Windows to ensure port is fully released
   if (process.platform === 'win32') {
-    await new Promise(r => setTimeout(r, 500));
-    logger.info('SYSTEM', 'Waited for Windows port cleanup');
+    await new Promise(r => setTimeout(r, 1000));
+    logger.info('SYSTEM', 'Waited for Windows port cleanup (2.5s total)');
   }
 }

@@ -90,9 +90,34 @@ export class Server {
   }
 
   /**
-   * Start listening on the specified host and port
+   * Start listening on the specified host and port.
+   * On Windows, retries up to 3 times on EADDRINUSE since the TCP stack
+   * can hold ports in TIME_WAIT for several seconds after shutdown.
    */
   async listen(port: number, host: string): Promise<void> {
+    const maxRetries = process.platform === 'win32' ? 3 : 0;
+    const retryDelayMs = 2000;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        await this.attemptListen(port, host);
+        return;
+      } catch (error: unknown) {
+        const isAddressInUse = (error as NodeJS.ErrnoException).code === 'EADDRINUSE';
+        if (isAddressInUse && attempt < maxRetries) {
+          logger.warn('SYSTEM', `EADDRINUSE on port ${port}, retrying in ${retryDelayMs}ms`, {
+            attempt: attempt + 1,
+            maxRetries,
+          });
+          await new Promise(r => setTimeout(r, retryDelayMs));
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  private attemptListen(port: number, host: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       this.server = this.app.listen(port, host, () => {
         logger.info('SYSTEM', 'HTTP server started', { host, port, pid: process.pid });
@@ -111,9 +136,10 @@ export class Server {
     // Close all active connections
     this.server.closeAllConnections();
 
-    // Give Windows time to close connections before closing server
+    // Give Windows time to close connections before closing server.
+    // Windows TCP stack needs longer for TIME_WAIT on localhost (up to 4s).
     if (process.platform === 'win32') {
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 1500));
     }
 
     // Close the server
@@ -123,7 +149,7 @@ export class Server {
 
     // Extra delay on Windows to ensure port is fully released
     if (process.platform === 'win32') {
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 1000));
     }
 
     this.server = null;

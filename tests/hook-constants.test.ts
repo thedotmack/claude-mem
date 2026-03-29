@@ -36,8 +36,8 @@ describe('hook-constants', () => {
       expect(HOOK_TIMEOUTS.POST_SPAWN_WAIT).toBe(5000);
     });
 
-    it('should define PORT_IN_USE_WAIT as 3s', () => {
-      expect(HOOK_TIMEOUTS.PORT_IN_USE_WAIT).toBe(3000);
+    it('should define PORT_IN_USE_WAIT as 6s (increased for Windows TIME_WAIT)', () => {
+      expect(HOOK_TIMEOUTS.PORT_IN_USE_WAIT).toBe(6000);
     });
 
     it('should define WORKER_STARTUP_WAIT', () => {
