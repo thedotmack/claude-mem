@@ -2,6 +2,39 @@
 
 All notable changes to claude-mem.
 
+## [v10.6.3] - 2026-03-29
+
+## v10.6.3 — Critical Patch Release
+
+### Bug Fixes
+
+- **Fix MCP server crash**: Removed erroneous `import.meta.url` ESM-compat banner from CJS files that caused Node.js startup failures
+- **Fix 7 critical bugs** affecting all non-dev-machine users and Windows:
+  - Hook registration paths corrected for plugin distribution
+  - Worker service spawn handling hardened for Windows
+  - Environment sanitization for cross-platform compatibility
+  - ProcessManager Windows spawn catch block improvements
+  - SessionEnd inline hook exemption in regression tests
+  - `summarize.ts` warning log now includes `sessionId` for triage
+- **CodeRabbit review feedback** addressed from PR #1518
+
+### Improvements
+
+- **Gemini CLI integration**: Strip ANSI color codes from timeline display, provide markdown fallback
+
+### Files Changed
+
+- `plugin/hooks/hooks.json`
+- `plugin/scripts/mcp-server.cjs`
+- `plugin/scripts/worker-service.cjs`
+- `scripts/build-hooks.js`
+- `src/cli/handlers/summarize.ts`
+- `src/services/infrastructure/ProcessManager.ts`
+- `src/services/worker-service.ts`
+- `src/supervisor/env-sanitizer.ts`
+- `tests/infrastructure/plugin-distribution.test.ts`
+- `tests/supervisor/env-sanitizer.test.ts`
+
 ## [v10.6.2] - 2026-03-21
 
 ## fix: Activity spinner stuck spinning forever
@@ -1089,25 +1122,4 @@ This release contains a significant refactoring of `worker-service.ts`, removing
 - Added Anti-Pattern Czar Generalization Analysis report
 - Updated README with $CMEM links and contract address
 - Added comprehensive cleanup and validation plans for worker-service.ts
-
-## [v9.0.4] - 2026-01-10
-
-## What's New
-
-This release adds the `/do` and `/make-plan` development commands to the plugin distribution, making them available to all users who install the plugin from the marketplace.
-
-### Features
-
-- **Development Commands Now Distributed with Plugin** (#666)
-  - `/do` command - Execute tasks with structured workflow
-  - `/make-plan` command - Create detailed implementation plans
-  - Commands now available at `plugin/commands/` for all users
-
-### Documentation
-
-- Revised Arabic README for clarity and corrections (#661)
-
-### Full Changelog
-
-https://github.com/thedotmack/claude-mem/compare/v9.0.3...v9.0.4
 
