@@ -622,6 +622,13 @@ export class WorkerService {
           'ENOENT',
           'spawn',
           'Invalid API key',
+          'API_KEY_INVALID',
+          'API key expired',
+          'API key not valid',
+          'PERMISSION_DENIED',
+          'Gemini API error: 400',
+          'Gemini API error: 401',
+          'Gemini API error: 403',
           'FOREIGN KEY constraint failed',
         ];
         if (unrecoverablePatterns.some(pattern => errorMessage.includes(pattern))) {
@@ -1327,7 +1334,10 @@ async function main() {
 // Check if running as main module in both ESM and CommonJS
 const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefined'
   ? require.main === module || !module.parent
-  : import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('worker-service');
+  : import.meta.url === `file://${process.argv[1]}`
+    || process.argv[1]?.endsWith('worker-service')
+    || process.argv[1]?.endsWith('worker-service.cjs')
+    || process.argv[1]?.replaceAll('\\', '/') === __filename?.replaceAll('\\', '/');
 
 if (isMainModule) {
   main().catch((error) => {
