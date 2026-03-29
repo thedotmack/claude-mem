@@ -116,7 +116,11 @@ async function buildHooks() {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
       banner: {
-        js: '#!/usr/bin/env bun'
+        js: [
+          '#!/usr/bin/env bun',
+          'var __filename = require("node:url").fileURLToPath(import.meta.url);',
+          'var __dirname = require("node:path").dirname(__filename);'
+        ].join('\n')
       }
     });
 
@@ -176,7 +180,8 @@ async function buildHooks() {
       external: ['bun:sqlite'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
-      }
+      },
+      // No banner needed: CJS files under Node.js have __dirname/__filename natively
     });
 
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
