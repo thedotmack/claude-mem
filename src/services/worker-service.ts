@@ -125,6 +125,7 @@ import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 import { EndlessRoutes } from './worker/http/routes/EndlessRoutes.js';
+import { StorylineRoutes } from './worker/http/routes/StorylineRoutes.js';
 import { EndlessRunner } from './worker/EndlessRunner.js';
 
 // Process management for zombie cleanup (Issue #737)
@@ -327,6 +328,7 @@ export class WorkerService {
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
     this.server.registerRoutes(new EndlessRoutes(this.endlessRunner));
+    this.server.registerRoutes(new StorylineRoutes(this.dbManager, this.sessionManager));
   }
 
   /**
