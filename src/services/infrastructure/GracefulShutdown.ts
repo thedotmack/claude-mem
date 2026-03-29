@@ -11,6 +11,7 @@
 import http from 'http';
 import { logger } from '../../utils/logger.js';
 import { stopSupervisor } from '../../supervisor/index.js';
+import { releaseRestartLock } from './ProcessManager.js';
 
 export interface ShutdownableService {
   shutdownAll(): Promise<void>;
@@ -81,6 +82,9 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
 
   // STEP 6: Supervisor handles tracked child termination, PID cleanup, and stale sockets.
   await stopSupervisor();
+
+  // STEP 7: Release restart lockfile if held (prevents stale locks after crash restarts)
+  releaseRestartLock();
 
   logger.info('SYSTEM', 'Worker shutdown complete');
 }

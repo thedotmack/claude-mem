@@ -81,7 +81,10 @@ import {
   isProcessAlive,
   spawnDaemon,
   isPidFileRecent,
-  touchPidFile
+  touchPidFile,
+  acquireRestartLock,
+  releaseRestartLock,
+  isRestartLockHeld
 } from './infrastructure/ProcessManager.js';
 import {
   isPortInUse,
@@ -975,21 +978,31 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   if (await waitForHealth(port, 1000)) {
     const versionCheck = await checkVersionMatch(port);
     if (!versionCheck.matches) {
-      // Guard: If PID file was written recently, another session is likely already
-      // restarting the worker. Poll health instead of starting a concurrent restart.
-      // This prevents the "100 sessions all restart simultaneously" storm (#1145).
-      const RESTART_COORDINATION_THRESHOLD_MS = 15000;
-      if (isPidFileRecent(RESTART_COORDINATION_THRESHOLD_MS)) {
-        logger.info('SYSTEM', 'Version mismatch detected but PID file is recent — another restart likely in progress, polling health', {
+      // Atomic lockfile prevents concurrent version-mismatch restart stampede (#1145).
+      // If another session holds the lock, poll health instead of starting our own restart.
+      if (isRestartLockHeld()) {
+        logger.info('SYSTEM', 'Version mismatch detected but restart lock held — another restart in progress, polling health', {
           pluginVersion: versionCheck.pluginVersion,
           workerVersion: versionCheck.workerVersion
         });
-        const healthy = await waitForHealth(port, RESTART_COORDINATION_THRESHOLD_MS);
+        const RESTART_POLL_TIMEOUT_MS = 30000;
+        const healthy = await waitForHealth(port, RESTART_POLL_TIMEOUT_MS);
         if (healthy) {
           logger.info('SYSTEM', 'Worker became healthy after waiting for concurrent restart');
           return true;
         }
         logger.warn('SYSTEM', 'Worker did not become healthy after waiting — proceeding with own restart');
+      }
+
+      if (!acquireRestartLock()) {
+        // Lost the race to acquire lock — another session just grabbed it, poll health
+        logger.info('SYSTEM', 'Another session acquired restart lock, polling health');
+        const healthy = await waitForHealth(port, 30000);
+        if (healthy) {
+          logger.info('SYSTEM', 'Worker became healthy after concurrent restart');
+          return true;
+        }
+        // Still not healthy — fall through to attempt our own restart
       }
 
       logger.info('SYSTEM', 'Worker version mismatch detected - auto-restarting', {
@@ -1000,6 +1013,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
       await httpShutdown(port);
       const freed = await waitForPortFree(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
       if (!freed) {
+        releaseRestartLock();
         logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port });
         return false;
       }
@@ -1044,6 +1058,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
   if (!healthy) {
     removePidFile();
+    releaseRestartLock();
     logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
     return false;
   }
@@ -1056,6 +1071,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   }
 
   clearWorkerSpawnAttempted();
+  releaseRestartLock();
   // Touch PID file to signal other sessions that a restart just completed.
   // Other sessions checking isPidFileRecent() will see this and skip their own restart.
   touchPidFile();

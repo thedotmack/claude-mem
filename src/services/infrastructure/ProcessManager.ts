@@ -23,6 +23,8 @@ const execAsync = promisify(exec);
 // Standard paths for PID file management
 const DATA_DIR = path.join(homedir(), '.claude-mem');
 const PID_FILE = path.join(DATA_DIR, 'worker.pid');
+const RESTART_LOCK_FILE = path.join(DATA_DIR, '.worker-restart.lock');
+const RESTART_LOCK_TTL_MS = 30000;
 
 // Orphaned process cleanup patterns and thresholds
 // These are claude-mem processes that can accumulate if not properly terminated
@@ -770,6 +772,68 @@ export function touchPidFile(): void {
  */
 export function cleanStalePidFile(): ValidateWorkerPidStatus {
   return validateWorkerPidFile({ logAlive: false });
+}
+
+// ============================================================================
+// Restart Lockfile — prevents concurrent version-mismatch restarts (#1145)
+// ============================================================================
+
+/**
+ * Attempt to acquire the restart lock. Returns true if this process now holds
+ * the lock. Returns false if another process holds a non-expired lock.
+ *
+ * Uses atomic O_EXCL create where possible; falls back to mtime-based TTL
+ * to handle crashes that leave a stale lockfile.
+ */
+export function acquireRestartLock(): boolean {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+
+    if (existsSync(RESTART_LOCK_FILE)) {
+      const lockAge = Date.now() - statSync(RESTART_LOCK_FILE).mtimeMs;
+      if (lockAge < RESTART_LOCK_TTL_MS) {
+        return false; // Another restart in progress and lock is fresh
+      }
+      // Lock expired (crash or timeout) — safe to override
+      unlinkSync(RESTART_LOCK_FILE);
+    }
+
+    // Write lock with our PID for diagnostics
+    writeFileSync(RESTART_LOCK_FILE, JSON.stringify({ pid: process.pid, acquiredAt: Date.now() }), { flag: 'wx' });
+    return true;
+  } catch (error: unknown) {
+    // EEXIST = race: another process created it between our check and write
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    // Other errors (permissions, disk full): log and allow restart to proceed
+    logger.warn('SYSTEM', 'Failed to acquire restart lock, proceeding anyway', {}, error as Error);
+    return true;
+  }
+}
+
+/**
+ * Release the restart lock. Called after restart completes or on shutdown.
+ */
+export function releaseRestartLock(): void {
+  try {
+    if (existsSync(RESTART_LOCK_FILE)) {
+      unlinkSync(RESTART_LOCK_FILE);
+    }
+  } catch {
+    // Best-effort cleanup
+  }
+}
+
+/**
+ * Check if a restart lock is currently held (non-expired).
+ */
+export function isRestartLockHeld(): boolean {
+  try {
+    if (!existsSync(RESTART_LOCK_FILE)) return false;
+    const lockAge = Date.now() - statSync(RESTART_LOCK_FILE).mtimeMs;
+    return lockAge < RESTART_LOCK_TTL_MS;
+  } catch {
+    return false;
+  }
 }
 
 /**
