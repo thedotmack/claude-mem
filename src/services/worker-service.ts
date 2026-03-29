@@ -954,6 +954,60 @@ export class WorkerService {
 // ============================================================================
 
 /**
+ * Collect structured diagnostics when worker fails to start.
+ * Output as JSON to stderr (exit code 2) so Claude can help users diagnose.
+ */
+async function collectStartupDiagnostics(port: number): Promise<Record<string, unknown>> {
+  const diagnostics: Record<string, unknown> = { port, timestamp: new Date().toISOString() };
+
+  // Check if port is held by another process
+  try {
+    diagnostics.portInUse = await isPortInUse(port);
+  } catch {
+    diagnostics.portInUse = 'check_failed';
+  }
+
+  // Check PID file state
+  const pidInfo = readPidFile();
+  if (pidInfo) {
+    diagnostics.pidFile = {
+      exists: true,
+      pid: pidInfo.pid,
+      port: pidInfo.port,
+      startedAt: pidInfo.startedAt,
+      processAlive: isProcessAlive(pidInfo.pid)
+    };
+  } else {
+    diagnostics.pidFile = { exists: false };
+  }
+
+  // Check if Bun is available
+  try {
+    const { execSync } = await import('child_process');
+    const bunVersion = execSync('bun --version', { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    diagnostics.bunAvailable = true;
+    diagnostics.bunVersion = bunVersion;
+  } catch {
+    diagnostics.bunAvailable = false;
+  }
+
+  // Check for recent worker stderr logs
+  try {
+    const logPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'logs', 'worker.log');
+    if (existsSync(logPath)) {
+      const { readFileSync: readFs } = await import('fs');
+      const logContent = readFs(logPath, 'utf-8');
+      const lines = logContent.split('\n').filter(Boolean);
+      diagnostics.recentWorkerLog = lines.slice(-5);
+    }
+  } catch {
+    diagnostics.recentWorkerLog = 'unavailable';
+  }
+
+  return diagnostics;
+}
+
+/**
  * Ensures the worker is started and healthy.
  * This function can be called by both 'start' and 'hook' commands.
  *
@@ -1109,7 +1163,12 @@ async function main() {
       if (success) {
         exitWithStatus('ready');
       } else {
-        exitWithStatus('error', 'Failed to start worker');
+        // Collect and output structured diagnostics (exit 2 = blocking, feeds to Claude)
+        const diagnostics = await collectStartupDiagnostics(port);
+        logger.error('SYSTEM', 'Worker startup failed — diagnostics collected', diagnostics);
+        process.stderr.write(JSON.stringify({ error: 'worker_startup_failed', diagnostics }, null, 2) + '\n');
+        console.log(JSON.stringify(buildStatusOutput('error', 'Failed to start worker')));
+        process.exit(2);
       }
       break;
     }
@@ -1203,7 +1262,11 @@ async function main() {
       // the hook process's exit and is invisible to Claude Code's sandbox.
       const workerReady = await ensureWorkerStarted(port);
       if (!workerReady) {
-        logger.warn('SYSTEM', 'Worker failed to start before hook, handler will proceed gracefully');
+        // Collect structured diagnostics so Claude can help users diagnose startup failures
+        const diagnostics = await collectStartupDiagnostics(port);
+        logger.error('SYSTEM', 'Worker failed to start before hook — diagnostics collected', diagnostics);
+        process.stderr.write(JSON.stringify({ error: 'worker_startup_failed', diagnostics }, null, 2) + '\n');
+        process.exit(2); // Blocking: feeds diagnostics to Claude for user assistance
       }
 
       const { hookCommand } = await import('../cli/hook-command.js');
