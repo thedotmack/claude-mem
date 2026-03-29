@@ -1,4 +1,6 @@
 <h1 align="center">
+
+[![gitcgr](https://gitcgr.com/badge/thedotmack/claude-mem.svg)](https://gitcgr.com/thedotmack/claude-mem)
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
     <picture>
