@@ -437,8 +437,13 @@ export class WorkerService {
         });
       }
 
-      // Connect to MCP server
+      // Mark MCP as externally ready once the bundled stdio server binary exists.
+      // Codex/Claude Desktop connect to this binary directly; the loopback client
+      // below is only a best-effort self-check and should not mark health false.
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
+      this.mcpReady = existsSync(mcpServerPath);
+
+      // Best-effort loopback MCP self-check
       getSupervisor().assertCanSpawn('mcp server');
       const transport = new StdioClientTransport({
         command: 'node',
@@ -460,7 +465,7 @@ export class WorkerService {
         await Promise.race([mcpConnectionPromise, timeoutPromise]);
       } catch (connectionError) {
         clearTimeout(timeoutId!);
-        logger.warn('WORKER', 'MCP server connection failed, cleaning up subprocess', {
+        logger.warn('WORKER', 'MCP loopback self-check failed, cleaning up subprocess', {
           error: connectionError instanceof Error ? connectionError.message : String(connectionError)
         });
         try {
@@ -468,7 +473,10 @@ export class WorkerService {
         } catch {
           // Best effort: the supervisor handles later process cleanup for survivors.
         }
-        throw connectionError;
+        logger.info('WORKER', 'Bundled MCP server remains available for external stdio clients', {
+          path: mcpServerPath
+        });
+        return;
       }
       clearTimeout(timeoutId!);
 
@@ -483,8 +491,7 @@ export class WorkerService {
           getSupervisor().unregisterProcess('mcp-server');
         });
       }
-      this.mcpReady = true;
-      logger.success('WORKER', 'MCP server connected');
+      logger.success('WORKER', 'MCP loopback self-check connected');
 
       // Start orphan reaper to clean up zombie processes (Issue #737)
       this.stopOrphanReaper = startOrphanReaper(() => {
