@@ -18,8 +18,8 @@ npx claude-mem install
 The interactive installer will:
 - Detect your installed IDEs (Claude Code, Cursor, Gemini CLI, Windsurf, etc.)
 - Copy plugin files to the correct locations
-- Register the plugin with Claude Code
-- Install all dependencies (including Bun and uv)
+- Register the plugin with the selected IDEs
+- Ensure required runtimes are available (Bun and uv)
 - Auto-start the worker service
 
 ### Option 2: Plugin Marketplace
@@ -31,7 +31,7 @@ Install Claude-Mem directly from the plugin marketplace inside Claude Code:
 /plugin install claude-mem
 ```
 
-Both methods will automatically configure hooks and start the worker service. Start a new Claude Code session and you'll see context from previous sessions automatically loaded.
+Both methods will configure the selected integrations and start the worker service. Start a new session in your IDE and you'll see context from previous sessions automatically loaded.
 
 > **Important:** Claude-Mem is published on npm, but running `npm install -g claude-mem` installs the
 > **SDK/library only**. It does **not** register plugin hooks or start the worker service.

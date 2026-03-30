@@ -45,21 +45,26 @@ Use claude-mem's MCP search tools for manual memory queries.`;
  */
 function buildMcpServerEntry(mcpServerPath: string): { command: string; args: string[] } {
   return {
-    command: 'node',
+    command: process.execPath,
     args: [mcpServerPath],
   };
 }
 
 /**
- * Read a JSON file safely, returning a default value if it doesn't exist or is corrupt.
+ * Read a JSON file safely, returning a default value if it doesn't exist.
+ * Throws on parse errors to prevent clobbering corrupt configs with empty objects.
  */
 function readJsonSafe<T>(filePath: string, defaultValue: T): T {
   if (!existsSync(filePath)) return defaultValue;
+  const raw = readFileSync(filePath, 'utf-8');
   try {
-    return JSON.parse(readFileSync(filePath, 'utf-8'));
+    return JSON.parse(raw);
   } catch (error) {
-    logger.error('MCP', `Corrupt JSON file, using default`, { path: filePath }, error as Error);
-    return defaultValue;
+    // Back up the corrupt file so the user doesn't lose their config
+    const backupPath = `${filePath}.backup-${Date.now()}`;
+    try { writeFileSync(backupPath, raw); } catch { /* best-effort */ }
+    logger.error('MCP', `Corrupt JSON file, backed up to ${backupPath}`, { path: filePath }, error as Error);
+    throw new Error(`Cannot parse ${filePath}. Original backed up to ${backupPath}. Fix the JSON syntax and retry.`);
   }
 }
 
@@ -287,10 +292,11 @@ function gooseConfigHasClaudeMemEntry(yamlContent: string): boolean {
  */
 function buildGooseMcpYamlBlock(mcpServerPath: string): string {
   // Goose expects the mcpServers section at the top level
+  const nodePath = process.execPath;
   return [
     'mcpServers:',
     '  claude-mem:',
-    '    command: node',
+    `    command: ${nodePath}`,
     '    args:',
     `      - ${mcpServerPath}`,
   ].join('\n');
@@ -300,9 +306,10 @@ function buildGooseMcpYamlBlock(mcpServerPath: string): string {
  * Build just the claude-mem server entry (for appending under existing mcpServers).
  */
 function buildGooseClaudeMemEntryYaml(mcpServerPath: string): string {
+  const nodePath = process.execPath;
   return [
     '  claude-mem:',
-    '    command: node',
+    `    command: ${nodePath}`,
     '    args:',
     `      - ${mcpServerPath}`,
   ].join('\n');

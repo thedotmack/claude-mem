@@ -94,7 +94,8 @@ interface SessionDeletedEvent {
 // Constants
 // ============================================================================
 
-const WORKER_BASE_URL = "http://127.0.0.1:37777";
+const WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT || "37777";
+const WORKER_BASE_URL = `http://127.0.0.1:${WORKER_PORT}`;
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
 // ============================================================================

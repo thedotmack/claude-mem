@@ -23,3 +23,4 @@ echo -e "This requires Node.js >= 18. Get it from ${CYAN}https://nodejs.org${NC}
 echo ""
 echo -e "For more info, visit: ${CYAN}https://docs.claude-mem.ai/installation${NC}"
 echo ""
+exit 1

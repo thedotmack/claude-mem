@@ -4,7 +4,7 @@
  * All platform-specific path logic is centralized here so that every command
  * resolves directories in exactly the same way, regardless of OS.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -148,5 +148,7 @@ export function readJsonFileSafe(filepath: string): any {
 
 export function writeJsonFileAtomic(filepath: string, data: any): void {
   ensureDirectoryExists(dirname(filepath));
-  writeFileSync(filepath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+  const tmpPath = `${filepath}.tmp-${process.pid}`;
+  writeFileSync(tmpPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+  renameSync(tmpPath, filepath);
 }

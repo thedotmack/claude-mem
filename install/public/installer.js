@@ -14,4 +14,4 @@ console.log('');
 console.log('For more info, visit: \x1b[36mhttps://docs.claude-mem.ai/installation\x1b[0m');
 console.log('');
 
-process.exit(0);
+process.exitCode = 1;

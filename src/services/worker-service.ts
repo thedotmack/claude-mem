@@ -991,14 +991,23 @@ async function collectStartupDiagnostics(port: number): Promise<Record<string, u
     diagnostics.bunAvailable = false;
   }
 
-  // Check for recent worker stderr logs
+  // Check for recent worker stderr logs (read only last 4KB to avoid OOM on large logs)
   try {
     const logPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'logs', 'worker.log');
     if (existsSync(logPath)) {
-      const { readFileSync: readFs } = await import('fs');
-      const logContent = readFs(logPath, 'utf-8');
-      const lines = logContent.split('\n').filter(Boolean);
-      diagnostics.recentWorkerLog = lines.slice(-5);
+      const { openSync, readSync, closeSync, statSync: statFn } = await import('fs');
+      const fd = openSync(logPath, 'r');
+      try {
+        const fileSize = statFn(logPath).size;
+        const readSize = Math.min(4096, fileSize);
+        const buffer = Buffer.alloc(readSize);
+        readSync(fd, buffer, 0, readSize, Math.max(0, fileSize - readSize));
+        const tail = buffer.toString('utf-8');
+        const lines = tail.split('\n').filter(Boolean);
+        diagnostics.recentWorkerLog = lines.slice(-5);
+      } finally {
+        closeSync(fd);
+      }
     }
   } catch {
     diagnostics.recentWorkerLog = 'unavailable';
@@ -1262,11 +1271,12 @@ async function main() {
       // the hook process's exit and is invisible to Claude Code's sandbox.
       const workerReady = await ensureWorkerStarted(port);
       if (!workerReady) {
-        // Collect structured diagnostics so Claude can help users diagnose startup failures
+        // Log diagnostics but don't block — exit 1 shows stderr to user but lets Claude continue.
+        // Exit 2 (blocking) would make Claude Code unusable until worker is fixed, firing on every hook call.
         const diagnostics = await collectStartupDiagnostics(port);
-        logger.error('SYSTEM', 'Worker failed to start before hook — diagnostics collected', diagnostics);
-        process.stderr.write(JSON.stringify({ error: 'worker_startup_failed', diagnostics }, null, 2) + '\n');
-        process.exit(2); // Blocking: feeds diagnostics to Claude for user assistance
+        logger.warn('SYSTEM', 'Worker failed to start before hook — diagnostics collected', diagnostics);
+        process.stderr.write(`claude-mem: worker not running. Run "npx claude-mem start" to fix.\n`);
+        // Proceed gracefully — hook handler will degrade without worker
       }
 
       const { hookCommand } = await import('../cli/hook-command.js');

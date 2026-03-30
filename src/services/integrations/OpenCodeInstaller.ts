@@ -330,11 +330,12 @@ export async function installOpenCodeIntegration(): Promise<number> {
 Use claude-mem search tools for manual memory queries.`;
 
   // Try to fetch real context from worker first
+  const workerPort = process.env.CLAUDE_MEM_WORKER_PORT || '37777';
   try {
-    const healthResponse = await fetch('http://127.0.0.1:37777/api/readiness');
+    const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/readiness`);
     if (healthResponse.ok) {
       const contextResponse = await fetch(
-        `http://127.0.0.1:37777/api/context/inject?project=opencode`,
+        `http://127.0.0.1:${workerPort}/api/context/inject?project=opencode`,
       );
       if (contextResponse.ok) {
         const realContext = await contextResponse.text();
