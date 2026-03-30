@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>MS · Signature</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #0A0C10;
+  font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  min-height: 100vh;
+  padding: 32px 20px 60px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+}
+
+.header {
+  font-family: 'SF Mono', 'Courier New', monospace;
+  font-size: 9px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: #2A333B;
+  text-align: center;
+  padding-top: 8px;
+}
+
+/* ── ANIMATED COPY BUTTON ── */
+.copy-btn {
+  width: 100%;
+  max-width: 480px;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  position: relative;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.btn-inner {
+  background: #0F1318;
+  border: 1px solid #161C26;
+  border-radius: 6px;
+  padding: 22px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.3s;
+}
+
+.copy-btn.success .btn-inner { border-color: #22C55E; }
+
+.btn-inner::before {
+  content: '';
+  position: absolute;
+  top: 0; left: -100%;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(90deg,
+    transparent,
+    rgba(77,107,135,0.08),
+    transparent);
+  animation: shimmer 2.5s ease infinite;
+}
+@keyframes shimmer {
+  0%   { left: -100%; }
+  100% { left: 200%; }
+}
+
+.btn-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.btn-dot {
+  position: relative;
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+}
+.btn-dot-core {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: #4D6B87;
+  transition: background 0.3s;
+}
+.copy-btn.success .btn-dot-core { background: #22C55E; }
+
+.btn-dot-ring {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1.5px solid #4D6B87;
+  opacity: 0;
+  animation: btn-pulse 2s ease-out infinite;
+}
+.btn-dot-ring.d2 { animation-delay: 0.8s; }
+.copy-btn.success .btn-dot-ring { border-color: #22C55E; }
+
+@keyframes btn-pulse {
+  0%   { transform: scale(0.7); opacity: 0.7; }
+  70%  { transform: scale(2.4); opacity: 0; }
+  100% { opacity: 0; }
+}
+
+.btn-text {
+  font-family: 'SF Mono', 'Courier New', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #CDD4DC;
+  text-align: left;
+  transition: color 0.3s;
+}
+.copy-btn.success .btn-text { color: #22C55E; }
+
+.btn-sub {
+  font-family: 'SF Mono', 'Courier New', monospace;
+  font-size: 8px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: #2A3A48;
+  margin-top: 3px;
+  transition: color 0.3s;
+}
+.copy-btn.success .btn-sub { color: #16A34A; }
+
+.btn-arrow {
+  font-size: 18px;
+  color: #2A3A48;
+  flex-shrink: 0;
+  animation: arrow-pulse 2s ease infinite;
+  transition: color 0.3s;
+}
+.copy-btn.success .btn-arrow { color: #22C55E; }
+
+@keyframes arrow-pulse {
+  0%,100% { opacity: 0.4; transform: translateX(0); }
+  50%      { opacity: 1;   transform: translateX(3px); }
+}
+
+/* Steps */
+.steps {
+  width: 100%;
+  max-width: 480px;
+  border: 1px solid #161C26;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.steps-header {
+  background: #0F1318;
+  padding: 12px 18px;
+  font-family: 'SF Mono', 'Courier New', monospace;
+  font-size: 8px;
+  letter-spacing: 0.28em;
+  color: #4D6B87;
+  text-transform: uppercase;
+  border-bottom: 1px solid #161C26;
+}
+.step {
+  background: #0A0C10;
+  padding: 12px 18px;
+  font-family: 'SF Mono', 'Courier New', monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: #3A4A58;
+  line-height: 1.6;
+  border-bottom: 1px solid #0F1318;
+  display: flex;
+  gap: 12px;
+}
+.step:last-child { border-bottom: none; }
+.step.active { color: #CDD4DC; }
+.n { color: #4D6B87; flex-shrink: 0; }
+
+/* Preview labels */
+.preview-label {
+  font-family: 'SF Mono', 'Courier New', monospace;
+  font-size: 8px;
+  letter-spacing: 0.28em;
+  color: #1E2D3C;
+  text-transform: uppercase;
+  align-self: flex-start;
+  max-width: 480px;
+  width: 100%;
+}
+
+/* ── MODE TOGGLE ── */
+.mode-toggle {
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  gap: 0;
+  border: 1px solid #161C26;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.mode-btn {
+  flex: 1;
+  padding: 10px 0;
+  border: none;
+  cursor: pointer;
+  font-family: 'SF Mono', 'Courier New', monospace;
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  transition: all 0.3s;
+  -webkit-tap-highlight-color: transparent;
+}
+.mode-btn.dark-btn {
+  background: #0F1318;
+  color: #4D6B87;
+}
+.mode-btn.light-btn {
+  background: #0F1318;
+  color: #4D6B87;
+}
+.mode-btn.active-mode {
+  background: #4D6B87;
+  color: #0A0C10;
+  font-weight: 700;
+}
+
+/* Signature preview */
+.sig-preview {
+  width: 100%;
+  max-width: 480px;
+  border: 1px solid #161C26;
+  border-radius: 6px;
+  padding: 24px 26px;
+  transition: background 0.3s, border-color 0.3s;
+}
+.sig-preview.dark { background: #0F1318; }
+.sig-preview.light { background: #FFFFFF; border-color: #D1D5DB; }
+
+.sig { display: flex; align-items: stretch; }
+.sig-bar {
+  width: 2px; flex-shrink: 0; border-radius: 2px;
+  animation: bar-grow 0.6s cubic-bezier(0.22,1,0.36,1) both;
+  transition: background 0.3s;
+}
+.sig-preview.dark .sig-bar { background: #4D6B87; }
+.sig-preview.light .sig-bar { background: #4D6B87; }
+
+@keyframes bar-grow {
+  from { transform: scaleY(0); transform-origin: top; }
+  to   { transform: scaleY(1); }
+}
+.sig-body { padding-left: 18px; flex: 1; min-width: 0; }
+.sig-name {
+  font-size: 18px; font-weight: 800;
+  line-height: 1; margin-bottom: 4px;
+  animation: fi 0.6s 0.1s ease both;
+  transition: color 0.3s;
+}
+.sig-preview.dark .sig-name { color: #CDD4DC; }
+.sig-preview.light .sig-name { color: #111827; }
+
+.sig-tech {
+  font-family: 'SF Mono', 'Courier New', monospace;
+  font-size: 9px; letter-spacing: 0.22em;
+  display: flex; align-items: center;
+  margin-bottom: 12px;
+  animation: fi 0.6s 0.2s ease both;
+  transition: color 0.3s;
+}
+.sig-preview.dark .sig-tech { color: #4D6B87; }
+.sig-preview.light .sig-tech { color: #4D6B87; }
+.sig-preview.dark .dot { color: #6B8FAD; }
+.sig-preview.light .dot { color: #6B8FAD; }
+
+.cursor {
+  display: inline-block; width: 1.5px; height: 9px;
+  margin-left: 3px; vertical-align: middle;
+  animation: blink 1.1s step-end infinite;
+  transition: background 0.3s;
+}
+.sig-preview.dark .cursor { background: #4D6B87; }
+.sig-preview.light .cursor { background: #4D6B87; }
+
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+.sig-divider {
+  height: 1px; margin-bottom: 10px;
+  animation: sweep 0.6s 0.3s ease both; transform-origin: left;
+  transition: background 0.3s;
+}
+.sig-preview.dark .sig-divider { background: #161C26; }
+.sig-preview.light .sig-divider { background: #E5E7EB; }
+
+@keyframes sweep { from{transform:scaleX(0)} to{transform:scaleX(1)} }
+@keyframes fi { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+
+.skills {
+  font-family: 'SF Mono', 'Courier New', monospace;
+  font-size: 7.5px; letter-spacing: 0.12em;
+  text-transform: uppercase; margin-bottom: 10px;
+  animation: fi 0.6s 0.35s ease both;
+}
+.skills-row { display: flex; gap: 5px; margin-bottom: 5px; }
+.sk { white-space: nowrap; transition: color 0.3s; }
+.sk-dim { white-space: nowrap; transition: color 0.3s; }
+.sep { transition: color 0.3s; }
+
+.sig-preview.dark .sk { color: #4D6B87; }
+.sig-preview.light .sk { color: #4D6B87; }
+.sig-preview.dark .sk-dim { color: #2A3A48; }
+.sig-preview.light .sk-dim { color: #9CA3AF; }
+.sig-preview.dark .sep { color: #1E2D3C; }
+.sig-preview.light .sep { color: #D1D5DB; }
+
+.contacts {
+  display: flex; flex-direction: column; gap: 5px;
+  animation: fi 0.6s 0.45s ease both;
+}
+.contacts a {
+  font-family: 'SF Mono', 'Courier New', monospace;
+  font-size: 8px; letter-spacing: 0.1em;
+  text-decoration: none;
+  display: flex; align-items: center; gap: 7px;
+  transition: color 0.3s;
+}
+.sig-preview.dark .contacts a { color: #4D6B87; }
+.sig-preview.light .contacts a { color: #4D6B87; }
+
+.status {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 12px;
+  animation: fi 0.6s 0.55s ease both;
+}
+.dot-wrap { position: relative; width: 8px; height: 8px; flex-shrink: 0; }
+.dot-core { position: absolute; inset: 0; border-radius: 50%; background: #22C55E; }
+.dot-ring {
+  position: absolute; inset: -3px; border-radius: 50%;
+  border: 1.5px solid #22C55E; opacity: 0;
+  animation: pulse 2s ease-out infinite;
+}
+.dot-ring.d2 { animation-delay: 0.7s; }
+@keyframes pulse {
+  0%  { transform: scale(0.7); opacity: 0.7; }
+  70% { transform: scale(2.2); opacity: 0; }
+  100%{ opacity: 0; }
+}
+.status-txt {
+  font-family: 'SF Mono', 'Courier New', monospace;
+  font-size: 8px; letter-spacing: 0.22em;
+  color: #22C55E; text-transform: uppercase;
+}
+</style>
+</head>
+<body>
+
+<div class="header">// Malcolm Shabazz · Signature Installer</div>
+
+<!-- ANIMATED COPY BUTTON -->
+<button class="copy-btn" id="copyBtn" onclick="copySig()">
+  <div class="btn-inner">
+    <div class="btn-left">
+      <div class="btn-dot">
+        <div class="btn-dot-ring"></div>
+        <div class="btn-dot-ring d2"></div>
+        <div class="btn-dot-core"></div>
+      </div>
+      <div>
+        <div class="btn-text" id="btnText">Tap to Copy Signature</div>
+        <div class="btn-sub" id="btnSub">Settings → Mail → Signature → Paste</div>
+      </div>
+    </div>
+    <div class="btn-arrow" id="btnArrow">→</div>
+  </div>
+</button>
+
+<!-- STEPS -->
+<div class="steps">
+  <div class="steps-header">// After Tapping</div>
+  <div class="step active"><span class="n">01</span><span>Tap the button above ☝️</span></div>
+  <div class="step"><span class="n">02</span><span>Settings → Mail → Signature</span></div>
+  <div class="step"><span class="n">03</span><span>Tap field → hold → Paste</span></div>
+  <div class="step"><span class="n">04</span><span>Send yourself a test email</span></div>
+</div>
+
+<div class="preview-label">// Preview</div>
+
+<!-- MODE TOGGLE -->
+<div class="mode-toggle">
+  <button class="mode-btn dark-btn active-mode" onclick="setMode('dark')">Dark Mode</button>
+  <button class="mode-btn light-btn" onclick="setMode('light')">Light Mode</button>
+</div>
+
+<!-- SIGNATURE PREVIEW -->
+<div class="sig-preview dark" id="sigPreview">
+  <div class="sig">
+    <div class="sig-bar"></div>
+    <div class="sig-body">
+      <div class="sig-name">Malcolm Shabazz</div>
+      <div class="sig-tech">tech<span class="dot">.</span>ni<span class="dot">.</span>cian<span class="cursor"></span></div>
+      <div class="sig-divider"></div>
+      <div class="skills">
+        <div class="skills-row">
+          <span class="sk">V2</span><span class="sep">·</span>
+          <span class="sk">A2</span><span class="sep">·</span>
+          <span class="sk">L2 / Hog 4</span><span class="sep">·</span>
+          <span class="sk">Cam Op</span>
+        </div>
+        <div class="skills-row">
+          <span class="sk-dim">Crew Chief</span><span class="sep">·</span>
+          <span class="sk-dim">Prod. Manager</span><span class="sep">·</span>
+          <span class="sk-dim">CDL-B</span><span class="sep">·</span>
+          <span class="sk-dim">Will Travel</span>
+        </div>
+      </div>
+      <div class="sig-divider"></div>
+      <div class="contacts">
+        <a href="tel:4079826950">📞 407-982-6950</a>
+        <a href="mailto:Malcolmas025@gmail.com">✉️ Malcolmas025@gmail.com</a>
+        <a href="https://linkedin.com/in/malcolmvs">🔗 linkedin.com/in/malcolmvs</a>
+        <a href="#">📍 Orlando, FL · Available for Travel</a>
+      </div>
+      <div class="status">
+        <div class="dot-wrap">
+          <div class="dot-ring"></div>
+          <div class="dot-ring d2"></div>
+          <div class="dot-core"></div>
+        </div>
+        <span class="status-txt">Show Ready</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     HIDDEN SIGNATURE HTML — Dark/Light Adaptive
+
+     Strategy:
+     • Inline styles = light-mode defaults (most email is read on white)
+     • <style> block with @media (prefers-color-scheme: dark) overrides
+     • Supported by: Apple Mail, iOS Mail, Outlook (macOS/iOS),
+       Hey, Fastmail, Yahoo, AOL
+     • Gmail strips <style> → falls back to light-mode inline styles (safe)
+     ═══════════════════════════════════════════════════════ -->
+<div id="sig-source" style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">
+<div>
+<style>
+  @media (prefers-color-scheme: dark) {
+    .sig-name-dm { color: #CDD4DC !important; }
+    .sig-tech-dm { color: #7B9AB5 !important; }
+    .sig-tech-dot-dm { color: #6B8FAD !important; }
+    .sig-bar-dm { background: #6B8FAD !important; }
+    .sig-divider-dm { background: #2D3748 !important; }
+    .sig-skills-dm { color: #7B9AB5 !important; }
+    .sig-skills-dim-dm { color: #5A6A78 !important; }
+    .sig-contact-dm { color: #7B9AB5 !important; }
+    .sig-contact-dm a { color: #7B9AB5 !important; }
+    .sig-location-dm { color: #7B9AB5 !important; }
+    .sig-status-dm { color: #34D399 !important; }
+  }
+</style>
+<table cellpadding="0" cellspacing="0" border="0" style="font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;">
+<tr>
+<td class="sig-bar-dm" style="width:3px;background:#4D6B87;border-radius:2px;">&nbsp;</td>
+<td style="padding-left:16px;">
+
+  <div class="sig-name-dm" style="font-size:18px;font-weight:800;color:#111827;line-height:1;margin-bottom:4px;">Malcolm Shabazz</div>
+
+  <div class="sig-tech-dm" style="font-family:'Courier New',monospace;font-size:9px;letter-spacing:0.22em;color:#4D6B87;text-transform:uppercase;margin-bottom:10px;">TECH<span class="sig-tech-dot-dm" style="color:#6B8FAD;">.</span>NI<span class="sig-tech-dot-dm" style="color:#6B8FAD;">.</span>CIAN</div>
+
+  <div class="sig-divider-dm" style="height:1px;background:#D1D5DB;margin-bottom:10px;"></div>
+
+  <div class="sig-skills-dm" style="font-family:'Courier New',monospace;font-size:7.5px;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:4px;color:#4D6B87;">
+    V2 &nbsp;·&nbsp; A2 &nbsp;·&nbsp; L2 / HOG 4 &nbsp;·&nbsp; CAM OP
+  </div>
+  <div class="sig-skills-dim-dm" style="font-family:'Courier New',monospace;font-size:7.5px;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:10px;color:#9CA3AF;">
+    CREW CHIEF &nbsp;·&nbsp; PROD. MANAGER &nbsp;·&nbsp; CDL-B &nbsp;·&nbsp; WILL TRAVEL
+  </div>
+
+  <div class="sig-divider-dm" style="height:1px;background:#D1D5DB;margin-bottom:10px;"></div>
+
+  <div class="sig-contact-dm" style="font-family:'Courier New',monospace;font-size:8px;letter-spacing:0.1em;color:#4D6B87;line-height:2.2;">
+    <a href="tel:4079826950" class="sig-contact-dm" style="color:#4D6B87;text-decoration:none;">📞 407-982-6950</a><br>
+    <a href="mailto:Malcolmas025@gmail.com" class="sig-contact-dm" style="color:#4D6B87;text-decoration:none;">✉️ Malcolmas025@gmail.com</a><br>
+    <a href="https://linkedin.com/in/malcolmvs" class="sig-contact-dm" style="color:#4D6B87;text-decoration:none;">🔗 linkedin.com/in/malcolmvs</a><br>
+    <span class="sig-location-dm" style="color:#4D6B87;">📍 Orlando, FL &nbsp;·&nbsp; Available for Travel</span>
+  </div>
+
+  <div class="sig-status-dm" style="margin-top:12px;font-family:'Courier New',monospace;font-size:8px;letter-spacing:0.22em;color:#22C55E;text-transform:uppercase;">
+    ● SHOW READY
+  </div>
+
+</td>
+</tr>
+</table>
+</div>
+</div>
+
+<script>
+function setMode(mode) {
+  const preview = document.getElementById('sigPreview');
+  const darkBtn = document.querySelector('.dark-btn');
+  const lightBtn = document.querySelector('.light-btn');
+
+  preview.classList.remove('dark', 'light');
+  preview.classList.add(mode);
+
+  darkBtn.classList.toggle('active-mode', mode === 'dark');
+  lightBtn.classList.toggle('active-mode', mode === 'light');
+}
+
+async function copySig() {
+  const btn    = document.getElementById('copyBtn');
+  const text   = document.getElementById('btnText');
+  const sub    = document.getElementById('btnSub');
+  const arrow  = document.getElementById('btnArrow');
+  const sigHTML = document.getElementById('sig-source').innerHTML;
+
+  try {
+    if (navigator.clipboard && window.ClipboardItem) {
+      const blob = new Blob([sigHTML], { type: 'text/html' });
+      await navigator.clipboard.write([new ClipboardItem({ 'text/html': blob })]);
+    } else {
+      const el = document.getElementById('sig-source');
+      el.style.position = 'static';
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand('copy');
+      sel.removeAllRanges();
+      el.style.position = 'absolute';
+    }
+
+    btn.classList.add('success');
+    text.textContent  = '✓ Copied!';
+    sub.textContent   = 'Now go to Settings → Mail → Signature → Paste';
+    arrow.textContent = '✓';
+
+    setTimeout(() => {
+      btn.classList.remove('success');
+      text.textContent  = 'Tap to Copy Signature';
+      sub.textContent   = 'Settings → Mail → Signature → Paste';
+      arrow.textContent = '→';
+    }, 4000);
+
+  } catch(e) {
+    text.textContent = 'Long press preview → Select All → Copy';
+  }
+}
+</script>
+
+</body>
+</html>
