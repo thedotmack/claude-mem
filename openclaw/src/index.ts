@@ -766,6 +766,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   api.on("gateway_start", async () => {
     sessionIds.clear();
     contextCache.clear();
+    lastActiveAgentProject = null;
     api.logger.info("[claude-mem] Gateway started — session tracking reset");
   });
 
