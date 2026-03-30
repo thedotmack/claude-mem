@@ -20,9 +20,19 @@ Use when users ask for:
 
 ## Prerequisites
 
-The claude-mem worker must be running on localhost:37777. The project must have claude-mem observations recorded.
+The claude-mem worker must be running. The project must have claude-mem observations recorded.
 
 ## Workflow
+
+### Step 0: Resolve Worker Port
+
+The worker port may be customized. Read it from settings before making any API calls:
+
+```bash
+CLAUDE_MEM_PORT=$(node -e "try{const s=JSON.parse(require('fs').readFileSync(require('os').homedir()+'/.claude-mem/settings.json','utf8'));console.log(s.CLAUDE_MEM_WORKER_PORT||37777)}catch{console.log(37777)}")
+```
+
+Use `http://localhost:${CLAUDE_MEM_PORT}` as the base URL for all subsequent API calls in this workflow.
 
 ### Step 1: Determine the Project Name
 
@@ -50,7 +60,7 @@ If a worktree is detected, use `$parent_project` (the basename of the parent rep
 Use Bash to fetch the complete timeline from the claude-mem worker API:
 
 ```bash
-curl -s "http://localhost:37777/api/context/inject?project=PROJECT_NAME&full=true"
+curl -s "http://localhost:${CLAUDE_MEM_PORT}/api/context/inject?project=PROJECT_NAME&full=true"
 ```
 
 This returns the entire compressed timeline -- every observation, session boundary, and summary across the project's full history. The response is pre-formatted markdown optimized for LLM consumption.
@@ -60,7 +70,7 @@ This returns the entire compressed timeline -- every observation, session bounda
 - Medium project (1,000-10,000 observations): ~50-300K tokens
 - Large project (10,000-35,000 observations): ~300-750K tokens
 
-If the response is empty or returns an error, the worker may not be running or the project name may be wrong. Try `curl -s "http://localhost:37777/api/search?query=*&limit=1"` to verify the worker is healthy.
+If the response is empty or returns an error, the worker may not be running or the project name may be wrong. Try `curl -s "http://localhost:${CLAUDE_MEM_PORT}/api/search?query=*&limit=1"` to verify the worker is healthy.
 
 ### Step 3: Estimate Token Count
 
@@ -187,15 +197,15 @@ Tell the user:
 
 ## Error Handling
 
-- **Empty timeline:** "No observations found for project 'X'. Check the project name with: `curl -s 'http://localhost:37777/api/search?query=*&limit=1'`"
-- **Worker not running:** "The claude-mem worker is not responding on port 37777. Start it with your usual method or check `ps aux | grep worker-service`."
-- **Timeline too large:** For projects with 50,000+ observations, the timeline may exceed context limits. Suggest using date range filtering: `curl -s "http://localhost:37777/api/context/inject?project=X&full=true"` -- the current endpoint returns all observations; for extremely large projects, the user may want to analyze in time-windowed segments.
+- **Empty timeline:** "No observations found for project 'X'. Check the project name with: `curl -s 'http://localhost:${CLAUDE_MEM_PORT}/api/search?query=*&limit=1'`"
+- **Worker not running:** "The claude-mem worker is not responding on the configured port. Start it with your usual method or check `ps aux | grep worker-service`."
+- **Timeline too large:** For projects with 50,000+ observations, the timeline may exceed context limits. Suggest using date range filtering: `curl -s "http://localhost:${CLAUDE_MEM_PORT}/api/context/inject?project=X&full=true"` -- the current endpoint returns all observations; for extremely large projects, the user may want to analyze in time-windowed segments.
 
 ## Example
 
 User: "Write a journey report for the tokyo project"
 
-1. Fetch: `curl -s "http://localhost:37777/api/context/inject?project=tokyo&full=true"`
+1. Fetch: `curl -s "http://localhost:${CLAUDE_MEM_PORT}/api/context/inject?project=tokyo&full=true"`
 2. Estimate: "Timeline fetched: ~34,722 observations, estimated ~718K tokens. Proceed?"
 3. User confirms
 4. Deploy analysis agent with full timeline
