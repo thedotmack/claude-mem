@@ -598,47 +598,27 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   }
 
   // ------------------------------------------------------------------
-  // Event: session_start — init claude-mem session (fires on /new, /reset)
+  // Event: session_start — track session context (init deferred to before_agent_start)
   // ------------------------------------------------------------------
   api.on("session_start", async (_event, ctx) => {
-    const contentSessionId = getContentSessionId(ctx.sessionKey);
-
-    await workerPost(workerPort, "/api/sessions/init", {
-      contentSessionId,
-      project: getProjectName(ctx),
-      prompt: "",
-    }, api.logger);
-
-    api.logger.info(`[claude-mem] Session initialized: ${contentSessionId}`);
+    getContentSessionId(ctx.sessionKey); // ensure session key is tracked
+    api.logger.info(`[claude-mem] Session tracked: ${ctx.sessionKey ?? "default"}`);
   });
 
   // ------------------------------------------------------------------
-  // Event: message_received — capture inbound user prompts from channels
+  // Event: message_received — log inbound prompt (init deferred to before_agent_start)
   // ------------------------------------------------------------------
-  api.on("message_received", async (event, ctx) => {
+  api.on("message_received", async (_event, ctx) => {
     const sessionKey = ctx.conversationId || ctx.channelId || "default";
-    const contentSessionId = getContentSessionId(sessionKey);
-
-    await workerPost(workerPort, "/api/sessions/init", {
-      contentSessionId,
-      project: baseProjectName,
-      prompt: event.content || "[media prompt]",
-    }, api.logger);
+    getContentSessionId(sessionKey); // ensure session key is tracked
   });
 
   // ------------------------------------------------------------------
-  // Event: after_compaction — re-init session after context compaction
+  // Event: after_compaction — preserve session tracking after compaction
   // ------------------------------------------------------------------
   api.on("after_compaction", async (_event, ctx) => {
-    const contentSessionId = getContentSessionId(ctx.sessionKey);
-
-    await workerPost(workerPort, "/api/sessions/init", {
-      contentSessionId,
-      project: getProjectName(ctx),
-      prompt: "",
-    }, api.logger);
-
-    api.logger.info(`[claude-mem] Session re-initialized after compaction: ${contentSessionId}`);
+    getContentSessionId(ctx.sessionKey); // ensure session key survives compaction
+    api.logger.info(`[claude-mem] Session preserved after compaction: ${ctx.sessionKey ?? "default"}`);
   });
 
   // ------------------------------------------------------------------
