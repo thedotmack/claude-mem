@@ -895,8 +895,14 @@ export class SearchManager {
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search (Chroma + SQLite)', {});
 
+      // Build Chroma where filter for project scoping
+      let whereFilter: Record<string, any> | undefined;
+      if (options.project) {
+        whereFilter = { project: options.project };
+      }
+
       // Step 1: Chroma semantic search (top 100)
-      const chromaResults = await this.queryChroma(query, 100);
+      const chromaResults = await this.queryChroma(query, 100, whereFilter);
       logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
@@ -912,7 +918,7 @@ export class SearchManager {
         // Step 3: Hydrate from SQLite in temporal order
         if (recentIds.length > 0) {
           const limit = options.limit || 20;
-          results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit });
+          results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
           logger.debug('SEARCH', 'Hydrated observations from SQLite', { count: results.length });
         }
       }
@@ -952,8 +958,14 @@ export class SearchManager {
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search for sessions', {});
 
+      // Build Chroma where filter for doc_type and project scoping
+      let whereFilter: Record<string, any> = { doc_type: 'session_summary' };
+      if (options.project) {
+        whereFilter = { $and: [whereFilter, { project: options.project }] };
+      }
+
       // Step 1: Chroma semantic search (top 100)
-      const chromaResults = await this.queryChroma(query, 100, { doc_type: 'session_summary' });
+      const chromaResults = await this.queryChroma(query, 100, whereFilter);
       logger.debug('SEARCH', 'Chroma returned semantic matches for sessions', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
@@ -969,7 +981,7 @@ export class SearchManager {
         // Step 3: Hydrate from SQLite in temporal order
         if (recentIds.length > 0) {
           const limit = options.limit || 20;
-          results = this.sessionStore.getSessionSummariesByIds(recentIds, { orderBy: 'date_desc', limit });
+          results = this.sessionStore.getSessionSummariesByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
           logger.debug('SEARCH', 'Hydrated sessions from SQLite', { count: results.length });
         }
       }
@@ -1009,8 +1021,14 @@ export class SearchManager {
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search for user prompts', {});
 
+      // Build Chroma where filter for doc_type and project scoping
+      let whereFilter: Record<string, any> = { doc_type: 'user_prompt' };
+      if (options.project) {
+        whereFilter = { $and: [whereFilter, { project: options.project }] };
+      }
+
       // Step 1: Chroma semantic search (top 100)
-      const chromaResults = await this.queryChroma(query, 100, { doc_type: 'user_prompt' });
+      const chromaResults = await this.queryChroma(query, 100, whereFilter);
       logger.debug('SEARCH', 'Chroma returned semantic matches for prompts', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
@@ -1026,7 +1044,7 @@ export class SearchManager {
         // Step 3: Hydrate from SQLite in temporal order
         if (recentIds.length > 0) {
           const limit = options.limit || 20;
-          results = this.sessionStore.getUserPromptsByIds(recentIds, { orderBy: 'date_desc', limit });
+          results = this.sessionStore.getUserPromptsByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
           logger.debug('SEARCH', 'Hydrated user prompts from SQLite', { count: results.length });
         }
       }
