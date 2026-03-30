@@ -570,14 +570,12 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // load manageable while still picking up new observations reasonably quickly.
   const CONTEXT_CACHE_TTL_MS = 60_000;
   const contextCache = new Map<string, { text: string; fetchedAt: number }>();
+  let lastActiveAgentProject: string | null = null;
 
   async function getContextForPrompt(ctx?: EventContext): Promise<string | null> {
-    // Include both the base project and agent-scoped project (e.g. "openclaw" + "openclaw-main")
-    const projects = [baseProjectName];
-    const agentProject = ctx ? getProjectName(ctx) : null;
-    if (agentProject && agentProject !== baseProjectName) {
-      projects.push(agentProject);
-    }
+    // Only include the agent-scoped project for strict per-agent isolation
+    const agentProject = ctx ? getProjectName(ctx) : baseProjectName;
+    const projects = [agentProject];
     const cacheKey = projects.join(",");
 
     // Return cached context if still fresh
@@ -600,53 +598,36 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   }
 
   // ------------------------------------------------------------------
-  // Event: session_start — init claude-mem session (fires on /new, /reset)
+  // Event: session_start — track session context (init deferred to before_agent_start)
   // ------------------------------------------------------------------
   api.on("session_start", async (_event, ctx) => {
-    const contentSessionId = getContentSessionId(ctx.sessionKey);
-
-    await workerPost(workerPort, "/api/sessions/init", {
-      contentSessionId,
-      project: getProjectName(ctx),
-      prompt: "",
-    }, api.logger);
-
-    api.logger.info(`[claude-mem] Session initialized: ${contentSessionId}`);
+    getContentSessionId(ctx.sessionKey); // ensure session key is tracked
+    api.logger.info(`[claude-mem] Session tracked: ${ctx.sessionKey ?? "default"}`);
   });
 
   // ------------------------------------------------------------------
-  // Event: message_received — capture inbound user prompts from channels
+  // Event: message_received — log inbound prompt (init deferred to before_agent_start)
   // ------------------------------------------------------------------
-  api.on("message_received", async (event, ctx) => {
+  api.on("message_received", async (_event, ctx) => {
     const sessionKey = ctx.conversationId || ctx.channelId || "default";
-    const contentSessionId = getContentSessionId(sessionKey);
-
-    await workerPost(workerPort, "/api/sessions/init", {
-      contentSessionId,
-      project: baseProjectName,
-      prompt: event.content || "[media prompt]",
-    }, api.logger);
+    getContentSessionId(sessionKey); // ensure session key is tracked
   });
 
   // ------------------------------------------------------------------
-  // Event: after_compaction — re-init session after context compaction
+  // Event: after_compaction — preserve session tracking after compaction
   // ------------------------------------------------------------------
   api.on("after_compaction", async (_event, ctx) => {
-    const contentSessionId = getContentSessionId(ctx.sessionKey);
-
-    await workerPost(workerPort, "/api/sessions/init", {
-      contentSessionId,
-      project: getProjectName(ctx),
-      prompt: "",
-    }, api.logger);
-
-    api.logger.info(`[claude-mem] Session re-initialized after compaction: ${contentSessionId}`);
+    getContentSessionId(ctx.sessionKey); // ensure session key survives compaction
+    api.logger.info(`[claude-mem] Session preserved after compaction: ${ctx.sessionKey ?? "default"}`);
   });
 
   // ------------------------------------------------------------------
   // Event: before_agent_start — init session
   // ------------------------------------------------------------------
   api.on("before_agent_start", async (event, ctx) => {
+    if (ctx.agentId) {
+      lastActiveAgentProject = getProjectName(ctx);
+    }
     // Initialize session in the worker so observations are not skipped
     // (the privacy check requires a stored user prompt to exist)
     const contentSessionId = getContentSessionId(ctx.sessionKey);
@@ -666,6 +647,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // cross-session context to the LLM.
   // ------------------------------------------------------------------
   api.on("before_prompt_build", async (_event, ctx) => {
+    if (ctx.agentId) {
+      lastActiveAgentProject = getProjectName(ctx);
+    }
     if (!shouldInjectContext(ctx)) return;
 
     const contextText = await getContextForPrompt(ctx);
@@ -766,6 +750,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   api.on("gateway_start", async () => {
     sessionIds.clear();
     contextCache.clear();
+    lastActiveAgentProject = null;
     api.logger.info("[claude-mem] Gateway started — session tracking reset");
   });
 
@@ -905,9 +890,14 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       const limit = hasTrailingLimit ? parseLimit(maybeLimit, 10) : 10;
       const query = hasTrailingLimit ? pieces.slice(0, -1).join(" ") : raw;
 
+      const project = lastActiveAgentProject;
+      let searchUrl = `/api/search/observations?query=${encodeURIComponent(query)}&limit=${limit}`;
+      if (project) {
+        searchUrl += `&project=${encodeURIComponent(project)}`;
+      }
       const data = await workerGetJson(
         workerPort,
-        `/api/search/observations?query=${encodeURIComponent(query)}&limit=${limit}`,
+        searchUrl,
         api.logger,
       );
 
@@ -939,9 +929,10 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       const limit = hasTrailingLimit ? parseLimit(maybeLimit, 3) : 3;
       const project = hasTrailingLimit ? parts.slice(0, -1).join(" ") : raw;
 
+      const effectiveProject = project || lastActiveAgentProject;
       const params = new URLSearchParams();
       params.set("limit", String(limit));
-      if (project) params.set("project", project);
+      if (effectiveProject) params.set("project", effectiveProject);
 
       const data = await workerGetJson(
         workerPort,
@@ -998,6 +989,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         depth_before: String(depthBefore),
         depth_after: String(depthAfter),
       });
+      if (lastActiveAgentProject) {
+        params.set("project", lastActiveAgentProject);
+      }
 
       const data = await workerGetJson(
         workerPort,
