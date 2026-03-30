@@ -625,7 +625,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // Event: before_agent_start — init session
   // ------------------------------------------------------------------
   api.on("before_agent_start", async (event, ctx) => {
-    lastActiveAgentProject = getProjectName(ctx);
+    if (ctx.agentId) {
+      lastActiveAgentProject = getProjectName(ctx);
+    }
     // Initialize session in the worker so observations are not skipped
     // (the privacy check requires a stored user prompt to exist)
     const contentSessionId = getContentSessionId(ctx.sessionKey);
@@ -645,7 +647,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // cross-session context to the LLM.
   // ------------------------------------------------------------------
   api.on("before_prompt_build", async (_event, ctx) => {
-    lastActiveAgentProject = getProjectName(ctx);
+    if (ctx.agentId) {
+      lastActiveAgentProject = getProjectName(ctx);
+    }
     if (!shouldInjectContext(ctx)) return;
 
     const contextText = await getContextForPrompt(ctx);
@@ -886,10 +890,14 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       const limit = hasTrailingLimit ? parseLimit(maybeLimit, 10) : 10;
       const query = hasTrailingLimit ? pieces.slice(0, -1).join(" ") : raw;
 
-      const project = lastActiveAgentProject || baseProjectName;
+      const project = lastActiveAgentProject;
+      let searchUrl = `/api/search/observations?query=${encodeURIComponent(query)}&limit=${limit}`;
+      if (project) {
+        searchUrl += `&project=${encodeURIComponent(project)}`;
+      }
       const data = await workerGetJson(
         workerPort,
-        `/api/search/observations?query=${encodeURIComponent(query)}&limit=${limit}&project=${encodeURIComponent(project)}`,
+        searchUrl,
         api.logger,
       );
 
@@ -921,7 +929,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       const limit = hasTrailingLimit ? parseLimit(maybeLimit, 3) : 3;
       const project = hasTrailingLimit ? parts.slice(0, -1).join(" ") : raw;
 
-      const effectiveProject = project || lastActiveAgentProject || baseProjectName;
+      const effectiveProject = project || lastActiveAgentProject;
       const params = new URLSearchParams();
       params.set("limit", String(limit));
       if (effectiveProject) params.set("project", effectiveProject);
@@ -975,14 +983,15 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       }
 
       const query = parts.join(" ");
-      const project = lastActiveAgentProject || baseProjectName;
       const params = new URLSearchParams({
         query,
         mode: "auto",
         depth_before: String(depthBefore),
         depth_after: String(depthAfter),
-        project,
       });
+      if (lastActiveAgentProject) {
+        params.set("project", lastActiveAgentProject);
+      }
 
       const data = await workerGetJson(
         workerPort,
