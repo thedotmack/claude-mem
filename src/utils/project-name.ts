@@ -1,4 +1,5 @@
 import path from 'path';
+import { homedir } from 'os';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
 
@@ -15,8 +16,13 @@ export function getProjectName(cwd: string | null | undefined): string {
     return 'unknown-project';
   }
 
+  // Expand ~ to home directory (some terminals report cwd as literal ~)
+  const resolvedCwd = (cwd === '~' || cwd.startsWith('~/'))
+    ? cwd.replace('~', homedir())
+    : cwd;
+
   // Extract basename (handles trailing slashes automatically)
-  const basename = path.basename(cwd);
+  const basename = path.basename(resolvedCwd);
 
   // Edge case: Drive roots on Windows (C:\, J:\) or Unix root (/)
   // path.basename('C:\') returns '' (empty string)
