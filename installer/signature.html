@@ -28,7 +28,7 @@ body {
   padding-top: 8px;
 }
 
-/* ── ANIMATED COPY BUTTON ── */
+/* ── ONE-TAP INSTALL BUTTON ── */
 .copy-btn {
   width: 100%;
   max-width: 480px;
@@ -53,7 +53,7 @@ body {
   gap: 16px;
   position: relative;
   overflow: hidden;
-  transition: border-color 0.3s;
+  transition: border-color 0.3s, background 0.3s;
 }
 
 .copy-btn.success .btn-inner { border-color: #22C55E; }
@@ -70,6 +70,8 @@ body {
     transparent);
   animation: shimmer 2.5s ease infinite;
 }
+.copy-btn.success .btn-inner::before { animation: none; }
+
 @keyframes shimmer {
   0%   { left: -100%; }
   100% { left: 200%; }
@@ -143,21 +145,58 @@ body {
   animation: arrow-pulse 2s ease infinite;
   transition: color 0.3s;
 }
-.copy-btn.success .btn-arrow { color: #22C55E; }
+.copy-btn.success .btn-arrow { color: #22C55E; animation: none; }
 
 @keyframes arrow-pulse {
   0%,100% { opacity: 0.4; transform: translateX(0); }
   50%      { opacity: 1;   transform: translateX(3px); }
 }
 
-/* Steps */
+/* ── REDIRECT NOTICE ── */
+.redirect-notice {
+  width: 100%;
+  max-width: 480px;
+  background: rgba(34,197,94,0.06);
+  border: 1px solid rgba(34,197,94,0.15);
+  border-radius: 6px;
+  padding: 14px 18px;
+  display: none;
+  align-items: center;
+  gap: 12px;
+  animation: fi 0.4s ease both;
+}
+.redirect-notice.show { display: flex; }
+.redirect-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.redirect-text {
+  font-family: 'SF Mono', 'Courier New', monospace;
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: #22C55E;
+  line-height: 1.6;
+}
+.redirect-text span {
+  display: block;
+  color: #16A34A;
+  font-size: 7.5px;
+  margin-top: 2px;
+}
+
+/* ── FALLBACK STEPS (non-iOS) ── */
 .steps {
   width: 100%;
   max-width: 480px;
   border: 1px solid #161C26;
   border-radius: 6px;
   overflow: hidden;
+  transition: opacity 0.3s;
 }
+.steps.dimmed { opacity: 0.3; }
 .steps-header {
   background: #0F1318;
   padding: 12px 18px;
@@ -179,12 +218,19 @@ body {
   border-bottom: 1px solid #0F1318;
   display: flex;
   gap: 12px;
+  transition: color 0.3s, background 0.3s;
 }
 .step:last-child { border-bottom: none; }
+.step.done { color: #22C55E; }
 .step.active { color: #CDD4DC; }
+.step.active { background: rgba(77,107,135,0.04); }
 .n { color: #4D6B87; flex-shrink: 0; }
+.step.done .n { color: #22C55E; }
+.check { display: none; color: #22C55E; }
+.step.done .check { display: inline; }
+.step.done .label { text-decoration: line-through; opacity: 0.6; }
 
-/* Preview labels */
+/* ── PREVIEW ── */
 .preview-label {
   font-family: 'SF Mono', 'Courier New', monospace;
   font-size: 8px;
@@ -196,7 +242,6 @@ body {
   width: 100%;
 }
 
-/* ── MODE TOGGLE ── */
 .mode-toggle {
   width: 100%;
   max-width: 480px;
@@ -217,12 +262,6 @@ body {
   text-transform: uppercase;
   transition: all 0.3s;
   -webkit-tap-highlight-color: transparent;
-}
-.mode-btn.dark-btn {
-  background: #0F1318;
-  color: #4D6B87;
-}
-.mode-btn.light-btn {
   background: #0F1318;
   color: #4D6B87;
 }
@@ -246,13 +285,9 @@ body {
 
 .sig { display: flex; align-items: stretch; }
 .sig-bar {
-  width: 2px; flex-shrink: 0; border-radius: 2px;
+  width: 2px; background: #4D6B87; flex-shrink: 0; border-radius: 2px;
   animation: bar-grow 0.6s cubic-bezier(0.22,1,0.36,1) both;
-  transition: background 0.3s;
 }
-.sig-preview.dark .sig-bar { background: #4D6B87; }
-.sig-preview.light .sig-bar { background: #4D6B87; }
-
 @keyframes bar-grow {
   from { transform: scaleY(0); transform-origin: top; }
   to   { transform: scaleY(1); }
@@ -270,25 +305,19 @@ body {
 .sig-tech {
   font-family: 'SF Mono', 'Courier New', monospace;
   font-size: 9px; letter-spacing: 0.22em;
+  color: #4D6B87;
   display: flex; align-items: center;
   margin-bottom: 12px;
   animation: fi 0.6s 0.2s ease both;
-  transition: color 0.3s;
 }
-.sig-preview.dark .sig-tech { color: #4D6B87; }
-.sig-preview.light .sig-tech { color: #4D6B87; }
-.sig-preview.dark .dot { color: #6B8FAD; }
-.sig-preview.light .dot { color: #6B8FAD; }
+.dot { color: #6B8FAD; }
 
 .cursor {
   display: inline-block; width: 1.5px; height: 9px;
+  background: #4D6B87;
   margin-left: 3px; vertical-align: middle;
   animation: blink 1.1s step-end infinite;
-  transition: background 0.3s;
 }
-.sig-preview.dark .cursor { background: #4D6B87; }
-.sig-preview.light .cursor { background: #4D6B87; }
-
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
 
 .sig-divider {
@@ -309,14 +338,11 @@ body {
   animation: fi 0.6s 0.35s ease both;
 }
 .skills-row { display: flex; gap: 5px; margin-bottom: 5px; }
-.sk { white-space: nowrap; transition: color 0.3s; }
+.sk { color: #4D6B87; white-space: nowrap; }
 .sk-dim { white-space: nowrap; transition: color 0.3s; }
-.sep { transition: color 0.3s; }
-
-.sig-preview.dark .sk { color: #4D6B87; }
-.sig-preview.light .sk { color: #4D6B87; }
 .sig-preview.dark .sk-dim { color: #2A3A48; }
 .sig-preview.light .sk-dim { color: #9CA3AF; }
+.sep { transition: color 0.3s; }
 .sig-preview.dark .sep { color: #1E2D3C; }
 .sig-preview.light .sep { color: #D1D5DB; }
 
@@ -327,12 +353,9 @@ body {
 .contacts a {
   font-family: 'SF Mono', 'Courier New', monospace;
   font-size: 8px; letter-spacing: 0.1em;
-  text-decoration: none;
+  color: #4D6B87; text-decoration: none;
   display: flex; align-items: center; gap: 7px;
-  transition: color 0.3s;
 }
-.sig-preview.dark .contacts a { color: #4D6B87; }
-.sig-preview.light .contacts a { color: #4D6B87; }
 
 .status {
   display: flex; align-items: center; gap: 8px;
@@ -363,8 +386,8 @@ body {
 
 <div class="header">// Malcolm Shabazz · Signature Installer</div>
 
-<!-- ANIMATED COPY BUTTON -->
-<button class="copy-btn" id="copyBtn" onclick="copySig()">
+<!-- ONE-TAP INSTALL BUTTON -->
+<button class="copy-btn" id="copyBtn" onclick="installSig()">
   <div class="btn-inner">
     <div class="btn-left">
       <div class="btn-dot">
@@ -373,29 +396,38 @@ body {
         <div class="btn-dot-core"></div>
       </div>
       <div>
-        <div class="btn-text" id="btnText">Tap to Copy Signature</div>
-        <div class="btn-sub" id="btnSub">Settings → Mail → Signature → Paste</div>
+        <div class="btn-text" id="btnText">Install Signature</div>
+        <div class="btn-sub" id="btnSub">One tap — copies & opens Mail settings</div>
       </div>
     </div>
     <div class="btn-arrow" id="btnArrow">→</div>
   </div>
 </button>
 
-<!-- STEPS -->
-<div class="steps">
-  <div class="steps-header">// After Tapping</div>
-  <div class="step active"><span class="n">01</span><span>Tap the button above ☝️</span></div>
-  <div class="step"><span class="n">02</span><span>Settings → Mail → Signature</span></div>
-  <div class="step"><span class="n">03</span><span>Tap field → hold → Paste</span></div>
-  <div class="step"><span class="n">04</span><span>Send yourself a test email</span></div>
+<!-- REDIRECT NOTICE (shown after tap on iOS) -->
+<div class="redirect-notice" id="redirectNotice">
+  <div class="redirect-icon">⚙️</div>
+  <div class="redirect-text">
+    Opening Mail Settings...
+    <span>Signature copied — tap your account → hold → Paste</span>
+  </div>
+</div>
+
+<!-- STEPS (visible before tap, updates after) -->
+<div class="steps" id="stepsBlock">
+  <div class="steps-header" id="stepsHeader">// How it works</div>
+  <div class="step active" id="step1"><span class="n">01</span><span class="check">✓ </span><span class="label">Tap "Install Signature"</span></div>
+  <div class="step" id="step2"><span class="n">02</span><span class="check">✓ </span><span class="label">Signature copies to clipboard</span></div>
+  <div class="step" id="step3"><span class="n">03</span><span class="check">✓ </span><span class="label">Mail settings opens automatically</span></div>
+  <div class="step" id="step4"><span class="n">04</span><span class="label">Tap your account → hold field → Paste</span></div>
 </div>
 
 <div class="preview-label">// Preview</div>
 
 <!-- MODE TOGGLE -->
 <div class="mode-toggle">
-  <button class="mode-btn dark-btn active-mode" onclick="setMode('dark')">Dark Mode</button>
-  <button class="mode-btn light-btn" onclick="setMode('light')">Light Mode</button>
+  <button class="mode-btn active-mode" id="darkBtn" onclick="setMode('dark')">Dark Mode</button>
+  <button class="mode-btn" id="lightBtn" onclick="setMode('light')">Light Mode</button>
 </div>
 
 <!-- SIGNATURE PREVIEW -->
@@ -442,12 +474,9 @@ body {
 <!-- ═══════════════════════════════════════════════════════
      HIDDEN SIGNATURE HTML — Dark/Light Adaptive
 
-     Strategy:
-     • Inline styles = light-mode defaults (most email is read on white)
-     • <style> block with @media (prefers-color-scheme: dark) overrides
-     • Supported by: Apple Mail, iOS Mail, Outlook (macOS/iOS),
-       Hey, Fastmail, Yahoo, AOL
-     • Gmail strips <style> → falls back to light-mode inline styles (safe)
+     • Inline styles = light-mode defaults (Gmail-safe)
+     • @media (prefers-color-scheme: dark) for Apple Mail,
+       iOS Mail, Outlook macOS/iOS, Yahoo, Fastmail, Hey
      ═══════════════════════════════════════════════════════ -->
 <div id="sig-source" style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">
 <div>
@@ -504,29 +533,64 @@ body {
 </div>
 
 <script>
+/* ── Platform detection ── */
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+              (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isAndroid = /Android/i.test(navigator.userAgent);
+const isMac = /Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints === 0;
+
+/* ── Deep links to mail signature settings ── */
+const MAIL_SETTINGS = {
+  ios:     'App-prefs:root=MAIL',           // iOS Settings → Mail
+  android: 'intent://com.google.android.gm/#Intent;scheme=android-app;end',
+  mac:     'x-apple.systempreferences:com.apple.preference.internet-accounts'
+};
+
+/* ── Mode toggle ── */
 function setMode(mode) {
   const preview = document.getElementById('sigPreview');
-  const darkBtn = document.querySelector('.dark-btn');
-  const lightBtn = document.querySelector('.light-btn');
-
   preview.classList.remove('dark', 'light');
   preview.classList.add(mode);
-
-  darkBtn.classList.toggle('active-mode', mode === 'dark');
-  lightBtn.classList.toggle('active-mode', mode === 'light');
+  document.getElementById('darkBtn').classList.toggle('active-mode', mode === 'dark');
+  document.getElementById('lightBtn').classList.toggle('active-mode', mode === 'light');
 }
 
-async function copySig() {
-  const btn    = document.getElementById('copyBtn');
-  const text   = document.getElementById('btnText');
-  const sub    = document.getElementById('btnSub');
-  const arrow  = document.getElementById('btnArrow');
-  const sigHTML = document.getElementById('sig-source').innerHTML;
+/* ── Step progress animation ── */
+function markStep(id, delay) {
+  return new Promise(resolve => {
+    setTimeout(() => {
+      const el = document.getElementById(id);
+      el.classList.remove('active');
+      el.classList.add('done');
+      resolve();
+    }, delay);
+  });
+}
 
+function activateStep(id, delay) {
+  setTimeout(() => {
+    document.getElementById(id).classList.add('active');
+  }, delay);
+}
+
+/* ── Main install function ── */
+async function installSig() {
+  const btn   = document.getElementById('copyBtn');
+  const text  = document.getElementById('btnText');
+  const sub   = document.getElementById('btnSub');
+  const arrow = document.getElementById('btnArrow');
+  const sigHTML = document.getElementById('sig-source').innerHTML;
+  const notice  = document.getElementById('redirectNotice');
+  const steps   = document.getElementById('stepsBlock');
+  const header  = document.getElementById('stepsHeader');
+
+  /* — Step 1: Copy to clipboard — */
+  let copied = false;
   try {
     if (navigator.clipboard && window.ClipboardItem) {
       const blob = new Blob([sigHTML], { type: 'text/html' });
       await navigator.clipboard.write([new ClipboardItem({ 'text/html': blob })]);
+      copied = true;
     } else {
       const el = document.getElementById('sig-source');
       el.style.position = 'static';
@@ -538,23 +602,80 @@ async function copySig() {
       document.execCommand('copy');
       sel.removeAllRanges();
       el.style.position = 'absolute';
+      copied = true;
     }
-
-    btn.classList.add('success');
-    text.textContent  = '✓ Copied!';
-    sub.textContent   = 'Now go to Settings → Mail → Signature → Paste';
-    arrow.textContent = '✓';
-
-    setTimeout(() => {
-      btn.classList.remove('success');
-      text.textContent  = 'Tap to Copy Signature';
-      sub.textContent   = 'Settings → Mail → Signature → Paste';
-      arrow.textContent = '→';
-    }, 4000);
-
   } catch(e) {
     text.textContent = 'Long press preview → Select All → Copy';
+    sub.textContent  = 'Clipboard access denied by browser';
+    return;
   }
+
+  if (!copied) return;
+
+  /* — Update button — */
+  btn.classList.add('success');
+  text.textContent  = '✓ Signature Copied';
+  arrow.textContent = '✓';
+
+  /* — Animate steps — */
+  header.textContent = '// Installing...';
+  await markStep('step1', 0);
+  await markStep('step2', 300);
+
+  /* — Step 2: Open mail settings — */
+  if (isIOS) {
+    await markStep('step3', 300);
+    activateStep('step4', 400);
+
+    sub.textContent = 'Opening Settings → Mail...';
+    notice.classList.add('show');
+
+    /* Brief delay so user sees the confirmation, then redirect */
+    setTimeout(() => {
+      window.location.href = MAIL_SETTINGS.ios;
+    }, 800);
+
+  } else if (isMac) {
+    await markStep('step3', 300);
+    activateStep('step4', 400);
+
+    sub.textContent = 'Opening Internet Accounts...';
+    notice.classList.add('show');
+
+    setTimeout(() => {
+      window.location.href = MAIL_SETTINGS.mac;
+    }, 800);
+
+  } else {
+    /* Non-iOS/Mac: can't deep-link, show manual instructions */
+    document.getElementById('step3').querySelector('.label').textContent =
+      'Open your email app → Settings → Signature';
+    activateStep('step3', 400);
+    activateStep('step4', 400);
+
+    sub.textContent  = 'Copied! Now open your email app settings';
+    header.textContent = '// Almost done';
+
+    /* Reset button after delay */
+    setTimeout(() => {
+      btn.classList.remove('success');
+      text.textContent  = 'Tap to Copy Again';
+      sub.textContent   = 'Signature is on your clipboard';
+      arrow.textContent = '→';
+    }, 5000);
+    return;
+  }
+
+  /* — Reset for iOS/Mac after return — */
+  setTimeout(() => {
+    btn.classList.remove('success');
+    text.textContent  = 'Tap to Copy Again';
+    sub.textContent   = 'If you need to re-copy';
+    arrow.textContent = '→';
+    notice.classList.remove('show');
+    header.textContent = '// Done';
+    markStep('step4', 0);
+  }, 10000);
 }
 </script>
 
