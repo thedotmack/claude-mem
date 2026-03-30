@@ -1,12 +1,24 @@
+import { homedir } from 'os'
 import path from 'path';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
 
 /**
+ * Expand leading ~ to the user's home directory.
+ * Handles "~", "~/", and "~/subpath" but not "~user/" (which is rare in cwd).
+ */
+function expandTilde(p: string): string {
+  if (p === '~' || p.startsWith('~/')) {
+    return p.replace(/^~/, homedir())
+  }
+  return p
+}
+
+/**
  * Extract project name from working directory path
- * Handles edge cases: null/undefined cwd, drive roots, trailing slashes
+ * Handles edge cases: null/undefined cwd, drive roots, trailing slashes, unexpanded ~
  *
- * @param cwd - Current working directory (absolute path)
+ * @param cwd - Current working directory (absolute path, or ~-prefixed path)
  * @returns Project name or "unknown-project" if extraction fails
  */
 export function getProjectName(cwd: string | null | undefined): string {
@@ -15,8 +27,11 @@ export function getProjectName(cwd: string | null | undefined): string {
     return 'unknown-project';
   }
 
+  // Expand leading ~ before path operations
+  const expanded = expandTilde(cwd)
+
   // Extract basename (handles trailing slashes automatically)
-  const basename = path.basename(cwd);
+  const basename = path.basename(expanded);
 
   // Edge case: Drive roots on Windows (C:\, J:\) or Unix root (/)
   // path.basename('C:\') returns '' (empty string)
@@ -69,7 +84,8 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
     return { primary, parent: null, isWorktree: false, allProjects: [primary] };
   }
 
-  const worktreeInfo = detectWorktree(cwd);
+  const expandedCwd = expandTilde(cwd);
+  const worktreeInfo = detectWorktree(expandedCwd);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
     // In a worktree: include parent first for chronological ordering
