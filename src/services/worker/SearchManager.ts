@@ -895,10 +895,10 @@ export class SearchManager {
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search (Chroma + SQLite)', {});
 
-      // Build Chroma where filter for project scoping
-      let whereFilter: Record<string, any> | undefined;
+      // Build Chroma where filter for doc_type and project scoping
+      let whereFilter: Record<string, any> = { doc_type: 'observation' };
       if (options.project) {
-        whereFilter = { project: options.project };
+        whereFilter = { $and: [whereFilter, { project: options.project }] };
       }
 
       // Step 1: Chroma semantic search (top 100)
