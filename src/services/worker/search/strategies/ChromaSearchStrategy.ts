@@ -98,8 +98,11 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       });
 
       // Step 2b: Optionally rerank with Flashrank cross-encoder
+      let wasReranked = false;
       if (recentItems.length > 1 && query) {
-        recentItems = await this.rerank(query, recentItems);
+        const rerankResult = await this.rerank(query, recentItems);
+        recentItems = rerankResult.items;
+        wasReranked = rerankResult.reranked;
       }
 
       // Step 3: Categorize by document type
@@ -109,16 +112,20 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         searchPrompts
       });
 
-      // Step 4: Hydrate from SQLite with additional filters
+      // Step 4: Hydrate from SQLite with additional filters.
+      // When reranked, omit limit from SQL so top-ranked items aren't dropped
+      // by the date-based ORDER BY + LIMIT before we can restore reranked order.
+      const hydrateLimit = wasReranked ? undefined : limit;
+
       if (categorized.obsIds.length > 0) {
-        const obsOptions = { type: obsType, concepts, files, orderBy, limit, project };
+        const obsOptions = { type: obsType, concepts, files, orderBy, limit: hydrateLimit, project };
         observations = this.sessionStore.getObservationsByIds(categorized.obsIds, obsOptions);
       }
 
       if (categorized.sessionIds.length > 0) {
         sessions = this.sessionStore.getSessionSummariesByIds(categorized.sessionIds, {
           orderBy,
-          limit,
+          limit: hydrateLimit,
           project
         });
       }
@@ -126,9 +133,25 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       if (categorized.promptIds.length > 0) {
         prompts = this.sessionStore.getUserPromptsByIds(categorized.promptIds, {
           orderBy,
-          limit,
+          limit: hydrateLimit,
           project
         });
+      }
+
+      // Step 4b: Restore reranked order after SQL hydration, then apply limit.
+      // The hydration methods apply ORDER BY created_at_epoch, which discards
+      // the reranked relevance order. Re-sort using the categorized ID arrays
+      // (which preserve reranked order from categorizeByDocType), then trim.
+      if (wasReranked) {
+        observations = this.restoreIdOrder(observations, categorized.obsIds);
+        sessions = this.restoreIdOrder(sessions, categorized.sessionIds);
+        prompts = this.restoreIdOrder(prompts, categorized.promptIds);
+
+        if (limit) {
+          observations = observations.slice(0, limit);
+          sessions = sessions.slice(0, limit);
+          prompts = prompts.slice(0, limit);
+        }
       }
 
       logger.debug('SEARCH', 'ChromaSearchStrategy: Hydrated results', {
@@ -169,10 +192,10 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
   private async rerank(
     query: string,
     items: Array<{ id: number; meta: ChromaMetadata }>
-  ): Promise<Array<{ id: number; meta: ChromaMetadata }>> {
+  ): Promise<{ items: Array<{ id: number; meta: ChromaMetadata }>; reranked: boolean }> {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     if (String(settings.CLAUDE_MEM_RERANK_ENABLED).toLowerCase() !== 'true') {
-      return items;
+      return { items, reranked: false };
     }
 
     const rerankUrl = settings.CLAUDE_MEM_RERANK_URL || 'http://127.0.0.1:37778';
@@ -206,7 +229,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         logger.warn('SEARCH', 'Flashrank reranker returned non-OK status', {
           status: response.status
         });
-        return items;
+        return { items, reranked: false };
       }
 
       const data = await response.json() as { results: Array<{ id: string; score: number }>; latency_ms: number };
@@ -222,16 +245,18 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         scoreMap.set(Number(result.id), result.score);
       }
 
-      return items
+      const rerankedItems = items
         .slice()
         .sort((a, b) => (scoreMap.get(b.id) ?? 0) - (scoreMap.get(a.id) ?? 0));
+
+      return { items: rerankedItems, reranked: true };
 
     } catch (error) {
       // Non-fatal: reranker is optional. Fall back to Chroma ordering.
       logger.debug('SEARCH', 'Flashrank reranker unavailable, using Chroma ordering', {
         error: (error as Error).message
       });
-      return items;
+      return { items, reranked: false };
     }
   }
 
@@ -306,6 +331,21 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
   /**
    * Categorize IDs by document type
    */
+  /**
+   * Re-sort hydrated results to match the order of the given ID array.
+   * Used after SQL hydration to restore reranked relevance order, since
+   * the SQL queries apply ORDER BY created_at_epoch which discards it.
+   */
+  private restoreIdOrder<T extends { id: number }>(items: T[], orderedIds: number[]): T[] {
+    if (orderedIds.length === 0) return items;
+    const positionMap = new Map(orderedIds.map((id, index) => [id, index]));
+    return [...items].sort((a, b) => {
+      const posA = positionMap.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+      const posB = positionMap.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+      return posA - posB;
+    });
+  }
+
   private categorizeByDocType(
     items: Array<{ id: number; meta: ChromaMetadata }>,
     options: {
