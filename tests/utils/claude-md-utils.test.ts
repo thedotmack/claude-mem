@@ -37,7 +37,8 @@ import {
   replaceTaggedContent,
   formatTimelineForClaudeMd,
   writeClaudeMdToFolder,
-  updateFolderClaudeMdFiles
+  updateFolderClaudeMdFiles,
+  getTargetFilename
 } from '../../src/utils/claude-md-utils.js';
 
 let tempDir: string;
@@ -1000,5 +1001,115 @@ describe('issue #912 - skip unsafe directories for CLAUDE.md generation', () => 
     );
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('getTargetFilename', () => {
+  it('should return CLAUDE.md by default', () => {
+    const settings = { CLAUDE_MEM_FOLDER_USE_LOCAL_MD: 'false' } as any;
+    expect(getTargetFilename(settings)).toBe('CLAUDE.md');
+  });
+
+  it('should return CLAUDE.local.md when USE_LOCAL_MD is true', () => {
+    const settings = { CLAUDE_MEM_FOLDER_USE_LOCAL_MD: 'true' } as any;
+    expect(getTargetFilename(settings)).toBe('CLAUDE.local.md');
+  });
+
+  it('should return CLAUDE.md when USE_LOCAL_MD is undefined', () => {
+    const settings = {} as any;
+    expect(getTargetFilename(settings)).toBe('CLAUDE.md');
+  });
+});
+
+describe('CLAUDE.local.md support', () => {
+  it('should write CLAUDE.local.md when targetFilename is specified', () => {
+    const folderPath = join(tempDir, 'local-md-test');
+    mkdirSync(folderPath, { recursive: true });
+    const content = '# Recent Activity\n\nTest content';
+
+    writeClaudeMdToFolder(folderPath, content, 'CLAUDE.local.md');
+
+    const localMdPath = join(folderPath, 'CLAUDE.local.md');
+    const regularMdPath = join(folderPath, 'CLAUDE.md');
+
+    expect(existsSync(localMdPath)).toBe(true);
+    expect(existsSync(regularMdPath)).toBe(false);
+
+    const fileContent = readFileSync(localMdPath, 'utf-8');
+    expect(fileContent).toContain('<claude-mem-context>');
+    expect(fileContent).toContain('Test content');
+    expect(fileContent).toContain('</claude-mem-context>');
+  });
+
+  it('should preserve user content in CLAUDE.local.md outside tags', () => {
+    const folderPath = join(tempDir, 'local-preserve-test');
+    mkdirSync(folderPath, { recursive: true });
+
+    const localMdPath = join(folderPath, 'CLAUDE.local.md');
+    const userContent = 'My personal notes\n<claude-mem-context>\nOld content\n</claude-mem-context>\nMore notes';
+    writeFileSync(localMdPath, userContent);
+
+    writeClaudeMdToFolder(folderPath, 'New generated content', 'CLAUDE.local.md');
+
+    const fileContent = readFileSync(localMdPath, 'utf-8');
+    expect(fileContent).toContain('My personal notes');
+    expect(fileContent).toContain('New generated content');
+    expect(fileContent).toContain('More notes');
+    expect(fileContent).not.toContain('Old content');
+  });
+
+  it('should not leave .tmp file after writing CLAUDE.local.md', () => {
+    const folderPath = join(tempDir, 'local-atomic-test');
+    mkdirSync(folderPath, { recursive: true });
+
+    writeClaudeMdToFolder(folderPath, 'Atomic write test', 'CLAUDE.local.md');
+
+    const localMdPath = join(folderPath, 'CLAUDE.local.md');
+    const tempFilePath = `${localMdPath}.tmp`;
+
+    expect(existsSync(localMdPath)).toBe(true);
+    expect(existsSync(tempFilePath)).toBe(false);
+  });
+
+  it('should skip folder when CLAUDE.local.md was read in observation', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['/project/src/utils/CLAUDE.local.md'],
+      'test-project',
+      37777,
+      '/project'
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip folder when either CLAUDE.md or CLAUDE.local.md was read', async () => {
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      [
+        '/project/src/a/CLAUDE.md',          // Skip folder a (regular)
+        '/project/src/b/CLAUDE.local.md',    // Skip folder b (local)
+        '/project/src/c/file.ts'             // Process folder c
+      ],
+      'test-project',
+      37777,
+      '/project'
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
+    expect(callUrl).toContain(encodeURIComponent('/project/src/c'));
+    expect(callUrl).not.toContain(encodeURIComponent('/project/src/a'));
+    expect(callUrl).not.toContain(encodeURIComponent('/project/src/b'));
   });
 });
