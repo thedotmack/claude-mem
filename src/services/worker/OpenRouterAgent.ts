@@ -45,6 +45,9 @@ const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  // Maximum messages to keep in convers
 const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  // ~100k tokens max context (safety limit)
 const CHARS_PER_TOKEN_ESTIMATE = 4;  // Conservative estimate: 1 token = 4 chars
 
+// Fetch timeout for LLM API calls - local models (Ollama) can be slow, so use 5 min default
+const FETCH_TIMEOUT_MS = 5 * 60 * 1000;
+
 // OpenAI-compatible message format
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
@@ -414,16 +417,29 @@ export class OpenRouterAgent {
       headers['X-Title'] = appName || 'claude-mem';
     }
 
-    const response = await fetch(baseUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: 0.3,  // Lower temperature for structured extraction
-        max_tokens: 4096,
-      }),
-    });
+    const fetchController = new AbortController();
+    const fetchTimeout = setTimeout(() => fetchController.abort(), FETCH_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(baseUrl, {
+        method: 'POST',
+        headers,
+        signal: fetchController.signal,
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: 0.3,  // Lower temperature for structured extraction
+          max_tokens: 4096,
+        }),
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new Error(`OpenRouter fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(fetchTimeout);
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
