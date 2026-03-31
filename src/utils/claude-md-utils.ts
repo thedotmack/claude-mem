@@ -475,7 +475,7 @@ export async function updateFolderClaudeMdFiles(
     } catch (error) {
       // Fire-and-forget: log warning but don't fail
       const err = error as Error;
-      logger.error('FOLDER_INDEX', 'Failed to update CLAUDE.md', {
+      logger.error('FOLDER_INDEX', `Failed to update ${targetFilename}`, {
         folderPath,
         errorMessage: err.message,
         errorStack: err.stack
