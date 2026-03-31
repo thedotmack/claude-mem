@@ -16,6 +16,8 @@ import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 interface ChromaDocument {
   id: string;
@@ -96,9 +98,13 @@ export class ChromaSync {
     }
 
     const chromaMcp = ChromaMcpManager.getInstance();
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const embeddingFunction = settings.CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION || 'default';
+
     try {
       await chromaMcp.callTool('chroma_create_collection', {
-        collection_name: this.collectionName
+        collection_name: this.collectionName,
+        ...(embeddingFunction !== 'default' && { embedding_function_name: embeddingFunction }),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
