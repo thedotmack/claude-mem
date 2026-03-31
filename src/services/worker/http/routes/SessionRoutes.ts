@@ -659,12 +659,15 @@ export class SessionRoutes extends BaseRouteHandler {
     // Check if session is in the active sessions map
     const activeSession = this.sessionManager.getSession(sessionDbId);
     if (!activeSession) {
+      // Persist completion even if session is no longer in memory (idempotent update)
+      store.completeSession(sessionDbId);
+
       // Session may not be in memory (already completed or never initialized)
       logger.debug('SESSION', 'session-complete: Session not in active map', {
         contentSessionId,
         sessionDbId
       });
-      res.json({ status: 'skipped', reason: 'not_active' });
+      res.json({ status: 'completed', sessionDbId, reason: 'not_active' });
       return;
     }
 
