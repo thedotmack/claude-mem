@@ -118,7 +118,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
     // Reranking Configuration
     CLAUDE_MEM_RERANK_ENABLED: 'false',        // Disabled by default; requires flashrank-service.py running
-    CLAUDE_MEM_RERANK_URL: 'http://localhost:37778',  // Default port for the Flashrank microservice
+    CLAUDE_MEM_RERANK_URL: 'http://127.0.0.1:37778',  // Default port for the Flashrank microservice
     // Chroma Vector Database Configuration
     CLAUDE_MEM_CHROMA_ENABLED: 'true',         // Set to 'false' to disable Chroma and use SQLite-only search
     CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' uses persistent chroma-mcp via uvx, 'remote' connects to existing server

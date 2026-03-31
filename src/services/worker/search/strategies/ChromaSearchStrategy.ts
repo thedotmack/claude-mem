@@ -171,11 +171,11 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     items: Array<{ id: number; meta: ChromaMetadata }>
   ): Promise<Array<{ id: number; meta: ChromaMetadata }>> {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    if (settings.CLAUDE_MEM_RERANK_ENABLED !== 'true') {
+    if (String(settings.CLAUDE_MEM_RERANK_ENABLED).toLowerCase() !== 'true') {
       return items;
     }
 
-    const rerankUrl = settings.CLAUDE_MEM_RERANK_URL || 'http://localhost:37778';
+    const rerankUrl = settings.CLAUDE_MEM_RERANK_URL || 'http://127.0.0.1:37778';
 
     try {
       // Build passage list from available Chroma metadata fields.

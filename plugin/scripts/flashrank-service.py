@@ -117,16 +117,31 @@ class RerankHandler(BaseHTTPRequestHandler):
         try:
             body = self.rfile.read(content_length)
             data = json.loads(body)
-        except (json.JSONDecodeError, Exception) as e:
-            self._respond(400, {"error": f"invalid JSON: {e}"})
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._respond(400, {"error": "invalid JSON"})
             return
 
-        query = data.get("query", "").strip()
-        passages = data.get("passages", [])
-        top_k = int(data.get("top_k", 20))
+        if not isinstance(data, dict):
+            self._respond(400, {"error": "body must be a JSON object"})
+            return
 
-        if not query:
-            self._respond(400, {"error": "query is required"})
+        query = data.get("query", "")
+        passages = data.get("passages", [])
+        top_k = data.get("top_k", 20)
+
+        if not isinstance(query, str) or not query.strip():
+            self._respond(400, {"error": "query is required and must be a string"})
+            return
+        query = query.strip()
+
+        if not isinstance(passages, list):
+            self._respond(400, {"error": "passages must be an array"})
+            return
+
+        try:
+            top_k = int(top_k)
+        except (TypeError, ValueError):
+            self._respond(400, {"error": "top_k must be an integer"})
             return
 
         if not passages:
@@ -135,8 +150,8 @@ class RerankHandler(BaseHTTPRequestHandler):
 
         # Validate passage format
         for p in passages:
-            if "id" not in p or "text" not in p:
-                self._respond(400, {"error": "each passage must have 'id' and 'text' keys"})
+            if not isinstance(p, dict) or "id" not in p or "text" not in p or not isinstance(p["text"], str):
+                self._respond(400, {"error": "each passage must be an object with 'id' and 'text' string keys"})
                 return
 
         try:
@@ -146,9 +161,9 @@ class RerankHandler(BaseHTTPRequestHandler):
                 f"in {latency_ms:.1f}ms"
             )
             self._respond(200, {"results": results, "latency_ms": latency_ms})
-        except Exception as e:
-            logger.error(f"Rerank failed: {e}", exc_info=True)
-            self._respond(500, {"error": f"rerank failed: {e}"})
+        except Exception:
+            logger.error("Rerank failed", exc_info=True)
+            self._respond(500, {"error": "rerank failed"})
 
     def _respond(self, status: int, data: dict):
         body = json.dumps(data).encode("utf-8")
