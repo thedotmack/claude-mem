@@ -104,7 +104,7 @@ export class ChromaSync {
     try {
       await chromaMcp.callTool('chroma_create_collection', {
         collection_name: this.collectionName,
-        ...(embeddingFunction !== 'default' && { embedding_function_name: embeddingFunction }),
+        ...(embeddingFunction !== 'default' ? { embedding_function_name: embeddingFunction } : {}),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
