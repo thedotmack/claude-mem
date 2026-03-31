@@ -464,12 +464,42 @@ export class SDKAgent {
 
     // 3. Try auto-detection for non-Windows platforms
     try {
-      const claudePath = execSync(
+      let claudePath = execSync(
         process.platform === 'win32' ? 'where claude' : 'which claude',
         { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
       ).trim().split('\n')[0].trim();
 
-      if (claudePath) return claudePath;
+      if (!claudePath) {
+        throw new Error('which claude returned empty');
+      }
+
+      // Detect cmux wrapper: when `which claude` finds a cmux wrapper script
+      // instead of the real Claude binary, resolve the actual executable.
+      // cmux wrappers skip their own directory in PATH search, so we try
+      // known locations where the real Claude binary typically lives.
+      if (claudePath.includes('cmux.app') && claudePath.endsWith('/bin/claude')) {
+        const { existsSync } = require('fs');
+        const { homedir } = require('os');
+        const realPaths = [
+          path.join(homedir(), '.local', 'bin', 'claude'),
+          '/usr/local/bin/claude',
+          '/opt/homebrew/bin/claude',
+        ];
+        for (const p of realPaths) {
+          if (existsSync(p)) {
+            logger.debug('SDK', 'Resolved cmux wrapper to real Claude binary', { wrapper: claudePath, resolved: p });
+            return p;
+          }
+        }
+        // Also try the cmux binary itself if it supports --print mode
+        const cmuxBin = claudePath.replace('/bin/claude', '/bin/cmux');
+        if (existsSync(cmuxBin)) {
+          logger.debug('SDK', 'Falling back to cmux binary', { cmuxBin });
+          return cmuxBin;
+        }
+      }
+
+      return claudePath;
     } catch (error) {
       // [ANTI-PATTERN IGNORED]: Fallback behavior - which/where failed, continue to throw clear error
       logger.debug('SDK', 'Claude executable auto-detection failed', {}, error as Error);

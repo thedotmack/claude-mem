@@ -671,6 +671,9 @@ export class SessionRoutes extends BaseRouteHandler {
     // Complete the session (removes from active sessions map)
     await this.completionHandler.completeByDbId(sessionDbId);
 
+    // Mark session as completed in the database so sdk_sessions.status reflects reality
+    store.completeSession(sessionDbId);
+
     logger.info('SESSION', 'Session completed via API', {
       contentSessionId,
       sessionDbId

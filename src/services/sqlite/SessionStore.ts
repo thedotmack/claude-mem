@@ -1461,8 +1461,19 @@ export class SessionStore {
     return row.id;
   }
 
-
-
+  /**
+   * Mark a session as completed in the database.
+   * Called by /api/sessions/complete when the session-complete hook fires.
+   * Updates status='completed' and records completed_at timestamps.
+   */
+  completeSession(sessionDbId: number): void {
+    const now = new Date();
+    this.db.prepare(`
+      UPDATE sdk_sessions
+      SET status = 'completed', completed_at = ?, completed_at_epoch = ?
+      WHERE id = ? AND status = 'active'
+    `).run(now.toISOString(), now.getTime(), sessionDbId);
+  }
 
   /**
    * Save a user prompt
