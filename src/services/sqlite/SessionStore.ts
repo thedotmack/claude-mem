@@ -14,6 +14,7 @@ import {
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
 import { computeObservationContentHash, findDuplicateObservation } from './observations/store.js';
+import { parseFileList } from './observations/files.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -1307,20 +1308,10 @@ export class SessionStore {
 
     for (const row of rows) {
       // Parse files_read
-      if (row.files_read) {
-        const files = JSON.parse(row.files_read);
-        if (Array.isArray(files)) {
-          files.forEach(f => filesReadSet.add(f));
-        }
-      }
+      parseFileList(row.files_read).forEach(f => filesReadSet.add(f));
 
       // Parse files_modified
-      if (row.files_modified) {
-        const files = JSON.parse(row.files_modified);
-        if (Array.isArray(files)) {
-          files.forEach(f => filesModifiedSet.add(f));
-        }
-      }
+      parseFileList(row.files_modified).forEach(f => filesModifiedSet.add(f));
     }
 
     return {
