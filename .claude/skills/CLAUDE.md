@@ -23,6 +23,18 @@ Manages semantic versioning for the claude-mem project itself. Handles updating 
 
 **Usage**: Only for claude-mem maintainers releasing new versions.
 
+### mcp-builder
+Orchestrator for building high-quality MCP servers. Guides through research, implementation, review, and evaluation phases with comprehensive reference material.
+
+**Structure**:
+- `mcp-builder/mcp-builder.md` - Main orchestrator (4-phase workflow)
+- `mcp-builder/reference/mcp_best_practices.md` - Universal MCP guidelines
+- `mcp-builder/reference/node_mcp_server.md` - TypeScript/Node implementation guide
+- `mcp-builder/reference/python_mcp_server.md` - Python/FastMCP implementation guide
+- `mcp-builder/reference/evaluation.md` - Evaluation creation guide
+
+**Usage**: For anyone building or improving MCP servers that integrate external APIs.
+
 ## Adding New Skills
 
 **For claude-mem development** → Add to `.claude/skills/`
