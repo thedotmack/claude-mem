@@ -86,8 +86,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; node \"$_R/scripts/bun-runner.js\" \"$_R/scripts/worker-service.cjs\" hook claude-code session-complete",
-            "timeout": 30
+            "command": "node -e \"let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const{sessionId:s}=JSON.parse(d);if(!s){process.exit(0)}const r=require('http').request({hostname:'127.0.0.1',port:37777,path:'/api/sessions/complete',method:'POST',headers:{'Content-Type':'application/json'}},()=>process.exit(0));r.on('error',()=>process.exit(0));r.end(JSON.stringify({contentSessionId:s}));setTimeout(()=>process.exit(0),3000)}catch{process.exit(0)}})\"",
+            "timeout": 5
           }
         ]
       }

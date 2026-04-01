@@ -2,6 +2,55 @@
 
 All notable changes to claude-mem.
 
+## [v10.6.3] - 2026-03-29
+
+## v10.6.3 — Critical Patch Release
+
+### Bug Fixes
+
+- **Fix MCP server crash**: Removed erroneous `import.meta.url` ESM-compat banner from CJS files that caused Node.js startup failures
+- **Fix 7 critical bugs** affecting all non-dev-machine users and Windows:
+  - Hook registration paths corrected for plugin distribution
+  - Worker service spawn handling hardened for Windows
+  - Environment sanitization for cross-platform compatibility
+  - ProcessManager Windows spawn catch block improvements
+  - SessionEnd inline hook exemption in regression tests
+  - `summarize.ts` warning log now includes `sessionId` for triage
+- **CodeRabbit review feedback** addressed from PR #1518
+
+### Improvements
+
+- **Gemini CLI integration**: Strip ANSI color codes from timeline display, provide markdown fallback
+
+### Files Changed
+
+- `plugin/hooks/hooks.json`
+- `plugin/scripts/mcp-server.cjs`
+- `plugin/scripts/worker-service.cjs`
+- `scripts/build-hooks.js`
+- `src/cli/handlers/summarize.ts`
+- `src/services/infrastructure/ProcessManager.ts`
+- `src/services/worker-service.ts`
+- `src/supervisor/env-sanitizer.ts`
+- `tests/infrastructure/plugin-distribution.test.ts`
+- `tests/supervisor/env-sanitizer.test.ts`
+
+## [v10.6.2] - 2026-03-21
+
+## fix: Activity spinner stuck spinning forever
+
+The viewer UI activity spinner would spin indefinitely because `isAnySessionProcessing()` queried all pending/processing messages in the database globally — including orphaned messages from dead sessions that no generator would ever process. These orphans caused `isProcessing=true` forever.
+
+### Changes
+
+- Scoped `isAnySessionProcessing()` and `hasPendingMessages()` to only check sessions in the active in-memory Map, so orphaned DB messages no longer affect the spinner
+- Added `terminateSession()` method enforcing a restart-or-terminate invariant — every generator exit must either restart or fully clean up
+- Fixed 3 zombie paths in the `.finally()` handler that previously left sessions alive in memory with no generator running
+- Fixed idle-timeout race condition where fresh messages arriving between idle abort and cleanup could be silently dropped
+- Removed redundant bare `isProcessing: true` broadcast and eliminated double-iteration in `broadcastProcessingStatus()`
+- Replaced inline `require()` with proper accessor via `sessionManager.getPendingMessageStore()`
+- Added 8 regression tests for session termination invariant
+
 ## [v10.6.1] - 2026-03-18
 
 ### New Features
@@ -1073,48 +1122,4 @@ This release contains a significant refactoring of `worker-service.ts`, removing
 - Added Anti-Pattern Czar Generalization Analysis report
 - Updated README with $CMEM links and contract address
 - Added comprehensive cleanup and validation plans for worker-service.ts
-
-## [v9.0.4] - 2026-01-10
-
-## What's New
-
-This release adds the `/do` and `/make-plan` development commands to the plugin distribution, making them available to all users who install the plugin from the marketplace.
-
-### Features
-
-- **Development Commands Now Distributed with Plugin** (#666)
-  - `/do` command - Execute tasks with structured workflow
-  - `/make-plan` command - Create detailed implementation plans
-  - Commands now available at `plugin/commands/` for all users
-
-### Documentation
-
-- Revised Arabic README for clarity and corrections (#661)
-
-### Full Changelog
-
-https://github.com/thedotmack/claude-mem/compare/v9.0.3...v9.0.4
-
-## [v9.0.3] - 2026-01-10
-
-## Bug Fixes
-
-### Hook Framework JSON Status Output (#655)
-
-Fixed an issue where the worker service startup wasn't producing proper JSON status output for the Claude Code hook framework. This caused hooks to appear stuck or unresponsive during worker initialization.
-
-**Changes:**
-- Added `buildStatusOutput()` function for generating structured JSON status output
-- Worker now outputs JSON with `status`, `message`, and `continue` fields on stdout
-- Proper exit code 0 ensures Windows Terminal compatibility (no tab accumulation)
-- `continue: true` flag ensures Claude Code continues processing after hook execution
-
-**Technical Details:**
-- Extracted status output generation into a pure, testable function
-- Added comprehensive test coverage in `tests/infrastructure/worker-json-status.test.ts`
-- 23 passing tests covering unit, CLI integration, and hook framework compatibility
-
-## Housekeeping
-
-- Removed obsolete error handling baseline file
 
