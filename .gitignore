@@ -37,3 +37,7 @@ src/ui/viewer.html
 .claude/session-plan.md
 .octo/
 .gstack/
+
+# Benchmark
+benchmark/keys.env
+benchmark/results/

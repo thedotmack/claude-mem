@@ -1,0 +1,33 @@
+dimensions:
+  functionality:
+    weight: 0.30
+    anchors:
+      1: "Does not start"
+      3: "Starts, core feature broken"
+      5: "Core features work"
+      7: "All features work, minor bugs"
+      9: "All features work, edge cases handled"
+  code_quality:
+    weight: 0.25
+    anchors:
+      1: "Unreadable, no structure"
+      3: "Some structure, major issues"
+      5: "Clean, follows conventions"
+      7: "Well-organized, tested"
+      9: "Exemplary, well-tested, documented"
+  ux:
+    weight: 0.20
+    anchors:
+      1: "Unusable"
+      3: "Confusing but functional"
+      5: "Clear, standard patterns"
+      7: "Polished, thoughtful"
+      9: "Delightful, feels designed"
+  completeness:
+    weight: 0.25
+    anchors:
+      1: "Less than 20% of spec"
+      3: "About 40% of spec"
+      5: "About 70% of spec"
+      7: "About 90% of spec"
+      9: "100% of spec, plus extras"

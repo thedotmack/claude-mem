@@ -1,0 +1,220 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://claude-mem.ai/benchmark/agent-result.schema.json",
+  "title": "Agent Benchmark Result",
+  "description": "Schema for a single agent's benchmark run result in the 200-agent benchmark.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "agent_id",
+    "arm",
+    "prompt_id",
+    "prompt_category",
+    "model_version",
+    "tokens",
+    "cost_usd",
+    "wall_clock_seconds",
+    "completion_status",
+    "smoke_tests",
+    "rubric_scores",
+    "judge_blinded",
+    "industry_baseline",
+    "raw_log_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version for forward compatibility."
+    },
+    "agent_id": {
+      "type": "string",
+      "description": "Unique identifier for this agent run, e.g. cmem-07-2.",
+      "pattern": "^[a-z0-9-]+$"
+    },
+    "arm": {
+      "type": "string",
+      "enum": ["claude-mem", "vanilla"],
+      "description": "Which experimental arm this agent belongs to."
+    },
+    "prompt_id": {
+      "type": "string",
+      "description": "Identifier matching the prompt filename without extension.",
+      "pattern": "^[0-9]{2}-[a-z0-9-]+$"
+    },
+    "prompt_category": {
+      "type": "string",
+      "enum": ["web", "cli", "api", "data", "fullstack", "frontend"],
+      "description": "Category of the prompt task."
+    },
+    "model_version": {
+      "type": "string",
+      "description": "Exact model version string used for this run."
+    },
+    "tokens": {
+      "type": "object",
+      "required": ["input", "output", "cache_creation", "cache_read", "total"],
+      "properties": {
+        "input": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of input tokens consumed."
+        },
+        "output": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of output tokens generated."
+        },
+        "cache_creation": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of tokens written to prompt cache."
+        },
+        "cache_read": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of tokens read from prompt cache."
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total tokens (input + output + cache_creation + cache_read)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "cost_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Total API cost in USD for this agent run."
+    },
+    "wall_clock_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Wall-clock duration of the agent run in seconds."
+    },
+    "completion_status": {
+      "type": "string",
+      "enum": ["DONE", "CRASHED", "KILLED", "INCOMPLETE"],
+      "description": "How the agent run terminated."
+    },
+    "smoke_tests": {
+      "type": "object",
+      "required": ["total", "passed", "failed", "skipped", "results"],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total number of smoke tests defined for this prompt."
+        },
+        "passed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of smoke tests that passed."
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of smoke tests that failed."
+        },
+        "skipped": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of smoke tests that were skipped."
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["test_name", "status"],
+            "properties": {
+              "test_name": {
+                "type": "string",
+                "description": "Human-readable name of the smoke test."
+              },
+              "status": {
+                "type": "string",
+                "enum": ["passed", "failed", "skipped"],
+                "description": "Outcome of this individual smoke test."
+              },
+              "detail": {
+                "type": "string",
+                "description": "Optional detail or error message for this test."
+              }
+            },
+            "additionalProperties": false
+          },
+          "description": "Individual smoke test results."
+        }
+      },
+      "additionalProperties": false
+    },
+    "rubric_scores": {
+      "type": "object",
+      "required": ["functionality", "code_quality", "ux", "completeness"],
+      "properties": {
+        "functionality": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9,
+          "description": "Functionality score (1-9)."
+        },
+        "code_quality": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9,
+          "description": "Code quality score (1-9)."
+        },
+        "ux": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9,
+          "description": "User experience score (1-9)."
+        },
+        "completeness": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9,
+          "description": "Completeness score (1-9)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "judge_blinded": {
+      "type": "boolean",
+      "description": "Whether the judge was blinded to which arm produced this result."
+    },
+    "industry_baseline": {
+      "type": "object",
+      "required": ["source", "reference_cost_usd", "reference_duration_seconds", "reference_architecture"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["anthropic", "openai", "none"],
+          "description": "Which company's benchmark this prompt is compared against."
+        },
+        "reference_cost_usd": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Reference cost from the industry baseline, or null if unavailable."
+        },
+        "reference_duration_seconds": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Reference duration from the industry baseline, or null if unavailable."
+        },
+        "reference_architecture": {
+          "type": ["string", "null"],
+          "description": "Description of the architecture used in the industry baseline, or null if unavailable."
+        }
+      },
+      "additionalProperties": false
+    },
+    "raw_log_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 hash of the raw transcript log for integrity verification."
+    }
+  },
+  "additionalProperties": false
+}
