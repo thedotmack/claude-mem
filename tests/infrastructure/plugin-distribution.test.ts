@@ -97,6 +97,25 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
       }
     }
   });
+
+  it('should try cache path before marketplaces fallback in all hook commands (#1533)', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+    const cachePath = '$HOME/.claude/plugins/cache/thedotmack/claude-mem';
+    const marketplacesPath = '$HOME/.claude/plugins/marketplaces/thedotmack/plugin';
+
+    for (const [eventName, matchers] of Object.entries(parsed.hooks)) {
+      for (const matcher of matchers as any[]) {
+        for (const hook of matcher.hooks) {
+          if (hook.type === 'command') {
+            expect(hook.command).toContain(cachePath);
+            // Cache lookup must appear before the final marketplaces fallback
+            expect(hook.command.indexOf(cachePath)).toBeLessThan(hook.command.indexOf(marketplacesPath));
+          }
+        }
+      }
+    }
+  });
 });
 
 describe('Plugin Distribution - package.json Files Field', () => {
