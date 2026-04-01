@@ -1,0 +1,20 @@
+{
+  "name": "benchmark-orchestrator",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "bun run src/orchestrator.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "dockerode": "^4.0.0",
+    "yaml": "^2.3.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  }
+}
