@@ -159,15 +159,24 @@ const stdinData = await collectStdin();
 
 // Spawn Bun with the provided script and args
 // Use spawn (not spawnSync) to properly handle stdio
-// Use shell mode on Windows because npm-installed bun is a .cmd/.sh script,
-// not a native executable. Without shell:true, spawn() fails with ENOENT.
+// On Windows, use cmd.exe to execute bun.cmd since npm-installed bun is a batch file
 // Use windowsHide to prevent a visible console window from spawning on Windows
-const child = spawn(bunPath, args, {
+const spawnOptions = {
   stdio: [stdinData ? 'pipe' : 'ignore', 'inherit', 'inherit'],
   windowsHide: true,
-  shell: IS_WINDOWS,
   env: process.env
-});
+};
+
+let spawnCmd = bunPath;
+let spawnArgs = args;
+
+if (IS_WINDOWS) {
+  // On Windows, bun.cmd must be executed via cmd /c
+  spawnCmd = 'cmd';
+  spawnArgs = ['/c', bunPath, ...args];
+}
+
+const child = spawn(spawnCmd, spawnArgs, spawnOptions);
 
 // Write buffered stdin to child's pipe, then close it so the child sees EOF
 if (stdinData && child.stdin) {
