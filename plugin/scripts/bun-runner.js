@@ -55,6 +55,13 @@ function findBun() {
   });
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
+    // On Windows, prefer bun.cmd over bun (bun is a shell script, bun.cmd is the Windows batch file)
+    if (IS_WINDOWS) {
+      const bunCmdPath = pathCheck.stdout.split('\n').find(line => line.trim().endsWith('bun.cmd'));
+      if (bunCmdPath) {
+        return bunCmdPath.trim();
+      }
+    }
     return 'bun'; // Found in PATH
   }
 
