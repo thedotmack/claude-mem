@@ -18,8 +18,6 @@ import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
-import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
@@ -130,6 +128,7 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortController = new AbortController();
       session.lastGeneratorActivity = Date.now();
       // Start a fresh generator
+      this.applyTierRouting(session);
       this.spawnInProgress.set(sessionDbId, true);
       this.startGeneratorWithProvider(session, selectedProvider, 'stale-recovery');
       return;
@@ -287,6 +286,7 @@ export class SessionRoutes extends BaseRouteHandler {
                 this.crashRecoveryScheduled.delete(sessionDbId);
                 const stillExists = this.sessionManager.getSession(sessionDbId);
                 if (stillExists && !stillExists.generatorPromise) {
+                  this.applyTierRouting(stillExists);
                   this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
                 }
               }, backoffMs);
@@ -835,6 +835,10 @@ export class SessionRoutes extends BaseRouteHandler {
       session.modelOverride = undefined;
       return;
     }
+
+    // Clear stale override before re-evaluating — prevents previous tier
+    // from persisting when queue composition changes between spawns.
+    session.modelOverride = undefined;
 
     const pendingStore = this.sessionManager.getPendingMessageStore();
     const pending = pendingStore.peekPendingTypes(session.sessionDbId);
