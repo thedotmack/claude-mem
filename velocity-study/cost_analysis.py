@@ -196,12 +196,7 @@ def generate_cost_summary(all_projects, observer_project_rows):
 
     lines.append("")
 
-    # --- Average cost per session: claude-mem vs no-claude-mem ---
-    lines.append("-" * 72)
-    lines.append("AVERAGE COST PER SESSION (claude-mem vs no-claude-mem)")
-    lines.append("-" * 72)
-
-    # Use user projects only (exclude observer) for the cohort comparison
+    # Use user projects only (exclude observer) for comparisons
     user_rows = []
     for pid, project_rows in all_projects.items():
         user_rows.extend(project_rows)
@@ -209,97 +204,140 @@ def generate_cost_summary(all_projects, observer_project_rows):
     mem_sessions = [r for r in user_rows if r["has_claude_mem"]]
     no_mem_sessions = [r for r in user_rows if not r["has_claude_mem"]]
 
-    if mem_sessions:
-        avg_mem = sum(r["cost_dollars"] for r in mem_sessions) / len(mem_sessions)
-        lines.append(
-            f"  claude-mem sessions:    ${avg_mem:.4f}/session  "
-            f"({len(mem_sessions)} sessions)"
-        )
-    if no_mem_sessions:
-        avg_no_mem = sum(r["cost_dollars"] for r in no_mem_sessions) / len(no_mem_sessions)
-        lines.append(
-            f"  no-claude-mem sessions: ${avg_no_mem:.4f}/session  "
-            f"({len(no_mem_sessions)} sessions)"
-        )
-
-    if mem_sessions and no_mem_sessions:
-        diff = avg_mem - avg_no_mem
-        pct = (diff / avg_no_mem) * 100 if avg_no_mem > 0 else float("inf")
-        direction = "more" if diff > 0 else "less"
-        lines.append(
-            f"  Difference: ${abs(diff):.4f}/session ({abs(pct):.1f}% {direction} with claude-mem)"
-        )
-
+    # =======================================================================
+    # MODEL-CONTROLLED COMPARISON (primary analysis)
+    # =======================================================================
+    lines.append("-" * 72)
+    lines.append("MODEL-CONTROLLED COMPARISON (apples-to-apples)")
+    lines.append("-" * 72)
+    lines.append("  Comparing same-model sessions to isolate claude-mem effect.")
     lines.append("")
 
-    # --- Per-project paired comparison ---
-    # Find projects that have BOTH claude-mem and non-claude-mem sessions
+    models_seen = sorted(set(r["model"] for r in user_rows))
+    model_controlled_findings = []
+    for model_name in models_seen:
+        mem_model = [r for r in mem_sessions if r["model"] == model_name]
+        no_mem_model = [r for r in no_mem_sessions if r["model"] == model_name]
+        if not mem_model or not no_mem_model:
+            lines.append(f"  {model_name}: insufficient data for paired comparison")
+            if mem_model:
+                lines.append(f"    mem only: {len(mem_model)} sessions, "
+                             f"avg ${sum(r['cost_dollars'] for r in mem_model)/len(mem_model):.4f}/session")
+            if no_mem_model:
+                lines.append(f"    no-mem only: {len(no_mem_model)} sessions, "
+                             f"avg ${sum(r['cost_dollars'] for r in no_mem_model)/len(no_mem_model):.4f}/session")
+            lines.append("")
+            continue
+
+        avg_m = sum(r["cost_dollars"] for r in mem_model) / len(mem_model)
+        avg_n = sum(r["cost_dollars"] for r in no_mem_model) / len(no_mem_model)
+        tok_m = sum(r["total_api_tokens"] for r in mem_model) / len(mem_model)
+        tok_n = sum(r["total_api_tokens"] for r in no_mem_model) / len(no_mem_model)
+        cost_diff = avg_m - avg_n
+        cost_pct = (cost_diff / avg_n) * 100 if avg_n > 0 else float("inf")
+        tok_diff = tok_m - tok_n
+        tok_pct = (tok_diff / tok_n) * 100 if tok_n > 0 else float("inf")
+        direction = "more" if cost_diff > 0 else "less"
+
+        lines.append(f"  {model_name}:")
+        lines.append(f"    mem:    {len(mem_model):>4} sessions | ${avg_m:.4f}/session | "
+                     f"{tok_m:>12,.0f} tokens/session")
+        lines.append(f"    no-mem: {len(no_mem_model):>4} sessions | ${avg_n:.4f}/session | "
+                     f"{tok_n:>12,.0f} tokens/session")
+        lines.append(f"    Cost delta:  ${abs(cost_diff):.4f}/session "
+                     f"({abs(cost_pct):.1f}% {direction} with claude-mem)")
+        lines.append(f"    Token delta: {abs(tok_pct):.1f}% "
+                     f"{'more' if tok_diff > 0 else 'fewer'} tokens with claude-mem")
+        lines.append("")
+        model_controlled_findings.append(
+            (model_name, cost_pct, tok_pct, len(mem_model), len(no_mem_model))
+        )
+
+    # =======================================================================
+    # WITHIN-PROJECT TRAJECTORY (early vs late half)
+    # =======================================================================
     lines.append("-" * 72)
-    lines.append("PER-PROJECT COMPARISON (projects with both mem and no-mem sessions)")
+    lines.append("WITHIN-PROJECT TRAJECTORY (early half vs late half)")
+    lines.append("-" * 72)
+    lines.append("  Does token usage decrease as a project matures?")
+    lines.append("")
+
+    for pid, project_rows in sorted(all_projects.items(), key=lambda x: -len(x[1])):
+        if len(project_rows) < 6:
+            continue
+        sorted_rows = sorted(project_rows, key=lambda r: r["sequence_num"])
+        mid = len(sorted_rows) // 2
+        early = sorted_rows[:mid]
+        late = sorted_rows[mid:]
+        avg_early = sum(r["total_api_tokens"] for r in early) / len(early)
+        avg_late = sum(r["total_api_tokens"] for r in late) / len(late)
+        pct = ((avg_late - avg_early) / avg_early) * 100 if avg_early > 0 else 0
+        mem_count = sum(1 for r in project_rows if r["has_claude_mem"])
+        label = short_project_label(pid)
+        lines.append(f"  {label}  ({len(project_rows)} sessions, {mem_count} mem)")
+        lines.append(f"    Early: {avg_early:>12,.0f} tokens/session")
+        lines.append(f"    Late:  {avg_late:>12,.0f} tokens/session")
+        lines.append(f"    Change: {pct:+.1f}%")
+        lines.append("")
+
+    # =======================================================================
+    # PER-PROJECT MODEL-CONTROLLED COMPARISON
+    # =======================================================================
+    lines.append("-" * 72)
+    lines.append("PER-PROJECT COMPARISON (same-model, projects with both mem and no-mem)")
     lines.append("-" * 72)
 
     paired_found = False
     for pid, project_rows in sorted(all_projects.items()):
-        mem_rows = [r for r in project_rows if r["has_claude_mem"]]
-        no_mem_rows = [r for r in project_rows if not r["has_claude_mem"]]
-        if mem_rows and no_mem_rows:
-            paired_found = True
-            avg_m = sum(r["cost_dollars"] for r in mem_rows) / len(mem_rows)
-            avg_n = sum(r["cost_dollars"] for r in no_mem_rows) / len(no_mem_rows)
-            diff = avg_m - avg_n
-            pct = (diff / avg_n) * 100 if avg_n > 0 else float("inf")
-            direction = "more" if diff > 0 else "less"
-            label = short_project_label(pid)
-            lines.append(f"  {label}")
-            lines.append(
-                f"    mem: ${avg_m:.4f}/session ({len(mem_rows)} sessions)  |  "
-                f"no-mem: ${avg_n:.4f}/session ({len(no_mem_rows)} sessions)"
-            )
-            lines.append(
-                f"    Delta: ${abs(diff):.4f}/session ({abs(pct):.1f}% {direction} with claude-mem)"
-            )
-            lines.append("")
+        proj_models = sorted(set(r["model"] for r in project_rows))
+        for model_name in proj_models:
+            mem_rows = [r for r in project_rows if r["has_claude_mem"] and r["model"] == model_name]
+            no_mem_rows = [r for r in project_rows if not r["has_claude_mem"] and r["model"] == model_name]
+            if mem_rows and no_mem_rows:
+                paired_found = True
+                avg_m = sum(r["cost_dollars"] for r in mem_rows) / len(mem_rows)
+                avg_n = sum(r["cost_dollars"] for r in no_mem_rows) / len(no_mem_rows)
+                diff = avg_m - avg_n
+                pct = (diff / avg_n) * 100 if avg_n > 0 else float("inf")
+                direction = "more" if diff > 0 else "less"
+                label = short_project_label(pid)
+                lines.append(f"  {label} [{model_name}]")
+                lines.append(
+                    f"    mem: ${avg_m:.4f}/session ({len(mem_rows)} sessions)  |  "
+                    f"no-mem: ${avg_n:.4f}/session ({len(no_mem_rows)} sessions)"
+                )
+                lines.append(
+                    f"    Delta: ${abs(diff):.4f}/session "
+                    f"({abs(pct):.1f}% {direction} with claude-mem)"
+                )
+                lines.append("")
 
     if not paired_found:
-        lines.append("  (No projects found with both claude-mem and non-claude-mem sessions)")
+        lines.append("  (No projects found with same-model paired data)")
         lines.append("")
 
-    # --- Headline finding ---
+    # =======================================================================
+    # HEADLINE FINDING
+    # =======================================================================
     lines.append("-" * 72)
     lines.append("HEADLINE FINDING")
     lines.append("-" * 72)
 
-    # Calculate typical project size
-    user_project_sizes = [len(v) for v in all_projects.values()]
-    if user_project_sizes:
-        median_size = sorted(user_project_sizes)[len(user_project_sizes) // 2]
+    if model_controlled_findings:
+        lines.append("  Model-controlled analysis (apples-to-apples):")
+        for model_name, cost_pct, tok_pct, n_mem, n_nomem in model_controlled_findings:
+            direction = "more" if cost_pct > 0 else "less"
+            lines.append(
+                f"    {model_name}: claude-mem sessions cost "
+                f"{abs(cost_pct):.1f}% {direction} "
+                f"(mem: {n_mem} sessions, no-mem: {n_nomem} sessions)"
+            )
+        lines.append("")
+        lines.append("  NOTE: These comparisons control for model but NOT for task")
+        lines.append("  complexity. Claude-mem is used on more complex, longer-running")
+        lines.append("  projects. A true A/B test requires same-task comparison.")
     else:
-        median_size = 0
-
-    if mem_sessions and no_mem_sessions:
-        # Recompute overall cohort percentage (the per-project loop may have
-        # overwritten `pct` with the last paired project's value).
-        overall_diff = avg_mem - avg_no_mem
-        overall_pct = (overall_diff / avg_no_mem) * 100 if avg_no_mem > 0 else float("inf")
-        if avg_mem > avg_no_mem:
-            lines.append(
-                f"  For a typical {median_size}-conversation project, claude-mem costs "
-                f"approximately ${avg_mem:.4f} per session vs ${avg_no_mem:.4f} without "
-                f"({abs(overall_pct):.1f}% more with claude-mem)."
-            )
-        elif avg_mem < avg_no_mem:
-            lines.append(
-                f"  For a typical {median_size}-conversation project, claude-mem costs "
-                f"approximately ${avg_mem:.4f} per session vs ${avg_no_mem:.4f} without "
-                f"({abs(overall_pct):.1f}% less with claude-mem)."
-            )
-        else:
-            lines.append(
-                f"  For a typical {median_size}-conversation project, claude-mem costs "
-                f"are essentially identical at ~${avg_mem:.4f} per session."
-            )
-    else:
-        lines.append("  Insufficient data for a paired comparison.")
+        lines.append("  Insufficient data for model-controlled comparison.")
 
     lines.append("")
 
