@@ -1,6 +1,7 @@
 import path from 'path';
 import { logger } from './logger.js';
-import { detectWorktree } from './worktree.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+import { detectWorktree, discoverAllWorktrees } from './worktree.js';
 
 /**
  * Extract project name from working directory path
@@ -70,9 +71,16 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   }
 
   const worktreeInfo = detectWorktree(cwd);
+  const sharedContext = SettingsDefaultsManager.getBool('CLAUDE_MEM_WORKTREE_SHARED_CONTEXT');
 
-  if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
-    // In a worktree: include parent first for chronological ordering
+  if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName && worktreeInfo.parentRepoPath) {
+    if (sharedContext) {
+      // In a worktree: include parent + all siblings for unified context
+      const worktrees = discoverAllWorktrees(worktreeInfo.parentRepoPath);
+      const allProjects = dedupePreservingOrder([worktreeInfo.parentProjectName, ...worktrees, primary]);
+      return { primary, parent: worktreeInfo.parentProjectName, isWorktree: true, allProjects };
+    }
+    // Original behavior: parent + self only
     return {
       primary,
       parent: worktreeInfo.parentProjectName,
@@ -81,5 +89,21 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
     };
   }
 
+  if (sharedContext) {
+    // Main repo: check if it has active worktrees
+    const worktrees = discoverAllWorktrees(cwd);
+    if (worktrees.length > 0) {
+      const allProjects = dedupePreservingOrder([primary, ...worktrees]);
+      return { primary, parent: null, isWorktree: false, allProjects };
+    }
+  }
+
   return { primary, parent: null, isWorktree: false, allProjects: [primary] };
+}
+
+/**
+ * Remove duplicates from an array while preserving insertion order.
+ */
+function dedupePreservingOrder(items: string[]): string[] {
+  return [...new Set(items)];
 }

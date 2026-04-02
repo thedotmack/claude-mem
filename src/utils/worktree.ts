@@ -8,7 +8,7 @@
  *   gitdir: /path/to/parent/.git/worktrees/<name>
  */
 
-import { statSync, readFileSync } from 'fs';
+import { statSync, readFileSync, readdirSync } from 'fs';
 import path from 'path';
 
 export interface WorktreeInfo {
@@ -81,4 +81,39 @@ export function detectWorktree(cwd: string): WorktreeInfo {
     parentRepoPath,
     parentProjectName
   };
+}
+
+/**
+ * Discover all active worktree project names for a given repository.
+ *
+ * Reads .git/worktrees/ and extracts the basename of each worktree's
+ * actual path from its gitdir file.
+ *
+ * @param repoPath - Absolute path to the repository (main or parent)
+ * @returns Array of worktree project names (basenames of worktree paths)
+ */
+export function discoverAllWorktrees(parentRepoPath: string): string[] {
+  const worktreesDir = path.join(parentRepoPath, '.git', 'worktrees');
+
+  let entries: string[];
+  try {
+    entries = readdirSync(worktreesDir);
+  } catch {
+    return [];
+  }
+
+  const worktrees: string[] = [];
+
+  for (const entry of entries) {
+    const gitdirFile = path.join(worktreesDir, entry, 'gitdir');
+    try {
+      // gitdir file contains the absolute path to the worktree's .git file
+      const worktreePath = path.dirname(readFileSync(gitdirFile, 'utf-8').trim());
+      worktrees.push(path.basename(worktreePath));
+    } catch {
+      // Stale or broken worktree entry — skip
+    }
+  }
+
+  return worktrees;
 }
