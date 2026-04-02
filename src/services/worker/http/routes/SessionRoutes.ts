@@ -18,6 +18,8 @@ import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
+import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
@@ -106,6 +108,8 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Start generator if not running
     if (!session.generatorPromise) {
+      // Apply tier routing before starting the generator
+      this.applyTierRouting(session);
       this.spawnInProgress.set(sessionDbId, true);
       this.startGeneratorWithProvider(session, selectedProvider, source);
       return;
@@ -813,4 +817,56 @@ export class SessionRoutes extends BaseRouteHandler {
       contextInjected
     });
   });
+
+  // Simple tool names that produce low-complexity observations
+  private static readonly SIMPLE_TOOLS = new Set([
+    'Read', 'Glob', 'Grep', 'LS', 'ListMcpResourcesTool'
+  ]);
+
+  /**
+   * Apply tier routing: select model based on pending queue complexity.
+   * - Summarize in queue → summary model (e.g., Opus)
+   * - All simple tools → simple model (e.g., Haiku)
+   * - Otherwise → default model (no override)
+   */
+  private applyTierRouting(session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>): void {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (settings.CLAUDE_MEM_TIER_ROUTING_ENABLED === 'false') {
+      session.modelOverride = undefined;
+      return;
+    }
+
+    const pendingStore = this.sessionManager.getPendingMessageStore();
+    const pending = pendingStore.peekPendingTypes(session.sessionDbId);
+
+    if (pending.length === 0) {
+      session.modelOverride = undefined;
+      return;
+    }
+
+    const hasSummarize = pending.some(m => m.message_type === 'summarize');
+    const allSimple = pending.every(m =>
+      m.message_type === 'observation' && m.tool_name && SessionRoutes.SIMPLE_TOOLS.has(m.tool_name)
+    );
+
+    if (hasSummarize) {
+      const summaryModel = settings.CLAUDE_MEM_TIER_SUMMARY_MODEL;
+      if (summaryModel) {
+        session.modelOverride = summaryModel;
+        logger.debug('SESSION', `Tier routing: summary model`, {
+          sessionId: session.sessionDbId, model: summaryModel
+        });
+      }
+    } else if (allSimple) {
+      const simpleModel = settings.CLAUDE_MEM_TIER_SIMPLE_MODEL;
+      if (simpleModel) {
+        session.modelOverride = simpleModel;
+        logger.debug('SESSION', `Tier routing: simple model`, {
+          sessionId: session.sessionDbId, model: simpleModel
+        });
+      }
+    } else {
+      session.modelOverride = undefined;
+    }
+  }
 }
