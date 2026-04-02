@@ -2,7 +2,7 @@
 
 ## System Layers
 
-```
+```text
 +-----------------------------------------------------------+
 |  Claude Code (host)                                       |
 |  +-- Hook System (5 events)                               |
@@ -36,11 +36,12 @@
 | SessionStart | smart-install.js + context | Install deps + start worker + inject context | 60s |
 | UserPromptSubmit | session-init | Register session + start SDK agent + semantic injection | 60s |
 | PostToolUse | observation | Capture tool usage -> enqueue in worker | 120s |
-| Stop | summarize + session-complete | Request summary + end session | 120s+30s |
+| Summary | summarize | Request session summary from SDK agent | 120s |
+| SessionEnd | session-complete | End session + drain pending messages | 30s |
 
 ## Data Flow
 
-```
+```text
 User prompt -> session-init -> /api/sessions/init + /api/context/semantic
   |
 Tool use -> observation -> /api/sessions/observations
@@ -63,7 +64,7 @@ Stop -> summarize -> /api/sessions/summarize
 
 ### CLAIM-CONFIRM (PendingMessageStore)
 
-```
+```text
 enqueue()           -> INSERT status='pending'
 claimNextMessage()  -> UPDATE status='processing' (atomic)
 confirmProcessed()  -> DELETE (success)
@@ -74,7 +75,7 @@ Self-healing: messages in 'processing' for >60s reset to 'pending'
 
 ### Circuit-Breaker (SessionRoutes)
 
-```
+```text
 Generator crash -> retry 1 (1s) -> retry 2 (2s) -> retry 3 (4s)
   -> consecutiveRestarts > 3 -> CIRCUIT-BREAKER
   -> markAllSessionMessagesAbandoned(sessionDbId)
@@ -85,7 +86,7 @@ Counter resets to 0 when generator completes work naturally.
 
 ### Graceful Degradation (hook-command.ts)
 
-```
+```text
 Transport errors (ECONNREFUSED, timeout, 5xx) -> exit 0 (never block Claude Code)
 Client bugs (4xx, TypeError, ReferenceError)  -> exit 2 (blocking, needs fix)
 ```
@@ -94,7 +95,7 @@ The worker being unavailable NEVER blocks the user's Claude Code session.
 
 ### Deduplication (observations)
 
-```
+```text
 SHA256(memory_session_id + title + narrative) -> content_hash
 If hash exists within 30s window -> return existing ID (no insert)
 ```
@@ -123,7 +124,7 @@ The conversion between them is handled by SessionStore and is critical for FK co
 
 Vector embeddings for semantic search. Each observation generates multiple documents:
 
-```
+```text
 obs_{id}_narrative  -> main text
 obs_{id}_fact_0     -> first fact
 obs_{id}_fact_1     -> second fact
