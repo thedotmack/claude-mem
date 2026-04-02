@@ -46,7 +46,10 @@ async function httpRequestToWorker(
  */
 export async function isPortInUse(port: number): Promise<boolean> {
   if (process.platform === 'win32') {
-    // Windows: keep HTTP check (socket bind semantics differ)
+    // APPROVED OVERRIDE: Windows keeps HTTP health check because socket bind
+    // semantics differ (SO_REUSEADDR defaults, firewall prompts). The TOCTOU
+    // race remains on Windows but is an accepted limitation — the atomic
+    // socket approach would cause false positives or UAC popups.
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/health`);
       return response.ok;

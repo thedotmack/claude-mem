@@ -284,27 +284,32 @@ export class ChromaSync {
         });
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
-        // Duplicate IDs: docs were partially written before a timeout/crash.
-        // Fall back to update so the data is consistent (upstream bug workaround).
+        // APPROVED OVERRIDE: Duplicate IDs from partial write before timeout/crash.
+        // chroma_update_documents only updates *existing* IDs — it silently ignores
+        // missing ones. So we delete-then-add to guarantee all IDs are written.
         if (errMsg.includes('already exist')) {
           try {
-            await chromaMcp.callTool('chroma_update_documents', {
+            await chromaMcp.callTool('chroma_delete_documents', {
+              collection_name: this.collectionName,
+              ids: batch.map(d => d.id)
+            });
+            await chromaMcp.callTool('chroma_add_documents', {
               collection_name: this.collectionName,
               ids: batch.map(d => d.id),
               documents: batch.map(d => d.document),
               metadatas: cleanMetadatas
             });
-            logger.info('CHROMA_SYNC', 'Batch upserted after duplicate conflict', {
+            logger.info('CHROMA_SYNC', 'Batch reconciled via delete+add after duplicate conflict', {
               collection: this.collectionName,
               batchStart: i,
               batchSize: batch.length
             });
-          } catch (updateError) {
-            logger.error('CHROMA_SYNC', 'Batch update also failed', {
+          } catch (reconcileError) {
+            logger.error('CHROMA_SYNC', 'Batch reconcile (delete+add) failed', {
               collection: this.collectionName,
               batchStart: i,
               batchSize: batch.length
-            }, updateError as Error);
+            }, reconcileError as Error);
           }
         } else {
           logger.error('CHROMA_SYNC', 'Batch add failed, continuing with remaining batches', {
