@@ -20,6 +20,9 @@ function writeJson(filePath, value) {
 }
 
 function syncCodexPlugin(plugin, pkg) {
+  const author =
+    typeof plugin.author === 'object' && plugin.author ? plugin.author : {};
+
   return {
     ...plugin,
     name: pkg.name,
@@ -30,7 +33,7 @@ function syncCodexPlugin(plugin, pkg) {
     license: pkg.license,
     keywords: pkg.keywords,
     author: {
-      ...(plugin.author ?? {}),
+      ...author,
       name: normalizeAuthorName(pkg.author),
     },
     interface: {
@@ -72,6 +75,13 @@ function normalizeRepositoryUrl(repository) {
 }
 
 function main() {
+  for (const filePath of [packageJsonPath, codexPluginPath, claudePluginPath]) {
+    if (!fs.existsSync(filePath)) {
+      console.error(`Missing required file: ${filePath}`);
+      process.exit(1);
+    }
+  }
+
   const pkg = readJson(packageJsonPath);
   const codexPlugin = readJson(codexPluginPath);
   const claudePlugin = readJson(claudePluginPath);
