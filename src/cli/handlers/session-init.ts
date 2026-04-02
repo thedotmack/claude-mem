@@ -119,9 +119,50 @@ export const sessionInitHandler: EventHandler = {
       logger.debug('HOOK', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
     }
 
+    // Semantic context injection: query Chroma for relevant past observations
+    // and inject as additionalContext so Claude receives relevant memory each prompt.
+    // Controlled by CLAUDE_MEM_SEMANTIC_INJECT setting (default: true).
+    const semanticInject = settings.CLAUDE_MEM_SEMANTIC_INJECT !== 'false';
+    let additionalContext = '';
+
+    if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
+      try {
+        const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
+        const semanticRes = await workerHttpRequest(
+          `/api/context/semantic?q=${encodeURIComponent(prompt)}&project=${encodeURIComponent(project)}&limit=${limit}`
+        );
+        if (semanticRes.ok) {
+          const data = await semanticRes.json() as { context: string; count: number };
+          if (data.context) {
+            additionalContext = data.context;
+            logger.debug('HOOK', `Semantic injection: ${data.count} observations for prompt`, {
+              sessionId: sessionDbId, count: data.count
+            });
+          }
+        }
+      } catch (e) {
+        // Graceful degradation — semantic injection is optional
+        logger.debug('HOOK', 'Semantic injection unavailable', {
+          error: e instanceof Error ? e.message : String(e)
+        });
+      }
+    }
+
     logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | project=${project}`, {
       sessionId: sessionDbId
     });
+
+    // Return with semantic context if available
+    if (additionalContext) {
+      return {
+        continue: true,
+        suppressOutput: true,
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext
+        }
+      };
+    }
 
     return { continue: true, suppressOutput: true };
   }
