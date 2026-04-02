@@ -38,7 +38,7 @@ export class SearchRoutes extends BaseRouteHandler {
     app.get('/api/context/timeline', this.handleGetContextTimeline.bind(this));
     app.get('/api/context/preview', this.handleContextPreview.bind(this));
     app.get('/api/context/inject', this.handleContextInject.bind(this));
-    app.get('/api/context/semantic', this.handleSemanticContext.bind(this));
+    app.post('/api/context/semantic', this.handleSemanticContext.bind(this));
 
     // Timeline and help endpoints
     app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
@@ -255,9 +255,9 @@ export class SearchRoutes extends BaseRouteHandler {
    * Returns compact markdown for injection as additionalContext.
    */
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const query = req.query.q as string;
-    const project = req.query.project as string;
-    const limit = parseInt(req.query.limit as string || '5', 10);
+    const query = (req.body?.q || req.query.q) as string;
+    const project = (req.body?.project || req.query.project) as string;
+    const limit = parseInt(String(req.body?.limit || req.query.limit || '5'), 10);
 
     if (!query || query.length < 20) {
       res.json({ context: '', count: 0 });
