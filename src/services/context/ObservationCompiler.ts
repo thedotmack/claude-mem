@@ -240,11 +240,11 @@ export function buildTimeline(
     ...summaries.map(summary => ({ type: 'summary' as const, data: summary }))
   ];
 
-  // Sort chronologically
+  // Sort chronologically (newest first so preview truncation shows recent entries)
   timeline.sort((a, b) => {
     const aEpoch = a.type === 'observation' ? a.data.created_at_epoch : a.data.displayEpoch;
     const bEpoch = b.type === 'observation' ? b.data.created_at_epoch : b.data.displayEpoch;
-    return aEpoch - bEpoch;
+    return bEpoch - aEpoch;
   });
 
   return timeline;
