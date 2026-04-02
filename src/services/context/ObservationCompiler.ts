@@ -8,6 +8,7 @@ import path from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
+import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import type {
   ContextConfig,
@@ -164,7 +165,7 @@ export function extractPriorMessages(transcriptPath: string): PriorMessages {
               text += block.text;
             }
           }
-          text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
+          text = text.replace(SYSTEM_REMINDER_REGEX, '').trim();
           if (text) {
             lastAssistantMessage = text;
             break;

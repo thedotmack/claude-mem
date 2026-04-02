@@ -325,6 +325,56 @@ after`;
     });
   });
 
+  describe('system-reminder tag stripping', () => {
+    it('should strip single <system-reminder> tag from prompt', () => {
+      const input = 'user content <system-reminder>CLAUDE.md contents here</system-reminder> more content';
+      const result = stripMemoryTagsFromPrompt(input);
+      expect(result).toBe('user content  more content');
+    });
+
+    it('should strip <system-reminder> mixed with other tag types', () => {
+      const input = '<system-reminder>reminder</system-reminder> public <private>secret</private> <claude-mem-context>ctx</claude-mem-context> end';
+      const result = stripMemoryTagsFromPrompt(input);
+      expect(result).toBe('public   end');
+    });
+
+    it('should return empty string for entirely <system-reminder> content', () => {
+      const input = '<system-reminder>entire content is a system reminder</system-reminder>';
+      const result = stripMemoryTagsFromPrompt(input);
+      expect(result).toBe('');
+    });
+
+    it('should strip <system-reminder> tags from JSON content', () => {
+      const jsonContent = JSON.stringify({
+        data: '<system-reminder>injected reminder</system-reminder> real data'
+      });
+      const result = stripMemoryTagsFromJson(jsonContent);
+      const parsed = JSON.parse(result);
+      expect(parsed.data).toBe(' real data');
+    });
+
+    it('should strip multiline content within <system-reminder> tags', () => {
+      const input = `before
+<system-reminder>
+Contents of /path/to/CLAUDE.md:
+
+<claude-mem-context>
+# Recent Activity
+- Item 1
+</claude-mem-context>
+</system-reminder>
+after`;
+      const result = stripMemoryTagsFromPrompt(input);
+      expect(result).toBe('before\n\nafter');
+    });
+
+    it('should strip realistic tool result with nested CLAUDE.md content', () => {
+      const input = `Here is the file content.\n\n<system-reminder>\nContents of /project/src/CLAUDE.md:\n\n<claude-mem-context>\n# Recent Activity\n\n### Dec 14, 2025\n| ID | Time | Title |\n|-----|------|-------|\n| #123 | 11:30 PM | Some observation |\n</claude-mem-context>\n</system-reminder>`;
+      const result = stripMemoryTagsFromPrompt(input);
+      expect(result).toBe('Here is the file content.');
+    });
+  });
+
   describe('privacy enforcement integration', () => {
     it('should allow empty result to trigger privacy skip', () => {
       // Simulates what SessionRoutes does with private-only prompts

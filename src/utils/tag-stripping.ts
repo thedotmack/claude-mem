@@ -8,12 +8,20 @@
  *    (allows users to mark content they don't want persisted)
  * 3. <system_instruction> / <system-instruction> - Conductor-injected system instructions
  *    (should not be persisted to memory)
+ * 4. <system-reminder> - Claude Code-injected system reminders
+ *    (CLAUDE.md contents, deferred tool lists, etc. — should not be persisted)
  *
  * EDGE PROCESSING PATTERN: Filter at hook layer before sending to worker/storage.
  * This keeps the worker service simple and follows one-way data stream.
  */
 
 import { logger } from './logger.js';
+
+/**
+ * Regex to match <system-reminder> tags and their content.
+ * Exported for use by transcript parsers that strip system-reminder at read-time.
+ */
+export const SYSTEM_REMINDER_REGEX = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 
 /**
  * Maximum number of tags allowed in a single content block
@@ -31,7 +39,8 @@ function countTags(content: string): number {
   const contextCount = (content.match(/<claude-mem-context>/g) || []).length;
   const systemInstructionCount = (content.match(/<system_instruction>/g) || []).length;
   const systemInstructionHyphenCount = (content.match(/<system-instruction>/g) || []).length;
-  return privateCount + contextCount + systemInstructionCount + systemInstructionHyphenCount;
+  const systemReminderCount = (content.match(/<system-reminder>/g) || []).length;
+  return privateCount + contextCount + systemInstructionCount + systemInstructionHyphenCount + systemReminderCount;
 }
 
 /**
@@ -55,6 +64,7 @@ function stripTagsInternal(content: string): string {
     .replace(/<private>[\s\S]*?<\/private>/g, '')
     .replace(/<system_instruction>[\s\S]*?<\/system_instruction>/g, '')
     .replace(/<system-instruction>[\s\S]*?<\/system-instruction>/g, '')
+    .replace(SYSTEM_REMINDER_REGEX, '')
     .trim();
 }
 
