@@ -519,7 +519,7 @@ export const migration007: Migration = {
  * explicit retrieval). Foundation for future Thompson Sampling optimization.
  */
 export const migration008: Migration = {
-  version: 8,
+  version: 25,
   up: (db: Database) => {
     db.run(`
       CREATE TABLE IF NOT EXISTS observation_feedback (
