@@ -283,11 +283,36 @@ export class ChromaSync {
           metadatas: cleanMetadatas
         });
       } catch (error) {
-        logger.error('CHROMA_SYNC', 'Batch add failed, continuing with remaining batches', {
-          collection: this.collectionName,
-          batchStart: i,
-          batchSize: batch.length
-        }, error as Error);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        // Duplicate IDs: docs were partially written before a timeout/crash.
+        // Fall back to update so the data is consistent (upstream bug workaround).
+        if (errMsg.includes('already exist')) {
+          try {
+            await chromaMcp.callTool('chroma_update_documents', {
+              collection_name: this.collectionName,
+              ids: batch.map(d => d.id),
+              documents: batch.map(d => d.document),
+              metadatas: cleanMetadatas
+            });
+            logger.info('CHROMA_SYNC', 'Batch upserted after duplicate conflict', {
+              collection: this.collectionName,
+              batchStart: i,
+              batchSize: batch.length
+            });
+          } catch (updateError) {
+            logger.error('CHROMA_SYNC', 'Batch update also failed', {
+              collection: this.collectionName,
+              batchStart: i,
+              batchSize: batch.length
+            }, updateError as Error);
+          }
+        } else {
+          logger.error('CHROMA_SYNC', 'Batch add failed, continuing with remaining batches', {
+            collection: this.collectionName,
+            batchStart: i,
+            batchSize: batch.length
+          }, error as Error);
+        }
       }
     }
 

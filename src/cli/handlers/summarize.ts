@@ -43,6 +43,16 @@ export const summarizeHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
+    // Skip summary if transcript has no assistant message (prevents repeated
+    // empty summarize requests that pollute logs — upstream bug)
+    if (!lastAssistantMessage || !lastAssistantMessage.trim()) {
+      logger.debug('HOOK', 'No assistant message in transcript - skipping summary', {
+        sessionId,
+        transcriptPath
+      });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     logger.dataIn('HOOK', 'Stop: Requesting summary', {
       hasLastAssistantMessage: !!lastAssistantMessage
     });
