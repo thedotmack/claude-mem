@@ -133,6 +133,12 @@ Install with a single command:
 npx claude-mem install
 ```
 
+Or install for Gemini CLI (auto-detects `~/.gemini`):
+
+```bash
+npx claude-mem install --ide gemini-cli
+```
+
 Or install from the plugin marketplace inside Claude Code:
 
 ```
@@ -141,7 +147,7 @@ Or install from the plugin marketplace inside Claude Code:
 /plugin install claude-mem
 ```
 
-Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
+Restart Claude Code or Gemini CLI. Context from previous sessions will automatically appear in new sessions.
 
 > **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. Always install via `npx claude-mem install` or the `/plugin` commands above.
 
@@ -177,6 +183,7 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 ### Getting Started
 
 - **[Installation Guide](https://docs.claude-mem.ai/installation)** - Quick start & advanced installation
+- **[Gemini CLI Setup](https://docs.claude-mem.ai/gemini-cli/setup)** - Dedicated guide for Google's Gemini CLI integration
 - **[Usage Guide](https://docs.claude-mem.ai/usage/getting-started)** - How Claude-Mem works automatically
 - **[Search Tools](https://docs.claude-mem.ai/usage/search-tools)** - Query your project history with natural language
 - **[Beta Features](https://docs.claude-mem.ai/beta-features)** - Try experimental features like Endless Mode

@@ -109,7 +109,8 @@ export const geminiCliAdapter: PlatformAdapter = {
     }
 
     if (result.systemMessage) {
-      output.systemMessage = result.systemMessage;
+      // Strip ANSI escape codes — Gemini CLI renders them as raw text
+      output.systemMessage = result.systemMessage.replace(/\x1b\[[0-9;]*m/g, '');
     }
 
     // hookSpecificOutput is a first-class Gemini CLI field — pass through directly

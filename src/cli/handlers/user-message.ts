@@ -23,9 +23,11 @@ export const userMessageHandler: EventHandler = {
     const project = basename(input.cwd ?? process.cwd());
 
     // Fetch formatted context directly from worker API
+    // Only request ANSI colors for platforms that render them (claude-code)
+    const colorsParam = input.platform === 'claude-code' ? '&colors=true' : '';
     try {
       const response = await workerHttpRequest(
-        `/api/context/inject?project=${encodeURIComponent(project)}&colors=true`
+        `/api/context/inject?project=${encodeURIComponent(project)}${colorsParam}`
       );
 
       if (!response.ok) {

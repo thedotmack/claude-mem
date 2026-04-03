@@ -230,22 +230,36 @@ async function promptForIDESelection(): Promise<string[]> {
 
 function copyPluginToMarketplace(): void {
   const marketplaceDir = marketplaceDirectory();
+  const packageRoot = npmPackageRootDirectory();
 
   ensureDirectoryExists(marketplaceDir);
 
-  // Copy the entire npm package (not just plugin/) so that package.json,
-  // node_modules, and scripts are all present in the marketplace dir.
-  const packageRoot = npmPackageRootDirectory();
-  cpSync(packageRoot, marketplaceDir, {
-    recursive: true,
-    force: true,
-    filter: (source) => {
-      // Skip .git and other unnecessary directories
-      if (source.includes('.git') && !source.includes('.claude-plugin')) return false;
-      if (source.endsWith('.tgz')) return false;
-      return true;
-    },
-  });
+  // Only copy directories/files that are actually needed at runtime.
+  // The npm package ships plugin/, package.json, node_modules/, openclaw/, dist/.
+  // When running from a dev checkout, the root contains many extra dirs
+  // (.claude, .agents, src, docs, etc.) that must NOT be copied.
+  const allowedTopLevelEntries = [
+    'plugin',
+    'package.json',
+    'package-lock.json',
+    'node_modules',
+    'openclaw',
+    'dist',
+    'LICENSE',
+    'README.md',
+    'CHANGELOG.md',
+  ];
+
+  for (const entry of allowedTopLevelEntries) {
+    const sourcePath = join(packageRoot, entry);
+    const destPath = join(marketplaceDir, entry);
+    if (!existsSync(sourcePath)) continue;
+
+    cpSync(sourcePath, destPath, {
+      recursive: true,
+      force: true,
+    });
+  }
 }
 
 function copyPluginToCache(version: string): void {
