@@ -58,6 +58,13 @@
         ]
       },
       {
+        "group": "Gemini CLI Integration",
+        "icon": "terminal",
+        "pages": [
+          "gemini-cli/setup"
+        ]
+      },
+      {
         "group": "Best Practices",
         "icon": "lightbulb",
         "pages": [

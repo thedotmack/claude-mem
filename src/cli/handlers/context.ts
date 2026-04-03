@@ -39,7 +39,7 @@ export const contextHandler: EventHandler = {
     // Pass all projects (parent + worktree if applicable) for unified timeline
     const projectsParam = context.allProjects.join(',');
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
-    const colorApiPath = `${apiPath}&colors=true`;
+    const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
     // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
     // Worker service has its own timeouts, so client-side timeout is redundant
