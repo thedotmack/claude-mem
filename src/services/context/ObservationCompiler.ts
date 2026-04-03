@@ -20,7 +20,19 @@ import type {
 import { SUMMARY_LOOKAHEAD } from './types.js';
 
 /**
- * Query observations from database with type and concept filtering
+ * Query observations from database with type and concept filtering.
+ *
+ * When `project` is non-empty the query uses a two-part UNION strategy so
+ * that observations from the current project are always preferred:
+ *
+ *   1. Up to `totalObservationCount` rows WHERE project = current project
+ *   2. Fill any remaining slots from ALL projects (excluding duplicates)
+ *
+ * The combined result is de-duplicated by id and re-sorted chronologically,
+ * keeping the total at `totalObservationCount`.
+ *
+ * When `project` is empty the original single-query behaviour is used so
+ * that nothing breaks for callers that do not supply a project.
  */
 export function queryObservations(
   db: SessionStore,
@@ -31,22 +43,88 @@ export function queryObservations(
   const typePlaceholders = typeArray.map(() => '?').join(',');
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+  const limit = config.totalObservationCount;
 
+  // No project context – fall back to the original behaviour (all projects, recency order).
+  if (!project) {
+    return db.db.prepare(`
+      SELECT
+        id, memory_session_id, type, title, subtitle, narrative,
+        facts, concepts, files_read, files_modified, discovery_tokens,
+        created_at, created_at_epoch
+      FROM observations
+      WHERE type IN (${typePlaceholders})
+        AND EXISTS (
+          SELECT 1 FROM json_each(concepts)
+          WHERE value IN (${conceptPlaceholders})
+        )
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
+    `).all(...typeArray, ...conceptArray, limit) as Observation[];
+  }
+
+  // Project-aware: current-project observations first, then fill from all projects.
+  //
+  // The UNION ALL + outer SELECT de-duplicates by picking the lowest row_num per id
+  // (current-project rows always have row_num <= limit so they win over the fill rows),
+  // then re-sorts everything chronologically and caps at `limit`.
   return db.db.prepare(`
     SELECT
       id, memory_session_id, type, title, subtitle, narrative,
       facts, concepts, files_read, files_modified, discovery_tokens,
       created_at, created_at_epoch
-    FROM observations
-    WHERE project = ?
-      AND type IN (${typePlaceholders})
-      AND EXISTS (
-        SELECT 1 FROM json_each(concepts)
-        WHERE value IN (${conceptPlaceholders})
+    FROM (
+      SELECT
+        id, memory_session_id, type, title, subtitle, narrative,
+        facts, concepts, files_read, files_modified, discovery_tokens,
+        created_at, created_at_epoch,
+        ROW_NUMBER() OVER (PARTITION BY id ORDER BY priority) AS rn
+      FROM (
+        -- Part 1: observations from the current project (highest priority)
+        SELECT
+          id, memory_session_id, type, title, subtitle, narrative,
+          facts, concepts, files_read, files_modified, discovery_tokens,
+          created_at, created_at_epoch,
+          1 AS priority
+        FROM observations
+        WHERE project = ?
+          AND type IN (${typePlaceholders})
+          AND EXISTS (
+            SELECT 1 FROM json_each(concepts)
+            WHERE value IN (${conceptPlaceholders})
+          )
+        ORDER BY created_at_epoch DESC
+        LIMIT ?
+
+        UNION ALL
+
+        -- Part 2: fill from all projects (lower priority; duplicates removed by rn filter)
+        SELECT
+          id, memory_session_id, type, title, subtitle, narrative,
+          facts, concepts, files_read, files_modified, discovery_tokens,
+          created_at, created_at_epoch,
+          2 AS priority
+        FROM observations
+        WHERE type IN (${typePlaceholders})
+          AND EXISTS (
+            SELECT 1 FROM json_each(concepts)
+            WHERE value IN (${conceptPlaceholders})
+          )
+        ORDER BY created_at_epoch DESC
+        LIMIT ?
       )
+    )
+    WHERE rn = 1
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(project, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
+  `).all(
+    // Part 1 params
+    project, ...typeArray, ...conceptArray, limit,
+    // Part 2 params
+    ...typeArray, ...conceptArray, limit,
+    // Outer LIMIT
+    limit
+  ) as Observation[];
 }
 
 /**
