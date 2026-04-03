@@ -30,7 +30,7 @@ Claude-mem uses **two distinct session IDs** to track conversations and memory:
                            ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ 3. First SDK message arrives with session_id                │
-│    updateMemorySessionId(sessionDbId, "sdk-gen-abc123")     │
+│    ensureMemorySessionIdRegistered(sessionDbId, "sdk-gen-abc123") │
 │                                                              │
 │    Database state:                                          │
 │    ├─ content_session_id: "user-session-123"               │
@@ -73,8 +73,8 @@ This is why `SDKAgent` persists the SDK-returned `session_id` immediately throug
 const hasRealMemorySessionId = !!session.memorySessionId;
 ```
 
-- When `memorySessionId === null` → Not yet captured
-- When `memorySessionId !== null` → Real SDK session captured
+- When `memorySessionId` is falsy → Not yet captured
+- When `memorySessionId` is truthy → Real SDK session captured
 
 ### 2. Resume Safety
 
