@@ -1,9 +1,16 @@
 /**
  * Summarize Handler - Stop
  *
- * Extracted from summary-hook.ts - sends summary request to worker.
- * Transcript parsing stays in the hook because only the hook has access to
- * the transcript file path.
+ * Runs in the Stop hook (120s timeout, not capped like SessionEnd).
+ * This is the ONLY place where we can reliably wait for async work.
+ *
+ * Flow:
+ * 1. Queue summarize request to worker
+ * 2. Poll worker until summary processing completes
+ * 3. Call /api/sessions/complete to clean up session
+ *
+ * SessionEnd (1.5s cap from Claude Code) is just a lightweight fallback —
+ * all real work must happen here in Stop.
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
@@ -13,6 +20,8 @@ import { extractLastMessage } from '../../shared/transcript-parser.js';
 import { HOOK_EXIT_CODES, HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
 
 const SUMMARIZE_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.DEFAULT);
+const POLL_INTERVAL_MS = 500;
+const MAX_WAIT_FOR_SUMMARY_MS = 110_000; // 110s — fits within Stop hook's 120s timeout
 
 export const summarizeHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -47,7 +56,7 @@ export const summarizeHandler: EventHandler = {
       hasLastAssistantMessage: !!lastAssistantMessage
     });
 
-    // Send to worker - worker handles privacy check and database operations
+    // 1. Queue summarize request — worker returns immediately with { status: 'queued' }
     const response = await workerHttpRequest('/api/sessions/summarize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -59,11 +68,49 @@ export const summarizeHandler: EventHandler = {
     });
 
     if (!response.ok) {
-      // Return standard response even on failure (matches original behavior)
       return { continue: true, suppressOutput: true };
     }
 
-    logger.debug('HOOK', 'Summary request sent successfully');
+    logger.debug('HOOK', 'Summary request queued, waiting for completion');
+
+    // 2. Poll worker until pending work for this session is done.
+    //    This keeps the Stop hook alive (120s timeout) so the SDK agent
+    //    can finish processing the summary before SessionEnd kills the session.
+    const waitStart = Date.now();
+    while ((Date.now() - waitStart) < MAX_WAIT_FOR_SUMMARY_MS) {
+      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+      try {
+        const statusResponse = await workerHttpRequest(`/api/sessions/status?contentSessionId=${encodeURIComponent(sessionId)}`, {
+          timeoutMs: 5000
+        });
+        if (statusResponse.ok) {
+          const status = await statusResponse.json() as { queueLength?: number };
+          if ((status.queueLength ?? 0) === 0) {
+            logger.info('HOOK', 'Summary processing complete', {
+              waitedMs: Date.now() - waitStart
+            });
+            break;
+          }
+        }
+      } catch {
+        // Worker may be busy — keep polling
+      }
+    }
+
+    // 3. Complete the session — clean up active sessions map.
+    //    This runs here in Stop (120s timeout) instead of SessionEnd (1.5s cap)
+    //    so it reliably fires after summary work is done.
+    try {
+      await workerHttpRequest('/api/sessions/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contentSessionId: sessionId }),
+        timeoutMs: 10_000
+      });
+      logger.info('HOOK', 'Session completed in Stop hook', { contentSessionId: sessionId });
+    } catch (err) {
+      logger.warn('HOOK', `Stop hook: session-complete failed: ${err instanceof Error ? err.message : err}`);
+    }
 
     return { continue: true, suppressOutput: true };
   }
