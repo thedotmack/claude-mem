@@ -155,14 +155,17 @@ const stdinData = await collectStdin();
 // Note: Don't use shell mode on Windows - it breaks paths with spaces in usernames
 // Use windowsHide to prevent a visible console window from spawning on Windows
 const child = spawn(bunPath, args, {
-  stdio: [stdinData ? 'pipe' : 'ignore', 'inherit', 'inherit'],
+  stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
   env: process.env
 });
 
-// Write buffered stdin to child's pipe, then close it so the child sees EOF
-if (stdinData && child.stdin) {
-  child.stdin.write(stdinData);
+// Write buffered stdin to child's pipe, then close it so the child sees EOF.
+// Fall back to '{}' when no stdin data is available so worker-service.cjs
+// always receives valid JSON input even when Claude Code doesn't pipe stdin
+// (e.g. during SessionStart on some platforms). Fixes #1560.
+if (child.stdin) {
+  child.stdin.write(stdinData || '{}');
   child.stdin.end();
 }
 
