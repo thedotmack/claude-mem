@@ -7,9 +7,9 @@ Practical guide based on 23 days of production usage with 3,400+ observations ac
 | Setting | Default | Recommended | Why |
 |---------|---------|-------------|-----|
 | CLAUDE_MEM_MAX_CONCURRENT_AGENTS | 2 | 3 | Better throughput without overload |
-| CLAUDE_MEM_SEMANTIC_INJECT | (proposed in PR #1568) | true | Relevant context >> recent context |
-| CLAUDE_MEM_SEMANTIC_INJECT_LIMIT | (proposed in PR #1568) | 5 | Sweet spot for token cost vs coverage |
-| CLAUDE_MEM_TIER_ROUTING_ENABLED | (proposed in PR #1569) | true | ~52% cost savings, no quality loss |
+| CLAUDE_MEM_SEMANTIC_INJECT | true | true | Relevant context >> recent context |
+| CLAUDE_MEM_SEMANTIC_INJECT_LIMIT | 5 | 5 | Sweet spot for token cost vs coverage |
+| CLAUDE_MEM_TIER_ROUTING_ENABLED | true | true | ~52% cost savings, no quality loss |
 
 ## Health Monitoring
 
@@ -75,7 +75,7 @@ Based on active daily development usage:
 
 **Symptom:** `[ERROR] Batch add failed... IDs already exist`
 **Cause:** MCP timeout during add leaves partial writes; retry fails on existing IDs.
-**Fix:** PR #1566 — fallback to update (upsert pattern).
+**Fix:** PR #1566 — fallback to delete+add reconciliation.
 
 ### Port conflict on startup
 

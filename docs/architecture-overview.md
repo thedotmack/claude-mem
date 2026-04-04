@@ -96,7 +96,7 @@ The worker being unavailable NEVER blocks the user's Claude Code session.
 ### Deduplication (observations)
 
 ```text
-SHA256(memory_session_id + title + narrative) -> content_hash
+SHA256(memory_session_id + title + narrative)[:16] -> content_hash (16 hex chars)
 If hash exists within 30s window -> return existing ID (no insert)
 ```
 
