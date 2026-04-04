@@ -21,13 +21,12 @@ import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { findMcpServerPath } from './CursorHooksInstaller.js';
+import { readJsonSafe } from '../../utils/json-utils.js';
+import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 
 // ============================================================================
 // Shared Constants
 // ============================================================================
-
-const CONTEXT_TAG_OPEN = '<claude-mem-context>';
-const CONTEXT_TAG_CLOSE = '</claude-mem-context>';
 
 const PLACEHOLDER_CONTEXT = `# claude-mem: Cross-Session Memory
 
@@ -45,55 +44,9 @@ Use claude-mem's MCP search tools for manual memory queries.`;
  */
 function buildMcpServerEntry(mcpServerPath: string): { command: string; args: string[] } {
   return {
-    command: 'node',
+    command: process.execPath,
     args: [mcpServerPath],
   };
-}
-
-/**
- * Read a JSON file safely, returning a default value if it doesn't exist or is corrupt.
- */
-function readJsonSafe<T>(filePath: string, defaultValue: T): T {
-  if (!existsSync(filePath)) return defaultValue;
-  try {
-    return JSON.parse(readFileSync(filePath, 'utf-8'));
-  } catch (error) {
-    logger.error('MCP', `Corrupt JSON file, using default`, { path: filePath }, error as Error);
-    return defaultValue;
-  }
-}
-
-/**
- * Inject or update a <claude-mem-context> section in a markdown file.
- * Creates the file if it doesn't exist. Preserves content outside the tags.
- */
-function injectContextIntoMarkdownFile(filePath: string, contextContent: string): void {
-  const parentDirectory = path.dirname(filePath);
-  mkdirSync(parentDirectory, { recursive: true });
-
-  const wrappedContent = `${CONTEXT_TAG_OPEN}\n${contextContent}\n${CONTEXT_TAG_CLOSE}`;
-
-  if (existsSync(filePath)) {
-    let existingContent = readFileSync(filePath, 'utf-8');
-
-    const tagStartIndex = existingContent.indexOf(CONTEXT_TAG_OPEN);
-    const tagEndIndex = existingContent.indexOf(CONTEXT_TAG_CLOSE);
-
-    if (tagStartIndex !== -1 && tagEndIndex !== -1) {
-      // Replace existing section
-      existingContent =
-        existingContent.slice(0, tagStartIndex) +
-        wrappedContent +
-        existingContent.slice(tagEndIndex + CONTEXT_TAG_CLOSE.length);
-    } else {
-      // Append section
-      existingContent = existingContent.trimEnd() + '\n\n' + wrappedContent + '\n';
-    }
-
-    writeFileSync(filePath, existingContent, 'utf-8');
-  } else {
-    writeFileSync(filePath, wrappedContent + '\n', 'utf-8');
-  }
 }
 
 /**
@@ -120,147 +73,142 @@ function writeMcpJsonConfig(
 }
 
 // ============================================================================
-// Copilot CLI
+// MCP Installer Factory (Phase 1D)
 // ============================================================================
 
 /**
- * Get the Copilot CLI MCP config path.
- * Copilot CLI uses ~/.github/copilot/mcp.json for user-level MCP config.
+ * Configuration for a JSON-based MCP IDE integration.
  */
-function getCopilotCliMcpConfigPath(): string {
-  return path.join(homedir(), '.github', 'copilot', 'mcp.json');
+interface McpInstallerConfig {
+  ideId: string;
+  ideLabel: string;
+  configPath: string;
+  configKey: 'servers' | 'mcpServers';
+  contextFile?: {
+    path: string;
+    isWorkspaceRelative: boolean;
+  };
 }
 
 /**
- * Get the Copilot CLI context injection path for the current workspace.
- * Copilot reads instructions from .github/copilot-instructions.md in the workspace.
+ * Factory function that creates an MCP installer for any JSON-config-based IDE.
+ * Handles MCP config writing and optional context injection.
  */
-function getCopilotCliContextPath(): string {
-  return path.join(process.cwd(), '.github', 'copilot-instructions.md');
-}
+function installMcpIntegration(config: McpInstallerConfig): () => Promise<number> {
+  return async (): Promise<number> => {
+    console.log(`\nInstalling Claude-Mem MCP integration for ${config.ideLabel}...\n`);
 
-/**
- * Install claude-mem MCP integration for Copilot CLI.
- *
- * - Writes MCP config to ~/.github/copilot/mcp.json
- * - Injects context into .github/copilot-instructions.md in the workspace
- *
- * @returns 0 on success, 1 on failure
- */
-export async function installCopilotCliMcpIntegration(): Promise<number> {
-  console.log('\nInstalling Claude-Mem MCP integration for Copilot CLI...\n');
+    const mcpServerPath = findMcpServerPath();
+    if (!mcpServerPath) {
+      console.error('Could not find MCP server script');
+      console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
+      return 1;
+    }
 
-  const mcpServerPath = findMcpServerPath();
-  if (!mcpServerPath) {
-    console.error('Could not find MCP server script');
-    console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
-    return 1;
-  }
+    try {
+      // Write MCP config
+      const configPath = config.configPath;
 
-  try {
-    // Write MCP config — Copilot CLI uses { "servers": { ... } } format
-    const configPath = getCopilotCliMcpConfigPath();
-    writeMcpJsonConfig(configPath, mcpServerPath, 'servers');
-    console.log(`  MCP config written to: ${configPath}`);
+      // Warp special case: skip config write if ~/.warp/ doesn't exist
+      if (config.ideId === 'warp' && !existsSync(path.dirname(configPath))) {
+        console.log(`  Note: ~/.warp/ not found. MCP may need to be configured via Warp Drive UI.`);
+      } else {
+        writeMcpJsonConfig(configPath, mcpServerPath, config.configKey);
+        console.log(`  MCP config written to: ${configPath}`);
+      }
 
-    // Inject context into workspace instructions
-    const contextPath = getCopilotCliContextPath();
-    injectContextIntoMarkdownFile(contextPath, PLACEHOLDER_CONTEXT);
-    console.log(`  Context placeholder written to: ${contextPath}`);
+      // Inject context if configured
+      let contextPath: string | undefined;
+      if (config.contextFile) {
+        contextPath = config.contextFile.path;
+        injectContextIntoMarkdownFile(contextPath, PLACEHOLDER_CONTEXT);
+        console.log(`  Context placeholder written to: ${contextPath}`);
+      }
 
-    console.log(`
-Installation complete!
+      // Print summary
+      const summaryLines = [`\nInstallation complete!\n`];
+      summaryLines.push(`MCP config:  ${configPath}`);
+      if (contextPath) {
+        summaryLines.push(`Context:     ${contextPath}`);
+      }
+      summaryLines.push('');
+      summaryLines.push(`Note: This is an MCP-only integration providing search tools and context.`);
+      summaryLines.push(`Transcript capture is not available for ${config.ideLabel}.`);
+      if (config.ideId === 'warp') {
+        summaryLines.push('If MCP config via file is not supported, configure MCP through Warp Drive UI.');
+      }
+      summaryLines.push('');
+      summaryLines.push('Next steps:');
+      summaryLines.push('  1. Start claude-mem worker: npx claude-mem start');
+      summaryLines.push(`  2. Restart ${config.ideLabel} to pick up the MCP server`);
+      summaryLines.push('');
+      console.log(summaryLines.join('\n'));
 
-MCP config:  ${configPath}
-Context:     ${contextPath}
-
-Note: This is an MCP-only integration providing search tools and context.
-Transcript capture is not available for Copilot CLI.
-
-Next steps:
-  1. Start claude-mem worker: npx claude-mem start
-  2. Restart Copilot CLI to pick up the MCP server
-`);
-
-    return 0;
-  } catch (error) {
-    console.error(`\nInstallation failed: ${(error as Error).message}`);
-    return 1;
-  }
+      return 0;
+    } catch (error) {
+      console.error(`\nInstallation failed: ${(error as Error).message}`);
+      return 1;
+    }
+  };
 }
 
 // ============================================================================
-// Antigravity
+// Factory Configs for JSON-based IDEs
 // ============================================================================
 
-/**
- * Get the Antigravity MCP config path.
- * Antigravity stores MCP config at ~/.gemini/antigravity/mcp_config.json.
- */
-function getAntigravityMcpConfigPath(): string {
-  return path.join(homedir(), '.gemini', 'antigravity', 'mcp_config.json');
-}
+const COPILOT_CLI_CONFIG: McpInstallerConfig = {
+  ideId: 'copilot-cli',
+  ideLabel: 'Copilot CLI',
+  configPath: path.join(homedir(), '.github', 'copilot', 'mcp.json'),
+  configKey: 'servers',
+  contextFile: {
+    path: path.join(process.cwd(), '.github', 'copilot-instructions.md'),
+    isWorkspaceRelative: true,
+  },
+};
 
-/**
- * Get the Antigravity context injection path for the current workspace.
- * Antigravity reads agent rules from .agent/rules/ in the workspace.
- */
-function getAntigravityContextPath(): string {
-  return path.join(process.cwd(), '.agent', 'rules', 'claude-mem-context.md');
-}
+const ANTIGRAVITY_CONFIG: McpInstallerConfig = {
+  ideId: 'antigravity',
+  ideLabel: 'Antigravity',
+  configPath: path.join(homedir(), '.gemini', 'antigravity', 'mcp_config.json'),
+  configKey: 'mcpServers',
+  contextFile: {
+    path: path.join(process.cwd(), '.agent', 'rules', 'claude-mem-context.md'),
+    isWorkspaceRelative: true,
+  },
+};
 
-/**
- * Install claude-mem MCP integration for Antigravity.
- *
- * - Writes MCP config to ~/.gemini/antigravity/mcp_config.json
- * - Injects context into .agent/rules/claude-mem-context.md in the workspace
- *
- * @returns 0 on success, 1 on failure
- */
-export async function installAntigravityMcpIntegration(): Promise<number> {
-  console.log('\nInstalling Claude-Mem MCP integration for Antigravity...\n');
+const CRUSH_CONFIG: McpInstallerConfig = {
+  ideId: 'crush',
+  ideLabel: 'Crush',
+  configPath: path.join(homedir(), '.config', 'crush', 'mcp.json'),
+  configKey: 'mcpServers',
+};
 
-  const mcpServerPath = findMcpServerPath();
-  if (!mcpServerPath) {
-    console.error('Could not find MCP server script');
-    console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
-    return 1;
-  }
+const ROO_CODE_CONFIG: McpInstallerConfig = {
+  ideId: 'roo-code',
+  ideLabel: 'Roo Code',
+  configPath: path.join(process.cwd(), '.roo', 'mcp.json'),
+  configKey: 'mcpServers',
+  contextFile: {
+    path: path.join(process.cwd(), '.roo', 'rules', 'claude-mem-context.md'),
+    isWorkspaceRelative: true,
+  },
+};
 
-  try {
-    // Write MCP config
-    const configPath = getAntigravityMcpConfigPath();
-    writeMcpJsonConfig(configPath, mcpServerPath);
-    console.log(`  MCP config written to: ${configPath}`);
-
-    // Inject context into workspace rules
-    const contextPath = getAntigravityContextPath();
-    injectContextIntoMarkdownFile(contextPath, PLACEHOLDER_CONTEXT);
-    console.log(`  Context placeholder written to: ${contextPath}`);
-
-    console.log(`
-Installation complete!
-
-MCP config:  ${configPath}
-Context:     ${contextPath}
-
-Note: This is an MCP-only integration providing search tools and context.
-Transcript capture is not available for Antigravity.
-
-Next steps:
-  1. Start claude-mem worker: npx claude-mem start
-  2. Restart Antigravity to pick up the MCP server
-`);
-
-    return 0;
-  } catch (error) {
-    console.error(`\nInstallation failed: ${(error as Error).message}`);
-    return 1;
-  }
-}
+const WARP_CONFIG: McpInstallerConfig = {
+  ideId: 'warp',
+  ideLabel: 'Warp',
+  configPath: path.join(homedir(), '.warp', 'mcp.json'),
+  configKey: 'mcpServers',
+  contextFile: {
+    path: path.join(process.cwd(), 'WARP.md'),
+    isWorkspaceRelative: true,
+  },
+};
 
 // ============================================================================
-// Goose
+// Goose (YAML-based — separate handler)
 // ============================================================================
 
 /**
@@ -290,7 +238,7 @@ function buildGooseMcpYamlBlock(mcpServerPath: string): string {
   return [
     'mcpServers:',
     '  claude-mem:',
-    '    command: node',
+    `    command: ${process.execPath}`,
     '    args:',
     `      - ${mcpServerPath}`,
   ].join('\n');
@@ -302,7 +250,7 @@ function buildGooseMcpYamlBlock(mcpServerPath: string): string {
 function buildGooseClaudeMemEntryYaml(mcpServerPath: string): string {
   return [
     '  claude-mem:',
-    '    command: node',
+    `    command: ${process.execPath}`,
     '    args:',
     `      - ${mcpServerPath}`,
   ].join('\n');
@@ -393,206 +341,6 @@ Next steps:
 }
 
 // ============================================================================
-// Crush
-// ============================================================================
-
-/**
- * Get the Crush MCP config path.
- * Crush stores MCP config at ~/.config/crush/mcp.json.
- */
-function getCrushMcpConfigPath(): string {
-  return path.join(homedir(), '.config', 'crush', 'mcp.json');
-}
-
-/**
- * Install claude-mem MCP integration for Crush.
- *
- * - Writes MCP config to ~/.config/crush/mcp.json
- *
- * @returns 0 on success, 1 on failure
- */
-export async function installCrushMcpIntegration(): Promise<number> {
-  console.log('\nInstalling Claude-Mem MCP integration for Crush...\n');
-
-  const mcpServerPath = findMcpServerPath();
-  if (!mcpServerPath) {
-    console.error('Could not find MCP server script');
-    console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
-    return 1;
-  }
-
-  try {
-    // Write MCP config
-    const configPath = getCrushMcpConfigPath();
-    writeMcpJsonConfig(configPath, mcpServerPath);
-    console.log(`  MCP config written to: ${configPath}`);
-
-    console.log(`
-Installation complete!
-
-MCP config:  ${configPath}
-
-Note: This is an MCP-only integration providing search tools and context.
-Transcript capture is not available for Crush.
-
-Next steps:
-  1. Start claude-mem worker: npx claude-mem start
-  2. Restart Crush to pick up the MCP server
-`);
-
-    return 0;
-  } catch (error) {
-    console.error(`\nInstallation failed: ${(error as Error).message}`);
-    return 1;
-  }
-}
-
-// ============================================================================
-// Roo Code
-// ============================================================================
-
-/**
- * Get the Roo Code MCP config path for the current workspace.
- * Roo Code reads MCP config from .roo/mcp.json in the workspace.
- */
-function getRooCodeMcpConfigPath(): string {
-  return path.join(process.cwd(), '.roo', 'mcp.json');
-}
-
-/**
- * Get the Roo Code context injection path for the current workspace.
- * Roo Code reads rules from .roo/rules/ in the workspace.
- */
-function getRooCodeContextPath(): string {
-  return path.join(process.cwd(), '.roo', 'rules', 'claude-mem-context.md');
-}
-
-/**
- * Install claude-mem MCP integration for Roo Code.
- *
- * - Writes MCP config to .roo/mcp.json in the workspace
- * - Injects context into .roo/rules/claude-mem-context.md in the workspace
- *
- * @returns 0 on success, 1 on failure
- */
-export async function installRooCodeMcpIntegration(): Promise<number> {
-  console.log('\nInstalling Claude-Mem MCP integration for Roo Code...\n');
-
-  const mcpServerPath = findMcpServerPath();
-  if (!mcpServerPath) {
-    console.error('Could not find MCP server script');
-    console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
-    return 1;
-  }
-
-  try {
-    // Write MCP config to workspace
-    const configPath = getRooCodeMcpConfigPath();
-    writeMcpJsonConfig(configPath, mcpServerPath);
-    console.log(`  MCP config written to: ${configPath}`);
-
-    // Inject context into workspace rules
-    const contextPath = getRooCodeContextPath();
-    injectContextIntoMarkdownFile(contextPath, PLACEHOLDER_CONTEXT);
-    console.log(`  Context placeholder written to: ${contextPath}`);
-
-    console.log(`
-Installation complete!
-
-MCP config:  ${configPath}
-Context:     ${contextPath}
-
-Note: This is an MCP-only integration providing search tools and context.
-Transcript capture is not available for Roo Code.
-
-Next steps:
-  1. Start claude-mem worker: npx claude-mem start
-  2. Restart Roo Code to pick up the MCP server
-`);
-
-    return 0;
-  } catch (error) {
-    console.error(`\nInstallation failed: ${(error as Error).message}`);
-    return 1;
-  }
-}
-
-// ============================================================================
-// Warp
-// ============================================================================
-
-/**
- * Get the Warp context injection path for the current workspace.
- * Warp reads project-level instructions from WARP.md in the project root.
- */
-function getWarpContextPath(): string {
-  return path.join(process.cwd(), 'WARP.md');
-}
-
-/**
- * Get the Warp MCP config path.
- * Warp stores MCP config at ~/.warp/mcp.json when supported.
- */
-function getWarpMcpConfigPath(): string {
-  return path.join(homedir(), '.warp', 'mcp.json');
-}
-
-/**
- * Install claude-mem MCP integration for Warp.
- *
- * - Writes MCP config to ~/.warp/mcp.json
- * - Injects context into WARP.md in the project root
- *
- * @returns 0 on success, 1 on failure
- */
-export async function installWarpMcpIntegration(): Promise<number> {
-  console.log('\nInstalling Claude-Mem MCP integration for Warp...\n');
-
-  const mcpServerPath = findMcpServerPath();
-  if (!mcpServerPath) {
-    console.error('Could not find MCP server script');
-    console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
-    return 1;
-  }
-
-  try {
-    // Write MCP config — Warp may also support configuring MCP via Warp Drive UI
-    const configPath = getWarpMcpConfigPath();
-    if (existsSync(path.dirname(configPath))) {
-      writeMcpJsonConfig(configPath, mcpServerPath);
-      console.log(`  MCP config written to: ${configPath}`);
-    } else {
-      console.log(`  Note: ~/.warp/ not found. MCP may need to be configured via Warp Drive UI.`);
-    }
-
-    // Inject context into project-level WARP.md
-    const contextPath = getWarpContextPath();
-    injectContextIntoMarkdownFile(contextPath, PLACEHOLDER_CONTEXT);
-    console.log(`  Context placeholder written to: ${contextPath}`);
-
-    console.log(`
-Installation complete!
-
-MCP config:  ${configPath}
-Context:     ${contextPath}
-
-Note: This is an MCP-only integration providing search tools and context.
-Transcript capture is not available for Warp.
-If MCP config via file is not supported, configure MCP through Warp Drive UI.
-
-Next steps:
-  1. Start claude-mem worker: npx claude-mem start
-  2. Restart Warp to pick up the MCP server
-`);
-
-    return 0;
-  } catch (error) {
-    console.error(`\nInstallation failed: ${(error as Error).message}`);
-    return 1;
-  }
-}
-
-// ============================================================================
 // Unified Installer (used by npx install command)
 // ============================================================================
 
@@ -601,10 +349,10 @@ Next steps:
  * Used by the install command to dispatch to the correct integration.
  */
 export const MCP_IDE_INSTALLERS: Record<string, () => Promise<number>> = {
-  'copilot-cli': installCopilotCliMcpIntegration,
-  'antigravity': installAntigravityMcpIntegration,
+  'copilot-cli': installMcpIntegration(COPILOT_CLI_CONFIG),
+  'antigravity': installMcpIntegration(ANTIGRAVITY_CONFIG),
   'goose': installGooseMcpIntegration,
-  'crush': installCrushMcpIntegration,
-  'roo-code': installRooCodeMcpIntegration,
-  'warp': installWarpMcpIntegration,
+  'crush': installMcpIntegration(CRUSH_CONFIG),
+  'roo-code': installMcpIntegration(ROO_CODE_CONFIG),
+  'warp': installMcpIntegration(WARP_CONFIG),
 };

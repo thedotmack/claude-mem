@@ -18,9 +18,9 @@ import {
   knownMarketplacesPath,
   marketplaceDirectory,
   pluginsDirectory,
-  readJsonFileSafe,
   writeJsonFileAtomic,
 } from '../utils/paths.js';
+import { readJsonSafe } from '../../utils/json-utils.js';
 
 // ---------------------------------------------------------------------------
 // Cleanup helpers
@@ -45,7 +45,7 @@ function removeCacheDirectory(): boolean {
 }
 
 function removeFromKnownMarketplaces(): void {
-  const knownMarketplaces = readJsonFileSafe(knownMarketplacesPath());
+  const knownMarketplaces = readJsonSafe<Record<string, any>>(knownMarketplacesPath(), {});
   if (knownMarketplaces['thedotmack']) {
     delete knownMarketplaces['thedotmack'];
     writeJsonFileAtomic(knownMarketplacesPath(), knownMarketplaces);
@@ -53,7 +53,7 @@ function removeFromKnownMarketplaces(): void {
 }
 
 function removeFromInstalledPlugins(): void {
-  const installedPlugins = readJsonFileSafe(installedPluginsPath());
+  const installedPlugins = readJsonSafe<Record<string, any>>(installedPluginsPath(), {});
   if (installedPlugins.plugins?.['claude-mem@thedotmack']) {
     delete installedPlugins.plugins['claude-mem@thedotmack'];
     writeJsonFileAtomic(installedPluginsPath(), installedPlugins);
@@ -61,7 +61,7 @@ function removeFromInstalledPlugins(): void {
 }
 
 function removeFromClaudeSettings(): void {
-  const settings = readJsonFileSafe(claudeSettingsPath());
+  const settings = readJsonSafe<Record<string, any>>(claudeSettingsPath(), {});
   if (settings.enabledPlugins?.['claude-mem@thedotmack'] !== undefined) {
     delete settings.enabledPlugins['claude-mem@thedotmack'];
     writeJsonFileAtomic(claudeSettingsPath(), settings);

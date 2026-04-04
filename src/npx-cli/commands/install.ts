@@ -12,6 +12,34 @@ import pc from 'picocolors';
 import { execSync } from 'child_process';
 import { cpSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+
+// Non-TTY detection: @clack/prompts crashes with ENOENT in non-TTY environments
+const isInteractive = process.stdin.isTTY === true;
+
+/** Run a list of tasks, falling back to plain console.log when non-TTY */
+interface TaskDescriptor {
+  title: string;
+  task: (message: (msg: string) => void) => Promise<string>;
+}
+
+async function runTasks(tasks: TaskDescriptor[]): Promise<void> {
+  if (isInteractive) {
+    await p.tasks(tasks);
+  } else {
+    for (const t of tasks) {
+      const result = await t.task((msg: string) => console.log(`  ${msg}`));
+      console.log(`  ${result}`);
+    }
+  }
+}
+
+/** Log helpers that fall back to console.log in non-TTY */
+const log = {
+  info: (msg: string) => isInteractive ? p.log.info(msg) : console.log(`  ${msg}`),
+  success: (msg: string) => isInteractive ? p.log.success(msg) : console.log(`  ${msg}`),
+  warn: (msg: string) => isInteractive ? p.log.warn(msg) : console.warn(`  ${msg}`),
+  error: (msg: string) => isInteractive ? p.log.error(msg) : console.error(`  ${msg}`),
+};
 import {
   claudeSettingsPath,
   ensureDirectoryExists,
@@ -23,10 +51,10 @@ import {
   npmPackageRootDirectory,
   pluginCacheDirectory,
   pluginsDirectory,
-  readJsonFileSafe,
   readPluginVersion,
   writeJsonFileAtomic,
 } from '../utils/paths.js';
+import { readJsonSafe } from '../../utils/json-utils.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 
 // ---------------------------------------------------------------------------
@@ -34,7 +62,7 @@ import { detectInstalledIDEs } from './ide-detection.js';
 // ---------------------------------------------------------------------------
 
 function registerMarketplace(): void {
-  const knownMarketplaces = readJsonFileSafe(knownMarketplacesPath());
+  const knownMarketplaces = readJsonSafe<Record<string, any>>(knownMarketplacesPath(), {});
 
   knownMarketplaces['thedotmack'] = {
     source: {
@@ -51,7 +79,7 @@ function registerMarketplace(): void {
 }
 
 function registerPlugin(version: string): void {
-  const installedPlugins = readJsonFileSafe(installedPluginsPath());
+  const installedPlugins = readJsonSafe<Record<string, any>>(installedPluginsPath(), {});
 
   if (!installedPlugins.version) installedPlugins.version = 2;
   if (!installedPlugins.plugins) installedPlugins.plugins = {};
@@ -73,7 +101,7 @@ function registerPlugin(version: string): void {
 }
 
 function enablePluginInClaudeSettings(): void {
-  const settings = readJsonFileSafe(claudeSettingsPath());
+  const settings = readJsonSafe<Record<string, any>>(claudeSettingsPath(), {});
 
   if (!settings.enabledPlugins) settings.enabledPlugins = {};
   settings.enabledPlugins['claude-mem@thedotmack'] = true;
@@ -91,21 +119,21 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
       case 'claude-code':
         // Claude Code picks up the plugin via marketplace registration — nothing
         // else to do beyond what registerMarketplace / registerPlugin already did.
-        p.log.success('Claude Code: plugin registered via marketplace.');
+        log.success('Claude Code: plugin registered via marketplace.');
         break;
 
       case 'cursor':
-        p.log.info('Cursor: hook configuration available after first launch.');
-        p.log.info(`  Run: npx claude-mem cursor-setup (coming soon)`);
+        log.info('Cursor: hook configuration available after first launch.');
+        log.info(`  Run: npx claude-mem cursor-setup (coming soon)`);
         break;
 
       case 'gemini-cli': {
         const { installGeminiCliHooks } = await import('../../services/integrations/GeminiCliHooksInstaller.js');
         const geminiResult = await installGeminiCliHooks();
         if (geminiResult === 0) {
-          p.log.success('Gemini CLI: hooks installed.');
+          log.success('Gemini CLI: hooks installed.');
         } else {
-          p.log.error('Gemini CLI: hook installation failed.');
+          log.error('Gemini CLI: hook installation failed.');
         }
         break;
       }
@@ -114,9 +142,9 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
         const { installOpenCodeIntegration } = await import('../../services/integrations/OpenCodeInstaller.js');
         const openCodeResult = await installOpenCodeIntegration();
         if (openCodeResult === 0) {
-          p.log.success('OpenCode: plugin installed.');
+          log.success('OpenCode: plugin installed.');
         } else {
-          p.log.error('OpenCode: plugin installation failed.');
+          log.error('OpenCode: plugin installation failed.');
         }
         break;
       }
@@ -125,9 +153,9 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
         const { installWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
         const windsurfResult = await installWindsurfHooks();
         if (windsurfResult === 0) {
-          p.log.success('Windsurf: hooks installed.');
+          log.success('Windsurf: hooks installed.');
         } else {
-          p.log.error('Windsurf: hook installation failed.');
+          log.error('Windsurf: hook installation failed.');
         }
         break;
       }
@@ -136,9 +164,9 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
         const { installOpenClawIntegration } = await import('../../services/integrations/OpenClawInstaller.js');
         const openClawResult = await installOpenClawIntegration();
         if (openClawResult === 0) {
-          p.log.success('OpenClaw: plugin installed.');
+          log.success('OpenClaw: plugin installed.');
         } else {
-          p.log.error('OpenClaw: plugin installation failed.');
+          log.error('OpenClaw: plugin installation failed.');
         }
         break;
       }
@@ -147,9 +175,9 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
         const { installCodexCli } = await import('../../services/integrations/CodexCliInstaller.js');
         const codexResult = await installCodexCli();
         if (codexResult === 0) {
-          p.log.success('Codex CLI: transcript watching configured.');
+          log.success('Codex CLI: transcript watching configured.');
         } else {
-          p.log.error('Codex CLI: integration setup failed.');
+          log.error('Codex CLI: integration setup failed.');
         }
         break;
       }
@@ -168,9 +196,9 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
           const ideInfo = allIDEs.find((i) => i.id === ideId);
           const ideLabel = ideInfo?.label ?? ideId;
           if (mcpResult === 0) {
-            p.log.success(`${ideLabel}: MCP integration installed.`);
+            log.success(`${ideLabel}: MCP integration installed.`);
           } else {
-            p.log.error(`${ideLabel}: MCP integration failed.`);
+            log.error(`${ideLabel}: MCP integration failed.`);
           }
         }
         break;
@@ -180,7 +208,7 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
         const allIDEs = detectInstalledIDEs();
         const ide = allIDEs.find((i) => i.id === ideId);
         if (ide && !ide.supported) {
-          p.log.warn(`Support for ${ide.label} coming soon.`);
+          log.warn(`Support for ${ide.label} coming soon.`);
         }
         break;
       }
@@ -197,7 +225,7 @@ async function promptForIDESelection(): Promise<string[]> {
   const detected = detectedIDEs.filter((ide) => ide.detected);
 
   if (detected.length === 0) {
-    p.log.warn('No supported IDEs detected. Installing for Claude Code by default.');
+    log.warn('No supported IDEs detected. Installing for Claude Code by default.');
     return ['claude-code'];
   }
 
@@ -295,7 +323,7 @@ function runSmartInstall(): void {
   const smartInstallPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'smart-install.js');
 
   if (!existsSync(smartInstallPath)) {
-    p.log.warn('smart-install.js not found — skipping Bun/uv auto-install.');
+    log.warn('smart-install.js not found — skipping Bun/uv auto-install.');
     return;
   }
 
@@ -305,7 +333,7 @@ function runSmartInstall(): void {
       ...(IS_WINDOWS ? { shell: true as const } : {}),
     });
   } catch {
-    p.log.warn('smart-install encountered an issue. You may need to install Bun/uv manually.');
+    log.warn('smart-install encountered an issue. You may need to install Bun/uv manually.');
   }
 }
 
@@ -321,9 +349,13 @@ export interface InstallOptions {
 export async function runInstallCommand(options: InstallOptions = {}): Promise<void> {
   const version = readPluginVersion();
 
-  p.intro(pc.bgCyan(pc.black(' claude-mem install ')));
-  p.log.info(`Version: ${pc.cyan(version)}`);
-  p.log.info(`Platform: ${process.platform} (${process.arch})`);
+  if (isInteractive) {
+    p.intro(pc.bgCyan(pc.black(' claude-mem install ')));
+  } else {
+    console.log('claude-mem install');
+  }
+  log.info(`Version: ${pc.cyan(version)}`);
+  log.info(`Platform: ${process.platform} (${process.arch})`);
 
   // Check for existing installation
   const marketplaceDir = marketplaceDirectory();
@@ -335,9 +367,9 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
       const existingPluginJson = JSON.parse(
         readFileSync(join(marketplaceDir, 'plugin', '.claude-plugin', 'plugin.json'), 'utf-8'),
       );
-      p.log.warn(`Existing installation detected (v${existingPluginJson.version ?? 'unknown'}).`);
+      log.warn(`Existing installation detected (v${existingPluginJson.version ?? 'unknown'}).`);
     } catch {
-      p.log.warn('Existing installation detected.');
+      log.warn('Existing installation detected.');
     }
 
     if (process.stdin.isTTY) {
@@ -360,12 +392,12 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     const allIDEs = detectInstalledIDEs();
     const match = allIDEs.find((i) => i.id === options.ide);
     if (match && !match.supported) {
-      p.log.error(`Support for ${match.label} coming soon.`);
+      log.error(`Support for ${match.label} coming soon.`);
       process.exit(1);
     }
     if (!match) {
-      p.log.error(`Unknown IDE: ${options.ide}`);
-      p.log.info(`Available IDEs: ${allIDEs.map((i) => i.id).join(', ')}`);
+      log.error(`Unknown IDE: ${options.ide}`);
+      log.info(`Available IDEs: ${allIDEs.map((i) => i.id).join(', ')}`);
       process.exit(1);
     }
   } else if (process.stdin.isTTY) {
@@ -376,7 +408,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   }
 
   // Run tasks
-  await p.tasks([
+  await runTasks([
     {
       title: 'Copying plugin files',
       task: async (message) => {
@@ -450,7 +482,12 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     `IDEs:        ${pc.cyan(selectedIDEs.join(', '))}`,
   ];
 
-  p.note(summaryLines.join('\n'), 'Installation Complete');
+  if (isInteractive) {
+    p.note(summaryLines.join('\n'), 'Installation Complete');
+  } else {
+    console.log('\n  Installation Complete');
+    summaryLines.forEach(l => console.log(`  ${l}`));
+  }
 
   const nextSteps = [
     'Open Claude Code and start a conversation -- memory is automatic!',
@@ -459,7 +496,12 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     `Start worker: ${pc.bold('npx claude-mem start')}`,
   ];
 
-  p.note(nextSteps.join('\n'), 'Next Steps');
-
-  p.outro(pc.green('claude-mem installed successfully!'));
+  if (isInteractive) {
+    p.note(nextSteps.join('\n'), 'Next Steps');
+    p.outro(pc.green('claude-mem installed successfully!'));
+  } else {
+    console.log('\n  Next Steps');
+    nextSteps.forEach(l => console.log(`  ${l}`));
+    console.log('\nclaude-mem installed successfully!');
+  }
 }

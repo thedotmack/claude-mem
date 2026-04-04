@@ -1,148 +1,270 @@
 /**
- * GeminiCliHooksInstaller - First-class Gemini CLI integration for claude-mem
+ * GeminiCliHooksInstaller - Gemini CLI integration for claude-mem
  *
- * Installs claude-mem hooks into ~/.gemini/settings.json using deep merge
- * to preserve any existing user configuration.
+ * Installs hooks into ~/.gemini/settings.json using the unified CLI:
+ *   bun worker-service.cjs hook gemini-cli <event>
  *
- * Gemini CLI hook config format:
- * {
- *   "hooks": {
- *     "AfterTool": [{
- *       "matcher": "*",
- *       "hooks": [{ "name": "claude-mem", "type": "command", "command": "...", "timeout": 5000, "description": "..." }]
- *     }]
+ * This routes through the hook-command.ts framework:
+ *   readJsonFromStdin() → gemini-cli adapter → event handler → POST to worker
+ *
+ * Gemini CLI supports 11 lifecycle hooks; we register 8 that map to
+ * useful memory events. See src/cli/adapters/gemini-cli.ts for the
+ * adapter that normalizes Gemini's stdin JSON to NormalizedHookInput.
+ *
+ * Hook config format (verified against Gemini CLI source):
+ *   {
+ *     "hooks": {
+ *       "AfterTool": [{
+ *         "matcher": "*",
+ *         "hooks": [{ "name": "claude-mem", "type": "command", "command": "...", "timeout": 5000 }]
+ *       }]
+ *     }
  *   }
- * }
- *
- * Registers 8 of 11 Gemini CLI hooks:
- *   SessionStart  — inject memory context (via hookSpecificOutput.additionalContext)
- *   BeforeAgent   — capture user prompt
- *   AfterAgent    — capture full agent response
- *   BeforeTool    — capture tool intent before execution
- *   AfterTool     — capture all tool results (matcher: "*")
- *   Notification  — capture system events (ToolPermission, etc.)
- *   PreCompress   — trigger summary generation
- *   SessionEnd    — finalize session
- *
- * Skipped (model-level, too chatty):
- *   BeforeModel, AfterModel, BeforeToolSelection
  */
 
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { replaceTaggedContent } from '../../utils/claude-md-utils.js';
-import { findBunPath, findWorkerServicePath } from './CursorHooksInstaller.js';
+import { findWorkerServicePath, findBunPath } from './CursorHooksInstaller.js';
 
-// ---------------------------------------------------------------------------
+// ============================================================================
 // Types
-// ---------------------------------------------------------------------------
+// ============================================================================
 
+/** A single hook entry in a Gemini CLI hook group */
 interface GeminiHookEntry {
   name: string;
   type: 'command';
   command: string;
   timeout: number;
-  description?: string;
 }
 
-interface GeminiHookMatcher {
+/** A hook group — matcher selects which tools/events this applies to */
+interface GeminiHookGroup {
   matcher: string;
   hooks: GeminiHookEntry[];
 }
 
-interface GeminiSettingsJson {
-  hooks?: Record<string, GeminiHookMatcher[]>;
-  [otherKeys: string]: unknown;
+/** The hooks section in ~/.gemini/settings.json */
+interface GeminiHooksConfig {
+  [eventName: string]: GeminiHookGroup[];
 }
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+/** Full ~/.gemini/settings.json structure (partial — we only care about hooks) */
+interface GeminiSettingsJson {
+  hooks?: GeminiHooksConfig;
+  [key: string]: unknown;
+}
 
-const GEMINI_DIR = path.join(homedir(), '.gemini');
-const GEMINI_SETTINGS_PATH = path.join(GEMINI_DIR, 'settings.json');
-const GEMINI_MD_PATH = path.join(GEMINI_DIR, 'GEMINI.md');
+// ============================================================================
+// Constants
+// ============================================================================
+
+const GEMINI_CONFIG_DIR = path.join(homedir(), '.gemini');
+const GEMINI_SETTINGS_PATH = path.join(GEMINI_CONFIG_DIR, 'settings.json');
+const GEMINI_MD_PATH = path.join(GEMINI_CONFIG_DIR, 'GEMINI.md');
+
 const HOOK_NAME = 'claude-mem';
-const HOOK_TIMEOUT_MS = 5000;
+const HOOK_TIMEOUT_MS = 10000;
 
 /**
- * Gemini CLI events → claude-mem internal events.
+ * Mapping from Gemini CLI hook events to internal claude-mem event types.
  *
- * We register 8 of 11 hooks. Skipped: BeforeModel, AfterModel, BeforeToolSelection
- * (model-level events fire per-LLM-call — too chatty for observation capture).
+ * These events are processed by hookCommand() in src/cli/hook-command.ts,
+ * which reads stdin via readJsonFromStdin(), normalizes through the
+ * gemini-cli adapter, and dispatches to the matching event handler.
+ *
+ * Events NOT mapped (too chatty for memory capture):
+ *   BeforeModel, AfterModel, BeforeToolSelection
  */
-interface GeminiEventConfig {
-  claudeMemEvent: string;
-  description: string;
-}
-
-const GEMINI_EVENTS: Record<string, GeminiEventConfig> = {
-  'SessionStart': { claudeMemEvent: 'context', description: 'Inject memory context from past sessions' },
-  'BeforeAgent': { claudeMemEvent: 'session-init', description: 'Initialize session and capture user prompt' },
-  'AfterAgent': { claudeMemEvent: 'observation', description: 'Capture full agent response' },
-  'BeforeTool': { claudeMemEvent: 'observation', description: 'Capture tool intent before execution' },
-  'AfterTool': { claudeMemEvent: 'observation', description: 'Capture tool results after execution' },
-  'Notification': { claudeMemEvent: 'observation', description: 'Capture system events (permissions, etc.)' },
-  'PreCompress': { claudeMemEvent: 'summarize', description: 'Generate session summary before compression' },
-  'SessionEnd': { claudeMemEvent: 'session-complete', description: 'Finalize session and persist memory' },
+const GEMINI_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
+  'SessionStart': 'context',
+  'BeforeAgent': 'user-message',
+  'AfterAgent': 'observation',
+  'BeforeTool': 'observation',
+  'AfterTool': 'observation',
+  'PreCompress': 'summarize',
+  'Notification': 'observation',
+  'SessionEnd': 'session-complete',
 };
 
-// ---------------------------------------------------------------------------
-// Deep Merge for Hook Arrays
-// ---------------------------------------------------------------------------
-
-/**
- * Merge claude-mem hooks into an existing event's hook matcher array.
- * If a matcher with the same `matcher` value already has a hook named "claude-mem",
- * it is replaced. Otherwise, the hook is appended.
- */
-function mergeHookMatchers(
-  existingMatchers: GeminiHookMatcher[],
-  newMatcher: GeminiHookMatcher,
-): GeminiHookMatcher[] {
-  const result = [...existingMatchers];
-
-  const existingMatcherIndex = result.findIndex(
-    (m) => m.matcher === newMatcher.matcher,
-  );
-
-  if (existingMatcherIndex !== -1) {
-    // Matcher exists — replace or add our hook within it
-    const existing = result[existingMatcherIndex];
-    const hookIndex = existing.hooks.findIndex((h) => h.name === HOOK_NAME);
-    if (hookIndex !== -1) {
-      existing.hooks[hookIndex] = newMatcher.hooks[0];
-    } else {
-      existing.hooks.push(newMatcher.hooks[0]);
-    }
-  } else {
-    // No matching matcher — add the whole entry
-    result.push(newMatcher);
-  }
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// Hook Installation
-// ---------------------------------------------------------------------------
+// ============================================================================
+// Hook Command Builder
+// ============================================================================
 
 /**
  * Build the hook command string for a given Gemini CLI event.
  *
- * Invokes: <bun-path> <worker-service.cjs> hook gemini-cli <event>
+ * The command invokes worker-service.cjs with the `hook` subcommand,
+ * which delegates to hookCommand('gemini-cli', event) — the same
+ * framework used by Claude Code and Cursor hooks.
+ *
+ * Pipeline: bun worker-service.cjs hook gemini-cli <event>
+ *   → worker-service.ts parses args, ensures worker daemon is running
+ *   → hookCommand('gemini-cli', '<event>')
+ *   → readJsonFromStdin() reads Gemini's JSON payload
+ *   → geminiCliAdapter.normalizeInput() → NormalizedHookInput
+ *   → eventHandler.execute(input)
+ *   → geminiCliAdapter.formatOutput(result)
+ *   → JSON.stringify to stdout
  */
-function buildHookCommand(bunPath: string, workerServicePath: string, claudeMemEvent: string): string {
+function buildHookCommand(
+  bunPath: string,
+  workerServicePath: string,
+  geminiEventName: string,
+): string {
+  const internalEvent = GEMINI_EVENT_TO_INTERNAL_EVENT[geminiEventName];
+  if (!internalEvent) {
+    throw new Error(`Unknown Gemini CLI event: ${geminiEventName}`);
+  }
+
+  // Escape backslashes for JSON compatibility on Windows
   const escapedBunPath = bunPath.replace(/\\/g, '\\\\');
   const escapedWorkerPath = workerServicePath.replace(/\\/g, '\\\\');
-  return `"${escapedBunPath}" "${escapedWorkerPath}" hook gemini-cli ${claudeMemEvent}`;
+
+  return `"${escapedBunPath}" "${escapedWorkerPath}" hook gemini-cli ${internalEvent}`;
 }
 
 /**
- * Install claude-mem hooks into Gemini CLI's settings.json.
- * Deep-merges with existing configuration — never overwrites.
+ * Create a hook group entry for a Gemini CLI event.
+ * Uses matcher "*" to match all tools/contexts for that event.
+ */
+function createHookGroup(hookCommand: string): GeminiHookGroup {
+  return {
+    matcher: '*',
+    hooks: [{
+      name: HOOK_NAME,
+      type: 'command',
+      command: hookCommand,
+      timeout: HOOK_TIMEOUT_MS,
+    }],
+  };
+}
+
+// ============================================================================
+// Settings JSON Management
+// ============================================================================
+
+/**
+ * Read ~/.gemini/settings.json, returning empty object if missing/corrupt.
+ */
+function readGeminiSettings(): GeminiSettingsJson {
+  if (!existsSync(GEMINI_SETTINGS_PATH)) {
+    return {};
+  }
+
+  try {
+    const content = readFileSync(GEMINI_SETTINGS_PATH, 'utf-8');
+    return JSON.parse(content) as GeminiSettingsJson;
+  } catch (error) {
+    logger.warn('GEMINI', `Failed to parse ${GEMINI_SETTINGS_PATH}, treating as empty`, {});
+    return {};
+  }
+}
+
+/**
+ * Write settings back to ~/.gemini/settings.json.
+ * Creates the directory if it doesn't exist.
+ */
+function writeGeminiSettings(settings: GeminiSettingsJson): void {
+  mkdirSync(GEMINI_CONFIG_DIR, { recursive: true });
+  writeFileSync(GEMINI_SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
+}
+
+/**
+ * Deep-merge claude-mem hooks into existing settings.
+ *
+ * For each event:
+ * - If the event already has a hook group with a claude-mem hook, update it
+ * - Otherwise, append a new hook group
+ *
+ * Preserves all non-claude-mem hooks and all non-hook settings.
+ */
+function mergeHooksIntoSettings(
+  existingSettings: GeminiSettingsJson,
+  newHooks: GeminiHooksConfig,
+): GeminiSettingsJson {
+  const settings = { ...existingSettings };
+  if (!settings.hooks) {
+    settings.hooks = {};
+  }
+
+  for (const [eventName, newGroups] of Object.entries(newHooks)) {
+    const existingGroups: GeminiHookGroup[] = settings.hooks[eventName] ?? [];
+
+    // For each new hook group, check if there's already a group
+    // containing a claude-mem hook — update it in place
+    for (const newGroup of newGroups) {
+      const existingGroupIndex = existingGroups.findIndex((group: GeminiHookGroup) =>
+        group.hooks.some((hook: GeminiHookEntry) => hook.name === HOOK_NAME)
+      );
+
+      if (existingGroupIndex >= 0) {
+        // Update existing group: replace the claude-mem hook entry
+        const existingGroup: GeminiHookGroup = existingGroups[existingGroupIndex];
+        const hookIndex = existingGroup.hooks.findIndex((hook: GeminiHookEntry) => hook.name === HOOK_NAME);
+        if (hookIndex >= 0) {
+          existingGroup.hooks[hookIndex] = newGroup.hooks[0];
+        } else {
+          existingGroup.hooks.push(newGroup.hooks[0]);
+        }
+      } else {
+        // No existing claude-mem group — append
+        existingGroups.push(newGroup);
+      }
+    }
+
+    settings.hooks[eventName] = existingGroups;
+  }
+
+  return settings;
+}
+
+// ============================================================================
+// GEMINI.md Context Injection
+// ============================================================================
+
+/**
+ * Append or update the claude-mem context section in ~/.gemini/GEMINI.md.
+ * Uses the same <claude-mem-context> tag pattern as CLAUDE.md.
+ */
+function setupGeminiMdContextSection(): void {
+  const contextTag = '<claude-mem-context>';
+  const contextEndTag = '</claude-mem-context>';
+  const placeholder = `${contextTag}
+# Memory Context from Past Sessions
+
+*No context yet. Complete your first session and context will appear here.*
+${contextEndTag}`;
+
+  let content = '';
+  if (existsSync(GEMINI_MD_PATH)) {
+    content = readFileSync(GEMINI_MD_PATH, 'utf-8');
+  }
+
+  if (content.includes(contextTag)) {
+    // Already has claude-mem section — leave it alone (may have real context)
+    return;
+  }
+
+  // Append the section
+  const separator = content.length > 0 && !content.endsWith('\n') ? '\n\n' : content.length > 0 ? '\n' : '';
+  const newContent = content + separator + placeholder + '\n';
+
+  mkdirSync(GEMINI_CONFIG_DIR, { recursive: true });
+  writeFileSync(GEMINI_MD_PATH, newContent);
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+/**
+ * Install claude-mem hooks into ~/.gemini/settings.json.
+ *
+ * Merges hooks non-destructively: existing settings and non-claude-mem
+ * hooks are preserved. Existing claude-mem hooks are updated in place.
  *
  * @returns 0 on success, 1 on failure
  */
@@ -162,80 +284,47 @@ export async function installGeminiCliHooks(): Promise<number> {
   console.log(`  Worker service: ${workerServicePath}`);
 
   try {
-    // Ensure ~/.gemini exists
-    mkdirSync(GEMINI_DIR, { recursive: true });
-
-    // Read existing settings (deep merge, never overwrite)
-    let settings: GeminiSettingsJson = {};
-    if (existsSync(GEMINI_SETTINGS_PATH)) {
-      try {
-        settings = JSON.parse(readFileSync(GEMINI_SETTINGS_PATH, 'utf-8'));
-      } catch (parseError) {
-        logger.error('GEMINI', 'Corrupt settings.json, creating backup', { path: GEMINI_SETTINGS_PATH }, parseError as Error);
-        // Back up corrupt file
-        const backupPath = `${GEMINI_SETTINGS_PATH}.backup.${Date.now()}`;
-        writeFileSync(backupPath, readFileSync(GEMINI_SETTINGS_PATH));
-        console.warn(`  Backed up corrupt settings.json to ${backupPath}`);
-        settings = {};
-      }
+    // Build hook commands for all mapped events
+    const hooksConfig: GeminiHooksConfig = {};
+    for (const geminiEvent of Object.keys(GEMINI_EVENT_TO_INTERNAL_EVENT)) {
+      const command = buildHookCommand(bunPath, workerServicePath, geminiEvent);
+      hooksConfig[geminiEvent] = [createHookGroup(command)];
     }
 
-    // Initialize hooks object if missing
-    if (!settings.hooks) {
-      settings.hooks = {};
+    // Read existing settings and merge
+    const existingSettings = readGeminiSettings();
+    const mergedSettings = mergeHooksIntoSettings(existingSettings, hooksConfig);
+
+    // Write back
+    writeGeminiSettings(mergedSettings);
+    console.log(`  Merged hooks into ${GEMINI_SETTINGS_PATH}`);
+
+    // Setup GEMINI.md context injection
+    setupGeminiMdContextSection();
+    console.log(`  Setup context injection in ${GEMINI_MD_PATH}`);
+
+    // List installed events
+    const eventNames = Object.keys(GEMINI_EVENT_TO_INTERNAL_EVENT);
+    console.log(`  Registered ${eventNames.length} hook events:`);
+    for (const event of eventNames) {
+      const internalEvent = GEMINI_EVENT_TO_INTERNAL_EVENT[event];
+      console.log(`    ${event} → ${internalEvent}`);
     }
-
-    // Register each event
-    for (const [geminiEvent, config] of Object.entries(GEMINI_EVENTS)) {
-      const command = buildHookCommand(bunPath, workerServicePath, config.claudeMemEvent);
-
-      const newMatcher: GeminiHookMatcher = {
-        matcher: '*',
-        hooks: [{
-          name: HOOK_NAME,
-          type: 'command',
-          command,
-          timeout: HOOK_TIMEOUT_MS,
-          description: config.description,
-        }],
-      };
-
-      const existingMatchers = settings.hooks[geminiEvent] ?? [];
-      settings.hooks[geminiEvent] = mergeHookMatchers(existingMatchers, newMatcher);
-    }
-
-    // Write merged settings
-    writeFileSync(GEMINI_SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
-    console.log(`  Updated ${GEMINI_SETTINGS_PATH}`);
-    console.log(`  Registered hooks for: ${Object.keys(GEMINI_EVENTS).join(', ')}`);
-
-    // Inject context into GEMINI.md
-    injectGeminiMdContext();
 
     console.log(`
-Installation complete! (8 hooks registered)
+Installation complete!
 
 Hooks installed to: ${GEMINI_SETTINGS_PATH}
 Using unified CLI: bun worker-service.cjs hook gemini-cli <event>
 
-Registered hooks:
-  SessionStart  → Inject memory context from past sessions
-  BeforeAgent   → Capture user prompt for memory
-  AfterAgent    → Capture full agent response
-  BeforeTool    → Capture tool intent before execution
-  AfterTool     → Capture tool results after execution
-  Notification  → Capture system events (permissions, etc.)
-  PreCompress   → Generate session summary before compression
-  SessionEnd    → Finalize session and persist memory
-
 Next steps:
-  1. Start claude-mem worker: npx claude-mem start
+  1. Start claude-mem worker: claude-mem start
   2. Restart Gemini CLI to load the hooks
-  3. Memory capture is now automatic!
+  3. Memory will be captured automatically during sessions
 
 Context Injection:
-  Memory from past sessions is injected via hookSpecificOutput.additionalContext
-  on SessionStart, and persisted in ${GEMINI_MD_PATH} for static context.
+  Context from past sessions is injected via ~/.gemini/GEMINI.md
+  and automatically included in Gemini CLI conversations.
 `);
 
     return 0;
@@ -245,48 +334,10 @@ Context Injection:
   }
 }
 
-// ---------------------------------------------------------------------------
-// Context Injection (GEMINI.md)
-// ---------------------------------------------------------------------------
-
 /**
- * Inject claude-mem context section into ~/.gemini/GEMINI.md.
- * Uses the same <claude-mem-context> tag pattern as CLAUDE.md.
- * Preserves any existing user content outside the tags.
- */
-function injectGeminiMdContext(): void {
-  try {
-    let existingContent = '';
-    if (existsSync(GEMINI_MD_PATH)) {
-      existingContent = readFileSync(GEMINI_MD_PATH, 'utf-8');
-    }
-
-    // Initial placeholder content — will be populated after first session
-    const contextContent = [
-      '# Recent Activity',
-      '',
-      '<!-- This section is auto-generated by claude-mem. Edit content outside the tags. -->',
-      '',
-      '*No context yet. Complete your first session and context will appear here.*',
-    ].join('\n');
-
-    const finalContent = replaceTaggedContent(existingContent, contextContent);
-    writeFileSync(GEMINI_MD_PATH, finalContent);
-    console.log(`  Injected context placeholder into ${GEMINI_MD_PATH}`);
-  } catch (error) {
-    // Non-fatal — hooks still work without context injection
-    logger.warn('GEMINI', 'Failed to inject GEMINI.md context', { error: (error as Error).message });
-    console.warn(`  Warning: Could not inject context into GEMINI.md: ${(error as Error).message}`);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Uninstallation
-// ---------------------------------------------------------------------------
-
-/**
- * Remove claude-mem hooks from Gemini CLI settings.json.
- * Preserves all other hooks and settings.
+ * Uninstall claude-mem hooks from ~/.gemini/settings.json.
+ *
+ * Removes only claude-mem hooks — other hooks and settings are preserved.
  *
  * @returns 0 on success, 1 on failure
  */
@@ -295,44 +346,31 @@ export function uninstallGeminiCliHooks(): number {
 
   try {
     if (!existsSync(GEMINI_SETTINGS_PATH)) {
-      console.log('  No settings.json found — nothing to uninstall.');
+      console.log('  No Gemini CLI settings found — nothing to uninstall.');
       return 0;
     }
 
-    let settings: GeminiSettingsJson;
-    try {
-      settings = JSON.parse(readFileSync(GEMINI_SETTINGS_PATH, 'utf-8'));
-    } catch {
-      console.error('  Could not parse settings.json');
-      return 1;
-    }
-
+    const settings = readGeminiSettings();
     if (!settings.hooks) {
-      console.log('  No hooks configured — nothing to uninstall.');
+      console.log('  No hooks found in Gemini CLI settings — nothing to uninstall.');
       return 0;
     }
 
     let removedCount = 0;
 
     // Remove claude-mem hooks from each event
-    for (const eventName of Object.keys(settings.hooks)) {
-      const matchers = settings.hooks[eventName];
-      if (!Array.isArray(matchers)) continue;
-
-      for (const matcher of matchers) {
-        if (!Array.isArray(matcher.hooks)) continue;
-        const beforeLength = matcher.hooks.length;
-        matcher.hooks = matcher.hooks.filter((h) => h.name !== HOOK_NAME);
-        removedCount += beforeLength - matcher.hooks.length;
-      }
-
-      // Clean up empty matchers
-      settings.hooks[eventName] = matchers.filter(
-        (m) => m.hooks.length > 0,
+    for (const [eventName, groups] of Object.entries(settings.hooks)) {
+      const filteredGroups = groups.filter(group =>
+        !group.hooks.some(hook => hook.name === HOOK_NAME)
       );
 
-      // Clean up empty event arrays
-      if (settings.hooks[eventName].length === 0) {
+      if (filteredGroups.length < groups.length) {
+        removedCount += groups.length - filteredGroups.length;
+      }
+
+      if (filteredGroups.length > 0) {
+        settings.hooks[eventName] = filteredGroups;
+      } else {
         delete settings.hooks[eventName];
       }
     }
@@ -342,61 +380,28 @@ export function uninstallGeminiCliHooks(): number {
       delete settings.hooks;
     }
 
-    writeFileSync(GEMINI_SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
-    console.log(`  Removed ${removedCount} claude-mem hook(s) from settings.json`);
+    writeGeminiSettings(settings);
+    console.log(`  Removed ${removedCount} claude-mem hook group(s) from ${GEMINI_SETTINGS_PATH}`);
 
-    // Remove context section from GEMINI.md
-    removeGeminiMdContext();
+    // Remove claude-mem context section from GEMINI.md
+    if (existsSync(GEMINI_MD_PATH)) {
+      let mdContent = readFileSync(GEMINI_MD_PATH, 'utf-8');
+      const contextRegex = /\n?<claude-mem-context>[\s\S]*?<\/claude-mem-context>\n?/;
+      if (contextRegex.test(mdContent)) {
+        mdContent = mdContent.replace(contextRegex, '');
+        writeFileSync(GEMINI_MD_PATH, mdContent);
+        console.log(`  Removed context section from ${GEMINI_MD_PATH}`);
+      }
+    }
 
-    console.log('\nUninstallation complete!');
-    console.log('Restart Gemini CLI to apply changes.\n');
-
+    console.log('\nUninstallation complete!\n');
+    console.log('Restart Gemini CLI to apply changes.');
     return 0;
   } catch (error) {
     console.error(`\nUninstallation failed: ${(error as Error).message}`);
     return 1;
   }
 }
-
-/**
- * Remove claude-mem context section from GEMINI.md.
- * Preserves user content outside the <claude-mem-context> tags.
- */
-function removeGeminiMdContext(): void {
-  try {
-    if (!existsSync(GEMINI_MD_PATH)) return;
-
-    const content = readFileSync(GEMINI_MD_PATH, 'utf-8');
-    const startTag = '<claude-mem-context>';
-    const endTag = '</claude-mem-context>';
-
-    const startIdx = content.indexOf(startTag);
-    const endIdx = content.indexOf(endTag);
-
-    if (startIdx === -1 || endIdx === -1) return;
-
-    // Remove the tagged section and any surrounding blank lines
-    const before = content.substring(0, startIdx).replace(/\n+$/, '');
-    const after = content.substring(endIdx + endTag.length).replace(/^\n+/, '');
-    const finalContent = (before + (after ? '\n\n' + after : '')).trim();
-
-    if (finalContent) {
-      writeFileSync(GEMINI_MD_PATH, finalContent + '\n');
-    } else {
-      // File would be empty — leave it empty rather than deleting
-      // (user may have other tooling that expects it to exist)
-      writeFileSync(GEMINI_MD_PATH, '');
-    }
-
-    console.log(`  Removed context section from ${GEMINI_MD_PATH}`);
-  } catch (error) {
-    logger.warn('GEMINI', 'Failed to clean GEMINI.md context', { error: (error as Error).message });
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Status Check
-// ---------------------------------------------------------------------------
 
 /**
  * Check Gemini CLI hooks installation status.
@@ -407,64 +412,93 @@ export function checkGeminiCliHooksStatus(): number {
   console.log('\nClaude-Mem Gemini CLI Hooks Status\n');
 
   if (!existsSync(GEMINI_SETTINGS_PATH)) {
-    console.log('Status: Not installed');
-    console.log(`  No settings file at ${GEMINI_SETTINGS_PATH}`);
-    console.log('\nRun: npx claude-mem install --ide gemini-cli\n');
+    console.log('Gemini CLI settings: Not found');
+    console.log(`  Expected at: ${GEMINI_SETTINGS_PATH}\n`);
+    console.log('No hooks installed. Run: claude-mem install --ide gemini-cli\n');
     return 0;
   }
 
-  try {
-    const settings: GeminiSettingsJson = JSON.parse(readFileSync(GEMINI_SETTINGS_PATH, 'utf-8'));
+  const settings = readGeminiSettings();
 
-    if (!settings.hooks) {
-      console.log('Status: Not installed');
-      console.log('  settings.json exists but has no hooks section.');
-      return 0;
+  if (!settings.hooks) {
+    console.log('Gemini CLI settings: Found, but no hooks configured\n');
+    console.log('No hooks installed. Run: claude-mem install --ide gemini-cli\n');
+    return 0;
+  }
+
+  // Check for claude-mem hooks
+  const installedEvents: string[] = [];
+  for (const [eventName, groups] of Object.entries(settings.hooks)) {
+    const hasClaudeMem = groups.some(group =>
+      group.hooks.some(hook => hook.name === HOOK_NAME)
+    );
+    if (hasClaudeMem) {
+      installedEvents.push(eventName);
     }
+  }
 
-    const installedEvents: string[] = [];
-    for (const [eventName, matchers] of Object.entries(settings.hooks)) {
-      if (!Array.isArray(matchers)) continue;
-      for (const matcher of matchers) {
-        if (matcher.hooks?.some((h: GeminiHookEntry) => h.name === HOOK_NAME)) {
-          installedEvents.push(eventName);
-        }
-      }
-    }
+  if (installedEvents.length === 0) {
+    console.log('Gemini CLI settings: Found, but no claude-mem hooks\n');
+    console.log('Run: claude-mem install --ide gemini-cli\n');
+    return 0;
+  }
 
-    if (installedEvents.length === 0) {
-      console.log('Status: Not installed');
-      console.log('  settings.json exists but no claude-mem hooks found.');
+  console.log(`Settings: ${GEMINI_SETTINGS_PATH}`);
+  console.log(`Mode: Unified CLI (bun worker-service.cjs hook gemini-cli)`);
+  console.log(`Events: ${installedEvents.length} of ${Object.keys(GEMINI_EVENT_TO_INTERNAL_EVENT).length} mapped`);
+  for (const event of installedEvents) {
+    const internalEvent = GEMINI_EVENT_TO_INTERNAL_EVENT[event] ?? 'unknown';
+    console.log(`  ${event} → ${internalEvent}`);
+  }
+
+  // Check GEMINI.md context
+  if (existsSync(GEMINI_MD_PATH)) {
+    const mdContent = readFileSync(GEMINI_MD_PATH, 'utf-8');
+    if (mdContent.includes('<claude-mem-context>')) {
+      console.log(`Context: Active (${GEMINI_MD_PATH})`);
     } else {
-      console.log('Status: Installed');
-      console.log(`  Config: ${GEMINI_SETTINGS_PATH}`);
-      console.log(`  Events: ${installedEvents.join(', ')}`);
-
-      // Check GEMINI.md context
-      if (existsSync(GEMINI_MD_PATH)) {
-        const mdContent = readFileSync(GEMINI_MD_PATH, 'utf-8');
-        if (mdContent.includes('<claude-mem-context>')) {
-          console.log(`  Context: Active (${GEMINI_MD_PATH})`);
-        } else {
-          console.log(`  Context: GEMINI.md exists but no context tags`);
-        }
-      } else {
-        console.log(`  Context: No GEMINI.md file`);
-      }
-
-      // Check expected vs actual events
-      const expectedEvents = Object.keys(GEMINI_EVENTS);
-      const missingEvents = expectedEvents.filter((e) => !installedEvents.includes(e));
-      if (missingEvents.length > 0) {
-        console.log(`  Warning: Missing events: ${missingEvents.join(', ')}`);
-        console.log('  Run install again to add missing hooks.');
-      }
+      console.log('Context: GEMINI.md exists but missing claude-mem section');
     }
-  } catch {
-    console.log('Status: Unknown');
-    console.log('  Could not parse settings.json.');
+  } else {
+    console.log('Context: No GEMINI.md found');
   }
 
   console.log('');
   return 0;
+}
+
+/**
+ * Handle gemini-cli subcommand for hooks management.
+ */
+export async function handleGeminiCliCommand(subcommand: string, _args: string[]): Promise<number> {
+  switch (subcommand) {
+    case 'install':
+      return installGeminiCliHooks();
+
+    case 'uninstall':
+      return uninstallGeminiCliHooks();
+
+    case 'status':
+      return checkGeminiCliHooksStatus();
+
+    default:
+      console.log(`
+Claude-Mem Gemini CLI Integration
+
+Usage: claude-mem gemini-cli <command>
+
+Commands:
+  install             Install hooks into ~/.gemini/settings.json
+  uninstall           Remove claude-mem hooks (preserves other hooks)
+  status              Check installation status
+
+Examples:
+  claude-mem gemini-cli install     # Install hooks
+  claude-mem gemini-cli status      # Check if installed
+  claude-mem gemini-cli uninstall   # Remove hooks
+
+For more info: https://docs.claude-mem.ai/usage/gemini-provider
+      `);
+      return 0;
+  }
 }

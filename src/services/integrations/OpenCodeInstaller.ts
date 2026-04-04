@@ -18,6 +18,7 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
 import { logger } from '../../utils/logger.js';
+import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 
 // ============================================================================
 // Path Resolution
@@ -125,9 +126,6 @@ export function installOpenCodePlugin(): number {
 // Context Injection (AGENTS.md)
 // ============================================================================
 
-const CONTEXT_TAG_OPEN = '<claude-mem-context>';
-const CONTEXT_TAG_CLOSE = '</claude-mem-context>';
-
 /**
  * Inject or update claude-mem context in OpenCode's AGENTS.md file.
  *
@@ -140,37 +138,9 @@ const CONTEXT_TAG_CLOSE = '</claude-mem-context>';
  */
 export function injectContextIntoAgentsMd(contextContent: string): number {
   const agentsMdPath = getOpenCodeAgentsMdPath();
-  const wrappedContent = `${CONTEXT_TAG_OPEN}\n${contextContent}\n${CONTEXT_TAG_CLOSE}`;
 
   try {
-    const configDirectory = getOpenCodeConfigDirectory();
-    mkdirSync(configDirectory, { recursive: true });
-
-    if (existsSync(agentsMdPath)) {
-      let existingContent = readFileSync(agentsMdPath, 'utf-8');
-
-      // Check if context tags already exist
-      const tagStartIndex = existingContent.indexOf(CONTEXT_TAG_OPEN);
-      const tagEndIndex = existingContent.indexOf(CONTEXT_TAG_CLOSE);
-
-      if (tagStartIndex !== -1 && tagEndIndex !== -1) {
-        // Replace existing section
-        existingContent =
-          existingContent.slice(0, tagStartIndex) +
-          wrappedContent +
-          existingContent.slice(tagEndIndex + CONTEXT_TAG_CLOSE.length);
-      } else {
-        // Append section
-        existingContent = existingContent.trimEnd() + '\n\n' + wrappedContent + '\n';
-      }
-
-      writeFileSync(agentsMdPath, existingContent, 'utf-8');
-    } else {
-      // Create new AGENTS.md with context
-      const newContent = `# Claude-Mem Memory Context\n\n${wrappedContent}\n`;
-      writeFileSync(agentsMdPath, newContent, 'utf-8');
-    }
-
+    injectContextIntoMarkdownFile(agentsMdPath, contextContent, '# Claude-Mem Memory Context');
     logger.info('OPENCODE', 'Context injected into AGENTS.md', { path: agentsMdPath });
     return 0;
   } catch (error) {
