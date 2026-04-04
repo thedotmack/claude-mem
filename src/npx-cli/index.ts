@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * NPX CLI entry point for claude-mem.
  *
