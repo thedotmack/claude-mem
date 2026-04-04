@@ -35,3 +35,6 @@ src/ui/viewer.html
 .claude/session-intent.md
 .claude/session-plan.md
 .octo/
+
+# Local contribution analysis (not part of upstream)
+CONTRIB_NOTES.md
