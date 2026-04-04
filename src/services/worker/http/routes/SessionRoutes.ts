@@ -321,6 +321,7 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
     app.post('/api/sessions/complete', this.handleCompleteByClaudeId.bind(this));
+    app.get('/api/sessions/status', this.handleStatusByClaudeId.bind(this));
   }
 
   /**
@@ -632,6 +633,39 @@ export class SessionRoutes extends BaseRouteHandler {
   });
 
   /**
+   * Get session status by contentSessionId (summarize handler polls this)
+   * GET /api/sessions/status?contentSessionId=...
+   *
+   * Returns queue depth so the Stop hook can wait for summary completion.
+   */
+  private handleStatusByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
+    const contentSessionId = req.query.contentSessionId as string;
+
+    if (!contentSessionId) {
+      return this.badRequest(res, 'Missing contentSessionId query parameter');
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    const session = this.sessionManager.getSession(sessionDbId);
+
+    if (!session) {
+      res.json({ status: 'not_found', queueLength: 0 });
+      return;
+    }
+
+    const pendingStore = this.sessionManager.getPendingMessageStore();
+    const queueLength = pendingStore.getPendingCount(sessionDbId);
+
+    res.json({
+      status: 'active',
+      sessionDbId,
+      queueLength,
+      uptime: Date.now() - session.startTime
+    });
+  });
+
+  /**
    * Complete session by contentSessionId (session-complete hook uses this)
    * POST /api/sessions/complete
    * Body: { contentSessionId }
@@ -669,6 +703,8 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Complete the session (removes from active sessions map)
+    // Note: The Stop hook (summarize handler) waits for pending work before calling
+    // this endpoint. No polling here — that's the hook's responsibility.
     await this.completionHandler.completeByDbId(sessionDbId);
 
     logger.info('SESSION', 'Session completed via API', {

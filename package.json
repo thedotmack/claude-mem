@@ -26,6 +26,9 @@
     "url": "https://github.com/thedotmack/claude-mem/issues"
   },
   "type": "module",
+  "bin": {
+    "claude-mem": "./dist/npx-cli/index.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -39,7 +42,17 @@
   },
   "files": [
     "dist",
-    "plugin"
+    "plugin/.claude-plugin",
+    "plugin/CLAUDE.md",
+    "plugin/package.json",
+    "plugin/hooks",
+    "plugin/modes",
+    "plugin/scripts/*.js",
+    "plugin/scripts/*.cjs",
+    "plugin/scripts/CLAUDE.md",
+    "plugin/skills",
+    "plugin/ui",
+    "openclaw"
   ],
   "engines": {
     "node": ">=18.0.0",
@@ -97,12 +110,14 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.76",
+    "@clack/prompts": "^0.9.1",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "ansi-to-html": "^0.7.2",
     "dompurify": "^3.3.1",
     "express": "^4.18.2",
     "glob": "^11.0.3",
     "handlebars": "^4.7.8",
+    "picocolors": "^1.1.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "yaml": "^2.8.2",
