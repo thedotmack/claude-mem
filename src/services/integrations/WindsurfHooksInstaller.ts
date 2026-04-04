@@ -278,6 +278,11 @@ export async function installWindsurfHooks(): Promise<number> {
 
   // Find bun executable — required because worker-service.cjs uses bun:sqlite
   const bunPath = findBunPath();
+  if (!bunPath) {
+    console.error('Could not find Bun runtime');
+    console.error('   Install Bun: curl -fsSL https://bun.sh/install | bash');
+    return 1;
+  }
 
   // IMPORTANT: Tilde expansion is NOT supported in working_directory — use absolute paths
   const workingDirectory = path.dirname(workerServicePath);

@@ -285,7 +285,7 @@ export async function installGooseMcpIntegration(): Promise<number> {
       if (gooseConfigHasClaudeMemEntry(yamlContent)) {
         // Already configured — replace the claude-mem block
         // Find the claude-mem entry and replace it
-        const claudeMemPattern = /( {2}claude-mem:\n(?:.*\n)*?(?= {2}\S|\n\n|$))/;
+        const claudeMemPattern = /( {2}claude-mem:\n(?:.*\n)*?(?= {2}\S|\n\n|^\S|$))/m;
         const newEntry = buildGooseClaudeMemEntryYaml(mcpServerPath) + '\n';
 
         if (claudeMemPattern.test(yamlContent)) {

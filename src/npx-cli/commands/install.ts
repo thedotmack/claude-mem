@@ -10,7 +10,7 @@
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import { execSync } from 'child_process';
-import { cpSync, existsSync, readFileSync } from 'fs';
+import { cpSync, existsSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
 
 // Non-TTY detection: @clack/prompts crashes with ENOENT in non-TTY environments
@@ -113,7 +113,10 @@ function enablePluginInClaudeSettings(): void {
 // IDE setup dispatcher
 // ---------------------------------------------------------------------------
 
-async function setupIDEs(selectedIDEs: string[]): Promise<void> {
+/** Returns a list of IDE IDs that failed setup. */
+async function setupIDEs(selectedIDEs: string[]): Promise<string[]> {
+  const failedIDEs: string[] = [];
+
   for (const ideId of selectedIDEs) {
     switch (ideId) {
       case 'claude-code':
@@ -133,6 +136,7 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
           log.success('Gemini CLI: hooks installed.');
         } else {
           log.error('Gemini CLI: hook installation failed.');
+          failedIDEs.push(ideId);
         }
         break;
       }
@@ -144,6 +148,7 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
           log.success('OpenCode: plugin installed.');
         } else {
           log.error('OpenCode: plugin installation failed.');
+          failedIDEs.push(ideId);
         }
         break;
       }
@@ -155,6 +160,7 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
           log.success('Windsurf: hooks installed.');
         } else {
           log.error('Windsurf: hook installation failed.');
+          failedIDEs.push(ideId);
         }
         break;
       }
@@ -166,6 +172,7 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
           log.success('OpenClaw: plugin installed.');
         } else {
           log.error('OpenClaw: plugin installation failed.');
+          failedIDEs.push(ideId);
         }
         break;
       }
@@ -177,6 +184,7 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
           log.success('Codex CLI: transcript watching configured.');
         } else {
           log.error('Codex CLI: integration setup failed.');
+          failedIDEs.push(ideId);
         }
         break;
       }
@@ -198,6 +206,7 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
             log.success(`${ideLabel}: MCP integration installed.`);
           } else {
             log.error(`${ideLabel}: MCP integration failed.`);
+            failedIDEs.push(ideId);
           }
         }
         break;
@@ -213,6 +222,8 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
       }
     }
   }
+
+  return failedIDEs;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +293,10 @@ function copyPluginToMarketplace(): void {
     const destPath = join(marketplaceDir, entry);
     if (!existsSync(sourcePath)) continue;
 
+    // Clean replace: remove stale files from previous installs before copying
+    if (existsSync(destPath)) {
+      rmSync(destPath, { recursive: true, force: true });
+    }
     cpSync(sourcePath, destPath, {
       recursive: true,
       force: true,
@@ -293,6 +308,8 @@ function copyPluginToCache(version: string): void {
   const sourcePluginDirectory = npmPackagePluginDirectory();
   const cachePath = pluginCacheDirectory(version);
 
+  // Clean replace: remove stale cache before copying
+  rmSync(cachePath, { recursive: true, force: true });
   ensureDirectoryExists(cachePath);
   cpSync(sourcePluginDirectory, cachePath, { recursive: true, force: true });
 }
@@ -318,12 +335,12 @@ function runNpmInstallInMarketplace(): void {
 // Trigger smart-install for Bun / uv
 // ---------------------------------------------------------------------------
 
-function runSmartInstall(): void {
+function runSmartInstall(): boolean {
   const smartInstallPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'smart-install.js');
 
   if (!existsSync(smartInstallPath)) {
     log.warn('smart-install.js not found — skipping Bun/uv auto-install.');
-    return;
+    return false;
   }
 
   try {
@@ -331,8 +348,10 @@ function runSmartInstall(): void {
       stdio: 'inherit',
       ...(IS_WINDOWS ? { shell: true as const } : {}),
     });
+    return true;
   } catch {
     log.warn('smart-install encountered an issue. You may need to install Bun/uv manually.');
+    return false;
   }
 }
 
@@ -461,46 +480,57 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
       title: 'Setting up Bun and uv',
       task: async (message) => {
         message('Running smart-install...');
-        try {
-          runSmartInstall();
-          return `Runtime dependencies ready ${pc.green('OK')}`;
-        } catch {
-          return `Runtime setup may need attention ${pc.yellow('!')}`;
-        }
+        return runSmartInstall()
+          ? `Runtime dependencies ready ${pc.green('OK')}`
+          : `Runtime setup may need attention ${pc.yellow('!')}`;
       },
     },
   ]);
 
   // IDE-specific setup
-  await setupIDEs(selectedIDEs);
+  const failedIDEs = await setupIDEs(selectedIDEs);
 
   // Summary
+  const installStatus = failedIDEs.length > 0 ? 'Installation Partial' : 'Installation Complete';
   const summaryLines = [
     `Version:     ${pc.cyan(version)}`,
     `Plugin dir:  ${pc.cyan(marketplaceDir)}`,
     `IDEs:        ${pc.cyan(selectedIDEs.join(', '))}`,
   ];
+  if (failedIDEs.length > 0) {
+    summaryLines.push(`Failed:      ${pc.red(failedIDEs.join(', '))}`);
+  }
 
   if (isInteractive) {
-    p.note(summaryLines.join('\n'), 'Installation Complete');
+    p.note(summaryLines.join('\n'), installStatus);
   } else {
-    console.log('\n  Installation Complete');
+    console.log(`\n  ${installStatus}`);
     summaryLines.forEach(l => console.log(`  ${l}`));
   }
 
+  const workerPort = process.env.CLAUDE_MEM_WORKER_PORT || '37777';
   const nextSteps = [
     'Open Claude Code and start a conversation -- memory is automatic!',
-    `View your memories: ${pc.underline('http://localhost:37777')}`,
+    `View your memories: ${pc.underline(`http://localhost:${workerPort}`)}`,
     `Search past work: use ${pc.bold('/mem-search')} in Claude Code`,
     `Start worker: ${pc.bold('npx claude-mem start')}`,
   ];
 
   if (isInteractive) {
     p.note(nextSteps.join('\n'), 'Next Steps');
-    p.outro(pc.green('claude-mem installed successfully!'));
+    if (failedIDEs.length > 0) {
+      p.outro(pc.yellow('claude-mem installed with some IDE setup failures.'));
+    } else {
+      p.outro(pc.green('claude-mem installed successfully!'));
+    }
   } else {
     console.log('\n  Next Steps');
     nextSteps.forEach(l => console.log(`  ${l}`));
-    console.log('\nclaude-mem installed successfully!');
+    if (failedIDEs.length > 0) {
+      console.log('\nclaude-mem installed with some IDE setup failures.');
+      process.exitCode = 1;
+    } else {
+      console.log('\nclaude-mem installed successfully!');
+    }
   }
 }

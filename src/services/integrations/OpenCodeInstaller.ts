@@ -218,12 +218,16 @@ export function uninstallOpenCodePlugin(): number {
           '\n' +
           content.slice(tagEndIndex + CONTEXT_TAG_CLOSE.length).trimStart();
 
-        // If the file is now essentially empty, don't bother keeping it
-        if (content.trim().length === 0) {
+        // If the file is now essentially empty or only has our header, remove it
+        const trimmedContent = content.trim();
+        if (
+          trimmedContent.length === 0 ||
+          trimmedContent === '# Claude-Mem Memory Context'
+        ) {
           unlinkSync(agentsMdPath);
           console.log(`  Removed empty AGENTS.md`);
         } else {
-          writeFileSync(agentsMdPath, content.trimEnd() + '\n', 'utf-8');
+          writeFileSync(agentsMdPath, trimmedContent + '\n', 'utf-8');
           console.log(`  Cleaned context from AGENTS.md`);
         }
       }

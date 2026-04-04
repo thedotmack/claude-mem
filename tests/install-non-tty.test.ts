@@ -91,7 +91,7 @@ describe('Install Non-TTY Support', () => {
     });
 
     it('uses console.log for note/summary in non-interactive mode', () => {
-      expect(installSource).toContain("console.log('\\n  Installation Complete')");
+      expect(installSource).toContain("console.log(`\\n  ${installStatus}`)");
     });
   });
 

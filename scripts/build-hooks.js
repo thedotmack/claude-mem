@@ -244,7 +244,7 @@ async function buildHooks() {
       console.log(`✓ openclaw plugin built (${(openclawStats.size / 1024).toFixed(2)} KB)`);
     }
 
-    // Build OpenCode plugin (self-contained, runs in Bun)
+    // Build OpenCode plugin (self-contained, Node.js ESM — Bun-compatible)
     if (fs.existsSync('src/integrations/opencode-plugin/index.ts')) {
       console.log(`\n🔧 Building OpenCode plugin...`);
       const opencodeOutDir = 'dist/opencode-plugin';

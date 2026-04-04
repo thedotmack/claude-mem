@@ -116,7 +116,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
       id: 'cursor',
       label: 'Cursor',
       detected: existsSync(join(home, '.cursor')),
-      supported: true,
+      supported: false,
     },
     {
       id: 'copilot-cli',
