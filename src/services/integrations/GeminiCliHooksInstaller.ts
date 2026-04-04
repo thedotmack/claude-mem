@@ -418,7 +418,13 @@ export function checkGeminiCliHooksStatus(): number {
     return 0;
   }
 
-  const settings = readGeminiSettings();
+  let settings: GeminiSettingsJson;
+  try {
+    settings = readGeminiSettings();
+  } catch (error) {
+    console.log(`Gemini CLI settings: ${(error as Error).message}\n`);
+    return 0;
+  }
 
   if (!settings.hooks) {
     console.log('Gemini CLI settings: Found, but no hooks configured\n');
