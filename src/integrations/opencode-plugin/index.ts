@@ -165,8 +165,19 @@ async function workerGetText(path: string): Promise<string | null> {
 
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 
+const MAX_SESSION_MAP_ENTRIES = 1000;
+
 function getOrCreateContentSessionId(openCodeSessionId: string): string {
   if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
+    // Evict oldest entries when the map exceeds the cap (Map preserves insertion order)
+    while (contentSessionIdsByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
+      const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
+      if (oldestKey !== undefined) {
+        contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
+      } else {
+        break;
+      }
+    }
     contentSessionIdsByOpenCodeSessionId.set(
       openCodeSessionId,
       `opencode-${openCodeSessionId}-${Date.now()}`,

@@ -141,7 +141,7 @@ npx claude-mem install --ide gemini-cli
 
 Or install from the plugin marketplace inside Claude Code:
 
-```
+```bash
 /plugin marketplace add thedotmack/claude-mem
 
 /plugin install claude-mem

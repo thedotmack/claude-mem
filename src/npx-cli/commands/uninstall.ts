@@ -105,13 +105,25 @@ export async function runUninstallCommand(): Promise<void> {
     }
   }
 
-  // Stop the worker first (best-effort)
+  // Stop the worker and wait for it to exit before deleting files
+  const workerPort = process.env.CLAUDE_MEM_WORKER_PORT || '37777';
   try {
-    const workerPort = process.env.CLAUDE_MEM_WORKER_PORT || '37777';
     await fetch(`http://127.0.0.1:${workerPort}/api/admin/shutdown`, {
       method: 'POST',
       signal: AbortSignal.timeout(5000),
     });
+    // Poll health endpoint until worker is gone (max 10s)
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      try {
+        await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
+          signal: AbortSignal.timeout(1000),
+        });
+        // Still alive — keep waiting
+      } catch {
+        break; // Connection refused = worker is gone
+      }
+    }
     p.log.info('Worker service stopped.');
   } catch {
     // Worker may not be running — that is fine
@@ -158,6 +170,41 @@ export async function runUninstallCommand(): Promise<void> {
       },
     },
   ]);
+
+  // Remove IDE-specific hooks and config (best-effort, each is independent)
+  const ideCleanups: Array<{ label: string; fn: () => Promise<number> | number }> = [
+    { label: 'Gemini CLI hooks', fn: async () => {
+      const { uninstallGeminiCliHooks } = await import('../../services/integrations/GeminiCliHooksInstaller.js');
+      return uninstallGeminiCliHooks();
+    }},
+    { label: 'Windsurf hooks', fn: async () => {
+      const { uninstallWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
+      return uninstallWindsurfHooks();
+    }},
+    { label: 'OpenCode plugin', fn: async () => {
+      const { uninstallOpenCodePlugin } = await import('../../services/integrations/OpenCodeInstaller.js');
+      return uninstallOpenCodePlugin();
+    }},
+    { label: 'OpenClaw plugin', fn: async () => {
+      const { uninstallOpenClawPlugin } = await import('../../services/integrations/OpenClawInstaller.js');
+      return uninstallOpenClawPlugin();
+    }},
+    { label: 'Codex CLI', fn: async () => {
+      const { uninstallCodexCli } = await import('../../services/integrations/CodexCliInstaller.js');
+      return uninstallCodexCli();
+    }},
+  ];
+
+  for (const { label, fn } of ideCleanups) {
+    try {
+      const result = await fn();
+      if (result === 0) {
+        p.log.info(`${label}: removed.`);
+      }
+    } catch {
+      // IDE not configured or uninstaller errored — skip silently
+    }
+  }
 
   p.note(
     [

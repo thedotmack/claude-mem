@@ -73,7 +73,14 @@ export function claudeMemDataDirectory(): string {
 export function npmPackageRootDirectory(): string {
   const currentFilePath = fileURLToPath(import.meta.url);
   // <pkg>/dist/npx-cli/index.js  ->  up 2 levels  ->  <pkg>
-  return join(dirname(currentFilePath), '..', '..');
+  const root = join(dirname(currentFilePath), '..', '..');
+  if (!existsSync(join(root, 'package.json'))) {
+    throw new Error(
+      `npmPackageRootDirectory: expected package.json at ${root}. ` +
+      `Bundle structure may have changed — update the path walk.`,
+    );
+  }
+  return root;
 }
 
 /**

@@ -16,6 +16,7 @@
 
 import path from 'path';
 import { homedir } from 'os';
+import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
@@ -74,8 +75,8 @@ export function findBuiltPluginPath(): string | null {
       'plugins', 'marketplaces', 'thedotmack',
       'dist', 'opencode-plugin', 'index.js',
     ),
-    // Development location (relative to project root)
-    path.join(process.cwd(), 'dist', 'opencode-plugin', 'index.js'),
+    // Development location (relative to this module's package root)
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'dist', 'opencode-plugin', 'index.js'),
   ];
 
   for (const candidatePath of possiblePaths) {
@@ -171,7 +172,10 @@ export async function syncContextToAgentsMd(
 
     const contextText = await response.text();
     if (contextText && contextText.trim()) {
-      injectContextIntoAgentsMd(contextText);
+      const injectResult = injectContextIntoAgentsMd(contextText);
+      if (injectResult !== 0) {
+        logger.warn('OPENCODE', 'Failed to inject context into AGENTS.md during sync');
+      }
     }
   } catch {
     // Worker not available — non-critical
@@ -315,22 +319,41 @@ Use claude-mem search tools for manual memory queries.`;
       if (contextResponse.ok) {
         const realContext = await contextResponse.text();
         if (realContext && realContext.trim()) {
-          injectContextIntoAgentsMd(realContext);
-          console.log('  Context injected from existing memory');
+          const injectResult = injectContextIntoAgentsMd(realContext);
+          if (injectResult !== 0) {
+            logger.warn('OPENCODE', 'Failed to inject real context into AGENTS.md during install');
+          } else {
+            console.log('  Context injected from existing memory');
+          }
         } else {
-          injectContextIntoAgentsMd(placeholderContext);
-          console.log('  Placeholder context created (will populate after first session)');
+          const injectResult = injectContextIntoAgentsMd(placeholderContext);
+          if (injectResult !== 0) {
+            logger.warn('OPENCODE', 'Failed to inject placeholder context into AGENTS.md during install');
+          } else {
+            console.log('  Placeholder context created (will populate after first session)');
+          }
         }
       } else {
-        injectContextIntoAgentsMd(placeholderContext);
+        const injectResult = injectContextIntoAgentsMd(placeholderContext);
+        if (injectResult !== 0) {
+          logger.warn('OPENCODE', 'Failed to inject placeholder context into AGENTS.md during install');
+        }
       }
     } else {
-      injectContextIntoAgentsMd(placeholderContext);
-      console.log('  Placeholder context created (worker not running)');
+      const injectResult = injectContextIntoAgentsMd(placeholderContext);
+      if (injectResult !== 0) {
+        logger.warn('OPENCODE', 'Failed to inject placeholder context into AGENTS.md during install');
+      } else {
+        console.log('  Placeholder context created (worker not running)');
+      }
     }
   } catch {
-    injectContextIntoAgentsMd(placeholderContext);
-    console.log('  Placeholder context created (worker not running)');
+    const injectResult = injectContextIntoAgentsMd(placeholderContext);
+    if (injectResult !== 0) {
+      logger.warn('OPENCODE', 'Failed to inject placeholder context into AGENTS.md during install');
+    } else {
+      console.log('  Placeholder context created (worker not running)');
+    }
   }
 
   console.log(`

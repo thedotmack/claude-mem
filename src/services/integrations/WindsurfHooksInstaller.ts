@@ -46,8 +46,7 @@ interface WindsurfHooksJson {
 }
 
 interface WindsurfProjectRegistry {
-  [projectName: string]: {
-    workspacePath: string;
+  [workspacePath: string]: {
     installedAt: string;
   };
 }
@@ -104,37 +103,37 @@ export function writeWindsurfRegistry(registry: WindsurfProjectRegistry): void {
 }
 
 /**
- * Register a project for auto-context updates
+ * Register a project for auto-context updates.
+ * Keys by full workspacePath to avoid collisions between directories with the same basename.
  */
-export function registerWindsurfProject(projectName: string, workspacePath: string): void {
+export function registerWindsurfProject(workspacePath: string): void {
   const registry = readWindsurfRegistry();
-  registry[projectName] = {
-    workspacePath,
+  registry[workspacePath] = {
     installedAt: new Date().toISOString(),
   };
   writeWindsurfRegistry(registry);
-  logger.info('WINDSURF', 'Registered project for auto-context updates', { projectName, workspacePath });
+  logger.info('WINDSURF', 'Registered project for auto-context updates', { workspacePath });
 }
 
 /**
  * Unregister a project from auto-context updates
  */
-export function unregisterWindsurfProject(projectName: string): void {
+export function unregisterWindsurfProject(workspacePath: string): void {
   const registry = readWindsurfRegistry();
-  if (registry[projectName]) {
-    delete registry[projectName];
+  if (registry[workspacePath]) {
+    delete registry[workspacePath];
     writeWindsurfRegistry(registry);
-    logger.info('WINDSURF', 'Unregistered project', { projectName });
+    logger.info('WINDSURF', 'Unregistered project', { workspacePath });
   }
 }
 
 /**
- * Update Windsurf context files for all registered projects matching this project name.
+ * Update Windsurf context files for a registered project.
  * Called by SDK agents after saving a summary.
  */
-export async function updateWindsurfContextForProject(projectName: string, port: number): Promise<void> {
+export async function updateWindsurfContextForProject(projectName: string, workspacePath: string, port: number): Promise<void> {
   const registry = readWindsurfRegistry();
-  const entry = registry[projectName];
+  const entry = registry[workspacePath];
 
   if (!entry) return; // Project doesn't have Windsurf hooks installed
 
@@ -148,11 +147,11 @@ export async function updateWindsurfContextForProject(projectName: string, port:
     const context = await response.text();
     if (!context || !context.trim()) return;
 
-    writeWindsurfContextFile(entry.workspacePath, context);
-    logger.debug('WINDSURF', 'Updated context file', { projectName, workspacePath: entry.workspacePath });
+    writeWindsurfContextFile(workspacePath, context);
+    logger.debug('WINDSURF', 'Updated context file', { projectName, workspacePath });
   } catch (error) {
     // Background context update — failure is non-critical
-    logger.error('WINDSURF', 'Failed to update context file', { projectName }, error as Error);
+    logger.error('WINDSURF', 'Failed to update context file', { projectName, workspacePath }, error as Error);
   }
 }
 
@@ -371,7 +370,7 @@ Use claude-mem's MCP search tools for manual memory queries.
   }
 
   // Register project for automatic context updates after summaries
-  registerWindsurfProject(projectName, workspaceRoot);
+  registerWindsurfProject(workspaceRoot);
   console.log(`  Registered for auto-context updates`);
 }
 
@@ -423,8 +422,7 @@ export function uninstallWindsurfHooks(): number {
     }
 
     // Unregister project
-    const projectName = path.basename(workspaceRoot);
-    unregisterWindsurfProject(projectName);
+    unregisterWindsurfProject(workspaceRoot);
     console.log(`  Unregistered from auto-context updates`);
 
     console.log(`\nUninstallation complete!\n`);

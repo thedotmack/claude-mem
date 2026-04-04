@@ -119,7 +119,10 @@ function buildHookCommand(
     throw new Error(`Unknown Gemini CLI event: ${geminiEventName}`);
   }
 
-  // Escape backslashes for JSON compatibility on Windows
+  // Double-escape backslashes intentionally: this command string is embedded inside
+  // a JSON value, so `\\` in the source becomes `\` when the JSON is parsed by the
+  // IDE. Without double-escaping, Windows paths like C:\Users would lose their
+  // backslashes and break when the IDE deserializes the hook configuration.
   const escapedBunPath = bunPath.replace(/\\/g, '\\\\');
   const escapedWorkerPath = workerServicePath.replace(/\\/g, '\\\\');
 
