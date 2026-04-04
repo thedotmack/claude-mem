@@ -147,19 +147,19 @@ function createHookGroup(hookCommand: string): GeminiHookGroup {
 // ============================================================================
 
 /**
- * Read ~/.gemini/settings.json, returning empty object if missing/corrupt.
+ * Read ~/.gemini/settings.json, returning empty object if missing.
+ * Throws on corrupt JSON to prevent silent data loss.
  */
 function readGeminiSettings(): GeminiSettingsJson {
   if (!existsSync(GEMINI_SETTINGS_PATH)) {
     return {};
   }
 
+  const content = readFileSync(GEMINI_SETTINGS_PATH, 'utf-8');
   try {
-    const content = readFileSync(GEMINI_SETTINGS_PATH, 'utf-8');
     return JSON.parse(content) as GeminiSettingsJson;
   } catch (error) {
-    logger.warn('GEMINI', `Failed to parse ${GEMINI_SETTINGS_PATH}, treating as empty`, {});
-    return {};
+    throw new Error(`Corrupt JSON in ${GEMINI_SETTINGS_PATH}, refusing to overwrite user settings`);
   }
 }
 
@@ -358,15 +358,15 @@ export function uninstallGeminiCliHooks(): number {
 
     let removedCount = 0;
 
-    // Remove claude-mem hooks from each event
+    // Remove claude-mem hooks from within each group, preserving other hooks
     for (const [eventName, groups] of Object.entries(settings.hooks)) {
-      const filteredGroups = groups.filter(group =>
-        !group.hooks.some(hook => hook.name === HOOK_NAME)
-      );
-
-      if (filteredGroups.length < groups.length) {
-        removedCount += groups.length - filteredGroups.length;
-      }
+      const filteredGroups = groups
+        .map(group => {
+          const remainingHooks = group.hooks.filter(hook => hook.name !== HOOK_NAME);
+          removedCount += group.hooks.length - remainingHooks.length;
+          return { ...group, hooks: remainingHooks };
+        })
+        .filter(group => group.hooks.length > 0);
 
       if (filteredGroups.length > 0) {
         settings.hooks[eventName] = filteredGroups;
@@ -381,7 +381,7 @@ export function uninstallGeminiCliHooks(): number {
     }
 
     writeGeminiSettings(settings);
-    console.log(`  Removed ${removedCount} claude-mem hook group(s) from ${GEMINI_SETTINGS_PATH}`);
+    console.log(`  Removed ${removedCount} claude-mem hook(s) from ${GEMINI_SETTINGS_PATH}`);
 
     // Remove claude-mem context section from GEMINI.md
     if (existsSync(GEMINI_MD_PATH)) {

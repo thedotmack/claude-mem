@@ -123,8 +123,7 @@ async function setupIDEs(selectedIDEs: string[]): Promise<void> {
         break;
 
       case 'cursor':
-        log.info('Cursor: hook configuration available after first launch.');
-        log.info(`  Run: npx claude-mem cursor-setup (coming soon)`);
+        log.warn('Cursor: integration not yet implemented. Skipping.');
         break;
 
       case 'gemini-cli': {

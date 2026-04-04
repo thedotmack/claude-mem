@@ -213,11 +213,7 @@ function buildHookCommand(bunPath: string, workerServicePath: string, eventName:
 
   const hookCommand = eventToCommand[eventName] ?? 'observation';
 
-  // Escape backslashes for JSON on Windows
-  const escapedBunPath = bunPath.replace(/\\/g, '\\\\');
-  const escapedWorkerPath = workerServicePath.replace(/\\/g, '\\\\');
-
-  return `"${escapedBunPath}" "${escapedWorkerPath}" hook windsurf ${hookCommand}`;
+  return `"${bunPath}" "${workerServicePath}" hook windsurf ${hookCommand}`;
 }
 
 /**
@@ -240,10 +236,7 @@ function mergeAndWriteHooksJson(
         existingConfig.hooks = {};
       }
     } catch (error) {
-      logger.error('WINDSURF', 'Corrupt hooks.json, starting fresh', {
-        path: WINDSURF_HOOKS_JSON_PATH,
-      }, error as Error);
-      existingConfig = { hooks: {} };
+      throw new Error(`Corrupt hooks.json at ${WINDSURF_HOOKS_JSON_PATH}, refusing to overwrite`);
     }
   }
 
@@ -410,9 +403,7 @@ export function uninstallWindsurfHooks(): number {
           console.log(`  Removed claude-mem entries from hooks.json (other hooks preserved)`);
         }
       } catch (error) {
-        // Corrupt file — just remove it
-        unlinkSync(WINDSURF_HOOKS_JSON_PATH);
-        console.log(`  Removed corrupt hooks.json`);
+        console.log(`  Warning: could not parse hooks.json — leaving file intact to preserve other hooks`);
       }
     } else {
       console.log(`  No hooks.json found`);

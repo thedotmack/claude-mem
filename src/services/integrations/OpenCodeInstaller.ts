@@ -19,6 +19,7 @@ import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
+import { getWorkerPort } from '../../shared/worker-utils.js';
 
 // ============================================================================
 // Path Resolution
@@ -301,10 +302,11 @@ Use claude-mem search tools for manual memory queries.`;
 
   // Try to fetch real context from worker first
   try {
-    const healthResponse = await fetch('http://127.0.0.1:37777/api/readiness');
+    const workerPort = getWorkerPort();
+    const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/readiness`);
     if (healthResponse.ok) {
       const contextResponse = await fetch(
-        `http://127.0.0.1:37777/api/context/inject?project=opencode`,
+        `http://127.0.0.1:${workerPort}/api/context/inject?project=opencode`,
       );
       if (contextResponse.ok) {
         const realContext = await contextResponse.text();

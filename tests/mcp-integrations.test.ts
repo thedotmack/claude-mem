@@ -192,35 +192,34 @@ describe('MCP Integrations', () => {
   });
 
   describe('corrupt file recovery', () => {
-    it('replaces corrupt JSON with fresh config', () => {
+    it('throws on corrupt JSON to prevent data loss', () => {
       const configPath = join(tempDir, 'mcp.json');
       writeFileSync(configPath, 'not valid json {{{{');
 
-      // readJsonSafe returns default {} for corrupt file
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
+      expect(() => writeMcpJsonConfig(configPath, '/path/to/mcp.cjs')).toThrow(
+        /Corrupt JSON file, refusing to overwrite/
+      );
 
-      const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-      expect(config.mcpServers['claude-mem']).toBeDefined();
+      // Original file should be untouched
+      expect(readFileSync(configPath, 'utf-8')).toBe('not valid json {{{{');
     });
 
-    it('handles empty file gracefully', () => {
+    it('throws on empty file to prevent data loss', () => {
       const configPath = join(tempDir, 'mcp.json');
       writeFileSync(configPath, '');
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
-
-      const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-      expect(config.mcpServers['claude-mem']).toBeDefined();
+      expect(() => writeMcpJsonConfig(configPath, '/path/to/mcp.cjs')).toThrow(
+        /Corrupt JSON file, refusing to overwrite/
+      );
     });
 
-    it('handles file with only whitespace', () => {
+    it('throws on file with only whitespace', () => {
       const configPath = join(tempDir, 'mcp.json');
       writeFileSync(configPath, '   \n\n   ');
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
-
-      const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-      expect(config.mcpServers['claude-mem']).toBeDefined();
+      expect(() => writeMcpJsonConfig(configPath, '/path/to/mcp.cjs')).toThrow(
+        /Corrupt JSON file, refusing to overwrite/
+      );
     });
   });
 

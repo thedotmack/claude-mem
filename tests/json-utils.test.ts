@@ -46,23 +46,22 @@ describe('JSON Utils', () => {
       expect(result).toEqual(data);
     });
 
-    it('returns default value for corrupt JSON file', () => {
+    it('throws on corrupt JSON file to prevent data loss', () => {
       const filePath = join(tempDir, 'corrupt.json');
       writeFileSync(filePath, 'this is not valid json {{{');
 
-      const defaultValue = { recovered: true };
-      const result = readJsonSafe(filePath, defaultValue);
-
-      expect(result).toEqual(defaultValue);
+      expect(() => readJsonSafe(filePath, { recovered: true })).toThrow(
+        /Corrupt JSON file, refusing to overwrite/
+      );
     });
 
-    it('returns default value for empty file', () => {
+    it('throws on empty file to prevent data loss', () => {
       const filePath = join(tempDir, 'empty.json');
       writeFileSync(filePath, '');
 
-      const result = readJsonSafe(filePath, []);
-
-      expect(result).toEqual([]);
+      expect(() => readJsonSafe(filePath, [])).toThrow(
+        /Corrupt JSON file, refusing to overwrite/
+      );
     });
 
     it('works with array default values', () => {

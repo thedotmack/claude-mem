@@ -36,9 +36,9 @@ function removeMarketplaceDirectory(): boolean {
 }
 
 function removeCacheDirectory(): boolean {
-  const cacheBaseDirectory = join(pluginsDirectory(), 'cache', 'thedotmack');
-  if (existsSync(cacheBaseDirectory)) {
-    rmSync(cacheBaseDirectory, { recursive: true, force: true });
+  const cacheDirectory = join(pluginsDirectory(), 'cache', 'thedotmack', 'claude-mem');
+  if (existsSync(cacheDirectory)) {
+    rmSync(cacheDirectory, { recursive: true, force: true });
     return true;
   }
   return false;
