@@ -87,51 +87,58 @@ export class PendingMessageStore {
    * Atomically claim the next pending message by marking it as 'processing'.
    * Self-healing: resets any stale 'processing' messages (>60s) back to 'pending' first.
    * Message stays in DB until confirmProcessed() is called.
-   * Uses explicit BEGIN/COMMIT for atomicity.
+   *
+   * The claim itself is a single atomic UPDATE with a subquery, eliminating the
+   * race condition where two callers could SELECT the same row before either UPDATEs.
    */
   async claimNextMessage(sessionDbId: number): Promise<PersistentPendingMessage | null> {
-    await this.db.execute('BEGIN');
-    try {
-      // Capture time inside transaction so it's fresh if WAL contention causes retry
-      const now = Date.now();
-      // Self-healing: reset stale 'processing' messages back to 'pending'
-      const staleCutoff = now - STALE_PROCESSING_THRESHOLD_MS;
-      const resetResult = await exec(this.db, `
-        UPDATE pending_messages
-        SET status = 'pending', started_processing_at_epoch = NULL
-        WHERE session_db_id = ? AND status = 'processing'
-          AND started_processing_at_epoch < ?
-      `, [sessionDbId, staleCutoff]);
-      if (resetResult.rowsAffected > 0) {
-        logger.info('QUEUE', `SELF_HEAL | sessionDbId=${sessionDbId} | recovered ${resetResult.rowsAffected} stale processing message(s)`);
-      }
+    const now = Date.now();
 
-      const msg = await queryOne<PersistentPendingMessage>(this.db, `
-        SELECT * FROM pending_messages
+    // Self-healing: reset stale 'processing' messages back to 'pending'
+    const staleCutoff = now - STALE_PROCESSING_THRESHOLD_MS;
+    const resetResult = await exec(this.db, `
+      UPDATE pending_messages
+      SET status = 'pending', started_processing_at_epoch = NULL
+      WHERE session_db_id = ? AND status = 'processing'
+        AND started_processing_at_epoch < ?
+    `, [sessionDbId, staleCutoff]);
+    if (resetResult.rowsAffected > 0) {
+      logger.info('QUEUE', `SELF_HEAL | sessionDbId=${sessionDbId} | recovered ${resetResult.rowsAffected} stale processing message(s)`);
+    }
+
+    // Atomic claim: UPDATE with subquery ensures only one caller can claim a given row.
+    // If two callers race, the subquery sees status='pending' so only the first UPDATE
+    // matches; the second finds no pending row (or a different one).
+    const claimResult = await exec(this.db, `
+      UPDATE pending_messages
+      SET status = 'processing', started_processing_at_epoch = ?
+      WHERE id = (
+        SELECT id FROM pending_messages
         WHERE session_db_id = ? AND status = 'pending'
         ORDER BY id ASC
         LIMIT 1
-      `, [sessionDbId]);
+      )
+    `, [now, sessionDbId]);
 
-      if (msg) {
-        // CRITICAL FIX: Mark as 'processing' instead of deleting
-        await exec(this.db, `
-          UPDATE pending_messages
-          SET status = 'processing', started_processing_at_epoch = ?
-          WHERE id = ?
-        `, [now, msg.id]);
-
-        logger.info('QUEUE', `CLAIMED | sessionDbId=${sessionDbId} | messageId=${msg.id} | type=${msg.message_type}`, {
-          sessionId: sessionDbId
-        });
-      }
-
-      await this.db.execute('COMMIT');
-      return msg;
-    } catch (e) {
-      await this.db.execute('ROLLBACK');
-      throw e;
+    if (claimResult.rowsAffected === 0) {
+      return null;
     }
+
+    // Fetch the claimed row by its processing timestamp and session
+    const msg = await queryOne<PersistentPendingMessage>(this.db, `
+      SELECT * FROM pending_messages
+      WHERE session_db_id = ? AND status = 'processing' AND started_processing_at_epoch = ?
+      ORDER BY id ASC
+      LIMIT 1
+    `, [sessionDbId, now]);
+
+    if (msg) {
+      logger.info('QUEUE', `CLAIMED | sessionDbId=${sessionDbId} | messageId=${msg.id} | type=${msg.message_type}`, {
+        sessionId: sessionDbId
+      });
+    }
+
+    return msg;
   }
 
   /**

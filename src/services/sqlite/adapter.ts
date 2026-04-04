@@ -28,6 +28,16 @@ export interface DbAdapter {
   /** Multi-statement DDL string (splits on `;`, for migrations) */
   executeScript(sql: string): Promise<void>;
 
+  /**
+   * Run a callback inside a transaction.
+   * In local mode: uses BEGIN/COMMIT/ROLLBACK.
+   * In remote mode: uses client.transaction() for proper scoping.
+   * The callback receives a transaction-scoped adapter — all operations
+   * within the callback run on the same transaction without leaking
+   * to concurrent requests.
+   */
+  withTransaction<T>(fn: (txDb: DbAdapter) => Promise<T>): Promise<T>;
+
   /** Close the connection */
   close(): Promise<void>;
 }

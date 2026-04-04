@@ -150,10 +150,10 @@ export async function generateContext(
     // Query data for all projects (supports worktree: parent + worktree combined)
     const observations = projects.length > 1
       ? await queryObservationsMulti(db, projects, config)
-      : await queryObservations(db, project, config);
+      : await queryObservations(db, projects[0], config);
     const summaries = projects.length > 1
       ? await querySummariesMulti(db, projects, config)
-      : await querySummaries(db, project, config);
+      : await querySummaries(db, projects[0], config);
 
     // Handle empty state
     if (observations.length === 0 && summaries.length === 0) {

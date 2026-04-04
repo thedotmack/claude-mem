@@ -16,16 +16,14 @@ async function main() {
   console.log('Finding duplicate observations...');
 
   const duplicateObs = await queryAll<{
-    memory_session_id: string;
-    title: string;
-    subtitle: string;
-    type: string;
+    content_hash: string;
     count: number;
     ids: string;
   }>(db.db, `
-    SELECT memory_session_id, title, subtitle, type, COUNT(*) as count, GROUP_CONCAT(id) as ids
+    SELECT content_hash, COUNT(*) as count, GROUP_CONCAT(id) as ids
     FROM observations
-    GROUP BY memory_session_id, title, subtitle, type
+    WHERE content_hash IS NOT NULL
+    GROUP BY content_hash
     HAVING count > 1
   `);
 
@@ -37,7 +35,7 @@ async function main() {
     const keepId = Math.min(...ids);
     const deleteIds = ids.filter(id => id !== keepId);
 
-    console.log(`Observation "${dup.title.substring(0, 60)}..."`);
+    console.log(`Observation hash "${dup.content_hash}"`);
     console.log(`  Found ${dup.count} copies, keeping ID ${keepId}, deleting ${deleteIds.length} duplicates`);
 
     await exec(db.db, `DELETE FROM observations WHERE id IN (${deleteIds.join(',')})`);

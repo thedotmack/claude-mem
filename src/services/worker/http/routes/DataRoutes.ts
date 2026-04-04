@@ -291,7 +291,7 @@ export class DataRoutes extends BaseRouteHandler {
     await this.workerService.broadcastProcessingStatus();
 
     const isProcessing = await this.sessionManager.isAnySessionProcessing();
-    const queueDepth = await this.sessionManager.getTotalQueueDepth();
+    const queueDepth = await this.sessionManager.getTotalActiveWork();
     const activeSessions = this.sessionManager.getActiveSessionCount();
 
     res.json({ status: 'ok', isProcessing, queueDepth, activeSessions });

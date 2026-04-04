@@ -26,8 +26,16 @@ export class DatabaseManager {
    */
   async initialize(): Promise<void> {
     // Open database connection (ONCE)
-    this.sessionStore = await SessionStore.create();
-    this.sessionSearch = await SessionSearch.create();
+    try {
+      this.sessionStore = await SessionStore.create();
+      this.sessionSearch = await SessionSearch.create();
+    } catch (error) {
+      if (this.sessionStore) {
+        await this.sessionStore.close().catch(() => {});
+        this.sessionStore = null;
+      }
+      throw error;
+    }
 
     // Initialize ChromaSync only if Chroma is enabled (SQLite-only fallback when disabled)
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);

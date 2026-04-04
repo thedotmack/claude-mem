@@ -396,7 +396,8 @@ export class WorkerService {
       // Reset any messages that were processing when worker died
       const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
       const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-      const resetCount = await pendingStore.resetStaleProcessingMessages(0); // 0 = reset ALL processing
+      const STALE_PROCESSING_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+      const resetCount = await pendingStore.resetStaleProcessingMessages(STALE_PROCESSING_THRESHOLD_MS);
       if (resetCount > 0) {
         logger.info('SYSTEM', `Reset ${resetCount} stale processing messages to pending`);
       }

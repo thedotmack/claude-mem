@@ -168,8 +168,20 @@ export class SessionRoutes extends BaseRouteHandler {
     const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
 
     // Use database count for accurate telemetry (in-memory array is always empty due to FK constraint fix)
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const actualQueueDepth = await pendingStore.getPendingCount(session.sessionDbId);
+    let actualQueueDepth: number;
+    try {
+      const pendingStore = this.sessionManager.getPendingMessageStore();
+      actualQueueDepth = await pendingStore.getPendingCount(session.sessionDbId);
+    } catch (error) {
+      // Clear spawnInProgress so the session can retry later
+      this.spawnInProgress.delete(session.sessionDbId);
+      logger.error('SESSION', 'Failed to query pending count before starting generator', {
+        sessionId: session.sessionDbId,
+        provider,
+        source
+      }, error as Error);
+      return;
+    }
 
     logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
       sessionId: session.sessionDbId,

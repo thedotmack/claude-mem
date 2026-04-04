@@ -58,6 +58,6 @@ export class SettingsManager {
       await exec(db, `INSERT OR REPLACE INTO viewer_settings (key, value) VALUES (?, ?)`, [key, JSON.stringify(value)]);
     }
 
-    return this.getSettings();
+    return await this.getSettings();
   }
 }

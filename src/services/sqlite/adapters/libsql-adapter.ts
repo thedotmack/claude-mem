@@ -156,8 +156,88 @@ export class LibsqlAdapter implements DbAdapter {
     }
   }
 
+  async withTransaction<T>(fn: (txDb: DbAdapter) => Promise<T>): Promise<T> {
+    if (this.isRemote) {
+      // Remote mode: use client.transaction() for proper scoping
+      const tx = await this.client.transaction('write');
+      const txAdapter = new TxScopedAdapter(tx, this.isRemote);
+      try {
+        const result = await fn(txAdapter);
+        await tx.commit();
+        return result;
+      } catch (e) {
+        await tx.rollback();
+        throw e;
+      }
+    } else {
+      // Local mode: use BEGIN/COMMIT/ROLLBACK on the client
+      await this.client.execute('BEGIN');
+      try {
+        const result = await fn(this);
+        await this.client.execute('COMMIT');
+        return result;
+      } catch (e) {
+        await this.client.execute('ROLLBACK');
+        throw e;
+      }
+    }
+  }
+
   async close(): Promise<void> {
     this.client.close();
+  }
+}
+
+/**
+ * Transaction-scoped adapter for remote mode.
+ * All operations run on the provided Transaction, not the shared client.
+ * Prevents cross-request transaction leakage.
+ */
+class TxScopedAdapter implements DbAdapter {
+  constructor(
+    private tx: Transaction,
+    private isRemote: boolean
+  ) {}
+
+  async execute(sql: string, args?: unknown[]): Promise<ExecResult> {
+    if (this.isRemote && isLocalOnlyPragma(sql)) {
+      return { rows: [], rowsAffected: 0, lastInsertRowid: 0 };
+    }
+    // Skip transaction control — the parent withTransaction handles commit/rollback
+    if (isTransactionControl(sql)) {
+      return { rows: [], rowsAffected: 0, lastInsertRowid: 0 };
+    }
+    const rs = await this.tx.execute({
+      sql,
+      args: (args ?? []) as any,
+    });
+    return toExecResult(rs);
+  }
+
+  async batch(stmts: Array<{ sql: string; args?: unknown[] }>): Promise<ExecResult[]> {
+    // Execute sequentially on the transaction
+    const results: ExecResult[] = [];
+    for (const s of stmts) {
+      results.push(await this.execute(s.sql, s.args));
+    }
+    return results;
+  }
+
+  async executeScript(sql: string): Promise<void> {
+    const stmts = splitStatements(sql);
+    for (const s of stmts) {
+      if (this.isRemote && isLocalOnlyPragma(s)) continue;
+      await this.tx.execute({ sql: s, args: [] });
+    }
+  }
+
+  async withTransaction<T>(fn: (txDb: DbAdapter) => Promise<T>): Promise<T> {
+    // Already inside a transaction — just run the callback with this adapter (savepoint semantics)
+    return fn(this);
+  }
+
+  async close(): Promise<void> {
+    // No-op — transaction lifecycle managed by parent withTransaction
   }
 }
 

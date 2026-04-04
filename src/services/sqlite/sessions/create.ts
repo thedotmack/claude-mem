@@ -28,42 +28,37 @@ export async function createSDKSession(
   const now = new Date();
   const nowEpoch = now.getTime();
 
-  // Check for existing session
-  const existing = await queryOne<{ id: number }>(db, `
-    SELECT id FROM sdk_sessions WHERE content_session_id = ?
-  `, [contentSessionId]);
-
-  if (existing) {
-    // Backfill project if session was created by another hook with empty project
-    if (project) {
-      await exec(db, `
-        UPDATE sdk_sessions SET project = ?
-        WHERE content_session_id = ? AND (project IS NULL OR project = '')
-      `, [project, contentSessionId]);
-    }
-    // Backfill custom_title if provided and not yet set
-    if (customTitle) {
-      await exec(db, `
-        UPDATE sdk_sessions SET custom_title = ?
-        WHERE content_session_id = ? AND custom_title IS NULL
-      `, [customTitle, contentSessionId]);
-    }
-    return existing.id;
-  }
-
-  // New session - insert fresh row
+  // Atomic get-or-create: INSERT OR IGNORE handles concurrent race without failing
   // NOTE: memory_session_id starts as NULL. It is captured by SDKAgent from the first SDK
   // response and stored via ensureMemorySessionIdRegistered(). CRITICAL: memory_session_id
   // must NEVER equal contentSessionId - that would inject memory messages into the user's transcript!
   await exec(db, `
-    INSERT INTO sdk_sessions
+    INSERT OR IGNORE INTO sdk_sessions
     (content_session_id, memory_session_id, project, user_prompt, custom_title, started_at, started_at_epoch, status)
     VALUES (?, NULL, ?, ?, ?, ?, ?, 'active')
   `, [contentSessionId, project, userPrompt, customTitle || null, now.toISOString(), nowEpoch]);
 
-  // Return new ID
   const row = await queryOne<{ id: number }>(db, 'SELECT id FROM sdk_sessions WHERE content_session_id = ?', [contentSessionId]);
-  return row!.id;
+  if (!row) {
+    throw new Error(`Failed to create or load sdk_session for ${contentSessionId}`);
+  }
+
+  // Backfill project if session was created by another hook with empty project
+  if (project) {
+    await exec(db, `
+      UPDATE sdk_sessions SET project = ?
+      WHERE content_session_id = ? AND (project IS NULL OR project = '')
+    `, [project, contentSessionId]);
+  }
+  // Backfill custom_title if provided and not yet set
+  if (customTitle) {
+    await exec(db, `
+      UPDATE sdk_sessions SET custom_title = ?
+      WHERE content_session_id = ? AND custom_title IS NULL
+    `, [customTitle, contentSessionId]);
+  }
+
+  return row.id;
 }
 
 /**

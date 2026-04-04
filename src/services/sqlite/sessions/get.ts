@@ -83,18 +83,20 @@ export async function getSessionSummaryById(
 ): Promise<SessionSummaryDetail | null> {
   return queryOne<SessionSummaryDetail>(db, `
     SELECT
-      id,
-      memory_session_id,
-      content_session_id,
-      project,
-      user_prompt,
-      request_summary,
-      learned_summary,
-      status,
-      created_at,
-      created_at_epoch
-    FROM sdk_sessions
-    WHERE id = ?
+      s.id,
+      s.memory_session_id,
+      s.content_session_id,
+      s.project,
+      s.user_prompt,
+      ss.request AS request_summary,
+      ss.learned AS learned_summary,
+      s.status,
+      ss.created_at,
+      ss.created_at_epoch
+    FROM sdk_sessions s
+    LEFT JOIN session_summaries ss ON s.memory_session_id = ss.memory_session_id
+    WHERE s.id = ?
+    ORDER BY ss.created_at_epoch DESC
     LIMIT 1
   `, [id]);
 }

@@ -11,7 +11,6 @@
  */
 
 import path from 'path';
-import os from 'os';
 import {
   existsSync,
   writeFileSync,
@@ -22,15 +21,13 @@ import {
 } from 'fs';
 import { execSync } from 'child_process';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+import { DB_PATH, USER_SETTINGS_PATH } from '../shared/paths.js';
 import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
 import { isDirectChild } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
 import type { DbAdapter } from '../services/sqlite/adapter.js';
 import { queryAll } from '../services/sqlite/adapter.js';
 import { createDbAdapter } from '../services/sqlite/adapters/libsql-adapter.js';
-
-const DB_PATH = path.join(os.homedir(), '.claude-mem', 'claude-mem.db');
-const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
 
 interface ObservationRow {
   id: number;
@@ -358,13 +355,15 @@ async function regenerateFolder(
 export async function generateClaudeMd(dryRun: boolean): Promise<number> {
   try {
     const workingDir = process.cwd();
-    const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const observationLimit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
+    const dbMode = settings.CLAUDE_MEM_DB_MODE || 'local';
 
     logger.info('CLAUDE_MD', 'Starting CLAUDE.md generation', {
       workingDir,
       dryRun,
-      observationLimit
+      observationLimit,
+      dbMode
     });
 
     const project = path.basename(workingDir);
@@ -377,7 +376,8 @@ export async function generateClaudeMd(dryRun: boolean): Promise<number> {
 
     logger.info('CLAUDE_MD', `Found ${trackedFolders.size} folders in project`);
 
-    if (!existsSync(DB_PATH)) {
+    // Only check for local DB file in local mode; remote/replica modes connect over the network
+    if (dbMode === 'local' && !existsSync(DB_PATH)) {
       logger.info('CLAUDE_MD', 'Database not found, no observations to process');
       return 0;
     }

@@ -170,7 +170,7 @@ describe('Session ID Critical Invariants', () => {
       await store.updateMemorySessionId(id1, sharedMemoryId);
 
       // Second session tries to use SAME memory ID - should FAIL
-      expect(async () => {
+      await expect(async () => {
         await store.updateMemorySessionId(id2, sharedMemoryId);
       }).toThrow(); // UNIQUE constraint violation
 
@@ -182,7 +182,7 @@ describe('Session ID Critical Invariants', () => {
 
   describe('Foreign Key Integrity', () => {
     it('should reject observations for non-existent sessions', async () => {
-      expect(async () => {
+      await expect(async () => {
         await store.storeObservation('nonexistent-session-id', 'test-project', {
           type: 'discovery',
           title: 'Invalid FK',

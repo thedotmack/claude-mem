@@ -222,55 +222,51 @@ export class SessionStore {
 
     logger.debug('DB', 'Removing UNIQUE constraint from session_summaries.memory_session_id');
 
-    // Begin transaction
-    await this.db.execute('BEGIN TRANSACTION');
-
     // Clean up leftover temp table from a previously-crashed run
     await this.db.execute('DROP TABLE IF EXISTS session_summaries_new');
 
-    // Create new table without UNIQUE constraint
-    await this.db.execute(`
-      CREATE TABLE session_summaries_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        memory_session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        request TEXT,
-        investigated TEXT,
-        learned TEXT,
-        completed TEXT,
-        next_steps TEXT,
-        files_read TEXT,
-        files_edited TEXT,
-        notes TEXT,
-        prompt_number INTEGER,
-        created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
-      )
-    `);
+    await this.db.withTransaction(async (txDb) => {
+      // Create new table without UNIQUE constraint
+      await txDb.execute(`
+        CREATE TABLE session_summaries_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          memory_session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          request TEXT,
+          investigated TEXT,
+          learned TEXT,
+          completed TEXT,
+          next_steps TEXT,
+          files_read TEXT,
+          files_edited TEXT,
+          notes TEXT,
+          prompt_number INTEGER,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+        )
+      `);
 
-    // Copy data from old table
-    await this.db.execute(`
-      INSERT INTO session_summaries_new
-      SELECT id, memory_session_id, project, request, investigated, learned,
-             completed, next_steps, files_read, files_edited, notes,
-             prompt_number, created_at, created_at_epoch
-      FROM session_summaries
-    `);
+      // Copy data from old table
+      await txDb.execute(`
+        INSERT INTO session_summaries_new
+        SELECT id, memory_session_id, project, request, investigated, learned,
+               completed, next_steps, files_read, files_edited, notes,
+               prompt_number, created_at, created_at_epoch
+        FROM session_summaries
+      `);
 
-    // Drop old table
-    await this.db.execute('DROP TABLE session_summaries');
+      // Drop old table
+      await txDb.execute('DROP TABLE session_summaries');
 
-    // Rename new table
-    await this.db.execute('ALTER TABLE session_summaries_new RENAME TO session_summaries');
+      // Rename new table
+      await txDb.execute('ALTER TABLE session_summaries_new RENAME TO session_summaries');
 
-    // Recreate indexes
-    await this.db.execute('CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id)');
-    await this.db.execute('CREATE INDEX idx_session_summaries_project ON session_summaries(project)');
-    await this.db.execute('CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC)');
-
-    // Commit transaction
-    await this.db.execute('COMMIT');
+      // Recreate indexes
+      await txDb.execute('CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id)');
+      await txDb.execute('CREATE INDEX idx_session_summaries_project ON session_summaries(project)');
+      await txDb.execute('CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC)');
+    });
 
     // Record migration
     await exec(this.db, 'INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)', [7, new Date().toISOString()]);
@@ -336,57 +332,53 @@ export class SessionStore {
 
     logger.debug('DB', 'Making observations.text nullable');
 
-    // Begin transaction
-    await this.db.execute('BEGIN TRANSACTION');
-
     // Clean up leftover temp table from a previously-crashed run
     await this.db.execute('DROP TABLE IF EXISTS observations_new');
 
-    // Create new table with text as nullable
-    await this.db.execute(`
-      CREATE TABLE observations_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        memory_session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        text TEXT,
-        type TEXT NOT NULL,
-        title TEXT,
-        subtitle TEXT,
-        facts TEXT,
-        narrative TEXT,
-        concepts TEXT,
-        files_read TEXT,
-        files_modified TEXT,
-        prompt_number INTEGER,
-        created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
-      )
-    `);
+    await this.db.withTransaction(async (txDb) => {
+      // Create new table with text as nullable
+      await txDb.execute(`
+        CREATE TABLE observations_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          memory_session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          text TEXT,
+          type TEXT NOT NULL,
+          title TEXT,
+          subtitle TEXT,
+          facts TEXT,
+          narrative TEXT,
+          concepts TEXT,
+          files_read TEXT,
+          files_modified TEXT,
+          prompt_number INTEGER,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+        )
+      `);
 
-    // Copy data from old table (all existing columns)
-    await this.db.execute(`
-      INSERT INTO observations_new
-      SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
-             narrative, concepts, files_read, files_modified, prompt_number,
-             created_at, created_at_epoch
-      FROM observations
-    `);
+      // Copy data from old table (all existing columns)
+      await txDb.execute(`
+        INSERT INTO observations_new
+        SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
+               narrative, concepts, files_read, files_modified, prompt_number,
+               created_at, created_at_epoch
+        FROM observations
+      `);
 
-    // Drop old table
-    await this.db.execute('DROP TABLE observations');
+      // Drop old table
+      await txDb.execute('DROP TABLE observations');
 
-    // Rename new table
-    await this.db.execute('ALTER TABLE observations_new RENAME TO observations');
+      // Rename new table
+      await txDb.execute('ALTER TABLE observations_new RENAME TO observations');
 
-    // Recreate indexes
-    await this.db.execute('CREATE INDEX idx_observations_sdk_session ON observations(memory_session_id)');
-    await this.db.execute('CREATE INDEX idx_observations_project ON observations(project)');
-    await this.db.execute('CREATE INDEX idx_observations_type ON observations(type)');
-    await this.db.execute('CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC)');
-
-    // Commit transaction
-    await this.db.execute('COMMIT');
+      // Recreate indexes
+      await txDb.execute('CREATE INDEX idx_observations_sdk_session ON observations(memory_session_id)');
+      await txDb.execute('CREATE INDEX idx_observations_project ON observations(project)');
+      await txDb.execute('CREATE INDEX idx_observations_type ON observations(type)');
+      await txDb.execute('CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC)');
+    });
 
     // Record migration
     await exec(this.db, 'INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)', [9, new Date().toISOString()]);
@@ -412,67 +404,63 @@ export class SessionStore {
 
     logger.debug('DB', 'Creating user_prompts table with FTS5 support');
 
-    // Begin transaction
-    await this.db.execute('BEGIN TRANSACTION');
-
-    // Create main table (using content_session_id since memory_session_id is set asynchronously by worker)
-    await this.db.execute(`
-      CREATE TABLE user_prompts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        content_session_id TEXT NOT NULL,
-        prompt_number INTEGER NOT NULL,
-        prompt_text TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(content_session_id) REFERENCES sdk_sessions(content_session_id) ON DELETE CASCADE
-      )
-    `);
-
-    await this.db.execute('CREATE INDEX idx_user_prompts_claude_session ON user_prompts(content_session_id)');
-    await this.db.execute('CREATE INDEX idx_user_prompts_created ON user_prompts(created_at_epoch DESC)');
-    await this.db.execute('CREATE INDEX idx_user_prompts_prompt_number ON user_prompts(prompt_number)');
-    await this.db.execute('CREATE INDEX idx_user_prompts_lookup ON user_prompts(content_session_id, prompt_number)');
-
-    // Create FTS5 virtual table — skip if FTS5 is unavailable (e.g., Bun on Windows #791).
-    // The user_prompts table itself is still created; only FTS indexing is skipped.
-    try {
-      await this.db.execute(`
-        CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
-          prompt_text,
-          content='user_prompts',
-          content_rowid='id'
+    await this.db.withTransaction(async (txDb) => {
+      // Create main table (using content_session_id since memory_session_id is set asynchronously by worker)
+      await txDb.execute(`
+        CREATE TABLE user_prompts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          content_session_id TEXT NOT NULL,
+          prompt_number INTEGER NOT NULL,
+          prompt_text TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          FOREIGN KEY(content_session_id) REFERENCES sdk_sessions(content_session_id) ON DELETE CASCADE
         )
       `);
 
-      // Create triggers to sync FTS5
-      await this.db.execute(`
-        CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN
-          INSERT INTO user_prompts_fts(rowid, prompt_text)
-          VALUES (new.id, new.prompt_text);
-        END
-      `);
+      await txDb.execute('CREATE INDEX idx_user_prompts_claude_session ON user_prompts(content_session_id)');
+      await txDb.execute('CREATE INDEX idx_user_prompts_created ON user_prompts(created_at_epoch DESC)');
+      await txDb.execute('CREATE INDEX idx_user_prompts_prompt_number ON user_prompts(prompt_number)');
+      await txDb.execute('CREATE INDEX idx_user_prompts_lookup ON user_prompts(content_session_id, prompt_number)');
 
-      await this.db.execute(`
-        CREATE TRIGGER user_prompts_ad AFTER DELETE ON user_prompts BEGIN
-          INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
-          VALUES('delete', old.id, old.prompt_text);
-        END
-      `);
+      // Create FTS5 virtual table — skip if FTS5 is unavailable (e.g., Bun on Windows #791).
+      // The user_prompts table itself is still created; only FTS indexing is skipped.
+      try {
+        await txDb.execute(`
+          CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
+            prompt_text,
+            content='user_prompts',
+            content_rowid='id'
+          )
+        `);
 
-      await this.db.execute(`
-        CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN
-          INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
-          VALUES('delete', old.id, old.prompt_text);
-          INSERT INTO user_prompts_fts(rowid, prompt_text)
-          VALUES (new.id, new.prompt_text);
-        END
-      `);
-    } catch (ftsError) {
-      logger.warn('DB', 'FTS5 not available — user_prompts_fts skipped (search uses ChromaDB)', {}, ftsError as Error);
-    }
+        // Create triggers to sync FTS5
+        await txDb.execute(`
+          CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(rowid, prompt_text)
+            VALUES (new.id, new.prompt_text);
+          END
+        `);
 
-    // Commit transaction
-    await this.db.execute('COMMIT');
+        await txDb.execute(`
+          CREATE TRIGGER user_prompts_ad AFTER DELETE ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+            VALUES('delete', old.id, old.prompt_text);
+          END
+        `);
+
+        await txDb.execute(`
+          CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+            VALUES('delete', old.id, old.prompt_text);
+            INSERT INTO user_prompts_fts(rowid, prompt_text)
+            VALUES (new.id, new.prompt_text);
+          END
+        `);
+      } catch (ftsError) {
+        logger.warn('DB', 'FTS5 not available — user_prompts_fts skipped (search uses ChromaDB)', {}, ftsError as Error);
+      }
+    });
 
     // Record migration
     await exec(this.db, 'INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)', [10, new Date().toISOString()]);
@@ -1407,42 +1395,36 @@ export class SessionStore {
     const now = new Date();
     const nowEpoch = now.getTime();
 
-    // Session reuse: Return existing session ID if already created for this contentSessionId.
-    const existing = await queryOne<{ id: number }>(this.db, `
-      SELECT id FROM sdk_sessions WHERE content_session_id = ?
-    `, [contentSessionId]);
-
-    if (existing) {
-      // Backfill project if session was created by another hook with empty project
-      if (project) {
-        await exec(this.db, `
-          UPDATE sdk_sessions SET project = ?
-          WHERE content_session_id = ? AND (project IS NULL OR project = '')
-        `, [project, contentSessionId]);
-      }
-      // Backfill custom_title if provided and not yet set
-      if (customTitle) {
-        await exec(this.db, `
-          UPDATE sdk_sessions SET custom_title = ?
-          WHERE content_session_id = ? AND custom_title IS NULL
-        `, [customTitle, contentSessionId]);
-      }
-      return existing.id;
-    }
-
-    // New session - insert fresh row
+    // Atomic get-or-create: INSERT OR IGNORE handles concurrent race without failing
     // NOTE: memory_session_id starts as NULL. It is captured by SDKAgent from the first SDK
     // response and stored via ensureMemorySessionIdRegistered(). CRITICAL: memory_session_id
     // must NEVER equal contentSessionId - that would inject memory messages into the user's transcript!
     await exec(this.db, `
-      INSERT INTO sdk_sessions
+      INSERT OR IGNORE INTO sdk_sessions
       (content_session_id, memory_session_id, project, user_prompt, custom_title, started_at, started_at_epoch, status)
       VALUES (?, NULL, ?, ?, ?, ?, ?, 'active')
     `, [contentSessionId, project, userPrompt, customTitle || null, now.toISOString(), nowEpoch]);
 
-    // Return new ID
     const row = await queryOne<{ id: number }>(this.db, 'SELECT id FROM sdk_sessions WHERE content_session_id = ?', [contentSessionId]);
-    return row!.id;
+    if (!row) {
+      throw new Error(`Failed to create or load sdk_session for ${contentSessionId}`);
+    }
+
+    // Backfill project/custom_title if session was created by another hook
+    if (project) {
+      await exec(this.db, `
+        UPDATE sdk_sessions SET project = ?
+        WHERE content_session_id = ? AND (project IS NULL OR project = '')
+      `, [project, contentSessionId]);
+    }
+    if (customTitle) {
+      await exec(this.db, `
+        UPDATE sdk_sessions SET custom_title = ?
+        WHERE content_session_id = ? AND custom_title IS NULL
+      `, [customTitle, contentSessionId]);
+    }
+
+    return row.id;
   }
 
 
@@ -2150,18 +2132,20 @@ export class SessionStore {
   } | null> {
     return queryOne(this.db, `
       SELECT
-        id,
-        memory_session_id,
-        content_session_id,
-        project,
-        user_prompt,
-        request_summary,
-        learned_summary,
-        status,
-        created_at,
-        created_at_epoch
-      FROM sdk_sessions
-      WHERE id = ?
+        s.id,
+        s.memory_session_id,
+        s.content_session_id,
+        s.project,
+        s.user_prompt,
+        ss.request AS request_summary,
+        ss.learned AS learned_summary,
+        s.status,
+        ss.created_at,
+        ss.created_at_epoch
+      FROM sdk_sessions s
+      LEFT JOIN session_summaries ss ON s.memory_session_id = ss.memory_session_id
+      WHERE s.id = ?
+      ORDER BY ss.created_at_epoch DESC
       LIMIT 1
     `, [id]);
   }
@@ -2252,7 +2236,7 @@ export class SessionStore {
   }
 
   /**
-   * Import session summary with duplicate checking
+   * Import session summary (multiple summaries per session are allowed)
    * Returns: { imported: boolean, id: number }
    */
   async importSessionSummary(summary: {
@@ -2271,16 +2255,6 @@ export class SessionStore {
     created_at: string;
     created_at_epoch: number;
   }): Promise<{ imported: boolean; id: number }> {
-    // Check if summary already exists for this session
-    const existing = await queryOne<{ id: number }>(this.db,
-      'SELECT id FROM session_summaries WHERE memory_session_id = ?',
-      [summary.memory_session_id]
-    );
-
-    if (existing) {
-      return { imported: false, id: existing.id };
-    }
-
     const result = await exec(this.db, `
       INSERT INTO session_summaries (
         memory_session_id, project, request, investigated, learned,

@@ -211,6 +211,7 @@ describe('MigrationRunner', () => {
       const columns = await getColumns(db, 'sdk_sessions');
       const columnNames = columns.map(c => c.name);
       expect(columnNames).toContain('content_session_id');
+      expect(columnNames).toContain('worker_port');
     });
   });
 

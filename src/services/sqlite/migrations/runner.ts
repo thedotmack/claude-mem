@@ -173,46 +173,44 @@ export class MigrationRunner {
 
     logger.debug('DB', 'Removing UNIQUE constraint from session_summaries.memory_session_id');
 
-    await this.db.execute('BEGIN TRANSACTION');
-
     await this.db.execute('DROP TABLE IF EXISTS session_summaries_new');
 
-    await this.db.execute(`
-      CREATE TABLE session_summaries_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        memory_session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        request TEXT,
-        investigated TEXT,
-        learned TEXT,
-        completed TEXT,
-        next_steps TEXT,
-        files_read TEXT,
-        files_edited TEXT,
-        notes TEXT,
-        prompt_number INTEGER,
-        created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
-      )
-    `);
+    await this.db.withTransaction(async (txDb) => {
+      await txDb.execute(`
+        CREATE TABLE session_summaries_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          memory_session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          request TEXT,
+          investigated TEXT,
+          learned TEXT,
+          completed TEXT,
+          next_steps TEXT,
+          files_read TEXT,
+          files_edited TEXT,
+          notes TEXT,
+          prompt_number INTEGER,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+        )
+      `);
 
-    await this.db.execute(`
-      INSERT INTO session_summaries_new
-      SELECT id, memory_session_id, project, request, investigated, learned,
-             completed, next_steps, files_read, files_edited, notes,
-             prompt_number, created_at, created_at_epoch
-      FROM session_summaries
-    `);
+      await txDb.execute(`
+        INSERT INTO session_summaries_new
+        SELECT id, memory_session_id, project, request, investigated, learned,
+               completed, next_steps, files_read, files_edited, notes,
+               prompt_number, created_at, created_at_epoch
+        FROM session_summaries
+      `);
 
-    await this.db.execute('DROP TABLE session_summaries');
-    await this.db.execute('ALTER TABLE session_summaries_new RENAME TO session_summaries');
+      await txDb.execute('DROP TABLE session_summaries');
+      await txDb.execute('ALTER TABLE session_summaries_new RENAME TO session_summaries');
 
-    await this.db.execute('CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id)');
-    await this.db.execute('CREATE INDEX idx_session_summaries_project ON session_summaries(project)');
-    await this.db.execute('CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC)');
-
-    await this.db.execute('COMMIT');
+      await txDb.execute('CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id)');
+      await txDb.execute('CREATE INDEX idx_session_summaries_project ON session_summaries(project)');
+      await txDb.execute('CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC)');
+    });
 
     await exec(this.db, 'INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)', [7, new Date().toISOString()]);
     logger.debug('DB', 'Successfully removed UNIQUE constraint from session_summaries.memory_session_id');
@@ -266,47 +264,46 @@ export class MigrationRunner {
 
     logger.debug('DB', 'Making observations.text nullable');
 
-    await this.db.execute('BEGIN TRANSACTION');
     await this.db.execute('DROP TABLE IF EXISTS observations_new');
 
-    await this.db.execute(`
-      CREATE TABLE observations_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        memory_session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        text TEXT,
-        type TEXT NOT NULL,
-        title TEXT,
-        subtitle TEXT,
-        facts TEXT,
-        narrative TEXT,
-        concepts TEXT,
-        files_read TEXT,
-        files_modified TEXT,
-        prompt_number INTEGER,
-        created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
-      )
-    `);
+    await this.db.withTransaction(async (txDb) => {
+      await txDb.execute(`
+        CREATE TABLE observations_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          memory_session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          text TEXT,
+          type TEXT NOT NULL,
+          title TEXT,
+          subtitle TEXT,
+          facts TEXT,
+          narrative TEXT,
+          concepts TEXT,
+          files_read TEXT,
+          files_modified TEXT,
+          prompt_number INTEGER,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+        )
+      `);
 
-    await this.db.execute(`
-      INSERT INTO observations_new
-      SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
-             narrative, concepts, files_read, files_modified, prompt_number,
-             created_at, created_at_epoch
-      FROM observations
-    `);
+      await txDb.execute(`
+        INSERT INTO observations_new
+        SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
+               narrative, concepts, files_read, files_modified, prompt_number,
+               created_at, created_at_epoch
+        FROM observations
+      `);
 
-    await this.db.execute('DROP TABLE observations');
-    await this.db.execute('ALTER TABLE observations_new RENAME TO observations');
+      await txDb.execute('DROP TABLE observations');
+      await txDb.execute('ALTER TABLE observations_new RENAME TO observations');
 
-    await this.db.execute('CREATE INDEX idx_observations_sdk_session ON observations(memory_session_id)');
-    await this.db.execute('CREATE INDEX idx_observations_project ON observations(project)');
-    await this.db.execute('CREATE INDEX idx_observations_type ON observations(type)');
-    await this.db.execute('CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC)');
-
-    await this.db.execute('COMMIT');
+      await txDb.execute('CREATE INDEX idx_observations_sdk_session ON observations(memory_session_id)');
+      await txDb.execute('CREATE INDEX idx_observations_project ON observations(project)');
+      await txDb.execute('CREATE INDEX idx_observations_type ON observations(type)');
+      await txDb.execute('CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC)');
+    });
 
     await exec(this.db, 'INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)', [9, new Date().toISOString()]);
     logger.debug('DB', 'Successfully made observations.text nullable');
@@ -327,62 +324,60 @@ export class MigrationRunner {
 
     logger.debug('DB', 'Creating user_prompts table with FTS5 support');
 
-    await this.db.execute('BEGIN TRANSACTION');
-
-    await this.db.execute(`
-      CREATE TABLE user_prompts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        content_session_id TEXT NOT NULL,
-        prompt_number INTEGER NOT NULL,
-        prompt_text TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(content_session_id) REFERENCES sdk_sessions(content_session_id) ON DELETE CASCADE
-      )
-    `);
-
-    await this.db.execute('CREATE INDEX idx_user_prompts_claude_session ON user_prompts(content_session_id)');
-    await this.db.execute('CREATE INDEX idx_user_prompts_created ON user_prompts(created_at_epoch DESC)');
-    await this.db.execute('CREATE INDEX idx_user_prompts_prompt_number ON user_prompts(prompt_number)');
-    await this.db.execute('CREATE INDEX idx_user_prompts_lookup ON user_prompts(content_session_id, prompt_number)');
-
-    // Create FTS5 virtual table — skip if FTS5 is unavailable
-    try {
-      await this.db.execute(`
-        CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
-          prompt_text,
-          content='user_prompts',
-          content_rowid='id'
+    await this.db.withTransaction(async (txDb) => {
+      await txDb.execute(`
+        CREATE TABLE user_prompts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          content_session_id TEXT NOT NULL,
+          prompt_number INTEGER NOT NULL,
+          prompt_text TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          FOREIGN KEY(content_session_id) REFERENCES sdk_sessions(content_session_id) ON DELETE CASCADE
         )
       `);
 
-      await this.db.execute(`
-        CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN
-          INSERT INTO user_prompts_fts(rowid, prompt_text)
-          VALUES (new.id, new.prompt_text);
-        END
-      `);
+      await txDb.execute('CREATE INDEX idx_user_prompts_claude_session ON user_prompts(content_session_id)');
+      await txDb.execute('CREATE INDEX idx_user_prompts_created ON user_prompts(created_at_epoch DESC)');
+      await txDb.execute('CREATE INDEX idx_user_prompts_prompt_number ON user_prompts(prompt_number)');
+      await txDb.execute('CREATE INDEX idx_user_prompts_lookup ON user_prompts(content_session_id, prompt_number)');
 
-      await this.db.execute(`
-        CREATE TRIGGER user_prompts_ad AFTER DELETE ON user_prompts BEGIN
-          INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
-          VALUES('delete', old.id, old.prompt_text);
-        END
-      `);
+      // Create FTS5 virtual table — skip if FTS5 is unavailable
+      try {
+        await txDb.execute(`
+          CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
+            prompt_text,
+            content='user_prompts',
+            content_rowid='id'
+          )
+        `);
 
-      await this.db.execute(`
-        CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN
-          INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
-          VALUES('delete', old.id, old.prompt_text);
-          INSERT INTO user_prompts_fts(rowid, prompt_text)
-          VALUES (new.id, new.prompt_text);
-        END
-      `);
-    } catch (ftsError) {
-      logger.warn('DB', 'FTS5 not available — user_prompts_fts skipped (search uses ChromaDB)', {}, ftsError as Error);
-    }
+        await txDb.execute(`
+          CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(rowid, prompt_text)
+            VALUES (new.id, new.prompt_text);
+          END
+        `);
 
-    await this.db.execute('COMMIT');
+        await txDb.execute(`
+          CREATE TRIGGER user_prompts_ad AFTER DELETE ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+            VALUES('delete', old.id, old.prompt_text);
+          END
+        `);
+
+        await txDb.execute(`
+          CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+            VALUES('delete', old.id, old.prompt_text);
+            INSERT INTO user_prompts_fts(rowid, prompt_text)
+            VALUES (new.id, new.prompt_text);
+          END
+        `);
+      } catch (ftsError) {
+        logger.warn('DB', 'FTS5 not available — user_prompts_fts skipped (search uses ChromaDB)', {}, ftsError as Error);
+      }
+    });
 
     await exec(this.db, 'INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)', [10, new Date().toISOString()]);
     logger.debug('DB', 'Successfully created user_prompts table');
@@ -540,160 +535,156 @@ export class MigrationRunner {
     logger.debug('DB', 'Adding ON UPDATE CASCADE to FK constraints on observations and session_summaries');
 
     await this.db.execute('PRAGMA foreign_keys = OFF');
-    await this.db.execute('BEGIN TRANSACTION');
 
     try {
-      // 1. Recreate observations table
-      await this.db.execute('DROP TRIGGER IF EXISTS observations_ai');
-      await this.db.execute('DROP TRIGGER IF EXISTS observations_ad');
-      await this.db.execute('DROP TRIGGER IF EXISTS observations_au');
+      await this.db.withTransaction(async (txDb) => {
+        // 1. Recreate observations table
+        await txDb.execute('DROP TRIGGER IF EXISTS observations_ai');
+        await txDb.execute('DROP TRIGGER IF EXISTS observations_ad');
+        await txDb.execute('DROP TRIGGER IF EXISTS observations_au');
 
-      await this.db.execute('DROP TABLE IF EXISTS observations_new');
+        await txDb.execute('DROP TABLE IF EXISTS observations_new');
 
-      await this.db.execute(`
-        CREATE TABLE observations_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          memory_session_id TEXT NOT NULL,
-          project TEXT NOT NULL,
-          text TEXT,
-          type TEXT NOT NULL,
-          title TEXT,
-          subtitle TEXT,
-          facts TEXT,
-          narrative TEXT,
-          concepts TEXT,
-          files_read TEXT,
-          files_modified TEXT,
-          prompt_number INTEGER,
-          discovery_tokens INTEGER DEFAULT 0,
-          created_at TEXT NOT NULL,
-          created_at_epoch INTEGER NOT NULL,
-          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
-        )
-      `);
-
-      await this.db.execute(`
-        INSERT INTO observations_new
-        SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
-               narrative, concepts, files_read, files_modified, prompt_number,
-               discovery_tokens, created_at, created_at_epoch
-        FROM observations
-      `);
-
-      await this.db.execute('DROP TABLE observations');
-      await this.db.execute('ALTER TABLE observations_new RENAME TO observations');
-
-      await this.db.execute('CREATE INDEX idx_observations_sdk_session ON observations(memory_session_id)');
-      await this.db.execute('CREATE INDEX idx_observations_project ON observations(project)');
-      await this.db.execute('CREATE INDEX idx_observations_type ON observations(type)');
-      await this.db.execute('CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC)');
-
-      // Recreate FTS triggers only if observations_fts exists
-      const hasFTS = (await queryAll<{ name: string }>(this.db, "SELECT name FROM sqlite_master WHERE type='table' AND name='observations_fts'")).length > 0;
-      if (hasFTS) {
-        await this.db.execute(`
-          CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
-            INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-            VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-          END
+        await txDb.execute(`
+          CREATE TABLE observations_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_session_id TEXT NOT NULL,
+            project TEXT NOT NULL,
+            text TEXT,
+            type TEXT NOT NULL,
+            title TEXT,
+            subtitle TEXT,
+            facts TEXT,
+            narrative TEXT,
+            concepts TEXT,
+            files_read TEXT,
+            files_modified TEXT,
+            prompt_number INTEGER,
+            discovery_tokens INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            created_at_epoch INTEGER NOT NULL,
+            FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+          )
         `);
 
-        await this.db.execute(`
-          CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
-            INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-            VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-          END
+        await txDb.execute(`
+          INSERT INTO observations_new
+          SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
+                 narrative, concepts, files_read, files_modified, prompt_number,
+                 discovery_tokens, created_at, created_at_epoch
+          FROM observations
         `);
 
-        await this.db.execute(`
-          CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
-            INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-            VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-            INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-            VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-          END
-        `);
-      }
+        await txDb.execute('DROP TABLE observations');
+        await txDb.execute('ALTER TABLE observations_new RENAME TO observations');
 
-      // 2. Recreate session_summaries table
-      await this.db.execute('DROP TABLE IF EXISTS session_summaries_new');
+        await txDb.execute('CREATE INDEX idx_observations_sdk_session ON observations(memory_session_id)');
+        await txDb.execute('CREATE INDEX idx_observations_project ON observations(project)');
+        await txDb.execute('CREATE INDEX idx_observations_type ON observations(type)');
+        await txDb.execute('CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC)');
 
-      await this.db.execute(`
-        CREATE TABLE session_summaries_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          memory_session_id TEXT NOT NULL,
-          project TEXT NOT NULL,
-          request TEXT,
-          investigated TEXT,
-          learned TEXT,
-          completed TEXT,
-          next_steps TEXT,
-          files_read TEXT,
-          files_edited TEXT,
-          notes TEXT,
-          prompt_number INTEGER,
-          discovery_tokens INTEGER DEFAULT 0,
-          created_at TEXT NOT NULL,
-          created_at_epoch INTEGER NOT NULL,
-          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
-        )
-      `);
+        // Recreate FTS triggers only if observations_fts exists
+        const hasFTS = (await queryAll<{ name: string }>(txDb, "SELECT name FROM sqlite_master WHERE type='table' AND name='observations_fts'")).length > 0;
+        if (hasFTS) {
+          await txDb.execute(`
+            CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
+              INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+              VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+            END
+          `);
 
-      await this.db.execute(`
-        INSERT INTO session_summaries_new
-        SELECT id, memory_session_id, project, request, investigated, learned,
-               completed, next_steps, files_read, files_edited, notes,
-               prompt_number, discovery_tokens, created_at, created_at_epoch
-        FROM session_summaries
-      `);
+          await txDb.execute(`
+            CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
+              INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+              VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+            END
+          `);
 
-      await this.db.execute('DROP TRIGGER IF EXISTS session_summaries_ai');
-      await this.db.execute('DROP TRIGGER IF EXISTS session_summaries_ad');
-      await this.db.execute('DROP TRIGGER IF EXISTS session_summaries_au');
+          await txDb.execute(`
+            CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
+              INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+              VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+              INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+              VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+            END
+          `);
+        }
 
-      await this.db.execute('DROP TABLE session_summaries');
-      await this.db.execute('ALTER TABLE session_summaries_new RENAME TO session_summaries');
+        // 2. Recreate session_summaries table
+        await txDb.execute('DROP TABLE IF EXISTS session_summaries_new');
 
-      await this.db.execute('CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id)');
-      await this.db.execute('CREATE INDEX idx_session_summaries_project ON session_summaries(project)');
-      await this.db.execute('CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC)');
-
-      const hasSummariesFTS = (await queryAll<{ name: string }>(this.db, "SELECT name FROM sqlite_master WHERE type='table' AND name='session_summaries_fts'")).length > 0;
-      if (hasSummariesFTS) {
-        await this.db.execute(`
-          CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
-            INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-            VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-          END
+        await txDb.execute(`
+          CREATE TABLE session_summaries_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_session_id TEXT NOT NULL,
+            project TEXT NOT NULL,
+            request TEXT,
+            investigated TEXT,
+            learned TEXT,
+            completed TEXT,
+            next_steps TEXT,
+            files_read TEXT,
+            files_edited TEXT,
+            notes TEXT,
+            prompt_number INTEGER,
+            discovery_tokens INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            created_at_epoch INTEGER NOT NULL,
+            FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+          )
         `);
 
-        await this.db.execute(`
-          CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
-            INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-            VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
-          END
+        await txDb.execute(`
+          INSERT INTO session_summaries_new
+          SELECT id, memory_session_id, project, request, investigated, learned,
+                 completed, next_steps, files_read, files_edited, notes,
+                 prompt_number, discovery_tokens, created_at, created_at_epoch
+          FROM session_summaries
         `);
 
-        await this.db.execute(`
-          CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
-            INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-            VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
-            INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-            VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-          END
-        `);
-      }
+        await txDb.execute('DROP TRIGGER IF EXISTS session_summaries_ai');
+        await txDb.execute('DROP TRIGGER IF EXISTS session_summaries_ad');
+        await txDb.execute('DROP TRIGGER IF EXISTS session_summaries_au');
 
-      await exec(this.db, 'INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)', [21, new Date().toISOString()]);
+        await txDb.execute('DROP TABLE session_summaries');
+        await txDb.execute('ALTER TABLE session_summaries_new RENAME TO session_summaries');
 
-      await this.db.execute('COMMIT');
-      await this.db.execute('PRAGMA foreign_keys = ON');
+        await txDb.execute('CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id)');
+        await txDb.execute('CREATE INDEX idx_session_summaries_project ON session_summaries(project)');
+        await txDb.execute('CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC)');
+
+        const hasSummariesFTS = (await queryAll<{ name: string }>(txDb, "SELECT name FROM sqlite_master WHERE type='table' AND name='session_summaries_fts'")).length > 0;
+        if (hasSummariesFTS) {
+          await txDb.execute(`
+            CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
+              INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+              VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+            END
+          `);
+
+          await txDb.execute(`
+            CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
+              INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+              VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+            END
+          `);
+
+          await txDb.execute(`
+            CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
+              INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+              VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+              INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+              VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+            END
+          `);
+        }
+
+        await exec(txDb, 'INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)', [21, new Date().toISOString()]);
+      });
 
       logger.debug('DB', 'Successfully added ON UPDATE CASCADE to FK constraints');
-    } catch (error) {
-      await this.db.execute('ROLLBACK');
+    } finally {
       await this.db.execute('PRAGMA foreign_keys = ON');
-      throw error;
     }
   }
 

@@ -49,20 +49,19 @@ export async function storeObservationsAndMarkComplete(
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
-  await db.execute('BEGIN');
-  try {
+  return db.withTransaction(async (txDb) => {
     const observationIds: number[] = [];
 
     // 1. Store all observations (with content-hash deduplication)
     for (const observation of observations) {
       const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-      const existing = await findDuplicateObservation(db, contentHash, timestampEpoch);
+      const existing = await findDuplicateObservation(txDb, contentHash, timestampEpoch);
       if (existing) {
         observationIds.push(existing.id);
         continue;
       }
 
-      const result = await exec(db, `
+      const result = await exec(txDb, `
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
@@ -84,13 +83,13 @@ export async function storeObservationsAndMarkComplete(
         timestampIso,
         timestampEpoch
       ]);
-      observationIds.push(result.lastInsertRowid);
+      observationIds.push(Number(result.lastInsertRowid));
     }
 
     // 2. Store summary if provided
     let summaryId: number | null = null;
     if (summary) {
-      const result = await exec(db, `
+      const result = await exec(txDb, `
         INSERT INTO session_summaries
         (memory_session_id, project, request, investigated, learned, completed,
          next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
@@ -109,11 +108,11 @@ export async function storeObservationsAndMarkComplete(
         timestampIso,
         timestampEpoch
       ]);
-      summaryId = result.lastInsertRowid;
+      summaryId = Number(result.lastInsertRowid);
     }
 
     // 3. Mark pending message as processed
-    await exec(db, `
+    await exec(txDb, `
       UPDATE pending_messages
       SET
         status = 'processed',
@@ -123,12 +122,8 @@ export async function storeObservationsAndMarkComplete(
       WHERE id = ? AND status = 'processing'
     `, [timestampEpoch, messageId]);
 
-    await db.execute('COMMIT');
     return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
-  } catch (e) {
-    await db.execute('ROLLBACK');
-    throw e;
-  }
+  });
 }
 
 /**
@@ -152,20 +147,19 @@ export async function storeObservations(
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
-  await db.execute('BEGIN');
-  try {
+  return db.withTransaction(async (txDb) => {
     const observationIds: number[] = [];
 
     // 1. Store all observations (with content-hash deduplication)
     for (const observation of observations) {
       const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-      const existing = await findDuplicateObservation(db, contentHash, timestampEpoch);
+      const existing = await findDuplicateObservation(txDb, contentHash, timestampEpoch);
       if (existing) {
         observationIds.push(existing.id);
         continue;
       }
 
-      const result = await exec(db, `
+      const result = await exec(txDb, `
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
@@ -187,13 +181,13 @@ export async function storeObservations(
         timestampIso,
         timestampEpoch
       ]);
-      observationIds.push(result.lastInsertRowid);
+      observationIds.push(Number(result.lastInsertRowid));
     }
 
     // 2. Store summary if provided
     let summaryId: number | null = null;
     if (summary) {
-      const result = await exec(db, `
+      const result = await exec(txDb, `
         INSERT INTO session_summaries
         (memory_session_id, project, request, investigated, learned, completed,
          next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
@@ -212,13 +206,9 @@ export async function storeObservations(
         timestampIso,
         timestampEpoch
       ]);
-      summaryId = result.lastInsertRowid;
+      summaryId = Number(result.lastInsertRowid);
     }
 
-    await db.execute('COMMIT');
     return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
-  } catch (e) {
-    await db.execute('ROLLBACK');
-    throw e;
-  }
+  });
 }

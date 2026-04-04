@@ -61,7 +61,7 @@ describe('TRIAGE-03: Data Integrity', () => {
 
     it('computeObservationContentHash produces different hashes for different content', () => {
       const hash1 = computeObservationContentHash('session-1', 'Title A', 'Narrative A');
-      const hash2 = computeObservationContentHash('neptune-1', 'Title B', 'Narrative B');
+      const hash2 = computeObservationContentHash('session-1', 'Title B', 'Narrative B');
       expect(hash1).not.toBe(hash2);
     });
 
