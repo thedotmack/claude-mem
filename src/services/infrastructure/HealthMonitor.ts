@@ -39,10 +39,15 @@ async function httpRequestToWorker(
  */
 export async function isPortInUse(port: number): Promise<boolean> {
   try {
-    // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+    // AbortSignal.timeout is skipped on Windows to avoid a Bun libuv assertion crash.
+    // On Linux/macOS, fetch() to a closed port may hang forever (Bun 1.3.11+), so
+    // we apply a 2s timeout to prevent daemon startup from blocking indefinitely.
+    const options: RequestInit = process.platform !== 'win32'
+      ? { signal: AbortSignal.timeout(2000) }
+      : {};
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, options);
     return response.ok;
-  } catch (error) {
+  } catch {
     // [ANTI-PATTERN IGNORED]: Health check polls every 500ms, logging would flood
     return false;
   }
