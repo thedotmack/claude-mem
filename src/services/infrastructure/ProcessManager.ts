@@ -646,18 +646,19 @@ export function spawnDaemon(
       return undefined;
     }
 
-    const escapedRuntimePath = runtimePath.replace(/'/g, "''");
-    const escapedScriptPath = scriptPath.replace(/'/g, "''");
-    const psCommand = `Start-Process -FilePath '${escapedRuntimePath}' -ArgumentList '${escapedScriptPath}','--daemon' -WindowStyle Hidden`;
+    // Use -EncodedCommand to avoid all shell quoting issues with spaces in paths
+    const psScript = `Start-Process -FilePath '${runtimePath.replace(/'/g, "''")}' -ArgumentList @('${scriptPath.replace(/'/g, "''")}','--daemon') -WindowStyle Hidden`;
+    const encodedCommand = Buffer.from(psScript, 'utf16le').toString('base64');
 
     try {
-      execSync(`powershell -NoProfile -Command "${psCommand}"`, {
+      execSync(`powershell -NoProfile -EncodedCommand ${encodedCommand}`, {
         stdio: 'ignore',
         windowsHide: true,
         env
       });
       return 0;
     } catch (error) {
+      // APPROVED OVERRIDE: Windows daemon spawn is best-effort; log and let callers fall back to health checks/retry flow.
       logger.error('SYSTEM', 'Failed to spawn worker daemon on Windows', { runtimePath }, error as Error);
       return undefined;
     }
