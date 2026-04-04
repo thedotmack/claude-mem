@@ -348,20 +348,36 @@ export class SDKAgent {
       promptType: isInitPrompt ? 'INIT' : 'CONTINUATION'
     });
 
-    const initPrompt = isInitPrompt
+    // CACHE FIX: Split prompt into static prefix (cacheable) and dynamic context (unique per turn).
+    // The static prefix is byte-identical across turns, enabling Anthropic prompt cache hits.
+    // The dynamic context (user request) is yielded as a separate message after the static prefix.
+    const { staticPrefix, dynamicContext } = isInitPrompt
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
-    // Add to shared conversation history for provider interop
-    session.conversationHistory.push({ role: 'user', content: initPrompt });
+    // Add concatenated prompt to shared conversation history for provider interop.
+    // Gemini requires strictly alternating user/model turns, so we store one entry.
+    // The two separate yields below are only for Anthropic's prompt cache.
+    session.conversationHistory.push({ role: 'user', content: staticPrefix + '\n\n' + dynamicContext });
 
-    // Yield initial user prompt with context (or continuation if prompt #2+)
-    // CRITICAL: Both paths use session.contentSessionId from the hook
+    // Yield static prefix first (cacheable — identical across all turns)
     yield {
       type: 'user',
       message: {
         role: 'user',
-        content: initPrompt
+        content: staticPrefix
+      },
+      session_id: session.contentSessionId,
+      parent_tool_use_id: null,
+      isSynthetic: true
+    };
+
+    // Yield dynamic context second (unique per turn — user request)
+    yield {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: dynamicContext
       },
       session_id: session.contentSessionId,
       parent_tool_use_id: null,
