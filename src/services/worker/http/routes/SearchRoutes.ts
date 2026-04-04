@@ -249,7 +249,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Semantic context search for per-prompt injection
-   * GET /api/context/semantic?q=<prompt>&project=<project>&limit=5
+   * POST /api/context/semantic  { q, project?, limit? }
    *
    * Queries Chroma for observations semantically similar to the user's prompt.
    * Returns compact markdown for injection as additionalContext.
@@ -257,7 +257,7 @@ export class SearchRoutes extends BaseRouteHandler {
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const query = (req.body?.q || req.query.q) as string;
     const project = (req.body?.project || req.query.project) as string;
-    const limit = parseInt(String(req.body?.limit || req.query.limit || '5'), 10);
+    const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
 
     if (!query || query.length < 20) {
       res.json({ context: '', count: 0 });
