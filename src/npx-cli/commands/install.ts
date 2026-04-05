@@ -136,10 +136,15 @@ async function setupIDEs(selectedIDEs: string[]): Promise<string[]> {
       }
 
       case 'cursor': {
-        const { installCursorHooks } = await import('../../services/integrations/CursorHooksInstaller.js');
+        const { installCursorHooks, configureCursorMcp } = await import('../../services/integrations/CursorHooksInstaller.js');
         const cursorResult = await installCursorHooks('user');
         if (cursorResult === 0) {
-          log.success('Cursor: hooks installed.');
+          const mcpResult = configureCursorMcp('user');
+          if (mcpResult === 0) {
+            log.success('Cursor: hooks + MCP installed.');
+          } else {
+            log.success('Cursor: hooks installed (MCP setup failed — run `npx claude-mem cursor mcp` to retry).');
+          }
         } else {
           log.error('Cursor: hook installation failed.');
           failedIDEs.push(ideId);
