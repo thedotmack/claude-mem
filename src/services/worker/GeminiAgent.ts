@@ -175,7 +175,9 @@ export class GeminiAgent {
           worker,
           tokensUsed,
           null,
-          'Gemini'
+          'Gemini',
+          undefined,
+          model
         );
       } else {
         logger.error('SDK', 'Empty Gemini init response - session may lack context', {
@@ -248,7 +250,8 @@ export class GeminiAgent {
               tokensUsed,
               originalTimestamp,
               'Gemini',
-              lastCwd
+              lastCwd,
+              model
             );
           } else {
             logger.warn('SDK', 'Empty Gemini observation response, skipping processing to preserve message', {
@@ -298,7 +301,8 @@ export class GeminiAgent {
               tokensUsed,
               originalTimestamp,
               'Gemini',
-              lastCwd
+              lastCwd,
+              model
             );
           } else {
             logger.warn('SDK', 'Empty Gemini summary response, skipping processing to preserve message', {
