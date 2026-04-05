@@ -4,10 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [10.7.2] - 2026-
+## [11.0.0] - 2026-
 ✅ CHANGELOG.md generated successfully!
-   220 releases processed
-m error to debug (#1606) — reduces noise in logs by treating routine concept-type cleanup as debug-level rather than error-level logging.
+   221 releases processed
+server agent can no longer return prose-style skip responses (e.g., "Skipping — no substantive tool executions"). This is a behavioral change that affects all observation processing.
+
+**What changed:**
+- **Prompt enforcement**: `buildObservationPrompt` now explicitly instructs the observer to return `<observation>` XML blocks or an empty response — never prose
+- **Runtime detection**: `ResponseProcessor` logs a warning when non-XML content is received and discarded
+- **Recording scope expanded**: Concrete debugging findings from logs, queue state, database rows, and code-path inspection are now explicitly encouraged as durable discoveries
+- **Skip guidance clarified**: "Return an empty response only. Do not explain the skip in prose."
+
+**Why major version:**
+This changes the implicit contract between the prompt layer and the response parser. Existing observer behavior that produced prose skip responses will now be flagged and discarded rather than silently ignored.
+
+**Tests added:**
+- `tests/sdk/prompts.test.ts` — verifies anti-prose instructions in observation prompt
+- `tests/worker/agents/response-processor.test.ts` — verifies warning on non-XML responses
+
+## [10.7.2] - 2026-04-05
+
+## Bug Fix
+
+- **fix**: Downgrade concept-type cleanup log from error to debug (#1606) — reduces noise in logs by treating routine concept-type cleanup as debug-level rather than error-level logging.
 
 ## [10.7.1] - 2026-04-05
 
