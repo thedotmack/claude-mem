@@ -320,7 +320,8 @@ export class SessionSearch {
         ORDER BY o.created_at_epoch DESC
         LIMIT ? OFFSET ?
       `;
-      const likeParam = `%${query}%`;
+      const escapedQuery = query.replace(/[%_]/g, '\\$&');
+      const likeParam = `%${escapedQuery}%`;
       return this.db.prepare(sql).all(likeParam, likeParam, likeParam, limit, offset) as ObservationSearchResult[];
     }
   }
