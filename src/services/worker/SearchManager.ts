@@ -252,14 +252,19 @@ export class SearchManager {
         logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
       }
     }
-    // ChromaDB not initialized - mark as failed to show proper error message
+    // ChromaDB not initialized - fall back to FTS5 keyword search
     else if (query) {
-      chromaFailed = true;
-      logger.debug('SEARCH', 'ChromaDB not initialized - semantic search unavailable', {});
-      logger.debug('SEARCH', 'Install UVX/Python to enable vector search', { url: 'https://docs.astral.sh/uv/getting-started/installation/' });
-      observations = [];
-      sessions = [];
-      prompts = [];
+      logger.debug('SEARCH', 'ChromaDB not available, falling back to FTS5 keyword search', {});
+      const searchFilters = { ...options, type: types, concepts, files };
+      if (searchObservations) {
+        observations = this.sessionSearch.searchObservations(query, searchFilters);
+      }
+      if (searchSessions) {
+        sessions = this.sessionSearch.searchSessions(query, options);
+      }
+      if (searchPrompts) {
+        prompts = this.sessionSearch.searchUserPrompts(query, options);
+      }
     }
 
     const totalResults = observations.length + sessions.length + prompts.length;
