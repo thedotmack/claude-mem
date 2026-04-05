@@ -74,6 +74,8 @@ export interface ObservationRecord {
   source_files?: string;
   prompt_number?: number;
   discovery_tokens?: number;
+  branch?: string;
+  status?: string;
 }
 
 /**
@@ -92,6 +94,7 @@ export interface SessionSummaryRecord {
   created_at_epoch: number;
   prompt_number?: number;
   discovery_tokens?: number;
+  branch?: string;
 }
 
 /**

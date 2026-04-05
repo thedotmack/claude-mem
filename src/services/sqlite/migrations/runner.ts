@@ -35,6 +35,7 @@ export class MigrationRunner {
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
     this.createObservationFeedbackTable();
+    this.addBranchAndStatusColumns();
   }
 
   /**
@@ -890,5 +891,34 @@ export class MigrationRunner {
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
     logger.debug('DB', 'Created observation_feedback table for usage tracking');
+  }
+
+  private addBranchAndStatusColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(25) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // observations: branch + status
+    const obsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    if (!obsInfo.some(col => col.name === 'branch')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN branch TEXT');
+      this.db.run("ALTER TABLE observations ADD COLUMN status TEXT DEFAULT 'active'");
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_branch ON observations(branch)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_status ON observations(status)');
+    }
+
+    // session_summaries: branch only
+    const sumInfo = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
+    if (!sumInfo.some(col => col.name === 'branch')) {
+      this.db.run('ALTER TABLE session_summaries ADD COLUMN branch TEXT');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_session_summaries_branch ON session_summaries(branch)');
+    }
+
+    // sdk_sessions: branch (captured at session init)
+    const sessInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    if (!sessInfo.some(col => col.name === 'branch')) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN branch TEXT');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
   }
 }
