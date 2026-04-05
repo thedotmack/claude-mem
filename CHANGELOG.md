@@ -7,20 +7,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [11.0.0] - 2026-
 ✅ CHANGELOG.md generated successfully!
    221 releases processed
-server agent can no longer return prose-style skip responses (e.g., "Skipping — no substantive tool executions"). This is a behavioral change that affects all observation processing.
+k deletions · 39 patch releases since v10.0.0**
 
-**What changed:**
-- **Prompt enforcement**: `buildObservationPrompt` now explicitly instructs the observer to return `<observation>` XML blocks or an empty response — never prose
-- **Runtime detection**: `ResponseProcessor` logs a warning when non-XML content is received and discarded
-- **Recording scope expanded**: Concrete debugging findings from logs, queue state, database rows, and code-path inspection are now explicitly encouraged as durable discoveries
-- **Skip guidance clarified**: "Return an empty response only. Do not explain the skip in prose."
+### Breaking: Strict Observer Response Contract
 
-**Why major version:**
-This changes the implicit contract between the prompt layer and the response parser. Existing observer behavior that produced prose skip responses will now be flagged and discarded rather than silently ignored.
+The memory agent can no longer return prose-style skip responses. This changes the implicit contract between the prompt layer and the response parser:
 
-**Tests added:**
-- `tests/sdk/prompts.test.ts` — verifies anti-prose instructions in observation prompt
-- `tests/worker/agents/response-processor.test.ts` — verifies warning on non-XML responses
+- **Prompt enforcement** — `buildObservationPrompt` now requires `<observation>` XML blocks or an empty response. Prose like "Skipping — no substantive tool executions" is explicitly forbidden.
+- **Runtime detection** — `ResponseProcessor` warns when non-XML content is received and discarded, making silent data loss visible.
+- **Expanded recording scope** — Concrete debugging findings from logs, queue state, database rows, and code-path inspection are now encouraged as durable discoveries.
+
+### v10.x Highlights (What Got Us Here)
+
+#### Multi-IDE Platform (v10.2.0 → v10.7.0)
+- **NPX CLI installer** with interactive `@clack/prompts` UI and `--ide` flag
+- **13 IDE integrations**: Claude Code, Gemini CLI, Windsurf, OpenCode, OpenClaw, Codex CLI, Copilot CLI, Antigravity, Goose, Crush, Roo Code, Warp, and MCP factory pattern for extensibility
+- Claude Code install now delegates to native `claude plugin marketplace add` + `claude plugin install`
+
+#### OpenClaw Plugin (v10.0.0)
+- Persistent memory for [OpenClaw](https://openclaw.ai) agents — observation recording, MEMORY.md live sync, and real-time observation feeds to Telegram/Discord/Slack/Signal/WhatsApp/LINE
+- System prompt context injection via `before_prompt_build` hook (v10.6.0)
+
+#### Smart Explore (v10.5.0)
+- AST-powered code navigation via tree-sitter with 3 MCP tools: `smart_search`, `smart_outline`, `smart_unfold`
+- **6–12× token savings** over traditional Glob → Grep → Read exploration cycles
+- 10 languages: TypeScript, JavaScript, Python, Rust, Go, Java, C, C++, Ruby, PHP
+
+#### ChromaDB Overhaul (v10.3.0 → v10.7.0)
+- Replaced WASM embeddings with persistent `chroma-mcp` MCP connection
+- Semantic context injection on `UserPromptSubmit` via Chroma vector search
+- Tier routing by queue complexity with observation feedback table
+- Multi-machine sync via `claude-mem-sync`
+
+#### Stability (v10.4.0 → v10.5.6)
+- **30+ root-cause bug fixes** across 10 triage phases (v10.4.0)
+- Embedded Process Supervisor for unified lifecycle management
+- Content-hash deduplication on observation INSERT
+- Self-healing `claimNextMessage` for stuck processing messages
+- Chroma spawn storm fix (641 processes → max 2)
+- Fixed infinite spinner from orphaned pending messages
+
+#### New Skills & Modes
+- **Timeline Report** — narrative "Journey Into [Project]" reports from development history
+- **Make Plan / Do** — phased implementation planning with subagent execution
+- **Law Study Mode** — purpose-built for law students with Socratic methodology
+- **Smart Explore** — structural code search as an MCP skill
+
+#### Platform
+- Windows hardening: PowerShell daemon spawning, backslash path conversion, Chroma re-enabled
+- Linux: stdin buffering fix for Node.js → Bun handoff
+- XDG-compliant environment resolution
+- npm publish workflow on tag push
 
 ## [10.7.2] - 2026-04-05
 
