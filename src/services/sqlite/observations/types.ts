@@ -33,6 +33,7 @@ export interface GetObservationsByIdsOptions {
   orderBy?: 'date_desc' | 'date_asc';
   limit?: number;
   project?: string;
+  branch?: string | string[];
   type?: string | string[];
   concepts?: string | string[];
   files?: string | string[];

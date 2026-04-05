@@ -8,6 +8,7 @@
 import type { Database } from 'bun:sqlite';
 import type { ObservationRecord, SessionSummaryRecord, UserPromptRecord } from '../../../types/database.js';
 import { logger } from '../../../utils/logger.js';
+import { buildBranchFilter } from '../../../utils/branch-filter.js';
 
 /**
  * Timeline result containing observations, sessions, and prompts within a time window
@@ -51,9 +52,10 @@ export function getTimelineAroundTimestamp(
   anchorEpoch: number,
   depthBefore: number = 10,
   depthAfter: number = 10,
-  project?: string
+  project?: string,
+  branch?: string | string[]
 ): TimelineResult {
-  return getTimelineAroundObservation(db, null, anchorEpoch, depthBefore, depthAfter, project);
+  return getTimelineAroundObservation(db, null, anchorEpoch, depthBefore, depthAfter, project, branch);
 }
 
 /**
@@ -74,10 +76,12 @@ export function getTimelineAroundObservation(
   anchorEpoch: number,
   depthBefore: number = 10,
   depthAfter: number = 10,
-  project?: string
+  project?: string,
+  branch?: string | string[]
 ): TimelineResult {
   const projectFilter = project ? 'AND project = ?' : '';
   const projectParams = project ? [project] : [];
+  const branchFilter = buildBranchFilter(branch ? (Array.isArray(branch) ? branch : [branch]) : undefined);
 
   let startEpoch: number;
   let endEpoch: number;
@@ -87,21 +91,21 @@ export function getTimelineAroundObservation(
     const beforeQuery = `
       SELECT id, created_at_epoch
       FROM observations
-      WHERE id <= ? ${projectFilter}
+      WHERE id <= ? ${projectFilter} ${branchFilter.sql}
       ORDER BY id DESC
       LIMIT ?
     `;
     const afterQuery = `
       SELECT id, created_at_epoch
       FROM observations
-      WHERE id >= ? ${projectFilter}
+      WHERE id >= ? ${projectFilter} ${branchFilter.sql}
       ORDER BY id ASC
       LIMIT ?
     `;
 
     try {
-      const beforeRecords = db.prepare(beforeQuery).all(anchorObservationId, ...projectParams, depthBefore + 1) as Array<{id: number; created_at_epoch: number}>;
-      const afterRecords = db.prepare(afterQuery).all(anchorObservationId, ...projectParams, depthAfter + 1) as Array<{id: number; created_at_epoch: number}>;
+      const beforeRecords = db.prepare(beforeQuery).all(anchorObservationId, ...projectParams, ...branchFilter.params, depthBefore + 1) as Array<{id: number; created_at_epoch: number}>;
+      const afterRecords = db.prepare(afterQuery).all(anchorObservationId, ...projectParams, ...branchFilter.params, depthAfter + 1) as Array<{id: number; created_at_epoch: number}>;
 
       // Get the earliest and latest timestamps from boundary observations
       if (beforeRecords.length === 0 && afterRecords.length === 0) {
@@ -120,21 +124,21 @@ export function getTimelineAroundObservation(
     const beforeQuery = `
       SELECT created_at_epoch
       FROM observations
-      WHERE created_at_epoch <= ? ${projectFilter}
+      WHERE created_at_epoch <= ? ${projectFilter} ${branchFilter.sql}
       ORDER BY created_at_epoch DESC
       LIMIT ?
     `;
     const afterQuery = `
       SELECT created_at_epoch
       FROM observations
-      WHERE created_at_epoch >= ? ${projectFilter}
+      WHERE created_at_epoch >= ? ${projectFilter} ${branchFilter.sql}
       ORDER BY created_at_epoch ASC
       LIMIT ?
     `;
 
     try {
-      const beforeRecords = db.prepare(beforeQuery).all(anchorEpoch, ...projectParams, depthBefore) as Array<{created_at_epoch: number}>;
-      const afterRecords = db.prepare(afterQuery).all(anchorEpoch, ...projectParams, depthAfter + 1) as Array<{created_at_epoch: number}>;
+      const beforeRecords = db.prepare(beforeQuery).all(anchorEpoch, ...projectParams, ...branchFilter.params, depthBefore) as Array<{created_at_epoch: number}>;
+      const afterRecords = db.prepare(afterQuery).all(anchorEpoch, ...projectParams, ...branchFilter.params, depthAfter + 1) as Array<{created_at_epoch: number}>;
 
       if (beforeRecords.length === 0 && afterRecords.length === 0) {
         return { observations: [], sessions: [], prompts: [] };
@@ -152,28 +156,31 @@ export function getTimelineAroundObservation(
   const obsQuery = `
     SELECT *
     FROM observations
-    WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${projectFilter}
+    WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${projectFilter} ${branchFilter.sql}
     ORDER BY created_at_epoch ASC
   `;
 
   const sessQuery = `
     SELECT *
     FROM session_summaries
-    WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${projectFilter}
+    WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${projectFilter} ${branchFilter.sql}
     ORDER BY created_at_epoch ASC
   `;
+
+  // Build branch filter with table alias for the prompt query's join
+  const branchFilterForPrompts = buildBranchFilter(branch ? (Array.isArray(branch) ? branch : [branch]) : undefined, 's');
 
   const promptQuery = `
     SELECT up.*, s.project, s.memory_session_id
     FROM user_prompts up
     JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
-    WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${projectFilter.replace('project', 's.project')}
+    WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${projectFilter.replace('project', 's.project')} ${branchFilterForPrompts.sql}
     ORDER BY up.created_at_epoch ASC
   `;
 
-  const observations = db.prepare(obsQuery).all(startEpoch, endEpoch, ...projectParams) as ObservationRecord[];
-  const sessions = db.prepare(sessQuery).all(startEpoch, endEpoch, ...projectParams) as SessionSummaryRecord[];
-  const prompts = db.prepare(promptQuery).all(startEpoch, endEpoch, ...projectParams) as UserPromptRecord[];
+  const observations = db.prepare(obsQuery).all(startEpoch, endEpoch, ...projectParams, ...branchFilter.params) as ObservationRecord[];
+  const sessions = db.prepare(sessQuery).all(startEpoch, endEpoch, ...projectParams, ...branchFilter.params) as SessionSummaryRecord[];
+  const prompts = db.prepare(promptQuery).all(startEpoch, endEpoch, ...projectParams, ...branchFilterForPrompts.params) as UserPromptRecord[];
 
   return {
     observations,

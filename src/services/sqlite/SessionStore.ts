@@ -1977,13 +1977,14 @@ export class SessionStore {
     anchorEpoch: number,
     depthBefore: number = 10,
     depthAfter: number = 10,
-    project?: string
+    project?: string,
+    branch?: string
   ): {
     observations: any[];
     sessions: any[];
     prompts: any[];
   } {
-    return this.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project);
+    return this.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project, branch);
   }
 
   /**
@@ -1995,7 +1996,8 @@ export class SessionStore {
     anchorEpoch: number,
     depthBefore: number = 10,
     depthAfter: number = 10,
-    project?: string
+    project?: string,
+    branch?: string
   ): {
     observations: any[];
     sessions: any[];
@@ -2003,6 +2005,8 @@ export class SessionStore {
   } {
     const projectFilter = project ? 'AND project = ?' : '';
     const projectParams = project ? [project] : [];
+    const branchFilter = branch ? 'AND branch = ?' : '';
+    const branchParams = branch ? [branch] : [];
 
     let startEpoch: number;
     let endEpoch: number;
@@ -2012,21 +2016,21 @@ export class SessionStore {
       const beforeQuery = `
         SELECT id, created_at_epoch
         FROM observations
-        WHERE id <= ? ${projectFilter}
+        WHERE id <= ? ${projectFilter} ${branchFilter}
         ORDER BY id DESC
         LIMIT ?
       `;
       const afterQuery = `
         SELECT id, created_at_epoch
         FROM observations
-        WHERE id >= ? ${projectFilter}
+        WHERE id >= ? ${projectFilter} ${branchFilter}
         ORDER BY id ASC
         LIMIT ?
       `;
 
       try {
-        const beforeRecords = this.db.prepare(beforeQuery).all(anchorObservationId, ...projectParams, depthBefore + 1) as Array<{id: number; created_at_epoch: number}>;
-        const afterRecords = this.db.prepare(afterQuery).all(anchorObservationId, ...projectParams, depthAfter + 1) as Array<{id: number; created_at_epoch: number}>;
+        const beforeRecords = this.db.prepare(beforeQuery).all(anchorObservationId, ...projectParams, ...branchParams, depthBefore + 1) as Array<{id: number; created_at_epoch: number}>;
+        const afterRecords = this.db.prepare(afterQuery).all(anchorObservationId, ...projectParams, ...branchParams, depthAfter + 1) as Array<{id: number; created_at_epoch: number}>;
 
         // Get the earliest and latest timestamps from boundary observations
         if (beforeRecords.length === 0 && afterRecords.length === 0) {
@@ -2045,21 +2049,21 @@ export class SessionStore {
       const beforeQuery = `
         SELECT created_at_epoch
         FROM observations
-        WHERE created_at_epoch <= ? ${projectFilter}
+        WHERE created_at_epoch <= ? ${projectFilter} ${branchFilter}
         ORDER BY created_at_epoch DESC
         LIMIT ?
       `;
       const afterQuery = `
         SELECT created_at_epoch
         FROM observations
-        WHERE created_at_epoch >= ? ${projectFilter}
+        WHERE created_at_epoch >= ? ${projectFilter} ${branchFilter}
         ORDER BY created_at_epoch ASC
         LIMIT ?
       `;
 
       try {
-        const beforeRecords = this.db.prepare(beforeQuery).all(anchorEpoch, ...projectParams, depthBefore) as Array<{created_at_epoch: number}>;
-        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...projectParams, depthAfter + 1) as Array<{created_at_epoch: number}>;
+        const beforeRecords = this.db.prepare(beforeQuery).all(anchorEpoch, ...projectParams, ...branchParams, depthBefore) as Array<{created_at_epoch: number}>;
+        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...projectParams, ...branchParams, depthAfter + 1) as Array<{created_at_epoch: number}>;
 
         if (beforeRecords.length === 0 && afterRecords.length === 0) {
           return { observations: [], sessions: [], prompts: [] };
@@ -2077,28 +2081,29 @@ export class SessionStore {
     const obsQuery = `
       SELECT *
       FROM observations
-      WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${projectFilter}
+      WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${projectFilter} ${branchFilter}
       ORDER BY created_at_epoch ASC
     `;
 
     const sessQuery = `
       SELECT *
       FROM session_summaries
-      WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${projectFilter}
+      WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${projectFilter} ${branchFilter}
       ORDER BY created_at_epoch ASC
     `;
 
+    const sessBranchFilter = branch ? 'AND s.branch = ?' : '';
     const promptQuery = `
       SELECT up.*, s.project, s.memory_session_id
       FROM user_prompts up
       JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
-      WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${projectFilter.replace('project', 's.project')}
+      WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${projectFilter.replace('project', 's.project')} ${sessBranchFilter}
       ORDER BY up.created_at_epoch ASC
     `;
 
-    const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...projectParams) as ObservationRecord[];
-    const sessions = this.db.prepare(sessQuery).all(startEpoch, endEpoch, ...projectParams) as SessionSummaryRecord[];
-    const prompts = this.db.prepare(promptQuery).all(startEpoch, endEpoch, ...projectParams) as UserPromptRecord[];
+    const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...projectParams, ...branchParams) as ObservationRecord[];
+    const sessions = this.db.prepare(sessQuery).all(startEpoch, endEpoch, ...projectParams, ...branchParams) as SessionSummaryRecord[];
+    const prompts = this.db.prepare(promptQuery).all(startEpoch, endEpoch, ...projectParams, ...branchParams) as UserPromptRecord[];
 
     return {
       observations,

@@ -66,8 +66,8 @@ export class DataRoutes extends BaseRouteHandler {
    * Get paginated observations
    */
   private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getObservations(offset, limit, project);
+    const { offset, limit, project, branch } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getObservations(offset, limit, project, branch);
     res.json(result);
   });
 
@@ -75,8 +75,8 @@ export class DataRoutes extends BaseRouteHandler {
    * Get paginated summaries
    */
   private handleGetSummaries = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getSummaries(offset, limit, project);
+    const { offset, limit, project, branch } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getSummaries(offset, limit, project, branch);
     res.json(result);
   });
 
@@ -84,8 +84,8 @@ export class DataRoutes extends BaseRouteHandler {
    * Get paginated user prompts
    */
   private handleGetPrompts = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getPrompts(offset, limit, project);
+    const { offset, limit, project, branch } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getPrompts(offset, limit, project, branch);
     res.json(result);
   });
 
@@ -299,12 +299,13 @@ export class DataRoutes extends BaseRouteHandler {
   /**
    * Parse pagination parameters from request query
    */
-  private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string } {
+  private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; branch?: string } {
     const offset = parseInt(req.query.offset as string, 10) || 0;
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); // Max 100
     const project = req.query.project as string | undefined;
+    const branch = req.query.branch as string | undefined;
 
-    return { offset, limit, project };
+    return { offset, limit, project, branch };
   }
 
   /**

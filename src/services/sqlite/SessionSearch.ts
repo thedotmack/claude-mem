@@ -3,6 +3,7 @@ import { TableNameRow } from '../../types/database.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isDirectChild } from '../../shared/path-utils.js';
+import { buildBranchFilter } from '../../utils/branch-filter.js';
 import {
   ObservationSearchResult,
   SessionSummarySearchResult,
@@ -190,6 +191,17 @@ export class SessionSearch {
     if (filters.project) {
       conditions.push(`${tableAlias}.project = ?`);
       params.push(filters.project);
+    }
+
+    // Branch filter
+    if (filters.branch) {
+      const branches = Array.isArray(filters.branch) ? filters.branch : [filters.branch];
+      const bf = buildBranchFilter(branches, tableAlias);
+      if (bf.sql) {
+        // Remove leading 'AND ' since we're pushing to conditions array
+        conditions.push(bf.sql.replace(/^AND\s+/, ''));
+        params.push(...bf.params);
+      }
     }
 
     // Type filter (for observations only)

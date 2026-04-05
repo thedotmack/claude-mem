@@ -71,13 +71,14 @@ export class PaginationHelper {
   /**
    * Get paginated observations
    */
-  getObservations(offset: number, limit: number, project?: string): PaginatedResult<Observation> {
+  getObservations(offset: number, limit: number, project?: string, branch?: string): PaginatedResult<Observation> {
     const result = this.paginate<Observation>(
       'observations',
       'id, memory_session_id, project, type, title, subtitle, narrative, text, facts, concepts, files_read, files_modified, prompt_number, created_at, created_at_epoch',
       offset,
       limit,
-      project
+      project,
+      branch
     );
 
     // Strip project paths from file paths before returning
@@ -90,7 +91,7 @@ export class PaginationHelper {
   /**
    * Get paginated summaries
    */
-  getSummaries(offset: number, limit: number, project?: string): PaginatedResult<Summary> {
+  getSummaries(offset: number, limit: number, project?: string, branch?: string): PaginatedResult<Summary> {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `
@@ -115,6 +116,11 @@ export class PaginationHelper {
       params.push(project);
     }
 
+    if (branch) {
+      query += project ? ' AND ss.branch = ?' : ' WHERE ss.branch = ?';
+      params.push(branch);
+    }
+
     query += ' ORDER BY ss.created_at_epoch DESC LIMIT ? OFFSET ?';
     params.push(limit + 1, offset);
 
@@ -132,7 +138,7 @@ export class PaginationHelper {
   /**
    * Get paginated user prompts
    */
-  getPrompts(offset: number, limit: number, project?: string): PaginatedResult<UserPrompt> {
+  getPrompts(offset: number, limit: number, project?: string, branch?: string): PaginatedResult<UserPrompt> {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `
@@ -145,6 +151,11 @@ export class PaginationHelper {
     if (project) {
       query += ' WHERE s.project = ?';
       params.push(project);
+    }
+
+    if (branch) {
+      query += project ? ' AND s.branch = ?' : ' WHERE s.branch = ?';
+      params.push(branch);
     }
 
     query += ' ORDER BY up.created_at_epoch DESC LIMIT ? OFFSET ?';
@@ -169,7 +180,8 @@ export class PaginationHelper {
     columns: string,
     offset: number,
     limit: number,
-    project?: string
+    project?: string,
+    branch?: string
   ): PaginatedResult<T> {
     const db = this.dbManager.getSessionStore().db;
 
@@ -179,6 +191,11 @@ export class PaginationHelper {
     if (project) {
       query += ' WHERE project = ?';
       params.push(project);
+    }
+
+    if (branch) {
+      query += project ? ' AND branch = ?' : ' WHERE branch = ?';
+      params.push(branch);
     }
 
     query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';

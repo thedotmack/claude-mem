@@ -152,14 +152,16 @@ function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
  * Query observations for a specific folder.
  * Only returns observations with files directly in the folder (not in subfolders).
  */
-function findObservationsByFolder(db: Database, relativeFolderPath: string, project: string, limit: number): ObservationRow[] {
+function findObservationsByFolder(db: Database, relativeFolderPath: string, project: string, limit: number, branch?: string): ObservationRow[] {
   const queryLimit = limit * 3;
 
+  const branchClause = branch ? 'AND o.branch = ?' : '';
   const sql = `
     SELECT o.*, o.discovery_tokens
     FROM observations o
     WHERE o.project = ?
       AND (o.files_modified LIKE ? OR o.files_read LIKE ?)
+      ${branchClause}
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
   `;
@@ -167,7 +169,10 @@ function findObservationsByFolder(db: Database, relativeFolderPath: string, proj
   // Database stores paths with forward slashes (git-normalized)
   const normalizedFolderPath = relativeFolderPath.split(path.sep).join('/');
   const likePattern = `%"${normalizedFolderPath}/%`;
-  const allMatches = db.prepare(sql).all(project, likePattern, likePattern, queryLimit) as ObservationRow[];
+  const params = branch
+    ? [project, likePattern, likePattern, branch, queryLimit]
+    : [project, likePattern, likePattern, queryLimit];
+  const allMatches = db.prepare(sql).all(...params) as ObservationRow[];
 
   return allMatches.filter(obs => hasDirectChildFile(obs, relativeFolderPath)).slice(0, limit);
 }

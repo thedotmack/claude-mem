@@ -5,6 +5,7 @@
 
 import { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
+import { buildBranchFilter } from '../../../utils/branch-filter.js';
 import type { ObservationRecord } from '../../../types/database.js';
 import type { GetObservationsByIdsOptions, ObservationSessionRow } from './types.js';
 
@@ -31,7 +32,7 @@ export function getObservationsByIds(
 ): ObservationRecord[] {
   if (ids.length === 0) return [];
 
-  const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
+  const { orderBy = 'date_desc', limit, project, branch, type, concepts, files } = options;
   const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
   const limitClause = limit ? `LIMIT ${limit}` : '';
 
@@ -44,6 +45,16 @@ export function getObservationsByIds(
   if (project) {
     additionalConditions.push('project = ?');
     params.push(project);
+  }
+
+  // Apply branch filter
+  if (branch) {
+    const branches = Array.isArray(branch) ? branch : [branch];
+    const bf = buildBranchFilter(branches);
+    if (bf.sql) {
+      additionalConditions.push(bf.sql.replace(/^AND\s+/, ''));
+      params.push(...bf.params);
+    }
   }
 
   // Apply type filter

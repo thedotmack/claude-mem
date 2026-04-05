@@ -13,17 +13,20 @@ import type { RecentObservationRow, AllRecentObservationRow } from './types.js';
 export function getRecentObservations(
   db: Database,
   project: string,
-  limit: number = 20
+  limit: number = 20,
+  branch?: string
 ): RecentObservationRow[] {
-  const stmt = db.prepare(`
+  const branchClause = branch ? 'AND branch = ?' : '';
+  const sql = `
     SELECT type, text, prompt_number, created_at
     FROM observations
-    WHERE project = ?
+    WHERE project = ? ${branchClause}
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `);
+  `;
+  const params = branch ? [project, branch, limit] : [project, limit];
 
-  return stmt.all(project, limit) as RecentObservationRow[];
+  return db.prepare(sql).all(...params) as RecentObservationRow[];
 }
 
 /**

@@ -3,6 +3,7 @@
  */
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
+import { buildBranchFilter } from '../../../utils/branch-filter.js';
 import type { SessionSummaryRecord } from '../../../types/database.js';
 import type { SessionSummary, GetByIdsOptions } from './types.js';
 
@@ -64,17 +65,31 @@ export function getSummariesByIds(
 ): SessionSummaryRecord[] {
   if (ids.length === 0) return [];
 
-  const { orderBy = 'date_desc', limit, project } = options;
+  const { orderBy = 'date_desc', limit, project, branch } = options;
   const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
   const limitClause = limit ? `LIMIT ${limit}` : '';
   const placeholders = ids.map(() => '?').join(',');
   const params: (number | string)[] = [...ids];
+  const additionalConditions: string[] = [];
 
   // Apply project filter
-  const whereClause = project
-    ? `WHERE id IN (${placeholders}) AND project = ?`
+  if (project) {
+    additionalConditions.push('project = ?');
+    params.push(project);
+  }
+
+  // Apply branch filter
+  if (branch) {
+    const bf = buildBranchFilter([branch]);
+    if (bf.sql) {
+      additionalConditions.push(bf.sql.replace(/^AND\s+/, ''));
+      params.push(...bf.params);
+    }
+  }
+
+  const whereClause = additionalConditions.length > 0
+    ? `WHERE id IN (${placeholders}) AND ${additionalConditions.join(' AND ')}`
     : `WHERE id IN (${placeholders})`;
-  if (project) params.push(project);
 
   const stmt = db.prepare(`
     SELECT * FROM session_summaries

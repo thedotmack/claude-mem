@@ -260,6 +260,7 @@ export class SearchRoutes extends BaseRouteHandler {
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const query = (req.body?.q || req.query.q) as string;
     const project = (req.body?.project || req.query.project) as string;
+    const branch = (req.body?.branch || req.query.branch) as string | undefined;
     const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
 
     if (!query || query.length < 20) {
@@ -272,6 +273,7 @@ export class SearchRoutes extends BaseRouteHandler {
         query,
         type: 'observations',
         project,
+        branch,
         limit: String(limit),
         format: 'json'
       });
