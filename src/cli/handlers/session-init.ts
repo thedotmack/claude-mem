@@ -12,6 +12,7 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { isProjectExcluded } from '../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { getCurrentBranch } from '../../utils/branch.js';
 
 export const sessionInitHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -42,6 +43,7 @@ export const sessionInitHandler: EventHandler = {
     const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
 
     const project = getProjectName(cwd);
+    const branch = getCurrentBranch(cwd);
 
     logger.debug('HOOK', 'session-init: Calling /api/sessions/init', { contentSessionId: sessionId, project });
 
@@ -52,7 +54,8 @@ export const sessionInitHandler: EventHandler = {
       body: JSON.stringify({
         contentSessionId: sessionId,
         project,
-        prompt
+        prompt,
+        branch
       })
     });
 

@@ -14,6 +14,7 @@ export interface SessionBasic {
   project: string;
   user_prompt: string;
   custom_title: string | null;
+  branch: string | null;
 }
 
 /**

@@ -11,6 +11,7 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { isProjectExcluded } from '../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { getCurrentBranch } from '../../utils/branch.js';
 
 export const observationHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -37,6 +38,8 @@ export const observationHandler: EventHandler = {
       throw new Error(`Missing cwd in PostToolUse hook input for session ${sessionId}, tool ${toolName}`);
     }
 
+    const branch = getCurrentBranch(cwd);
+
     // Check if project is excluded from tracking
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     if (isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
@@ -54,7 +57,8 @@ export const observationHandler: EventHandler = {
           tool_name: toolName,
           tool_input: toolInput,
           tool_response: toolResponse,
-          cwd
+          cwd,
+          branch
         })
       });
 

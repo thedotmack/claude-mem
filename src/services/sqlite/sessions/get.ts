@@ -17,7 +17,7 @@ import type {
  */
 export function getSessionById(db: Database, id: number): SessionBasic | null {
   const stmt = db.prepare(`
-    SELECT id, content_session_id, memory_session_id, project, user_prompt, custom_title
+    SELECT id, content_session_id, memory_session_id, project, user_prompt, custom_title, branch
     FROM sdk_sessions
     WHERE id = ?
     LIMIT 1

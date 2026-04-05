@@ -22,6 +22,7 @@ export interface ActiveSession {
   contentSessionId: string;      // User's Claude Code session being observed
   memorySessionId: string | null; // Memory agent's session ID for resume
   project: string;
+  branch: string | null;          // Git branch at session init (for branch-scoped observations)
   userPrompt: string;
   pendingMessages: PendingMessage[];  // Deprecated: now using persistent store, kept for compatibility
   abortController: AbortController;

@@ -54,7 +54,8 @@ export function storeObservationsAndMarkComplete(
   messageId: number,
   promptNumber?: number,
   discoveryTokens: number = 0,
-  overrideTimestampEpoch?: number
+  overrideTimestampEpoch?: number,
+  branch?: string | null
 ): StoreAndMarkCompleteResult {
   // Use override timestamp if provided
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -68,8 +69,8 @@ export function storeObservationsAndMarkComplete(
     const obsStmt = db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, content_hash, branch, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const observation of observations) {
@@ -94,6 +95,7 @@ export function storeObservationsAndMarkComplete(
         promptNumber || null,
         discoveryTokens,
         contentHash,
+        branch || null,
         timestampIso,
         timestampEpoch
       );
@@ -106,8 +108,8 @@ export function storeObservationsAndMarkComplete(
       const summaryStmt = db.prepare(`
         INSERT INTO session_summaries
         (memory_session_id, project, request, investigated, learned, completed,
-         next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         next_steps, notes, prompt_number, discovery_tokens, branch, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const result = summaryStmt.run(
@@ -121,6 +123,7 @@ export function storeObservationsAndMarkComplete(
         summary.notes,
         promptNumber || null,
         discoveryTokens,
+        branch || null,
         timestampIso,
         timestampEpoch
       );
@@ -173,7 +176,8 @@ export function storeObservations(
   summary: SummaryInput | null,
   promptNumber?: number,
   discoveryTokens: number = 0,
-  overrideTimestampEpoch?: number
+  overrideTimestampEpoch?: number,
+  branch?: string | null
 ): StoreObservationsResult {
   // Use override timestamp if provided
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -187,8 +191,8 @@ export function storeObservations(
     const obsStmt = db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, content_hash, branch, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const observation of observations) {
@@ -213,6 +217,7 @@ export function storeObservations(
         promptNumber || null,
         discoveryTokens,
         contentHash,
+        branch || null,
         timestampIso,
         timestampEpoch
       );
@@ -225,8 +230,8 @@ export function storeObservations(
       const summaryStmt = db.prepare(`
         INSERT INTO session_summaries
         (memory_session_id, project, request, investigated, learned, completed,
-         next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         next_steps, notes, prompt_number, discovery_tokens, branch, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const result = summaryStmt.run(
@@ -240,6 +245,7 @@ export function storeObservations(
         summary.notes,
         promptNumber || null,
         discoveryTokens,
+        branch || null,
         timestampIso,
         timestampEpoch
       );

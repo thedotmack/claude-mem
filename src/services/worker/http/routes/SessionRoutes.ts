@@ -501,7 +501,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
+    const { contentSessionId, tool_name, tool_input, tool_response, cwd, branch } = req.body;
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');
@@ -536,7 +536,7 @@ export class SessionRoutes extends BaseRouteHandler {
       const store = this.dbManager.getSessionStore();
 
       // Get or create session
-      const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+      const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, branch);
       const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
       // Privacy check: skip if user prompt was entirely private
@@ -733,6 +733,7 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private handleSessionInitByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { contentSessionId } = req.body;
+    const branch = req.body.branch || null;
 
     // Only contentSessionId is truly required — Cursor and other platforms
     // may omit prompt/project in their payload (#838, #1049)
@@ -755,7 +756,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
 
     // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
-    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle);
+    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, branch);
 
     // Verify session creation with DB lookup
     const dbSession = store.getSessionById(sessionDbId);

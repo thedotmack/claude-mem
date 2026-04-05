@@ -1341,9 +1341,10 @@ export class SessionStore {
     project: string;
     user_prompt: string;
     custom_title: string | null;
+    branch: string | null;
   } | null {
     const stmt = this.db.prepare(`
-      SELECT id, content_session_id, memory_session_id, project, user_prompt, custom_title
+      SELECT id, content_session_id, memory_session_id, project, user_prompt, custom_title, branch
       FROM sdk_sessions
       WHERE id = ?
       LIMIT 1
@@ -1418,7 +1419,7 @@ export class SessionStore {
    * Pure get-or-create: never modifies memory_session_id.
    * Multi-terminal isolation is handled by ON UPDATE CASCADE at the schema level.
    */
-  createSDKSession(contentSessionId: string, project: string, userPrompt: string, customTitle?: string): number {
+  createSDKSession(contentSessionId: string, project: string, userPrompt: string, customTitle?: string, branch?: string | null): number {
     const now = new Date();
     const nowEpoch = now.getTime();
 
@@ -1442,6 +1443,13 @@ export class SessionStore {
           WHERE content_session_id = ? AND custom_title IS NULL
         `).run(customTitle, contentSessionId);
       }
+      // Backfill branch if provided and not yet set
+      if (branch) {
+        this.db.prepare(`
+          UPDATE sdk_sessions SET branch = ?
+          WHERE content_session_id = ? AND branch IS NULL
+        `).run(branch, contentSessionId);
+      }
       return existing.id;
     }
 
@@ -1451,9 +1459,9 @@ export class SessionStore {
     // must NEVER equal contentSessionId - that would inject memory messages into the user's transcript!
     this.db.prepare(`
       INSERT INTO sdk_sessions
-      (content_session_id, memory_session_id, project, user_prompt, custom_title, started_at, started_at_epoch, status)
-      VALUES (?, NULL, ?, ?, ?, ?, ?, 'active')
-    `).run(contentSessionId, project, userPrompt, customTitle || null, now.toISOString(), nowEpoch);
+      (content_session_id, memory_session_id, project, user_prompt, custom_title, branch, started_at, started_at_epoch, status)
+      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
+    `).run(contentSessionId, project, userPrompt, customTitle || null, branch || null, now.toISOString(), nowEpoch);
 
     // Return new ID
     const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
@@ -1517,7 +1525,8 @@ export class SessionStore {
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    branch?: string | null
   ): { id: number; createdAtEpoch: number } {
     // Use override timestamp if provided (for processing backlog messages with original timestamps)
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1533,8 +1542,8 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, content_hash, branch, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1551,6 +1560,7 @@ export class SessionStore {
       promptNumber || null,
       discoveryTokens,
       contentHash,
+      branch || null,
       timestampIso,
       timestampEpoch
     );
@@ -1651,7 +1661,8 @@ export class SessionStore {
     } | null,
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    branch?: string | null
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     // Use override timestamp if provided
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1665,8 +1676,8 @@ export class SessionStore {
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-         files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         files_read, files_modified, prompt_number, discovery_tokens, content_hash, branch, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
@@ -1692,6 +1703,7 @@ export class SessionStore {
           promptNumber || null,
           discoveryTokens,
           contentHash,
+          branch || null,
           timestampIso,
           timestampEpoch
         );
@@ -1704,8 +1716,8 @@ export class SessionStore {
         const summaryStmt = this.db.prepare(`
           INSERT INTO session_summaries
           (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           next_steps, notes, prompt_number, discovery_tokens, branch, created_at, created_at_epoch)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = summaryStmt.run(
@@ -1719,6 +1731,7 @@ export class SessionStore {
           summary.notes,
           promptNumber || null,
           discoveryTokens,
+          branch || null,
           timestampIso,
           timestampEpoch
         );
@@ -1780,7 +1793,8 @@ export class SessionStore {
     _pendingStore: PendingMessageStore,
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    branch?: string | null
   ): { observationIds: number[]; summaryId?: number; createdAtEpoch: number } {
     // Use override timestamp if provided
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1794,8 +1808,8 @@ export class SessionStore {
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-         files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         files_read, files_modified, prompt_number, discovery_tokens, content_hash, branch, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
@@ -1821,6 +1835,7 @@ export class SessionStore {
           promptNumber || null,
           discoveryTokens,
           contentHash,
+          branch || null,
           timestampIso,
           timestampEpoch
         );
@@ -1833,8 +1848,8 @@ export class SessionStore {
         const summaryStmt = this.db.prepare(`
           INSERT INTO session_summaries
           (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           next_steps, notes, prompt_number, discovery_tokens, branch, created_at, created_at_epoch)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = summaryStmt.run(
@@ -1848,6 +1863,7 @@ export class SessionStore {
           summary.notes,
           promptNumber || null,
           discoveryTokens,
+          branch || null,
           timestampIso,
           timestampEpoch
         );
