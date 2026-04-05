@@ -133,9 +133,7 @@ export function findMcpServerPath(): string | null {
   const possiblePaths = [
     // Marketplace install location
     path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'mcp-server.cjs'),
-    // Development/source location (relative to built worker-service.cjs in plugin/scripts/)
-    path.join(path.dirname(__filename), 'mcp-server.cjs'),
-    // Alternative dev location
+    // Development/source location
     path.join(process.cwd(), 'plugin', 'scripts', 'mcp-server.cjs'),
   ];
 
@@ -155,9 +153,7 @@ export function findWorkerServicePath(): string | null {
   const possiblePaths = [
     // Marketplace install location
     path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
-    // Development/source location (relative to built worker-service.cjs in plugin/scripts/)
-    path.join(path.dirname(__filename), 'worker-service.cjs'),
-    // Alternative dev location
+    // Development/source location
     path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
   ];
 

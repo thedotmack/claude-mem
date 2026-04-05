@@ -1,7 +1,7 @@
 export interface NormalizedHookInput {
   sessionId: string;
   cwd: string;
-  platform?: string;   // 'claude-code' or 'cursor'
+  platform?: string;   // 'claude-code', 'cursor', 'gemini-cli', etc.
   prompt?: string;
   toolName?: string;
   toolInput?: unknown;
@@ -10,6 +10,8 @@ export interface NormalizedHookInput {
   // Cursor-specific fields
   filePath?: string;   // afterFileEdit
   edits?: unknown[];   // afterFileEdit
+  // Platform-specific metadata (source, reason, trigger, mcp_context, etc.)
+  metadata?: Record<string, unknown>;
 }
 
 export interface HookResult {

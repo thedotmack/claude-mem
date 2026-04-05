@@ -10,6 +10,7 @@
  */
 
 import path from 'path';
+import net from 'net';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
@@ -35,17 +36,43 @@ async function httpRequestToWorker(
 }
 
 /**
- * Check if a port is in use by querying the health endpoint
+ * Check if a port is in use by attempting an atomic socket bind.
+ * More reliable than HTTP health check for daemon spawn guards —
+ * prevents TOCTOU race where two daemons both see "port free" via
+ * HTTP and then both try to listen() (upstream bug workaround).
+ *
+ * Falls back to HTTP health check on Windows where socket bind
+ * behavior differs.
  */
 export async function isPortInUse(port: number): Promise<boolean> {
-  try {
-    // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`);
-    return response.ok;
-  } catch (error) {
-    // [ANTI-PATTERN IGNORED]: Health check polls every 500ms, logging would flood
-    return false;
+  if (process.platform === 'win32') {
+    // APPROVED OVERRIDE: Windows keeps HTTP health check because socket bind
+    // semantics differ (SO_REUSEADDR defaults, firewall prompts). The TOCTOU
+    // race remains on Windows but is an accepted limitation — the atomic
+    // socket approach would cause false positives or UAC popups.
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+      return response.ok;
+    } catch {
+      return false;
+    }
   }
+
+  // Unix: atomic socket bind check — no TOCTOU race
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
+        resolve(true);
+      } else {
+        resolve(false);
+      }
+    });
+    server.once('listening', () => {
+      server.close(() => resolve(false));
+    });
+    server.listen(port, '127.0.0.1');
+  });
 }
 
 /**

@@ -75,7 +75,7 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
     const cleanedConcepts = concepts.filter(c => c !== finalType);
 
     if (cleanedConcepts.length !== concepts.length) {
-      logger.error('PARSER', 'Removed observation type from concepts array', {
+      logger.debug('PARSER', 'Removed observation type from concepts array', {
         correlationId,
         type: finalType,
         originalConcepts: concepts,
