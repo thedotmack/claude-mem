@@ -22,6 +22,7 @@ import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProcessBySession, ensureProcessExit } from '../../ProcessRegistry.js';
+import { detectOrphanedBranches } from '../../../../utils/branch.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -754,9 +755,19 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     const store = this.dbManager.getSessionStore();
+    const cwd = req.body.cwd || null;
 
     // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
     const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, branch);
+
+    // Detect orphaned branches (synchronous, best-effort)
+    if (branch && project !== 'unknown' && cwd) {
+      try {
+        detectOrphanedBranches(store.db, project, cwd);
+      } catch {
+        // Non-fatal: orphan detection is best-effort
+      }
+    }
 
     // Verify session creation with DB lookup
     const dbSession = store.getSessionById(sessionDbId);

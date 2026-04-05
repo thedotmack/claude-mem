@@ -55,7 +55,8 @@ export const sessionInitHandler: EventHandler = {
         contentSessionId: sessionId,
         project,
         prompt,
-        branch
+        branch,
+        cwd
       })
     });
 

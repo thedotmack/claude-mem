@@ -40,6 +40,7 @@ interface StoredObservation {
   discovery_tokens: number; // ROI metrics
   created_at: string;
   created_at_epoch: number;
+  branch?: string | null;
 }
 
 interface StoredSummary {
@@ -56,6 +57,7 @@ interface StoredSummary {
   discovery_tokens: number; // ROI metrics
   created_at: string;
   created_at_epoch: number;
+  branch?: string | null;
 }
 
 interface StoredUserPrompt {
@@ -151,6 +153,9 @@ export class ChromaSync {
     if (files_modified.length > 0) {
       baseMetadata.files_modified = files_modified.join(',');
     }
+    if (obs.branch) {
+      baseMetadata.branch = obs.branch;
+    }
 
     // Narrative as separate document
     if (obs.narrative) {
@@ -197,6 +202,9 @@ export class ChromaSync {
       created_at_epoch: summary.created_at_epoch,
       prompt_number: summary.prompt_number || 0
     };
+    if (summary.branch) {
+      baseMetadata.branch = summary.branch;
+    }
 
     // Each field becomes a separate document
     if (summary.request) {
