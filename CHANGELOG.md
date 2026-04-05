@@ -4,10 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [10.7.1] - 2026-
+## [10.7.2] - 2026-
 ✅ CHANGELOG.md generated successfully!
-   219 releases processed
-stall simplification in v10.7.0 (commit 21b10b46) over-applied scope and replaced the entire `runInstallCommand` with just two `claude` CLI commands. This gutted the interactive IDE multi-select, `--ide` flag, and all 13 IDE-specific setup dispatchers.
+   220 releases processed
+m error to debug (#1606) — reduces noise in logs by treating routine concept-type cleanup as debug-level rather than error-level logging.
+
+## [10.7.1] - 2026-04-05
+
+## Bug Fix
+
+**Restore full interactive installer** — the install simplification in v10.7.0 (commit 21b10b46) over-applied scope and replaced the entire `runInstallCommand` with just two `claude` CLI commands. This gutted the interactive IDE multi-select, `--ide` flag, and all 13 IDE-specific setup dispatchers.
 
 ### What changed
 - **Claude Code**: now uses native `claude plugin marketplace add` + `claude plugin install` (the intended simplification)
