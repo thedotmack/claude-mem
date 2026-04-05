@@ -133,6 +133,7 @@ export async function generateContext(
 
   // Use provided projects array (for worktree support) or fall back to single project
   const projects = input?.projects || [project];
+  const branches = input?.branches;
 
   // Full mode: fetch all observations but keep normal rendering (level 1 summaries)
   if (input?.full) {
@@ -149,11 +150,11 @@ export async function generateContext(
   try {
     // Query data for all projects (supports worktree: parent + worktree combined)
     const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config)
-      : queryObservations(db, project, config);
+      ? queryObservationsMulti(db, projects, config, branches)
+      : queryObservations(db, project, config, branches);
     const summaries = projects.length > 1
-      ? querySummariesMulti(db, projects, config)
-      : querySummaries(db, project, config);
+      ? querySummariesMulti(db, projects, config, branches)
+      : querySummaries(db, project, config, branches);
 
     // Handle empty state
     if (observations.length === 0 && summaries.length === 0) {

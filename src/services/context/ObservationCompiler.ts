@@ -18,6 +18,7 @@ import type {
   PriorMessages,
 } from './types.js';
 import { SUMMARY_LOOKAHEAD } from './types.js';
+import { buildBranchFilter } from '../../utils/branch-filter.js';
 
 /**
  * Query observations from database with type and concept filtering
@@ -25,8 +26,10 @@ import { SUMMARY_LOOKAHEAD } from './types.js';
 export function queryObservations(
   db: SessionStore,
   project: string,
-  config: ContextConfig
+  config: ContextConfig,
+  branches?: string[]
 ): Observation[] {
+  const branchFilter = buildBranchFilter(branches);
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
   const conceptArray = Array.from(config.observationConcepts);
@@ -39,6 +42,7 @@ export function queryObservations(
       created_at, created_at_epoch
     FROM observations
     WHERE project = ?
+      ${branchFilter.sql}
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(concepts)
@@ -46,7 +50,7 @@ export function queryObservations(
       )
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(project, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
+  `).all(project, ...branchFilter.params, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
 }
 
 /**
@@ -55,15 +59,18 @@ export function queryObservations(
 export function querySummaries(
   db: SessionStore,
   project: string,
-  config: ContextConfig
+  config: ContextConfig,
+  branches?: string[]
 ): SessionSummary[] {
+  const branchFilter = buildBranchFilter(branches);
   return db.db.prepare(`
     SELECT id, memory_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch
     FROM session_summaries
     WHERE project = ?
+      ${branchFilter.sql}
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(project, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+  `).all(project, ...branchFilter.params, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
 }
 
 /**
@@ -75,8 +82,10 @@ export function querySummaries(
 export function queryObservationsMulti(
   db: SessionStore,
   projects: string[],
-  config: ContextConfig
+  config: ContextConfig,
+  branches?: string[]
 ): Observation[] {
+  const branchFilter = buildBranchFilter(branches);
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
   const conceptArray = Array.from(config.observationConcepts);
@@ -92,6 +101,7 @@ export function queryObservationsMulti(
       created_at, created_at_epoch, project
     FROM observations
     WHERE project IN (${projectPlaceholders})
+      ${branchFilter.sql}
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(concepts)
@@ -99,7 +109,7 @@ export function queryObservationsMulti(
       )
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(...projects, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
+  `).all(...projects, ...branchFilter.params, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
 }
 
 /**
@@ -111,8 +121,10 @@ export function queryObservationsMulti(
 export function querySummariesMulti(
   db: SessionStore,
   projects: string[],
-  config: ContextConfig
+  config: ContextConfig,
+  branches?: string[]
 ): SessionSummary[] {
+  const branchFilter = buildBranchFilter(branches);
   // Build IN clause for projects
   const projectPlaceholders = projects.map(() => '?').join(',');
 
@@ -120,9 +132,10 @@ export function querySummariesMulti(
     SELECT id, memory_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch, project
     FROM session_summaries
     WHERE project IN (${projectPlaceholders})
+      ${branchFilter.sql}
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(...projects, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+  `).all(...projects, ...branchFilter.params, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
 }
 
 /**

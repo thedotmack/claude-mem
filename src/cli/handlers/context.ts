@@ -8,6 +8,7 @@
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { ensureWorkerRunning, getWorkerPort, workerHttpRequest } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
+import { getCurrentBranch, getMergedBranches } from '../../utils/branch.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -32,13 +33,18 @@ export const contextHandler: EventHandler = {
     const context = getProjectContext(cwd);
     const port = getWorkerPort();
 
+    // Resolve current branch and its merged ancestors for branch-scoped filtering
+    const currentBranch = getCurrentBranch(cwd);
+    const mergedBranches = currentBranch ? getMergedBranches(cwd) : [];
+    const branchesParam = mergedBranches.length > 0 ? mergedBranches.join(',') : '';
+
     // Check if terminal output should be shown (load settings early)
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const showTerminalOutput = settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true';
 
     // Pass all projects (parent + worktree if applicable) for unified timeline
     const projectsParam = context.allProjects.join(',');
-    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
+    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${branchesParam ? `&branches=${encodeURIComponent(branchesParam)}` : ''}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
     // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
