@@ -120,10 +120,31 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
   const summaryMatch = summaryRegex.exec(text);
 
   if (!summaryMatch) {
-    // Log when the response contains <observation> instead of <summary>
-    // to help diagnose prompt conditioning issues (see #1312)
+    // When response contains <observation> instead of <summary>, attempt to salvage
+    // summary data from the observation fields rather than discarding it (see #1546)
     if (/<observation>/.test(text)) {
-      logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — prompt conditioning may need strengthening', { sessionId });
+      logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — attempting to salvage summary data', { sessionId });
+
+      const obsContentMatch = /<observation>([\s\S]*?)<\/observation>/.exec(text);
+      if (obsContentMatch) {
+        const obsContent = obsContentMatch[1];
+        const title = extractField(obsContent, 'title');
+        const narrative = extractField(obsContent, 'narrative');
+        const facts = extractArrayElements(obsContent, 'facts', 'fact');
+        const learned = narrative || (facts.length > 0 ? facts.join('; ') : null);
+
+        if (title || learned) {
+          logger.info('PARSER', 'Salvaged summary from observation tags', { sessionId, hasTitle: !!title, hasLearned: !!learned });
+          return {
+            request: null,
+            investigated: null,
+            learned,
+            completed: title,
+            next_steps: null,
+            notes: null
+          };
+        }
+      }
     }
     return null;
   }
