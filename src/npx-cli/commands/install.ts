@@ -135,9 +135,22 @@ async function setupIDEs(selectedIDEs: string[]): Promise<string[]> {
         break;
       }
 
-      case 'cursor':
-        log.warn('Cursor: integration not yet implemented. Skipping.');
+      case 'cursor': {
+        const { installCursorHooks, configureCursorMcp } = await import('../../services/integrations/CursorHooksInstaller.js');
+        const cursorResult = await installCursorHooks('user');
+        if (cursorResult === 0) {
+          const mcpResult = configureCursorMcp('user');
+          if (mcpResult === 0) {
+            log.success('Cursor: hooks + MCP installed.');
+          } else {
+            log.success('Cursor: hooks installed (MCP setup failed — run `npx claude-mem cursor mcp` to retry).');
+          }
+        } else {
+          log.error('Cursor: hook installation failed.');
+          failedIDEs.push(ideId);
+        }
         break;
+      }
 
       case 'gemini-cli': {
         const { installGeminiCliHooks } = await import('../../services/integrations/GeminiCliHooksInstaller.js');
