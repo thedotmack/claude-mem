@@ -135,9 +135,17 @@ async function setupIDEs(selectedIDEs: string[]): Promise<string[]> {
         break;
       }
 
-      case 'cursor':
-        log.warn('Cursor: integration not yet implemented. Skipping.');
+      case 'cursor': {
+        const { installCursorHooks } = await import('../../services/integrations/CursorHooksInstaller.js');
+        const cursorResult = await installCursorHooks('user');
+        if (cursorResult === 0) {
+          log.success('Cursor: hooks installed.');
+        } else {
+          log.error('Cursor: hook installation failed.');
+          failedIDEs.push(ideId);
+        }
         break;
+      }
 
       case 'gemini-cli': {
         const { installGeminiCliHooks } = await import('../../services/integrations/GeminiCliHooksInstaller.js');
