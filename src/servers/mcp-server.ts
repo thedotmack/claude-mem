@@ -284,7 +284,17 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+        limit: { type: 'number', description: 'Max results (default 20)' },
+        project: { type: 'string', description: 'Filter by project name' },
+        type: { type: 'string', description: 'Filter by observation type' },
+        obs_type: { type: 'string', description: 'Filter by obs_type field' },
+        dateStart: { type: 'string', description: 'Start date filter (ISO)' },
+        dateEnd: { type: 'string', description: 'End date filter (ISO)' },
+        offset: { type: 'number', description: 'Pagination offset' },
+        orderBy: { type: 'string', description: 'Sort order: date_desc or date_asc' }
+      },
       additionalProperties: true
     },
     handler: async (args: any) => {
@@ -297,7 +307,13 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        anchor: { type: 'number', description: 'Observation ID to center the timeline around' },
+        query: { type: 'string', description: 'Query to find anchor automatically' },
+        depth_before: { type: 'number', description: 'Items before anchor (default 3)' },
+        depth_after: { type: 'number', description: 'Items after anchor (default 3)' },
+        project: { type: 'string', description: 'Filter by project name' }
+      },
       additionalProperties: true
     },
     handler: async (args: any) => {
