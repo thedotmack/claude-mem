@@ -37,12 +37,14 @@ export class SessionCompletionHandler {
    * If the session has pending messages (e.g. a summarize in flight), defers
    * deletion to let the generator finish. A safety timeout ensures the session
    * is always cleaned up even if the generator stalls.
+   *
+   * @returns whether completion was deferred (true) or immediate (false).
    */
-  async completeByDbId(sessionDbId: number): Promise<void> {
+  async completeByDbId(sessionDbId: number): Promise<{ deferred: boolean }> {
     // Guard: skip if a deferred completion is already scheduled
     if (this.deferredCompletions.has(sessionDbId)) {
       logger.debug('SESSION', 'Deferred completion already scheduled, skipping', { sessionDbId });
-      return;
+      return { deferred: true };
     }
 
     const pendingStore = this.sessionManager.getPendingMessageStore();
@@ -51,7 +53,7 @@ export class SessionCompletionHandler {
     if (queueLength === 0) {
       // No pending work — safe to delete immediately
       await this.forceComplete(sessionDbId);
-      return;
+      return { deferred: false };
     }
 
     // Pending work exists — defer deletion to let the generator drain the queue.
@@ -67,9 +69,14 @@ export class SessionCompletionHandler {
       while (Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, DRAIN_POLL_MS));
 
-        // Session may have been deleted by another path (e.g. manual delete)
+        // Session may have been deleted by another path (e.g. manual delete).
+        // Drain any leftover pending messages defensively — the other path's
+        // drain may have raced with new enqueues.
         if (!this.sessionManager.getSession(sessionDbId)) {
           this.deferredCompletions.delete(sessionDbId);
+          try {
+            pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+          } catch { /* best-effort */ }
           return;
         }
 
@@ -92,6 +99,8 @@ export class SessionCompletionHandler {
       });
       this.forceComplete(sessionDbId).catch(() => {});
     });
+
+    return { deferred: true };
   }
 
   /**

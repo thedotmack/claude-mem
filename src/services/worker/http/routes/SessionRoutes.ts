@@ -477,9 +477,9 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
-    await this.completionHandler.completeByDbId(sessionDbId);
+    const { deferred } = await this.completionHandler.completeByDbId(sessionDbId);
 
-    res.json({ status: 'deleted' });
+    res.json({ status: deferred ? 'completing' : 'deleted', deferred });
   });
 
   /**
@@ -490,9 +490,9 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
-    await this.completionHandler.completeByDbId(sessionDbId);
+    const { deferred } = await this.completionHandler.completeByDbId(sessionDbId);
 
-    res.json({ success: true });
+    res.json({ success: true, deferred });
   });
 
   /**
@@ -709,14 +709,15 @@ export class SessionRoutes extends BaseRouteHandler {
     // Complete the session (removes from active sessions map).
     // If pending work exists (e.g. in-flight summarize), completeByDbId defers
     // deletion to let the generator finish before killing the agent.
-    await this.completionHandler.completeByDbId(sessionDbId);
+    const { deferred } = await this.completionHandler.completeByDbId(sessionDbId);
 
-    logger.info('SESSION', 'Session completed via API', {
+    logger.info('SESSION', `Session ${deferred ? 'completion deferred' : 'completed'} via API`, {
       contentSessionId,
-      sessionDbId
+      sessionDbId,
+      deferred
     });
 
-    res.json({ status: 'completed', sessionDbId });
+    res.json({ status: deferred ? 'completing' : 'completed', sessionDbId, deferred });
   });
 
   /**
