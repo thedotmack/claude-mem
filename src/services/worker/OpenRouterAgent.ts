@@ -131,7 +131,8 @@ export class OpenRouterAgent {
           tokensUsed,
           null,
           'OpenRouter',
-          undefined  // No lastCwd yet - before message processing
+          undefined,  // No lastCwd yet - before message processing
+          model
         );
       } else {
         logger.error('SDK', 'Empty OpenRouter init response - session may lack context', {
@@ -202,7 +203,8 @@ export class OpenRouterAgent {
             tokensUsed,
             originalTimestamp,
             'OpenRouter',
-            lastCwd
+            lastCwd,
+            model
           );
 
         } else if (message.type === 'summarize') {
@@ -244,7 +246,8 @@ export class OpenRouterAgent {
             tokensUsed,
             originalTimestamp,
             'OpenRouter',
-            lastCwd
+            lastCwd,
+            model
           );
         }
       }
