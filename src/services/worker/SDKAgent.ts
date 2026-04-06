@@ -49,8 +49,8 @@ export class SDKAgent {
     // Find Claude executable
     const claudePath = this.findClaudeExecutable();
 
-    // Get model ID and disallowed tools
-    const modelId = this.getModelId();
+    // Get model ID (tier routing override takes precedence)
+    const modelId = session.modelOverride || this.getModelId();
     // Memory agent is OBSERVER ONLY - no tools allowed
     const disallowedTools = [
       'Bash',           // Prevent infinite loops

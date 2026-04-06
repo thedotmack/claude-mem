@@ -39,7 +39,7 @@ export const contextHandler: EventHandler = {
     // Pass all projects (parent + worktree if applicable) for unified timeline
     const projectsParam = context.allProjects.join(',');
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
-    const colorApiPath = `${apiPath}&colors=true`;
+    const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
     // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
     // Worker service has its own timeouts, so client-side timeout is redundant
@@ -66,9 +66,15 @@ export const contextHandler: EventHandler = {
 
       const additionalContext = contextResult.trim();
       const coloredTimeline = colorResult.trim();
+      const platform = input.platform;
 
-      const systemMessage = showTerminalOutput && coloredTimeline
-        ? `${coloredTimeline}\n\nView Observations Live @ http://localhost:${port}`
+      // Use colored timeline for display if available, otherwise fall back to 
+      // plain markdown context (especially useful for platforms like Gemini 
+      // where we want to ensure visibility even if colors aren't fetched).
+      const displayContent = coloredTimeline || (platform === 'gemini-cli' || platform === 'gemini' ? additionalContext : '');
+
+      const systemMessage = showTerminalOutput && displayContent
+        ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}`
         : undefined;
 
       return {

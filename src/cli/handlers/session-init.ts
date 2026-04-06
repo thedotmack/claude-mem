@@ -87,17 +87,18 @@ export const sessionInitHandler: EventHandler = {
 
     // Skip SDK agent re-initialization if context was already injected for this session (#1079)
     // The prompt was already saved to the database by /api/sessions/init above —
-    // no need to re-start the SDK agent on every turn
-    if (initResult.contextInjected) {
+    // no need to re-start the SDK agent on every turn.
+    // Note: we do NOT return here — semantic injection below must run on every prompt.
+    const skipAgentInit = Boolean(initResult.contextInjected);
+    if (skipAgentInit) {
       logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | skipped_agent_init=true | reason=context_already_injected`, {
         sessionId: sessionDbId
       });
-      return { continue: true, suppressOutput: true };
     }
 
     // Only initialize SDK agent for Claude Code (not Cursor)
     // Cursor doesn't use the SDK agent - it only needs session/observation storage
-    if (input.platform !== 'cursor' && sessionDbId) {
+    if (!skipAgentInit && input.platform !== 'cursor' && sessionDbId) {
       // Strip leading slash from commands for memory agent
       // /review 101 -> review 101 (more semantic for observations)
       const cleanedPrompt = prompt.startsWith('/') ? prompt.substring(1) : prompt;
@@ -115,13 +116,57 @@ export const sessionInitHandler: EventHandler = {
         // Log but don't throw - SDK agent failure should not block the user's prompt
         logger.failure('HOOK', `SDK agent start failed: ${response.status}`, { sessionDbId, promptNumber });
       }
-    } else if (input.platform === 'cursor') {
+    } else if (!skipAgentInit && input.platform === 'cursor') {
       logger.debug('HOOK', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
+    }
+
+    // Semantic context injection: query Chroma for relevant past observations
+    // and inject as additionalContext so Claude receives relevant memory each prompt.
+    // Controlled by CLAUDE_MEM_SEMANTIC_INJECT setting (default: true).
+    const semanticInject =
+      String(settings.CLAUDE_MEM_SEMANTIC_INJECT).toLowerCase() === 'true';
+    let additionalContext = '';
+
+    if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
+      try {
+        const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
+        const semanticRes = await workerHttpRequest('/api/context/semantic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ q: prompt, project, limit })
+        });
+        if (semanticRes.ok) {
+          const data = await semanticRes.json() as { context: string; count: number };
+          if (data.context) {
+            additionalContext = data.context;
+            logger.debug('HOOK', `Semantic injection: ${data.count} observations for prompt`, {
+              sessionId: sessionDbId, count: data.count
+            });
+          }
+        }
+      } catch (e) {
+        // Graceful degradation — semantic injection is optional
+        logger.debug('HOOK', 'Semantic injection unavailable', {
+          error: e instanceof Error ? e.message : String(e)
+        });
+      }
     }
 
     logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | project=${project}`, {
       sessionId: sessionDbId
     });
+
+    // Return with semantic context if available
+    if (additionalContext) {
+      return {
+        continue: true,
+        suppressOutput: true,
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext
+        }
+      };
+    }
 
     return { continue: true, suppressOutput: true };
   }

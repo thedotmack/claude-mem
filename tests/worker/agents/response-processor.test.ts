@@ -213,6 +213,36 @@ describe('ResponseProcessor', () => {
     });
   });
 
+  describe('non-XML observer responses', () => {
+    it('warns when the observer returns prose that will be discarded', async () => {
+      const session = createMockSession();
+      const responseText = 'Skipping — repeated log scan with no new findings.';
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        'TestAgent returned non-XML response; observation content was discarded',
+        expect.objectContaining({
+          sessionId: 1,
+          preview: responseText
+        })
+      );
+      const [, , observations, summary] = mockStoreObservations.mock.calls[0];
+      expect(observations).toHaveLength(0);
+      expect(summary).toBeNull();
+    });
+  });
+
   describe('parsing summary from XML response', () => {
     it('should parse summary from response', async () => {
       const session = createMockSession();

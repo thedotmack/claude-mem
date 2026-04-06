@@ -73,6 +73,19 @@ export async function processAgentResponse(
   const observations = parseObservations(text, session.contentSessionId, sessionMode);
   const summary = parseSummary(text, session.sessionDbId);
 
+  if (
+    text.trim() &&
+    observations.length === 0 &&
+    !summary &&
+    !/<observation>|<summary>|<skip_summary\b/.test(text)
+  ) {
+    const preview = text.length > 200 ? `${text.slice(0, 200)}...` : text;
+    logger.warn('PARSER', `${agentName} returned non-XML response; observation content was discarded`, {
+      sessionId: session.sessionDbId,
+      preview
+    });
+  }
+
   // Convert nullable fields to empty strings for storeSummary (if summary exists)
   const summaryForStore = normalizeSummaryForStorage(summary);
 
