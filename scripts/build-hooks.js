@@ -27,6 +27,48 @@ const CONTEXT_GENERATOR = {
   source: 'src/services/context-generator.ts'
 };
 
+/**
+ * Strip hardcoded __dirname/__filename from bundled CJS output.
+ *
+ * When esbuild converts ESM TypeScript source to CJS format, it inlines
+ * __dirname and __filename as static strings based on the SOURCE file paths
+ * at build time. These `var __dirname = "/build/machine/path/..."` declarations
+ * shadow the runtime's native __dirname (provided by Bun/Node's CJS module
+ * wrapper), causing path resolution to fail on end-user machines.
+ *
+ * This post-build step removes those hardcoded assignments so the runtime
+ * globals are used instead.
+ *
+ * See: https://github.com/thedotmack/claude-mem/issues/1410
+ */
+function stripHardcodedDirname(filePath) {
+  let content = fs.readFileSync(filePath, 'utf-8');
+  const before = content.length;
+
+  // Match both double-quoted and single-quoted string literals.
+  // esbuild currently emits double quotes, but single quotes are handled
+  // defensively in case future versions change quoting style.
+  const str = `(?:"[^"]*"|'[^']*')`;
+
+  for (const id of ['__dirname', '__filename']) {
+    // Remove `var <id> = "...", rest` → `var rest`
+    content = content.replace(new RegExp(`\\bvar ${id}\\s*=\\s*${str},\\s*`, 'g'), 'var ');
+    // Remove standalone `var <id> = "...";`
+    content = content.replace(new RegExp(`\\bvar ${id}\\s*=\\s*${str};\\s*`, 'g'), '');
+    // Remove `, <id> = "..."` from mid/end of var declarations
+    content = content.replace(new RegExp(`,\\s*${id}\\s*=\\s*${str}`, 'g'), '');
+  }
+
+  // Clean up dangling `var ;` left when __dirname was the sole declarator
+  content = content.replace(/\bvar\s*;/g, '');
+
+  const removed = before - content.length;
+  if (removed > 0) {
+    fs.writeFileSync(filePath, content);
+    console.log(`  ✓ Stripped hardcoded __dirname/__filename paths (${removed} bytes)`);
+  }
+}
+
 async function buildHooks() {
   console.log('🔨 Building claude-mem hooks and worker service...\n');
 
@@ -124,6 +166,9 @@ async function buildHooks() {
       }
     });
 
+    // Fix hardcoded __dirname/__filename in bundled output (#1410)
+    stripHardcodedDirname(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
+
     // Make worker service executable
     fs.chmodSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
@@ -161,6 +206,9 @@ async function buildHooks() {
       }
     });
 
+    // Fix hardcoded __dirname/__filename in bundled output (#1410)
+    stripHardcodedDirname(`${hooksDir}/${MCP_SERVER.name}.cjs`);
+
     // Make MCP server executable
     fs.chmodSync(`${hooksDir}/${MCP_SERVER.name}.cjs`, 0o755);
     const mcpServerStats = fs.statSync(`${hooksDir}/${MCP_SERVER.name}.cjs`);
@@ -183,6 +231,9 @@ async function buildHooks() {
       },
       // No banner needed: CJS files under Node.js have __dirname/__filename natively
     });
+
+    // Fix hardcoded __dirname/__filename in bundled output (#1410)
+    stripHardcodedDirname(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
 
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
