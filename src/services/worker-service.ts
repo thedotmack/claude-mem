@@ -1307,8 +1307,10 @@ async function main() {
 }
 
 // Check if running as main module in both ESM and CommonJS
+// The CLAUDE_MEM_MANAGED check handles Bun on Windows where require.main !== module
+// in CJS mode despite being the entry point (see #1450)
 const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefined'
-  ? require.main === module || !module.parent
+  ? require.main === module || !module.parent || process.env.CLAUDE_MEM_MANAGED === 'true'
   : import.meta.url === `file://${process.argv[1]}`
     || process.argv[1]?.endsWith('worker-service')
     || process.argv[1]?.endsWith('worker-service.cjs')
