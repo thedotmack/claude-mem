@@ -925,6 +925,38 @@ export const migration013: Migration = {
 /**
  * All migrations in order
  */
+/**
+ * Migration 014: Observation feedback table for tracking observation usage
+ *
+ * Tracks how observations are used (semantic injection hits, search access,
+ * explicit retrieval). Foundation for future Thompson Sampling optimization.
+ */
+export const migration014: Migration = {
+  version: 25,
+  up: (db: Database) => {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS observation_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        observation_id INTEGER NOT NULL,
+        signal_type TEXT NOT NULL,
+        session_db_id INTEGER,
+        created_at_epoch INTEGER NOT NULL,
+        metadata TEXT,
+        FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+      )
+    `);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_feedback_observation ON observation_feedback(observation_id)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_feedback_signal ON observation_feedback(signal_type)`);
+    console.log('✅ Created observation_feedback table for usage tracking');
+  },
+  down: (db: Database) => {
+    db.run(`DROP TABLE IF EXISTS observation_feedback`);
+  }
+};
+
+/**
+ * All migrations in order
+ */
 export const migrations: Migration[] = [
   migration001,
   migration002,
@@ -938,5 +970,6 @@ export const migrations: Migration[] = [
   migration010,
   migration011,
   migration012,
-  migration013
+  migration013,
+  migration014
 ];

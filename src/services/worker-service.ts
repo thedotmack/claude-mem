@@ -101,6 +101,9 @@ import {
   updateCursorContextForProject,
   handleCursorCommand
 } from './integrations/CursorHooksInstaller.js';
+import {
+  handleGeminiCliCommand
+} from './integrations/GeminiCliHooksInstaller.js';
 
 // Service layer imports
 import { DatabaseManager } from './worker/DatabaseManager.js';
@@ -132,6 +135,10 @@ import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 
 // Process management for zombie cleanup (Issue #737)
 import { startOrphanReaper, reapOrphanedProcesses, getProcessBySession, ensureProcessExit } from './worker/ProcessRegistry.js';
+
+// Transcript watcher for external CLI session monitoring
+import { TranscriptWatcher } from './transcripts/watcher.js';
+import { loadTranscriptWatchConfig, expandHomePath, DEFAULT_CONFIG_PATH as TRANSCRIPT_CONFIG_PATH } from './transcripts/config.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -198,6 +205,9 @@ export class WorkerService {
 
   // Stale session reaper interval (Issue #1168)
   private staleSessionReaperInterval: ReturnType<typeof setInterval> | null = null;
+
+  // Transcript watcher for external CLI sessions (e.g. Codex, Gemini)
+  private transcriptWatcher: TranscriptWatcher | null = null;
 
   // AI interaction tracking for health endpoint
   private lastAiInteraction: {
@@ -458,6 +468,22 @@ export class WorkerService {
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
+
+      // Auto-start transcript watchers if configured
+      if (existsSync(TRANSCRIPT_CONFIG_PATH)) {
+        try {
+          const transcriptConfig = loadTranscriptWatchConfig(TRANSCRIPT_CONFIG_PATH);
+          if (transcriptConfig.watches.length > 0) {
+            const transcriptStatePath = expandHomePath(transcriptConfig.stateFile ?? '~/.claude-mem/transcript-watch-state.json');
+            this.transcriptWatcher = new TranscriptWatcher(transcriptConfig, transcriptStatePath);
+            await this.transcriptWatcher.start();
+            logger.info('SYSTEM', `Transcript watcher started with ${transcriptConfig.watches.length} watch target(s)`);
+          }
+        } catch (transcriptError) {
+          logger.warn('SYSTEM', 'Failed to start transcript watcher (non-fatal)', {}, transcriptError as Error);
+          // Non-fatal — worker continues without transcript watching
+        }
+      }
 
       // Auto-backfill Chroma for all projects if out of sync with SQLite (fire-and-forget)
       if (this.chromaMcpManager) {
@@ -966,6 +992,13 @@ export class WorkerService {
       this.staleSessionReaperInterval = null;
     }
 
+    // Stop transcript watcher
+    if (this.transcriptWatcher) {
+      this.transcriptWatcher.stop();
+      this.transcriptWatcher = null;
+      logger.info('SYSTEM', 'Transcript watcher stopped');
+    }
+
     await performGracefulShutdown({
       server: this.server.getHttpServer(),
       sessionManager: this.sessionManager,
@@ -1239,14 +1272,21 @@ async function main() {
       break;
     }
 
+    case 'gemini-cli': {
+      const geminiSubcommand = process.argv[3];
+      const geminiResult = await handleGeminiCliCommand(geminiSubcommand, process.argv.slice(4));
+      process.exit(geminiResult);
+      break;
+    }
+
     case 'hook': {
       // Validate CLI args first (before any I/O)
       const platform = process.argv[3];
       const event = process.argv[4];
       if (!platform || !event) {
         console.error('Usage: claude-mem hook <platform> <event>');
-        console.error('Platforms: claude-code, cursor, raw');
-        console.error('Events: context, session-init, observation, summarize, session-complete');
+        console.error('Platforms: claude-code, cursor, gemini-cli, raw');
+        console.error('Events: context, session-init, observation, summarize, session-complete, user-message');
         process.exit(1);
       }
 

@@ -1,0 +1,48 @@
+# Source code (dist/ and plugin/ are the shipped artifacts)
+src/
+scripts/
+tests/
+docs/
+datasets/
+private/
+antipattern-czar/
+
+# Heavy binaries installed at runtime via smart-install.js
+plugin/node_modules/
+plugin/scripts/claude-mem
+plugin/bun.lock
+plugin/data/
+plugin/data.backup/
+
+# Development files
+*.ts
+!*.d.ts
+tsconfig*.json
+.eslintrc*
+.prettierrc*
+.editorconfig
+jest.config*
+vitest.config*
+
+# Git and CI
+.git/
+.github/
+.gitignore
+.claude/
+.cursor/
+.mcp.json
+.plan/
+
+# OS files
+.DS_Store
+*.log
+*.tmp
+*.temp
+Thumbs.db
+
+# Misc
+Auto Run Docs/
+~*/
+http*/
+https*/
+.idea/
