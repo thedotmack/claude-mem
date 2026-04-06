@@ -80,7 +80,6 @@ import {
   cleanStalePidFile,
   isProcessAlive,
   spawnDaemon,
-  isPidFileRecent,
   touchPidFile
 } from './infrastructure/ProcessManager.js';
 import {
@@ -88,8 +87,7 @@ import {
   waitForHealth,
   waitForReadiness,
   waitForPortFree,
-  httpShutdown,
-  checkVersionMatch
+  httpShutdown
 } from './infrastructure/HealthMonitor.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 
@@ -1011,43 +1009,25 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
     return false;
   }
 
-  // Check if worker is already running and healthy
+  // Check if worker is already running and healthy.
+  // NOTE: Version mismatch auto-restart intentionally removed (#1435).
+  // The marketplace bundle ships with __DEFAULT_PACKAGE_VERSION__ unbaked, causing
+  // BUILT_IN_VERSION to fall back to "development". This creates a 100% reproducible
+  // mismatch on every hook call, killing a healthy worker and often failing to restart
+  // (cold start exceeds POST_SPAWN_WAIT). A working-but-old worker is strictly better
+  // than a dead worker. Users must manually restart after genuine plugin updates.
+  // See also: #566, #665, #667, #669, #689, #1124, #1145 (same pattern across 8+ releases).
   if (await waitForHealth(port, 1000)) {
-    const versionCheck = await checkVersionMatch(port);
-    if (!versionCheck.matches) {
-      // Guard: If PID file was written recently, another session is likely already
-      // restarting the worker. Poll health instead of starting a concurrent restart.
-      // This prevents the "100 sessions all restart simultaneously" storm (#1145).
-      const RESTART_COORDINATION_THRESHOLD_MS = 15000;
-      if (isPidFileRecent(RESTART_COORDINATION_THRESHOLD_MS)) {
-        logger.info('SYSTEM', 'Version mismatch detected but PID file is recent — another restart likely in progress, polling health', {
-          pluginVersion: versionCheck.pluginVersion,
-          workerVersion: versionCheck.workerVersion
-        });
-        const healthy = await waitForHealth(port, RESTART_COORDINATION_THRESHOLD_MS);
-        if (healthy) {
-          logger.info('SYSTEM', 'Worker became healthy after waiting for concurrent restart');
-          return true;
-        }
-        logger.warn('SYSTEM', 'Worker did not become healthy after waiting — proceeding with own restart');
-      }
-
-      logger.info('SYSTEM', 'Worker version mismatch detected - auto-restarting', {
-        pluginVersion: versionCheck.pluginVersion,
-        workerVersion: versionCheck.workerVersion
-      });
-
-      await httpShutdown(port);
-      const freed = await waitForPortFree(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
-      if (!freed) {
-        logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port });
-        return false;
-      }
-      removePidFile();
-    } else {
-      logger.info('SYSTEM', 'Worker already running and healthy');
-      return true;
+    // Health passed — worker is listening. Also wait for readiness in case
+    // another hook just spawned it and background init is still running.
+    // This mirrors the fresh-spawn path (line ~1025) so concurrent hooks
+    // don't race past a cold-starting worker's initialization guard.
+    const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+    if (!ready) {
+      logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
     }
+    logger.info('SYSTEM', 'Worker already running and healthy');
+    return true;
   }
 
   // Check if port is in use by something else
@@ -1096,8 +1076,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   }
 
   clearWorkerSpawnAttempted();
-  // Touch PID file to signal other sessions that a restart just completed.
-  // Other sessions checking isPidFileRecent() will see this and skip their own restart.
+  // Touch PID file to signal other sessions that a spawn just completed.
   touchPidFile();
   logger.info('SYSTEM', 'Worker started successfully');
   return true;
