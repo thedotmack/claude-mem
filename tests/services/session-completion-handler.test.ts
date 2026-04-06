@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import { SessionCompletionHandler } from '../../src/services/worker/session/SessionCompletionHandler.js';
 import type { SessionManager } from '../../src/services/worker/SessionManager.js';
 import type { SessionEventBroadcaster } from '../../src/services/worker/events/SessionEventBroadcaster.js';
@@ -19,13 +19,15 @@ function createMockSessionManager(opts: {
   const pendingCountFn = opts.pendingCount ?? (() => 0);
   const getSessionFn = opts.getSession ?? ((id: number) => ({ sessionDbId: id, startTime: Date.now() }));
 
+  const pendingStore = {
+    getPendingCount: mock((id: number) => pendingCountFn(id)),
+    markAllSessionMessagesAbandoned: mock((_id: number) => 0),
+  };
+
   return {
     deleteSession: mock(async (_id: number) => {}),
     getSession: mock((id: number) => getSessionFn(id)),
-    getPendingMessageStore: () => ({
-      getPendingCount: mock((id: number) => pendingCountFn(id)),
-      markAllSessionMessagesAbandoned: mock((_id: number) => 0),
-    }),
+    getPendingMessageStore: () => pendingStore,
   } as unknown as SessionManager;
 }
 
@@ -45,23 +47,21 @@ describe('SessionCompletionHandler', () => {
     broadcaster = createMockBroadcaster();
     handler = new SessionCompletionHandler(sessionManager, broadcaster);
 
-    await handler.completeByDbId(1);
+    const result = await handler.completeByDbId(1);
 
+    expect(result).toEqual({ deferred: false });
     expect(sessionManager.deleteSession).toHaveBeenCalledTimes(1);
     expect(broadcaster.broadcastSessionCompleted).toHaveBeenCalledTimes(1);
   });
 
-  it('should not delete immediately when queue has pending work', async () => {
+  it('should defer when queue has pending work', async () => {
     sessionManager = createMockSessionManager({ pendingCount: () => 1 });
     broadcaster = createMockBroadcaster();
     handler = new SessionCompletionHandler(sessionManager, broadcaster);
 
-    const start = Date.now();
-    await handler.completeByDbId(1);
-    const elapsed = Date.now() - start;
+    const result = await handler.completeByDbId(1);
 
-    // Returns immediately (not blocking) but has NOT deleted yet
-    expect(elapsed).toBeLessThan(100);
+    expect(result).toEqual({ deferred: true });
     expect(sessionManager.deleteSession).toHaveBeenCalledTimes(0);
   });
 
@@ -77,35 +77,38 @@ describe('SessionCompletionHandler', () => {
     broadcaster = createMockBroadcaster();
     handler = new SessionCompletionHandler(sessionManager, broadcaster);
 
-    await handler.completeByDbId(1);
+    const result = await handler.completeByDbId(1);
+    expect(result).toEqual({ deferred: true });
 
     // Wait for deferred poll to detect drain (~500ms poll interval)
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise(resolve => setTimeout(resolve, 700));
 
     expect(sessionManager.deleteSession).toHaveBeenCalledTimes(1);
     expect(broadcaster.broadcastSessionCompleted).toHaveBeenCalledTimes(1);
   });
 
-  it('should handle 4 concurrent completions without blocking', async () => {
+  it('should defer all 4 concurrent completions', async () => {
     sessionManager = createMockSessionManager({ pendingCount: () => 1 });
     broadcaster = createMockBroadcaster();
     handler = new SessionCompletionHandler(sessionManager, broadcaster);
 
-    const start = Date.now();
-    await Promise.all([
+    const results = await Promise.all([
       handler.completeByDbId(1),
       handler.completeByDbId(2),
       handler.completeByDbId(3),
       handler.completeByDbId(4),
     ]);
-    const elapsed = Date.now() - start;
 
-    // All 4 return in <100ms (deferred, not blocking)
-    expect(elapsed).toBeLessThan(100);
+    expect(results).toEqual([
+      { deferred: true },
+      { deferred: true },
+      { deferred: true },
+      { deferred: true },
+    ]);
     expect(sessionManager.deleteSession).toHaveBeenCalledTimes(0);
   });
 
-  it('should not delete if session removed by another path during deferral', async () => {
+  it('should drain orphaned messages when session removed during deferral', async () => {
     let checkCount = 0;
     sessionManager = createMockSessionManager({
       pendingCount: () => 1,
@@ -118,12 +121,16 @@ describe('SessionCompletionHandler', () => {
     broadcaster = createMockBroadcaster();
     handler = new SessionCompletionHandler(sessionManager, broadcaster);
 
-    await handler.completeByDbId(1);
+    const result = await handler.completeByDbId(1);
+    expect(result).toEqual({ deferred: true });
 
-    // Wait for poll to detect missing session
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    // Wait for 2 poll ticks: first sees session, second sees it gone
+    await new Promise(resolve => setTimeout(resolve, 1200));
 
     // Should NOT have called deleteSession — session already gone
     expect(sessionManager.deleteSession).toHaveBeenCalledTimes(0);
+    // Should have drained orphaned messages defensively
+    expect(sessionManager.getPendingMessageStore().markAllSessionMessagesAbandoned)
+      .toHaveBeenCalledWith(1);
   });
 });
