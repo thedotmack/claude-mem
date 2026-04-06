@@ -15,6 +15,11 @@ export interface Observation {
   cwd?: string;
 }
 
+export interface SplitPrompt {
+  staticPrefix: string;
+  dynamicContext: string;
+}
+
 export interface SDKSession {
   id: number;
   memory_session_id: string | null;
@@ -24,15 +29,13 @@ export interface SDKSession {
 }
 
 /**
- * Build initial prompt to initialize the SDK agent
+ * Build initial prompt to initialize the SDK agent.
+ * Returns { staticPrefix, dynamicContext } so callers can yield them as
+ * separate messages, keeping the static prefix byte-identical across turns
+ * for Anthropic prompt-cache hits.
  */
-export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): string {
-  return `${mode.prompts.system_identity}
-
-<observed_from_primary_session>
-  <user_request>${userPrompt}</user_request>
-  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
-</observed_from_primary_session>
+export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): SplitPrompt {
+  const staticPrefix = `${mode.prompts.system_identity}
 
 ${mode.prompts.observer_role}
 
@@ -83,6 +86,12 @@ ${mode.prompts.format_examples}
 ${mode.prompts.footer}
 
 ${mode.prompts.header_memory_start}`;
+
+  const dynamicContext = `<observed_from_primary_session>
+  <user_request>${userPrompt}</user_request>
+</observed_from_primary_session>`;
+
+  return { staticPrefix, dynamicContext };
 }
 
 /**
@@ -178,13 +187,8 @@ ${mode.prompts.summary_footer}`;
  * Called when: promptNumber > 1 (see SDKAgent.ts line 150)
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
  */
-export function buildContinuationPrompt(userPrompt: string, promptNumber: number, contentSessionId: string, mode: ModeConfig): string {
-  return `${mode.prompts.continuation_greeting}
-
-<observed_from_primary_session>
-  <user_request>${userPrompt}</user_request>
-  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
-</observed_from_primary_session>
+export function buildContinuationPrompt(userPrompt: string, promptNumber: number, contentSessionId: string, mode: ModeConfig): SplitPrompt {
+  const staticPrefix = `${mode.prompts.continuation_greeting}
 
 ${mode.prompts.system_identity}
 
@@ -239,4 +243,10 @@ ${mode.prompts.format_examples}
 ${mode.prompts.footer}
 
 ${mode.prompts.header_memory_continued}`;
-} 
+
+  const dynamicContext = `<observed_from_primary_session>
+  <user_request>${userPrompt}</user_request>
+</observed_from_primary_session>`;
+
+  return { staticPrefix, dynamicContext };
+}

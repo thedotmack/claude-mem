@@ -103,13 +103,14 @@ export class OpenRouterAgent {
       // Load active mode
       const mode = ModeManager.getInstance().getActiveMode();
 
-      // Build initial prompt
-      const initPrompt = session.lastPromptNumber === 1
+      // CACHE FIX: Split prompt into static prefix + dynamic context
+      const { staticPrefix, dynamicContext } = session.lastPromptNumber === 1
         ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
         : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
-      // Add to conversation history and query OpenRouter with full context
-      session.conversationHistory.push({ role: 'user', content: initPrompt });
+      // Add both parts to conversation history (OpenRouter doesn't benefit from the split,
+      // but we keep the same data flow for provider-switching consistency)
+      session.conversationHistory.push({ role: 'user', content: staticPrefix + '\n\n' + dynamicContext });
       const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
 
       if (initResponse.content) {
