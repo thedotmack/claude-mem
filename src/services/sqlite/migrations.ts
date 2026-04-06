@@ -573,6 +573,44 @@ export const migration009: Migration = {
 };
 
 /**
+ * Migration 010: Bandit engine tables for multi-armed bandit experiments
+ *
+ * Stores experiment definitions and per-arm Beta distribution parameters
+ * for Thompson Sampling optimization.
+ */
+export const migration010: Migration = {
+  version: 27,
+  up: (db: Database) => {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS bandit_experiments (
+        id TEXT PRIMARY KEY,
+        description TEXT NOT NULL,
+        reward_signals TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL
+      )
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS bandit_arms (
+        experiment_id TEXT NOT NULL,
+        arm_id TEXT NOT NULL,
+        alpha REAL NOT NULL DEFAULT 1.0,
+        beta REAL NOT NULL DEFAULT 1.0,
+        pulls INTEGER NOT NULL DEFAULT 0,
+        total_reward REAL NOT NULL DEFAULT 0.0,
+        updated_at_epoch INTEGER NOT NULL,
+        PRIMARY KEY (experiment_id, arm_id),
+        FOREIGN KEY (experiment_id) REFERENCES bandit_experiments(id) ON DELETE CASCADE
+      )
+    `);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_bandit_arms_experiment ON bandit_arms(experiment_id)`);
+  },
+  down: (db: Database) => {
+    db.run(`DROP TABLE IF EXISTS bandit_arms`);
+    db.run(`DROP TABLE IF EXISTS bandit_experiments`);
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
@@ -584,5 +622,6 @@ export const migrations: Migration[] = [
   migration006,
   migration007,
   migration008,
-  migration009
+  migration009,
+  migration010
 ];
