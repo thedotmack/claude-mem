@@ -3,7 +3,7 @@
  *
  * No native bindings. No WASM. Just the CLI binary + query patterns.
  *
- * Supported: JS, TS, Python, Go, Rust, Ruby, Java, C, C++
+ * Supported: JS, TS, Python, Go, Rust, Ruby, Java, C, C++, PHP
  *
  * by Copter Labs
  */
@@ -66,6 +66,7 @@ const LANG_MAP: Record<string, string> = {
   ".cxx": "cpp",
   ".hpp": "cpp",
   ".hh": "cpp",
+  ".php": "php",
 };
 
 export function detectLanguage(filePath: string): string {
@@ -86,6 +87,7 @@ const GRAMMAR_PACKAGES: Record<string, string> = {
   java: "tree-sitter-java",
   c: "tree-sitter-c",
   cpp: "tree-sitter-cpp",
+  php: "tree-sitter-php/php",
 };
 
 function resolveGrammarPath(language: string): string | null {
@@ -160,6 +162,15 @@ const QUERIES: Record<string, string> = {
 (import_statement) @imp
 (import_declaration) @imp
 `,
+
+  php: `
+(function_definition name: (name) @name) @func
+(method_declaration name: (name) @name) @method
+(class_declaration name: (name) @name) @cls
+(interface_declaration name: (name) @name) @iface
+(trait_declaration name: (name) @name) @trait_def
+(namespace_use_declaration) @imp
+`,
 };
 
 function getQueryKey(language: string): string {
@@ -173,6 +184,7 @@ function getQueryKey(language: string): string {
     case "rust": return "rust";
     case "ruby": return "ruby";
     case "java": return "java";
+    case "php": return "php";
     default: return "generic";
   }
 }
