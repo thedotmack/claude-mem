@@ -49,6 +49,12 @@ describe('Tag Stripping Utilities', () => {
         const result = stripMemoryTagsFromPrompt(input);
         expect(result).toBe('public  end');
       });
+
+      it('should strip <persisted-output> tags', () => {
+        const input = 'public <persisted-output>large output</persisted-output> after';
+        const result = stripMemoryTagsFromPrompt(input);
+        expect(result).toBe('public  after');
+      });
     });
 
     describe('multiple tags handling', () => {
@@ -229,6 +235,15 @@ finish`;
         const result = stripMemoryTagsFromJson(JSON.stringify(toolResponse));
         const parsed = JSON.parse(result);
         expect(parsed.output).toBe('result ');
+      });
+
+      it('should strip persisted-output tags from JSON', () => {
+        const jsonContent = JSON.stringify({
+          output: '<persisted-output>big output</persisted-output> keep'
+        });
+        const result = stripMemoryTagsFromJson(jsonContent);
+        const parsed = JSON.parse(result);
+        expect(parsed.output).toBe(' keep');
       });
     });
 
