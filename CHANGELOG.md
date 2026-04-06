@@ -4,60 +4,64 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [11.0.0] - 2026-
+## [11.0.1] - 2026-
 ✅ CHANGELOG.md generated successfully!
-   221 releases processed
-k deletions · 39 patch releases since v10.0.0**
+   222 releases processed
+fault from `true` to `false`.
 
-### Breaking: Strict Observer Response Contract
+### What changed
+- Per-prompt Chroma vector search on `UserPromptSubmit` is now **opt-in** rather than opt-out
+- Reduces latency and context noise for users who haven't explicitly enabled it
+- Users can re-enable via `CLAUDE_MEM_SEMANTIC_INJECT=true` in `~/.claude-mem/settings.json`
 
-The memory agent can no longer return prose-style skip responses. This changes the implicit contract between the prompt layer and the response parser:
+### Why
+The semantic inject fires on every prompt and often surfaces tangentially related observations. A more precise file-context approach (PreToolUse timeline gate) is in development as a replacement.
 
-- **Prompt enforcement** — `buildObservationPrompt` now requires `<observation>` XML blocks or an empty response. Prose like "Skipping — no substantive tool executions" is explicitly forbidden.
-- **Runtime detection** — `ResponseProcessor` warns when non-XML content is received and discarded, making silent data loss visible.
-- **Expanded recording scope** — Concrete debugging findings from logs, queue state, database rows, and code-path inspection are now encouraged as durable discoveries.
+## [11.0.0] - 2026-04-05
 
-### v10.x Highlights (What Got Us Here)
+## claude-mem v11.0.0
 
-#### Multi-IDE Platform (v10.2.0 → v10.7.0)
-- **NPX CLI installer** with interactive `@clack/prompts` UI and `--ide` flag
-- **13 IDE integrations**: Claude Code, Gemini CLI, Windsurf, OpenCode, OpenClaw, Codex CLI, Copilot CLI, Antigravity, Goose, Crush, Roo Code, Warp, and MCP factory pattern for extensibility
-- Claude Code install now delegates to native `claude plugin marketplace add` + `claude plugin install`
+**4 releases today** · 21 commits · 6,051 insertions · 34 files changed
 
-#### OpenClaw Plugin (v10.0.0)
-- Persistent memory for [OpenClaw](https://openclaw.ai) agents — observation recording, MEMORY.md live sync, and real-time observation feeds to Telegram/Discord/Slack/Signal/WhatsApp/LINE
-- System prompt context injection via `before_prompt_build` hook (v10.6.0)
+### Features
 
-#### Smart Explore (v10.5.0)
-- AST-powered code navigation via tree-sitter with 3 MCP tools: `smart_search`, `smart_outline`, `smart_unfold`
-- **6–12× token savings** over traditional Glob → Grep → Read exploration cycles
-- 10 languages: TypeScript, JavaScript, Python, Rust, Go, Java, C, C++, Ruby, PHP
+#### Semantic Context Injection (#1568)
+Every `UserPromptSubmit` now queries ChromaDB for the top-N most relevant past observations and injects them as context. Replaces recency-based "last N observations" with relevance-based semantic search. Survives `/clear`, skips trivial prompts (<20 chars), and degrades gracefully when Chroma is unavailable.
 
-#### ChromaDB Overhaul (v10.3.0 → v10.7.0)
-- Replaced WASM embeddings with persistent `chroma-mcp` MCP connection
-- Semantic context injection on `UserPromptSubmit` via Chroma vector search
-- Tier routing by queue complexity with observation feedback table
-- Multi-machine sync via `claude-mem-sync`
+#### Tier Routing by Queue Complexity
+The SDK agent now inspects pending queue complexity before selecting a model. Simple tool-only queues (Read, Glob, Grep) route to Haiku; mixed/complex queues use the default model. Production result: **~52% cost reduction** on SDK agent usage with quality indistinguishable from Sonnet. Includes a new `observation_feedback` table for future Thompson Sampling optimization.
 
-#### Stability (v10.4.0 → v10.5.6)
-- **30+ root-cause bug fixes** across 10 triage phases (v10.4.0)
-- Embedded Process Supervisor for unified lifecycle management
-- Content-hash deduplication on observation INSERT
-- Self-healing `claimNextMessage` for stuck processing messages
-- Chroma spawn storm fix (641 processes → max 2)
-- Fixed infinite spinner from orphaned pending messages
+#### Multi-Machine Observation Sync (#1570)
+New `claude-mem-sync` CLI with `push`, `pull`, `sync`, and `status` commands. Bidirectional sync of observations and session summaries between machines via SSH/SCP with deduplication by `(created_at, title)`. Tested syncing 3,400+ observations between two physical servers — a session on the remote machine used transferred memory to deliver a real feature PR.
 
-#### New Skills & Modes
-- **Timeline Report** — narrative "Journey Into [Project]" reports from development history
-- **Make Plan / Do** — phased implementation planning with subagent execution
-- **Law Study Mode** — purpose-built for law students with Socratic methodology
-- **Smart Explore** — structural code search as an MCP skill
+#### Orphaned Message Drain (#1567)
+When `deleteSession()` aborts the SDK agent via SIGTERM, pending messages are now marked abandoned instead of remaining in `pending` status forever. Production evidence: 15 orphaned messages found before fix → 0 orphaned messages over 23 days after fix.
 
-#### Platform
-- Windows hardening: PowerShell daemon spawning, backslash path conversion, Chroma re-enabled
-- Linux: stdin buffering fix for Node.js → Bun handoff
-- XDG-compliant environment resolution
-- npm publish workflow on tag push
+### Bug Fixes
+
+#### Installer Regression Fixed (v10.7.0 → v10.7.1)
+The install simplification in v10.7.0 over-applied scope — it replaced the entire `runInstallCommand` with just two `claude` CLI commands, gutting the interactive IDE multi-select, `--ide` flag, and all 13 IDE-specific setup dispatchers. v10.7.1 restores the full installer for all non-Claude-Code IDEs while keeping the native plugin delegation for Claude Code.
+
+#### 3 Upstream Production Bugs (#1566)
+Found via analysis of 543K log lines over 17 days across two servers:
+- **summarize.ts**: Skip summary when transcript has no assistant message (was causing ~30 errors/day)
+- **ChromaSync.ts**: Fallback to `chroma_update_documents` when add fails with "IDs already exist"
+- **HealthMonitor.ts**: Replace HTTP-based port check with atomic socket bind (eliminates TOCTOU race on simultaneous session starts)
+
+#### Other Fixes
+- Concept-type cleanup log downgraded from error to debug (reduces log noise)
+
+### Breaking Change
+
+**Strict Observer Response Contract** — The memory agent can no longer return prose-style skip responses like "Skipping — no substantive tool executions." `buildObservationPrompt` now requires `<observation>` XML blocks or an empty response. `ResponseProcessor` warns when non-XML content is received. This prevents silent data loss from the observer deciding on its own that tool output isn't worth recording.
+
+### Community
+
+Features in this release were contributed by **Alessandro Costa** ([@alessandropcostabr](https://github.com/alessandropcostabr)) — semantic injection, tier routing, multi-machine sync, orphan drain, and the 3-bug production fix. All PRs include production data from real multi-server deployments.
+
+### Release History
+
+This release consolidates v10.7.0 through v11.0.0, all shipped on April 4, 2026. For the full v10.x era (267 commits, 39 releases), see [v10.7.0](https://github.com/thedotmack/claude-mem/releases/tag/v10.7.0) and earlier.
 
 ## [10.7.2] - 2026-04-05
 
