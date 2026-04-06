@@ -53,7 +53,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * Note: Session linking via contentSessionId allows provider switching mid-session.
    * The conversationHistory on ActiveSession maintains context across providers.
    */
-  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent | OllamaAgent {
+  private async getActiveAgent(): Promise<SDKAgent | GeminiAgent | OpenRouterAgent | OllamaAgent> {
     if (isOpenRouterSelected()) {
       if (isOpenRouterAvailable()) {
         logger.debug('SESSION', 'Using OpenRouter agent');
@@ -71,7 +71,7 @@ export class SessionRoutes extends BaseRouteHandler {
       }
     }
     if (isOllamaSelected()) {
-      if (isOllamaAvailable()) {
+      if (await isOllamaAvailable()) {
         logger.debug('SESSION', 'Using Ollama agent');
         return this.ollamaAgent;
       } else {
@@ -84,14 +84,14 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Get the currently selected provider name
    */
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'ollama' {
+  private async getSelectedProvider(): Promise<'claude' | 'gemini' | 'openrouter' | 'ollama'> {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
     }
     if (isGeminiSelected() && isGeminiAvailable()) {
       return 'gemini';
     }
-    if (isOllamaSelected() && isOllamaAvailable()) {
+    if (isOllamaSelected() && (await isOllamaAvailable())) {
       return 'ollama';
     }
     return 'claude';
@@ -108,7 +108,7 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private static readonly STALE_GENERATOR_THRESHOLD_MS = 30_000; // 30 seconds (#1099)
 
-  private ensureGeneratorRunning(sessionDbId: number, source: string): void {
+  private async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 
@@ -118,7 +118,7 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    const selectedProvider = this.getSelectedProvider();
+    const selectedProvider = await this.getSelectedProvider();
 
     // Start generator if not running
     if (!session.generatorPromise) {
@@ -307,7 +307,9 @@ export class SessionRoutes extends BaseRouteHandler {
                 const stillExists = this.sessionManager.getSession(sessionDbId);
                 if (stillExists && !stillExists.generatorPromise) {
                   this.applyTierRouting(stillExists);
-                  this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
+                  void this.getSelectedProvider().then((selectedProvider) => {
+                    this.startGeneratorWithProvider(stillExists, selectedProvider, 'crash-recovery');
+                  });
                 }
               }, backoffMs);
             } else {
@@ -351,7 +353,7 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Initialize a new session
    */
-  private handleSessionInit = this.wrapHandler((req: Request, res: Response): void => {
+  private handleSessionInit = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
@@ -407,7 +409,7 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Idempotent: ensure generator is running (matches handleObservations / handleSummarize)
-    this.ensureGeneratorRunning(sessionDbId, 'init');
+    await this.ensureGeneratorRunning(sessionDbId, 'init');
 
     // Broadcast session started event
     this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
@@ -419,7 +421,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * Queue observations for processing
    * CRITICAL: Ensures SDK agent is running to process the queue (ALWAYS SAVE EVERYTHING)
    */
-  private handleObservations = this.wrapHandler((req: Request, res: Response): void => {
+  private handleObservations = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
@@ -434,7 +436,7 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     // CRITICAL: Ensure SDK agent is running to consume the queue
-    this.ensureGeneratorRunning(sessionDbId, 'observation');
+    await this.ensureGeneratorRunning(sessionDbId, 'observation');
 
     // Broadcast observation queued event
     this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
@@ -446,7 +448,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * Queue summarize request
    * CRITICAL: Ensures SDK agent is running to process the queue (ALWAYS SAVE EVERYTHING)
    */
-  private handleSummarize = this.wrapHandler((req: Request, res: Response): void => {
+  private handleSummarize = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
@@ -455,7 +457,7 @@ export class SessionRoutes extends BaseRouteHandler {
     this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
 
     // CRITICAL: Ensure SDK agent is running to consume the queue
-    this.ensureGeneratorRunning(sessionDbId, 'summarize');
+    await this.ensureGeneratorRunning(sessionDbId, 'summarize');
 
     // Broadcast summarize queued event
     this.eventBroadcaster.broadcastSummarizeQueued();
@@ -520,7 +522,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * POST /api/sessions/observations
    * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
    */
-  private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
+  private handleObservationsByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
 
     if (!contentSessionId) {
@@ -598,7 +600,7 @@ export class SessionRoutes extends BaseRouteHandler {
       });
 
       // Ensure SDK agent is running
-      this.ensureGeneratorRunning(sessionDbId, 'observation');
+      await this.ensureGeneratorRunning(sessionDbId, 'observation');
 
       // Broadcast observation queued event
       this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
@@ -618,7 +620,7 @@ export class SessionRoutes extends BaseRouteHandler {
    *
    * Checks privacy, queues summarize request for SDK agent
    */
-  private handleSummarizeByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
+  private handleSummarizeByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId, last_assistant_message } = req.body;
 
     if (!contentSessionId) {
@@ -648,7 +650,7 @@ export class SessionRoutes extends BaseRouteHandler {
     this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
 
     // Ensure SDK agent is running
-    this.ensureGeneratorRunning(sessionDbId, 'summarize');
+    await this.ensureGeneratorRunning(sessionDbId, 'summarize');
 
     // Broadcast summarize queued event
     this.eventBroadcaster.broadcastSummarizeQueued();

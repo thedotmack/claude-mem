@@ -9,7 +9,6 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { execSync } from 'child_process';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
@@ -268,7 +267,6 @@ export class OllamaAgent {
     const data = await response.json() as OllamaChatResponse;
     const content =
       data.message?.content ||
-      data.choices?.[0]?.message?.content ||
       data.choices?.[0]?.message?.content;
 
     return content || '';
@@ -316,7 +314,10 @@ export class OllamaAgent {
       ? parseInt(settings.CLAUDE_MEM_OLLAMA_MAX_TOKENS, 10)
       : 100000;
 
-    const fallbackToClaudeEnabled = settings.CLAUDE_MEM_OLLAMA_FALLBACK_TO_CLAUDE !== 'false';
+    const fallbackToClaudeEnabled =
+      String(settings.CLAUDE_MEM_OLLAMA_FALLBACK_TO_CLAUDE ?? '')
+        .trim()
+        .toLowerCase() === 'true';
 
     return {
       baseUrl,
@@ -338,22 +339,82 @@ export function isOllamaSelected(): boolean {
   return settings.CLAUDE_MEM_PROVIDER === 'ollama';
 }
 
+/** Last successful probe; updated by {@link isOllamaAvailable} for sync readers (e.g. /api/health). */
+let ollamaReachabilityCached = false;
+
+const OLLAMA_PROBE_CACHE_MS = 2000;
+let ollamaProbeCache: { ok: boolean; at: number } | null = null;
+
 /**
- * Check if Ollama is reachable (basic health check).
+ * Build a validated http(s) URL for Ollama's tags endpoint (no shell / user-controlled injection).
  */
-export function isOllamaAvailable(): boolean {
+function resolveValidatedOllamaTagsUrl(baseUrlRaw: string): URL | null {
+  try {
+    const trimmed = trimTrailingSlash(baseUrlRaw.trim());
+    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+      return null;
+    }
+    const base = new URL(trimmed);
+    if (base.protocol !== 'http:' && base.protocol !== 'https:') {
+      return null;
+    }
+    if (!base.hostname) {
+      return null;
+    }
+    const tags = new URL('/api/tags', base);
+    return tags;
+  } catch {
+    return null;
+  }
+}
+
+async function probeOllamaTagsReachable(tagsUrl: URL): Promise<boolean> {
+  try {
+    const response = await fetch(tagsUrl.href, {
+      method: 'GET',
+      signal: AbortSignal.timeout(1500)
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Cached reachability for synchronous health/status (e.g. getAiStatus) without blocking the event loop.
+ */
+export function getOllamaReachabilityCached(): boolean {
+  return ollamaReachabilityCached;
+}
+
+/**
+ * Check if Ollama is reachable (HTTP GET /api/tags on configured base URL).
+ * Updates {@link getOllamaReachabilityCached} for sync consumers.
+ */
+export async function isOllamaAvailable(): Promise<boolean> {
   try {
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     const baseUrl = settings.CLAUDE_MEM_OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-    if (!baseUrl || !baseUrl.startsWith('http')) return false;
 
-    // Fast synchronous health check.
-    // If Ollama is not reachable, curl will fail quickly and we consider Ollama unavailable.
-    const tagsUrl = `${trimTrailingSlash(baseUrl)}/api/tags`;
-    execSync(`curl -fsS --max-time 1 "${tagsUrl}" >/dev/null 2>&1`);
-    return true;
+    const tagsUrl = resolveValidatedOllamaTagsUrl(baseUrl);
+    if (!tagsUrl) {
+      ollamaReachabilityCached = false;
+      return false;
+    }
+
+    const now = Date.now();
+    if (ollamaProbeCache && now - ollamaProbeCache.at < OLLAMA_PROBE_CACHE_MS) {
+      ollamaReachabilityCached = ollamaProbeCache.ok;
+      return ollamaProbeCache.ok;
+    }
+
+    const ok = await probeOllamaTagsReachable(tagsUrl);
+    ollamaProbeCache = { ok, at: now };
+    ollamaReachabilityCached = ok;
+    return ok;
   } catch {
+    ollamaReachabilityCached = false;
     return false;
   }
 }

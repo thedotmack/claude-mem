@@ -112,7 +112,7 @@ import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from './worker/GeminiAgent.js';
 import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterAgent.js';
-import { OllamaAgent, isOllamaSelected, isOllamaAvailable } from './worker/OllamaAgent.js';
+import { OllamaAgent, isOllamaSelected, isOllamaAvailable, getOllamaReachabilityCached } from './worker/OllamaAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
@@ -252,7 +252,7 @@ export class WorkerService {
         let provider = 'claude';
         if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
         else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
-        else if (isOllamaSelected() && isOllamaAvailable()) provider = 'ollama';
+        else if (isOllamaSelected() && getOllamaReachabilityCached()) provider = 'ollama';
         return {
           provider,
           authMethod: getAuthMethodDescription(),
@@ -373,6 +373,12 @@ export class WorkerService {
     });
 
     logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
+
+    // Keep Ollama reachability cache fresh for /api/health (async probe; see getOllamaReachabilityCached)
+    void isOllamaAvailable().catch(() => {});
+    setInterval(() => {
+      void isOllamaAvailable().catch(() => {});
+    }, 15_000);
 
     // Do slow initialization in background (non-blocking)
     this.initializeBackground().catch((error) => {
