@@ -9,10 +9,12 @@ import express, { Request, Response } from 'express';
 import { SearchManager } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { logger } from '../../../../utils/logger.js';
+import { FeedbackRecorder } from '../../../bandit/FeedbackRecorder.js';
 
 export class SearchRoutes extends BaseRouteHandler {
   constructor(
-    private searchManager: SearchManager
+    private searchManager: SearchManager,
+    private feedbackRecorder?: FeedbackRecorder
   ) {
     super();
   }
@@ -51,6 +53,14 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleUnifiedSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.search(req.query);
+    // Record search access feedback
+    if (this.feedbackRecorder) {
+      const observations = (result as any)?.observations || [];
+      const obsIds = observations.map((o: any) => o.id).filter((id: any) => typeof id === 'number');
+      if (obsIds.length > 0) {
+        this.feedbackRecorder.recordFeedback(obsIds, 'search_accessed', 'search');
+      }
+    }
     res.json(result);
   });
 
@@ -282,6 +292,14 @@ export class SearchRoutes extends BaseRouteHandler {
       if (!observations.length) {
         res.json({ context: '', count: 0 });
         return;
+      }
+
+      // Record semantic injection feedback
+      if (this.feedbackRecorder && observations.length > 0) {
+        const obsIds = observations.slice(0, limit).map((o: any) => o.id).filter((id: any) => typeof id === 'number');
+        if (obsIds.length > 0) {
+          this.feedbackRecorder.recordFeedback(obsIds, 'semantic_inject_hit', 'semantic_inject');
+        }
       }
 
       // Format as compact markdown for context injection
