@@ -51,6 +51,8 @@ export class BanditEngine {
       }
     }
 
+    let selected: string;
+
     // Round-robin phase: if any candidate has fewer pulls than minimum, pick the least-pulled
     const minPulls = this.config.minPullsBeforeExploit;
     const underExplored = candidateArms.filter(id => {
@@ -60,40 +62,49 @@ export class BanditEngine {
 
     if (underExplored.length > 0) {
       underExplored.sort((a, b) => expArms.get(a)!.pulls - expArms.get(b)!.pulls);
-      const selected = underExplored[0];
+      selected = underExplored[0];
       if (this.config.logSelections) {
         const arm = expArms.get(selected)!;
         logger.debug('BANDIT', `round-robin select`, {
           experiment: experimentId, selected, pulls: arm.pulls, minPulls
         });
       }
-      return selected;
-    }
+    } else {
+      // Thompson Sampling: sample from each arm's Beta distribution
+      let bestArm = candidateArms[0];
+      let bestSample = -1;
 
-    // Thompson Sampling: sample from each arm's Beta distribution
-    let bestArm = candidateArms[0];
-    let bestSample = -1;
+      for (const armId of candidateArms) {
+        const arm = expArms.get(armId)!;
+        const theta = betaSample(arm.alpha, arm.beta);
+        if (theta > bestSample) {
+          bestSample = theta;
+          bestArm = armId;
+        }
+      }
 
-    for (const armId of candidateArms) {
-      const arm = expArms.get(armId)!;
-      const theta = betaSample(arm.alpha, arm.beta);
-      if (theta > bestSample) {
-        bestSample = theta;
-        bestArm = armId;
+      selected = bestArm;
+
+      if (this.config.logSelections) {
+        const arm = expArms.get(selected)!;
+        logger.debug('BANDIT', `thompson select`, {
+          experiment: experimentId, selected,
+          alpha: arm.alpha, beta: arm.beta,
+          estimated: (arm.alpha / (arm.alpha + arm.beta)).toFixed(3),
+          pulls: arm.pulls
+        });
       }
     }
 
-    if (this.config.logSelections) {
-      const arm = expArms.get(bestArm)!;
-      logger.debug('BANDIT', `thompson select`, {
-        experiment: experimentId, selected: bestArm,
-        alpha: arm.alpha, beta: arm.beta,
-        estimated: (arm.alpha / (arm.alpha + arm.beta)).toFixed(3),
-        pulls: arm.pulls
-      });
-    }
+    // Increment pulls on selection (not on reward)
+    const arm = expArms.get(selected)!;
+    arm.pulls += 1;
+    arm.updatedAt = Date.now();
+    this.db.prepare(
+      'UPDATE bandit_arms SET pulls = ?, updated_at_epoch = ? WHERE experiment_id = ? AND arm_id = ?'
+    ).run(arm.pulls, arm.updatedAt, experimentId, selected);
 
-    return bestArm;
+    return selected;
   }
 
   recordReward(experimentId: string, armId: string, reward: 0 | 1): void {
@@ -111,13 +122,12 @@ export class BanditEngine {
     } else {
       arm.beta += 1;
     }
-    arm.pulls += 1;
     arm.totalReward += reward;
     arm.updatedAt = Date.now();
 
     this.db.prepare(
-      'UPDATE bandit_arms SET alpha = ?, beta = ?, pulls = ?, total_reward = ?, updated_at_epoch = ? WHERE experiment_id = ? AND arm_id = ?'
-    ).run(arm.alpha, arm.beta, arm.pulls, arm.totalReward, arm.updatedAt, experimentId, armId);
+      'UPDATE bandit_arms SET alpha = ?, beta = ?, total_reward = ?, updated_at_epoch = ? WHERE experiment_id = ? AND arm_id = ?'
+    ).run(arm.alpha, arm.beta, arm.totalReward, arm.updatedAt, experimentId, armId);
 
     if (this.config.logSelections) {
       logger.debug('BANDIT', `reward`, {

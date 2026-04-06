@@ -393,7 +393,7 @@ export class WorkerService {
       // Initialize Bandit Engine for Thompson Sampling optimization
       try {
         const sessionStore = this.dbManager.getSessionStore();
-        const db = (sessionStore as any).db;
+        const db = sessionStore.db;
         if (db) {
           this.banditEngine = new BanditEngine();
           this.banditEngine.init(db);

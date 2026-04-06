@@ -25,7 +25,7 @@ export class FeedbackRecorder {
     );
   }
 
-  recordFeedback(observationIds: number[], signal: string, source: string, project?: string): void {
+  recordFeedback(observationIds: number[], signal: string, source: string): void {
     if (observationIds.length === 0) return;
 
     const now = Date.now();

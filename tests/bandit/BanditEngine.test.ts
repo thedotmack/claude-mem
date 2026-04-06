@@ -129,6 +129,7 @@ describe('BanditEngine', () => {
         id: 'exp1', description: 'Test', rewardSignals: ['hit'], createdAt: Date.now()
       });
       engine.selectArm('exp1', ['arm-a', 'arm-b']);
+      engine.selectArm('exp1', ['arm-a', 'arm-b']);
       engine.recordReward('exp1', 'arm-a', 1);
       engine.recordReward('exp1', 'arm-b', 0);
       const summary = engine.getExperimentSummary('exp1');
@@ -153,7 +154,7 @@ describe('BanditEngine', () => {
       const arm = stats.find(a => a.armId === 'arm-a')!;
       expect(arm.alpha).toBe(3.0);
       expect(arm.beta).toBe(2.0);
-      expect(arm.pulls).toBe(3);
+      expect(arm.pulls).toBe(1);  // pulls incremented only in selectArm, not recordReward
     });
   });
 });

@@ -525,15 +525,15 @@ export const migration008: Migration = {
       CREATE TABLE IF NOT EXISTS observation_feedback (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         observation_id INTEGER NOT NULL,
-        signal_type TEXT NOT NULL,
-        session_db_id INTEGER,
+        signal TEXT NOT NULL,
+        source TEXT NOT NULL,
+        project TEXT,
         created_at_epoch INTEGER NOT NULL,
-        metadata TEXT,
         FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
       )
     `);
     db.run(`CREATE INDEX IF NOT EXISTS idx_feedback_observation ON observation_feedback(observation_id)`);
-    db.run(`CREATE INDEX IF NOT EXISTS idx_feedback_signal ON observation_feedback(signal_type)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_feedback_signal ON observation_feedback(signal)`);
     console.log('✅ Created observation_feedback table for usage tracking');
   },
   down: (db: Database) => {
@@ -581,6 +581,18 @@ export const migration009: Migration = {
 export const migration010: Migration = {
   version: 27,
   up: (db: Database) => {
+    // Ensure observations has required columns for bandit engine
+    const obsColumns = db.prepare('PRAGMA table_info(observations)').all() as any[];
+    const hasRelevanceCount = obsColumns.some((c: any) => c.name === 'relevance_count');
+    const hasGeneratedByModel = obsColumns.some((c: any) => c.name === 'generated_by_model');
+
+    if (!hasRelevanceCount) {
+      db.run('ALTER TABLE observations ADD COLUMN relevance_count INTEGER DEFAULT 0');
+    }
+    if (!hasGeneratedByModel) {
+      db.run('ALTER TABLE observations ADD COLUMN generated_by_model TEXT');
+    }
+
     db.run(`
       CREATE TABLE IF NOT EXISTS bandit_experiments (
         id TEXT PRIMARY KEY,
