@@ -1,8 +1,8 @@
 /**
- * MarkdownFormatter - Formats context output as compact markdown for LLM injection
+ * AgentFormatter - Formats context output as compact markdown for LLM injection
  *
  * Optimized for token efficiency: flat lines instead of tables, no repeated headers.
- * The colored terminal formatter (ColorFormatter.ts) handles human-readable display separately.
+ * The human-readable terminal formatter (HumanFormatter.ts) handles human-readable display separately.
  */
 
 import type {
@@ -31,9 +31,9 @@ function formatHeaderDateTime(): string {
 }
 
 /**
- * Render markdown header
+ * Render agent header
  */
-export function renderMarkdownHeader(project: string): string[] {
+export function renderAgentHeader(project: string): string[] {
   return [
     `# $CMEM ${project} ${formatHeaderDateTime()}`,
     ''
@@ -41,9 +41,9 @@ export function renderMarkdownHeader(project: string): string[] {
 }
 
 /**
- * Render markdown legend
+ * Render agent legend
  */
-export function renderMarkdownLegend(): string[] {
+export function renderAgentLegend(): string[] {
   const mode = ModeManager.getInstance().getActiveMode();
   const typeLegendItems = mode.observation_types.map(t => `${t.emoji}${t.id}`).join(' ');
 
@@ -56,23 +56,23 @@ export function renderMarkdownLegend(): string[] {
 }
 
 /**
- * Render markdown column key - no longer needed in compact format
+ * Render agent column key - no longer needed in compact format
  */
-export function renderMarkdownColumnKey(): string[] {
+export function renderAgentColumnKey(): string[] {
   return [];
 }
 
 /**
- * Render markdown context index instructions - folded into legend
+ * Render agent context index instructions - folded into legend
  */
-export function renderMarkdownContextIndex(): string[] {
+export function renderAgentContextIndex(): string[] {
   return [];
 }
 
 /**
- * Render markdown context economics
+ * Render agent context economics
  */
-export function renderMarkdownContextEconomics(
+export function renderAgentContextEconomics(
   economics: TokenEconomics,
   config: ContextConfig
 ): string[] {
@@ -98,18 +98,18 @@ export function renderMarkdownContextEconomics(
 }
 
 /**
- * Render markdown day header
+ * Render agent day header
  */
-export function renderMarkdownDayHeader(day: string): string[] {
+export function renderAgentDayHeader(day: string): string[] {
   return [
     `### ${day}`,
   ];
 }
 
 /**
- * Render markdown file header - no longer renders table headers in compact format
+ * Render agent file header - no longer renders table headers in compact format
  */
-export function renderMarkdownFileHeader(_file: string): string[] {
+export function renderAgentFileHeader(_file: string): string[] {
   // File grouping eliminated in compact format - file context is in observation titles
   return [];
 }
@@ -124,7 +124,7 @@ function compactTime(time: string): string {
 /**
  * Render compact flat line for observation (replaces table row)
  */
-export function renderMarkdownTableRow(
+export function renderAgentTableRow(
   obs: Observation,
   timeDisplay: string,
   _config: ContextConfig
@@ -137,9 +137,9 @@ export function renderMarkdownTableRow(
 }
 
 /**
- * Render markdown full observation
+ * Render agent full observation
  */
-export function renderMarkdownFullObservation(
+export function renderAgentFullObservation(
   obs: Observation,
   timeDisplay: string,
   detailField: string | null,
@@ -172,9 +172,9 @@ export function renderMarkdownFullObservation(
 }
 
 /**
- * Render markdown summary item in timeline
+ * Render agent summary item in timeline
  */
-export function renderMarkdownSummaryItem(
+export function renderAgentSummaryItem(
   summary: { id: number; request: string | null },
   formattedTime: string
 ): string[] {
@@ -184,17 +184,17 @@ export function renderMarkdownSummaryItem(
 }
 
 /**
- * Render markdown summary field
+ * Render agent summary field
  */
-export function renderMarkdownSummaryField(label: string, value: string | null): string[] {
+export function renderAgentSummaryField(label: string, value: string | null): string[] {
   if (!value) return [];
   return [`**${label}**: ${value}`, ''];
 }
 
 /**
- * Render markdown previously section
+ * Render agent previously section
  */
-export function renderMarkdownPreviouslySection(priorMessages: PriorMessages): string[] {
+export function renderAgentPreviouslySection(priorMessages: PriorMessages): string[] {
   if (!priorMessages.assistantMessage) return [];
 
   return [
@@ -209,9 +209,9 @@ export function renderMarkdownPreviouslySection(priorMessages: PriorMessages): s
 }
 
 /**
- * Render markdown footer
+ * Render agent footer
  */
-export function renderMarkdownFooter(totalDiscoveryTokens: number, totalReadTokens: number): string[] {
+export function renderAgentFooter(totalDiscoveryTokens: number, totalReadTokens: number): string[] {
   const workTokensK = Math.round(totalDiscoveryTokens / 1000);
   return [
     '',
@@ -220,8 +220,8 @@ export function renderMarkdownFooter(totalDiscoveryTokens: number, totalReadToke
 }
 
 /**
- * Render markdown empty state
+ * Render agent empty state
  */
-export function renderMarkdownEmptyState(project: string): string {
+export function renderAgentEmptyState(project: string): string {
   return `# $CMEM ${project} ${formatHeaderDateTime()}\n\nNo previous sessions found.`;
 }

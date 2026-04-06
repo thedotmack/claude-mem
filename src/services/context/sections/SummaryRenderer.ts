@@ -6,8 +6,8 @@
 
 import type { ContextConfig, Observation, SessionSummary } from '../types.js';
 import { colors } from '../types.js';
-import * as Markdown from '../formatters/MarkdownFormatter.js';
-import * as Color from '../formatters/ColorFormatter.js';
+import * as Agent from '../formatters/AgentFormatter.js';
+import * as Human from '../formatters/HumanFormatter.js';
 
 /**
  * Check if summary should be displayed
@@ -45,20 +45,20 @@ export function shouldShowSummary(
  */
 export function renderSummaryFields(
   summary: SessionSummary,
-  useColors: boolean
+  forHuman: boolean
 ): string[] {
   const output: string[] = [];
 
-  if (useColors) {
-    output.push(...Color.renderColorSummaryField('Investigated', summary.investigated, colors.blue));
-    output.push(...Color.renderColorSummaryField('Learned', summary.learned, colors.yellow));
-    output.push(...Color.renderColorSummaryField('Completed', summary.completed, colors.green));
-    output.push(...Color.renderColorSummaryField('Next Steps', summary.next_steps, colors.magenta));
+  if (forHuman) {
+    output.push(...Human.renderHumanSummaryField('Investigated', summary.investigated, colors.blue));
+    output.push(...Human.renderHumanSummaryField('Learned', summary.learned, colors.yellow));
+    output.push(...Human.renderHumanSummaryField('Completed', summary.completed, colors.green));
+    output.push(...Human.renderHumanSummaryField('Next Steps', summary.next_steps, colors.magenta));
   } else {
-    output.push(...Markdown.renderMarkdownSummaryField('Investigated', summary.investigated));
-    output.push(...Markdown.renderMarkdownSummaryField('Learned', summary.learned));
-    output.push(...Markdown.renderMarkdownSummaryField('Completed', summary.completed));
-    output.push(...Markdown.renderMarkdownSummaryField('Next Steps', summary.next_steps));
+    output.push(...Agent.renderAgentSummaryField('Investigated', summary.investigated));
+    output.push(...Agent.renderAgentSummaryField('Learned', summary.learned));
+    output.push(...Agent.renderAgentSummaryField('Completed', summary.completed));
+    output.push(...Agent.renderAgentSummaryField('Next Steps', summary.next_steps));
   }
 
   return output;

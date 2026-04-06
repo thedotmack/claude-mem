@@ -1,5 +1,5 @@
 /**
- * ColorFormatter - Formats context output with ANSI colors for terminal
+ * HumanFormatter - Formats context output with ANSI colors for terminal
  *
  * Handles all colored formatting for context injection (terminal display).
  */
@@ -30,9 +30,9 @@ function formatHeaderDateTime(): string {
 }
 
 /**
- * Render colored header
+ * Render human-readable header
  */
-export function renderColorHeader(project: string): string[] {
+export function renderHumanHeader(project: string): string[] {
   return [
     '',
     `${colors.bright}${colors.cyan}[${project}] recent context, ${formatHeaderDateTime()}${colors.reset}`,
@@ -42,9 +42,9 @@ export function renderColorHeader(project: string): string[] {
 }
 
 /**
- * Render colored legend
+ * Render human-readable legend
  */
-export function renderColorLegend(): string[] {
+export function renderHumanLegend(): string[] {
   const mode = ModeManager.getInstance().getActiveMode();
   const typeLegendItems = mode.observation_types.map(t => `${t.emoji} ${t.id}`).join(' | ');
 
@@ -55,9 +55,9 @@ export function renderColorLegend(): string[] {
 }
 
 /**
- * Render colored column key
+ * Render human-readable column key
  */
-export function renderColorColumnKey(): string[] {
+export function renderHumanColumnKey(): string[] {
   return [
     `${colors.bright}Column Key${colors.reset}`,
     `${colors.dim}  Read: Tokens to read this observation (cost to learn it now)${colors.reset}`,
@@ -67,9 +67,9 @@ export function renderColorColumnKey(): string[] {
 }
 
 /**
- * Render colored context index instructions
+ * Render human-readable context index instructions
  */
-export function renderColorContextIndex(): string[] {
+export function renderHumanContextIndex(): string[] {
   return [
     `${colors.dim}Context Index: This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.${colors.reset}`,
     '',
@@ -82,9 +82,9 @@ export function renderColorContextIndex(): string[] {
 }
 
 /**
- * Render colored context economics
+ * Render human-readable context economics
  */
-export function renderColorContextEconomics(
+export function renderHumanContextEconomics(
   economics: TokenEconomics,
   config: ContextConfig
 ): string[] {
@@ -111,9 +111,9 @@ export function renderColorContextEconomics(
 }
 
 /**
- * Render colored day header
+ * Render human-readable day header
  */
-export function renderColorDayHeader(day: string): string[] {
+export function renderHumanDayHeader(day: string): string[] {
   return [
     `${colors.bright}${colors.cyan}${day}${colors.reset}`,
     ''
@@ -121,18 +121,18 @@ export function renderColorDayHeader(day: string): string[] {
 }
 
 /**
- * Render colored file header
+ * Render human-readable file header
  */
-export function renderColorFileHeader(file: string): string[] {
+export function renderHumanFileHeader(file: string): string[] {
   return [
     `${colors.dim}${file}${colors.reset}`
   ];
 }
 
 /**
- * Render colored table row for observation
+ * Render human-readable table row for observation
  */
-export function renderColorTableRow(
+export function renderHumanTableRow(
   obs: Observation,
   time: string,
   showTime: boolean,
@@ -150,9 +150,9 @@ export function renderColorTableRow(
 }
 
 /**
- * Render colored full observation
+ * Render human-readable full observation
  */
-export function renderColorFullObservation(
+export function renderHumanFullObservation(
   obs: Observation,
   time: string,
   showTime: boolean,
@@ -181,9 +181,9 @@ export function renderColorFullObservation(
 }
 
 /**
- * Render colored summary item in timeline
+ * Render human-readable summary item in timeline
  */
-export function renderColorSummaryItem(
+export function renderHumanSummaryItem(
   summary: { id: number; request: string | null },
   formattedTime: string
 ): string[] {
@@ -195,17 +195,17 @@ export function renderColorSummaryItem(
 }
 
 /**
- * Render colored summary field
+ * Render human-readable summary field
  */
-export function renderColorSummaryField(label: string, value: string | null, color: string): string[] {
+export function renderHumanSummaryField(label: string, value: string | null, color: string): string[] {
   if (!value) return [];
   return [`${color}${label}:${colors.reset} ${value}`, ''];
 }
 
 /**
- * Render colored previously section
+ * Render human-readable previously section
  */
-export function renderColorPreviouslySection(priorMessages: PriorMessages): string[] {
+export function renderHumanPreviouslySection(priorMessages: PriorMessages): string[] {
   if (!priorMessages.assistantMessage) return [];
 
   return [
@@ -220,9 +220,9 @@ export function renderColorPreviouslySection(priorMessages: PriorMessages): stri
 }
 
 /**
- * Render colored footer
+ * Render human-readable footer
  */
-export function renderColorFooter(totalDiscoveryTokens: number, totalReadTokens: number): string[] {
+export function renderHumanFooter(totalDiscoveryTokens: number, totalReadTokens: number): string[] {
   const workTokensK = Math.round(totalDiscoveryTokens / 1000);
   return [
     '',
@@ -231,8 +231,8 @@ export function renderColorFooter(totalDiscoveryTokens: number, totalReadTokens:
 }
 
 /**
- * Render colored empty state
+ * Render human-readable empty state
  */
-export function renderColorEmptyState(project: string): string {
+export function renderHumanEmptyState(project: string): string {
   return `\n${colors.bright}${colors.cyan}[${project}] recent context, ${formatHeaderDateTime()}${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
 }

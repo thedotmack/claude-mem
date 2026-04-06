@@ -6,20 +6,20 @@
 
 import type { ContextConfig, TokenEconomics, PriorMessages } from '../types.js';
 import { shouldShowContextEconomics } from '../TokenCalculator.js';
-import * as Markdown from '../formatters/MarkdownFormatter.js';
-import * as Color from '../formatters/ColorFormatter.js';
+import * as Agent from '../formatters/AgentFormatter.js';
+import * as Human from '../formatters/HumanFormatter.js';
 
 /**
  * Render the previously section (prior assistant message)
  */
 export function renderPreviouslySection(
   priorMessages: PriorMessages,
-  useColors: boolean
+  forHuman: boolean
 ): string[] {
-  if (useColors) {
-    return Color.renderColorPreviouslySection(priorMessages);
+  if (forHuman) {
+    return Human.renderHumanPreviouslySection(priorMessages);
   }
-  return Markdown.renderMarkdownPreviouslySection(priorMessages);
+  return Agent.renderAgentPreviouslySection(priorMessages);
 }
 
 /**
@@ -28,15 +28,15 @@ export function renderPreviouslySection(
 export function renderFooter(
   economics: TokenEconomics,
   config: ContextConfig,
-  useColors: boolean
+  forHuman: boolean
 ): string[] {
   // Only show footer if we have savings to display
   if (!shouldShowContextEconomics(config) || economics.totalDiscoveryTokens <= 0 || economics.savings <= 0) {
     return [];
   }
 
-  if (useColors) {
-    return Color.renderColorFooter(economics.totalDiscoveryTokens, economics.totalReadTokens);
+  if (forHuman) {
+    return Human.renderHumanFooter(economics.totalDiscoveryTokens, economics.totalReadTokens);
   }
-  return Markdown.renderMarkdownFooter(economics.totalDiscoveryTokens, economics.totalReadTokens);
+  return Agent.renderAgentFooter(economics.totalDiscoveryTokens, economics.totalReadTokens);
 }
