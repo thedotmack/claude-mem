@@ -13,6 +13,8 @@ import { logger } from '../../../utils/logger.js';
  * Check if an error should trigger fallback to Claude SDK
  *
  * Errors that trigger fallback:
+ * - 400: Bad request / API_KEY_INVALID (permanent failure, skip retries)
+ * - 401: Unauthorized (invalid credentials, skip retries)
  * - 429: Rate limit exceeded
  * - 500/502/503: Server errors
  * - ECONNREFUSED: Connection refused (server down)

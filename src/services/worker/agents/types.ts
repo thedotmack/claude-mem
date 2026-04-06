@@ -123,6 +123,8 @@ export interface BaseAgentConfig {
  * Error codes that should trigger fallback to Claude
  */
 export const FALLBACK_ERROR_PATTERNS = [
+  '400',           // Bad request (e.g. API_KEY_INVALID — permanent failure, no point retrying)
+  '401',           // Unauthorized — invalid or missing credentials
   '429',           // Rate limit
   '500',           // Internal server error
   '502',           // Bad gateway
