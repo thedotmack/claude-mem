@@ -238,6 +238,7 @@ async function syncAndBroadcastObservations(
       id: obsId,
       memory_session_id: session.memorySessionId,
       session_id: session.contentSessionId,
+      platform_source: session.platformSource,
       type: obs.type,
       title: obs.title,
       subtitle: obs.subtitle,
@@ -327,6 +328,7 @@ async function syncAndBroadcastSummary(
   broadcastSummary(worker, {
     id: result.summaryId,
     session_id: session.contentSessionId,
+    platform_source: session.platformSource,
     request: summary!.request,
     investigated: summary!.investigated,
     learned: summary!.learned,

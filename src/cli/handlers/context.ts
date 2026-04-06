@@ -12,6 +12,7 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -31,6 +32,7 @@ export const contextHandler: EventHandler = {
     const cwd = input.cwd ?? process.cwd();
     const context = getProjectContext(cwd);
     const port = getWorkerPort();
+    const platformSource = normalizePlatformSource(input.platform);
 
     // Check if terminal output should be shown (load settings early)
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -38,7 +40,7 @@ export const contextHandler: EventHandler = {
 
     // Pass all projects (parent + worktree if applicable) for unified timeline
     const projectsParam = context.allProjects.join(',');
-    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
+const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}&platformSource=${encodeURIComponent(platformSource)}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
     // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)

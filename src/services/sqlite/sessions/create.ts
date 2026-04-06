@@ -5,6 +5,17 @@
 
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
+import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../../shared/platform-source.js';
+
+function resolveCreateSessionArgs(
+  customTitle?: string,
+  platformSource?: string
+): { customTitle?: string; platformSource?: string } {
+  return {
+    customTitle,
+    platformSource: platformSource ? normalizePlatformSource(platformSource) : undefined
+  };
+}
 
 /**
  * Create a new SDK session (idempotent - returns existing session ID if already exists)
@@ -22,15 +33,18 @@ export function createSDKSession(
   contentSessionId: string,
   project: string,
   userPrompt: string,
-  customTitle?: string
+  customTitle?: string,
+  platformSource?: string
 ): number {
   const now = new Date();
   const nowEpoch = now.getTime();
+  const resolved = resolveCreateSessionArgs(customTitle, platformSource);
+  const normalizedPlatformSource = resolved.platformSource ?? DEFAULT_PLATFORM_SOURCE;
 
   // Check for existing session
   const existing = db.prepare(`
-    SELECT id FROM sdk_sessions WHERE content_session_id = ?
-  `).get(contentSessionId) as { id: number } | undefined;
+    SELECT id, platform_source FROM sdk_sessions WHERE content_session_id = ?
+  `).get(contentSessionId) as { id: number; platform_source: string | null } | undefined;
 
   if (existing) {
     // Backfill project if session was created by another hook with empty project
@@ -41,11 +55,29 @@ export function createSDKSession(
       `).run(project, contentSessionId);
     }
     // Backfill custom_title if provided and not yet set
-    if (customTitle) {
+    if (resolved.customTitle) {
       db.prepare(`
         UPDATE sdk_sessions SET custom_title = ?
         WHERE content_session_id = ? AND custom_title IS NULL
-      `).run(customTitle, contentSessionId);
+      `).run(resolved.customTitle, contentSessionId);
+    }
+
+    if (resolved.platformSource) {
+      const storedPlatformSource = existing.platform_source?.trim()
+        ? normalizePlatformSource(existing.platform_source)
+        : undefined;
+
+      if (!storedPlatformSource) {
+        db.prepare(`
+          UPDATE sdk_sessions SET platform_source = ?
+          WHERE content_session_id = ?
+            AND COALESCE(platform_source, '') = ''
+        `).run(resolved.platformSource, contentSessionId);
+      } else if (storedPlatformSource !== resolved.platformSource) {
+        throw new Error(
+          `Platform source conflict for session ${contentSessionId}: existing=${storedPlatformSource}, received=${resolved.platformSource}`
+        );
+      }
     }
     return existing.id;
   }
@@ -56,9 +88,9 @@ export function createSDKSession(
   // must NEVER equal contentSessionId - that would inject memory messages into the user's transcript!
   db.prepare(`
     INSERT INTO sdk_sessions
-    (content_session_id, memory_session_id, project, user_prompt, custom_title, started_at, started_at_epoch, status)
-    VALUES (?, NULL, ?, ?, ?, ?, ?, 'active')
-  `).run(contentSessionId, project, userPrompt, customTitle || null, now.toISOString(), nowEpoch);
+    (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status)
+    VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
+  `).run(contentSessionId, project, normalizedPlatformSource, userPrompt, resolved.customTitle || null, now.toISOString(), nowEpoch);
 
   // Return new ID
   const row = db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')

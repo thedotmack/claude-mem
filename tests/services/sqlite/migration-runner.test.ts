@@ -22,6 +22,10 @@ interface TableColumnInfo {
   notnull: number;
 }
 
+interface IndexInfo {
+  name: string;
+}
+
 interface SchemaVersion {
   version: number;
 }
@@ -44,6 +48,11 @@ function getColumns(db: Database, table: string): TableColumnInfo[] {
 function getSchemaVersions(db: Database): number[] {
   const rows = db.prepare('SELECT version FROM schema_versions ORDER BY version').all() as SchemaVersion[];
   return rows.map(r => r.version);
+}
+
+function getIndexNames(db: Database, table: string): string[] {
+  const rows = db.prepare(`PRAGMA index_list(${table})`).all() as IndexInfo[];
+  return rows.map(r => r.name);
 }
 
 describe('MigrationRunner', () => {
@@ -155,6 +164,43 @@ describe('MigrationRunner', () => {
 
       expect(tablesAfterSecond).toEqual(tablesAfterFirst);
       expect(versionsAfterSecond).toEqual(versionsAfterFirst);
+    });
+  });
+
+  describe('schema drift recovery for migration 24', () => {
+    it('should repair platform_source column and index even when version 24 is already recorded', () => {
+      db.run(`
+        CREATE TABLE IF NOT EXISTS schema_versions (
+          id INTEGER PRIMARY KEY,
+          version INTEGER UNIQUE NOT NULL,
+          applied_at TEXT NOT NULL
+        )
+      `);
+      db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
+
+      db.run(`
+        CREATE TABLE sdk_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          content_session_id TEXT UNIQUE NOT NULL,
+          memory_session_id TEXT UNIQUE,
+          project TEXT NOT NULL,
+          user_prompt TEXT,
+          started_at TEXT NOT NULL,
+          started_at_epoch INTEGER NOT NULL,
+          completed_at TEXT,
+          completed_at_epoch INTEGER,
+          status TEXT NOT NULL CHECK(status IN ('active','completed','failed'))
+        )
+      `);
+
+      const runner = new MigrationRunner(db);
+      expect(() => runner.runAllMigrations()).not.toThrow();
+
+      const columnNames = getColumns(db, 'sdk_sessions').map(column => column.name);
+      expect(columnNames).toContain('platform_source');
+
+      const indexNames = getIndexNames(db, 'sdk_sessions');
+      expect(indexNames).toContain('idx_sdk_sessions_platform_source');
     });
   });
 

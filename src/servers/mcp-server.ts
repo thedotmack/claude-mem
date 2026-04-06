@@ -27,7 +27,8 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { workerHttpRequest } from '../shared/worker-utils.js';
+import { getWorkerPort, workerHttpRequest } from '../shared/worker-utils.js';
+import { ensureWorkerStarted } from '../services/worker-service.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
 import { readFile } from 'node:fs/promises';
@@ -140,6 +141,26 @@ async function verifyWorkerConnection(): Promise<boolean> {
   } catch (error) {
     // Expected during worker startup or if worker is down
     logger.debug('SYSTEM', 'Worker health check failed', {}, error as Error);
+    return false;
+  }
+}
+
+/**
+ * Ensure Worker is available for Codex and other MCP-only clients.
+ * Claude hooks already start the worker; this path makes Codex turnkey.
+ */
+async function ensureWorkerConnection(): Promise<boolean> {
+  if (await verifyWorkerConnection()) {
+    return true;
+  }
+
+  logger.warn('SYSTEM', 'Worker not available, attempting auto-start for MCP client');
+
+  try {
+    const port = getWorkerPort();
+    return await ensureWorkerStarted(port);
+  } catch (error) {
+    logger.error('SYSTEM', 'Worker auto-start failed', undefined, error as Error);
     return false;
   }
 }
@@ -392,6 +413,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // Prevents orphaned MCP server processes when Claude Code exits unexpectedly
 const HEARTBEAT_INTERVAL_MS = 30_000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let isCleaningUp = false;
+
+function handleStdioClosed() {
+  cleanup('stdio-closed');
+}
+
+function handleStdioError(error: Error) {
+  logger.warn('SYSTEM', 'MCP stdio stream errored, shutting down', {
+    message: error.message
+  });
+  cleanup('stdio-error');
+}
+
+function attachStdioLifecycle() {
+  process.stdin.on('end', handleStdioClosed);
+  process.stdin.on('close', handleStdioClosed);
+  process.stdin.on('error', handleStdioError);
+}
+
+function detachStdioLifecycle() {
+  process.stdin.off('end', handleStdioClosed);
+  process.stdin.off('close', handleStdioClosed);
+  process.stdin.off('error', handleStdioError);
+}
 
 function startParentHeartbeat() {
   // ppid-based orphan detection only works on Unix
@@ -414,9 +459,13 @@ function startParentHeartbeat() {
 
 // Cleanup function — synchronous to ensure consistent behavior whether called
 // from signal handlers, heartbeat interval, or awaited in async context
-function cleanup() {
+function cleanup(reason: string = 'shutdown') {
+  if (isCleaningUp) return;
+  isCleaningUp = true;
+
   if (heartbeatTimer) clearInterval(heartbeatTimer);
-  logger.info('SYSTEM', 'MCP server shutting down');
+  detachStdioLifecycle();
+  logger.info('SYSTEM', 'MCP server shutting down', { reason });
   process.exit(0);
 }
 
@@ -428,6 +477,7 @@ process.on('SIGINT', cleanup);
 async function main() {
   // Start the MCP server
   const transport = new StdioServerTransport();
+  attachStdioLifecycle();
   await server.connect(transport);
   logger.info('SYSTEM', 'Claude-mem search server started');
 
@@ -436,7 +486,7 @@ async function main() {
 
   // Check Worker availability in background
   setTimeout(async () => {
-    const workerAvailable = await verifyWorkerConnection();
+    const workerAvailable = await ensureWorkerConnection();
     if (!workerAvailable) {
       logger.error('SYSTEM', 'Worker not available', undefined, {});
       logger.error('SYSTEM', 'Tools will fail until Worker is started');

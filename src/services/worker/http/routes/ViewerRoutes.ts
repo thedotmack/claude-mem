@@ -76,11 +76,13 @@ export class ViewerRoutes extends BaseRouteHandler {
     // Add client to broadcaster
     this.sseBroadcaster.addClient(res);
 
-    // Send initial_load event with projects list
-    const allProjects = this.dbManager.getSessionStore().getAllProjects();
+    // Send initial_load event with project/source catalog
+    const projectCatalog = this.dbManager.getSessionStore().getProjectCatalog();
     this.sseBroadcaster.broadcast({
       type: 'initial_load',
-      projects: allProjects,
+      projects: projectCatalog.projects,
+      sources: projectCatalog.sources,
+      projectsBySource: projectCatalog.projectsBySource,
       timestamp: Date.now()
     });
 

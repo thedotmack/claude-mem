@@ -116,6 +116,8 @@ import { SearchManager } from './worker/SearchManager.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
+import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './transcripts/config.js';
+import { TranscriptWatcher } from './transcripts/watcher.js';
 
 // HTTP route handlers
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
@@ -183,6 +185,9 @@ export class WorkerService {
 
   // Chroma MCP manager (lazy - connects on first use)
   private chromaMcpManager: ChromaMcpManager | null = null;
+
+  // Transcript watcher for Codex and other transcript-based clients
+  private transcriptWatcher: TranscriptWatcher | null = null;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -429,21 +434,7 @@ export class WorkerService {
       this.resolveInitialization();
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
 
-      // Auto-start transcript watchers if configured
-      if (existsSync(TRANSCRIPT_CONFIG_PATH)) {
-        try {
-          const transcriptConfig = loadTranscriptWatchConfig(TRANSCRIPT_CONFIG_PATH);
-          if (transcriptConfig.watches.length > 0) {
-            const transcriptStatePath = expandHomePath(transcriptConfig.stateFile ?? '~/.claude-mem/transcript-watch-state.json');
-            this.transcriptWatcher = new TranscriptWatcher(transcriptConfig, transcriptStatePath);
-            await this.transcriptWatcher.start();
-            logger.info('SYSTEM', `Transcript watcher started with ${transcriptConfig.watches.length} watch target(s)`);
-          }
-        } catch (transcriptError) {
-          logger.warn('SYSTEM', 'Failed to start transcript watcher (non-fatal)', {}, transcriptError as Error);
-          // Non-fatal — worker continues without transcript watching
-        }
-      }
+      await this.startTranscriptWatcher(settings);
 
       // Auto-backfill Chroma for all projects if out of sync with SQLite (fire-and-forget)
       if (this.chromaMcpManager) {
@@ -454,8 +445,13 @@ export class WorkerService {
         });
       }
 
-      // Connect to MCP server
+      // Mark MCP as externally ready once the bundled stdio server binary exists.
+      // Codex/Claude Desktop connect to this binary directly; the loopback client
+      // below is only a best-effort self-check and should not mark health false.
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
+      this.mcpReady = existsSync(mcpServerPath);
+
+      // Best-effort loopback MCP self-check
       getSupervisor().assertCanSpawn('mcp server');
       const transport = new StdioClientTransport({
         command: 'node',
@@ -477,7 +473,7 @@ export class WorkerService {
         await Promise.race([mcpConnectionPromise, timeoutPromise]);
       } catch (connectionError) {
         clearTimeout(timeoutId!);
-        logger.warn('WORKER', 'MCP server connection failed, cleaning up subprocess', {
+        logger.warn('WORKER', 'MCP loopback self-check failed, cleaning up subprocess', {
           error: connectionError instanceof Error ? connectionError.message : String(connectionError)
         });
         try {
@@ -485,7 +481,10 @@ export class WorkerService {
         } catch {
           // Best effort: the supervisor handles later process cleanup for survivors.
         }
-        throw connectionError;
+        logger.info('WORKER', 'Bundled MCP server remains available for external stdio clients', {
+          path: mcpServerPath
+        });
+        return;
       }
       clearTimeout(timeoutId!);
 
@@ -500,8 +499,7 @@ export class WorkerService {
           getSupervisor().unregisterProcess('mcp-server');
         });
       }
-      this.mcpReady = true;
-      logger.success('WORKER', 'MCP server connected');
+      logger.success('WORKER', 'MCP loopback self-check connected');
 
       // Start orphan reaper to clean up zombie processes (Issue #737)
       this.stopOrphanReaper = startOrphanReaper(() => {
@@ -540,6 +538,48 @@ export class WorkerService {
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
       throw error;
+    }
+  }
+
+  /**
+   * Start transcript watcher for Codex and other transcript-based clients.
+   * This is intentionally non-fatal so Claude hooks remain usable even if
+   * transcript ingestion is misconfigured.
+   */
+  private async startTranscriptWatcher(settings: ReturnType<typeof SettingsDefaultsManager.loadFromFile>): Promise<void> {
+    const transcriptsEnabled = settings.CLAUDE_MEM_TRANSCRIPTS_ENABLED !== 'false';
+    if (!transcriptsEnabled) {
+      logger.info('TRANSCRIPT', 'Transcript watcher disabled via CLAUDE_MEM_TRANSCRIPTS_ENABLED=false');
+      return;
+    }
+
+    const configPath = settings.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH || DEFAULT_CONFIG_PATH;
+    const resolvedConfigPath = expandHomePath(configPath);
+
+    try {
+      if (!existsSync(resolvedConfigPath)) {
+        writeSampleConfig(configPath);
+        logger.info('TRANSCRIPT', 'Created default transcript watch config', {
+          configPath: resolvedConfigPath
+        });
+      }
+
+      const transcriptConfig = loadTranscriptWatchConfig(configPath);
+      const statePath = expandHomePath(transcriptConfig.stateFile ?? DEFAULT_STATE_PATH);
+
+      this.transcriptWatcher = new TranscriptWatcher(transcriptConfig, statePath);
+      await this.transcriptWatcher.start();
+      logger.info('TRANSCRIPT', 'Transcript watcher started', {
+        configPath: resolvedConfigPath,
+        statePath,
+        watches: transcriptConfig.watches.length
+      });
+    } catch (error) {
+      this.transcriptWatcher?.stop();
+      this.transcriptWatcher = null;
+      logger.error('TRANSCRIPT', 'Failed to start transcript watcher (continuing without Codex ingestion)', {
+        configPath: resolvedConfigPath
+      }, error as Error);
     }
   }
 
@@ -934,6 +974,12 @@ export class WorkerService {
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
+    if (this.transcriptWatcher) {
+      this.transcriptWatcher.stop();
+      this.transcriptWatcher = null;
+      logger.info('TRANSCRIPT', 'Transcript watcher stopped');
+    }
+
     // Stop orphan reaper before shutdown (Issue #737)
     if (this.stopOrphanReaper) {
       this.stopOrphanReaper();
@@ -995,7 +1041,7 @@ export class WorkerService {
  * @param port - The TCP port (used for port-in-use checks and daemon spawn)
  * @returns true if worker is healthy (existing or newly started), false on failure
  */
-async function ensureWorkerStarted(port: number): Promise<boolean> {
+export async function ensureWorkerStarted(port: number): Promise<boolean> {
   // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
   const pidFileStatus = cleanStalePidFile();
   if (pidFileStatus === 'alive') {
