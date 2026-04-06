@@ -706,9 +706,9 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    // Complete the session (removes from active sessions map)
-    // Note: The Stop hook (summarize handler) waits for pending work before calling
-    // this endpoint. No polling here — that's the hook's responsibility.
+    // Complete the session (removes from active sessions map).
+    // If pending work exists (e.g. in-flight summarize), completeByDbId defers
+    // deletion to let the generator finish before killing the agent.
     await this.completionHandler.completeByDbId(sessionDbId);
 
     logger.info('SESSION', 'Session completed via API', {
