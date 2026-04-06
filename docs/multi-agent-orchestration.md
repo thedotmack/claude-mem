@@ -92,7 +92,7 @@ Mark done ONLY after all checks pass.
 
 ### 30-Minute Heartbeat
 
-```
+```text
 Every 30 minutes:
 1. Check registry for stale assignments (>30 min without update)
 2. Follow up with idle agents or reassign their tasks
