@@ -9,7 +9,7 @@
 import { spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { IS_WINDOWS } from './paths.js';
 
 /**
@@ -18,9 +18,11 @@ import { IS_WINDOWS } from './paths.js';
  */
 function bunCandidatePaths(): string[] {
   if (IS_WINDOWS) {
+    const appData = process.env.APPDATA || join(homedir(), 'AppData', 'Roaming');
     return [
       join(homedir(), '.bun', 'bin', 'bun.exe'),
       join(process.env.USERPROFILE || homedir(), '.bun', 'bin', 'bun.exe'),
+      join(appData, 'npm', 'node_modules', 'bun', 'bin', 'bun.exe'),
     ];
   }
 
@@ -51,7 +53,43 @@ export function resolveBunBinaryPath(): string | null {
   });
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
-    return 'bun'; // Available in PATH — use short name
+    if (!IS_WINDOWS) {
+      return 'bun';
+    }
+
+    const candidates = pathCheck.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const exeCandidate = candidates.find((candidate) =>
+      candidate.toLowerCase().endsWith('.exe') && existsSync(candidate)
+    );
+    if (exeCandidate) {
+      return exeCandidate;
+    }
+
+    const plainCandidate = candidates.find((candidate) =>
+      !candidate.match(/\.(cmd|bat)$/i) && existsSync(candidate)
+    );
+    if (plainCandidate) {
+      return plainCandidate;
+    }
+
+    const cmdCandidate = candidates.find((candidate) => candidate.match(/\.(cmd|bat)$/i));
+    if (cmdCandidate) {
+      const cmdDir = dirname(cmdCandidate);
+      const exeSibling = cmdCandidate.replace(/\.(cmd|bat)$/i, '.exe');
+      const npmBunExe = join(cmdDir, 'node_modules', 'bun', 'bin', 'bun.exe');
+
+      if (existsSync(exeSibling)) {
+        return exeSibling;
+      }
+
+      if (existsSync(npmBunExe)) {
+        return npmBunExe;
+      }
+    }
   }
 
   // Probe known install locations

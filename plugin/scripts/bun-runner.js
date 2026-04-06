@@ -55,14 +55,54 @@ function findBun() {
   });
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
-    return 'bun'; // Found in PATH
+    if (!IS_WINDOWS) {
+      return 'bun'; // Found in PATH
+    }
+
+    const candidates = pathCheck.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const exeCandidate = candidates.find((candidate) =>
+      candidate.toLowerCase().endsWith('.exe') && existsSync(candidate)
+    );
+    if (exeCandidate) {
+      return exeCandidate;
+    }
+
+    const plainCandidate = candidates.find((candidate) =>
+      !candidate.match(/\.(cmd|bat)$/i) && existsSync(candidate)
+    );
+    if (plainCandidate) {
+      return plainCandidate;
+    }
+
+    const cmdCandidate = candidates.find((candidate) => candidate.match(/\.(cmd|bat)$/i));
+    if (cmdCandidate) {
+      const cmdDir = dirname(cmdCandidate);
+      const exeSibling = cmdCandidate.replace(/\.(cmd|bat)$/i, '.exe');
+      const npmBunExe = join(cmdDir, 'node_modules', 'bun', 'bin', 'bun.exe');
+
+      if (existsSync(exeSibling)) {
+        return exeSibling;
+      }
+
+      if (existsSync(npmBunExe)) {
+        return npmBunExe;
+      }
+    }
   }
 
   // Check common installation paths (handles fresh installs before PATH reload)
   // Windows: Bun installs to ~/.bun/bin/bun.exe (same as smart-install.js)
   // Unix: Check default location plus common package manager paths
+  const windowsAppData = process.env.APPDATA || join(homedir(), 'AppData', 'Roaming');
   const bunPaths = IS_WINDOWS
-    ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
+    ? [
+        join(homedir(), '.bun', 'bin', 'bun.exe'),
+        join(windowsAppData, 'npm', 'node_modules', 'bun', 'bin', 'bun.exe')
+      ]
     : [
         join(homedir(), '.bun', 'bin', 'bun'),
         '/usr/local/bin/bun',
