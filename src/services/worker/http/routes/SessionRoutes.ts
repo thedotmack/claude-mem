@@ -758,6 +758,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const project = req.body.project || 'unknown';
     const prompt = req.body.prompt || '[media prompt]';
     const customTitle = req.body.customTitle || undefined;
+    const projectMode = req.body.projectMode || undefined;
 
     logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {
       contentSessionId,
@@ -822,11 +823,22 @@ export class SessionRoutes extends BaseRouteHandler {
     // If contextInjected is true, the hook should skip re-initializing the SDK agent
     const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
 
+    // Step 7: Apply per-project mode override from .claude-mem.json
+    // Only set if no existing override (GStack auto-detection or previous init takes priority)
+    if (projectMode && !this.sessionManager.getModeOverride(sessionDbId)) {
+      this.sessionManager.setModeOverride(sessionDbId, projectMode);
+      logger.info('SESSION', `Project mode applied from .claude-mem.json: ${projectMode}`, {
+        sessionId: sessionDbId,
+        project
+      });
+    }
+
     // Debug-level log since CREATED already logged the key info
     logger.debug('SESSION', 'User prompt saved', {
       sessionId: sessionDbId,
       promptNumber,
-      contextInjected
+      contextInjected,
+      projectMode: this.sessionManager.getModeOverride(sessionDbId)
     });
 
     res.json({

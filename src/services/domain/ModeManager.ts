@@ -6,7 +6,7 @@
  * can be selected via CLAUDE_MEM_MODE setting.
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import type { ModeConfig, ObservationType, ObservationConcept } from './types.js';
 import { logger } from '../../utils/logger.js';
@@ -268,5 +268,37 @@ export class ModeManager {
   getTypeLabel(typeId: string): string {
     const type = this.getObservationTypes().find(t => t.id === typeId);
     return type?.label || typeId;
+  }
+
+  /**
+   * List all available mode IDs from the modes directory.
+   * Returns mode metadata (id, name, description) for each .json file found.
+   */
+  listAvailableModes(): Array<{ id: string; name: string; description: string }> {
+    if (!existsSync(this.modesDir)) return [];
+
+    return readdirSync(this.modesDir)
+      .filter(f => f.endsWith('.json'))
+      .map(f => {
+        const modeId = f.replace('.json', '');
+        try {
+          const content = JSON.parse(readFileSync(join(this.modesDir, f), 'utf-8'));
+          return {
+            id: modeId,
+            name: content.name || modeId,
+            description: content.description || ''
+          };
+        } catch {
+          return { id: modeId, name: modeId, description: '' };
+        }
+      })
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /**
+   * Get the modes directory path (for creating new mode files)
+   */
+  getModesDir(): string {
+    return this.modesDir;
   }
 }

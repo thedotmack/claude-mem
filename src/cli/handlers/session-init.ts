@@ -4,6 +4,8 @@
  * Extracted from new-hook.ts - initializes session and starts SDK agent.
  */
 
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { getProjectName } from '../../utils/project-name.js';
@@ -43,7 +45,24 @@ export const sessionInitHandler: EventHandler = {
 
     const project = getProjectName(cwd);
 
-    logger.debug('HOOK', 'session-init: Calling /api/sessions/init', { contentSessionId: sessionId, project });
+    // Detect per-project mode from .claude-mem.json in the project root
+    let projectMode: string | undefined;
+    if (cwd) {
+      try {
+        const configPath = join(cwd, '.claude-mem.json');
+        if (existsSync(configPath)) {
+          const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+          if (config.mode && typeof config.mode === 'string') {
+            projectMode = config.mode;
+            logger.info('HOOK', `Project mode detected from .claude-mem.json: ${projectMode}`, { cwd });
+          }
+        }
+      } catch (e) {
+        logger.debug('HOOK', 'Failed to read .claude-mem.json', { cwd, error: (e as Error).message });
+      }
+    }
+
+    logger.debug('HOOK', 'session-init: Calling /api/sessions/init', { contentSessionId: sessionId, project, projectMode });
 
     // Initialize session via HTTP - handles DB operations and privacy checks
     const initResponse = await workerHttpRequest('/api/sessions/init', {
@@ -52,7 +71,8 @@ export const sessionInitHandler: EventHandler = {
       body: JSON.stringify({
         contentSessionId: sessionId,
         project,
-        prompt
+        prompt,
+        projectMode
       })
     });
 

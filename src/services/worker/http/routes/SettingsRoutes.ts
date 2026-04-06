@@ -13,7 +13,7 @@ import { getPackageRoot } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
 import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js';
-import { ModeManager } from '../../domain/ModeManager.js';
+import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
@@ -38,6 +38,9 @@ export class SettingsRoutes extends BaseRouteHandler {
     app.get('/api/branch/status', this.handleGetBranchStatus.bind(this));
     app.post('/api/branch/switch', this.handleSwitchBranch.bind(this));
     app.post('/api/branch/update', this.handleUpdateBranch.bind(this));
+
+    // Mode discovery endpoint
+    app.get('/api/modes', this.handleListModes.bind(this));
   }
 
   /**
@@ -394,6 +397,14 @@ export class SettingsRoutes extends BaseRouteHandler {
       logger.debug('WORKER', 'MCP toggle no-op (already in desired state)', { enabled });
     }
   }
+
+  /**
+   * GET /api/modes - List all available observation modes
+   */
+  private handleListModes = this.wrapHandler((req: Request, res: Response): void => {
+    const modes = ModeManager.getInstance().listAvailableModes();
+    res.json({ modes });
+  });
 
   /**
    * Ensure settings file exists, creating with defaults if missing
