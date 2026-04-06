@@ -122,7 +122,7 @@ export function getObservationsByFilePath(
   options?: { projects?: string[]; limit?: number }
 ): ObservationRecord[] {
   const likePattern = `%${filePath}%`;
-  const limit = options?.limit ?? 30;
+  const limit = options?.limit ?? 15;
   const params: any[] = [likePattern, likePattern];
 
   let projectClause = '';

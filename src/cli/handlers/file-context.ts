@@ -9,11 +9,22 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { parseJsonArray } from '../../shared/timeline-formatting.js';
+import { statSync } from 'fs';
 import path from 'path';
 import { isProjectExcluded } from '../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { getProjectContext } from '../../utils/project-name.js';
+
+/** Skip the gate for files smaller than this — timeline overhead exceeds file read cost. */
+const FILE_READ_GATE_MIN_BYTES = 1_500;
+
+/** Fetch more candidates than the display limit so dedup still fills 15 slots. */
+const FETCH_LOOKAHEAD_LIMIT = 40;
+
+/** Maximum observations to show in the timeline. */
+const DISPLAY_LIMIT = 15;
 
 const TYPE_ICONS: Record<string, string> = {
   decision: '\u2696\uFE0F',
@@ -40,9 +51,59 @@ function formatDate(epoch: number): string {
 
 interface ObservationRow {
   id: number;
+  memory_session_id: string;
   title: string | null;
   type: string;
   created_at_epoch: number;
+  files_read: string | null;
+  files_modified: string | null;
+}
+
+/**
+ * Deduplicate and rank observations for the timeline display.
+ *
+ * 1. Same-session dedup: keep only the most recent observation per session
+ *    (input is already sorted newest-first by SQL).
+ * 2. Specificity scoring: rank by how specifically the observation is about
+ *    the target file (modified > read-only, fewer total files > many).
+ * 3. Truncate to displayLimit.
+ */
+function deduplicateObservations(
+  observations: ObservationRow[],
+  targetPath: string,
+  displayLimit: number
+): ObservationRow[] {
+  // Phase 1: Keep only the most recent observation per session
+  const seenSessions = new Set<string>();
+  const dedupedBySession: ObservationRow[] = [];
+  for (const obs of observations) {
+    const sessionKey = obs.memory_session_id ?? `no-session-${obs.id}`;
+    if (!seenSessions.has(sessionKey)) {
+      seenSessions.add(sessionKey);
+      dedupedBySession.push(obs);
+    }
+  }
+
+  // Phase 2: Score by specificity to the target file
+  const scored = dedupedBySession.map(obs => {
+    const filesRead = parseJsonArray(obs.files_read);
+    const filesModified = parseJsonArray(obs.files_modified);
+    const totalFiles = filesRead.length + filesModified.length;
+    const inModified = filesModified.some(f => f.includes(targetPath) || targetPath.includes(f));
+
+    let specificityScore = 0;
+    if (inModified) specificityScore += 2;
+    if (totalFiles <= 3) specificityScore += 2;
+    else if (totalFiles <= 8) specificityScore += 1;
+    // totalFiles > 8: no bonus (survey-like observation)
+
+    return { obs, specificityScore };
+  });
+
+  // Stable sort: higher specificity first, preserve chronological order within same score
+  scored.sort((a, b) => b.specificityScore - a.specificityScore);
+
+  return scored.slice(0, displayLimit).map(s => s.obs);
 }
 
 function formatFileTimeline(observations: ObservationRow[], filePath: string): string {
@@ -90,6 +151,17 @@ export const fileContextHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
+    // Skip gate for files below the token-economics threshold — timeline (~370 tokens)
+    // costs more than reading small files directly.
+    try {
+      const stat = statSync(filePath);
+      if (stat.size < FILE_READ_GATE_MIN_BYTES) {
+        return { continue: true, suppressOutput: true };
+      }
+    } catch {
+      // File not found, symlink error, permission denied — fall through and let gate proceed
+    }
+
     // Check if project is excluded from tracking
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     if (input.cwd && isProjectExcluded(input.cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
@@ -112,6 +184,7 @@ export const fileContextHandler: EventHandler = {
       const queryParams = new URLSearchParams({ path: relativePath });
       // Pass all project names (parent + worktree) for unified lookup
       queryParams.set('projects', context.allProjects.join(','));
+      queryParams.set('limit', String(FETCH_LOOKAHEAD_LIMIT));
 
       const response = await workerHttpRequest(`/api/observations/by-file?${queryParams.toString()}`, {
         method: 'GET',
@@ -128,6 +201,12 @@ export const fileContextHandler: EventHandler = {
         return { continue: true, suppressOutput: true };
       }
 
+      // Deduplicate: one per session, ranked by specificity to this file
+      const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
+      if (dedupedObservations.length === 0) {
+        return { continue: true, suppressOutput: true };
+      }
+
       // Check the gate: has this file's timeline been shown in this session?
       const gateResponse = await workerHttpRequest('/api/file-context/gate', {
         method: 'POST',
@@ -140,7 +219,7 @@ export const fileContextHandler: EventHandler = {
 
         if (gateData.firstAttempt) {
           // BLOCK: Show timeline, Claude decides whether to re-read or use get_observations()
-          const timeline = formatFileTimeline(data.observations, filePath);
+          const timeline = formatFileTimeline(dedupedObservations, filePath);
           return {
             exitCode: HOOK_EXIT_CODES.BLOCKING_ERROR,
             stderrMessage: timeline,

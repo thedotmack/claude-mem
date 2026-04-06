@@ -116,7 +116,7 @@ export class DataRoutes extends BaseRouteHandler {
 
   /**
    * Get observations associated with a file path, scoped to projects
-   * GET /api/observations/by-file?path=<file_path>&projects=<comma,separated>&limit=30
+   * GET /api/observations/by-file?path=<file_path>&projects=<comma,separated>&limit=15
    */
   private handleGetObservationsByFile = this.wrapHandler((req: Request, res: Response): void => {
     const filePath = req.query.path as string | undefined;
