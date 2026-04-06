@@ -28,8 +28,8 @@ import {
   type WorkerRef
 } from './agents/index.js';
 
-// OpenRouter API endpoint
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+// OpenRouter API endpoint (default, overridable via settings)
+const DEFAULT_OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 // Context window management constants (defaults, overridable via settings)
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  // Maximum messages to keep in conversation history
@@ -367,7 +367,8 @@ export class OpenRouterAgent {
       estimatedTokens
     });
 
-    const response = await fetch(OPENROUTER_API_URL, {
+    const apiUrl = this.getApiUrl();
+    const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -451,6 +452,20 @@ export class OpenRouterAgent {
     const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
 
     return { apiKey, model, siteUrl, appName };
+  }
+
+  /**
+   * Get the OpenRouter API URL from settings or use the default
+   */
+  private getApiUrl(): string {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const baseUrl = settings.CLAUDE_MEM_OPENROUTER_API_URL;
+    if (baseUrl) {
+      // Ensure the URL ends with /chat/completions
+      const normalized = baseUrl.replace(/\/+$/, '');
+      return normalized.endsWith('/chat/completions') ? normalized : `${normalized}/chat/completions`;
+    }
+    return DEFAULT_OPENROUTER_API_URL;
   }
 }
 

@@ -40,6 +40,8 @@ export const MANAGED_CREDENTIAL_KEYS = [
 export interface ClaudeMemEnv {
   // Credentials (optional - empty means use CLI billing for Claude)
   ANTHROPIC_API_KEY?: string;
+  ANTHROPIC_BASE_URL?: string;
+  ANTHROPIC_AUTH_TOKEN?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
 }
@@ -115,6 +117,8 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
     // Only return managed credential keys
     const result: ClaudeMemEnv = {};
     if (parsed.ANTHROPIC_API_KEY) result.ANTHROPIC_API_KEY = parsed.ANTHROPIC_API_KEY;
+    if (parsed.ANTHROPIC_BASE_URL) result.ANTHROPIC_BASE_URL = parsed.ANTHROPIC_BASE_URL;
+    if (parsed.ANTHROPIC_AUTH_TOKEN) result.ANTHROPIC_AUTH_TOKEN = parsed.ANTHROPIC_AUTH_TOKEN;
     if (parsed.GEMINI_API_KEY) result.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
     if (parsed.OPENROUTER_API_KEY) result.OPENROUTER_API_KEY = parsed.OPENROUTER_API_KEY;
 
@@ -209,6 +213,15 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     // If not configured, CLI billing will be used (via ANTHROPIC_AUTH_TOKEN passthrough)
     if (credentials.ANTHROPIC_API_KEY) {
       isolatedEnv.ANTHROPIC_API_KEY = credentials.ANTHROPIC_API_KEY;
+    }
+    // Override ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN from .env if configured
+    // This ensures the SDK subprocess uses a stable API endpoint instead of
+    // inheriting a dynamic local proxy port that may become stale
+    if (credentials.ANTHROPIC_BASE_URL) {
+      isolatedEnv.ANTHROPIC_BASE_URL = credentials.ANTHROPIC_BASE_URL;
+    }
+    if (credentials.ANTHROPIC_AUTH_TOKEN) {
+      isolatedEnv.ANTHROPIC_AUTH_TOKEN = credentials.ANTHROPIC_AUTH_TOKEN;
     }
     // Note: GEMINI_API_KEY and OPENROUTER_API_KEY pass through from process.env,
     // but claude-mem's .env takes precedence if configured
