@@ -22,6 +22,8 @@ import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
+import { BanditEngine } from './bandit/BanditEngine.js';
+import { FeedbackRecorder } from './bandit/FeedbackRecorder.js';
 
 // Worker spawn / Windows-cooldown helpers are defined in ./worker-spawner.ts
 // so that lightweight consumers (e.g. the MCP server running under Node) can
@@ -146,6 +148,9 @@ export class WorkerService {
 
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
+  private sessionRoutes: SessionRoutes | null = null;
+  private banditEngine: BanditEngine | null = null;
+  private feedbackRecorder: FeedbackRecorder | null = null;
 
   // Chroma MCP manager (lazy - connects on first use)
   private chromaMcpManager: ChromaMcpManager | null = null;
@@ -289,7 +294,8 @@ export class WorkerService {
 
     // Standard routes (registered AFTER guard middleware)
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
+    this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this);
+    this.server.registerRoutes(this.sessionRoutes);
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
@@ -384,7 +390,47 @@ export class WorkerService {
         formattingService,
         timelineService
       );
-      this.searchRoutes = new SearchRoutes(searchManager);
+      // Initialize Bandit Engine for Thompson Sampling optimization
+      try {
+        const sessionStore = this.dbManager.getSessionStore();
+        const db = (sessionStore as any).db;
+        if (db) {
+          this.banditEngine = new BanditEngine();
+          this.banditEngine.init(db);
+
+          const settings = SettingsDefaultsManager.loadFromFile(
+            path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json')
+          );
+          this.banditEngine.setConfig({
+            enabled: settings.CLAUDE_MEM_BANDIT_ENABLED === 'true',
+            candidateModels: (settings.CLAUDE_MEM_BANDIT_CANDIDATE_MODELS || '').split(',').map((s: string) => s.trim()).filter(Boolean),
+            minPullsBeforeExploit: parseInt(settings.CLAUDE_MEM_BANDIT_MIN_PULLS_BEFORE_EXPLOIT || '3', 10),
+            logSelections: settings.CLAUDE_MEM_BANDIT_LOG_SELECTIONS !== 'false',
+          });
+
+          this.banditEngine.registerExperiment({
+            id: 'model-per-obs-type',
+            description: 'Select best model per observation type via Thompson Sampling',
+            rewardSignals: ['semantic_inject_hit', 'search_accessed'],
+            createdAt: Date.now()
+          });
+
+          this.feedbackRecorder = new FeedbackRecorder(db, this.banditEngine);
+
+          if (this.sessionRoutes) {
+            this.sessionRoutes.setBanditEngine(this.banditEngine);
+          }
+
+          logger.info('WORKER', 'BanditEngine initialized', {
+            enabled: settings.CLAUDE_MEM_BANDIT_ENABLED === 'true',
+            candidates: settings.CLAUDE_MEM_BANDIT_CANDIDATE_MODELS || '(none)'
+          });
+        }
+      } catch (banditError) {
+        logger.warn('WORKER', 'BanditEngine initialization failed (non-fatal)', {}, banditError as Error);
+      }
+
+      this.searchRoutes = new SearchRoutes(searchManager, this.feedbackRecorder ?? undefined);
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
