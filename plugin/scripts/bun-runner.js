@@ -55,6 +55,13 @@ function findBun() {
   });
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
+    // On Windows, prefer bun.cmd over bun (bun is a shell script, bun.cmd is the Windows batch file)
+    if (IS_WINDOWS) {
+      const bunCmdPath = pathCheck.stdout.split('\n').find(line => line.trim().endsWith('bun.cmd'));
+      if (bunCmdPath) {
+        return bunCmdPath.trim();
+      }
+    }
     return 'bun'; // Found in PATH
   }
 
@@ -152,13 +159,24 @@ const stdinData = await collectStdin();
 
 // Spawn Bun with the provided script and args
 // Use spawn (not spawnSync) to properly handle stdio
-// Note: Don't use shell mode on Windows - it breaks paths with spaces in usernames
+// On Windows, use cmd.exe to execute bun.cmd since npm-installed bun is a batch file
 // Use windowsHide to prevent a visible console window from spawning on Windows
-const child = spawn(bunPath, args, {
+const spawnOptions = {
   stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
   env: process.env
-});
+};
+
+let spawnCmd = bunPath;
+let spawnArgs = args;
+
+if (IS_WINDOWS) {
+  // On Windows, bun.cmd must be executed via cmd /c
+  spawnCmd = 'cmd';
+  spawnArgs = ['/c', bunPath, ...args];
+}
+
+const child = spawn(spawnCmd, spawnArgs, spawnOptions);
 
 // Write buffered stdin to child's pipe, then close it so the child sees EOF.
 // Fall back to '{}' when no stdin data is available so worker-service.cjs
