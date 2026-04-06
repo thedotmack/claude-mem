@@ -67,7 +67,6 @@ export interface Settings {
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED?: string;  // 'true' | 'false'
   CLAUDE_MEM_OPENROUTER_API_KEY?: string;
   CLAUDE_MEM_OPENROUTER_MODEL?: string;
-  CLAUDE_MEM_OPENROUTER_API_URL?: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL?: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME?: string;
 
