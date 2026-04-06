@@ -18,7 +18,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORKER_HOST: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
   // AI Provider Configuration
-  CLAUDE_MEM_PROVIDER: string;  // 'claude' | 'gemini' | 'openrouter'
+  CLAUDE_MEM_PROVIDER: string;  // 'claude' | 'gemini' | 'openrouter' | 'ollama'
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  // 'cli' | 'api' - how Claude provider authenticates
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  // 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-3-flash-preview'
@@ -29,6 +29,14 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
   CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
   CLAUDE_MEM_OPENROUTER_MAX_TOKENS: string;
+
+  // Ollama Provider Settings
+  CLAUDE_MEM_OLLAMA_BASE_URL: string;
+  CLAUDE_MEM_OLLAMA_MODEL: string;
+  CLAUDE_MEM_OLLAMA_TEMPERATURE: string;
+  CLAUDE_MEM_OLLAMA_MAX_CONTEXT_MESSAGES: string;
+  CLAUDE_MEM_OLLAMA_MAX_TOKENS: string;
+  CLAUDE_MEM_OLLAMA_FALLBACK_TO_CLAUDE: string;
   // System Configuration
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
@@ -114,6 +122,15 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true',
+
+    // Ollama Provider Settings (Local inference; no API key required)
+    CLAUDE_MEM_OLLAMA_BASE_URL: 'http://127.0.0.1:11434',
+    CLAUDE_MEM_OLLAMA_MODEL: 'qwen2.5-coder:7b',
+    CLAUDE_MEM_OLLAMA_TEMPERATURE: '0.2',
+    CLAUDE_MEM_OLLAMA_MAX_CONTEXT_MESSAGES: '20',
+    CLAUDE_MEM_OLLAMA_MAX_TOKENS: '100000',
+    // Default off: avoid surprising Anthropic token usage if Ollama is down.
+    CLAUDE_MEM_OLLAMA_FALLBACK_TO_CLAUDE: 'false',
     CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
     // Process Management
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses

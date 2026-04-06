@@ -30,6 +30,9 @@ export class SettingsRoutes extends BaseRouteHandler {
     app.get('/api/settings', this.handleGetSettings.bind(this));
     app.post('/api/settings', this.handleUpdateSettings.bind(this));
 
+    // Ollama helper endpoints
+    app.get('/api/ollama/models', this.handleGetOllamaModels.bind(this));
+
     // MCP toggle endpoints
     app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
     app.post('/api/mcp/toggle', this.handleToggleMcp.bind(this));
@@ -141,6 +144,49 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   /**
+   * GET /api/ollama/models - List locally available Ollama model tags
+   */
+  private handleGetOllamaModels = this.wrapHandler(async (_req: Request, res: Response): Promise<void> => {
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    this.ensureSettingsFile(settingsPath);
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+    const baseUrl = (settings.CLAUDE_MEM_OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\/+$/, '');
+    const tagsUrl = `${baseUrl}/api/tags`;
+
+    try {
+      const response = await fetch(tagsUrl, { method: 'GET' });
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        res.status(502).json({
+          success: false,
+          error: `Ollama /api/tags failed: ${response.status}`,
+          details: text
+        });
+        return;
+      }
+
+      const data = await response.json() as { models?: Array<{ name?: string; model?: string }> };
+      const models = (data.models || [])
+        .map(m => (m.name || m.model || '').trim())
+        .filter(Boolean);
+
+      res.json({
+        success: true,
+        baseUrl,
+        models
+      });
+    } catch (error) {
+      logger.warn('HTTP', 'Failed to fetch Ollama models list', { tagsUrl }, error as Error);
+      res.status(502).json({
+        success: false,
+        error: 'Failed to reach Ollama. Is it running?',
+        baseUrl
+      });
+    }
+  });
+
+  /**
    * GET /api/mcp/status - Check if MCP search server is enabled
    */
   private handleGetMcpStatus = this.wrapHandler((req: Request, res: Response): void => {
@@ -234,9 +280,9 @@ export class SettingsRoutes extends BaseRouteHandler {
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     // Validate CLAUDE_MEM_PROVIDER
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter'];
-    if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      const validProviders = ['claude', 'gemini', 'openrouter', 'ollama'];
+      if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
+        return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", or "ollama"' };
       }
     }
 
@@ -253,6 +299,43 @@ export class SettingsRoutes extends BaseRouteHandler {
       const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
       if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
+      }
+    }
+
+    // Validate Ollama provider fields
+    if (settings.CLAUDE_MEM_OLLAMA_BASE_URL) {
+      const baseUrl: string = settings.CLAUDE_MEM_OLLAMA_BASE_URL;
+      if (!/^https?:\/\//.test(baseUrl)) {
+        return { valid: false, error: 'CLAUDE_MEM_OLLAMA_BASE_URL must start with http:// or https://' };
+      }
+    }
+    if (settings.CLAUDE_MEM_OLLAMA_MODEL) {
+      const model: string = settings.CLAUDE_MEM_OLLAMA_MODEL;
+      if (!model || model.trim().length < 1) {
+        return { valid: false, error: 'CLAUDE_MEM_OLLAMA_MODEL must be a non-empty string' };
+      }
+    }
+    if (settings.CLAUDE_MEM_OLLAMA_TEMPERATURE) {
+      const t = parseFloat(settings.CLAUDE_MEM_OLLAMA_TEMPERATURE);
+      if (isNaN(t) || t < 0 || t > 2) {
+        return { valid: false, error: 'CLAUDE_MEM_OLLAMA_TEMPERATURE must be between 0 and 2' };
+      }
+    }
+    if (settings.CLAUDE_MEM_OLLAMA_MAX_CONTEXT_MESSAGES) {
+      const m = parseInt(settings.CLAUDE_MEM_OLLAMA_MAX_CONTEXT_MESSAGES, 10);
+      if (isNaN(m) || m < 1 || m > 200) {
+        return { valid: false, error: 'CLAUDE_MEM_OLLAMA_MAX_CONTEXT_MESSAGES must be between 1 and 200' };
+      }
+    }
+    if (settings.CLAUDE_MEM_OLLAMA_MAX_TOKENS) {
+      const mt = parseInt(settings.CLAUDE_MEM_OLLAMA_MAX_TOKENS, 10);
+      if (isNaN(mt) || mt < 1000 || mt > 10000000) {
+        return { valid: false, error: 'CLAUDE_MEM_OLLAMA_MAX_TOKENS must be between 1000 and 10000000' };
+      }
+    }
+    if (settings.CLAUDE_MEM_OLLAMA_FALLBACK_TO_CLAUDE) {
+      if (!['true', 'false'].includes(settings.CLAUDE_MEM_OLLAMA_FALLBACK_TO_CLAUDE)) {
+        return { valid: false, error: 'CLAUDE_MEM_OLLAMA_FALLBACK_TO_CLAUDE must be "true" or "false"' };
       }
     }
 

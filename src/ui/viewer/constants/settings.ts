@@ -18,6 +18,14 @@ export const DEFAULT_SETTINGS = {
   CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',
 
+  // Ollama (local) Provider Settings
+  CLAUDE_MEM_OLLAMA_BASE_URL: 'http://127.0.0.1:11434',
+  CLAUDE_MEM_OLLAMA_MODEL: 'qwen2.5-coder:7b',
+  CLAUDE_MEM_OLLAMA_TEMPERATURE: '0.2',
+  CLAUDE_MEM_OLLAMA_MAX_CONTEXT_MESSAGES: '20',
+  CLAUDE_MEM_OLLAMA_MAX_TOKENS: '100000',
+  CLAUDE_MEM_OLLAMA_FALLBACK_TO_CLAUDE: 'false',
+
   // Token Economics — match SettingsDefaultsManager defaults (off by default to keep context lean)
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'false',
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'false',

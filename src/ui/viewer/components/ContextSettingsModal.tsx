@@ -129,11 +129,40 @@ export function ContextSettingsModal({
   saveStatus
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [ollamaModelsError, setOllamaModelsError] = useState<string>('');
 
   // Update form state when settings prop changes
   useEffect(() => {
     setFormState(settings);
   }, [settings]);
+
+  // When Ollama provider is selected, fetch installed models from the worker (which queries Ollama /api/tags)
+  useEffect(() => {
+    const provider = formState.CLAUDE_MEM_PROVIDER || 'claude';
+    if (provider !== 'ollama') return;
+
+    const controller = new AbortController();
+    setOllamaModelsError('');
+
+    fetch('/api/ollama/models', { signal: controller.signal })
+      .then(async (res) => {
+        const json: any = await res.json().catch(() => ({}));
+        if (!res.ok || !json?.success) {
+          setOllamaModels([]);
+          setOllamaModelsError(json?.error || 'Failed to load Ollama models');
+          return;
+        }
+        setOllamaModels(Array.isArray(json.models) ? json.models : []);
+      })
+      .catch((e: any) => {
+        if (e?.name === 'AbortError') return;
+        setOllamaModels([]);
+        setOllamaModelsError('Failed to load Ollama models');
+      });
+
+    return () => controller.abort();
+  }, [formState.CLAUDE_MEM_PROVIDER, formState.CLAUDE_MEM_OLLAMA_BASE_URL]);
 
   // Get context preview based on current form state
   const { preview, isLoading, error, projects, selectedProject, setSelectedProject } = useContextPreview(formState);
@@ -323,6 +352,7 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="ollama">Ollama (local)</option>
                 </select>
               </FormField>
 
@@ -426,6 +456,107 @@ export function ContextSettingsModal({
                       placeholder="claude-mem"
                     />
                   </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'ollama' && (
+                <>
+                  <FormField
+                    label="Ollama Base URL"
+                    tooltip="Local Ollama endpoint (default: http://127.0.0.1:11434)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OLLAMA_BASE_URL || 'http://127.0.0.1:11434'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OLLAMA_BASE_URL', e.target.value)}
+                      placeholder="http://127.0.0.1:11434"
+                    />
+                  </FormField>
+
+                  <FormField
+                    label="Ollama Model"
+                    tooltip="Ollama model tag, e.g. qwen2.5-coder:7b"
+                  >
+                    {ollamaModels.length > 0 ? (
+                      <select
+                        value={formState.CLAUDE_MEM_OLLAMA_MODEL || ollamaModels[0] || ''}
+                        onChange={(e) => updateSetting('CLAUDE_MEM_OLLAMA_MODEL', e.target.value)}
+                      >
+                        {ollamaModels.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={formState.CLAUDE_MEM_OLLAMA_MODEL || 'qwen2.5-coder:7b'}
+                        onChange={(e) => updateSetting('CLAUDE_MEM_OLLAMA_MODEL', e.target.value)}
+                        placeholder="qwen2.5-coder:7b"
+                      />
+                    )}
+                    {ollamaModelsError && (
+                      <div style={{ marginTop: 6, color: '#ff6b6b', fontSize: 12 }}>
+                        {ollamaModelsError}
+                      </div>
+                    )}
+                  </FormField>
+
+                  <FormField
+                    label="Temperature"
+                    tooltip="Lower temperature tends to be more consistent for structured XML extraction"
+                  >
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      max="2"
+                      value={formState.CLAUDE_MEM_OLLAMA_TEMPERATURE || '0.2'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OLLAMA_TEMPERATURE', e.target.value)}
+                    />
+                  </FormField>
+
+                  <FormField
+                    label="Max Context Messages"
+                    tooltip="Caps the number of recent conversation turns sent to Ollama"
+                  >
+                    <input
+                      type="number"
+                      min="1"
+                      max="200"
+                      value={formState.CLAUDE_MEM_OLLAMA_MAX_CONTEXT_MESSAGES || '20'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OLLAMA_MAX_CONTEXT_MESSAGES', e.target.value)}
+                    />
+                  </FormField>
+
+                  <FormField
+                    label="Max Tokens (Safety Cap)"
+                    tooltip="Estimated token budget cap used for trimming conversation history"
+                  >
+                    <input
+                      type="number"
+                      min="1000"
+                      max="10000000"
+                      value={formState.CLAUDE_MEM_OLLAMA_MAX_TOKENS || '100000'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OLLAMA_MAX_TOKENS', e.target.value)}
+                    />
+                  </FormField>
+
+                  <div className="toggle-group" style={{ marginTop: '8px' }}>
+                    <ToggleSwitch
+                      id="ollama-fallback-to-claude"
+                      label="Fallback to Claude"
+                      description="If Ollama fails, allow falling back to Claude SDK (can increase token cost)."
+                      checked={formState.CLAUDE_MEM_OLLAMA_FALLBACK_TO_CLAUDE === 'true'}
+                      onChange={() =>
+                        updateSetting(
+                          'CLAUDE_MEM_OLLAMA_FALLBACK_TO_CLAUDE',
+                          formState.CLAUDE_MEM_OLLAMA_FALLBACK_TO_CLAUDE === 'true' ? 'false' : 'true'
+                        )
+                      }
+                    />
+                  </div>
                 </>
               )}
 
