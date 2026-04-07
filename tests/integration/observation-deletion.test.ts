@@ -156,6 +156,7 @@ describe('Observation Deletion — Integration', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [id] }),
       });
+      expect(first.status).toBe(200);
       const firstBody = await first.json() as { deleted: number[]; notFound: number[] };
       expect(firstBody.deleted).toContain(id);
 
@@ -165,6 +166,7 @@ describe('Observation Deletion — Integration', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [id] }),
       });
+      expect(second.status).toBe(200);
       const secondBody = await second.json() as { deleted: number[]; notFound: number[] };
       expect(secondBody.deleted).toEqual([]);
       expect(secondBody.notFound).toContain(id);
@@ -182,11 +184,12 @@ describe('Observation Deletion — Integration', () => {
     const [server, base] = await startServer(app);
 
     try {
-      await fetch(`${base}/api/observations/delete`, {
+      const res = await fetch(`${base}/api/observations/delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [id1] }),
       });
+      expect(res.status).toBe(200);
 
       expect(store.getObservationById(id1)).toBeNull();
       expect(store.getObservationById(id2)).not.toBeNull();

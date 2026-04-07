@@ -19,7 +19,7 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 
 ## REST API Endpoints
 
-The worker service exposes 23 HTTP endpoints organized into six categories:
+The worker service exposes 22 HTTP endpoints organized into six categories:
 
 ### Viewer & Health Endpoints
 
@@ -523,7 +523,7 @@ POST /api/pending-queue/process
 
 ### Session Management Endpoints
 
-#### 19. Initialize Session
+#### 18. Initialize Session
 ```
 POST /sessions/:sessionDbId/init
 ```
@@ -544,7 +544,7 @@ POST /sessions/:sessionDbId/init
 }
 ```
 
-#### 20. Add Observation
+#### 19. Add Observation
 ```
 POST /sessions/:sessionDbId/observations
 ```
@@ -567,7 +567,7 @@ POST /sessions/:sessionDbId/observations
 }
 ```
 
-#### 21. Generate Summary
+#### 20. Generate Summary
 ```
 POST /sessions/:sessionDbId/summarize
 ```
@@ -587,7 +587,7 @@ POST /sessions/:sessionDbId/summarize
 }
 ```
 
-#### 22. Session Status
+#### 21. Session Status
 ```
 GET /sessions/:sessionDbId/status
 ```
@@ -602,7 +602,7 @@ GET /sessions/:sessionDbId/status
 }
 ```
 
-#### 23. Delete Session
+#### 22. Delete Session
 ```
 DELETE /sessions/:sessionDbId
 ```

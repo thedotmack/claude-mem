@@ -58,7 +58,9 @@ export function ObservationCard({ observation, onDelete }: ObservationCardProps)
         <div className="view-mode-toggles">
           {onDelete && (
             <button
+              type="button"
               className="view-mode-toggle"
+              aria-label={`Delete observation ${observation.id}`}
               onClick={() => {
                 if (window.confirm(`Delete observation #${observation.id}?`)) {
                   onDelete(observation.id);

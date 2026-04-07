@@ -75,64 +75,65 @@ describe('DataRoutes DELETE observations — POST /api/observations/delete', () 
     mock.restore();
   });
 
-  it('should delete observations and return { success, deleted, notFound }', () => {
+  it('should delete observations and return { success, deleted, notFound }', async () => {
     const { req, res, jsonSpy } = createMockReqRes({ ids: [1, 2] });
-    handler(req as Request, res as Response);
+    await handler(req as Request, res as Response);
 
     expect(mockDeleteObservations).toHaveBeenCalledWith([1, 2]);
     expect(jsonSpy).toHaveBeenCalledWith({ success: true, deleted: [1, 2], notFound: [] });
   });
 
-  it('should return 400 for missing ids', () => {
+  it('should return 400 for missing ids', async () => {
     const { req, res, statusSpy } = createMockReqRes({});
-    handler(req as Request, res as Response);
+    await handler(req as Request, res as Response);
 
     expect(statusSpy).toHaveBeenCalledWith(400);
   });
 
-  it('should return 400 for non-array ids', () => {
+  it('should return 400 for non-array ids', async () => {
     const { req, res, statusSpy } = createMockReqRes({ ids: 'not-valid' });
-    handler(req as Request, res as Response);
+    await handler(req as Request, res as Response);
 
     // 'not-valid' splits to ['not-valid'] → fails integer check
     expect(statusSpy).toHaveBeenCalledWith(400);
   });
 
-  it('should coerce JSON-encoded string "[1,2]" to native array', () => {
+  it('should coerce JSON-encoded string "[1,2]" to native array', async () => {
     const { req, res } = createMockReqRes({ ids: '[1,2]' });
-    handler(req as Request, res as Response);
+    await handler(req as Request, res as Response);
 
     expect(mockDeleteObservations).toHaveBeenCalledWith([1, 2]);
   });
 
-  it('should coerce comma-separated string "1,2" to native array', () => {
+  it('should coerce comma-separated string "1,2" to native array', async () => {
     const { req, res } = createMockReqRes({ ids: '1,2' });
-    handler(req as Request, res as Response);
+    await handler(req as Request, res as Response);
 
     expect(mockDeleteObservations).toHaveBeenCalledWith([1, 2]);
   });
 
-  it('should return 400 when ids exceeds 1000', () => {
+  it('should return 400 when ids exceeds 1000', async () => {
     const { req, res, statusSpy } = createMockReqRes({ ids: Array.from({ length: 1001 }, (_, i) => i) });
-    handler(req as Request, res as Response);
+    await handler(req as Request, res as Response);
 
     expect(statusSpy).toHaveBeenCalledWith(400);
     expect(mockDeleteObservations).not.toHaveBeenCalled();
   });
 
-  it('should return 400 for non-integer values', () => {
+  it('should return 400 for non-integer values', async () => {
     const { req, res, statusSpy } = createMockReqRes({ ids: [1, 'two', 3] });
-    handler(req as Request, res as Response);
+    await handler(req as Request, res as Response);
 
     expect(statusSpy).toHaveBeenCalledWith(400);
   });
 
-  it('should handle empty ids array without calling store', () => {
+  it('should handle empty ids array', async () => {
     mockDeleteObservations = mock(() => ({ deleted: [], notFound: [] }));
     const { req, res, jsonSpy } = createMockReqRes({ ids: [] });
-    handler(req as Request, res as Response);
+    await handler(req as Request, res as Response);
 
     // Empty array passes validation, store called with []
+    expect(mockDeleteObservations).toHaveBeenCalledWith([]);
     expect(jsonSpy).toHaveBeenCalled();
   });
 });

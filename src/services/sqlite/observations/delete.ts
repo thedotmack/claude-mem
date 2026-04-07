@@ -17,15 +17,17 @@ export function deleteObservations(
 ): DeleteObservationsResult {
   if (ids.length === 0) return { deleted: [], notFound: [] };
 
+  const uniqueIds = [...new Set(ids)];
+
   // Find which IDs exist
-  const placeholders = ids.map(() => '?').join(',');
+  const placeholders = uniqueIds.map(() => '?').join(',');
   const existing = db
     .prepare(`SELECT id FROM observations WHERE id IN (${placeholders})`)
-    .all(...ids) as { id: number }[];
+    .all(...uniqueIds) as { id: number }[];
 
   const existingIds = new Set(existing.map(row => row.id));
-  const deleted = ids.filter(id => existingIds.has(id));
-  const notFound = ids.filter(id => !existingIds.has(id));
+  const deleted = uniqueIds.filter(id => existingIds.has(id));
+  const notFound = uniqueIds.filter(id => !existingIds.has(id));
 
   // Delete existing observations
   if (deleted.length > 0) {

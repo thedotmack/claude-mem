@@ -10,7 +10,7 @@
  *   claude-mem delete --query "wrong pattern" [--dry-run] [--force]
  */
 
-import { buildWorkerUrl, workerHttpRequest } from '../../shared/worker-utils.js';
+import { workerHttpRequest } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 
 interface DeleteResult {
@@ -46,8 +46,7 @@ async function resolveIdsByDate(before: string): Promise<number[]> {
   if (isNaN(epoch)) throw new Error(`Invalid date: ${before}`);
 
   // Fetch all observations (up to 1000) and filter by date
-  const url = buildWorkerUrl(`/api/observations?limit=1000&offset=0`);
-  const response = await fetch(url);
+  const response = await workerHttpRequest('/api/observations?limit=1000&offset=0', { method: 'GET', timeoutMs: 15_000 });
   if (!response.ok) throw new Error(`Failed to list observations: ${response.status}`);
 
   const data = await response.json() as { items?: Array<{ id: number; created_at_epoch: number }> };
@@ -58,8 +57,7 @@ async function resolveIdsByDate(before: string): Promise<number[]> {
 
 /** Resolve IDs from --query <term> using the search endpoint. */
 async function resolveIdsByQuery(query: string): Promise<number[]> {
-  const url = buildWorkerUrl(`/api/search?q=${encodeURIComponent(query)}&limit=100`);
-  const response = await fetch(url);
+  const response = await workerHttpRequest(`/api/search?q=${encodeURIComponent(query)}&limit=100`, { method: 'GET', timeoutMs: 15_000 });
   if (!response.ok) throw new Error(`Search failed: ${response.status}`);
 
   const data = await response.json() as SearchResult;
@@ -70,7 +68,10 @@ async function resolveIdsByQuery(query: string): Promise<number[]> {
 async function readLine(): Promise<string> {
   return new Promise(resolve => {
     process.stdin.setEncoding('utf-8');
-    process.stdin.once('data', chunk => resolve((chunk as string).trim()));
+    process.stdin.once('data', chunk => {
+      process.stdin.pause();
+      resolve((chunk as string).trim());
+    });
     process.stdin.resume();
   });
 }
@@ -84,6 +85,11 @@ export async function deleteCommand(argv: string[]): Promise<number> {
   const force = argv.includes('--force');
   const beforeIdx = argv.indexOf('--before');
   const queryIdx = argv.indexOf('--query');
+
+  if (beforeIdx !== -1 && queryIdx !== -1) {
+    console.error('Error: --before and --query are mutually exclusive');
+    return 1;
+  }
 
   // Positional args are numeric IDs (filter out flags)
   const positionalIds = argv

@@ -25,7 +25,7 @@ Claude-mem uses an **MCP-based search architecture** that provides intelligent m
 
 ### 1. User Query
 
-Claude has access to 4 MCP tools. When searching memory, Claude follows the 3-layer workflow:
+Claude has access to 5 MCP tools. When searching memory, Claude follows the 3-layer workflow:
 
 ```
 Step 1: search(query="authentication bug", type="bugfix", limit=10)
@@ -91,7 +91,7 @@ Claude reviews the index, decides which observations are relevant, and can:
 - Use `timeline` to get context
 - Use `get_observations` to fetch full details for selected IDs
 
-## The 4 MCP Tools
+## The 5 MCP Tools
 
 ### `__IMPORTANT` - Workflow Documentation
 
@@ -362,7 +362,7 @@ Total: 2,500-5,000 tokens (50-75% savings)
 
 ### After: Streamlined MCP Implementation
 
-**Approach:** 4 MCP tools following 3-layer workflow
+**Approach:** 5 MCP tools (4 search/context + 1 management)
 
 **Token Cost:** ~312 lines of code, simplified tool definitions
 
@@ -371,6 +371,7 @@ Total: 2,500-5,000 tokens (50-75% savings)
 2. `search` - Step 1 (index)
 3. `timeline` - Step 2 (context)
 4. `get_observations` - Step 3 (details)
+5. `delete_observations` - Remove unwanted memories
 
 **Benefits:**
 - Progressive disclosure built into tool design
@@ -471,7 +472,7 @@ function escapeFTS5Query(query: string): string {
 - No workflow guidance
 - ~2,500 tokens in definitions
 
-**Current (4 tools):**
+**Current (5 tools):**
 - Simple schemas
 - Clear workflow
 - Built-in guidance
