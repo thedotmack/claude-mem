@@ -126,7 +126,18 @@ function formatFileTimeline(observations: ObservationRow[], filePath: string): s
     return aEpoch - bEpoch;
   });
 
+  // Include current date/time so the model can judge recency of observations
+  const now = new Date();
+  const currentDate = now.toLocaleDateString('en-CA'); // YYYY-MM-DD
+  const currentTime = now.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  }).toLowerCase().replace(' ', '');
+  const currentTimezone = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
+
   const lines: string[] = [
+    `Current: ${currentDate} ${currentTime} ${currentTimezone}`,
     `Read blocked: This file has prior observations. Choose the cheapest path:`,
     `- **Already know enough?** The timeline below may be all you need (semantic priming).`,
     `- **Need details?** get_observations([IDs]) — ~300 tokens each.`,

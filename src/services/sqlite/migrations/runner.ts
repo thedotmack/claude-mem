@@ -35,7 +35,7 @@ export class MigrationRunner {
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
-this.createObservationFeedbackTable();
+    this.createObservationFeedbackTable();
     this.addSessionPlatformSourceColumn();
   }
 
