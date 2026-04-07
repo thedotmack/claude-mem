@@ -284,10 +284,11 @@ export class DataRoutes extends BaseRouteHandler {
     const platformSource = req.query.platformSource as string | undefined;
 
     if (platformSource) {
+      const projects = store.getAllProjects(platformSource);
       res.json({
-        projects: store.getAllProjects(platformSource),
+        projects,
         sources: [platformSource],
-        projectsBySource: { [platformSource]: store.getAllProjects(platformSource) }
+        projectsBySource: { [platformSource]: projects }
       });
       return;
     }

@@ -96,12 +96,16 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
       params.append('platformSource', selectedSource);
     }
 
-    const response = await fetch(`/api/context/preview?${params}`);
-    const text = await response.text();
+    try {
+      const response = await fetch(`/api/context/preview?${params}`);
+      const text = await response.text();
 
-    if (response.ok) {
-      setPreview(text);
-    } else {
+      if (response.ok) {
+        setPreview(text);
+      } else {
+        setError('Failed to load preview');
+      }
+    } catch {
       setError('Failed to load preview');
     }
 

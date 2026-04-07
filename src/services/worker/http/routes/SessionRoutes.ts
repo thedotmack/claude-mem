@@ -706,15 +706,14 @@ export class SessionRoutes extends BaseRouteHandler {
     const activeSession = this.sessionManager.getSession(sessionDbId);
     if (!activeSession) {
       // Session may not be in memory (already completed or never initialized)
-      logger.debug('SESSION', 'session-complete: Session not in active map', {
+      // Still proceed with DB-backed completion so the row gets marked completed
+      logger.debug('SESSION', 'session-complete: Session not in active map; continuing with DB-backed completion', {
         contentSessionId,
         sessionDbId
       });
-      res.json({ status: 'skipped', reason: 'not_active' });
-      return;
     }
 
-    // Complete the session (removes from active sessions map)
+    // Complete the session (removes from active sessions map if present)
     // Note: The Stop hook (summarize handler) waits for pending work before calling
     // this endpoint. No polling here — that's the hook's responsibility.
     await this.completionHandler.completeByDbId(sessionDbId);
@@ -724,7 +723,7 @@ export class SessionRoutes extends BaseRouteHandler {
       sessionDbId
     });
 
-    res.json({ status: 'completed', sessionDbId });
+    res.json({ status: activeSession ? 'completed' : 'completed_db_only', sessionDbId });
   });
 
   /**
@@ -746,7 +745,7 @@ export class SessionRoutes extends BaseRouteHandler {
     // may omit prompt/project in their payload (#838, #1049)
     const project = req.body.project || 'unknown';
     const prompt = req.body.prompt || '[media prompt]';
-    const platformSource = req.body.platformSource || 'claude';
+    const platformSource = normalizePlatformSource(req.body.platformSource);
     const customTitle = req.body.customTitle || undefined;
 
     logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {

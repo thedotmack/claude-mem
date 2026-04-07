@@ -657,7 +657,8 @@ export class MigrationRunner {
     this.db.run('BEGIN TRANSACTION');
 
     try {
-      // ===================================      // 1. Recreate observations table
+      // ===================================
+      // 1. Recreate observations table
       // ===================================
       // Drop FTS triggers first (they reference the observations table)
       this.db.run('DROP TRIGGER IF EXISTS observations_ai');
@@ -731,7 +732,8 @@ export class MigrationRunner {
         `);
       }
 
-      // ===================================      // 2. Recreate session_summaries table
+      // ===================================
+      // 2. Recreate session_summaries table
       // ===================================
       // Clean up leftover temp table from a previously-crashed run
       this.db.run('DROP TABLE IF EXISTS session_summaries_new');
@@ -889,6 +891,9 @@ export class MigrationRunner {
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
     logger.debug('DB', 'Created observation_feedback table for usage tracking');
+  }
+
+  /**
    * Add platform_source column to sdk_sessions for Claude/Codex isolation (migration 24)
    */
   private addSessionPlatformSourceColumn(): void {

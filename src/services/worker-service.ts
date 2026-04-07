@@ -131,10 +131,6 @@ import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 // Process management for zombie cleanup (Issue #737)
 import { startOrphanReaper, reapOrphanedProcesses, getProcessBySession, ensureProcessExit } from './worker/ProcessRegistry.js';
 
-// Transcript watcher for external CLI session monitoring
-import { TranscriptWatcher } from './transcripts/watcher.js';
-import { loadTranscriptWatchConfig, expandHomePath, DEFAULT_CONFIG_PATH as TRANSCRIPT_CONFIG_PATH } from './transcripts/config.js';
-
 /**
  * Build JSON status output for hook framework communication.
  * This is a pure function extracted for testability.
