@@ -21,9 +21,85 @@ import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import type { ActiveSession } from '../../worker-types.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
-import type { WorkerRef, StorageResult } from './types.js';
+import type { WorkerRef, StorageResult, ProcessAgentResponseResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
+
+// ============================================================================
+// Response Classification
+// ============================================================================
+
+/**
+ * Detect rate-limit responses returned as text by AI providers.
+ * These require message preservation for retry, not silent discard.
+ */
+export function isRateLimitResponse(text: string): boolean {
+  const lower = text.toLowerCase();
+  const patterns = [
+    "you've hit your limit",
+    "rate limit",
+    "rate_limit",
+    "too many requests",
+    "quota exceeded",
+    "try again later",
+    "please wait",
+    "usage cap",
+    "billing limit",
+  ];
+  if (patterns.some(p => lower.includes(p))) return true;
+  // "resets at 7pm", "resets in 2 hours", etc.
+  return /reset s?\s+(at\s+\d|in\s+\d)/i.test(text);
+}
+
+/**
+ * Detect authentication error responses returned as text by AI providers.
+ * These indicate a configuration problem; messages should be preserved for retry
+ * once credentials are corrected.
+ */
+export function isAuthErrorResponse(text: string): boolean {
+  const lower = text.toLowerCase();
+  const patterns = [
+    "invalid api key",
+    "invalid bearer token",
+    "authentication_error",
+    "invalid x-api-key",
+    "api key expired",
+    "invalid_api_key",
+    '"type":"authentication_error"',
+    '"unauthorized"',
+  ];
+  return patterns.some(p => lower.includes(p));
+}
+
+// ============================================================================
+// Message Preservation Helper
+// ============================================================================
+
+/**
+ * Mark all currently-processing messages as failed (for retry) and clean up session state.
+ * Called on any non-successful response to ensure messages are never silently lost.
+ */
+function preserveMessages(
+  session: ActiveSession,
+  sessionManager: SessionManager,
+  worker: WorkerRef | undefined,
+  reason: string
+): void {
+  const pendingStore = sessionManager.getPendingMessageStore();
+  const ids = session.processingMessageIds;
+
+  if (ids.length > 0) {
+    for (const messageId of ids) {
+      pendingStore.markFailed(messageId);
+    }
+    logger.info('QUEUE', `PRESERVED | sessionDbId=${session.sessionDbId} | reason=${reason} | count=${ids.length} | ids=[${ids.join(',')}]`, {
+      sessionId: session.sessionDbId
+    });
+    session.processingMessageIds = [];
+  }
+
+  cleanupProcessedMessages(session, worker);
+}
 
 /**
  * Process agent response text (parse XML, save to database, sync to Chroma, broadcast SSE)
@@ -56,7 +132,7 @@ export async function processAgentResponse(
   agentName: string,
   projectRoot?: string,
   modelId?: string
-): Promise<void> {
+): Promise<ProcessAgentResponseResult> {
   // Track generator activity for stale detection (Issue #1099)
   session.lastGeneratorActivity = Date.now();
 
@@ -65,10 +141,26 @@ export async function processAgentResponse(
     session.conversationHistory.push({ role: 'assistant', content: text });
   }
 
+  // --- GUARD: Empty response with pending messages ---
+  // An empty response when messages are in-flight means the LLM failed to respond.
+  // Preserve the messages for retry rather than silently deleting them.
+  if (!text.trim() && session.processingMessageIds.length > 0) {
+    logger.warn('PARSER', `${agentName} returned empty response; messages preserved for retry`, {
+      sessionId: session.sessionDbId,
+      count: session.processingMessageIds.length
+    });
+    preserveMessages(session, sessionManager, worker, 'empty_response');
+    return { status: 'error', observationCount: 0, summaryStored: false };
+  }
+
   // Parse observations and summary
   const observations = parseObservations(text, session.contentSessionId);
   const summary = parseSummary(text, session.sessionDbId);
 
+  // --- GUARD: Non-XML response with pending messages ---
+  // If we got non-empty text that contains no XML structure, the LLM returned
+  // something unexpected (auth error, rate limit, garbled output). Never silently
+  // discard — always preserve the messages so they can be retried.
   if (
     text.trim() &&
     observations.length === 0 &&
@@ -76,10 +168,32 @@ export async function processAgentResponse(
     !/<observation>|<summary>|<skip_summary\b/.test(text)
   ) {
     const preview = text.length > 200 ? `${text.slice(0, 200)}...` : text;
-    logger.warn('PARSER', `${agentName} returned non-XML response; observation content was discarded`, {
+
+    if (isRateLimitResponse(text)) {
+      logger.warn('PARSER', `${agentName} returned rate-limit response; messages preserved for retry`, {
+        sessionId: session.sessionDbId,
+        preview
+      });
+      preserveMessages(session, sessionManager, worker, 'rate_limit');
+      return { status: 'rate_limited', observationCount: 0, summaryStored: false };
+    }
+
+    if (isAuthErrorResponse(text)) {
+      logger.error('PARSER', `${agentName} returned auth error response; messages preserved for retry`, {
+        sessionId: session.sessionDbId,
+        preview
+      });
+      preserveMessages(session, sessionManager, worker, 'auth_error');
+      return { status: 'error', observationCount: 0, summaryStored: false };
+    }
+
+    // Unknown non-XML (confused model output, transient provider issue, etc.)
+    logger.warn('PARSER', `${agentName} returned non-XML response; messages preserved for retry`, {
       sessionId: session.sessionDbId,
       preview
     });
+    preserveMessages(session, sessionManager, worker, 'non_xml');
+    return { status: 'error', observationCount: 0, summaryStored: false };
   }
 
   // Convert nullable fields to empty strings for storeSummary (if summary exists)
@@ -164,6 +278,12 @@ export async function processAgentResponse(
 
   // Clean up session state
   cleanupProcessedMessages(session, worker);
+
+  return {
+    status: observations.length > 0 || summaryForStore ? 'ok' : 'empty',
+    observationCount: observations.length,
+    summaryStored: !!summaryForStore,
+  };
 }
 
 /**

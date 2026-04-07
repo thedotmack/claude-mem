@@ -122,7 +122,7 @@ export class OpenRouterAgent {
         session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
 
         // Process response using shared ResponseProcessor (no original timestamp for init - not from queue)
-        await processAgentResponse(
+        const initResult = await processAgentResponse(
           initResponse.content,
           session,
           this.dbManager,
@@ -134,6 +134,13 @@ export class OpenRouterAgent {
           undefined,  // No lastCwd yet - before message processing
           model
         );
+
+        if (initResult.status === 'rate_limited' || initResult.status === 'error') {
+          logger.warn('SDK', `OpenRouter init response failed (${initResult.status}), aborting session`, {
+            sessionId: session.sessionDbId
+          });
+          return;
+        }
       } else {
         logger.error('SDK', 'Empty OpenRouter init response - session may lack context', {
           sessionId: session.sessionDbId,
@@ -193,8 +200,9 @@ export class OpenRouterAgent {
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
           }
 
-          // Process response using shared ResponseProcessor
-          await processAgentResponse(
+          // Process response using shared ResponseProcessor.
+          // Empty/non-XML paths call markFailed() to preserve messages for retry.
+          const obsResult = await processAgentResponse(
             obsResponse.content || '',
             session,
             this.dbManager,
@@ -206,6 +214,13 @@ export class OpenRouterAgent {
             lastCwd,
             model
           );
+
+          if (obsResult.status === 'rate_limited') {
+            logger.warn('SDK', 'OpenRouter rate-limited during observation, aborting session', {
+              sessionId: session.sessionDbId
+            });
+            return;
+          }
 
         } else if (message.type === 'summarize') {
           // CRITICAL: Check memorySessionId BEFORE making expensive LLM call
@@ -236,8 +251,9 @@ export class OpenRouterAgent {
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
           }
 
-          // Process response using shared ResponseProcessor
-          await processAgentResponse(
+          // Process response using shared ResponseProcessor.
+          // Empty/non-XML paths call markFailed() to preserve messages for retry.
+          const summaryResult = await processAgentResponse(
             summaryResponse.content || '',
             session,
             this.dbManager,
@@ -249,6 +265,13 @@ export class OpenRouterAgent {
             lastCwd,
             model
           );
+
+          if (summaryResult.status === 'rate_limited') {
+            logger.warn('SDK', 'OpenRouter rate-limited during summary, aborting session', {
+              sessionId: session.sessionDbId
+            });
+            return;
+          }
         }
       }
 

@@ -173,7 +173,7 @@ export class GeminiAgent {
         session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
 
         // Process response using shared ResponseProcessor (no original timestamp for init - not from queue)
-        await processAgentResponse(
+        const initResult = await processAgentResponse(
           initResponse.content,
           session,
           this.dbManager,
@@ -185,6 +185,13 @@ export class GeminiAgent {
           undefined,
           model
         );
+
+        if (initResult.status === 'rate_limited' || initResult.status === 'error') {
+          logger.warn('SDK', `Gemini init response failed (${initResult.status}), aborting session`, {
+            sessionId: session.sessionDbId
+          });
+          return;
+        }
       } else {
         logger.error('SDK', 'Empty Gemini init response - session may lack context', {
           sessionId: session.sessionDbId,
@@ -245,26 +252,27 @@ export class GeminiAgent {
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
           }
 
-          // Process response using shared ResponseProcessor
-          if (obsResponse.content) {
-            await processAgentResponse(
-              obsResponse.content,
-              session,
-              this.dbManager,
-              this.sessionManager,
-              worker,
-              tokensUsed,
-              originalTimestamp,
-              'Gemini',
-              lastCwd,
-              model
-            );
-          } else {
-            logger.warn('SDK', 'Empty Gemini observation response, skipping processing to preserve message', {
-              sessionId: session.sessionDbId,
-              messageId: session.processingMessageIds[session.processingMessageIds.length - 1]
+          // Process response using shared ResponseProcessor.
+          // Both empty and non-XML paths inside processAgentResponse call markFailed()
+          // to preserve messages for retry instead of confirming them as processed.
+          const obsResult = await processAgentResponse(
+            obsResponse.content || '',
+            session,
+            this.dbManager,
+            this.sessionManager,
+            worker,
+            tokensUsed,
+            originalTimestamp,
+            'Gemini',
+            lastCwd,
+            model
+          );
+
+          if (obsResult.status === 'rate_limited') {
+            logger.warn('SDK', 'Gemini rate-limited during observation, aborting session', {
+              sessionId: session.sessionDbId
             });
-            // Don't confirm - leave message for stale recovery
+            return;
           }
 
         } else if (message.type === 'summarize') {
@@ -296,26 +304,27 @@ export class GeminiAgent {
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
           }
 
-          // Process response using shared ResponseProcessor
-          if (summaryResponse.content) {
-            await processAgentResponse(
-              summaryResponse.content,
-              session,
-              this.dbManager,
-              this.sessionManager,
-              worker,
-              tokensUsed,
-              originalTimestamp,
-              'Gemini',
-              lastCwd,
-              model
-            );
-          } else {
-            logger.warn('SDK', 'Empty Gemini summary response, skipping processing to preserve message', {
-              sessionId: session.sessionDbId,
-              messageId: session.processingMessageIds[session.processingMessageIds.length - 1]
+          // Process response using shared ResponseProcessor.
+          // Both empty and non-XML paths inside processAgentResponse call markFailed()
+          // to preserve messages for retry instead of confirming them as processed.
+          const summaryResult = await processAgentResponse(
+            summaryResponse.content || '',
+            session,
+            this.dbManager,
+            this.sessionManager,
+            worker,
+            tokensUsed,
+            originalTimestamp,
+            'Gemini',
+            lastCwd,
+            model
+          );
+
+          if (summaryResult.status === 'rate_limited') {
+            logger.warn('SDK', 'Gemini rate-limited during summary, aborting session', {
+              sessionId: session.sessionDbId
             });
-            // Don't confirm - leave message for stale recovery
+            return;
           }
         }
       }

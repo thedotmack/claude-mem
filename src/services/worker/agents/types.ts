@@ -99,6 +99,27 @@ export interface ParsedResponse {
 }
 
 // ============================================================================
+// Response Processing Result
+// ============================================================================
+
+/**
+ * Result from processAgentResponse indicating what happened with the LLM response.
+ *
+ * Used by agent call sites to decide whether to abort, continue, or retry.
+ */
+export interface ProcessAgentResponseResult {
+  /** What happened with the response:
+   * - 'ok': XML parsed successfully, observations/summary stored, messages confirmed (deleted from queue)
+   * - 'empty': Valid response but no observations produced (e.g. init prompt, <skip_summary/>); messages confirmed
+   * - 'rate_limited': Rate-limit text detected; messages preserved via markFailed() for retry
+   * - 'error': Non-XML/empty/auth error; messages preserved via markFailed() for retry
+   */
+  status: 'ok' | 'rate_limited' | 'error' | 'empty';
+  observationCount: number;
+  summaryStored: boolean;
+}
+
+// ============================================================================
 // Fallback Agent Interface
 // ============================================================================
 

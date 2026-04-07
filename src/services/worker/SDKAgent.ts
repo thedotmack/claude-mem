@@ -261,7 +261,7 @@ export class SDKAgent {
           }
 
           // Parse and process response using shared ResponseProcessor
-          await processAgentResponse(
+          const result = await processAgentResponse(
             textContent,
             session,
             this.dbManager,
@@ -273,6 +273,15 @@ export class SDKAgent {
             cwdTracker.lastCwd,
             modelId
           );
+
+          // Rate-limited: abort — subsequent calls will also fail
+          if (result.status === 'rate_limited') {
+            logger.warn('SDK', 'Aborting session due to rate limiting', {
+              sessionDbId: session.sessionDbId
+            });
+            session.abortController.abort();
+            return;
+          }
         }
 
         // Log result messages

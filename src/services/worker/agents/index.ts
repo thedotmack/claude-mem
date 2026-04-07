@@ -19,6 +19,7 @@ export type {
   StorageResult,
   ResponseProcessingContext,
   ParsedResponse,
+  ProcessAgentResponseResult,
   FallbackAgent,
   BaseAgentConfig,
 } from './types.js';
@@ -26,7 +27,7 @@ export type {
 export { FALLBACK_ERROR_PATTERNS } from './types.js';
 
 // Response Processing
-export { processAgentResponse } from './ResponseProcessor.js';
+export { processAgentResponse, isRateLimitResponse, isAuthErrorResponse } from './ResponseProcessor.js';
 
 // SSE Broadcasting
 export { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
