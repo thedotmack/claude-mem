@@ -35,6 +35,7 @@ export class MigrationRunner {
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
     this.createObservationFeedbackTable();
+    this.ensureGeneratedByModelColumn();
   }
 
   /**
@@ -890,5 +891,30 @@ export class MigrationRunner {
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
     logger.debug('DB', 'Created observation_feedback table for usage tracking');
+  }
+
+  /**
+   * Ensure generated_by_model and relevance_count columns exist (migration009, version 26)
+   *
+   * Both columns may already exist in databases created by the compiled binary
+   * (v10.6.3) but are missing from the migration source. This conditionally adds them.
+   */
+  private ensureGeneratedByModelColumn(): void {
+    const applied = this.db.query('SELECT 1 FROM schema_versions WHERE version = 26').get();
+    if (applied) return;
+
+    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasGeneratedByModel = columns.some((c) => c.name === 'generated_by_model');
+    const hasRelevanceCount = columns.some((c) => c.name === 'relevance_count');
+
+    if (!hasGeneratedByModel) {
+      this.db.run('ALTER TABLE observations ADD COLUMN generated_by_model TEXT');
+    }
+    if (!hasRelevanceCount) {
+      this.db.run('ALTER TABLE observations ADD COLUMN relevance_count INTEGER DEFAULT 0');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
+    logger.debug('DB', 'Ensured generated_by_model and relevance_count columns exist');
   }
 }
