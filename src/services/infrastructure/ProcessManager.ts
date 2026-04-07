@@ -74,17 +74,16 @@ function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): stri
 /**
  * Resolve the runtime executable for spawning the worker daemon.
  *
- * Windows must prefer Bun because worker-service.cjs imports bun:sqlite,
- * which is unavailable in Node.js.
+ * worker-service.cjs imports `bun:sqlite`, so it MUST run under Bun on every
+ * platform — not just Windows. When the caller is already running under Bun
+ * (e.g. the worker self-spawning from a hook), we reuse process.execPath to
+ * avoid an extra PATH lookup. Otherwise (notably when the MCP server running
+ * under Node spawns the worker for the first time) we locate the Bun binary
+ * via env vars, well-known install locations, and finally the system PATH.
  */
 export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): string | null {
   const platform = options.platform ?? process.platform;
   const execPath = options.execPath ?? process.execPath;
-
-  // Non-Windows currently relies on the runtime that launched worker-service.
-  if (platform !== 'win32') {
-    return execPath;
-  }
 
   // If already running under Bun, reuse it directly.
   if (isBunExecutablePath(execPath)) {
@@ -96,15 +95,24 @@ export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): 
   const pathExists = options.pathExists ?? existsSync;
   const lookupInPath = options.lookupInPath ?? lookupBinaryInPath;
 
-  const candidatePaths = [
-    env.BUN,
-    env.BUN_PATH,
-    path.join(homeDirectory, '.bun', 'bin', 'bun.exe'),
-    path.join(homeDirectory, '.bun', 'bin', 'bun'),
-    env.USERPROFILE ? path.join(env.USERPROFILE, '.bun', 'bin', 'bun.exe') : undefined,
-    env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bun.exe') : undefined,
-    env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bin', 'bun.exe') : undefined,
-  ];
+  const candidatePaths: (string | undefined)[] = platform === 'win32'
+    ? [
+        env.BUN,
+        env.BUN_PATH,
+        path.join(homeDirectory, '.bun', 'bin', 'bun.exe'),
+        path.join(homeDirectory, '.bun', 'bin', 'bun'),
+        env.USERPROFILE ? path.join(env.USERPROFILE, '.bun', 'bin', 'bun.exe') : undefined,
+        env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bun.exe') : undefined,
+        env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bin', 'bun.exe') : undefined,
+      ]
+    : [
+        env.BUN,
+        env.BUN_PATH,
+        path.join(homeDirectory, '.bun', 'bin', 'bun'),
+        '/usr/local/bin/bun',
+        '/opt/homebrew/bin/bun',
+        '/home/linuxbrew/.linuxbrew/bin/bun',
+      ];
 
   for (const candidate of candidatePaths) {
     const normalized = candidate?.trim();
@@ -681,9 +689,19 @@ export function spawnDaemon(
   // controlling terminal. This prevents SIGHUP from reaching the daemon
   // even if the in-process SIGHUP handler somehow fails (belt-and-suspenders).
   // Fall back to standard detached spawn if setsid is not available.
+  //
+  // IMPORTANT: worker-service.cjs imports `bun:sqlite`, so the spawned runtime
+  // MUST be Bun — never the current process.execPath, which may be Node when
+  // the caller is the MCP server. See resolveWorkerRuntimePath() for lookup.
+  const unixRuntimePath = resolveWorkerRuntimePath();
+  if (!unixRuntimePath) {
+    logger.error('SYSTEM', 'Failed to locate Bun runtime for worker spawn');
+    return undefined;
+  }
+
   const setsidPath = '/usr/bin/setsid';
   if (existsSync(setsidPath)) {
-    const child = spawn(setsidPath, [process.execPath, scriptPath, '--daemon'], {
+    const child = spawn(setsidPath, [unixRuntimePath, scriptPath, '--daemon'], {
       detached: true,
       stdio: 'ignore',
       env
@@ -698,7 +716,7 @@ export function spawnDaemon(
   }
 
   // Fallback: standard detached spawn (macOS, systems without setsid)
-  const child = spawn(process.execPath, [scriptPath, '--daemon'], {
+  const child = spawn(unixRuntimePath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
     env

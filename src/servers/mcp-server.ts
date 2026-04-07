@@ -28,11 +28,26 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getWorkerPort, workerHttpRequest } from '../shared/worker-utils.js';
-import { ensureWorkerStarted } from '../services/worker-service.js';
+import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Resolve the path to worker-service.cjs, which lives alongside mcp-server.cjs
+// in the plugin's scripts directory. We need an explicit path because the MCP
+// server runs under Node while the worker must run under Bun, so we can't rely
+// on `__filename` pointing to a self-spawnable script.
+const mcpServerDir = (() => {
+  if (typeof __dirname !== 'undefined') return __dirname;
+  try {
+    return dirname(fileURLToPath(import.meta.url));
+  } catch {
+    return process.cwd();
+  }
+})();
+const WORKER_SCRIPT_PATH = resolve(mcpServerDir, 'worker-service.cjs');
 
 /**
  * Map tool names to Worker HTTP endpoints
@@ -158,7 +173,7 @@ async function ensureWorkerConnection(): Promise<boolean> {
 
   try {
     const port = getWorkerPort();
-    return await ensureWorkerStarted(port);
+    return await ensureWorkerStarted(port, WORKER_SCRIPT_PATH);
   } catch (error) {
     logger.error('SYSTEM', 'Worker auto-start failed', undefined, error as Error);
     return false;

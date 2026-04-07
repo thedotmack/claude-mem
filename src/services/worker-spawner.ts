@@ -1,0 +1,153 @@
+/**
+ * Worker Spawner - Lightweight worker daemon lifecycle helper
+ *
+ * Extracted from worker-service.ts so that lightweight consumers (like the
+ * MCP server running under Node) can ensure the worker daemon is running
+ * without importing the full worker-service bundle, which transitively pulls
+ * in `bun:sqlite` and the entire database layer.
+ *
+ * This module MUST NOT import anything that touches SQLite, ChromaDB, or the
+ * worker business logic modules. Keep it lean on purpose.
+ */
+
+import path from 'path';
+import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { logger } from '../utils/logger.js';
+import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+import {
+  cleanStalePidFile,
+  getPlatformTimeout,
+  removePidFile,
+  spawnDaemon,
+  touchPidFile,
+} from './infrastructure/ProcessManager.js';
+import {
+  isPortInUse,
+  waitForHealth,
+  waitForReadiness,
+} from './infrastructure/HealthMonitor.js';
+
+// Windows: avoid repeated spawn popups when startup fails (issue #921)
+const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
+
+function getWorkerSpawnLockPath(): string {
+  return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
+}
+
+export function shouldSkipSpawnOnWindows(): boolean {
+  if (process.platform !== 'win32') return false;
+  const lockPath = getWorkerSpawnLockPath();
+  if (!existsSync(lockPath)) return false;
+  try {
+    const modifiedTimeMs = statSync(lockPath).mtimeMs;
+    return Date.now() - modifiedTimeMs < WINDOWS_SPAWN_COOLDOWN_MS;
+  } catch {
+    return false;
+  }
+}
+
+export function markWorkerSpawnAttempted(): void {
+  if (process.platform !== 'win32') return;
+  try {
+    writeFileSync(getWorkerSpawnLockPath(), '', 'utf-8');
+  } catch {
+    // Best-effort lock file — failure to write shouldn't block startup
+  }
+}
+
+export function clearWorkerSpawnAttempted(): void {
+  if (process.platform !== 'win32') return;
+  try {
+    const lockPath = getWorkerSpawnLockPath();
+    if (existsSync(lockPath)) unlinkSync(lockPath);
+  } catch {
+    // Best-effort cleanup
+  }
+}
+
+/**
+ * Ensures the worker is started and healthy.
+ *
+ * @param port - The TCP port (used for port-in-use checks and daemon spawn)
+ * @param workerScriptPath - Absolute path to the worker-service script to spawn.
+ *                           Callers running inside worker-service pass `__filename`.
+ *                           Callers outside (e.g., mcp-server) must resolve the
+ *                           path to worker-service.cjs in the plugin's scripts dir.
+ * @returns true if worker is healthy (existing or newly started), false on failure
+ */
+export async function ensureWorkerStarted(
+  port: number,
+  workerScriptPath: string
+): Promise<boolean> {
+  // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
+  const pidFileStatus = cleanStalePidFile();
+  if (pidFileStatus === 'alive') {
+    logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
+    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
+    if (healthy) {
+      logger.info('SYSTEM', 'Worker became healthy while waiting on live PID');
+      return true;
+    }
+    logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout');
+    return false;
+  }
+
+  // Check if worker is already running and healthy.
+  // NOTE: Version mismatch auto-restart intentionally removed (#1435).
+  if (await waitForHealth(port, 1000)) {
+    const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+    if (!ready) {
+      logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
+    }
+    logger.info('SYSTEM', 'Worker already running and healthy');
+    return true;
+  }
+
+  // Check if port is in use by something else
+  const portInUse = await isPortInUse(port);
+  if (portInUse) {
+    logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
+    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
+    if (healthy) {
+      logger.info('SYSTEM', 'Worker is now healthy');
+      return true;
+    }
+    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
+    return false;
+  }
+
+  // Windows: skip spawn if a recent attempt already failed (issue #921)
+  if (shouldSkipSpawnOnWindows()) {
+    logger.warn('SYSTEM', 'Worker unavailable on Windows — skipping spawn (recent attempt failed within cooldown)');
+    return false;
+  }
+
+  // Spawn new worker daemon
+  logger.info('SYSTEM', 'Starting worker daemon', { workerScriptPath });
+  markWorkerSpawnAttempted();
+  const pid = spawnDaemon(workerScriptPath, port);
+  if (pid === undefined) {
+    logger.error('SYSTEM', 'Failed to spawn worker daemon');
+    return false;
+  }
+
+  // PID file is written by the worker itself after listen() succeeds
+  const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
+  if (!healthy) {
+    removePidFile();
+    logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
+    return false;
+  }
+
+  // Health passed (HTTP listening). Now wait for DB + search initialization
+  const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+  if (!ready) {
+    logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
+  }
+
+  clearWorkerSpawnAttempted();
+  touchPidFile();
+  logger.info('SYSTEM', 'Worker started successfully');
+  return true;
+}

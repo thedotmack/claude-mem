@@ -229,13 +229,52 @@ describe('ProcessManager', () => {
   });
 
   describe('resolveWorkerRuntimePath', () => {
-    it('should return current runtime on non-Windows platforms', () => {
+    it('should reuse execPath when already running under Bun on Linux', () => {
       const resolved = resolveWorkerRuntimePath({
         platform: 'linux',
-        execPath: '/usr/bin/node'
+        execPath: '/home/alice/.bun/bin/bun'
       });
 
-      expect(resolved).toBe('/usr/bin/node');
+      expect(resolved).toBe('/home/alice/.bun/bin/bun');
+    });
+
+    it('should look up Bun on non-Windows when caller is Node (e.g. MCP server)', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: {} as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: candidatePath => candidatePath === '/home/alice/.bun/bin/bun',
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBe('/home/alice/.bun/bin/bun');
+    });
+
+    it('should fall back to PATH lookup on non-Windows when no known Bun candidate exists', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: {} as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: () => false,
+        lookupInPath: () => '/custom/bin/bun'
+      });
+
+      expect(resolved).toBe('/custom/bin/bun');
+    });
+
+    it('should return null on non-Windows when Bun cannot be resolved', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: {} as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: () => false,
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBeNull();
     });
 
     it('should reuse execPath when already running under Bun on Windows', () => {
