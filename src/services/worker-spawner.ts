@@ -11,7 +11,7 @@
  */
 
 import path from 'path';
-import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, statSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -50,7 +50,15 @@ export function shouldSkipSpawnOnWindows(): boolean {
 export function markWorkerSpawnAttempted(): void {
   if (process.platform !== 'win32') return;
   try {
-    writeFileSync(getWorkerSpawnLockPath(), '', 'utf-8');
+    const lockPath = getWorkerSpawnLockPath();
+    // Ensure CLAUDE_MEM_DATA_DIR exists before writing the marker. On a fresh
+    // user profile the directory may not exist yet, in which case writeFileSync
+    // would throw ENOENT, the catch would swallow it, and the cooldown marker
+    // would never be created — defeating the popup-loop protection that this
+    // helper exists to provide. recursive: true is a no-op when the dir already
+    // exists, so this is safe to call on every spawn attempt.
+    mkdirSync(path.dirname(lockPath), { recursive: true });
+    writeFileSync(lockPath, '', 'utf-8');
   } catch {
     // Best-effort lock file — failure to write shouldn't block startup
   }
