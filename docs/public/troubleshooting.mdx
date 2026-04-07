@@ -206,6 +206,28 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
    bun --version
    ```
 
+### Claude Executable Not Found on cmux.app
+
+**Symptoms**: SDK agent errors with `Claude executable not found`, even though cmux.app is installed.
+
+**Why this happens**: `which claude` can resolve to the cmux wrapper instead of the real Claude executable, so the worker never reaches a usable binary path.
+
+**Solutions**:
+
+1. Set `CLAUDE_CODE_PATH` explicitly in `~/.claude-mem/settings.json`:
+   ```json
+   {
+     "CLAUDE_CODE_PATH": "/Users/<username>/.local/bin/claude"
+   }
+   ```
+
+2. Verify the path exists:
+   ```bash
+   ls -l /Users/<username>/.local/bin/claude
+   ```
+
+3. Restart Claude Code after saving the setting.
+
 ### Port Allocation Failed
 
 **Symptoms**: Worker fails to start with "port already in use" error.
