@@ -9,12 +9,14 @@ import express, { Request, Response } from 'express';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { CorpusStore } from '../../knowledge/CorpusStore.js';
 import { CorpusBuilder } from '../../knowledge/CorpusBuilder.js';
+import { KnowledgeAgent } from '../../knowledge/KnowledgeAgent.js';
 import type { CorpusFilter } from '../../knowledge/types.js';
 
 export class CorpusRoutes extends BaseRouteHandler {
   constructor(
     private corpusStore: CorpusStore,
-    private corpusBuilder: CorpusBuilder
+    private corpusBuilder: CorpusBuilder,
+    private knowledgeAgent: KnowledgeAgent
   ) {
     super();
   }
@@ -25,6 +27,9 @@ export class CorpusRoutes extends BaseRouteHandler {
     app.get('/api/corpus/:name', this.handleGetCorpus.bind(this));
     app.delete('/api/corpus/:name', this.handleDeleteCorpus.bind(this));
     app.post('/api/corpus/:name/rebuild', this.handleRebuildCorpus.bind(this));
+    app.post('/api/corpus/:name/prime', this.handlePrimeCorpus.bind(this));
+    app.post('/api/corpus/:name/query', this.handleQueryCorpus.bind(this));
+    app.post('/api/corpus/:name/reprime', this.handleReprimeCorpus.bind(this));
   }
 
   /**
@@ -115,5 +120,61 @@ export class CorpusRoutes extends BaseRouteHandler {
     // Return stats without the full observations array
     const { observations, ...metadata } = corpus;
     res.json(metadata);
+  });
+
+  /**
+   * Prime a corpus — load all observations into a new Agent SDK session
+   * POST /api/corpus/:name/prime
+   */
+  private handlePrimeCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { name } = req.params;
+    const corpus = this.corpusStore.read(name);
+
+    if (!corpus) {
+      this.notFound(res, `Corpus "${name}" not found`);
+      return;
+    }
+
+    const sessionId = await this.knowledgeAgent.prime(corpus);
+    res.json({ session_id: sessionId, name: corpus.name });
+  });
+
+  /**
+   * Query a primed corpus — resume the SDK session with a question
+   * POST /api/corpus/:name/query
+   * Body: { question: string }
+   */
+  private handleQueryCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { name } = req.params;
+
+    if (!this.validateRequired(req, res, ['question'])) return;
+
+    const corpus = this.corpusStore.read(name);
+
+    if (!corpus) {
+      this.notFound(res, `Corpus "${name}" not found`);
+      return;
+    }
+
+    const { question } = req.body;
+    const result = await this.knowledgeAgent.query(corpus, question);
+    res.json({ answer: result.answer, session_id: result.session_id });
+  });
+
+  /**
+   * Reprime a corpus — create a fresh session, clearing prior Q&A context
+   * POST /api/corpus/:name/reprime
+   */
+  private handleReprimeCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { name } = req.params;
+    const corpus = this.corpusStore.read(name);
+
+    if (!corpus) {
+      this.notFound(res, `Corpus "${name}" not found`);
+      return;
+    }
+
+    const sessionId = await this.knowledgeAgent.reprime(corpus);
+    res.json({ session_id: sessionId, name: corpus.name });
   });
 }

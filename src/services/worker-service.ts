@@ -132,6 +132,7 @@ import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
 // Knowledge agent services
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
 import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
+import { KnowledgeAgent } from './worker/knowledge/KnowledgeAgent.js';
 
 // Process management for zombie cleanup (Issue #737)
 import { startOrphanReaper, reapOrphanedProcesses, getProcessBySession, ensureProcessExit } from './worker/ProcessRegistry.js';
@@ -439,7 +440,8 @@ export class WorkerService {
         corpusSearchOrchestrator,
         this.corpusStore
       );
-      this.server.registerRoutes(new CorpusRoutes(this.corpusStore, corpusBuilder));
+      const knowledgeAgent = new KnowledgeAgent(this.corpusStore);
+      this.server.registerRoutes(new CorpusRoutes(this.corpusStore, corpusBuilder, knowledgeAgent));
       logger.info('WORKER', 'CorpusRoutes registered');
 
       // DB and search are ready — mark initialization complete so hooks can proceed.
