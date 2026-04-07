@@ -229,6 +229,25 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     }
   },
   {
+    name: 'get_session',
+    description: 'Resolve a memory_session_id to its Claude Code session ID and name. Params: memory_session_ids (array of memory_session_id strings, required)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        memory_session_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Array of memory_session_id values from get_observations results'
+        }
+      },
+      required: ['memory_session_ids'],
+      additionalProperties: false
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/sdk-sessions/batch', { memorySessionIds: args.memory_session_ids });
+    }
+  },
+  {
     name: 'smart_search',
     description: 'Search codebase for symbols, functions, classes using tree-sitter AST parsing. Returns folded structural views with token counts. Use path parameter to scope the search.',
     inputSchema: {
