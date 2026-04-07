@@ -215,6 +215,11 @@ export class OpenRouterAgent {
             model
           );
 
+          if (obsResult.status === 'rate_limited' || obsResult.status === 'error') {
+            // Roll back the prompt we just pushed so retries don't accumulate duplicates
+            session.conversationHistory.pop();
+          }
+
           if (obsResult.status === 'rate_limited') {
             logger.warn('SDK', 'OpenRouter rate-limited during observation, aborting session', {
               sessionId: session.sessionDbId
@@ -265,6 +270,11 @@ export class OpenRouterAgent {
             lastCwd,
             model
           );
+
+          if (summaryResult.status === 'rate_limited' || summaryResult.status === 'error') {
+            // Roll back the prompt we just pushed so retries don't accumulate duplicates
+            session.conversationHistory.pop();
+          }
 
           if (summaryResult.status === 'rate_limited') {
             logger.warn('SDK', 'OpenRouter rate-limited during summary, aborting session', {

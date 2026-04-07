@@ -48,7 +48,7 @@ export function isRateLimitResponse(text: string): boolean {
   ];
   if (patterns.some(p => lower.includes(p))) return true;
   // "resets at 7pm", "resets in 2 hours", etc.
-  return /reset s?\s+(at\s+\d|in\s+\d)/i.test(text);
+  return /\bresets?\s+(at\s+\d|in\s+\d)/i.test(text);
 }
 
 /**
@@ -157,15 +157,22 @@ export async function processAgentResponse(
   const observations = parseObservations(text, session.contentSessionId);
   const summary = parseSummary(text, session.sessionDbId);
 
-  // --- GUARD: Non-XML response with pending messages ---
-  // If we got non-empty text that contains no XML structure, the LLM returned
-  // something unexpected (auth error, rate limit, garbled output). Never silently
-  // discard — always preserve the messages so they can be retried.
+  // --- GUARD: Unproductive response with pending messages ---
+  // Covers two cases:
+  //   1. No XML markers at all — the LLM returned an error message, rate-limit notice, etc.
+  //   2. XML markers present but parser produced nothing — truncated/malformed XML.
+  // <skip_summary> with no observations is intentional (init prompt); allow it through.
+  const hasXmlMarkers = /<observation\b|<summary\b|<skip_summary\b/.test(text);
+  const isIntentionalSkipOnly =
+    /<skip_summary\b/.test(text) &&
+    !/<observation\b/.test(text) &&
+    !/<summary\b/.test(text);
+
   if (
     text.trim() &&
     observations.length === 0 &&
     !summary &&
-    !/<observation>|<summary>|<skip_summary\b/.test(text)
+    (!hasXmlMarkers || (session.processingMessageIds.length > 0 && !isIntentionalSkipOnly))
   ) {
     const preview = text.length > 200 ? `${text.slice(0, 200)}...` : text;
 
@@ -187,12 +194,12 @@ export async function processAgentResponse(
       return { status: 'error', observationCount: 0, summaryStored: false };
     }
 
-    // Unknown non-XML (confused model output, transient provider issue, etc.)
-    logger.warn('PARSER', `${agentName} returned non-XML response; messages preserved for retry`, {
+    const reason = hasXmlMarkers ? 'malformed_xml' : 'non_xml';
+    logger.warn('PARSER', `${agentName} returned ${reason === 'malformed_xml' ? 'malformed/truncated XML' : 'non-XML'} response; messages preserved for retry`, {
       sessionId: session.sessionDbId,
       preview
     });
-    preserveMessages(session, sessionManager, worker, 'non_xml');
+    preserveMessages(session, sessionManager, worker, reason);
     return { status: 'error', observationCount: 0, summaryStored: false };
   }
 

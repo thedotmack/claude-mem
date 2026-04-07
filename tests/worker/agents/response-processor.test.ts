@@ -553,6 +553,28 @@ describe('ResponseProcessor', () => {
       expect(mockStoreObservations).not.toHaveBeenCalled();
       expect(result.status).toBe('error');
     });
+
+    it('preserves messages on malformed/truncated XML response with pending messages', async () => {
+      const session = createMockSession({
+        processingMessageIds: [302],
+      });
+
+      // Truncated XML — has XML markers but parser produces no observations/summary
+      const result = await processAgentResponse(
+        '<observation><type>bugfix',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(mockMarkFailed).toHaveBeenCalledWith(302);
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(result.status).toBe('error');
+    });
   });
 
   describe('session cleanup', () => {
