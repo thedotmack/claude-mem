@@ -373,14 +373,18 @@ export class SessionSearch {
       return this.db.prepare(sql).all(query, limit, offset) as SessionSummarySearchResult[];
     } catch (error) {
       logger.warn('DB', 'FTS5 search failed for sessions, falling back to LIKE query', {}, error as Error);
+      const likePattern = `%${query.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
       const sql = `
         SELECT s.*, s.discovery_tokens
         FROM session_summaries s
-        WHERE s.summary LIKE ?
+        WHERE s.request LIKE ? ESCAPE '\\'
+           OR s.learned LIKE ? ESCAPE '\\'
+           OR s.completed LIKE ? ESCAPE '\\'
+           OR s.notes LIKE ? ESCAPE '\\'
         ORDER BY s.created_at_epoch DESC
         LIMIT ? OFFSET ?
       `;
-      return this.db.prepare(sql).all(`%${query}%`, limit, offset) as SessionSummarySearchResult[];
+      return this.db.prepare(sql).all(likePattern, likePattern, likePattern, likePattern, limit, offset) as SessionSummarySearchResult[];
     }
   }
 
@@ -627,14 +631,15 @@ export class SessionSearch {
       return this.db.prepare(sql).all(query, limit, offset) as UserPromptSearchResult[];
     } catch (error) {
       logger.warn('DB', 'FTS5 search failed for prompts, falling back to LIKE query', {}, error as Error);
+      const likePattern = `%${query.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
       const sql = `
         SELECT up.*
         FROM user_prompts up
-        WHERE up.prompt_text LIKE ?
+        WHERE up.prompt_text LIKE ? ESCAPE '\\'
         ORDER BY up.created_at_epoch DESC
         LIMIT ? OFFSET ?
       `;
-      return this.db.prepare(sql).all(`%${query}%`, limit, offset) as UserPromptSearchResult[];
+      return this.db.prepare(sql).all(likePattern, limit, offset) as UserPromptSearchResult[];
     }
   }
 
