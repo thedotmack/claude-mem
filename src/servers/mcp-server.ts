@@ -16,7 +16,6 @@ import { logger } from '../utils/logger.js';
 // CRITICAL: Redirect console to stderr BEFORE other imports
 // MCP uses stdio transport where stdout is reserved for JSON-RPC protocol messages.
 // Any logs to stdout break the protocol (Claude Desktop parses "[2025..." as JSON array).
-const _originalLog = console['log'];
 console['log'] = (...args: any[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
 };
@@ -47,10 +46,11 @@ const mcpServerDir = (() => {
   } catch {
     // Last-ditch fallback: cwd is almost certainly wrong, but throwing here
     // would crash the MCP server before it can serve a single request. Log
-    // loud so the existence check below has a useful breadcrumb to point at.
-    logger.warn(
+    // at ERROR so the existence check below has a loud, searchable breadcrumb
+    // — a wrong WORKER_SCRIPT_PATH means worker auto-start will silently fail.
+    logger.error(
       'SYSTEM',
-      'mcp-server: unable to resolve __dirname or import.meta.url; falling back to process.cwd() — WORKER_SCRIPT_PATH will likely be wrong'
+      'mcp-server: unable to resolve __dirname or import.meta.url; falling back to process.cwd() — WORKER_SCRIPT_PATH will almost certainly be wrong and worker auto-start will fail'
     );
     return process.cwd();
   }

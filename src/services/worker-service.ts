@@ -992,8 +992,14 @@ export class WorkerService {
  * Ensures the worker is started and healthy.
  *
  * Thin wrapper around the canonical implementation in ./worker-spawner.ts.
- * When called from worker-service.ts itself, `__filename` resolves to the
- * worker-service bundle, which is the correct target for spawnDaemon.
+ *
+ * `__filename` is forwarded as the worker script path because, in the CJS
+ * bundle that ships to users, `__filename` always resolves to the compiled
+ * `worker-service.cjs` itself — which is exactly the script the spawner
+ * needs to relaunch as a detached daemon. The MCP server (a separate Node
+ * bundle) cannot rely on its own `__filename` because that would point at
+ * `mcp-server.cjs`, so it computes the worker path explicitly via
+ * `dirname(__filename) + 'worker-service.cjs'` instead.
  *
  * @param port - The TCP port (used for port-in-use checks and daemon spawn)
  * @returns true if worker is healthy (existing or newly started), false on failure

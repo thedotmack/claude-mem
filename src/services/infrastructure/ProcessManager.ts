@@ -112,6 +112,7 @@ export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): 
         '/usr/local/bin/bun',
         '/opt/homebrew/bin/bun',
         '/home/linuxbrew/.linuxbrew/bin/bun',
+        '/usr/bin/bun', // Debian/Ubuntu apt install path
       ];
 
   for (const candidate of candidatePaths) {
@@ -122,7 +123,11 @@ export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): 
       return normalized;
     }
 
-    // Allow command-style values from env (e.g. BUN=bun)
+    // Allow command-style values from env (e.g. BUN=bun). The previous branch
+    // would also match this candidate via isBunExecutablePath('bun') === true,
+    // but pathExists('bun') is false because it's a relative name — so this
+    // branch is what actually fires for the bare-command case. We return the
+    // bare name unchanged so child_process.spawn() resolves it via PATH.
     if (normalized.toLowerCase() === 'bun') {
       return normalized;
     }
