@@ -122,8 +122,8 @@ export function getObservationsByFilePath(
   options?: { projects?: string[]; limit?: number }
 ): ObservationRecord[] {
   const rawLimit = options?.limit;
-  const limit = Number.isInteger(rawLimit) && rawLimit! > 0
-    ? Math.min(rawLimit!, 100)
+  const limit = Number.isInteger(rawLimit) && (rawLimit as number) > 0
+    ? Math.min(rawLimit as number, 100)
     : 15;
   const params: (string | number)[] = [filePath, filePath];
 

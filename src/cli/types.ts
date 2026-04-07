@@ -20,12 +20,11 @@ export interface HookResult {
   hookSpecificOutput?: {
     hookEventName: string;
     additionalContext: string;
-    permissionDecision?: string;
+    permissionDecision?: 'allow' | 'deny';
     permissionDecisionReason?: string;
   };
   systemMessage?: string;
   exitCode?: number;
-  stderrMessage?: string;  // Written to stderr before exit (for exit code 2 blocking feedback)
 }
 
 export interface PlatformAdapter {

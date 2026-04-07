@@ -129,11 +129,14 @@ function formatFileTimeline(observations: ObservationRow[], filePath: string): s
     `- **Already know enough?** The timeline below may be all you need (semantic priming).`,
     `- **Need details?** get_observations([IDs]) — ~300 tokens each.`,
     `- **Need current code?** smart_outline("${filePath}") for structure (~1-2k tokens), smart_unfold("${filePath}", "<symbol>") for a specific function (~400-2k tokens).`,
+    `- **Need to edit?** Use smart tools for line numbers, then sed via Bash (Edit requires Read, but you already have the context).`,
   ];
 
   for (const [day, dayObservations] of sortedDays) {
+    // Sort within each day chronologically (deduplicateObservations reorders by specificity)
+    const chronological = [...dayObservations].sort((a, b) => a.created_at_epoch - b.created_at_epoch);
     lines.push(`### ${day}`);
-    for (const obs of dayObservations) {
+    for (const obs of chronological) {
       const title = obs.title || 'Untitled';
       const icon = TYPE_ICONS[obs.type] || '\u2753';
       const time = compactTime(formatTime(obs.created_at_epoch));
@@ -187,10 +190,13 @@ export const fileContextHandler: EventHandler = {
       const context = getProjectContext(input.cwd);
       // Observations store relative paths — convert absolute to relative using cwd
       const cwd = input.cwd || process.cwd();
-      const relativePath = path.isAbsolute(filePath) ? path.relative(cwd, filePath) : filePath;
+      const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+      const relativePath = path.relative(cwd, absolutePath).split(path.sep).join("/");
       const queryParams = new URLSearchParams({ path: relativePath });
       // Pass all project names (parent + worktree) for unified lookup
-      queryParams.set('projects', context.allProjects.join(','));
+      if (context.allProjects.length > 0) {
+        queryParams.set('projects', context.allProjects.join(','));
+      }
       queryParams.set('limit', String(FETCH_LOOKAHEAD_LIMIT));
 
       const response = await workerHttpRequest(`/api/observations/by-file?${queryParams.toString()}`, {
