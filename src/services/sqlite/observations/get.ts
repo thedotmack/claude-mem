@@ -140,8 +140,8 @@ export function getObservationsByFilePath(
     SELECT *
     FROM observations
     WHERE (
-      EXISTS (SELECT 1 FROM json_each(files_read) WHERE value = ?)
-      OR EXISTS (SELECT 1 FROM json_each(files_modified) WHERE value = ?)
+      (files_read LIKE '[%' AND EXISTS (SELECT 1 FROM json_each(files_read) WHERE value = ?))
+      OR (files_modified LIKE '[%' AND EXISTS (SELECT 1 FROM json_each(files_modified) WHERE value = ?))
     )
     ${projectClause}
     ORDER BY created_at_epoch DESC

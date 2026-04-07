@@ -18,6 +18,7 @@ import { SessionManager } from '../../SessionManager.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 
 export class DataRoutes extends BaseRouteHandler {
@@ -281,7 +282,8 @@ export class DataRoutes extends BaseRouteHandler {
    */
   private handleGetProjects = this.wrapHandler((req: Request, res: Response): void => {
     const store = this.dbManager.getSessionStore();
-    const platformSource = req.query.platformSource as string | undefined;
+    const rawPlatformSource = req.query.platformSource as string | undefined;
+    const platformSource = rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
 
     if (platformSource) {
       const projects = store.getAllProjects(platformSource);
@@ -328,7 +330,8 @@ export class DataRoutes extends BaseRouteHandler {
     const offset = parseInt(req.query.offset as string, 10) || 0;
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); // Max 100
     const project = req.query.project as string | undefined;
-    const platformSource = req.query.platformSource as string | undefined;
+    const rawPlatformSource = req.query.platformSource as string | undefined;
+    const platformSource = rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
 
     return { offset, limit, project, platformSource };
   }

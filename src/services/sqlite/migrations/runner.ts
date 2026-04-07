@@ -894,14 +894,14 @@ export class MigrationRunner {
   }
 
   /**
-   * Add platform_source column to sdk_sessions for Claude/Codex isolation (migration 24)
+   * Add platform_source column to sdk_sessions for Claude/Codex isolation (migration 25)
    */
   private addSessionPlatformSourceColumn(): void {
     const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
     const hasColumn = tableInfo.some(col => col.name === 'platform_source');
     const indexInfo = this.db.query('PRAGMA index_list(sdk_sessions)').all() as IndexInfo[];
     const hasIndex = indexInfo.some(index => index.name === 'idx_sdk_sessions_platform_source');
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(25) as SchemaVersion | undefined;
 
     if (applied && hasColumn && hasIndex) return;
 
@@ -920,6 +920,6 @@ export class MigrationRunner {
       this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
     }
 
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
   }
 }

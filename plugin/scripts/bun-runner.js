@@ -196,7 +196,7 @@ child.on('close', (code, signal) => {
   // Fix #1505: When the "start" subcommand forks a daemon, the parent bun
   // process may be killed by signal (e.g. SIGKILL, exit code 137). The daemon
   // is running fine — treat signal-based exits for "start" as success.
-  if (signal || (code > 128 && args.includes('start'))) {
+  if ((signal || code > 128) && args.includes('start')) {
     process.exit(0);
   }
   process.exit(code || 0);

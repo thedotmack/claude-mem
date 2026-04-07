@@ -68,6 +68,14 @@ export class ViewerRoutes extends BaseRouteHandler {
    * SSE stream endpoint
    */
   private handleSSEStream = this.wrapHandler((req: Request, res: Response): void => {
+    // Guard: if DB is not yet initialized, return 503 before registering client
+    try {
+      this.dbManager.getSessionStore();
+    } catch {
+      res.status(503).json({ error: 'Service initializing' });
+      return;
+    }
+
     // Setup SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
