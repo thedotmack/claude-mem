@@ -449,7 +449,7 @@ function installDeps() {
     console.error('⚠️  Bun install failed, falling back to npm...');
     console.error('   (This can happen with npm alias packages like *-cjs)');
     try {
-      execSync('npm install', { cwd: ROOT, stdio: installStdio, shell: IS_WINDOWS });
+      execSync('npm install --legacy-peer-deps', { cwd: ROOT, stdio: installStdio, shell: IS_WINDOWS });
     } catch (npmError) {
       throw new Error('Both bun and npm install failed: ' + npmError.message);
     }
@@ -546,7 +546,7 @@ try {
     if (!verifyCriticalModules()) {
       console.error('⚠️  Retrying install with npm...');
       try {
-        execSync('npm install --production', { cwd: ROOT, stdio: ['pipe', 'pipe', 'inherit'], shell: IS_WINDOWS });
+        execSync('npm install --production --legacy-peer-deps', { cwd: ROOT, stdio: ['pipe', 'pipe', 'inherit'], shell: IS_WINDOWS });
       } catch {
         // npm also failed
       }
