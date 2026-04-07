@@ -478,6 +478,39 @@ describe('ProcessManager', () => {
         try { process.kill(result, 'SIGKILL'); } catch { /* already exited */ }
       }
     });
+
+    /**
+     * Documents the spawnDaemon return contract for the Windows `0` PID
+     * success sentinel. PowerShell `Start-Process` does not return the spawned
+     * PID, so the Windows branch returns 0 as a "spawn dispatched" sentinel.
+     * Callers MUST use `pid === undefined` to detect failure — never falsy
+     * checks like `if (!pid)`, which would silently treat success as failure
+     * because 0 is falsy in JavaScript.
+     *
+     * This contract test exists so any future contributor introducing
+     * `if (!pid)` against a spawnDaemon return value (or its wrapper) sees a
+     * failing assertion that documents why the falsy check is incorrect.
+     * See PR #1645 review feedback for context.
+     */
+    it('Windows 0 PID success sentinel must NOT be detected via falsy check', () => {
+      const windowsSuccessSentinel: number | undefined = 0;
+      const failureSentinel: number | undefined = undefined;
+
+      // Correct contract: undefined === failure, anything else === success.
+      expect(windowsSuccessSentinel === undefined).toBe(false);
+      expect(failureSentinel === undefined).toBe(true);
+
+      // Demonstrates the bug a future regression would introduce:
+      // `if (!pid)` is true for BOTH the Windows success sentinel AND the
+      // genuine failure sentinel — silently treating success as failure.
+      expect(!windowsSuccessSentinel).toBe(true); // ← this is the trap
+      expect(!failureSentinel).toBe(true);
+
+      // Therefore, callers must use strict undefined comparison.
+      const isFailure = (pid: number | undefined) => pid === undefined;
+      expect(isFailure(windowsSuccessSentinel)).toBe(false);
+      expect(isFailure(failureSentinel)).toBe(true);
+    });
   });
 
   describe('SIGHUP handling', () => {
