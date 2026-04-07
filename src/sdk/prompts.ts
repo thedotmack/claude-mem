@@ -20,6 +20,18 @@ export interface SplitPrompt {
   dynamicContext: string;
 }
 
+/**
+ * Escape XML-special characters in user-supplied text before embedding
+ * it inside XML tags. Prevents <, >, & in code-heavy prompts from
+ * breaking the <user_request> envelope.
+ */
+export function escapeXmlText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 export interface SDKSession {
   id: number;
   memory_session_id: string | null;
@@ -88,7 +100,7 @@ ${mode.prompts.footer}
 ${mode.prompts.header_memory_start}`;
 
   const dynamicContext = `<observed_from_primary_session>
-  <user_request>${userPrompt}</user_request>
+  <user_request>${escapeXmlText(userPrompt)}</user_request>
 </observed_from_primary_session>`;
 
   return { staticPrefix, dynamicContext };
