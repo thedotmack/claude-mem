@@ -6,10 +6,7 @@
  */
 import { describe, it, expect } from 'bun:test';
 
-// Import the tools array directly — static schema validation, no server needed
-import '../../src/servers/mcp-server.js';
-
-// Re-import via dynamic require to access the tools array
+// Static schema validation — reads source as text, no server startup needed
 const mcpServerPath = new URL('../../src/servers/mcp-server.ts', import.meta.url).pathname;
 
 describe('MCP tool inputSchema declarations', () => {

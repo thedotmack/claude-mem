@@ -395,7 +395,9 @@ export class SearchManager {
    * Tool handler: timeline
    */
   async timeline(args: any): Promise<any> {
-    const { anchor, query, depth_before = 10, depth_after = 10, project } = args;
+    const { anchor, query, depth_before, depth_after, project } = args;
+    const depthBefore = Number(depth_before) || 10;
+    const depthAfter = Number(depth_after) || 10;
     const cwd = process.cwd();
 
     // Validate: must provide either anchor or query, not both
@@ -464,7 +466,7 @@ export class SearchManager {
       anchorId = topResult.id;
       anchorEpoch = topResult.created_at_epoch;
       logger.debug('SEARCH', 'Query mode: Using observation as timeline anchor', { observationId: topResult.id });
-      timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depth_before, depth_after, project);
+      timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project);
     }
     // MODE 2: Anchor-based timeline
     else if (typeof anchor === 'number') {
@@ -481,7 +483,7 @@ export class SearchManager {
       }
       anchorId = anchor;
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depth_before, depth_after, project);
+      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depthBefore, depthAfter, project);
     } else if (typeof anchor === 'string') {
       // Session ID or ISO timestamp
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
@@ -499,7 +501,7 @@ export class SearchManager {
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       } else {
         // ISO timestamp
         const date = new Date(anchor);
@@ -514,7 +516,7 @@ export class SearchManager {
         }
         anchorEpoch = date.getTime();
         anchorId = anchor;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       }
     } else {
       return {
@@ -533,15 +535,15 @@ export class SearchManager {
       ...(timelineData.prompts || []).map((prompt: any) => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
     ];
     items.sort((a, b) => a.epoch - b.epoch);
-    const filteredItems = this.timelineService.filterByDepth(items, anchorId, anchorEpoch, depth_before, depth_after);
+    const filteredItems = this.timelineService.filterByDepth(items, anchorId, anchorEpoch, depthBefore, depthAfter);
 
     if (!filteredItems || filteredItems.length === 0) {
       return {
         content: [{
           type: 'text' as const,
           text: query
-            ? `Found observation matching "${query}", but no timeline context available (${depth_before} records before, ${depth_after} records after).`
-            : `No context found around anchor (${depth_before} records before, ${depth_after} records after)`
+            ? `Found observation matching "${query}", but no timeline context available (${depthBefore} records before, ${depthAfter} records after).`
+            : `No context found around anchor (${depthBefore} records before, ${depthAfter} records after)`
         }]
       };
     }
@@ -559,7 +561,7 @@ export class SearchManager {
       lines.push(`# Timeline around anchor: ${anchorId}`);
     }
 
-    lines.push(`**Window:** ${depth_before} records before -> ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
+    lines.push(`**Window:** ${depthBefore} records before -> ${depthAfter} records after | **Items:** ${filteredItems?.length ?? 0}`);
     lines.push('');
 
 
@@ -1443,7 +1445,9 @@ export class SearchManager {
    * Tool handler: get_context_timeline
    */
   async getContextTimeline(args: any): Promise<any> {
-    const { anchor, depth_before = 10, depth_after = 10, project } = args;
+    const { anchor, depth_before, depth_after, project } = args;
+    const depthBefore = Number(depth_before) || 10;
+    const depthAfter = Number(depth_after) || 10;
     const cwd = process.cwd();
     let anchorEpoch: number;
     let anchorId: string | number = anchor;
@@ -1463,7 +1467,7 @@ export class SearchManager {
         };
       }
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depth_before, depth_after, project);
+      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depthBefore, depthAfter, project);
     } else if (typeof anchor === 'string') {
       // Session ID or ISO timestamp
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
@@ -1481,7 +1485,7 @@ export class SearchManager {
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       } else {
         // ISO timestamp
         const date = new Date(anchor);
@@ -1495,7 +1499,7 @@ export class SearchManager {
           };
         }
         anchorEpoch = date.getTime(); // Keep as milliseconds
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       }
     } else {
       return {
@@ -1514,14 +1518,14 @@ export class SearchManager {
       ...timelineData.prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
     ];
     items.sort((a, b) => a.epoch - b.epoch);
-    const filteredItems = this.timelineService.filterByDepth(items, anchorId, anchorEpoch, depth_before, depth_after);
+    const filteredItems = this.timelineService.filterByDepth(items, anchorId, anchorEpoch, depthBefore, depthAfter);
 
     if (!filteredItems || filteredItems.length === 0) {
       const anchorDate = new Date(anchorEpoch).toLocaleString();
       return {
         content: [{
           type: 'text' as const,
-          text: `No context found around ${anchorDate} (${depth_before} records before, ${depth_after} records after)`
+          text: `No context found around ${anchorDate} (${depthBefore} records before, ${depthAfter} records after)`
         }]
       };
     }
@@ -1531,7 +1535,7 @@ export class SearchManager {
 
     // Header
     lines.push(`# Timeline around anchor: ${anchorId}`);
-    lines.push(`**Window:** ${depth_before} records before -> ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
+    lines.push(`**Window:** ${depthBefore} records before -> ${depthAfter} records after | **Items:** ${filteredItems?.length ?? 0}`);
     lines.push('');
 
 
@@ -1655,7 +1659,9 @@ export class SearchManager {
    * Tool handler: get_timeline_by_query
    */
   async getTimelineByQuery(args: any): Promise<any> {
-    const { query, mode = 'auto', depth_before = 10, depth_after = 10, limit = 5, project } = args;
+    const { query, mode = 'auto', depth_before, depth_after, limit = 5, project } = args;
+    const depthBefore = Number(depth_before) || 10;
+    const depthAfter = Number(depth_after) || 10;
     const cwd = process.cwd();
 
     // Step 1: Search for observations
@@ -1736,8 +1742,8 @@ export class SearchManager {
       const timelineData = this.sessionStore.getTimelineAroundObservation(
         topResult.id,
         topResult.created_at_epoch,
-        depth_before,
-        depth_after,
+        depthBefore,
+        depthAfter,
         project
       );
 
@@ -1748,13 +1754,13 @@ export class SearchManager {
         ...(timelineData.prompts || []).map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
       ];
       items.sort((a, b) => a.epoch - b.epoch);
-      const filteredItems = this.timelineService.filterByDepth(items, topResult.id, 0, depth_before, depth_after);
+      const filteredItems = this.timelineService.filterByDepth(items, topResult.id, 0, depthBefore, depthAfter);
 
       if (!filteredItems || filteredItems.length === 0) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Found observation #${topResult.id} matching "${query}", but no timeline context available (${depth_before} records before, ${depth_after} records after).`
+            text: `Found observation #${topResult.id} matching "${query}", but no timeline context available (${depthBefore} records before, ${depthAfter} records after).`
           }]
         };
       }
@@ -1765,7 +1771,7 @@ export class SearchManager {
       // Header
       lines.push(`# Timeline for query: "${query}"`);
       lines.push(`**Anchor:** Observation #${topResult.id} - ${topResult.title || 'Untitled'}`);
-      lines.push(`**Window:** ${depth_before} records before -> ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
+      lines.push(`**Window:** ${depthBefore} records before -> ${depthAfter} records after | **Items:** ${filteredItems?.length ?? 0}`);
       lines.push('');
 
 
