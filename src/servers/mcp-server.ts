@@ -244,7 +244,27 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: false
     },
     handler: async (args: any) => {
-      return await callWorkerAPIPost('/api/sdk-sessions/batch', { memorySessionIds: args.memory_session_ids });
+      const res = await workerHttpRequest('/api/sdk-sessions/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ memorySessionIds: args.memory_session_ids })
+      });
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`Worker API error (${res.status}): ${errorText}`);
+      }
+      const rows = await res.json() as Array<any>;
+      const metadata = rows.map(({ memory_session_id, content_session_id, custom_title, project, started_at, status }: any) => ({
+        memory_session_id,
+        content_session_id,
+        custom_title,
+        project,
+        started_at,
+        status
+      }));
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(metadata, null, 2) }]
+      };
     }
   },
   {
