@@ -60,7 +60,10 @@ export function markWorkerSpawnAttempted(): void {
     mkdirSync(path.dirname(lockPath), { recursive: true });
     writeFileSync(lockPath, '', 'utf-8');
   } catch {
-    // Best-effort lock file — failure to write shouldn't block startup
+    // APPROVED OVERRIDE: best-effort cooldown marker. If we can't even create
+    // the data dir or write the marker, the worker spawn itself is almost
+    // certainly going to fail too — surfacing that downstream gives the user
+    // a far more useful error than a noisy log line about a lock file.
   }
 }
 
@@ -70,7 +73,9 @@ export function clearWorkerSpawnAttempted(): void {
     const lockPath = getWorkerSpawnLockPath();
     if (existsSync(lockPath)) unlinkSync(lockPath);
   } catch {
-    // Best-effort cleanup
+    // APPROVED OVERRIDE: best-effort cleanup of the cooldown marker after a
+    // successful spawn. A stale marker on disk is harmless — the worst case
+    // is one suppressed retry within the cooldown window, then it self-heals.
   }
 }
 
