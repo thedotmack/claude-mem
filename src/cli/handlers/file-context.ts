@@ -107,6 +107,8 @@ function deduplicateObservations(
 }
 
 function formatFileTimeline(observations: ObservationRow[], filePath: string): string {
+  // Escape filePath for safe interpolation into recovery hints (quotes, backslashes, newlines)
+  const safePath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
   // Group observations by day
   const byDay = new Map<string, ObservationRow[]>();
   for (const obs of observations) {
@@ -128,7 +130,7 @@ function formatFileTimeline(observations: ObservationRow[], filePath: string): s
     `Read blocked: This file has prior observations. Choose the cheapest path:`,
     `- **Already know enough?** The timeline below may be all you need (semantic priming).`,
     `- **Need details?** get_observations([IDs]) — ~300 tokens each.`,
-    `- **Need current code?** smart_outline("${filePath}") for structure (~1-2k tokens), smart_unfold("${filePath}", "<symbol>") for a specific function (~400-2k tokens).`,
+    `- **Need current code?** smart_outline("${safePath}") for structure (~1-2k tokens), smart_unfold("${safePath}", "<symbol>") for a specific function (~400-2k tokens).`,
     `- **Need to edit?** Use smart tools for line numbers, then sed via Bash (Edit requires Read, but you already have the context).`,
   ];
 
