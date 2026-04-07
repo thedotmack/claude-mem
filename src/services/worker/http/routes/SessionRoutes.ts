@@ -43,7 +43,7 @@ export class SessionRoutes extends BaseRouteHandler {
     this.completionHandler = new SessionCompletionHandler(
       sessionManager,
       eventBroadcaster,
-      dbManager.getSessionStore()
+      dbManager
     );
   }
 

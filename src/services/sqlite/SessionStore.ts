@@ -26,7 +26,6 @@ function resolveCreateSessionArgs(
     platformSource: platformSource ? normalizePlatformSource(platformSource) : undefined
   };
 }
->>>>>>> pr-1472
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -65,6 +64,7 @@ export class SessionStore {
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
     this.addSessionPlatformSourceColumn();
+    this.addObservationModelColumns();
   }
 
   /**
@@ -918,6 +918,30 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
+  }
+
+  /**
+   * Add generated_by_model and relevance_count columns to observations (migration 26)
+   *
+   * Note: Cannot trust schema_versions alone — the old MigrationRunner may have
+   * recorded version 26 without the ALTER TABLE actually succeeding. Always
+   * check column existence directly.
+   */
+  private addObservationModelColumns(): void {
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasGeneratedByModel = columns.some(col => col.name === 'generated_by_model');
+    const hasRelevanceCount = columns.some(col => col.name === 'relevance_count');
+
+    if (hasGeneratedByModel && hasRelevanceCount) return;
+
+    if (!hasGeneratedByModel) {
+      this.db.run('ALTER TABLE observations ADD COLUMN generated_by_model TEXT');
+    }
+    if (!hasRelevanceCount) {
+      this.db.run('ALTER TABLE observations ADD COLUMN relevance_count INTEGER DEFAULT 0');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
   }
 
   /**

@@ -199,9 +199,6 @@ export class WorkerService {
   // Stale session reaper interval (Issue #1168)
   private staleSessionReaperInterval: ReturnType<typeof setInterval> | null = null;
 
-  // Transcript watcher for external CLI sessions (e.g. Codex, Gemini)
-  private transcriptWatcher: TranscriptWatcher | null = null;
-
   // AI interaction tracking for health endpoint
   private lastAiInteraction: {
     timestamp: number;
@@ -990,13 +987,6 @@ export class WorkerService {
     if (this.staleSessionReaperInterval) {
       clearInterval(this.staleSessionReaperInterval);
       this.staleSessionReaperInterval = null;
-    }
-
-    // Stop transcript watcher
-    if (this.transcriptWatcher) {
-      this.transcriptWatcher.stop();
-      this.transcriptWatcher = null;
-      logger.info('SYSTEM', 'Transcript watcher stopped');
     }
 
     await performGracefulShutdown({
