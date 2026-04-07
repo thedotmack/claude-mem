@@ -4,10 +4,109 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [11.0.1] - 2026-
-✅ CHANGELOG.md generated successfully!
-   222 releases processed
-fault from `true` to `false`.
+## [12.0.0] - 2026-04-07
+
+# claude-mem v12.0.0
+
+A major release delivering intelligent file-read gating, expanded language support for smart-explore, platform source isolation, and 40+ bug fixes across Windows, Linux, and macOS.
+
+## Highlights
+
+### File-Read Decision Gate
+Claude Code now intelligently gates redundant file reads. When a file has prior observations in the timeline, the PreToolUse hook injects the observation history and blocks the read — saving tokens and keeping context focused. The gate supports both `Read` and `Edit` tools, uses `permissionDecision` deny with a rich timeline payload, and includes file-size thresholds and observation deduplication.
+
+### Smart-Explore: 24 Language Support
+The `smart-explore` skill now supports **24 programming languages** via tree-sitter AST parsing: TypeScript, JavaScript, Python, Rust, Go, Java, C, C++, C#, Ruby, PHP, Swift, Kotlin, Scala, Bash, CSS, SCSS, HTML, Lua, Haskell, Elixir, Zig, TOML, and YAML. User-installable grammars with `--legacy-peer-deps` support for tree-sitter version conflicts.
+
+### Platform Source Isolation
+Claude and Codex sessions are now fully isolated with `platform_source` column on `sdk_sessions`. Each platform gets its own session namespace, preventing cross-contamination between different AI coding tools. Normalized at route boundaries for consistent behavior.
+
+### Codex & OpenClaw Support
+- Codex plugin manifest added for marketplace discoverability
+- OpenClaw: `workerHost` config for Docker deployments
+- OpenClaw: handle stale `plugins.allow` and non-interactive TTY in installer
+
+## New Features
+
+- **File-read decision gate** — blocks redundant file reads with observation timeline injection (#1564, #1629, #1641)
+- **24-language smart-explore** — AST-based code exploration across all major languages
+- **Platform source isolation** — Claude/Codex session namespacing with DB migration
+- **CLAUDE.local.md support** — `CLAUDE_MEM_FOLDER_USE_LOCAL_MD` setting for writing to local-only config
+- **OpenClaw workerHost** — Docker deployment support for OpenClaw plugin
+- **Codex plugin manifest** — discoverability in Codex marketplace
+- **File-size threshold** — skip file-read gating for small files
+- **Observation deduplication** — prevent duplicate observations in timeline gate
+
+## Bug Fixes
+
+### Worker & Startup
+- Fix worker startup crash with missing observation columns (#1641)
+- Fix SessionStart hooks failing on cold start due to worker race condition
+- Fix worker daemon being killed by its own hooks (#1490)
+- Fail worker-start hook if worker never becomes healthy
+- Fix readiness timeout logging on reused-worker path (#1491)
+- Remove dead `USER_MESSAGE_ONLY` exit code that caused SessionStart hook errors
+- Decouple MCP health from loopback self-check
+
+### Data Integrity
+- Fix migration version conflict: `addSessionPlatformSourceColumn` now correctly uses v25
+- Add migration for `generated_by_model` and `relevance_count` columns
+- Wire `generated_by_model` into observation write path
+- Use null-byte delimiter in observation content hash to prevent collisions
+- Persist session completion to database in `completeByDbId` (#1532)
+- Handle bare path strings in `files_modified`/`files_read` columns (#1359)
+- Guard `json_each()` calls against legacy bare-path rows
+- Deduplicate session init to prevent multiple prompt records
+
+### Security
+- Prevent shell injection in summary workflow (#1285)
+- Sanitize observation titles in file-context deny reason (strip newlines, collapse whitespace)
+- Normalize `platformSource` at route boundary to prevent filter inconsistencies
+- Escape `filePath` in recovery hints to prevent malformed output
+- Address path safety, SQL injection, and gate scoping in file-read hook
+
+### Windows
+- Fix `isMainModule` CJS branch failure on Bun — add `CLAUDE_MEM_MANAGED` fallback
+- Use `cmd /c` to execute `bun.cmd` on Windows
+- Prefer `bun.cmd` over bun shell script on Windows
+- Add `shell: true` on Windows to spawn bun from npm
+
+### Cross-Platform
+- Replace GNU `sort -V` with POSIX-portable version sort
+- Resolve `node not found` on nvm/homebrew installations
+- Resolve hook failures when `CLAUDE_PLUGIN_ROOT` is not injected (#1533)
+- Fix bun-runner signal exit handling — scope to `start` subcommand only
+- Guard `/stream` SSE endpoint with 503 before DB initialization
+- Provide empty JSON fallback when stdin is not piped (#1560)
+
+### Parser & Content
+- Strip `<persisted-output>` tags from memory
+- Strip `<system-reminder>` tags from persisted memory and DRY up regex
+- Skip `parseSummary` false positives with no sub-tags (#1360)
+- Handle bare filenames in `regenerate-claude-md.ts` (#1514)
+- Handle bare filenames in `path-utils.ts isDirectChild`
+- Handle single-quoted paths and dangling var edge case
+- Strip hardcoded `__dirname`/`__filename` from bundled CJS output
+- Add PHP grammar support to smart-file-read parser (#1617)
+
+### Installer & Config
+- Make post-install allowlist write guaranteed
+- Harden plugin manifest sync script
+- Fix `expand ~` to home directory before project resolution
+- Update default model from `claude-sonnet-4-5` to `claude-sonnet-4-6` (#1390)
+- Fix Gemini conversation history truncation to prevent O(N²) token cost growth
+
+## Refactoring
+
+- Rename formatters to `AgentFormatter`/`HumanFormatter` for semantic clarity
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v11.0.1...v12.0.0
+
+## [11.0.1] - 2026-04-06
+
+**Patch release** — Changes `CLAUDE_MEM_SEMANTIC_INJECT` default from `true` to `false`.
 
 ### What changed
 - Per-prompt Chroma vector search on `UserPromptSubmit` is now **opt-in** rather than opt-out
