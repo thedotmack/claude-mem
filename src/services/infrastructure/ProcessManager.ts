@@ -668,7 +668,10 @@ export function spawnDaemon(
     const runtimePath = resolveWorkerRuntimePath();
 
     if (!runtimePath) {
-      logger.error('SYSTEM', 'Failed to locate Bun runtime for Windows worker spawn');
+      logger.error(
+        'SYSTEM',
+        'Bun runtime not found — install from https://bun.sh and ensure it is on PATH or set BUN env var. The worker daemon requires Bun because it uses bun:sqlite.'
+      );
       return undefined;
     }
 
@@ -707,7 +710,10 @@ export function spawnDaemon(
   // the caller is the MCP server. See resolveWorkerRuntimePath() for lookup.
   const unixRuntimePath = resolveWorkerRuntimePath();
   if (!unixRuntimePath) {
-    logger.error('SYSTEM', 'Failed to locate Bun runtime for worker spawn');
+    logger.error(
+      'SYSTEM',
+      'Bun runtime not found — install from https://bun.sh and ensure it is on PATH or set BUN env var. The worker daemon requires Bun because it uses bun:sqlite.'
+    );
     return undefined;
   }
 
