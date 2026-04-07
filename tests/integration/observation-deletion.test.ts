@@ -92,6 +92,8 @@ function seedObservation(store: SessionStore, memId: string, title: string): num
   return storeObservation(store.db, memId, 'test-project', input).id;
 }
 
+// Note: baseline assertions (NULL session IDs, version-tracking, tag-stripping) are covered
+// by dedicated test files. This suite is scoped to the deletion path only.
 describe('Observation Deletion — Integration', () => {
   let store: SessionStore;
 

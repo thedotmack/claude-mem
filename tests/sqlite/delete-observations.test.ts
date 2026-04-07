@@ -113,7 +113,8 @@ describe('deleteObservations', () => {
 
   it('should remove deleted observations from FTS index', () => {
     // FTS is initialized by SessionSearch, not ClaudeMemDatabase.
-    // Set up FTS table and trigger manually for this test.
+    // Manual FTS setup is intentional: isolates this unit test from the full migration
+    // chain. The integration test (observation-deletion.test.ts) covers production schema.
     db.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
         title, subtitle, narrative, text, facts, concepts,

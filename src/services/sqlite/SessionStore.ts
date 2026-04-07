@@ -1882,6 +1882,7 @@ export class SessionStore {
    * Delete observations by IDs.
    * Returns which IDs were deleted vs not found.
    */
+  // Note: deduplication is handled in observations/delete.ts, not here — this is a passthrough.
   deleteObservations(ids: number[]): DeleteObservationsResult {
     return deleteObservations(this.db, ids);
   }
