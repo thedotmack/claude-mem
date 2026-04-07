@@ -221,9 +221,9 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
    }
    ```
 
-2. Verify the path exists:
+2. Verify the path exists and is executable:
    ```bash
-   ls -l /Users/<username>/.local/bin/claude
+   test -x /Users/<username>/.local/bin/claude && echo "OK: executable"
    ```
 
 3. Restart Claude Code after saving the setting.
