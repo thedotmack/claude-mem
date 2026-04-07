@@ -20,6 +20,8 @@ export interface HookResult {
   hookSpecificOutput?: {
     hookEventName: string;
     additionalContext: string;
+    permissionDecision?: string;
+    permissionDecisionReason?: string;
   };
   systemMessage?: string;
   exitCode?: number;

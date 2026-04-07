@@ -19,7 +19,6 @@ import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
-import { checkAndMark } from '../../FileReadGate.js';
 
 export class DataRoutes extends BaseRouteHandler {
   constructor(
@@ -63,9 +62,6 @@ export class DataRoutes extends BaseRouteHandler {
 
     // Import endpoint
     app.post('/api/import', this.handleImport.bind(this));
-
-    // File-context gate
-    app.post('/api/file-context/gate', this.handleFileContextGate.bind(this));
   }
 
   /**
@@ -502,19 +498,4 @@ export class DataRoutes extends BaseRouteHandler {
     });
   });
 
-  /**
-   * Check if a file has already had its timeline injected in this session
-   * POST /api/file-context/gate
-   * Body: { sessionId: string, filePath: string }
-   * Returns: { firstAttempt: boolean }
-   */
-  private handleFileContextGate = this.wrapHandler((req: Request, res: Response): void => {
-    const { sessionId, filePath, cwd } = req.body;
-    if (!sessionId || !filePath) {
-      this.badRequest(res, 'sessionId and filePath are required');
-      return;
-    }
-    const firstAttempt = checkAndMark(sessionId, filePath, cwd);
-    res.json({ firstAttempt });
-  });
 }

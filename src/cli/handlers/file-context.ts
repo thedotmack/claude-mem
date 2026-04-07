@@ -8,7 +8,6 @@
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
-import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { parseJsonArray } from '../../shared/timeline-formatting.js';
 import { statSync } from 'fs';
 import path from 'path';
@@ -212,28 +211,17 @@ export const fileContextHandler: EventHandler = {
         return { continue: true, suppressOutput: true };
       }
 
-      // Check the gate: has this file's timeline been shown in this session?
-      const gateResponse = await workerHttpRequest('/api/file-context/gate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: input.sessionId, filePath: relativePath, cwd }),
-      });
-
-      if (gateResponse.ok) {
-        const gateData = await gateResponse.json() as { firstAttempt: boolean };
-
-        if (gateData.firstAttempt) {
-          // BLOCK: Show timeline, Claude decides whether to re-read or use get_observations()
-          const timeline = formatFileTimeline(dedupedObservations, filePath);
-          return {
-            exitCode: HOOK_EXIT_CODES.BLOCKING_ERROR,
-            stderrMessage: timeline,
-          };
-        }
-      }
-
-      // ALLOW: Second attempt or gate check failed — let the read proceed silently
-      return { continue: true, suppressOutput: true };
+      // Deny the read with the timeline as the reason — Claude sees the timeline
+      // and decides: work from semantic priming, use get_observations(), or ask user to allow read
+      const timeline = formatFileTimeline(dedupedObservations, filePath);
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          additionalContext: '',
+          permissionDecision: 'deny',
+          permissionDecisionReason: timeline,
+        },
+      };
     } catch (error) {
       logger.warn('HOOK', 'File context fetch error, skipping', {
         error: error instanceof Error ? error.message : String(error),
