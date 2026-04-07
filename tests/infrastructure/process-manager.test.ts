@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -419,7 +419,7 @@ describe('ProcessManager', () => {
       // Wait a bit to ensure measurable mtime difference
       await new Promise(r => setTimeout(r, 50));
 
-      const statsBefore = require('fs').statSync(PID_FILE);
+      const statsBefore = statSync(PID_FILE);
       const mtimeBefore = statsBefore.mtimeMs;
 
       // Wait again to ensure mtime advances
@@ -427,7 +427,7 @@ describe('ProcessManager', () => {
 
       touchPidFile();
 
-      const statsAfter = require('fs').statSync(PID_FILE);
+      const statsAfter = statSync(PID_FILE);
       const mtimeAfter = statsAfter.mtimeMs;
 
       expect(mtimeAfter).toBeGreaterThanOrEqual(mtimeBefore);

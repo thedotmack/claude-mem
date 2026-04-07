@@ -661,19 +661,24 @@ export function spawnDaemon(
     ...extraEnv
   });
 
+  // worker-service.cjs imports `bun:sqlite`, so the spawned runtime MUST be
+  // Bun on every platform — never the current process.execPath, which may be
+  // Node when the caller is the MCP server. Resolve once before the OS branch
+  // split so we don't pay for a duplicate PATH lookup if Bun isn't found at a
+  // well-known path. See resolveWorkerRuntimePath() for the candidate list.
+  const runtimePath = resolveWorkerRuntimePath();
+  if (!runtimePath) {
+    logger.error(
+      'SYSTEM',
+      'Bun runtime not found — install from https://bun.sh and ensure it is on PATH or set BUN env var. The worker daemon requires Bun because it uses bun:sqlite.'
+    );
+    return undefined;
+  }
+
   if (isWindows) {
     // Use PowerShell Start-Process to spawn a hidden, independent process
     // Unlike WMIC, PowerShell inherits environment variables from parent
     // -WindowStyle Hidden prevents console popup
-    const runtimePath = resolveWorkerRuntimePath();
-
-    if (!runtimePath) {
-      logger.error(
-        'SYSTEM',
-        'Bun runtime not found — install from https://bun.sh and ensure it is on PATH or set BUN env var. The worker daemon requires Bun because it uses bun:sqlite.'
-      );
-      return undefined;
-    }
 
     // Use -EncodedCommand to avoid all shell quoting issues with spaces in paths
     const psScript = `Start-Process -FilePath '${runtimePath.replace(/'/g, "''")}' -ArgumentList @('${scriptPath.replace(/'/g, "''")}','--daemon') -WindowStyle Hidden`;
@@ -704,22 +709,10 @@ export function spawnDaemon(
   // controlling terminal. This prevents SIGHUP from reaching the daemon
   // even if the in-process SIGHUP handler somehow fails (belt-and-suspenders).
   // Fall back to standard detached spawn if setsid is not available.
-  //
-  // IMPORTANT: worker-service.cjs imports `bun:sqlite`, so the spawned runtime
-  // MUST be Bun — never the current process.execPath, which may be Node when
-  // the caller is the MCP server. See resolveWorkerRuntimePath() for lookup.
-  const unixRuntimePath = resolveWorkerRuntimePath();
-  if (!unixRuntimePath) {
-    logger.error(
-      'SYSTEM',
-      'Bun runtime not found — install from https://bun.sh and ensure it is on PATH or set BUN env var. The worker daemon requires Bun because it uses bun:sqlite.'
-    );
-    return undefined;
-  }
-
+  // `runtimePath` was resolved at the top of this function (see comment there).
   const setsidPath = '/usr/bin/setsid';
   if (existsSync(setsidPath)) {
-    const child = spawn(setsidPath, [unixRuntimePath, scriptPath, '--daemon'], {
+    const child = spawn(setsidPath, [runtimePath, scriptPath, '--daemon'], {
       detached: true,
       stdio: 'ignore',
       env
@@ -734,7 +727,7 @@ export function spawnDaemon(
   }
 
   // Fallback: standard detached spawn (macOS, systems without setsid)
-  const child = spawn(unixRuntimePath, [scriptPath, '--daemon'], {
+  const child = spawn(runtimePath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
     env
