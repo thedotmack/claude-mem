@@ -360,6 +360,75 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         }]
       };
     }
+  },
+  {
+    name: 'build_corpus',
+    description: 'Build a knowledge corpus from filtered observations. Creates a queryable knowledge agent. Params: name (required), description, project, types (comma-separated), concepts (comma-separated), files (comma-separated), query, dateStart, dateEnd, limit',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Corpus name (used as filename)' },
+        description: { type: 'string', description: 'What this corpus is about' },
+        project: { type: 'string', description: 'Filter by project' },
+        types: { type: 'string', description: 'Comma-separated observation types: decision,bugfix,feature,refactor,discovery,change' },
+        concepts: { type: 'string', description: 'Comma-separated concepts to filter by' },
+        files: { type: 'string', description: 'Comma-separated file paths to filter by' },
+        query: { type: 'string', description: 'Semantic search query' },
+        dateStart: { type: 'string', description: 'Start date (ISO format)' },
+        dateEnd: { type: 'string', description: 'End date (ISO format)' },
+        limit: { type: 'number', description: 'Maximum observations (default 500)' }
+      },
+      required: ['name'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/corpus', args);
+    }
+  },
+  {
+    name: 'list_corpora',
+    description: 'List all knowledge corpora with their stats and priming status',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPI('/api/corpus', args);
+    }
+  },
+  {
+    name: 'prime_corpus',
+    description: 'Prime a knowledge corpus — creates an AI session loaded with the corpus knowledge. Must be called before query_corpus.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Name of the corpus to prime' }
+      },
+      required: ['name'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      const { name, ...rest } = args;
+      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/prime`, rest);
+    }
+  },
+  {
+    name: 'query_corpus',
+    description: 'Ask a question to a primed knowledge corpus. The corpus must be primed first with prime_corpus.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Name of the corpus to query' },
+        question: { type: 'string', description: 'The question to ask' }
+      },
+      required: ['name', 'question'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      const { name, ...rest } = args;
+      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/query`, rest);
+    }
   }
 ];
 
