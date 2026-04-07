@@ -396,8 +396,8 @@ export class SearchManager {
    */
   async timeline(args: any): Promise<any> {
     const { anchor, query, depth_before, depth_after, project } = args;
-    const depthBefore = Number(depth_before) || 10;
-    const depthAfter = Number(depth_after) || 10;
+    const depthBefore = depth_before != null ? Number(depth_before) : 10;
+    const depthAfter = depth_after != null ? Number(depth_after) : 10;
     const cwd = process.cwd();
 
     // Validate: must provide either anchor or query, not both
@@ -1446,8 +1446,8 @@ export class SearchManager {
    */
   async getContextTimeline(args: any): Promise<any> {
     const { anchor, depth_before, depth_after, project } = args;
-    const depthBefore = Number(depth_before) || 10;
-    const depthAfter = Number(depth_after) || 10;
+    const depthBefore = depth_before != null ? Number(depth_before) : 10;
+    const depthAfter = depth_after != null ? Number(depth_after) : 10;
     const cwd = process.cwd();
     let anchorEpoch: number;
     let anchorId: string | number = anchor;
@@ -1660,8 +1660,8 @@ export class SearchManager {
    */
   async getTimelineByQuery(args: any): Promise<any> {
     const { query, mode = 'auto', depth_before, depth_after, limit = 5, project } = args;
-    const depthBefore = Number(depth_before) || 10;
-    const depthAfter = Number(depth_after) || 10;
+    const depthBefore = depth_before != null ? Number(depth_before) : 10;
+    const depthAfter = depth_after != null ? Number(depth_after) : 10;
     const cwd = process.cwd();
 
     // Step 1: Search for observations
