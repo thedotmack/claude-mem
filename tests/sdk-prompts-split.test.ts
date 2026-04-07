@@ -173,7 +173,7 @@ describe('buildContinuationPrompt — SplitPrompt', () => {
 describe('Provider interop — concatenation produces valid prompt', () => {
   it('init: concatenated output should contain both static and dynamic parts', () => {
     const result = buildInitPrompt('proj', 'sess-1', 'test prompt', mockMode);
-    const concatenated = result.staticPrefix + '\n' + result.dynamicContext;
+    const concatenated = result.staticPrefix + '\n\n' + result.dynamicContext;
 
     expect(concatenated).toContain('You are a memory agent.');
     expect(concatenated).toContain('<user_request>test prompt</user_request>');
@@ -181,7 +181,7 @@ describe('Provider interop — concatenation produces valid prompt', () => {
 
   it('continuation: concatenated output should contain both static and dynamic parts', () => {
     const result = buildContinuationPrompt('test prompt', 2, 'sess-1', mockMode);
-    const concatenated = result.staticPrefix + '\n' + result.dynamicContext;
+    const concatenated = result.staticPrefix + '\n\n' + result.dynamicContext;
 
     expect(concatenated).toContain('Welcome back, memory agent.');
     expect(concatenated).toContain('<user_request>test prompt</user_request>');
