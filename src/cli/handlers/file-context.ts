@@ -150,7 +150,7 @@ function formatFileTimeline(observations: ObservationRow[], filePath: string): s
     const chronological = [...dayObservations].sort((a, b) => a.created_at_epoch - b.created_at_epoch);
     lines.push(`### ${day}`);
     for (const obs of chronological) {
-      const title = (obs.title || 'Untitled').replace(/[\r\n\t]/g, ' ').slice(0, 120);
+      const title = (obs.title || 'Untitled').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
       const icon = TYPE_ICONS[obs.type] || '\u2753';
       const time = compactTime(formatTime(obs.created_at_epoch));
       lines.push(`${obs.id} ${time} ${icon} ${title}`);
