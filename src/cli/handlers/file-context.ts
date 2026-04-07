@@ -125,7 +125,10 @@ function formatFileTimeline(observations: ObservationRow[], filePath: string): s
   });
 
   const lines: string[] = [
-    `Read blocked: This file has prior observations. Use get_observations([IDs]) to load what you need. Re-read the file only if you need raw content not captured in observations:`,
+    `Read blocked: This file has prior observations. Choose the cheapest path:`,
+    `- **Already know enough?** The timeline below may be all you need (semantic priming).`,
+    `- **Need details?** get_observations([IDs]) — ~300 tokens each.`,
+    `- **Need current code?** smart_outline("${filePath}") for structure (~1-2k tokens), smart_unfold("${filePath}", "<symbol>") for a specific function (~400-2k tokens).`,
   ];
 
   for (const [day, dayObservations] of sortedDays) {
