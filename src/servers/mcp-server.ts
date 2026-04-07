@@ -32,6 +32,7 @@ import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -44,10 +45,28 @@ const mcpServerDir = (() => {
   try {
     return dirname(fileURLToPath(import.meta.url));
   } catch {
+    // Last-ditch fallback: cwd is almost certainly wrong, but throwing here
+    // would crash the MCP server before it can serve a single request. Log
+    // loud so the existence check below has a useful breadcrumb to point at.
+    logger.warn(
+      'SYSTEM',
+      'mcp-server: unable to resolve __dirname or import.meta.url; falling back to process.cwd() — WORKER_SCRIPT_PATH will likely be wrong'
+    );
     return process.cwd();
   }
 })();
 const WORKER_SCRIPT_PATH = resolve(mcpServerDir, 'worker-service.cjs');
+
+// Surface a clear, actionable error early if the worker bundle isn't where
+// we expect. Without this check, a missing or partial install only fails
+// later inside spawnDaemon as a generic "failed to spawn" message.
+if (!existsSync(WORKER_SCRIPT_PATH)) {
+  logger.warn(
+    'SYSTEM',
+    'worker-service.cjs not found at expected path — auto-start will fail until it is built/installed',
+    { workerScriptPath: WORKER_SCRIPT_PATH, mcpServerDir }
+  );
+}
 
 /**
  * Map tool names to Worker HTTP endpoints

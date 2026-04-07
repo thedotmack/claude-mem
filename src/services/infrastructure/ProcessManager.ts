@@ -677,6 +677,13 @@ export function spawnDaemon(
         windowsHide: true,
         env
       });
+      // Windows success sentinel: PowerShell `Start-Process` does not return
+      // the spawned PID, and we don't want to pay for an extra `Get-Process`
+      // round-trip just to discover it. Return 0 (a conventionally invalid
+      // Unix PID) so callers can distinguish "spawn dispatched" from "spawn
+      // failed". Callers MUST use `pid === undefined` to detect failure —
+      // never falsy checks like `if (!pid)`, which would silently treat
+      // success as failure here.
       return 0;
     } catch (error) {
       // APPROVED OVERRIDE: Windows daemon spawn is best-effort; log and let callers fall back to health checks/retry flow.
