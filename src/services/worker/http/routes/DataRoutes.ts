@@ -127,7 +127,8 @@ export class DataRoutes extends BaseRouteHandler {
 
     const projectsParam = req.query.projects as string | undefined;
     const projects = projectsParam ? projectsParam.split(',').filter(Boolean) : undefined;
-    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+    const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+    const limit = Number.isFinite(parsedLimit) && parsedLimit! > 0 ? parsedLimit : undefined;
 
     const db = this.dbManager.getSessionStore().db;
     const observations = getObservationsByFilePath(db, filePath, { projects, limit });
@@ -508,12 +509,12 @@ export class DataRoutes extends BaseRouteHandler {
    * Returns: { firstAttempt: boolean }
    */
   private handleFileContextGate = this.wrapHandler((req: Request, res: Response): void => {
-    const { sessionId, filePath } = req.body;
+    const { sessionId, filePath, cwd } = req.body;
     if (!sessionId || !filePath) {
       this.badRequest(res, 'sessionId and filePath are required');
       return;
     }
-    const firstAttempt = checkAndMark(sessionId, filePath);
+    const firstAttempt = checkAndMark(sessionId, filePath, cwd);
     res.json({ firstAttempt });
   });
 }

@@ -89,7 +89,8 @@ function deduplicateObservations(
     const filesRead = parseJsonArray(obs.files_read);
     const filesModified = parseJsonArray(obs.files_modified);
     const totalFiles = filesRead.length + filesModified.length;
-    const inModified = filesModified.some(f => f.includes(targetPath) || targetPath.includes(f));
+    const normalizedTarget = targetPath.replace(/\\/g, '/');
+    const inModified = filesModified.some(f => f.replace(/\\/g, '/') === normalizedTarget);
 
     let specificityScore = 0;
     if (inModified) specificityScore += 2;
@@ -117,10 +118,10 @@ function formatFileTimeline(observations: ObservationRow[], filePath: string): s
     byDay.get(day)!.push(obs);
   }
 
-  // Sort days chronologically
+  // Sort days chronologically (use earliest observation in each group, not first — which is specificity-sorted)
   const sortedDays = Array.from(byDay.entries()).sort((a, b) => {
-    const aEpoch = a[1][0].created_at_epoch;
-    const bEpoch = b[1][0].created_at_epoch;
+    const aEpoch = Math.min(...a[1].map(o => o.created_at_epoch));
+    const bEpoch = Math.min(...b[1].map(o => o.created_at_epoch));
     return aEpoch - bEpoch;
   });
 
@@ -154,12 +155,16 @@ export const fileContextHandler: EventHandler = {
     // Skip gate for files below the token-economics threshold — timeline (~370 tokens)
     // costs more than reading small files directly.
     try {
-      const stat = statSync(filePath);
+      const statPath = path.isAbsolute(filePath)
+        ? filePath
+        : path.resolve(input.cwd || process.cwd(), filePath);
+      const stat = statSync(statPath);
       if (stat.size < FILE_READ_GATE_MIN_BYTES) {
         return { continue: true, suppressOutput: true };
       }
-    } catch {
-      // File not found, symlink error, permission denied — fall through and let gate proceed
+    } catch (err: any) {
+      if (err.code === 'ENOENT') return { continue: true, suppressOutput: true };
+      // Other errors (symlink, permission denied) — fall through and let gate proceed
     }
 
     // Check if project is excluded from tracking
@@ -211,7 +216,7 @@ export const fileContextHandler: EventHandler = {
       const gateResponse = await workerHttpRequest('/api/file-context/gate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: input.sessionId, filePath: relativePath }),
+        body: JSON.stringify({ sessionId: input.sessionId, filePath: relativePath, cwd }),
       });
 
       if (gateResponse.ok) {

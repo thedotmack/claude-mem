@@ -121,9 +121,11 @@ export function getObservationsByFilePath(
   filePath: string,
   options?: { projects?: string[]; limit?: number }
 ): ObservationRecord[] {
-  const likePattern = `%${filePath}%`;
-  const limit = options?.limit ?? 15;
-  const params: any[] = [likePattern, likePattern];
+  const rawLimit = options?.limit;
+  const limit = Number.isInteger(rawLimit) && rawLimit! > 0
+    ? Math.min(rawLimit!, 100)
+    : 15;
+  const params: (string | number)[] = [filePath, filePath];
 
   let projectClause = '';
   if (options?.projects?.length) {
@@ -132,16 +134,18 @@ export function getObservationsByFilePath(
     params.push(...options.projects);
   }
 
+  params.push(limit);
+
   const stmt = db.prepare(`
     SELECT *
     FROM observations
     WHERE (
-      EXISTS (SELECT 1 FROM json_each(files_read) WHERE value LIKE ?)
-      OR EXISTS (SELECT 1 FROM json_each(files_modified) WHERE value LIKE ?)
+      EXISTS (SELECT 1 FROM json_each(files_read) WHERE value = ?)
+      OR EXISTS (SELECT 1 FROM json_each(files_modified) WHERE value = ?)
     )
     ${projectClause}
     ORDER BY created_at_epoch DESC
-    LIMIT ${limit}
+    LIMIT ?
   `);
 
   return stmt.all(...params) as ObservationRecord[];
