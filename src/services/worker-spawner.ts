@@ -35,7 +35,11 @@ function getWorkerSpawnLockPath(): string {
   return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
 }
 
-export function shouldSkipSpawnOnWindows(): boolean {
+// Internal helpers — NOT exported. Only ensureWorkerStarted should be on the
+// public surface; callers must not bypass the lifecycle by calling these
+// directly. See PR #1645 review feedback for context.
+
+function shouldSkipSpawnOnWindows(): boolean {
   if (process.platform !== 'win32') return false;
   const lockPath = getWorkerSpawnLockPath();
   if (!existsSync(lockPath)) return false;
@@ -47,7 +51,7 @@ export function shouldSkipSpawnOnWindows(): boolean {
   }
 }
 
-export function markWorkerSpawnAttempted(): void {
+function markWorkerSpawnAttempted(): void {
   if (process.platform !== 'win32') return;
   try {
     const lockPath = getWorkerSpawnLockPath();
@@ -67,7 +71,7 @@ export function markWorkerSpawnAttempted(): void {
   }
 }
 
-export function clearWorkerSpawnAttempted(): void {
+function clearWorkerSpawnAttempted(): void {
   if (process.platform !== 'win32') return;
   try {
     const lockPath = getWorkerSpawnLockPath();

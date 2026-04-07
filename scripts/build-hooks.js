@@ -244,19 +244,22 @@ async function buildHooks() {
     const mcpServerStats = fs.statSync(`${hooksDir}/${MCP_SERVER.name}.cjs`);
     console.log(`✓ mcp-server built (${(mcpServerStats.size / 1024).toFixed(2)} KB)`);
 
-    // GUARDRAIL (#1645): The MCP server runs under Node, but `bun:sqlite` is
-    // a Bun-only module. If any transitive import in mcp-server.ts ever pulls
-    // it back in, the bundle will crash on first require under Node — which
-    // is exactly the regression PR #1645 fixed. Fail the build instead of
-    // shipping a broken bundle so future contributors get an immediate signal.
+    // GUARDRAIL (#1645): The MCP server runs under Node, but the entire `bun:`
+    // module namespace (bun:sqlite, bun:ffi, bun:test, etc.) is Bun-only. If
+    // any transitive import in mcp-server.ts ever pulls one in, the bundle
+    // will crash on first require under Node — which is exactly the regression
+    // PR #1645 fixed for `bun:sqlite`. Fail the build instead of shipping a
+    // broken bundle so future contributors get an immediate signal.
     //
-    // Only flag actual `require("bun:sqlite")` / `require('bun:sqlite')` calls,
-    // not the bare string — error messages and inline comments may legitimately
-    // mention "bun:sqlite" by name without re-introducing the import.
+    // Only flag actual `require("bun:...")` / `require('bun:...')` calls, not
+    // the bare string — error messages and inline comments may legitimately
+    // mention `bun:sqlite` by name without re-introducing the import.
     const mcpBundleContent = fs.readFileSync(`${hooksDir}/${MCP_SERVER.name}.cjs`, 'utf-8');
-    if (/require\(\s*["']bun:sqlite["']\s*\)/.test(mcpBundleContent)) {
+    const bunRequireRegex = /require\(\s*["']bun:[a-z][a-z0-9_-]*["']\s*\)/;
+    const bunRequireMatch = mcpBundleContent.match(bunRequireRegex);
+    if (bunRequireMatch) {
       throw new Error(
-        `mcp-server.cjs contains a require("bun:sqlite") call. This means a transitive import in src/servers/mcp-server.ts pulled in code from worker-service.ts (or another module that touches DatabaseManager/ChromaSync). The MCP server runs under Node and cannot load bun:sqlite. Audit recent imports in src/servers/mcp-server.ts and src/services/worker-spawner.ts — the spawner module is intentionally lightweight and MUST NOT import anything that touches SQLite. See PR #1645 for context.`
+        `mcp-server.cjs contains a Bun-only ${bunRequireMatch[0]} call. This means a transitive import in src/servers/mcp-server.ts pulled in code from worker-service.ts (or another module that touches DatabaseManager/ChromaSync). The MCP server runs under Node and cannot load bun:* modules. Audit recent imports in src/servers/mcp-server.ts and src/services/worker-spawner.ts — the spawner module is intentionally lightweight and MUST NOT import anything that touches SQLite or other Bun-only modules. See PR #1645 for context.`
       );
     }
 
