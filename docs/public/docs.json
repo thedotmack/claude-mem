@@ -70,6 +70,7 @@
         "pages": [
           "context-engineering",
           "progressive-disclosure",
+          "file-read-gate",
           "smart-explore-benchmark"
         ]
       },

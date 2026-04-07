@@ -453,6 +453,19 @@ export async function aggressiveStartupCleanup(): Promise<void> {
   const pidsToKill: number[] = [];
   const allPatterns = [...AGGRESSIVE_CLEANUP_PATTERNS, ...AGE_GATED_CLEANUP_PATTERNS];
 
+  // Protect parent process (the hook that spawned us) from being killed.
+  // Without this, a new daemon kills its own parent hook process (#1426).
+  //
+  // Note: readPidFile() is not used here because start() writes the new PID
+  // before initializeBackground() calls this function, so readPidFile() would
+  // just return process.pid (already protected). If a pre-existing worker needs
+  // protection, ensureWorkerStarted() handles that by returning early when a
+  // healthy worker is detected — we never reach this code in that case.
+  const protectedPids = new Set<number>([currentPid]);
+  if (process.ppid && process.ppid > 0) {
+    protectedPids.add(process.ppid);
+  }
+
   try {
     if (isWindows) {
       // Use WQL -Filter for server-side filtering (no $_ pipeline syntax).
@@ -475,7 +488,7 @@ export async function aggressiveStartupCleanup(): Promise<void> {
 
       for (const proc of processList) {
         const pid = proc.ProcessId;
-        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+        if (!Number.isInteger(pid) || pid <= 0 || protectedPids.has(pid)) continue;
 
         const commandLine = proc.CommandLine || '';
         const isAggressive = AGGRESSIVE_CLEANUP_PATTERNS.some(p => commandLine.includes(p));
@@ -518,7 +531,7 @@ export async function aggressiveStartupCleanup(): Promise<void> {
         const etime = match[2];
         const command = match[3];
 
-        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+        if (!Number.isInteger(pid) || pid <= 0 || protectedPids.has(pid)) continue;
 
         const isAggressive = AGGRESSIVE_CLEANUP_PATTERNS.some(p => command.includes(p));
 

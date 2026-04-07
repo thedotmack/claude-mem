@@ -130,6 +130,38 @@ describe('Sessions Module', () => {
     });
   });
 
+  describe('platform_source', () => {
+    it('should default new sessions to claude when platformSource is omitted', () => {
+      const sessionId = createSDKSession(db, 'session-platform-1', 'project', 'prompt');
+      const session = getSessionById(db, sessionId);
+
+      expect(session?.platform_source).toBe('claude');
+    });
+
+    it('should preserve a non-default platform_source for legacy callers that omit platformSource', () => {
+      const sessionId = createSDKSession(db, 'session-platform-2', 'project', 'prompt', undefined, 'codex');
+      let session = getSessionById(db, sessionId);
+      expect(session?.platform_source).toBe('codex');
+
+      createSDKSession(db, 'session-platform-2', 'project', 'prompt');
+      session = getSessionById(db, sessionId);
+      expect(session?.platform_source).toBe('codex');
+    });
+
+    it('should reject explicit platform_source conflicts for the same session', () => {
+      createSDKSession(db, 'session-platform-3', 'project', 'prompt', undefined, 'codex');
+
+      expect(() => createSDKSession(
+        db,
+        'session-platform-3',
+        'project',
+        'prompt',
+        undefined,
+        'claude'
+      )).toThrow(/Platform source conflict/);
+    });
+  });
+
   describe('updateMemorySessionId', () => {
     it('should update memory_session_id for existing session', () => {
       const contentSessionId = 'content-session-update';

@@ -94,9 +94,12 @@ function getTrackedFolders(workingDir: string): Set<string> {
       const absPath = path.join(workingDir, file);
       let dir = path.dirname(absPath);
 
-      // Add all parent directories up to (but not including) the working dir
-      while (dir.length > workingDir.length && dir.startsWith(workingDir)) {
+      // Add all parent directories up to and including the working dir itself.
+      // The working dir is included so that root-level files (stored in the DB
+      // as bare filenames with no directory component) can be matched. Fixes #1514.
+      while (dir.length >= workingDir.length && dir.startsWith(workingDir)) {
         folders.add(dir);
+        if (dir === workingDir) break;
         dir = path.dirname(dir);
       }
     }
@@ -164,19 +167,37 @@ function findObservationsByFolder(db: Database, relativeFolderPath: string, proj
   // Query more results than needed since we'll filter some out
   const queryLimit = limit * 3;
 
-  const sql = `
-    SELECT o.*, o.discovery_tokens
-    FROM observations o
-    WHERE o.project = ?
-      AND (o.files_modified LIKE ? OR o.files_read LIKE ?)
-    ORDER BY o.created_at_epoch DESC
-    LIMIT ?
-  `;
+  // For the root folder (empty relativeFolderPath), observations may have bare
+  // filenames stored without any directory component (e.g. ["dashboard.html"]).
+  // In that case the LIKE pattern below would never match, so we fetch all
+  // observations for the project and let isDirectChild filter to root-level files.
+  // Fixes #1514.
+  let allMatches: ObservationRow[];
 
-  // Files in DB are stored as relative paths like "src/services/foo.ts"
-  // Match any file that starts with this folder path (we'll filter to direct children below)
-  const likePattern = `%"${relativeFolderPath}/%`;
-  const allMatches = db.prepare(sql).all(project, likePattern, likePattern, queryLimit) as ObservationRow[];
+  if (relativeFolderPath === '' || relativeFolderPath === '.') {
+    const sql = `
+      SELECT o.*, o.discovery_tokens
+      FROM observations o
+      WHERE o.project = ?
+        AND (o.files_modified IS NOT NULL OR o.files_read IS NOT NULL)
+      ORDER BY o.created_at_epoch DESC
+      LIMIT ?
+    `;
+    allMatches = db.prepare(sql).all(project, queryLimit) as ObservationRow[];
+  } else {
+    const sql = `
+      SELECT o.*, o.discovery_tokens
+      FROM observations o
+      WHERE o.project = ?
+        AND (o.files_modified LIKE ? OR o.files_read LIKE ?)
+      ORDER BY o.created_at_epoch DESC
+      LIMIT ?
+    `;
+    // Files in DB are stored as relative paths like "src/services/foo.ts"
+    // Match any file that starts with this folder path (we'll filter to direct children below)
+    const likePattern = `%"${relativeFolderPath}/%`;
+    allMatches = db.prepare(sql).all(project, likePattern, likePattern, queryLimit) as ObservationRow[];
+  }
 
   // Filter to only observations with direct child files (not in subfolders)
   return allMatches.filter(obs => hasDirectChildFile(obs, relativeFolderPath)).slice(0, limit);

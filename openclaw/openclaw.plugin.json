@@ -27,6 +27,11 @@
         "default": 37777,
         "description": "Port for Claude-Mem worker service"
       },
+      "workerHost": {
+        "type": "string",
+        "default": "127.0.0.1",
+        "description": "Hostname for Claude-Mem worker service. Set to host.docker.internal when the gateway runs in Docker and the worker runs on the host."
+      },
       "project": {
         "type": "string",
         "default": "openclaw",
