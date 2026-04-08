@@ -271,8 +271,9 @@ export class SessionSearch {
   }
 
   /**
-   * Search observations using filter-only direct SQLite query.
-   * Vector search is handled by ChromaDB - this only supports filtering without query text.
+   * Search observations using direct SQLite query.
+   * When query text is provided and FTS5 is available, uses FTS5 MATCH for keyword search.
+   * When no query text, uses filter-only direct SQLite query.
    */
   searchObservations(query: string | undefined, options: SearchOptions = {}): ObservationSearchResult[] {
     const params: any[] = [];
@@ -300,15 +301,37 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
     }
 
-    // Vector search with query text should be handled by ChromaDB
-    // This method only supports filter-only queries (query=undefined)
-    logger.warn('DB', 'Text search not supported - use ChromaDB for vector search');
-    return [];
+    // TEXT SEARCH PATH: Use FTS5 for keyword search when available
+    try {
+      const sql = `
+        SELECT o.*, o.discovery_tokens
+        FROM observations o
+        INNER JOIN observations_fts fts ON fts.rowid = o.id
+        WHERE observations_fts MATCH ?
+        AND o.status = 'active'
+        ORDER BY rank
+        LIMIT ? OFFSET ?
+      `;
+      return this.db.prepare(sql).all(query, limit, offset) as ObservationSearchResult[];
+    } catch (error) {
+      logger.warn('DB', 'FTS5 search failed, falling back to LIKE query', {}, error as Error);
+      const sql = `
+        SELECT o.*, o.discovery_tokens
+        FROM observations o
+        WHERE (o.title LIKE ? OR o.narrative LIKE ? OR o.facts LIKE ?)
+        AND o.status = 'active'
+        ORDER BY o.created_at_epoch DESC
+        LIMIT ? OFFSET ?
+      `;
+      const likeParam = `%${query}%`;
+      return this.db.prepare(sql).all(likeParam, likeParam, likeParam, limit, offset) as ObservationSearchResult[];
+    }
   }
 
   /**
-   * Search session summaries using filter-only direct SQLite query.
-   * Vector search is handled by ChromaDB - this only supports filtering without query text.
+   * Search session summaries using direct SQLite query.
+   * When query text is provided and FTS5 is available, uses FTS5 MATCH for keyword search.
+   * When no query text, uses filter-only direct SQLite query.
    */
   searchSessions(query: string | undefined, options: SearchOptions = {}): SessionSummarySearchResult[] {
     const params: any[] = [];
@@ -339,10 +362,28 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
     }
 
-    // Vector search with query text should be handled by ChromaDB
-    // This method only supports filter-only queries (query=undefined)
-    logger.warn('DB', 'Text search not supported - use ChromaDB for vector search');
-    return [];
+    // TEXT SEARCH PATH: Use FTS5 for keyword search when available
+    try {
+      const sql = `
+        SELECT s.*, s.discovery_tokens
+        FROM session_summaries s
+        INNER JOIN session_summaries_fts fts ON fts.rowid = s.id
+        WHERE session_summaries_fts MATCH ?
+        ORDER BY rank
+        LIMIT ? OFFSET ?
+      `;
+      return this.db.prepare(sql).all(query, limit, offset) as SessionSummarySearchResult[];
+    } catch (error) {
+      logger.warn('DB', 'FTS5 search failed for sessions, falling back to LIKE query', {}, error as Error);
+      const sql = `
+        SELECT s.*, s.discovery_tokens
+        FROM session_summaries s
+        WHERE s.summary LIKE ?
+        ORDER BY s.created_at_epoch DESC
+        LIMIT ? OFFSET ?
+      `;
+      return this.db.prepare(sql).all(`%${query}%`, limit, offset) as SessionSummarySearchResult[];
+    }
   }
 
   /**
@@ -575,10 +616,28 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
     }
 
-    // Vector search with query text should be handled by ChromaDB
-    // This method only supports filter-only queries (query=undefined)
-    logger.warn('DB', 'Text search not supported - use ChromaDB for vector search');
-    return [];
+    // TEXT SEARCH PATH: Use FTS5 for keyword search when available
+    try {
+      const sql = `
+        SELECT up.*
+        FROM user_prompts up
+        INNER JOIN user_prompts_fts fts ON fts.rowid = up.id
+        WHERE user_prompts_fts MATCH ?
+        ORDER BY rank
+        LIMIT ? OFFSET ?
+      `;
+      return this.db.prepare(sql).all(query, limit, offset) as UserPromptSearchResult[];
+    } catch (error) {
+      logger.warn('DB', 'FTS5 search failed for prompts, falling back to LIKE query', {}, error as Error);
+      const sql = `
+        SELECT up.*
+        FROM user_prompts up
+        WHERE up.prompt_text LIKE ?
+        ORDER BY up.created_at_epoch DESC
+        LIMIT ? OFFSET ?
+      `;
+      return this.db.prepare(sql).all(`%${query}%`, limit, offset) as UserPromptSearchResult[];
+    }
   }
 
   /**
