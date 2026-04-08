@@ -289,9 +289,11 @@ export class SDKAgent {
             return;
           }
 
-          if (result.status === 'error') {
-            return;
-          }
+          // On error: continue the loop rather than returning. The failed messages
+          // are already preserved via markFailed() for retry. Returning would kill
+          // the subprocess and trigger crash-recovery, burning through restart limits
+          // on transient errors (e.g., empty responses after worker restarts).
+          // Only rate_limited warrants aborting, since subsequent calls will also fail.
         }
 
         // Log result messages
