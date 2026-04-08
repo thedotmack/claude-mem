@@ -72,12 +72,19 @@ function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): stri
 }
 
 // Memoize the resolved runtime path for the no-options call site (which is
-// what spawnDaemon uses). Caches both successful resolutions and the
-// not-found result so that repeated spawn attempts (crash loops, health
-// thrashing) don't repeatedly hit `statSync` on the candidate paths.
-// `undefined` means "not yet resolved"; `null` means "definitively not found".
-// Tests that pass options bypass the cache entirely.
-let cachedWorkerRuntimePath: string | null | undefined = undefined;
+// what spawnDaemon uses). Caches successful resolutions so repeated spawn
+// attempts (crash loops, health thrashing) don't repeatedly hit `statSync`
+// on the candidate paths.
+//
+// IMPORTANT: only success is cached. A `null` result (Bun not found) is
+// never cached so that a long-running MCP server can recover if the user
+// installs Bun in another terminal between the first failed lookup and a
+// subsequent retry. Caching `null` would permanently break the process
+// until restart. Per PR #1645 round-10 review.
+//
+// `undefined` means "not yet resolved"; tests that pass options bypass the
+// cache entirely.
+let cachedWorkerRuntimePath: string | undefined = undefined;
 
 /**
  * Reset the memoized runtime path. Exported for test isolation only —
@@ -108,7 +115,9 @@ export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): 
 
   const result = resolveWorkerRuntimePathUncached(options);
 
-  if (isMemoizable) {
+  // Only cache successful resolutions. See the comment on
+  // `cachedWorkerRuntimePath` above for the rationale.
+  if (isMemoizable && result !== null) {
     cachedWorkerRuntimePath = result;
   }
   return result;

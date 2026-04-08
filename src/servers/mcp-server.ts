@@ -75,7 +75,7 @@ const WORKER_SCRIPT_PATH = resolve(mcpServerDir, 'worker-service.cjs');
  * to start. The check is cheap and idempotent, so calling it on every
  * auto-start attempt is fine.
  */
-function warnIfWorkerScriptMissing(): void {
+function errorIfWorkerScriptMissing(): void {
   if (existsSync(WORKER_SCRIPT_PATH)) return;
 
   if (mcpServerDirResolutionFailed) {
@@ -222,7 +222,7 @@ async function ensureWorkerConnection(): Promise<boolean> {
   // so that tests/tools that import this module without booting the MCP
   // server don't see noisy ERROR-level log lines for a worker they never
   // intended to start.
-  warnIfWorkerScriptMissing();
+  errorIfWorkerScriptMissing();
 
   try {
     const port = getWorkerPort();
