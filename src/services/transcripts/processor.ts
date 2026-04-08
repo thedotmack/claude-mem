@@ -10,12 +10,20 @@ import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
 import { expandHomePath } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 
+export interface ConversationExchange {
+  promptNumber: number;
+  userText: string;
+  assistantText: string;
+}
+
 interface SessionState {
   sessionId: string;
   cwd?: string;
   project?: string;
+  promptNumber: number;
   lastUserMessage?: string;
   lastAssistantMessage?: string;
+  exchanges: ConversationExchange[];
   pendingTools: Map<string, { name?: string; input?: unknown }>;
 }
 
@@ -51,6 +59,8 @@ export class TranscriptEventProcessor {
     if (!session) {
       session = {
         sessionId,
+        promptNumber: 0,
+        exchanges: [],
         pendingTools: new Map()
       };
       this.sessions.set(key, session);
@@ -131,18 +141,38 @@ export class TranscriptEventProcessor {
         this.applySessionContext(session, fields);
         break;
       case 'session_init':
+        // Prompt boundary: flush previous segment before starting new one
+        await this.flushTranscriptSegment(session);
+        session.promptNumber++;
         await this.handleSessionInit(session, fields);
         if (watch.context?.updateOn?.includes('session_start')) {
           await this.updateContext(session, watch);
         }
         break;
-      case 'user_message':
-        if (typeof fields.message === 'string') session.lastUserMessage = fields.message;
-        if (typeof fields.prompt === 'string') session.lastUserMessage = fields.prompt;
+      case 'user_message': {
+        const userText = typeof fields.message === 'string' ? fields.message
+          : typeof fields.prompt === 'string' ? fields.prompt : undefined;
+        if (userText) {
+          session.lastUserMessage = userText;
+          session.exchanges.push({
+            promptNumber: session.promptNumber,
+            userText,
+            assistantText: ''
+          });
+        }
         break;
-      case 'assistant_message':
-        if (typeof fields.message === 'string') session.lastAssistantMessage = fields.message;
+      }
+      case 'assistant_message': {
+        const assistantText = typeof fields.message === 'string' ? fields.message : undefined;
+        if (assistantText) {
+          session.lastAssistantMessage = assistantText;
+          const lastExchange = session.exchanges[session.exchanges.length - 1];
+          if (lastExchange) {
+            lastExchange.assistantText = assistantText;
+          }
+        }
         break;
+      }
       case 'tool_use':
         await this.handleToolUse(session, fields);
         break;
@@ -301,6 +331,7 @@ export class TranscriptEventProcessor {
   }
 
   private async handleSessionEnd(session: SessionState, watch: WatchTarget): Promise<void> {
+    await this.flushTranscriptSegment(session);
     await this.queueSummary(session);
     await sessionCompleteHandler.execute({
       sessionId: session.sessionId,
@@ -311,6 +342,73 @@ export class TranscriptEventProcessor {
     session.pendingTools.clear();
     const key = this.getSessionKey(watch, session.sessionId);
     this.sessions.delete(key);
+  }
+
+  /**
+   * Flush accumulated transcript exchanges to the worker for Chroma storage.
+   * Called on prompt boundary (session_init) and session_end.
+   */
+  private async flushTranscriptSegment(session: SessionState): Promise<void> {
+    if (session.exchanges.length === 0 || session.promptNumber === 0) return;
+
+    // Capture exchanges before clearing (needed for conversation observation)
+    const exchangesToFlush = [...session.exchanges];
+
+    const text = exchangesToFlush
+      .map(ex => `USER: ${ex.userText}\nASSISTANT: ${ex.assistantText}`)
+      .join('\n\n');
+
+    if (!text.trim()) return;
+
+    const workerReady = await ensureWorkerRunning();
+    if (!workerReady) return;
+
+    try {
+      await workerHttpRequest('/api/transcript/store', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contentSessionId: session.sessionId,
+          promptNumber: session.promptNumber,
+          text,
+          project: session.project || 'unknown'
+        })
+      });
+    } catch (error) {
+      logger.warn('TRANSCRIPT', 'Transcript segment store failed', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    // Send exchanges for conversation observation (fire-and-forget)
+    this.fireConversationObservation(session, exchangesToFlush);
+
+    // Clear exchanges after flush
+    session.exchanges = [];
+  }
+
+  /**
+   * Fire-and-forget: send exchanges to worker for TITANS conversation observation
+   */
+  private fireConversationObservation(session: SessionState, exchanges: ConversationExchange[]): void {
+    if (exchanges.length === 0) return;
+
+    ensureWorkerRunning().then(ready => {
+      if (!ready) return;
+      workerHttpRequest('/api/sessions/conversation-observe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contentSessionId: session.sessionId,
+          exchanges,
+          project: session.project || 'unknown'
+        })
+      }).catch(error => {
+        logger.debug('TRANSCRIPT', 'Conversation observation request failed', {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+    });
   }
 
   private async queueSummary(session: SessionState): Promise<void> {

@@ -830,6 +830,95 @@ export class ChromaSync {
   }
 
   /**
+   * Store transcript chunks in Chroma for Layer 3 traversal
+   */
+  async addTranscriptChunks(
+    contentSessionId: string,
+    promptNumber: number,
+    chunks: string[],
+    project: string
+  ): Promise<void> {
+    if (chunks.length === 0) return;
+
+    const documents: ChromaDocument[] = chunks.map((chunk, i) => ({
+      id: `transcript_${contentSessionId}_p${promptNumber}_c${i}`,
+      document: chunk,
+      metadata: {
+        content_session_id: contentSessionId,
+        prompt_number: promptNumber,
+        chunk_index: i,
+        doc_type: 'transcript_segment',
+        project: project,
+        created_at_epoch: Date.now()
+      }
+    }));
+    await this.addDocuments(documents);
+  }
+
+  /**
+   * Retrieve all transcript chunks for a segment (full dump, ordered by chunk_index)
+   */
+  async getTranscriptSegment(contentSessionId: string, promptNumber: number): Promise<string[]> {
+    await this.ensureCollectionExists();
+    const chromaMcp = ChromaMcpManager.getInstance();
+
+    const result = await chromaMcp.callTool('chroma_get_documents', {
+      collection_name: this.collectionName,
+      where: {
+        $and: [
+          { content_session_id: contentSessionId },
+          { prompt_number: promptNumber }
+        ]
+      },
+      limit: 100,
+      include: ['documents', 'metadatas']
+    }) as any;
+
+    const documents = result?.documents || [];
+    const metadatas = result?.metadatas || [];
+
+    // Sort by chunk_index and return document content
+    const indexed: { index: number; text: string }[] = [];
+    for (let i = 0; i < documents.length; i++) {
+      indexed.push({
+        index: metadatas[i]?.chunk_index ?? i,
+        text: documents[i] || ''
+      });
+    }
+    indexed.sort((a, b) => a.index - b.index);
+    return indexed.map(c => c.text);
+  }
+
+  /**
+   * Scoped RAG: vector search within a specific transcript segment
+   */
+  async queryTranscriptSegment(
+    contentSessionId: string,
+    promptNumber: number,
+    query: string,
+    nResults: number = 3
+  ): Promise<string[]> {
+    await this.ensureCollectionExists();
+    const chromaMcp = ChromaMcpManager.getInstance();
+
+    const results = await chromaMcp.callTool('chroma_query_documents', {
+      collection_name: this.collectionName,
+      query_texts: [query],
+      n_results: nResults,
+      where: {
+        $and: [
+          { content_session_id: contentSessionId },
+          { prompt_number: promptNumber }
+        ]
+      },
+      include: ['documents', 'distances']
+    }) as any;
+
+    // chroma_query_documents returns nested arrays (one per query text)
+    return results?.documents?.[0] || [];
+  }
+
+  /**
    * Close the ChromaSync instance
    * ChromaMcpManager is a singleton and manages its own lifecycle
    * We don't close it here - it's closed during graceful shutdown

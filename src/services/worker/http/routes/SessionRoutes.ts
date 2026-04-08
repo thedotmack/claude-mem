@@ -8,7 +8,11 @@
 import express, { Request, Response } from 'express';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt, stripTranscriptPrivacyTags, chunkText } from '../../../../utils/tag-stripping.js';
+import { buildConversationObservationPrompt } from '../../../../sdk/prompts.js';
+import { parseObservations } from '../../../../sdk/parser.js';
+import { oneShotQuery } from '../../OneShotQuery.js';
+import { ModeManager } from '../../../domain/ModeManager.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
@@ -326,6 +330,13 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
     app.post('/api/sessions/complete', this.handleCompleteByClaudeId.bind(this));
     app.get('/api/sessions/status', this.handleStatusByClaudeId.bind(this));
+
+    // Layer 3: Transcript storage and retrieval
+    app.post('/api/transcript/store', this.handleTranscriptStore.bind(this));
+    app.post('/api/transcript/segment', this.handleTranscriptSegment.bind(this));
+
+    // TITANS: Conversation observation
+    app.post('/api/sessions/conversation-observe', this.handleConversationObserve.bind(this));
   }
 
   /**
@@ -873,4 +884,147 @@ export class SessionRoutes extends BaseRouteHandler {
       session.modelOverride = undefined;
     }
   }
+
+  /**
+   * Layer 3: Store transcript segment chunks in Chroma
+   * Called by TranscriptEventProcessor on prompt boundary
+   */
+  private handleTranscriptStore = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { contentSessionId, promptNumber, text, project } = req.body;
+
+    if (!contentSessionId || !promptNumber || !text) {
+      res.status(400).json({ error: 'Missing required fields: contentSessionId, promptNumber, text' });
+      return;
+    }
+
+    const transcriptSync = this.dbManager.getTranscriptChromaSync();
+    if (!transcriptSync) {
+      res.status(503).json({ error: 'Transcript storage unavailable' });
+      return;
+    }
+
+    const sanitized = stripTranscriptPrivacyTags(text);
+    const chunks = chunkText(sanitized, 2000);
+
+    await transcriptSync.addTranscriptChunks(
+      contentSessionId,
+      promptNumber,
+      chunks,
+      project || 'unknown'
+    );
+
+    res.json({ stored: chunks.length, promptNumber });
+  });
+
+  /**
+   * Layer 3: Retrieve transcript segment by observation ID
+   * Bridges observation → session → transcript Chroma collection
+   */
+  private handleTranscriptSegment = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { observation_id, query } = req.body;
+
+    if (!observation_id) {
+      res.status(400).json({ error: 'Missing required field: observation_id' });
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const obs = store.getObservationById(observation_id);
+    if (!obs) {
+      res.status(404).json({ error: 'Observation not found' });
+      return;
+    }
+
+    const contentSessionId = store.getContentSessionIdByMemoryId(obs.memory_session_id);
+    if (!contentSessionId) {
+      res.status(404).json({ error: 'Session not found for observation' });
+      return;
+    }
+
+    const transcriptSync = this.dbManager.getTranscriptChromaSync();
+    if (!transcriptSync) {
+      res.status(503).json({ error: 'Transcript storage unavailable' });
+      return;
+    }
+
+    let chunks: string[];
+    let mode: 'full' | 'scoped';
+
+    const promptNumber = obs.prompt_number ?? 1;
+
+    if (query) {
+      chunks = await transcriptSync.queryTranscriptSegment(
+        contentSessionId, promptNumber, query
+      );
+      mode = 'scoped';
+    } else {
+      chunks = await transcriptSync.getTranscriptSegment(
+        contentSessionId, promptNumber
+      );
+      mode = 'full';
+    }
+
+    res.json({ chunks, prompt_number: promptNumber, mode });
+  });
+
+  /**
+   * TITANS: Analyze conversation exchanges for emotional/behavioral signals.
+   * Fire-and-forget: responds immediately, processes async in background.
+   */
+  private handleConversationObserve = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { contentSessionId, exchanges, project } = req.body;
+
+    if (!contentSessionId || !exchanges || !Array.isArray(exchanges)) {
+      res.status(400).json({ error: 'Missing required fields: contentSessionId, exchanges' });
+      return;
+    }
+
+    // Fire-and-forget: respond immediately
+    res.json({ status: 'accepted', exchangeCount: exchanges.length });
+
+    // Process in background
+    try {
+      const mode = ModeManager.getInstance().getActiveMode();
+      const prompt = buildConversationObservationPrompt(exchanges, mode);
+
+      const response = await oneShotQuery(prompt);
+      if (!response) {
+        logger.debug('SESSION', 'No provider available for conversation observation');
+        return;
+      }
+
+      const observations = parseObservations(response);
+      if (observations.length === 0) return;
+
+      const store = this.dbManager.getSessionStore();
+
+      // Find session by contentSessionId to get memory_session_id
+      const sessionDbId = store.createSDKSession(contentSessionId, project || 'unknown', '', undefined);
+      const session = store.getSessionById(sessionDbId);
+      if (!session?.memory_session_id) {
+        logger.debug('SESSION', 'No memory session ID for conversation observation', { contentSessionId });
+        return;
+      }
+
+      for (const obs of observations) {
+        store.storeObservation(
+          session.memory_session_id,
+          project || 'unknown',
+          obs,
+          exchanges[0]?.promptNumber ?? 1,
+          0
+        );
+      }
+
+      logger.info('SESSION', 'Conversation observations stored', {
+        contentSessionId,
+        count: observations.length
+      });
+    } catch (err) {
+      logger.warn('SESSION', 'Conversation observation failed', {
+        contentSessionId,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+  });
 }

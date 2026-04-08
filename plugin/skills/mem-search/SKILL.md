@@ -42,7 +42,7 @@ search(query="authentication", limit=20, project="my-project")
 - `limit` (number) - Max results, default 20, max 100
 - `project` (string) - Project name filter
 - `type` (string, optional) - "observations", "sessions", or "prompts"
-- `obs_type` (string, optional) - Comma-separated: bugfix, feature, decision, discovery, change
+- `obs_type` (string, optional) - Comma-separated: bugfix, feature, decision, discovery, change, refactor, insight, commitment, correction, frustration, pattern_recognition, emotional_signal, overconfidence
 - `dateStart` (string, optional) - YYYY-MM-DD or epoch ms
 - `dateEnd` (string, optional) - YYYY-MM-DD or epoch ms
 - `offset` (number, optional) - Skip N results

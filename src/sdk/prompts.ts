@@ -239,4 +239,76 @@ ${mode.prompts.format_examples}
 ${mode.prompts.footer}
 
 ${mode.prompts.header_memory_continued}`;
+}
+
+/**
+ * Conversation exchange for TITANS observer
+ */
+export interface ConversationExchange {
+  promptNumber: number;
+  userText: string;
+  assistantText: string;
+}
+
+/**
+ * Build prompt for TITANS conversation observation (one-shot agent call)
+ * Analyzes conversation exchanges for emotional signals, commitments, corrections, etc.
+ */
+export function buildConversationObservationPrompt(
+  exchanges: ConversationExchange[],
+  mode: ModeConfig
+): string {
+  const exchangeXml = exchanges.map((ex, i) => `
+  <exchange index="${i + 1}" prompt_number="${ex.promptNumber}">
+    <user>${ex.userText}</user>
+    <assistant>${ex.assistantText}</assistant>
+  </exchange>`).join('');
+
+  return `You are a conversational memory observer. Analyze these exchanges for moments worth remembering.
+
+<conversation_from_primary_session>
+${exchangeXml}
+</conversation_from_primary_session>
+
+Identify conversational memory signals:
+- INSIGHT (type: insight): Surprise, delight, unexpected discovery
+- COMMITMENT (type: commitment): "I'll remember this", "Got it", "Won't do that again"
+- CORRECTION (type: correction): User corrected behavior, assistant acknowledged
+- FRUSTRATION (type: frustration): User pain, dissatisfaction, repeated requests
+- PATTERN (type: pattern_recognition): "This is similar to...", connecting dots
+- EMOTIONAL (type: emotional_signal): Strong sentiment in conversation flow
+- OVERCONFIDENCE (type: overconfidence): Assistant made confident claims without evidence
+
+OVERCONFIDENCE DETECTION (critical):
+Flag when the assistant makes declarative claims about system behavior, causation,
+or implementation details WITHOUT citing evidence (no file paths, no code read, no
+grep results preceding the claim). Key signals:
+- "This is because..." / "The issue is..." / "The solution is..." (stated as fact, not hypothesis)
+- Absence of hedging ("apparently", "it seems", "I believe") on claims that warrant it
+- Presenting one explanation as the only possibility
+- Diagnosing without investigation (no tool use before the claim)
+
+TWO FLAVORS, SAME PRIORITY:
+- overconfidence: Confident claim + no evidence + no hedging
+- unverified_inference: Hedged claim + no evidence (honest about uncertainty but still unverified)
+
+For each observation, capture the specific claim in <facts>, what evidence was missing
+in <narrative>, and the flavor in <subtitle>.
+
+Return <observation> blocks for significant moments only. Skip routine exchanges.
+Focus on moments that should change future behavior.
+
+${mode.prompts.output_format_header}
+\`\`\`xml
+<observation>
+  <type>[ insight | commitment | correction | frustration | pattern_recognition | emotional_signal | overconfidence ]</type>
+  <title>Brief description</title>
+  <subtitle>Context</subtitle>
+  <facts><fact>Specific detail</fact></facts>
+  <narrative>What happened and why it matters</narrative>
+  <concepts><concept>Related concept</concept></concepts>
+</observation>
+\`\`\`
+
+Non-XML text is discarded. Return empty response if no significant signals found.`;
 } 

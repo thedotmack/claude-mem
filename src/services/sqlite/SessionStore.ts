@@ -1198,6 +1198,17 @@ export class SessionStore {
   }
 
   /**
+   * Look up content_session_id from a memory_session_id
+   * Used by Layer 3 transcript retrieval to bridge observation → transcript segment
+   */
+  getContentSessionIdByMemoryId(memorySessionId: string): string | null {
+    const row = this.db.prepare(
+      'SELECT content_session_id FROM sdk_sessions WHERE memory_session_id = ? LIMIT 1'
+    ).get(memorySessionId) as { content_session_id: string } | undefined;
+    return row?.content_session_id ?? null;
+  }
+
+  /**
    * Get observations by array of IDs with ordering and limit
    */
   getObservationsByIds(

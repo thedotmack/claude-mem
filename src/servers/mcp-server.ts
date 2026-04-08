@@ -233,6 +233,27 @@ invoke: \`Skill(mem-search)\``
     }
   },
   {
+    name: 'get_transcript_segment',
+    description: 'Layer 3: Get the original conversation that produced an observation. Requires observation_id from search/timeline. Optional query for scoped vector search within segment.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        observation_id: {
+          type: 'number',
+          description: 'Observation ID to retrieve transcript for (required)'
+        },
+        query: {
+          type: 'string',
+          description: 'Optional: scoped vector search within the transcript segment'
+        }
+      },
+      required: ['observation_id']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/transcript/segment', args);
+    }
+  },
+  {
     name: 'smart_search',
     description: 'Search codebase for symbols, functions, classes using tree-sitter AST parsing. Returns folded structural views with token counts. Use path parameter to scope the search.',
     inputSchema: {
