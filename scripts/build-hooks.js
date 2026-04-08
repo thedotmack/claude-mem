@@ -263,6 +263,23 @@ async function buildHooks() {
       );
     }
 
+    // SECONDARY GUARDRAIL (#1645 round 11): bundle size budget. The bun:sqlite
+    // regex above catches the specific regression class we already know about,
+    // but esbuild could in theory change how it emits external module specifiers
+    // and silently slip past the regex. A bundle-size budget catches the
+    // structural symptom (worker-service.ts dragged into the bundle blew the
+    // size from ~358KB to ~1.96MB) regardless of how the imports look.
+    //
+    // 600KB is a generous ceiling — current size is ~384KB, the broken v12.0.0
+    // bundle was ~1920KB, and there's plenty of headroom for legitimate growth
+    // before we'd want to revisit this number.
+    const MCP_SERVER_MAX_BYTES = 600 * 1024;
+    if (mcpServerStats.size > MCP_SERVER_MAX_BYTES) {
+      throw new Error(
+        `mcp-server.cjs is ${(mcpServerStats.size / 1024).toFixed(2)} KB, exceeding the ${(MCP_SERVER_MAX_BYTES / 1024).toFixed(0)} KB budget. This usually means a transitive import pulled worker-service.ts (or another heavy module) into the MCP bundle. The MCP server is supposed to be a thin HTTP wrapper — audit recent imports in src/servers/mcp-server.ts and src/services/worker-spawner.ts. See PR #1645 for context on why this guardrail exists.`
+      );
+    }
+
     // Build context generator
     console.log(`\n🔧 Building context generator...`);
     await build({
