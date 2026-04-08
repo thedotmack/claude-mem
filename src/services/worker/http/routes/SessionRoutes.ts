@@ -872,14 +872,13 @@ export class SessionRoutes extends BaseRouteHandler {
     const candidateModels = (settings.CLAUDE_MEM_BANDIT_CANDIDATE_MODELS || '').split(',').map(s => s.trim()).filter(Boolean);
 
     if (banditEnabled && candidateModels.length >= 2) {
-      const obsTypes = pending
-        .filter(m => m.message_type === 'observation')
-        .map(m => m.tool_name || 'unknown');
-      const dominantType = obsTypes.length > 0
-        ? mostFrequent(obsTypes)
-        : 'general';
+      // Use obs_type (discovery, change, bugfix...) not tool_name (Bash, Read...)
+      // to match FeedbackRecorder which rewards arms as {obs_type}:{model}.
+      // Since obs_type isn't known before processing, use the dominant type
+      // from the bandit's own reward history — arms with actual feedback data.
+      const rewardedType = this.banditEngine!.getDominantRewardedType('model-per-obs-type') || 'discovery';
 
-      const arms = candidateModels.map(model => `${dominantType}:${model}`);
+      const arms = candidateModels.map(model => `${rewardedType}:${model}`);
       const selectedArm = this.banditEngine!.selectArm('model-per-obs-type', arms);
       const selectedModel = selectedArm.split(':').slice(1).join(':');
 

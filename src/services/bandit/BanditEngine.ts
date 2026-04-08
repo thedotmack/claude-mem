@@ -137,6 +137,32 @@ export class BanditEngine {
     }
   }
 
+  /**
+   * Get the obs_type dimension with the most reward data.
+   * Arms are formatted as "{type}:{model}". Returns the type prefix
+   * of the arm with the highest total_reward, giving selectArm access
+   * to the dimension where feedback has actually accumulated.
+   */
+  getDominantRewardedType(experimentId: string): string | null {
+    const expArms = this.arms.get(experimentId);
+    if (!expArms) return null;
+
+    let bestType: string | null = null;
+    let bestReward = 0;
+
+    for (const arm of expArms.values()) {
+      if (arm.totalReward > bestReward) {
+        bestReward = arm.totalReward;
+        const colonIdx = arm.armId.indexOf(':');
+        if (colonIdx > 0) {
+          bestType = arm.armId.substring(0, colonIdx);
+        }
+      }
+    }
+
+    return bestType;
+  }
+
   getArmStats(experimentId: string): Arm[] {
     const expArms = this.arms.get(experimentId);
     if (!expArms) return [];
