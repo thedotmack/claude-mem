@@ -7,6 +7,67 @@ description: "Build queryable AI brains from your observation history"
 
 Knowledge agents let you compile a slice of your claude-mem observation history into a **queryable "brain"** that answers questions conversationally. Instead of getting raw search results back, you get synthesized, grounded answers drawn from your actual project history -- decisions, discoveries, bugfixes, and features.
 
+## Quick Start
+
+Three ways to use knowledge agents, from simplest to most powerful.
+
+### 1. Create a Knowledge Agent
+
+Use the `/knowledge-agent` skill or the MCP tools directly:
+
+```
+build_corpus name="hooks-expertise" query="hooks architecture" project="claude-mem" limit=200
+```
+
+This searches your observation history, collects matching records, and saves them as a corpus file. Then prime it — this loads the corpus into a Claude session's context window:
+
+```
+prime_corpus name="hooks-expertise"
+```
+
+Your knowledge agent is ready. The returned `session_id` **is** the agent — a Claude session with your history baked in.
+
+### 2. Ask a Single Question
+
+Once primed, ask any question and get a grounded answer:
+
+```
+query_corpus name="hooks-expertise" question="What are the 5 lifecycle hooks and when does each fire?"
+```
+
+The agent answers from its corpus — no hallucination, no guessing, just your actual project history. Each follow-up question builds on the prior conversation:
+
+```
+query_corpus name="hooks-expertise" question="Which hook handles context injection?"
+```
+
+### 3. Start a Fresh Conversation
+
+If the conversation drifts, or you want to ask an unrelated question against the same corpus, reprime to start clean:
+
+```
+reprime_corpus name="hooks-expertise"
+```
+
+This creates a **new session** with the full corpus reloaded — like opening a fresh chat with the same "brain." All prior Q&A context is cleared, but the corpus knowledge remains. Use this when:
+
+- The conversation went off-track and you want a clean slate
+- You're switching topics within the same corpus
+- You want to ask a question without prior answers biasing the response
+
+### Keeping It Current
+
+When new observations are added to your project, rebuild the corpus to pull in the latest, then reprime:
+
+```
+rebuild_corpus name="hooks-expertise"
+reprime_corpus name="hooks-expertise"
+```
+
+Rebuild re-runs the original search filters. Reprime loads the refreshed data into a new session.
+
+---
+
 ## The Workflow: Build, Prime, Query
 
 ```
