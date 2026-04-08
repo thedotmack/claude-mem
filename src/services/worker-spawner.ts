@@ -129,6 +129,12 @@ export async function ensureWorkerStarted(
     logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
     const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
     if (healthy) {
+      // A previous failed spawn may have left a stale Windows cooldown marker
+      // on disk. Now that the worker is confirmed healthy via this alternate
+      // path, clear it so a future genuine outage isn't suppressed for the
+      // remainder of the 2-minute window. Per CodeRabbit on PR #1645.
+      // No-op on non-Windows.
+      clearWorkerSpawnAttempted();
       logger.info('SYSTEM', 'Worker became healthy while waiting on live PID');
       return true;
     }
@@ -139,6 +145,9 @@ export async function ensureWorkerStarted(
   // Check if worker is already running and healthy.
   // NOTE: Version mismatch auto-restart intentionally removed (#1435).
   if (await waitForHealth(port, 1000)) {
+    // Same rationale as above: clear any stale cooldown marker now that we
+    // know the worker is healthy via the fast-path health check.
+    clearWorkerSpawnAttempted();
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     if (!ready) {
       logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
@@ -153,6 +162,8 @@ export async function ensureWorkerStarted(
     logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
     const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
     if (healthy) {
+      // Same rationale as above.
+      clearWorkerSpawnAttempted();
       logger.info('SYSTEM', 'Worker is now healthy');
       return true;
     }
