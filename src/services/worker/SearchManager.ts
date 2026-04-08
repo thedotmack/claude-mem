@@ -255,7 +255,7 @@ export class SearchManager {
     // ChromaDB not initialized - fall back to FTS5 keyword search
     else if (query) {
       logger.debug('SEARCH', 'ChromaDB not available, falling back to FTS5 keyword search', {});
-      const searchFilters = { ...options, type: types, concepts, files };
+      const searchFilters = { ...options, type: obs_type, concepts, files };
       if (searchObservations) {
         observations = this.sessionSearch.searchObservations(query, searchFilters);
       }
