@@ -84,10 +84,21 @@ export class KnowledgeAgent {
     });
 
     let sessionId: string | undefined;
-    for await (const msg of queryResult) {
-      if (msg.session_id) sessionId = msg.session_id;
-      if (msg.type === 'result') {
-        logger.info('WORKER', `Knowledge agent primed for corpus "${corpus.name}"`);
+    try {
+      for await (const msg of queryResult) {
+        if (msg.session_id) sessionId = msg.session_id;
+        if (msg.type === 'result') {
+          logger.info('WORKER', `Knowledge agent primed for corpus "${corpus.name}"`);
+        }
+      }
+    } catch (error) {
+      // The SDK may throw after yielding all messages when the Claude process
+      // exits with a non-zero code. If we already captured a session_id,
+      // treat this as success — the session was created and primed.
+      if (sessionId) {
+        logger.debug('WORKER', `SDK process exited after priming corpus "${corpus.name}" — session captured, continuing`, {}, error as Error);
+      } else {
+        throw error;
       }
     }
 
@@ -159,14 +170,24 @@ export class KnowledgeAgent {
 
     let answer = '';
     let newSessionId = corpus.session_id!;
-    for await (const msg of queryResult) {
-      if (msg.session_id) newSessionId = msg.session_id;
-      if (msg.type === 'assistant') {
-        const text = msg.message.content
-          .filter((b: any) => b.type === 'text')
-          .map((b: any) => b.text)
-          .join('');
-        answer = text;
+    try {
+      for await (const msg of queryResult) {
+        if (msg.session_id) newSessionId = msg.session_id;
+        if (msg.type === 'assistant') {
+          const text = msg.message.content
+            .filter((b: any) => b.type === 'text')
+            .map((b: any) => b.text)
+            .join('');
+          answer = text;
+        }
+      }
+    } catch (error) {
+      // Same as prime() — SDK may throw after all messages are yielded.
+      // If we captured an answer, treat as success.
+      if (answer) {
+        logger.debug('WORKER', `SDK process exited after query — answer captured, continuing`, {}, error as Error);
+      } else {
+        throw error;
       }
     }
 
