@@ -38,6 +38,7 @@
           "usage/getting-started",
           "usage/openrouter-provider",
           "usage/gemini-provider",
+          "usage/docker-model-runner-provider",
           "usage/search-tools",
           "usage/claude-desktop",
           "usage/private-tags",

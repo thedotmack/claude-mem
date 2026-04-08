@@ -14,7 +14,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_MODEL`            | `sonnet`                        | AI model for processing observations (when using Claude) |
-| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, or `openrouter` |
+| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, `openrouter`, or `docker-model-runner` |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
@@ -42,6 +42,17 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and free
 | `CLAUDE_MEM_OPENROUTER_APP_NAME`             | `claude-mem`                | Optional: App name for analytics      |
 
 See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
+
+### Docker Model Runner Provider Settings
+
+| Setting                                              | Default       | Description                           |
+|------------------------------------------------------|---------------|---------------------------------------|
+| `CLAUDE_MEM_DOCKER_MODEL_RUNNER_MODEL`               | `ai/gemma4`   | Local model identifier                |
+| `CLAUDE_MEM_DOCKER_MODEL_RUNNER_PORT`                | `12434`       | Docker Model Runner port              |
+| `CLAUDE_MEM_DOCKER_MODEL_RUNNER_MAX_TOKENS`          | `4096`        | Context window size (1K-128K)         |
+| `CLAUDE_MEM_DOCKER_MODEL_RUNNER_MAX_CONTEXT_MESSAGES`| `20`          | Max messages in conversation history  |
+
+See [Docker Model Runner Provider](usage/docker-model-runner-provider) for setup instructions and model recommendations.
 
 ### System Configuration
 

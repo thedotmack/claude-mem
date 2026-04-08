@@ -299,14 +299,15 @@ Content-Type: application/json
 
 ## Comparing Providers
 
-| Feature | Claude (SDK) | Gemini | OpenRouter |
-|---------|-------------|--------|------------|
-| **Cost** | Pay per token | Free tier + paid | Free models + paid |
-| **Models** | Claude only | Gemini only | 100+ models |
-| **Quality** | Highest | High | Varies by model |
-| **Rate limits** | Based on tier | 5-4000 RPM | Varies by model |
-| **Fallback** | N/A (primary) | → Claude | → Claude |
-| **Setup** | Automatic | API key required | API key required |
+| Feature | Claude (SDK) | Gemini | OpenRouter | Docker Model Runner |
+|---------|-------------|--------|------------|-------------------|
+| **Cost** | Pay per token | Free tier + paid | Free models + paid | Free (local) |
+| **Privacy** | Cloud | Cloud | Cloud | Fully local |
+| **Models** | Claude only | Gemini only | 100+ models | Any local model |
+| **Quality** | Highest | High | Varies by model | Varies by model |
+| **Rate limits** | Based on tier | 5-4000 RPM | Varies by model | None |
+| **Fallback** | N/A (primary) | → Claude | → Claude | → Claude |
+| **Setup** | Automatic | API key required | API key required | Docker Desktop |
 
 <Tip>
 **Recommendation**: Start with OpenRouter's free `xiaomi/mimo-v2-flash:free` model for zero-cost observation extraction. If you need higher quality or encounter rate limits, switch to Claude or add OpenRouter credits for premium models.
@@ -315,6 +316,7 @@ Content-Type: application/json
 ## Next Steps
 
 - [Configuration](/configuration) - Full settings reference
-- [Gemini Provider](/usage/gemini-provider) - Alternative free provider
+- [Gemini Provider](/usage/gemini-provider) - Google's free tier provider
+- [Docker Model Runner Provider](/usage/docker-model-runner-provider) - Local model provider
 - [Getting Started](/usage/getting-started) - Basic usage guide
 - [Troubleshooting](/troubleshooting) - Common issues

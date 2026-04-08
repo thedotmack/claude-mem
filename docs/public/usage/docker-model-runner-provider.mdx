@@ -1,0 +1,260 @@
+---
+title: "Docker Model Runner Provider"
+description: "Run local AI models through Docker Model Runner for private, zero-cost observation extraction"
+---
+
+# Docker Model Runner Provider
+
+Claude-mem supports [Docker Model Runner](https://docs.docker.com/desktop/features/model-runner/) as a local provider for observation extraction. Docker Model Runner runs AI models directly on your machine through an OpenAI-compatible API, keeping all data private and eliminating API costs entirely.
+
+<Tip>
+**Zero cost, full privacy**: Docker Model Runner runs models locally on your hardware. No API keys, no network calls, no usage limits.
+</Tip>
+
+## Why Use Docker Model Runner?
+
+- **Complete privacy**: All data stays on your machine - no external API calls
+- **Zero cost**: No API keys, no usage fees, no rate limits
+- **Offline capable**: Works without an internet connection
+- **Seamless fallback**: Automatically falls back to Claude if the local model is unavailable
+- **Hot-swappable**: Switch providers without restarting the worker
+- **Configurable**: Choose any model available in Docker Model Runner
+
+## Prerequisites
+
+Docker Model Runner requires [Docker Desktop](https://www.docker.com/products/docker-desktop/) with the Model Runner feature enabled.
+
+### Enabling Docker Model Runner
+
+1. Install or update [Docker Desktop](https://www.docker.com/products/docker-desktop/) (4.40+)
+2. Open Docker Desktop Settings
+3. Navigate to **Features in development** > **Beta features**
+4. Enable **Docker Model Runner**
+5. Apply and restart Docker Desktop
+
+### Pulling a Model
+
+Pull a model before using it with claude-mem:
+
+```bash
+docker model pull ai/gemma4
+```
+
+Verify the model is available:
+
+```bash
+docker model list
+```
+
+## Configuration
+
+### Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_PROVIDER` | `claude` | Set to `docker-model-runner` to use local models |
+| `CLAUDE_MEM_DOCKER_MODEL_RUNNER_MODEL` | `ai/gemma4` | Model identifier |
+| `CLAUDE_MEM_DOCKER_MODEL_RUNNER_PORT` | `12434` | Port where Docker Model Runner listens |
+| `CLAUDE_MEM_DOCKER_MODEL_RUNNER_MAX_TOKENS` | `4096` | Context window size (1K-128K) |
+| `CLAUDE_MEM_DOCKER_MODEL_RUNNER_MAX_CONTEXT_MESSAGES` | `20` | Max messages in conversation history |
+
+### Using the Settings UI
+
+1. Open the viewer at http://localhost:37777
+2. Click the **gear icon** to open Settings
+3. Under **AI Provider**, select **Docker Model Runner (local)**
+4. Optionally change the model, port, or context size
+5. Click **Save**
+
+Settings are applied immediately - no restart required.
+
+### Manual Configuration
+
+Edit `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "docker-model-runner",
+  "CLAUDE_MEM_DOCKER_MODEL_RUNNER_MODEL": "ai/gemma4",
+  "CLAUDE_MEM_DOCKER_MODEL_RUNNER_PORT": "12434",
+  "CLAUDE_MEM_DOCKER_MODEL_RUNNER_MAX_TOKENS": "4096"
+}
+```
+
+## Available Models
+
+Any model available through Docker Model Runner can be used. Popular options:
+
+| Model | ID | Parameters | Best For |
+|-------|-----|-----------|----------|
+| **Gemma 4** | `ai/gemma4` | 27B | General purpose (default) |
+| **Llama 3.2** | `ai/llama3.2` | 3B | Lightweight, fast |
+| **Mistral** | `ai/mistral` | 7B | Efficient performance |
+| **Phi-4** | `ai/phi4-mini` | 3.8B | Compact, fast |
+| **Qwen 2.5** | `ai/qwen2.5` | 7B | Multilingual support |
+
+Pull any model with:
+
+```bash
+docker model pull <model-id>
+```
+
+<Note>
+**Performance depends on hardware**: Larger models require more RAM and produce better observations but run slower. Start with the default `ai/gemma4` and adjust based on your hardware.
+</Note>
+
+## Context Size Configuration
+
+Docker Model Runner supports configurable context sizes in multiples of 1024 tokens. Choose based on your model's capabilities and available RAM:
+
+| Context Size | Tokens | Best For |
+|-------------|--------|----------|
+| 1K | 1,024 | Very constrained environments |
+| 2K | 2,048 | Minimal context |
+| **4K** | 4,096 | **Default** - compatible with most models |
+| 8K | 8,192 | Standard usage |
+| 16K | 16,384 | Extended conversations |
+| 32K | 32,768 | Large context |
+| 64K | 65,536 | Large context models |
+| 128K | 131,072 | Maximum context |
+
+<Warning>
+Setting a context size larger than your model supports may cause errors. Check your model's documentation for its maximum context window.
+</Warning>
+
+## Provider Switching
+
+You can switch between providers at any time:
+
+- **No restart required**: Changes take effect on the next observation
+- **Conversation history preserved**: When switching mid-session, the new provider sees the full conversation context
+- **Seamless transition**: All providers use the same observation format
+
+### Switching via UI
+
+1. Open Settings in the viewer
+2. Change the **AI Provider** dropdown
+3. The next observation will use the new provider
+
+### Switching via Settings File
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "docker-model-runner"
+}
+```
+
+## Fallback Behavior
+
+If Docker Model Runner encounters errors, claude-mem automatically falls back to the Claude Agent SDK:
+
+**Triggers fallback:**
+- Connection refused (Docker Model Runner not running)
+- Server errors (HTTP 5xx)
+- Network timeout
+
+**Does not trigger fallback (unrecoverable):**
+- Invalid model name (HTTP 400)
+- Authentication errors (HTTP 401/403)
+
+When fallback occurs:
+1. A warning is logged
+2. Claude SDK takes over with the full conversation context
+3. Observations continue processing without interruption
+
+## Troubleshooting
+
+### "Docker Model Runner API error: connection refused"
+
+Docker Model Runner is not running or not listening on the configured port.
+
+1. Verify Docker Desktop is running
+2. Check that Model Runner is enabled in Docker Desktop settings
+3. Verify the port matches your configuration:
+   ```bash
+   curl http://localhost:12434/engines/v1/models
+   ```
+
+### "Docker Model Runner API error: 400"
+
+The model may not be available:
+
+1. Check available models:
+   ```bash
+   docker model list
+   ```
+2. Pull the model if missing:
+   ```bash
+   docker model pull ai/gemma4
+   ```
+
+### Slow Observation Processing
+
+Local model inference is slower than cloud APIs, especially on CPU:
+
+- Use a smaller model (e.g., `ai/llama3.2` instead of `ai/gemma4`)
+- Reduce context size in settings
+- Ensure Docker Desktop has sufficient RAM allocated
+
+### Port Conflict
+
+If port 12434 is already in use, configure a different port in Docker Desktop and update the setting:
+
+```json
+{
+  "CLAUDE_MEM_DOCKER_MODEL_RUNNER_PORT": "12435"
+}
+```
+
+## API Details
+
+Docker Model Runner uses an OpenAI-compatible REST API:
+
+**Base URL**: `http://localhost:12434/engines/v1`
+
+**Endpoint**: `http://localhost:12434/engines/v1/chat/completions`
+
+**Headers**:
+```
+Content-Type: application/json
+```
+
+**Request Format**:
+```json
+{
+  "model": "ai/gemma4",
+  "messages": [
+    {"role": "user", "content": "..."}
+  ],
+  "temperature": 0.3,
+  "max_tokens": 4096
+}
+```
+
+<Note>
+No `Authorization` header is required - Docker Model Runner runs locally without authentication.
+</Note>
+
+## Comparing Providers
+
+| Feature | Claude (SDK) | Gemini | OpenRouter | Docker Model Runner |
+|---------|-------------|--------|------------|-------------------|
+| **Cost** | Pay per token | Free tier + paid | Free models + paid | Free (local) |
+| **Privacy** | Cloud | Cloud | Cloud | Fully local |
+| **Models** | Claude only | Gemini only | 100+ models | Any local model |
+| **Quality** | Highest | High | Varies by model | Varies by model |
+| **Rate limits** | Based on tier | 5-4000 RPM | Varies by model | None (hardware limited) |
+| **Offline** | No | No | No | Yes |
+| **Fallback** | N/A (primary) | -> Claude | -> Claude | -> Claude |
+| **Setup** | Automatic | API key required | API key required | Docker Desktop |
+
+<Tip>
+**Recommendation**: Use Docker Model Runner for private/offline development where data must stay local. For best observation quality, use Claude or OpenRouter with a capable model.
+</Tip>
+
+## Next Steps
+
+- [Configuration](/configuration) - Full settings reference
+- [OpenRouter Provider](/usage/openrouter-provider) - Cloud-based multi-model provider
+- [Gemini Provider](/usage/gemini-provider) - Google's free tier provider
+- [Getting Started](/usage/getting-started) - Basic usage guide

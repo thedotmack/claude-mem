@@ -346,6 +346,7 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="docker-model-runner">Docker Model Runner (local)</option>
                 </select>
               </FormField>
 
@@ -448,6 +449,52 @@ export function ContextSettingsModal({
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
                       placeholder="claude-mem"
                     />
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'docker-model-runner' && (
+                <>
+                  <FormField
+                    label="Model"
+                    tooltip="Model identifier for Docker Model Runner (e.g., ai/gemma4, ai/llama3.2)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_DOCKER_MODEL_RUNNER_MODEL || 'ai/gemma4'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_DOCKER_MODEL_RUNNER_MODEL', e.target.value)}
+                      placeholder="e.g., ai/gemma4"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Port"
+                    tooltip="Port where Docker Model Runner is listening (default: 12434)"
+                  >
+                    <input
+                      type="number"
+                      min="1"
+                      max="65535"
+                      value={formState.CLAUDE_MEM_DOCKER_MODEL_RUNNER_PORT || '12434'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_DOCKER_MODEL_RUNNER_PORT', e.target.value)}
+                    />
+                  </FormField>
+                  <FormField
+                    label="Context Size"
+                    tooltip="Maximum context window size in tokens for the local model"
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_DOCKER_MODEL_RUNNER_MAX_TOKENS || '4096'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_DOCKER_MODEL_RUNNER_MAX_TOKENS', e.target.value)}
+                    >
+                      <option value="1024">1K</option>
+                      <option value="2048">2K</option>
+                      <option value="4096">4K</option>
+                      <option value="8192">8K</option>
+                      <option value="16384">16K</option>
+                      <option value="32768">32K</option>
+                      <option value="65536">64K</option>
+                      <option value="131072">128K</option>
+                    </select>
                   </FormField>
                 </>
               )}
