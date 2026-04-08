@@ -75,7 +75,7 @@ export class KnowledgeAgent {
     const queryResult = query({
       prompt: primePrompt,
       options: {
-        model: 'claude-sonnet-4-6-20250929',
+        model: this.getModelId(),
         cwd: OBSERVER_SESSIONS_DIR,
         disallowedTools: KNOWLEDGE_AGENT_DISALLOWED_TOOLS,
         pathToClaudeCodeExecutable: claudePath,
@@ -159,7 +159,7 @@ export class KnowledgeAgent {
     const queryResult = query({
       prompt: question,
       options: {
-        model: 'claude-sonnet-4-6-20250929',
+        model: this.getModelId(),
         resume: corpus.session_id!,
         cwd: OBSERVER_SESSIONS_DIR,
         disallowedTools: KNOWLEDGE_AGENT_DISALLOWED_TOOLS,
@@ -192,6 +192,14 @@ export class KnowledgeAgent {
     }
 
     return { answer, session_id: newSessionId };
+  }
+
+  /**
+   * Get model ID from user settings — same as SDKAgent.getModelId()
+   */
+  private getModelId(): string {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    return settings.CLAUDE_MEM_MODEL;
   }
 
   /**
