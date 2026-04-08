@@ -18,7 +18,11 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Execution Skill** (`plugin/skills/do/SKILL.md`) - Orchestrator instructions for executing phased plans using subagents
 
-**Chroma** (`src/services/sync/ChromaSync.ts`) - Vector embeddings for semantic search
+**Chroma** (`src/services/sync/ChromaSync.ts`) - Vector embeddings for semantic search; transcript segments stored in separate Chroma collection (traversal-only)
+
+**Conversation Observation Modality** - TITANS-inspired observer producing 7 observation types from conversation flow
+
+**3-Layer Progressive Search**: `search()` → `get_observations()` → `get_transcript_segment()`
 
 **Viewer UI** (`src/ui/viewer/`) - React interface at http://localhost:37777, built to `plugin/ui/viewer.html`
 

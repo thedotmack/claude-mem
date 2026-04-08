@@ -9,9 +9,9 @@
 
 Progressive disclosure is an information architecture pattern where you reveal complexity gradually rather than all at once. In the context of AI agents, it means:
 
-1. **Layer 1 (Index)**: Show lightweight metadata (titles, dates, types, token counts)
-2. **Layer 2 (Details)**: Fetch full content only when needed
-3. **Layer 3 (Deep Dive)**: Read original source files if required
+1. **Layer 1 (Index)**: `search()` — ~50-100 tokens/result
+2. **Layer 2 (Details)**: `get_observations()` — ~500-1000 tokens
+3. **Layer 3 (Transcript)**: `get_transcript_segment()` — ~2000-5000 tokens
 
 This mirrors how humans work: We scan headlines before reading articles, review table of contents before diving into chapters, and check file names before opening files.
 
@@ -261,11 +261,11 @@ The index is useless without retrieval mechanisms:
 ```
 
 **Available MCP tools:**
-- `search` - Search memory index (Layer 1: Get IDs)
-- `timeline` - Get chronological context (Layer 2: See narrative arc)
-- `get_observations` - Fetch full details (Layer 3: Deep dive)
+- `search` - Search memory index (Layer 1: ~50-100 tokens/result)
+- `get_observations` - Fetch observation details (Layer 2: ~500-1000 tokens)
+- `get_transcript_segment` - Retrieve original transcript context (Layer 3: ~2000-5000 tokens)
 
-The 3-layer workflow ensures progressive disclosure: index → context → details.
+The 3-layer workflow ensures progressive disclosure: search → get_observations → get_transcript_segment.
 
 ---
 
@@ -646,7 +646,7 @@ Layer 4: Source files (referenced code)
 3. **Agent autonomy**: Let the agent decide what's relevant
 4. **Semantic compression**: Good titles make or break the system
 5. **Consistent structure**: Patterns reduce cognitive load
-6. **Two-tier everything**: Index first, details on-demand
+6. **Three-layer everything**: Search → observations → transcript segments on-demand
 7. **Context as currency**: Spend wisely on high-value information
 
 ---
