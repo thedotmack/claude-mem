@@ -251,6 +251,19 @@ describe('ProcessManager', () => {
       expect(resolved).toBe('/home/alice/.bun/bin/bun');
     });
 
+    it('should preserve bare BUN env command on non-Windows so spawn resolves it via PATH', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: { BUN: 'bun' } as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: () => false,
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBe('bun');
+    });
+
     it('should fall back to PATH lookup on non-Windows when no known Bun candidate exists', () => {
       const resolved = resolveWorkerRuntimePath({
         platform: 'linux',
