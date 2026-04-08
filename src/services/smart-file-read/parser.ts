@@ -320,7 +320,16 @@ export function resolveGrammarPathWithFallback(language: string, projectRoot?: s
 // --- Query patterns (declarative symbol extraction) ---
 
 const QUERIES: Record<string, string> = {
-  jsts: `
+  js: `
+(function_declaration name: (identifier) @name) @func
+(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
+(class_declaration name: (type_identifier) @name) @cls
+(method_definition name: (property_identifier) @name) @method
+(import_statement) @imp
+(export_statement) @exp
+`,
+
+  ts: `
 (function_declaration name: (identifier) @name) @func
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
 (class_declaration name: (type_identifier) @name) @cls
@@ -490,9 +499,10 @@ const QUERIES: Record<string, string> = {
 function getQueryKey(language: string): string {
   switch (language) {
     case "javascript":
+      return "js";
     case "typescript":
     case "tsx":
-      return "jsts";
+      return "ts";
     case "python": return "python";
     case "go": return "go";
     case "rust": return "rust";
