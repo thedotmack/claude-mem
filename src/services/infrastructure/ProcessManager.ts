@@ -71,6 +71,22 @@ function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): stri
   }
 }
 
+// Memoize the resolved runtime path for the no-options call site (which is
+// what spawnDaemon uses). Caches both successful resolutions and the
+// not-found result so that repeated spawn attempts (crash loops, health
+// thrashing) don't repeatedly hit `statSync` on the candidate paths.
+// `undefined` means "not yet resolved"; `null` means "definitively not found".
+// Tests that pass options bypass the cache entirely.
+let cachedWorkerRuntimePath: string | null | undefined = undefined;
+
+/**
+ * Reset the memoized runtime path. Exported for test isolation only —
+ * production code never needs to call this.
+ */
+export function resetWorkerRuntimePathCache(): void {
+  cachedWorkerRuntimePath = undefined;
+}
+
 /**
  * Resolve the runtime executable for spawning the worker daemon.
  *
@@ -82,6 +98,23 @@ function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): stri
  * via env vars, well-known install locations, and finally the system PATH.
  */
 export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): string | null {
+  // Memoization fast path — only when called with no injected options. Tests
+  // that pass options always run the full resolution (and never populate or
+  // read the cache) to keep the existing test cases deterministic.
+  const isMemoizable = Object.keys(options).length === 0;
+  if (isMemoizable && cachedWorkerRuntimePath !== undefined) {
+    return cachedWorkerRuntimePath;
+  }
+
+  const result = resolveWorkerRuntimePathUncached(options);
+
+  if (isMemoizable) {
+    cachedWorkerRuntimePath = result;
+  }
+  return result;
+}
+
+function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): string | null {
   const platform = options.platform ?? process.platform;
   const execPath = options.execPath ?? process.execPath;
 
