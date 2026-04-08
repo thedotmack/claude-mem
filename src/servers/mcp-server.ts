@@ -60,14 +60,24 @@ const mcpServerDir = (() => {
 })();
 const WORKER_SCRIPT_PATH = resolve(mcpServerDir, 'worker-service.cjs');
 
-// Surface a clear, actionable error early if the worker bundle isn't where
-// we expect. Without this check, a missing or partial install only fails
-// later inside spawnDaemon as a generic "failed to spawn" message.
-//
-// If dirname resolution itself failed (extremely unlikely in CJS), attribute
-// the missing-bundle warning to the root cause so the user doesn't waste time
-// looking for an install bug that doesn't exist.
-if (!existsSync(WORKER_SCRIPT_PATH)) {
+/**
+ * Surface a clear, actionable error if the worker bundle isn't where we
+ * expect. Without this check, a missing or partial install only fails later
+ * inside spawnDaemon as a generic "failed to spawn" message.
+ *
+ * If dirname resolution itself failed (extremely unlikely in CJS), attribute
+ * the missing-bundle warning to the root cause so the user doesn't waste time
+ * looking for an install bug that doesn't exist.
+ *
+ * Called lazily from `ensureWorkerConnection` (not at module load) so that
+ * tests or tools that import this module without booting the MCP server
+ * don't see noisy ERROR-level log lines for a worker they never intended
+ * to start. The check is cheap and idempotent, so calling it on every
+ * auto-start attempt is fine.
+ */
+function checkWorkerScriptPath(): void {
+  if (existsSync(WORKER_SCRIPT_PATH)) return;
+
   if (mcpServerDirResolutionFailed) {
     logger.error(
       'SYSTEM',
@@ -75,10 +85,9 @@ if (!existsSync(WORKER_SCRIPT_PATH)) {
       { workerScriptPath: WORKER_SCRIPT_PATH, mcpServerDir }
     );
   } else {
-    // Elevated to ERROR per round-6 review feedback: a missing worker bundle
-    // means EVERY MCP tool call that needs the worker will silently fail. This
-    // is a broken-install state, not a transient warning condition — match the
-    // severity of the dirname-fallback branch above.
+    // A missing worker bundle means EVERY MCP tool call that needs the worker
+    // will silently fail. This is a broken-install state, not a transient
+    // warning condition — match the severity of the dirname-fallback branch.
     logger.error(
       'SYSTEM',
       'worker-service.cjs not found at expected path — auto-start will fail until it is built/installed',
@@ -208,6 +217,12 @@ async function ensureWorkerConnection(): Promise<boolean> {
   }
 
   logger.warn('SYSTEM', 'Worker not available, attempting auto-start for MCP client');
+
+  // Validate the worker bundle path lazily here (rather than at module load)
+  // so that tests/tools that import this module without booting the MCP
+  // server don't see noisy ERROR-level log lines for a worker they never
+  // intended to start.
+  checkWorkerScriptPath();
 
   try {
     const port = getWorkerPort();
