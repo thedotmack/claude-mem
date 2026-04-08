@@ -274,12 +274,22 @@ export class SDKAgent {
             modelId
           );
 
+          if (result.status === 'rate_limited' || result.status === 'error') {
+            // Roll back the user prompt we pushed before the SDK call so retries
+            // don't accumulate stale context in conversationHistory.
+            session.conversationHistory.pop();
+          }
+
           // Rate-limited: abort — subsequent calls will also fail
           if (result.status === 'rate_limited') {
             logger.warn('SDK', 'Aborting session due to rate limiting', {
               sessionDbId: session.sessionDbId
             });
             session.abortController.abort();
+            return;
+          }
+
+          if (result.status === 'error') {
             return;
           }
         }

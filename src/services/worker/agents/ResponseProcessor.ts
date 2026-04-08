@@ -136,11 +136,6 @@ export async function processAgentResponse(
   // Track generator activity for stale detection (Issue #1099)
   session.lastGeneratorActivity = Date.now();
 
-  // Add assistant response to shared conversation history for provider interop
-  if (text) {
-    session.conversationHistory.push({ role: 'assistant', content: text });
-  }
-
   // --- GUARD: Empty response with pending messages ---
   // An empty response when messages are in-flight means the LLM failed to respond.
   // Preserve the messages for retry rather than silently deleting them.
@@ -201,6 +196,13 @@ export async function processAgentResponse(
     });
     preserveMessages(session, sessionManager, worker, reason);
     return { status: 'error', observationCount: 0, summaryStored: false };
+  }
+
+  // Add assistant response to shared conversation history for provider interop.
+  // Done AFTER all early-return guards so error/rate-limit responses are never
+  // committed to history (callers pop their own user-prompt push on non-ok status).
+  if (text) {
+    session.conversationHistory.push({ role: 'assistant', content: text });
   }
 
   // Convert nullable fields to empty strings for storeSummary (if summary exists)

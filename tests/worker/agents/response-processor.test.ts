@@ -699,6 +699,66 @@ describe('ResponseProcessor', () => {
       expect(session.conversationHistory[0].role).toBe('assistant');
       expect(session.conversationHistory[0].content).toBe(responseText);
     });
+
+    it('should NOT add to conversationHistory on empty-response error path', async () => {
+      const session = createMockSession({
+        conversationHistory: [],
+        processingMessageIds: [1],
+      });
+
+      await processAgentResponse(
+        '',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        0,
+        null,
+        'TestAgent'
+      );
+
+      expect(session.conversationHistory).toHaveLength(0);
+    });
+
+    it('should NOT add to conversationHistory on non-XML error path', async () => {
+      const session = createMockSession({
+        conversationHistory: [],
+        processingMessageIds: [1],
+      });
+
+      await processAgentResponse(
+        'Some non-XML error text',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        0,
+        null,
+        'TestAgent'
+      );
+
+      expect(session.conversationHistory).toHaveLength(0);
+    });
+
+    it('should NOT add to conversationHistory on rate-limit error path', async () => {
+      const session = createMockSession({
+        conversationHistory: [],
+        processingMessageIds: [1],
+      });
+
+      await processAgentResponse(
+        "You've hit your rate limit. Please try again later.",
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        0,
+        null,
+        'TestAgent'
+      );
+
+      expect(session.conversationHistory).toHaveLength(0);
+    });
   });
 
   describe('error handling', () => {
