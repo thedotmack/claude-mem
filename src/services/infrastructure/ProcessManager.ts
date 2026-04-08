@@ -113,6 +113,7 @@ export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): 
         '/opt/homebrew/bin/bun',
         '/home/linuxbrew/.linuxbrew/bin/bun',
         '/usr/bin/bun', // Debian/Ubuntu apt install path
+        '/snap/bin/bun', // Ubuntu Snap install path
       ];
 
   for (const candidate of candidatePaths) {

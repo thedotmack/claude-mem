@@ -8,6 +8,13 @@
  *
  * This module MUST NOT import anything that touches SQLite, ChromaDB, or the
  * worker business logic modules. Keep it lean on purpose.
+ *
+ * Dependency boundary note: this file imports from `SettingsDefaultsManager`,
+ * `ProcessManager`, and `HealthMonitor`. None of those currently touch
+ * `bun:sqlite` or any other Bun-only module. If any of them ever does, this
+ * module's SQLite-free contract silently breaks and the build guardrail in
+ * `scripts/build-hooks.js` is the only thing that catches it. Audit transitive
+ * imports here when adding new helpers from the shared/infrastructure layers.
  */
 
 import path from 'path';
@@ -97,6 +104,25 @@ export async function ensureWorkerStarted(
   port: number,
   workerScriptPath: string
 ): Promise<boolean> {
+  // Defensive guard: validate the worker script path before any health check
+  // or spawn attempt. Without this, an empty string or missing file just
+  // surfaces as a low-signal child_process error from spawnDaemon. Callers
+  // should always pass a valid path, but a partial install or a regression
+  // in path resolution upstream is much easier to debug with an explicit
+  // log line at the entry point. See PR #1645 review feedback for context.
+  if (!workerScriptPath) {
+    logger.error('SYSTEM', 'ensureWorkerStarted called with empty workerScriptPath — caller bug');
+    return false;
+  }
+  if (!existsSync(workerScriptPath)) {
+    logger.error(
+      'SYSTEM',
+      'ensureWorkerStarted: worker script not found at expected path — likely a partial install or build artifact missing',
+      { workerScriptPath }
+    );
+    return false;
+  }
+
   // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
   const pidFileStatus = cleanStalePidFile();
   if (pidFileStatus === 'alive') {

@@ -75,7 +75,11 @@ if (!existsSync(WORKER_SCRIPT_PATH)) {
       { workerScriptPath: WORKER_SCRIPT_PATH, mcpServerDir }
     );
   } else {
-    logger.warn(
+    // Elevated to ERROR per round-6 review feedback: a missing worker bundle
+    // means EVERY MCP tool call that needs the worker will silently fail. This
+    // is a broken-install state, not a transient warning condition — match the
+    // severity of the dirname-fallback branch above.
+    logger.error(
       'SYSTEM',
       'worker-service.cjs not found at expected path — auto-start will fail until it is built/installed',
       { workerScriptPath: WORKER_SCRIPT_PATH, mcpServerDir }
