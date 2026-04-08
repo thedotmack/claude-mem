@@ -71,20 +71,61 @@ function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): stri
   }
 }
 
+// Memoize the resolved runtime path for the no-options call site (which is
+// what spawnDaemon uses). Caches successful resolutions so repeated spawn
+// attempts (crash loops, health thrashing) don't repeatedly hit `statSync`
+// on the candidate paths.
+//
+// IMPORTANT: only success is cached. A `null` result (Bun not found) is
+// never cached so that a long-running MCP server can recover if the user
+// installs Bun in another terminal between the first failed lookup and a
+// subsequent retry. Caching `null` would permanently break the process
+// until restart. Per PR #1645 round-10 review.
+//
+// `undefined` means "not yet resolved"; tests that pass options bypass the
+// cache entirely.
+let cachedWorkerRuntimePath: string | undefined = undefined;
+
+/**
+ * Reset the memoized runtime path. Exported for test isolation only —
+ * production code never needs to call this.
+ */
+export function resetWorkerRuntimePathCache(): void {
+  cachedWorkerRuntimePath = undefined;
+}
+
 /**
  * Resolve the runtime executable for spawning the worker daemon.
  *
- * Windows must prefer Bun because worker-service.cjs imports bun:sqlite,
- * which is unavailable in Node.js.
+ * worker-service.cjs imports `bun:sqlite`, so it MUST run under Bun on every
+ * platform — not just Windows. When the caller is already running under Bun
+ * (e.g. the worker self-spawning from a hook), we reuse process.execPath to
+ * avoid an extra PATH lookup. Otherwise (notably when the MCP server running
+ * under Node spawns the worker for the first time) we locate the Bun binary
+ * via env vars, well-known install locations, and finally the system PATH.
  */
 export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): string | null {
+  // Memoization fast path — only when called with no injected options. Tests
+  // that pass options always run the full resolution (and never populate or
+  // read the cache) to keep the existing test cases deterministic.
+  const isMemoizable = Object.keys(options).length === 0;
+  if (isMemoizable && cachedWorkerRuntimePath !== undefined) {
+    return cachedWorkerRuntimePath;
+  }
+
+  const result = resolveWorkerRuntimePathUncached(options);
+
+  // Only cache successful resolutions. See the comment on
+  // `cachedWorkerRuntimePath` above for the rationale.
+  if (isMemoizable && result !== null) {
+    cachedWorkerRuntimePath = result;
+  }
+  return result;
+}
+
+function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): string | null {
   const platform = options.platform ?? process.platform;
   const execPath = options.execPath ?? process.execPath;
-
-  // Non-Windows currently relies on the runtime that launched worker-service.
-  if (platform !== 'win32') {
-    return execPath;
-  }
 
   // If already running under Bun, reuse it directly.
   if (isBunExecutablePath(execPath)) {
@@ -96,15 +137,26 @@ export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): 
   const pathExists = options.pathExists ?? existsSync;
   const lookupInPath = options.lookupInPath ?? lookupBinaryInPath;
 
-  const candidatePaths = [
-    env.BUN,
-    env.BUN_PATH,
-    path.join(homeDirectory, '.bun', 'bin', 'bun.exe'),
-    path.join(homeDirectory, '.bun', 'bin', 'bun'),
-    env.USERPROFILE ? path.join(env.USERPROFILE, '.bun', 'bin', 'bun.exe') : undefined,
-    env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bun.exe') : undefined,
-    env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bin', 'bun.exe') : undefined,
-  ];
+  const candidatePaths: (string | undefined)[] = platform === 'win32'
+    ? [
+        env.BUN,
+        env.BUN_PATH,
+        path.join(homeDirectory, '.bun', 'bin', 'bun.exe'),
+        path.join(homeDirectory, '.bun', 'bin', 'bun'),
+        env.USERPROFILE ? path.join(env.USERPROFILE, '.bun', 'bin', 'bun.exe') : undefined,
+        env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bun.exe') : undefined,
+        env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bin', 'bun.exe') : undefined,
+      ]
+    : [
+        env.BUN,
+        env.BUN_PATH,
+        path.join(homeDirectory, '.bun', 'bin', 'bun'),
+        '/usr/local/bin/bun',
+        '/opt/homebrew/bin/bun',
+        '/home/linuxbrew/.linuxbrew/bin/bun',
+        '/usr/bin/bun', // Debian/Ubuntu apt install path
+        '/snap/bin/bun', // Ubuntu Snap install path
+      ];
 
   for (const candidate of candidatePaths) {
     const normalized = candidate?.trim();
@@ -114,7 +166,11 @@ export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): 
       return normalized;
     }
 
-    // Allow command-style values from env (e.g. BUN=bun)
+    // Allow command-style values from env (e.g. BUN=bun). The previous branch
+    // would also match this candidate via isBunExecutablePath('bun') === true,
+    // but pathExists('bun') is false because it's a relative name — so this
+    // branch is what actually fires for the bare-command case. We return the
+    // bare name unchanged so child_process.spawn() resolves it via PATH.
     if (normalized.toLowerCase() === 'bun') {
       return normalized;
     }
@@ -648,16 +704,24 @@ export function spawnDaemon(
     ...extraEnv
   });
 
+  // worker-service.cjs imports `bun:sqlite`, so the spawned runtime MUST be
+  // Bun on every platform — never the current process.execPath, which may be
+  // Node when the caller is the MCP server. Resolve once before the OS branch
+  // split so we don't pay for a duplicate PATH lookup if Bun isn't found at a
+  // well-known path. See resolveWorkerRuntimePath() for the candidate list.
+  const runtimePath = resolveWorkerRuntimePath();
+  if (!runtimePath) {
+    logger.error(
+      'SYSTEM',
+      'Bun runtime not found — install from https://bun.sh and ensure it is on PATH or set BUN env var. The worker daemon requires Bun because it uses bun:sqlite.'
+    );
+    return undefined;
+  }
+
   if (isWindows) {
     // Use PowerShell Start-Process to spawn a hidden, independent process
     // Unlike WMIC, PowerShell inherits environment variables from parent
     // -WindowStyle Hidden prevents console popup
-    const runtimePath = resolveWorkerRuntimePath();
-
-    if (!runtimePath) {
-      logger.error('SYSTEM', 'Failed to locate Bun runtime for Windows worker spawn');
-      return undefined;
-    }
 
     // Use -EncodedCommand to avoid all shell quoting issues with spaces in paths
     const psScript = `Start-Process -FilePath '${runtimePath.replace(/'/g, "''")}' -ArgumentList @('${scriptPath.replace(/'/g, "''")}','--daemon') -WindowStyle Hidden`;
@@ -669,6 +733,13 @@ export function spawnDaemon(
         windowsHide: true,
         env
       });
+      // Windows success sentinel: PowerShell `Start-Process` does not return
+      // the spawned PID, and we don't want to pay for an extra `Get-Process`
+      // round-trip just to discover it. Return 0 (a conventionally invalid
+      // Unix PID) so callers can distinguish "spawn dispatched" from "spawn
+      // failed". Callers MUST use `pid === undefined` to detect failure —
+      // never falsy checks like `if (!pid)`, which would silently treat
+      // success as failure here.
       return 0;
     } catch (error) {
       // APPROVED OVERRIDE: Windows daemon spawn is best-effort; log and let callers fall back to health checks/retry flow.
@@ -681,9 +752,10 @@ export function spawnDaemon(
   // controlling terminal. This prevents SIGHUP from reaching the daemon
   // even if the in-process SIGHUP handler somehow fails (belt-and-suspenders).
   // Fall back to standard detached spawn if setsid is not available.
+  // `runtimePath` was resolved at the top of this function (see comment there).
   const setsidPath = '/usr/bin/setsid';
   if (existsSync(setsidPath)) {
-    const child = spawn(setsidPath, [process.execPath, scriptPath, '--daemon'], {
+    const child = spawn(setsidPath, [runtimePath, scriptPath, '--daemon'], {
       detached: true,
       stdio: 'ignore',
       env
@@ -698,7 +770,7 @@ export function spawnDaemon(
   }
 
   // Fallback: standard detached spawn (macOS, systems without setsid)
-  const child = spawn(process.execPath, [scriptPath, '--daemon'], {
+  const child = spawn(runtimePath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
     env
