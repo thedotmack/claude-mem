@@ -10,7 +10,7 @@
  */
 
 import path from 'path';
-import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { existsSync } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
@@ -23,43 +23,11 @@ import { ChromaSync } from './sync/ChromaSync.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
-// Windows: avoid repeated spawn popups when startup fails (issue #921)
-const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
-
-function getWorkerSpawnLockPath(): string {
-  return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
-}
-
-function shouldSkipSpawnOnWindows(): boolean {
-  if (process.platform !== 'win32') return false;
-  const lockPath = getWorkerSpawnLockPath();
-  if (!existsSync(lockPath)) return false;
-  try {
-    const modifiedTimeMs = statSync(lockPath).mtimeMs;
-    return Date.now() - modifiedTimeMs < WINDOWS_SPAWN_COOLDOWN_MS;
-  } catch {
-    return false;
-  }
-}
-
-function markWorkerSpawnAttempted(): void {
-  if (process.platform !== 'win32') return;
-  try {
-    writeFileSync(getWorkerSpawnLockPath(), '', 'utf-8');
-  } catch {
-    // Best-effort lock file — failure to write shouldn't block startup
-  }
-}
-
-function clearWorkerSpawnAttempted(): void {
-  if (process.platform !== 'win32') return;
-  try {
-    const lockPath = getWorkerSpawnLockPath();
-    if (existsSync(lockPath)) unlinkSync(lockPath);
-  } catch {
-    // Best-effort cleanup
-  }
-}
+// Worker spawn / Windows-cooldown helpers are defined in ./worker-spawner.ts
+// so that lightweight consumers (e.g. the MCP server running under Node) can
+// ensure the worker daemon is up without importing this entire module — which
+// transitively pulls in the SQLite database layer via ChromaSync/DatabaseManager.
+import { ensureWorkerStarted as ensureWorkerStartedShared } from './worker-spawner.js';
 
 // Re-export for backward compatibility — canonical implementation in shared/plugin-state.ts
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -1046,96 +1014,22 @@ export class WorkerService {
 
 /**
  * Ensures the worker is started and healthy.
- * This function can be called by both 'start' and 'hook' commands.
+ *
+ * Thin wrapper around the canonical implementation in ./worker-spawner.ts.
+ *
+ * `__filename` is forwarded as the worker script path because, in the CJS
+ * bundle that ships to users, `__filename` always resolves to the compiled
+ * `worker-service.cjs` itself — which is exactly the script the spawner
+ * needs to relaunch as a detached daemon. The MCP server (a separate Node
+ * bundle) cannot rely on its own `__filename` because that would point at
+ * `mcp-server.cjs`, so it computes the worker path explicitly via
+ * `dirname(__filename) + 'worker-service.cjs'` instead.
  *
  * @param port - The TCP port (used for port-in-use checks and daemon spawn)
  * @returns true if worker is healthy (existing or newly started), false on failure
  */
 export async function ensureWorkerStarted(port: number): Promise<boolean> {
-  // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
-  const pidFileStatus = cleanStalePidFile();
-  if (pidFileStatus === 'alive') {
-    logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
-    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
-    if (healthy) {
-      logger.info('SYSTEM', 'Worker became healthy while waiting on live PID');
-      return true;
-    }
-    logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout');
-    return false;
-  }
-
-  // Check if worker is already running and healthy.
-  // NOTE: Version mismatch auto-restart intentionally removed (#1435).
-  // The marketplace bundle ships with __DEFAULT_PACKAGE_VERSION__ unbaked, causing
-  // BUILT_IN_VERSION to fall back to "development". This creates a 100% reproducible
-  // mismatch on every hook call, killing a healthy worker and often failing to restart
-  // (cold start exceeds POST_SPAWN_WAIT). A working-but-old worker is strictly better
-  // than a dead worker. Users must manually restart after genuine plugin updates.
-  // See also: #566, #665, #667, #669, #689, #1124, #1145 (same pattern across 8+ releases).
-  if (await waitForHealth(port, 1000)) {
-    // Health passed — worker is listening. Also wait for readiness in case
-    // another hook just spawned it and background init is still running.
-    // This mirrors the fresh-spawn path (line ~1025) so concurrent hooks
-    // don't race past a cold-starting worker's initialization guard.
-    const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
-    if (!ready) {
-      logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
-    }
-    logger.info('SYSTEM', 'Worker already running and healthy');
-    return true;
-  }
-
-  // Check if port is in use by something else
-  const portInUse = await isPortInUse(port);
-  if (portInUse) {
-    logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
-    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
-    if (healthy) {
-      logger.info('SYSTEM', 'Worker is now healthy');
-      return true;
-    }
-    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-    return false;
-  }
-
-  // Windows: skip spawn if a recent attempt already failed (prevents repeated bun.exe popups, issue #921)
-  if (shouldSkipSpawnOnWindows()) {
-    logger.warn('SYSTEM', 'Worker unavailable on Windows — skipping spawn (recent attempt failed within cooldown)');
-    return false;
-  }
-
-  // Spawn new worker daemon
-  logger.info('SYSTEM', 'Starting worker daemon');
-  markWorkerSpawnAttempted();
-  const pid = spawnDaemon(__filename, port);
-  if (pid === undefined) {
-    logger.error('SYSTEM', 'Failed to spawn worker daemon');
-    return false;
-  }
-
-  // PID file is written by the worker itself after listen() succeeds
-  // This is race-free and works correctly on Windows where cmd.exe PID is useless
-
-  const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
-  if (!healthy) {
-    removePidFile();
-    logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
-    return false;
-  }
-
-  // Health passed (HTTP listening). Now wait for DB + search initialization
-  // so hooks that run immediately after can actually use the worker.
-  const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
-  if (!ready) {
-    logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
-  }
-
-  clearWorkerSpawnAttempted();
-  // Touch PID file to signal other sessions that a spawn just completed.
-  touchPidFile();
-  logger.info('SYSTEM', 'Worker started successfully');
-  return true;
+  return ensureWorkerStartedShared(port, __filename);
 }
 
 // ============================================================================

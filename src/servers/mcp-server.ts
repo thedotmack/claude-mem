@@ -16,7 +16,6 @@ import { logger } from '../utils/logger.js';
 // CRITICAL: Redirect console to stderr BEFORE other imports
 // MCP uses stdio transport where stdout is reserved for JSON-RPC protocol messages.
 // Any logs to stdout break the protocol (Claude Desktop parses "[2025..." as JSON array).
-const _originalLog = console['log'];
 console['log'] = (...args: any[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
 };
@@ -28,11 +27,69 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getWorkerPort, workerHttpRequest } from '../shared/worker-utils.js';
-import { ensureWorkerStarted } from '../services/worker-service.js';
+import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Resolve the path to worker-service.cjs, which lives alongside mcp-server.cjs
+// in the plugin's scripts directory. We need an explicit path because the MCP
+// server runs under Node while the worker must run under Bun, so we can't rely
+// on `__filename` pointing to a self-spawnable script.
+//
+// In the deployed CJS bundle, `__dirname` is always defined — the import.meta
+// fallback only exists to keep the source future-proof against an eventual
+// ESM port. Both fallback branches should be functionally unreachable today.
+let mcpServerDirResolutionFailed = false;
+const mcpServerDir = (() => {
+  if (typeof __dirname !== 'undefined') return __dirname;
+  try {
+    return dirname(fileURLToPath(import.meta.url));
+  } catch {
+    // Last-ditch fallback: cwd is almost certainly wrong, but throwing here
+    // would crash the MCP server before it can serve a single request. Mark
+    // the failure so the existence check below can produce a single, loud,
+    // root-cause-attributing log line instead of a confusing "missing worker
+    // bundle" warning that hides the dirname resolution failure.
+    mcpServerDirResolutionFailed = true;
+    return process.cwd();
+  }
+})();
+const WORKER_SCRIPT_PATH = resolve(mcpServerDir, 'worker-service.cjs');
+
+/**
+ * Surface a clear, actionable error if the worker bundle isn't where we
+ * expect. Without this check, a missing or partial install only fails later
+ * inside spawnDaemon as a generic "failed to spawn" message.
+ *
+ * If dirname resolution itself failed (extremely unlikely in CJS), attribute
+ * the missing-bundle warning to the root cause so the user doesn't waste time
+ * looking for an install bug that doesn't exist.
+ *
+ * Called lazily from `ensureWorkerConnection` (not at module load) so that
+ * tests or tools that import this module without booting the MCP server
+ * don't see noisy ERROR-level log lines for a worker they never intended
+ * to start. The check is cheap and idempotent, so calling it on every
+ * auto-start attempt is fine.
+ */
+function errorIfWorkerScriptMissing(): void {
+  // Only log here when the dirname resolution itself failed — that's the
+  // mcp-server-specific root cause attribution that the spawner cannot
+  // provide. The plain "missing bundle" case is already covered by the
+  // existsSync guard inside ensureWorkerStarted, and logging from both
+  // sites would produce a confusing double-log on the same code path.
+  if (!mcpServerDirResolutionFailed) return;
+  if (existsSync(WORKER_SCRIPT_PATH)) return;
+
+  logger.error(
+    'SYSTEM',
+    'mcp-server: dirname resolution failed (both __dirname and import.meta.url are unavailable). Fell back to process.cwd() and the resolved WORKER_SCRIPT_PATH does not exist. This is the actual problem — the worker bundle is fine, but mcp-server cannot locate it. Worker auto-start will fail until the dirname-resolution path is fixed.',
+    { workerScriptPath: WORKER_SCRIPT_PATH, mcpServerDir }
+  );
+}
 
 /**
  * Map tool names to Worker HTTP endpoints
@@ -156,11 +213,29 @@ async function ensureWorkerConnection(): Promise<boolean> {
 
   logger.warn('SYSTEM', 'Worker not available, attempting auto-start for MCP client');
 
+  // Validate the worker bundle path lazily here (rather than at module load)
+  // so that tests/tools that import this module without booting the MCP
+  // server don't see noisy ERROR-level log lines for a worker they never
+  // intended to start.
+  errorIfWorkerScriptMissing();
+
   try {
     const port = getWorkerPort();
-    return await ensureWorkerStarted(port);
+    const started = await ensureWorkerStarted(port, WORKER_SCRIPT_PATH);
+    if (!started) {
+      logger.error(
+        'SYSTEM',
+        'Worker auto-start returned false — MCP tools that require the worker (search, timeline, get_observations) will fail until the worker is running. Check earlier log lines for the specific failure reason (Bun not found, missing worker bundle, port conflict, etc.).'
+      );
+    }
+    return started;
   } catch (error) {
-    logger.error('SYSTEM', 'Worker auto-start failed', undefined, error as Error);
+    logger.error(
+      'SYSTEM',
+      'Worker auto-start threw — MCP tools that require the worker (search, timeline, get_observations) will fail until the worker is running.',
+      undefined,
+      error as Error
+    );
     return false;
   }
 }

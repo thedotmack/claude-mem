@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.0.1] - 2026-04-08
+
+## 🔴 Hotfix: MCP server crashed with `Cannot find module 'bun:sqlite'` under Node
+
+v12.0.0 shipped a broken MCP server bundle that crashed on the very first `require()` call because a transitive import pulled `bun:sqlite` (a Bun-only module) into a bundle that runs under Node. Every MCP-only client (Codex and any flow that boots the MCP tool surface) was completely broken on v12.0.0.
+
+### Root cause
+
+`src/servers/mcp-server.ts` imported `ensureWorkerStarted` from `worker-service.ts`, which transitively pulled in `DatabaseManager` → `bun:sqlite`. The bundle ballooned from ~358KB (v11.0.1) to ~1.96MB (v12.0.0) and `node mcp-server.cjs` immediately threw `Error: Cannot find module 'bun:sqlite'`.
+
+### Fix
+
+- **Extracted** `ensureWorkerStarted` and Windows spawn-cooldown helpers into a new lightweight `src/services/worker-spawner.ts` module that has zero database/SQLite/ChromaDB imports
+- **Wired** `mcp-server.ts` and `worker-service.ts` through the new module via a thin back-compat wrapper
+- **Fixed** `resolveWorkerRuntimePath()` to find Bun on every platform (not just Windows) so the MCP server running under Node can correctly spawn the worker daemon under Bun
+- **Added** two build-time guardrails in `scripts/build-hooks.js`:
+  - Regex check: fails the build if `mcp-server.cjs` ever contains a `require("bun:*")` call
+  - Bundle size budget: fails the build if `mcp-server.cjs` exceeds 600KB
+- **Improved** error messages when Bun cannot be located (now names the install URL and explains *why* Bun is required)
+- **Validated** `workerScriptPath` at the spawner entry point with empty-string and existsSync guards
+- **Memoized** `resolveWorkerRuntimePath()` to skip repeated PATH lookups during crash loops, while never caching the not-found result so a long-running MCP server can recover if Bun is installed mid-session
+
+### Verification
+
+- `node mcp-server.cjs` exits cleanly under Node
+- JSON-RPC `initialize` + `tools/list` + `tools/call search` all succeed end-to-end
+- Bundle is back to ~384KB with zero `require("bun:sqlite")` calls
+- 47 unit tests pass (44 ProcessManager + 3 worker-spawner)
+- Both build guardrails verified to trip on simulated regressions
+- Smoke test: MCP server serves the full 7-tool surface
+
+### What this means for users
+
+- **MCP-only clients (Codex, etc.):** v12.0.0 was broken; v12.0.1 restores full functionality
+- **Claude Code users:** worker startup via the SessionStart hook continued working under Bun on v12.0.0, but the MCP tool surface (`mem-search`, `timeline`, `get_observations`, `smart_*`) was unreliable. v12.0.1 fixes that completely.
+- **Plugin developers:** new build-time guardrails prevent this regression class from shipping again
+
+PR: #1645
+Merge commit: `abd55977`
+
 ## [12.0.0] - 2026-04-07
 
 # claude-mem v12.0.0
