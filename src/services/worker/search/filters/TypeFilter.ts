@@ -3,36 +3,30 @@
  *
  * Provides utilities for filtering observations by type.
  */
-import { logger } from '../../../../utils/logger.js';
-
-type ObservationType = 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
+import { ModeManager } from '../../../domain/ModeManager.js';
 
 /**
- * Valid observation types
+ * Get valid observation types dynamically from ModeManager
  */
-export const OBSERVATION_TYPES: ObservationType[] = [
-  'decision',
-  'bugfix',
-  'feature',
-  'refactor',
-  'discovery',
-  'change'
-];
+export function getObservationTypes(): string[] {
+  return ModeManager.getInstance().getObservationTypes().map(t => t.id);
+}
 
 /**
  * Normalize type filter value(s)
  */
 export function normalizeType(
   type?: string | string[]
-): ObservationType[] | undefined {
+): string[] | undefined {
   if (!type) {
     return undefined;
   }
 
+  const validTypes = getObservationTypes();
   const types = Array.isArray(type) ? type : [type];
   const normalized = types
     .map(t => t.trim().toLowerCase())
-    .filter(t => OBSERVATION_TYPES.includes(t as ObservationType)) as ObservationType[];
+    .filter(t => validTypes.includes(t));
 
   return normalized.length > 0 ? normalized : undefined;
 }
@@ -42,13 +36,13 @@ export function normalizeType(
  */
 export function matchesType(
   resultType: string,
-  filterTypes?: ObservationType[]
+  filterTypes?: string[]
 ): boolean {
   if (!filterTypes || filterTypes.length === 0) {
     return true;
   }
 
-  return filterTypes.includes(resultType as ObservationType);
+  return filterTypes.includes(resultType);
 }
 
 /**
@@ -56,7 +50,7 @@ export function matchesType(
  */
 export function filterObservationsByType<T extends { type: string }>(
   observations: T[],
-  types?: ObservationType[]
+  types?: string[]
 ): T[] {
   if (!types || types.length === 0) {
     return observations;
@@ -68,9 +62,10 @@ export function filterObservationsByType<T extends { type: string }>(
 /**
  * Parse comma-separated type string
  */
-export function parseTypeString(typeString: string): ObservationType[] {
+export function parseTypeString(typeString: string): string[] {
+  const validTypes = getObservationTypes();
   return typeString
     .split(',')
     .map(t => t.trim().toLowerCase())
-    .filter(t => OBSERVATION_TYPES.includes(t as ObservationType)) as ObservationType[];
+    .filter(t => validTypes.includes(t));
 }

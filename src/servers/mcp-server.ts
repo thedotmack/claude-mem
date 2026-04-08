@@ -155,7 +155,8 @@ const tools = [
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
-NEVER fetch full details without filtering first. 10x token savings.`,
+NEVER fetch full details without filtering first. 10x token savings.
+For complete examples and advanced usage: load Skill(mem-search)`,
     inputSchema: {
       type: 'object',
       properties: {}
@@ -179,13 +180,16 @@ NEVER fetch full details without filtering first. 10x token savings.`,
    \`get_observations(ids=[...])\`  # ALWAYS batch for 2+ items
    Returns: Complete details (~500-1000 tokens/result)
 
-**Why:** 10x token savings. Never fetch full details without filtering first.`
+**Why:** 10x token savings. Never fetch full details without filtering first.
+
+**IMPORTANT:** For complete documentation, examples, and advanced patterns,
+invoke: \`Skill(mem-search)\``
       }]
     })
   },
   {
     name: 'search',
-    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd, offset, orderBy',
+    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd, offset, orderBy. Full docs: Skill(mem-search)',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -198,7 +202,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'timeline',
-    description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
+    description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project. Full docs: Skill(mem-search)',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -211,7 +215,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'get_observations',
-    description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project',
+    description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project. Full docs: Skill(mem-search)',
     inputSchema: {
       type: 'object',
       properties: {

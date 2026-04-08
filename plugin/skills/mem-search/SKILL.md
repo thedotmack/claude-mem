@@ -125,3 +125,29 @@ get_observations(ids=[11131, 10942, 10855], orderBy="date_desc")
 - **Full observation:** ~500-1000 tokens each
 - **Batch fetch:** 1 HTTP request vs N individual requests
 - **10x token savings** by filtering before fetching
+
+## Deep Dive: Full Transcript Context (Layer 3)
+
+When observations alone aren't enough, retrieve the original conversation:
+
+**Full segment dump:**
+```
+get_transcript_segment(observation_id=11131)
+```
+
+**Scoped search within segment:**
+```
+get_transcript_segment(observation_id=11131, query="why did we choose JWT")
+```
+
+**Returns:**
+- Without `query`: The full conversation segment (~2000-5000 tokens)
+- With `query`: The most relevant chunks from within that segment (scoped RAG)
+
+**This is a traversal tool, not a search tool.** You must already have an
+observation ID from search/timeline.
+
+**Token cost hierarchy:**
+- Search index: ~50-100 tokens/result
+- Full observation: ~500-1000 tokens
+- Transcript segment: ~2000-5000 tokens (full) or ~500-1000 (scoped query)

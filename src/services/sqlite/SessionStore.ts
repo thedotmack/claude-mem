@@ -51,6 +51,7 @@ export class SessionStore {
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
+    this.addUserPromptsUniqueIndex();
   }
 
   /**
@@ -873,6 +874,19 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
+  }
+
+  /**
+   * Add UNIQUE constraint to user_prompts for deduplication (migration 25)
+   */
+  private addUserPromptsUniqueIndex(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(25) as SchemaVersion | undefined;
+    if (applied) return;
+
+    this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_user_prompts_unique_session_prompt ON user_prompts(content_session_id, prompt_number)');
+    logger.debug('DB', 'Added unique index on user_prompts(content_session_id, prompt_number)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
   }
 
   /**

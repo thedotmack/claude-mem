@@ -66,7 +66,7 @@ export interface ObservationRecord {
   memory_session_id: string;
   project: string;
   text: string | null;
-  type: 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
+  type: string;  // Validated by ModeManager, not TypeScript
   created_at: string;
   created_at_epoch: number;
   title?: string;
