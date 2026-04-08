@@ -391,6 +391,13 @@ export class DataRoutes extends BaseRouteHandler {
           stats.observationsSkipped++;
         }
       }
+
+      // Rebuild FTS index so imported observations are immediately searchable.
+      // The FTS5 content table relies on triggers for incremental updates, but
+      // those triggers may not have fired correctly for all import paths.
+      if (stats.observationsImported > 0) {
+        store.rebuildObservationsFTSIndex();
+      }
     }
 
     // Import prompts (depends on sessions)
