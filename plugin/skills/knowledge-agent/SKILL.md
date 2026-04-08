@@ -60,3 +60,19 @@ Shows all corpora with stats and priming status.
 - **Prime once, query many times** — the session persists across queries
 - **Reprime for fresh context** — if the conversation drifts, reprime to reset
 - **Rebuild to update** — when new observations are added, rebuild then reprime
+
+## Maintenance
+
+### Rebuild a corpus (refresh with new observations)
+```
+rebuild_corpus name="hooks-expertise"
+```
+
+After rebuilding, reprime to load the updated knowledge:
+
+### Reprime (fresh session)
+```
+reprime_corpus name="hooks-expertise"
+```
+
+Clears prior Q&A context and reloads the corpus into a new session.

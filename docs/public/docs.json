@@ -39,6 +39,7 @@
           "usage/openrouter-provider",
           "usage/gemini-provider",
           "usage/search-tools",
+          "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",
           "usage/export-import",

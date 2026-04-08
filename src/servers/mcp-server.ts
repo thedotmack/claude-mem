@@ -504,6 +504,38 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       const { name, ...rest } = args;
       return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/query`, rest);
     }
+  },
+  {
+    name: 'rebuild_corpus',
+    description: 'Rebuild a knowledge corpus from its stored filter — re-runs the search to refresh with new observations. Does not re-prime the session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Name of the corpus to rebuild' }
+      },
+      required: ['name'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      const { name, ...rest } = args;
+      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/rebuild`, rest);
+    }
+  },
+  {
+    name: 'reprime_corpus',
+    description: 'Create a fresh knowledge agent session for a corpus, clearing prior Q&A context. Use when conversation has drifted or after rebuilding.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Name of the corpus to reprime' }
+      },
+      required: ['name'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      const { name, ...rest } = args;
+      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/reprime`, rest);
+    }
   }
 ];
 

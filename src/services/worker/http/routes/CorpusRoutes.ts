@@ -38,7 +38,14 @@ export class CorpusRoutes extends BaseRouteHandler {
    * Body: { name, description?, project?, types?, concepts?, files?, query?, date_start?, date_end?, limit? }
    */
   private handleBuildCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    if (!this.validateRequired(req, res, ['name'])) return;
+    if (!req.body.name) {
+      res.status(400).json({
+        error: 'Missing required field: name',
+        fix: 'Add a "name" field to your request body',
+        example: { name: 'my-corpus', query: 'hooks', limit: 100 }
+      });
+      return;
+    }
 
     const { name, description, project, types, concepts, files, query, date_start, date_end, limit } = req.body;
 
@@ -77,7 +84,11 @@ export class CorpusRoutes extends BaseRouteHandler {
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
-      this.notFound(res, `Corpus "${name}" not found`);
+      res.status(404).json({
+        error: `Corpus "${name}" not found`,
+        fix: 'Check the corpus name or build a new one',
+        available: this.corpusStore.list().map(c => c.name)
+      });
       return;
     }
 
@@ -95,7 +106,11 @@ export class CorpusRoutes extends BaseRouteHandler {
     const existed = this.corpusStore.delete(name);
 
     if (!existed) {
-      this.notFound(res, `Corpus "${name}" not found`);
+      res.status(404).json({
+        error: `Corpus "${name}" not found`,
+        fix: 'Check the corpus name or build a new one',
+        available: this.corpusStore.list().map(c => c.name)
+      });
       return;
     }
 
@@ -111,7 +126,11 @@ export class CorpusRoutes extends BaseRouteHandler {
     const existingCorpus = this.corpusStore.read(name);
 
     if (!existingCorpus) {
-      this.notFound(res, `Corpus "${name}" not found`);
+      res.status(404).json({
+        error: `Corpus "${name}" not found`,
+        fix: 'Check the corpus name or build a new one',
+        available: this.corpusStore.list().map(c => c.name)
+      });
       return;
     }
 
@@ -131,7 +150,11 @@ export class CorpusRoutes extends BaseRouteHandler {
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
-      this.notFound(res, `Corpus "${name}" not found`);
+      res.status(404).json({
+        error: `Corpus "${name}" not found`,
+        fix: 'Check the corpus name or build a new one',
+        available: this.corpusStore.list().map(c => c.name)
+      });
       return;
     }
 
@@ -147,12 +170,23 @@ export class CorpusRoutes extends BaseRouteHandler {
   private handleQueryCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { name } = req.params;
 
-    if (!this.validateRequired(req, res, ['question'])) return;
+    if (!req.body.question) {
+      res.status(400).json({
+        error: 'Missing required field: question',
+        fix: 'Add a "question" field to your request body',
+        example: { question: 'What architectural decisions were made about hooks?' }
+      });
+      return;
+    }
 
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
-      this.notFound(res, `Corpus "${name}" not found`);
+      res.status(404).json({
+        error: `Corpus "${name}" not found`,
+        fix: 'Check the corpus name or build a new one',
+        available: this.corpusStore.list().map(c => c.name)
+      });
       return;
     }
 
@@ -170,7 +204,11 @@ export class CorpusRoutes extends BaseRouteHandler {
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
-      this.notFound(res, `Corpus "${name}" not found`);
+      res.status(404).json({
+        error: `Corpus "${name}" not found`,
+        fix: 'Check the corpus name or build a new one',
+        available: this.corpusStore.list().map(c => c.name)
+      });
       return;
     }
 
