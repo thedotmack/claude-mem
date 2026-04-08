@@ -76,24 +76,19 @@ const WORKER_SCRIPT_PATH = resolve(mcpServerDir, 'worker-service.cjs');
  * auto-start attempt is fine.
  */
 function errorIfWorkerScriptMissing(): void {
+  // Only log here when the dirname resolution itself failed — that's the
+  // mcp-server-specific root cause attribution that the spawner cannot
+  // provide. The plain "missing bundle" case is already covered by the
+  // existsSync guard inside ensureWorkerStarted, and logging from both
+  // sites would produce a confusing double-log on the same code path.
+  if (!mcpServerDirResolutionFailed) return;
   if (existsSync(WORKER_SCRIPT_PATH)) return;
 
-  if (mcpServerDirResolutionFailed) {
-    logger.error(
-      'SYSTEM',
-      'mcp-server: dirname resolution failed (both __dirname and import.meta.url are unavailable). Fell back to process.cwd() and the resolved WORKER_SCRIPT_PATH does not exist. This is the actual problem — the worker bundle is fine, but mcp-server cannot locate it. Worker auto-start will fail until the dirname-resolution path is fixed.',
-      { workerScriptPath: WORKER_SCRIPT_PATH, mcpServerDir }
-    );
-  } else {
-    // A missing worker bundle means EVERY MCP tool call that needs the worker
-    // will silently fail. This is a broken-install state, not a transient
-    // warning condition — match the severity of the dirname-fallback branch.
-    logger.error(
-      'SYSTEM',
-      'worker-service.cjs not found at expected path — auto-start will fail until it is built/installed',
-      { workerScriptPath: WORKER_SCRIPT_PATH, mcpServerDir }
-    );
-  }
+  logger.error(
+    'SYSTEM',
+    'mcp-server: dirname resolution failed (both __dirname and import.meta.url are unavailable). Fell back to process.cwd() and the resolved WORKER_SCRIPT_PATH does not exist. This is the actual problem — the worker bundle is fine, but mcp-server cannot locate it. Worker auto-start will fail until the dirname-resolution path is fixed.',
+    { workerScriptPath: WORKER_SCRIPT_PATH, mcpServerDir }
+  );
 }
 
 /**
