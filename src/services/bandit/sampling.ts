@@ -11,6 +11,9 @@ function normalRandom(): number {
 }
 
 export function gammaSample(shape: number): number {
+  if (shape <= 0) {
+    throw new Error(`gammaSample: shape must be positive, got ${shape}`);
+  }
   if (shape < 1) {
     return gammaSample(shape + 1) * Math.pow(Math.random(), 1 / shape);
   }
@@ -31,6 +34,9 @@ export function gammaSample(shape: number): number {
 }
 
 export function betaSample(alpha: number, beta: number): number {
+  if (alpha <= 0 || beta <= 0) {
+    throw new Error(`betaSample: alpha and beta must be positive, got alpha=${alpha}, beta=${beta}`);
+  }
   const x = gammaSample(alpha);
   const y = gammaSample(beta);
   return x / (x + y);

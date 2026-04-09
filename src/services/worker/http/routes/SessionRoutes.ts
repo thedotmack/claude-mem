@@ -884,7 +884,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
       session.modelOverride = selectedModel;
       logger.debug('SESSION', `Bandit routing: ${selectedArm}`, {
-        sessionId: session.sessionDbId, model: selectedModel, type: dominantType
+        sessionId: session.sessionDbId, model: selectedModel, type: rewardedType
       });
       return;
     }

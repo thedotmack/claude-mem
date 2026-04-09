@@ -29,6 +29,9 @@ export class FeedbackRecorder {
     if (observationIds.length === 0) return;
 
     const now = Date.now();
+    // Track which arms already received reward in this batch to avoid over-rewarding.
+    // One selectArm() call = one pull, so at most one reward per arm per batch.
+    const rewardedArms = new Set<string>();
 
     for (const obsId of observationIds) {
       try {
@@ -39,7 +42,10 @@ export class FeedbackRecorder {
           const obs = this.getObservation.get(obsId) as { id: number; type: string; generated_by_model: string | null } | undefined;
           if (obs?.generated_by_model) {
             const armId = `${obs.type}:${obs.generated_by_model}`;
-            this.banditEngine.recordReward(MODEL_PER_OBS_TYPE, armId, 1);
+            if (!rewardedArms.has(armId)) {
+              this.banditEngine.recordReward(MODEL_PER_OBS_TYPE, armId, 1);
+              rewardedArms.add(armId);
+            }
           }
         }
       } catch (e) {

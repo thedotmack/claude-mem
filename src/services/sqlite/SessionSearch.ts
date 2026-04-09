@@ -378,11 +378,12 @@ export class SessionSearch {
       const sql = `
         SELECT s.*, s.discovery_tokens
         FROM session_summaries s
-        WHERE s.summary LIKE ?
+        WHERE (s.request LIKE ? OR s.investigated LIKE ? OR s.learned LIKE ? OR s.completed LIKE ?)
         ORDER BY s.created_at_epoch DESC
         LIMIT ? OFFSET ?
       `;
-      return this.db.prepare(sql).all(`%${query}%`, limit, offset) as SessionSummarySearchResult[];
+      const like = `%${query}%`;
+      return this.db.prepare(sql).all(like, like, like, like, limit, offset) as SessionSummarySearchResult[];
     }
   }
 

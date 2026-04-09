@@ -41,20 +41,22 @@ SSH_CMD="ssh $SSH_KEY_OPT $SSH_OPTS"
 mkdir -p "$TMPDIR"
 trap "rm -rf $TMPDIR" EXIT
 
-# Merge new observations from a remote DB into the local DB using content_hash dedup.
-# Only imports observations whose content_hash doesn't exist locally.
-merge_remote_obs() {
+# Merge new observations AND session_summaries from a remote DB into the local DB.
+# Uses content_hash dedup for observations, (created_at, memory_session_id) for summaries.
+merge_remote_data() {
   local remote_db_file="$1"
   bun -e "
 const local = require('bun:sqlite').Database.open('$LOCAL_DB');
 const remote = require('bun:sqlite').Database.open('$remote_db_file', {readonly: true});
+
+// Merge observations by content_hash
 const localHashes = new Set(
   local.query('SELECT content_hash FROM observations WHERE content_hash IS NOT NULL')
     .all().map(r => r.content_hash)
 );
 const remoteObs = remote.query('SELECT * FROM observations WHERE content_hash IS NOT NULL').all();
-let imported = 0;
-const insert = local.prepare(
+let obsImported = 0;
+const insertObs = local.prepare(
   'INSERT OR IGNORE INTO observations (memory_session_id, project, text, type, title, subtitle, ' +
   'facts, narrative, concepts, files_read, files_modified, prompt_number, discovery_tokens, ' +
   'created_at, created_at_epoch, content_hash, status, relevance_count, generated_by_model) ' +
@@ -62,17 +64,38 @@ const insert = local.prepare(
 );
 for (const o of remoteObs) {
   if (!localHashes.has(o.content_hash)) {
-    insert.run(
+    insertObs.run(
       o.memory_session_id, o.project, o.text, o.type, o.title, o.subtitle,
       o.facts, o.narrative, o.concepts, o.files_read, o.files_modified,
       o.prompt_number, o.discovery_tokens, o.created_at, o.created_at_epoch,
       o.content_hash, o.status, o.relevance_count || 0, o.generated_by_model
     );
-    imported++;
+    obsImported++;
   }
 }
+
+// Merge session_summaries by (created_at, memory_session_id)
+const localSums = new Set(
+  local.query('SELECT created_at || \"::\" || memory_session_id as key FROM session_summaries')
+    .all().map(r => r.key)
+);
+const remoteSums = remote.query('SELECT * FROM session_summaries').all();
+let sumImported = 0;
+const cols = Object.keys(remoteSums[0] || {}).filter(k => k !== 'id');
+if (cols.length > 0) {
+  const ph = cols.map(() => '?').join(',');
+  const insertSum = local.prepare('INSERT OR IGNORE INTO session_summaries (' + cols.join(',') + ') VALUES (' + ph + ')');
+  for (const s of remoteSums) {
+    const key = s.created_at + '::' + s.memory_session_id;
+    if (!localSums.has(key)) {
+      insertSum.run(...cols.map(c => s[c]));
+      sumImported++;
+    }
+  }
+}
+
 remote.close();
-console.log(imported);
+console.log(obsImported + ':' + sumImported);
 " 2>/dev/null
 }
 
@@ -99,7 +122,10 @@ do_pull() {
   echo "=== Pull: $REMOTE_HOST → local (merge by content_hash) ==="
   local remote_db_file="$TMPDIR/remote.db"
 
-  # Download remote DB
+  # Checkpoint remote WAL before pulling to capture all committed rows
+  $SSH_CMD "$REMOTE_HOST" "bun -e \"require('bun:sqlite').Database.open('\$HOME/$REMOTE_DB').run('PRAGMA wal_checkpoint(TRUNCATE)')\"" 2>/dev/null || true
+
+  # Download remote DB (WAL already merged)
   $SSH_CMD "$REMOTE_HOST" "cat ~/$REMOTE_DB" > "$remote_db_file" 2>/dev/null
 
   if [ ! -s "$remote_db_file" ]; then
@@ -107,10 +133,12 @@ do_pull() {
     return 1
   fi
 
-  # Merge new observations
-  local imported
-  imported=$(merge_remote_obs "$remote_db_file")
-  echo "Merged $imported new observations from $REMOTE_HOST"
+  # Merge new observations and session summaries
+  local result
+  result=$(merge_remote_data "$remote_db_file")
+  local obs_imported="${result%%:*}"
+  local sum_imported="${result##*:}"
+  echo "Merged $obs_imported obs + $sum_imported summaries from $REMOTE_HOST"
   rm -f "$remote_db_file"
 }
 
@@ -121,7 +149,10 @@ do_push() {
   checkpoint_local_wal
 
   # 2. Stop remote worker to prevent FTS corruption during write
-  $SSH_CMD "$REMOTE_HOST" "systemctl --user stop claude-mem-worker 2>/dev/null; rm -f ~/$REMOTE_DB-shm ~/$REMOTE_DB-wal ~/.claude-mem/worker.pid" 2>/dev/null || true
+  if ! $SSH_CMD "$REMOTE_HOST" "systemctl --user stop claude-mem-worker 2>/dev/null; rm -f ~/$REMOTE_DB-shm ~/$REMOTE_DB-wal ~/.claude-mem/worker.pid" 2>/dev/null; then
+    echo "Warning: Could not stop remote worker, aborting push to prevent corruption"
+    return 1
+  fi
 
   # 3. Push clean DB
   scp $SSH_KEY_OPT $SSH_OPTS "$LOCAL_DB" "$REMOTE_HOST:~/$REMOTE_DB" 2>/dev/null
