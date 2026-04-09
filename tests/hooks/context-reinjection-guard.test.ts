@@ -29,10 +29,6 @@ mock.module('../../src/shared/worker-utils.js', () => ({
   getWorkerPort: () => 37777,
 }));
 
-mock.module('../../src/utils/project-name.js', () => ({
-  getProjectName: () => 'test-project',
-}));
-
 mock.module('../../src/utils/project-filter.js', () => ({
   isProjectExcluded: () => false,
 }));
