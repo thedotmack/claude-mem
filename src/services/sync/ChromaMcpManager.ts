@@ -23,6 +23,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
+import { getUvxPath } from '../../utils/uvx-path.js';
 
 const CHROMA_MCP_CLIENT_NAME = 'claude-mem-chroma';
 const CHROMA_MCP_CLIENT_VERSION = '1.0.0';
@@ -112,7 +113,12 @@ export class ChromaMcpManager {
     // This also fixes Git Bash compatibility (#1062) since cmd.exe handles
     // Windows-native command resolution regardless of the calling shell.
     const isWindows = process.platform === 'win32';
-    const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'uvx';
+    // On non-Windows, resolve uvx absolute path so the worker can find it when
+    // started from non-interactive contexts (launchd, cron, nohup) where
+    // ~/.local/bin is not in PATH. Falls back to 'uvx' if not found (allows
+    // a clear error message rather than silent failure).
+    const resolvedUvxPath = !isWindows ? (getUvxPath() ?? 'uvx') : 'uvx';
+    const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : resolvedUvxPath;
     const uvxSpawnArgs = isWindows ? ['/c', 'uvx', ...commandArgs] : commandArgs;
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
