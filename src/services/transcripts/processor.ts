@@ -143,15 +143,16 @@ export class TranscriptEventProcessor {
       case 'session_context':
         this.applySessionContext(session, fields);
         break;
-      case 'session_init':
+      case 'session_init': {
         // Prompt boundary: flush previous segment before starting new one
-        await this.flushTranscriptSegment(session);
-        session.promptNumber++;
+        const flushed = await this.flushTranscriptSegment(session);
+        if (flushed) session.promptNumber++;
         await this.handleSessionInit(session, fields);
         if (watch.context?.updateOn?.includes('session_start')) {
           await this.updateContext(session, watch);
         }
         break;
+      }
       case 'user_message': {
         const userText = typeof fields.message === 'string' ? fields.message
           : typeof fields.prompt === 'string' ? fields.prompt : undefined;
@@ -351,8 +352,8 @@ export class TranscriptEventProcessor {
    * Flush accumulated transcript exchanges to the worker for Chroma storage.
    * Called on prompt boundary (session_init) and session_end.
    */
-  private async flushTranscriptSegment(session: SessionState): Promise<void> {
-    if (session.exchanges.length === 0 || session.promptNumber === 0) return;
+  private async flushTranscriptSegment(session: SessionState): Promise<boolean> {
+    if (session.exchanges.length === 0 || session.promptNumber === 0) return false;
 
     // Capture exchanges before clearing (needed for conversation observation)
     const exchangesToFlush = [...session.exchanges];
@@ -361,10 +362,10 @@ export class TranscriptEventProcessor {
       .map(ex => `USER: ${ex.userText}\nASSISTANT: ${ex.assistantText}`)
       .join('\n\n');
 
-    if (!text.trim()) return;
+    if (!text.trim()) return false;
 
     const workerReady = await ensureWorkerRunning();
-    if (!workerReady) return;
+    if (!workerReady) return false;
 
     try {
       const response = await workerHttpRequest('/api/transcript/store', {
@@ -379,13 +380,13 @@ export class TranscriptEventProcessor {
       });
       if (!response.ok) {
         logger.warn('TRANSCRIPT', 'Transcript segment store returned non-2xx', { status: response.status });
-        return;
+        return false;
       }
     } catch (error) {
       logger.warn('TRANSCRIPT', 'Transcript segment store failed', {
         error: error instanceof Error ? error.message : String(error)
       });
-      return;
+      return false;
     }
 
     // Send exchanges for conversation observation (fire-and-forget)
@@ -393,6 +394,7 @@ export class TranscriptEventProcessor {
 
     // Clear exchanges only after successful store
     session.exchanges = [];
+    return true;
   }
 
   /**
@@ -411,6 +413,10 @@ export class TranscriptEventProcessor {
           exchanges,
           project: session.project || 'unknown'
         })
+      }).then(response => {
+        if (!response.ok) {
+          logger.debug('TRANSCRIPT', 'Conversation observation returned non-2xx', { status: response.status });
+        }
       }).catch(error => {
         logger.debug('TRANSCRIPT', 'Conversation observation request failed', {
           error: error instanceof Error ? error.message : String(error)

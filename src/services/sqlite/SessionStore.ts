@@ -1683,13 +1683,18 @@ export class SessionStore {
     const now = new Date();
     const nowEpoch = now.getTime();
 
-    const stmt = this.db.prepare(`
-      INSERT INTO user_prompts
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO user_prompts
       (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?)
-    `);
+    `).run(contentSessionId, promptNumber, promptText, now.toISOString(), nowEpoch);
 
-    const result = stmt.run(contentSessionId, promptNumber, promptText, now.toISOString(), nowEpoch);
+    if (result.changes === 0) {
+      const existing = this.db.prepare(
+        'SELECT id FROM user_prompts WHERE content_session_id = ? AND prompt_number = ? LIMIT 1'
+      ).get(contentSessionId, promptNumber) as { id: number } | undefined;
+      return existing?.id ?? 0;
+    }
     return result.lastInsertRowid as number;
   }
 

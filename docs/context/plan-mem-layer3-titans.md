@@ -110,7 +110,7 @@ observation ID from search/timeline.
 
 ### Tasks
 
-#### 2.1: Add UNIQUE constraint to user_prompts (Migration 24)
+#### 2.1: Add UNIQUE constraint to user_prompts (Migration 25)
 
 **File:** `src/services/sqlite/SessionStore.ts`
 
@@ -159,7 +159,7 @@ type: string;  // Validated by ModeManager, not TypeScript
 
 **Why:** ModeManager already loads types dynamically from `plugin/modes/code.json`. The 3 hardcoded locations create a split-brain where ModeManager accepts new types but TypeFilter/DB types reject them.
 
-#### 2.3: Add 6 conversation observation types to code mode
+#### 2.3: Add 7 conversation observation types to code mode
 
 **File:** `plugin/modes/code.json`
 
@@ -175,7 +175,7 @@ Add to `observation_types` array:
 ```
 
 ### Verification
-- [ ] Migration 24 applies: UNIQUE index on user_prompts
+- [ ] Migration 25 applies: UNIQUE index on user_prompts
 - [ ] TypeFilter uses ModeManager dynamically
 - [ ] `ObservationRow.type` and `ObservationRecord.type` are `string`
 - [ ] code.json has 12 observation types
