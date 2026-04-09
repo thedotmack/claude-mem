@@ -143,3 +143,24 @@ Use smart_* tools for code exploration, Read for non-code files. Mix freely.
 | Explore agent | ~39,000-59,000 | Cross-file synthesis with narrative |
 
 **4-8x savings** on file understanding (outline + unfold vs Read). **11-18x savings** on codebase exploration vs Explore agent. The narrower the query, the wider the gap — a 27-line function costs 55x less to read via unfold than via an Explore agent, because the agent still reads the entire file.
+
+## Language Support
+
+Smart-explore uses **tree-sitter AST parsing** for structural analysis. Unsupported file types fall back to text-based search.
+
+### Bundled Languages
+
+| Language | Extensions |
+|----------|-----------|
+| JavaScript | `.js`, `.mjs`, `.cjs` |
+| TypeScript | `.ts` |
+| TSX / JSX | `.tsx`, `.jsx` |
+| Python | `.py`, `.pyw` |
+| Go | `.go` |
+| Rust | `.rs` |
+| Ruby | `.rb` |
+| Java | `.java` |
+| C | `.c`, `.h` |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh` |
+
+Files with unrecognized extensions are parsed as plain text — `smart_search` still works (grep-style), but `smart_outline` and `smart_unfold` will not extract structured symbols.
