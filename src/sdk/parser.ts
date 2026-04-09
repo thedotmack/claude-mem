@@ -120,6 +120,14 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
   const summaryMatch = summaryRegex.exec(text);
 
   if (!summaryMatch) {
+    // Detect <observation> tags in a summary response — LLM applied pattern-completion
+    // bias from prior observation turns and used the wrong XML schema (#1649)
+    if (/<observation>/.test(text)) {
+      logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — prompt conditioning may need strengthening', {
+        sessionId,
+        responsePrefix: text.slice(0, 120)
+      });
+    }
     return null;
   }
 
