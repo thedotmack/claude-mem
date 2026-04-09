@@ -10,7 +10,7 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, bufferedPostRequest } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 
@@ -37,14 +37,14 @@ export const sessionCompleteHandler: EventHandler = {
 
     try {
       // Call the session complete endpoint by contentSessionId
-      const response = await workerHttpRequest('/api/sessions/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const response = await bufferedPostRequest(
+        '/api/sessions/complete',
+        JSON.stringify({
           contentSessionId: sessionId,
           platformSource
-        })
-      });
+        }),
+        { 'Content-Type': 'application/json' }
+      );
 
       if (!response.ok) {
         const text = await response.text();

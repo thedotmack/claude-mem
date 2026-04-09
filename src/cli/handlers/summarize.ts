@@ -14,10 +14,11 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, workerHttpRequest, bufferedPostRequest } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { extractLastMessage } from '../../shared/transcript-parser.js';
 import { HOOK_EXIT_CODES, HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
+import { getLlmSource } from '../../shared/node-identity.js';
 
 const SUMMARIZE_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.DEFAULT);
 const POLL_INTERVAL_MS = 500;
@@ -67,15 +68,15 @@ export const summarizeHandler: EventHandler = {
     });
 
     // 1. Queue summarize request — worker returns immediately with { status: 'queued' }
-    const response = await workerHttpRequest('/api/sessions/summarize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const response = await bufferedPostRequest(
+      '/api/sessions/summarize',
+      JSON.stringify({
         contentSessionId: sessionId,
-        last_assistant_message: lastAssistantMessage
+        last_assistant_message: lastAssistantMessage,
+        llm_source: getLlmSource()
       }),
-      timeoutMs: SUMMARIZE_TIMEOUT_MS
-    });
+      { 'Content-Type': 'application/json' }
+    );
 
     if (!response.ok) {
       return { continue: true, suppressOutput: true };

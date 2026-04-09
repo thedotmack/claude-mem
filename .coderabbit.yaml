@@ -1,0 +1,49 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+early_access: true
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  review_status: true
+  commit_status: true
+  walkthrough: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    base_branches:
+      - main
+  path_filters:
+    - "!**/node_modules/**"
+    - "!**/dist/**"
+    - "!**/.local/**"
+    - "!plugin/scripts/*.cjs"
+    - "!plugin/scripts/claude-mem"
+    - "!plugin/ui/viewer-bundle.js"
+    - "!**/package-lock.json"
+    - "!**/bun.lock"
+  path_instructions:
+    - path: "src/**/*.ts"
+      instructions: |
+        Apply strict review for production runtime paths.
+        Prioritize correctness, data integrity, auth/cors boundaries, concurrency/race conditions, and backward compatibility.
+        Flag weak typing (`any`, unsafe casts), swallowed errors, and non-parameterized SQL.
+        Require explicit handling of null/undefined branches and edge-case behavior.
+    - path: "src/ui/**/*.tsx"
+      instructions: |
+        Focus on rendering correctness under stale/partial API data, state synchronization, and event-stream edge cases.
+        Flag hidden runtime errors, unsafe assumptions in optional fields, and noisy logging in hot paths.
+    - path: "tests/**/*.ts"
+      instructions: |
+        Enforce strict test quality: deterministic assertions, realistic edge cases, and migration/version expectations.
+        Flag brittle snapshots, weak assertions, and missing negative-path coverage.
+    - path: "scripts/**/*.js"
+      instructions: |
+        Review for safe shell/process usage, robust failure handling, and portability on macOS/Linux.
+        Flag unguarded destructive operations and missing input validation.
+chat:
+  auto_reply: false
+knowledge_base:
+  opt_out: false

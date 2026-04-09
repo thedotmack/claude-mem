@@ -16,6 +16,7 @@ import { parseObservations, parseSummary, type ParsedObservation, type ParsedSum
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
+import { getNodeName } from '../../../shared/node-identity.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import type { ActiveSession } from '../../worker-types.js';
@@ -117,7 +118,11 @@ export async function processAgentResponse(
     session.lastPromptNumber,
     discoveryTokens,
     originalTimestamp ?? undefined,
-    modelId
+    modelId,
+    session.node,
+    session.platform,
+    session.instance,
+    session.llm_source
   );
 
   // Log storage result with IDs for end-to-end traceability
@@ -202,6 +207,7 @@ async function syncAndBroadcastObservations(
   agentName: string,
   projectRoot?: string
 ): Promise<void> {
+  const nodeName = getNodeName();
   for (let i = 0; i < observations.length; i++) {
     const obsId = result.observationIds[i];
     const obs = observations[i];
@@ -250,7 +256,11 @@ async function syncAndBroadcastObservations(
       files_modified: JSON.stringify(obs.files_modified || []),
       project: session.project,
       prompt_number: session.lastPromptNumber,
-      created_at_epoch: result.createdAtEpoch
+      created_at_epoch: result.createdAtEpoch,
+      node: session.node || nodeName,
+      platform: session.platform || null,
+      instance: session.instance ?? null,
+      llm_source: session.llm_source || null
     });
   }
 
@@ -299,6 +309,7 @@ async function syncAndBroadcastSummary(
     return;
   }
 
+  const nodeName = getNodeName();
   const chromaStart = Date.now();
 
   // Sync to Chroma (fire-and-forget, skipped if Chroma is disabled)
@@ -337,7 +348,11 @@ async function syncAndBroadcastSummary(
     notes: summary!.notes,
     project: session.project,
     prompt_number: session.lastPromptNumber,
-    created_at_epoch: result.createdAtEpoch
+    created_at_epoch: result.createdAtEpoch,
+    node: session.node || nodeName,
+    platform: session.platform || null,
+    instance: session.instance ?? null,
+    llm_source: session.llm_source || null
   });
 
   // Update Cursor context file for registered projects (fire-and-forget)

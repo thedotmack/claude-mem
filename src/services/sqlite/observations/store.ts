@@ -34,13 +34,14 @@ export function computeObservationContentHash(
 export function findDuplicateObservation(
   db: Database,
   contentHash: string,
-  timestampEpoch: number
+  timestampEpoch: number,
+  node?: string
 ): { id: number; created_at_epoch: number } | null {
   const windowStart = timestampEpoch - DEDUP_WINDOW_MS;
   const stmt = db.prepare(
-    'SELECT id, created_at_epoch FROM observations WHERE content_hash = ? AND created_at_epoch > ?'
+    'SELECT id, created_at_epoch FROM observations WHERE content_hash = ? AND created_at_epoch > ? AND (node = ? OR node IS NULL)'
   );
-  return (stmt.get(contentHash, windowStart) as { id: number; created_at_epoch: number } | null);
+  return (stmt.get(contentHash, windowStart, node ?? null) as { id: number; created_at_epoch: number } | null);
 }
 
 /**
@@ -55,7 +56,11 @@ export function storeObservation(
   observation: ObservationInput,
   promptNumber?: number,
   discoveryTokens: number = 0,
-  overrideTimestampEpoch?: number
+  overrideTimestampEpoch?: number,
+  node?: string,
+  platform?: string,
+  instance?: string,
+  llmSource?: string
 ): StoreObservationResult {
   // Use override timestamp if provided (for processing backlog messages with original timestamps)
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -66,7 +71,7 @@ export function storeObservation(
 
   // Content-hash deduplication
   const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-  const existing = findDuplicateObservation(db, contentHash, timestampEpoch);
+  const existing = findDuplicateObservation(db, contentHash, timestampEpoch, node);
   if (existing) {
     logger.debug('DEDUP', `Skipped duplicate observation | contentHash=${contentHash} | existingId=${existing.id}`);
     return { id: existing.id, createdAtEpoch: existing.created_at_epoch };
@@ -75,8 +80,9 @@ export function storeObservation(
   const stmt = db.prepare(`
     INSERT INTO observations
     (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-     files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+     node, platform, instance, llm_source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const result = stmt.run(
@@ -94,7 +100,11 @@ export function storeObservation(
     discoveryTokens,
     contentHash,
     timestampIso,
-    timestampEpoch
+    timestampEpoch,
+    node ?? null,
+    platform ?? null,
+    instance ?? null,
+    llmSource ?? null
   );
 
   return {

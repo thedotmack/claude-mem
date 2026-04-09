@@ -5,7 +5,7 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, workerHttpRequest, bufferedPostRequest } from '../../shared/worker-utils.js';
 import { getProjectName } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
@@ -13,6 +13,7 @@ import { isProjectExcluded } from '../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { getLlmSource } from '../../shared/node-identity.js';
 
 export const sessionInitHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -48,16 +49,17 @@ export const sessionInitHandler: EventHandler = {
     logger.debug('HOOK', 'session-init: Calling /api/sessions/init', { contentSessionId: sessionId, project });
 
     // Initialize session via HTTP - handles DB operations and privacy checks
-    const initResponse = await workerHttpRequest('/api/sessions/init', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const initResponse = await bufferedPostRequest(
+      '/api/sessions/init',
+      JSON.stringify({
         contentSessionId: sessionId,
         project,
         prompt,
-        platformSource
-      })
-    });
+        platformSource,
+        llm_source: getLlmSource()
+      }),
+      { 'Content-Type': 'application/json' }
+    );
 
     if (!initResponse.ok) {
       // Log but don't throw - a worker 500 should not block the user's prompt

@@ -124,6 +124,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
+      // LLM Source Tracking
+      'CLAUDE_MEM_LLM_SOURCE',
+      // Settings Sync (client → server pull)
+      'CLAUDE_MEM_SETTINGS_SYNC_ENABLED',
+      'CLAUDE_MEM_SETTINGS_SYNC_INTERVAL_MS',
     ];
 
     for (const key of settingKeys) {

@@ -18,6 +18,7 @@ import { logger } from '../../utils/logger.js';
 import { createMiddleware, summarizeRequestBody, requireLocalhost } from './Middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
+import { getNetworkMode, getNodeName } from '../../shared/node-identity.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
 import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.js';
 
@@ -166,6 +167,8 @@ export class Server {
       res.status(200).json({
         status: 'ok',
         version: BUILT_IN_VERSION,
+        mode: getNetworkMode(),
+        node: getNodeName(),
         workerPath: this.options.workerPath,
         uptime: Date.now() - this.startTime,
         managed: process.env.CLAUDE_MEM_MANAGED === 'true',

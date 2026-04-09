@@ -36,4 +36,12 @@ export const DEFAULT_SETTINGS = {
   // Exclusion Settings
   CLAUDE_MEM_EXCLUDED_PROJECTS: '',
   CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',
+
+  // Network Mode
+  CLAUDE_MEM_NETWORK_MODE: 'standalone',
+  CLAUDE_MEM_SERVER_HOST: '',
+  CLAUDE_MEM_SERVER_PORT: '37777',
+  CLAUDE_MEM_NODE_NAME: '',
+  CLAUDE_MEM_INSTANCE_NAME: '',
+  CLAUDE_MEM_AUTH_TOKEN: '',
 } as const;

@@ -37,6 +37,8 @@ export class MigrationRunner {
     this.addSessionCustomTitleColumn();
     this.createObservationFeedbackTable();
     this.addSessionPlatformSourceColumn();
+    this.addProvenanceColumns();
+    this.addSummaryProvenanceColumns();
   }
 
   /**
@@ -921,5 +923,72 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
+  }
+
+  /**
+   * Add provenance columns to observations and sdk_sessions (migration 27)
+   * Tracks which machine/platform/instance created each record for multi-machine networking.
+   */
+  private addProvenanceColumns(): void {
+    // Always verify columns exist even if schema_versions says applied —
+    // guards against partial migrations that recorded version but failed mid-ALTER.
+    const alreadyRecorded = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(27) as SchemaVersion | undefined;
+
+    // Check each table independently — after corruption/repair, one table may
+    // already have the columns while the other doesn't.
+    const obsColumns = new Set(
+      (this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[]).map(c => c.name)
+    );
+    const sdkColumns = new Set(
+      (this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[]).map(c => c.name)
+    );
+
+    const promptColumns = new Set(
+      (this.db.query('PRAGMA table_info(user_prompts)').all() as TableColumnInfo[]).map(c => c.name)
+    );
+
+    for (const col of ['node', 'platform', 'instance', 'llm_source']) {
+      if (!obsColumns.has(col)) {
+        this.db.run(`ALTER TABLE observations ADD COLUMN ${col} TEXT`);
+      }
+      if (!sdkColumns.has(col)) {
+        this.db.run(`ALTER TABLE sdk_sessions ADD COLUMN ${col} TEXT`);
+      }
+      if (!promptColumns.has(col)) {
+        this.db.run(`ALTER TABLE user_prompts ADD COLUMN ${col} TEXT`);
+      }
+    }
+
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_node ON observations(node)');
+
+    if (!alreadyRecorded) {
+      logger.debug('DB', 'Added provenance columns (node, platform, instance, llm_source) to observations, sdk_sessions, and user_prompts');
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(27, new Date().toISOString());
+    }
+  }
+
+  /**
+   * Add provenance columns to session_summaries (migration 28)
+   * Tracks which machine/platform/instance created each summary for multi-machine networking.
+   */
+  private addSummaryProvenanceColumns(): void {
+    // Always verify columns exist even if schema_versions says applied —
+    // guards against partial migrations that recorded version but failed mid-ALTER.
+    const alreadyRecorded = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(28) as SchemaVersion | undefined;
+
+    const summaryColumns = new Set(
+      (this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[]).map(c => c.name)
+    );
+
+    for (const col of ['node', 'platform', 'instance', 'llm_source']) {
+      if (!summaryColumns.has(col)) {
+        this.db.run(`ALTER TABLE session_summaries ADD COLUMN ${col} TEXT`);
+      }
+    }
+
+    if (!alreadyRecorded) {
+      logger.debug('DB', 'Added provenance columns (node, platform, instance, llm_source) to session_summaries');
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
+    }
   }
 }

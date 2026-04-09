@@ -1,0 +1,117 @@
+/**
+ * ClientRegistry — In-memory tracking of connected client machines
+ *
+ * Volatile: NOT persisted to DB. State is reconstructed from incoming requests.
+ * Each request carrying x-claude-mem-node header calls touch() to update the map.
+ */
+
+import { logger } from '../../utils/logger.js';
+
+export interface ClientInfo {
+  node: string;
+  ip: string;
+  mode: string;       // 'proxy' | 'direct'
+  instance: string;   // empty string when not set
+  firstSeen: string;  // ISO timestamp
+  lastSeen: string;   // ISO timestamp
+  requestCount: number;
+}
+
+export type ClientRegistryEvent =
+  | { type: 'client_connected'; node: string; ip: string; mode: string; instance: string }
+  | { type: 'client_heartbeat'; node: string; ip: string; instance: string }
+  | { type: 'client_disconnected'; node: string; ip: string; instance: string };
+
+export type ClientRegistryEventHandler = (event: ClientRegistryEvent) => void;
+
+export class ClientRegistry {
+  private clients = new Map<string, ClientInfo>();
+  private onEvent?: ClientRegistryEventHandler;
+
+  constructor(onEvent?: ClientRegistryEventHandler) {
+    this.onEvent = onEvent;
+  }
+
+  /**
+   * Record or update a client's presence.
+   * @param node      - Value of x-claude-mem-node header
+   * @param ip        - Remote IP address from req.ip
+   * @param mode      - Value of x-claude-mem-mode header (defaults to 'direct')
+   * @param instance  - Value of x-claude-mem-instance header (defaults to '')
+   */
+  touch(node: string, ip: string, mode?: string, instance?: string): void {
+    const now = new Date().toISOString();
+    // Key by node + instance to distinguish multiple instances on the same node.
+    // Null byte (\0) is used as delimiter — it cannot appear in hostnames or instance names,
+    // which prevents ambiguous keys like "a:b" vs "a" + instance "b:c".
+    const key = instance ? `${node}\0${instance}` : node;
+    const existing = this.clients.get(key);
+
+    if (existing) {
+      existing.ip = ip;
+      existing.mode = mode ?? existing.mode;
+      existing.lastSeen = now;
+      existing.requestCount += 1;
+      this.onEvent?.({ type: 'client_heartbeat', node, ip, instance: existing.instance });
+    } else {
+      const resolvedMode = mode ?? 'direct';
+      const resolvedInstance = instance ?? '';
+      this.clients.set(key, {
+        node,
+        ip,
+        mode: resolvedMode,
+        instance: resolvedInstance,
+        firstSeen: now,
+        lastSeen: now,
+        requestCount: 1,
+      });
+      this.onEvent?.({ type: 'client_connected', node, ip, mode: resolvedMode, instance: resolvedInstance });
+    }
+  }
+
+  /**
+   * Check for clients that have not been seen in `timeoutMs` milliseconds,
+   * emit `client_disconnected` for each, and remove them from the map.
+   */
+  checkDisconnected(timeoutMs: number): void {
+    const cutoff = Date.now() - timeoutMs;
+    for (const [key, client] of this.clients) {
+      if (new Date(client.lastSeen).getTime() < cutoff) {
+        this.onEvent?.({ type: 'client_disconnected', node: client.node, ip: client.ip, instance: client.instance });
+        this.clients.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Return all tracked clients as an array.
+   */
+  getClients(): ClientInfo[] {
+    return Array.from(this.clients.values()).map(c => ({ ...c }));
+  }
+
+  /**
+   * Return the number of distinct clients seen.
+   */
+  getClientCount(): number {
+    return this.clients.size;
+  }
+
+  /**
+   * Return clients whose lastSeen is older than `timeoutMs` milliseconds ago.
+   */
+  getDisconnected(timeoutMs: number): ClientInfo[] {
+    const cutoff = Date.now() - timeoutMs;
+    return Array.from(this.clients.values()).filter(c =>
+      new Date(c.lastSeen).getTime() < cutoff
+    );
+  }
+}
+
+/** Singleton instance shared across the process */
+export const clientRegistry = new ClientRegistry((event) => {
+  // NOTE: SSE broadcasting of client events requires WorkerService integration (v2).
+  // The events are typed and ready; wiring to SSEBroadcaster is deferred because
+  // ClientRegistry is a singleton that doesn't have access to SSEBroadcaster.
+  logger.debug('NETWORK', `Client ${event.type}`, { node: event.node });
+});

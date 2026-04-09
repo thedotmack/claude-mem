@@ -43,6 +43,12 @@ export interface ActiveSession {
   processingMessageIds: number[];
   // Tier routing: model override per session based on queue complexity
   modelOverride?: string;
+  // Multi-machine provenance (optional, set from request headers/body)
+  node?: string;
+  platform?: string;
+  instance?: string;
+  // LLM source tracking — which upstream AI provider (claude, codex, gemini, etc.)
+  llm_source?: string;
 }
 
 export interface PendingMessage {
@@ -134,6 +140,12 @@ export interface Observation {
   prompt_number: number;
   created_at: string;
   created_at_epoch: number;
+  // Multi-machine provenance (nullable — populated only in network mode)
+  node: string | null;
+  platform: string | null;
+  instance: string | null;
+  // LLM source tracking (nullable — which upstream AI provider generated this)
+  llm_source: string | null;
 }
 
 export interface Summary {
@@ -149,6 +161,12 @@ export interface Summary {
   notes: string | null;
   created_at: string;
   created_at_epoch: number;
+  // Multi-machine provenance (nullable — populated only in network mode)
+  node: string | null;
+  platform: string | null;
+  instance: string | null;
+  // LLM source tracking (nullable — which upstream AI provider generated this)
+  llm_source: string | null;
 }
 
 export interface UserPrompt {
@@ -160,6 +178,10 @@ export interface UserPrompt {
   prompt_text: string;
   created_at: string;
   created_at_epoch: number;
+  node?: string | null;
+  platform?: string | null;
+  instance?: string | null;
+  llm_source?: string | null;
 }
 
 export interface DBSession {

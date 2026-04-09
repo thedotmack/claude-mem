@@ -339,6 +339,7 @@ export class SessionRoutes extends BaseRouteHandler {
     if (sessionDbId === null) return;
 
     const { userPrompt, promptNumber } = req.body;
+    const llmSource = req.body.llm_source || (req.headers['x-claude-mem-llm-source'] as string) || '';
     logger.info('HTTP', 'SessionRoutes: handleSessionInit called', {
       sessionDbId,
       promptNumber,
@@ -346,6 +347,11 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     const session = this.sessionManager.initializeSession(sessionDbId, userPrompt, promptNumber);
+
+    // Set llm_source on the active session for provenance tracking
+    if (llmSource) {
+      session.llm_source = llmSource;
+    }
 
     // Get the latest user_prompt for this session to sync to Chroma
     const latestPrompt = this.dbManager.getSessionStore().getLatestUserPrompt(session.contentSessionId);
@@ -392,6 +398,10 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Idempotent: ensure generator is running (matches handleObservations / handleSummarize)
     this.ensureGeneratorRunning(sessionDbId, 'init');
+
+    // Set llm_source after ensureGeneratorRunning in case it created the session
+    const initSession = this.sessionManager.getSession(sessionDbId);
+    if (initSession && llmSource) initSession.llm_source = llmSource;
 
     // Broadcast session started event
     this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
@@ -507,6 +517,7 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
+    const llmSource = req.body.llm_source || (req.headers['x-claude-mem-llm-source'] as string) || '';
     const project = typeof cwd === 'string' && cwd.trim() ? getProjectName(cwd) : '';
 
     if (!contentSessionId) {
@@ -568,6 +579,12 @@ export class SessionRoutes extends BaseRouteHandler {
         ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
         : '{}';
 
+      // Set llm_source on the active session BEFORE queueing so the generator sees it
+      if (llmSource) {
+        const obsSession = this.sessionManager.getSession(sessionDbId);
+        if (obsSession) obsSession.llm_source = llmSource;
+      }
+
       // Queue observation
       this.sessionManager.queueObservation(sessionDbId, {
         tool_name,
@@ -607,6 +624,7 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleSummarizeByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { contentSessionId, last_assistant_message } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
+    const llmSource = req.body.llm_source || (req.headers['x-claude-mem-llm-source'] as string) || '';
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');
@@ -629,6 +647,12 @@ export class SessionRoutes extends BaseRouteHandler {
     if (!userPrompt) {
       res.json({ status: 'skipped', reason: 'private' });
       return;
+    }
+
+    // Set llm_source on the active session BEFORE queueing so the generator sees it
+    if (llmSource) {
+      const sumSession = this.sessionManager.getSession(sessionDbId);
+      if (sumSession) sumSession.llm_source = llmSource;
     }
 
     // Queue summarize
@@ -747,13 +771,15 @@ export class SessionRoutes extends BaseRouteHandler {
     const prompt = req.body.prompt || '[media prompt]';
     const platformSource = normalizePlatformSource(req.body.platformSource);
     const customTitle = req.body.customTitle || undefined;
+    const llmSource = req.body.llm_source || (req.headers['x-claude-mem-llm-source'] as string) || '';
 
     logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {
       contentSessionId,
       project,
       platformSource,
       prompt_length: prompt?.length,
-      customTitle
+      customTitle,
+      llmSource: llmSource || undefined
     });
 
     // Validate required parameters
@@ -806,11 +832,22 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Step 5: Save cleaned user prompt
+    // Design note: saveUserPrompt uses SessionStore._currentNode (set at construction time)
+    // for provenance rather than per-request headers. This is intentional — user prompts
+    // originate from the local machine where the worker runs, so _currentNode is always
+    // accurate. Per-request provenance (via X-Claude-Mem-Node header) is used for
+    // observations and summaries where the data may arrive from remote client nodes.
     store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt);
 
     // Step 6: Check if SDK agent is already running for this session (#1079)
     // If contextInjected is true, the hook should skip re-initializing the SDK agent
-    const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
+    const activeSession = this.sessionManager.getSession(sessionDbId);
+    const contextInjected = activeSession !== undefined;
+
+    // Set llm_source on the active session for provenance tracking
+    if (activeSession && llmSource) {
+      activeSession.llm_source = llmSource;
+    }
 
     // Debug-level log since CREATED already logged the key info
     logger.debug('SESSION', 'User prompt saved', {

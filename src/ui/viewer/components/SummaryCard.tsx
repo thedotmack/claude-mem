@@ -1,6 +1,7 @@
 import React from "react";
 import { Summary } from "../types";
 import { formatDate } from "../utils/formatters";
+import { MetadataFooter } from "./MetadataFooter";
 
 interface SummaryCardProps {
   summary: Summary;
@@ -54,11 +55,13 @@ export function SummaryCard({ summary }: SummaryCardProps) {
       </div>
 
       <footer className="summary-card-footer">
-        <span className="summary-meta-id">Session #{summary.id}</span>
-        <span className="summary-meta-divider">•</span>
-        <time className="summary-meta-date" dateTime={new Date(summary.created_at_epoch).toISOString()}>
-          {date}
-        </time>
+        <MetadataFooter
+          id={summary.id}
+          date={date}
+          node={summary.node}
+          platform={summary.platform}
+          instance={summary.instance}
+        />
       </footer>
     </article>
   );

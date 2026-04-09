@@ -76,6 +76,18 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_API_KEY: string;
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
+  // Multi-Node Network Configuration
+  CLAUDE_MEM_NETWORK_MODE: string;     // 'standalone' | 'server' | 'client'
+  CLAUDE_MEM_SERVER_HOST: string;      // Remote server hostname (client mode)
+  CLAUDE_MEM_SERVER_PORT: string;      // Remote server port (client mode)
+  CLAUDE_MEM_AUTH_TOKEN: string;       // Bearer token for remote auth
+  CLAUDE_MEM_NODE_NAME: string;        // Node identity override (default: hostname)
+  CLAUDE_MEM_INSTANCE_NAME: string;    // Instance identity (default: empty)
+  // LLM Source Tracking
+  CLAUDE_MEM_LLM_SOURCE: string;
+  // Settings Sync (client → server pull)
+  CLAUDE_MEM_SETTINGS_SYNC_ENABLED: string;       // 'true' | 'false' - enable periodic settings pull from server
+  CLAUDE_MEM_SETTINGS_SYNC_INTERVAL_MS: string;   // Interval in ms between sync pulls (default: 60000)
 }
 
 export class SettingsDefaultsManager {
@@ -147,6 +159,18 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_API_KEY: '',
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
+    // LLM Source Tracking
+    // Multi-Node Network Configuration
+    CLAUDE_MEM_NETWORK_MODE: 'standalone',
+    CLAUDE_MEM_SERVER_HOST: '',
+    CLAUDE_MEM_SERVER_PORT: '37777',
+    CLAUDE_MEM_AUTH_TOKEN: '',
+    CLAUDE_MEM_NODE_NAME: '',
+    CLAUDE_MEM_INSTANCE_NAME: '',
+    CLAUDE_MEM_LLM_SOURCE: '',  // Auto-detected from environment; override to force a specific value
+    // Settings Sync (client → server pull)
+    CLAUDE_MEM_SETTINGS_SYNC_ENABLED: 'true',     // Sync settings from server by default in client mode
+    CLAUDE_MEM_SETTINGS_SYNC_INTERVAL_MS: '60000', // Pull every 60 seconds
   };
 
   /**

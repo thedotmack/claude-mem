@@ -10,6 +10,8 @@ import cors from 'cors';
 import path from 'path';
 import { getPackageRoot } from '../../../shared/paths.js';
 import { logger } from '../../../utils/logger.js';
+import { createAuthMiddleware } from './auth-middleware.js';
+import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 
 /**
  * Create all middleware for the worker service
@@ -41,6 +43,15 @@ export function createMiddleware(
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     credentials: false
   }));
+
+  // Auth — require Bearer token on non-localhost requests in server mode
+  const authToken = () => {
+    const settings = SettingsDefaultsManager.loadFromFile(
+      path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json')
+    );
+    return settings.CLAUDE_MEM_AUTH_TOKEN || '';
+  };
+  middlewares.push(createAuthMiddleware(authToken));
 
   // HTTP request/response logging
   middlewares.push((req: Request, res: Response, next: NextFunction) => {

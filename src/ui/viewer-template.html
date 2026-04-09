@@ -1128,7 +1128,85 @@
     /* Project badge styling */
     .card-project {
       color: var(--color-text-muted);
+      background: var(--color-bg-tertiary);
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 11px;
     }
+
+    /* ── MetadataFooter pills ── */
+    .meta-pills {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px solid var(--color-border-primary);
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 9px;
+      font-size: 11px;
+      font-family: var(--font-terminal);
+      font-weight: 500;
+      white-space: nowrap;
+      line-height: 1.4;
+    }
+    .pill-ico {
+      font-size: 9px;
+      opacity: 0.65;
+    }
+    .pill--id {
+      background: rgba(148,163,184,0.12);
+      color: var(--color-text-tertiary);
+    }
+    .pill--date {
+      background: rgba(148,163,184,0.08);
+      color: var(--color-text-tertiary);
+    }
+    .pill--node {
+      background: rgba(34,197,94,0.10);
+      color: #4ade80;
+    }
+    .pill--platform-claude {
+      background: rgba(96,165,250,0.10);
+      color: #60a5fa;
+    }
+    .pill--platform-cursor {
+      background: rgba(167,139,250,0.10);
+      color: #a78bfa;
+    }
+    .pill--platform-raw {
+      background: rgba(148,163,184,0.10);
+      color: var(--color-text-tertiary);
+    }
+    .pill--instance {
+      background: rgba(148,163,184,0.06);
+      color: var(--color-text-muted);
+      font-size: 10px;
+      opacity: 0.7;
+    }
+    .pill--muted {
+      background: rgba(148,163,184,0.06);
+      color: var(--color-text-muted);
+      font-style: italic;
+    }
+
+    /* Light mode pill adjustments */
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme="dark"]) .pill--node { background: rgba(22,163,74,0.08); color: #15803d; }
+      :root:not([data-theme="dark"]) .pill--platform-claude { background: rgba(37,99,235,0.08); color: #2563eb; }
+      :root:not([data-theme="dark"]) .pill--platform-cursor { background: rgba(124,58,237,0.08); color: #7c3aed; }
+      :root:not([data-theme="dark"]) .pill--instance { background: rgba(148,163,184,0.06); color: var(--color-text-muted); }
+    }
+    [data-theme="light"] .pill--node { background: rgba(22,163,74,0.08); color: #15803d; }
+    [data-theme="light"] .pill--platform-claude { background: rgba(37,99,235,0.08); color: #2563eb; }
+    [data-theme="light"] .pill--platform-cursor { background: rgba(124,58,237,0.08); color: #7c3aed; }
+    [data-theme="light"] .pill--instance { background: rgba(148,163,184,0.06); color: var(--color-text-muted); }
 
     .summary-card {
       border-color: var(--color-border-summary);
@@ -2987,6 +3065,469 @@
       .toggle-switch.on .toggle-knob {
         transform: translateX(16px);
       }
+    }
+
+    /* ============================================
+       Mode Badge (Header)
+       ============================================ */
+    .mode-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.2s ease;
+      font-family: inherit;
+      line-height: 1;
+    }
+
+    .mode-badge--server {
+      background: rgba(34, 197, 94, 0.12);
+      color: #16a34a;
+      border-color: rgba(34, 197, 94, 0.25);
+    }
+
+    [data-theme="dark"] .mode-badge--server {
+      color: #4ade80;
+      background: rgba(74, 222, 128, 0.12);
+      border-color: rgba(74, 222, 128, 0.2);
+    }
+
+    .mode-badge--client {
+      background: rgba(59, 130, 246, 0.12);
+      color: #2563eb;
+      border-color: rgba(59, 130, 246, 0.25);
+    }
+
+    [data-theme="dark"] .mode-badge--client {
+      color: #60a5fa;
+      background: rgba(96, 165, 250, 0.12);
+      border-color: rgba(96, 165, 250, 0.2);
+    }
+
+    .mode-badge:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+    }
+
+    .mode-badge--active {
+      box-shadow: 0 0 0 2px rgba(9, 105, 218, 0.2);
+    }
+
+    .mode-badge-count {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: currentColor;
+      color: white;
+      font-size: 9px;
+      font-weight: 700;
+      min-width: 16px;
+      height: 16px;
+      border-radius: 8px;
+      padding: 0 4px;
+    }
+
+    .mode-badge--server .mode-badge-count {
+      background: #16a34a;
+    }
+
+    [data-theme="dark"] .mode-badge--server .mode-badge-count {
+      background: #4ade80;
+      color: #052e16;
+    }
+
+    .mode-badge-chevron {
+      transition: transform 0.2s ease;
+      opacity: 0.6;
+    }
+
+    .mode-badge-chevron.rotated {
+      transform: rotate(180deg);
+    }
+
+    /* ============================================
+       Network Topology Bar
+       ============================================ */
+    .topology-bar {
+      padding: 12px 24px;
+      background: var(--color-bg-secondary);
+      border-bottom: 1px solid var(--color-border-primary);
+      animation: slideDown 0.2s ease-out;
+    }
+
+    @keyframes slideDown {
+      from {
+        opacity: 0;
+        transform: translateY(-8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .topology-row {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .topology-segment {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--color-text-secondary);
+    }
+
+    .topology-lock-icon {
+      display: flex;
+      color: #16a34a;
+    }
+
+    [data-theme="dark"] .topology-lock-icon {
+      color: #4ade80;
+    }
+
+    .topology-security-badge {
+      font-weight: 600;
+      color: #16a34a;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    [data-theme="dark"] .topology-security-badge {
+      color: #4ade80;
+    }
+
+    .topology-token {
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      font-size: 11px;
+      padding: 2px 8px;
+      background: var(--color-bg-tertiary);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 4px;
+      color: var(--color-text-muted);
+      letter-spacing: 0.5px;
+    }
+
+    .topology-serving-label,
+    .topology-connect-label {
+      font-size: 11px;
+      color: var(--color-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      font-weight: 500;
+    }
+
+    .topology-node-name {
+      font-weight: 600;
+      color: var(--color-text-primary);
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      font-size: 12px;
+    }
+
+    .topology-arrow {
+      display: flex;
+      color: var(--color-accent-primary);
+    }
+
+    .topology-clients {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .topology-client-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      font-size: 12px;
+      color: var(--color-text-secondary);
+      transition: border-color 0.15s ease;
+    }
+
+    .topology-client-chip:hover {
+      border-color: var(--color-border-hover);
+    }
+
+    .topology-client-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .topology-client-dot--active {
+      background: #16a34a;
+      box-shadow: 0 0 4px rgba(34,197,94,0.4);
+    }
+    .topology-client-dot--inactive {
+      background: #94a3b8;
+    }
+    [data-theme="dark"] .topology-client-dot--active {
+      background: #4ade80;
+      box-shadow: 0 0 4px rgba(74,222,128,0.3);
+    }
+    [data-theme="dark"] .topology-client-dot--inactive {
+      background: #64748b;
+    }
+    .topology-client-chip--inactive {
+      opacity: 0.55;
+    }
+
+    .topology-client-name {
+      font-weight: 600;
+      color: var(--color-text-primary);
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      font-size: 11px;
+    }
+
+    .topology-client-stats {
+      color: var(--color-text-muted);
+      font-size: 10px;
+    }
+
+    .topology-client-time {
+      color: var(--color-text-muted);
+      font-size: 10px;
+      opacity: 0.7;
+    }
+
+    .topology-empty {
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--color-text-muted);
+      font-style: italic;
+    }
+
+    .topology-reachable-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .topology-reachable-dot.reachable {
+      background: #16a34a;
+      box-shadow: 0 0 4px rgba(22, 163, 55, 0.4);
+    }
+
+    [data-theme="dark"] .topology-reachable-dot.reachable {
+      background: #4ade80;
+      box-shadow: 0 0 4px rgba(74, 222, 128, 0.4);
+    }
+
+    .topology-reachable-dot.unreachable {
+      background: var(--color-accent-error);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    .topology-reachable-text {
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .topology-version {
+      font-size: 10px;
+      color: var(--color-text-muted, #888);
+      font-weight: 400;
+      margin-left: 4px;
+    }
+
+    .topology-version--mismatch {
+      color: #e5534b;
+      font-weight: 600;
+    }
+
+    .mode-badge--warning {
+      border-color: #e5534b !important;
+      box-shadow: 0 0 0 2px rgba(229, 83, 75, 0.25);
+    }
+
+    .mode-badge-warning-icon {
+      font-size: 11px;
+      margin-right: 2px;
+    }
+
+    .mode-badge-version {
+      font-size: 10px;
+      opacity: 0.8;
+      margin-right: 2px;
+    }
+
+    .mode-badge--standalone {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--color-text-muted, #888);
+      background: transparent;
+      padding: 2px 6px;
+      font-weight: 400;
+    }
+
+    /* ============================================
+       Observation Provenance Badges
+       ============================================ */
+    .meta-separator {
+      color: var(--color-text-muted);
+      opacity: 0.5;
+    }
+
+    .badge-node {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      margin-left: 4px;
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: var(--color-bg-secondary);
+      color: var(--color-text-secondary);
+      font-weight: 500;
+      border: 1px solid var(--color-border-primary);
+    }
+
+    .badge-node-icon {
+      opacity: 0.6;
+      flex-shrink: 0;
+    }
+
+    .badge-platform {
+      display: inline-flex;
+      align-items: center;
+      margin-left: 4px;
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+
+    .badge-platform--claude {
+      background: rgba(59, 130, 246, 0.12);
+      color: #2563eb;
+    }
+
+    [data-theme="dark"] .badge-platform--claude {
+      background: rgba(96, 165, 250, 0.12);
+      color: #93bbfd;
+    }
+
+    .badge-platform--cursor {
+      background: rgba(139, 92, 246, 0.12);
+      color: #7c3aed;
+    }
+
+    [data-theme="dark"] .badge-platform--cursor {
+      background: rgba(167, 139, 250, 0.12);
+      color: #c4b5fd;
+    }
+
+    .badge-platform--raw {
+      background: var(--color-bg-tertiary);
+      color: var(--color-text-muted);
+    }
+
+    .badge-instance {
+      display: inline-flex;
+      align-items: center;
+      margin-left: 4px;
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 400;
+      font-style: italic;
+      background: rgba(245, 158, 11, 0.1);
+      color: var(--color-text-muted);
+    }
+
+    /* ============================================
+       Form Field Help Text
+       ============================================ */
+    .form-field-help {
+      display: block;
+      font-size: 11px;
+      color: var(--color-text-muted);
+      margin-top: 4px;
+      line-height: 1.4;
+    }
+
+    /* ============================================
+       Token Field (Auth Token input)
+       ============================================ */
+    .token-field-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .token-field-wrapper input {
+      width: 100%;
+      padding-right: 64px;
+      background: var(--color-bg-input);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      padding: 8px 12px;
+      padding-right: 64px;
+      height: 36px;
+      font-size: 13px;
+      color: var(--color-text-primary);
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      letter-spacing: 0.5px;
+      transition: all 0.15s ease;
+    }
+
+    .token-field-wrapper input:hover {
+      border-color: var(--color-border-hover);
+    }
+
+    .token-field-wrapper input:focus {
+      outline: none;
+      border-color: var(--color-border-focus);
+      box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.1);
+    }
+
+    .token-reveal-btn,
+    .token-copy-btn {
+      position: absolute;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      color: var(--color-text-muted);
+      cursor: pointer;
+      padding: 0;
+      transition: all 0.15s ease;
+    }
+
+    .token-reveal-btn:hover,
+    .token-copy-btn:hover {
+      color: var(--color-text-primary);
+      background: var(--color-bg-tertiary);
+    }
+
+    .token-reveal-btn {
+      right: 32px;
+    }
+
+    .token-copy-btn {
+      right: 4px;
     }
   </style>
 </head>

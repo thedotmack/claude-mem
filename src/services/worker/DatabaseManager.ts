@@ -15,6 +15,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { DBSession } from '../worker-types.js';
+import { getNodeName, getInstanceName, getLlmSource } from '../../shared/node-identity.js';
 
 export class DatabaseManager {
   private sessionStore: SessionStore | null = null;
@@ -27,6 +28,7 @@ export class DatabaseManager {
   async initialize(): Promise<void> {
     // Open database connection (ONCE)
     this.sessionStore = new SessionStore();
+    this.sessionStore.setLocalProvenance(getNodeName(), 'claude-code', getInstanceName(), getLlmSource());
     this.sessionSearch = new SessionSearch();
 
     // Initialize ChromaSync only if Chroma is enabled (SQLite-only fallback when disabled)

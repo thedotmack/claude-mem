@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Observation } from '../types';
 import { formatDate } from '../utils/formatters';
+import { MetadataFooter } from './MetadataFooter';
 
 interface ObservationCardProps {
   observation: Observation;
@@ -115,9 +116,15 @@ export function ObservationCard({ observation }: ObservationCardProps) {
         )}
       </div>
 
-      {/* Metadata footer - id, date, and conditionally concepts/files when facts toggle is on */}
+      {/* Metadata footer */}
       <div className="card-meta">
-        <span className="meta-date">#{observation.id} • {date}</span>
+        <MetadataFooter
+          id={observation.id}
+          date={date}
+          node={observation.node}
+          platform={observation.platform}
+          instance={observation.instance}
+        />
         {showFacts && (concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
             {concepts.map((concept: string, i: number) => (

@@ -1,8 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { ThemeToggle } from './ThemeToggle';
 import { ThemePreference } from '../hooks/useTheme';
 import { GitHubStarsButton } from './GitHubStarsButton';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
+import { NetworkTopology } from './NetworkTopology';
+import { HealthData, TrackedClient } from '../types';
 
 interface HeaderProps {
   isConnected: boolean;
@@ -17,6 +19,13 @@ interface HeaderProps {
   themePreference: ThemePreference;
   onThemeChange: (theme: ThemePreference) => void;
   onContextPreviewToggle: () => void;
+  version?: string;
+  mode?: 'standalone' | 'server' | 'client';
+  activeClients?: number;
+  totalClients?: number;
+  health: HealthData;
+  clients: TrackedClient[];
+  authToken?: string;
 }
 
 function formatSourceLabel(source: string): string {
@@ -43,14 +52,25 @@ export function Header({
   queueDepth,
   themePreference,
   onThemeChange,
-  onContextPreviewToggle
+  onContextPreviewToggle,
+  version,
+  mode,
+  activeClients,
+  totalClients,
+  health,
+  clients,
+  authToken
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
+  const [topologyOpen, setTopologyOpen] = useState(false);
   const availableSources = buildSourceTabs(sources);
 
+  const isNetworked = mode && mode !== 'standalone';
+
   return (
-    <div className="header">
-      <div className="header-main">
+    <>
+      <div className="header">
+        <div className="header-main">
         <h1>
           <div style={{ position: 'relative', display: 'inline-block' }}>
             <img src="claude-mem-logomark.webp" alt="" className={`logomark ${isProcessing ? 'spinning' : ''}`} />
@@ -60,7 +80,64 @@ export function Header({
               </div>
             )}
           </div>
-          <span className="logo-text">claude-mem</span>
+          {(() => {
+            // Version display: always show, integrated with mode badge
+            const displayVersion = health.proxy
+              ? health.proxyVersion
+              : (version || health.version);
+            const displayCommit = health.proxy
+              ? health.proxyCommit
+              : health.commit;
+            const mismatch = health.proxy && health.versionMatch === false;
+            const versionLabel = displayVersion
+              ? `v${displayVersion}${displayCommit ? ` (${displayCommit})` : ''}`
+              : '';
+
+            if (!isNetworked) {
+              // Standalone: simple version badge
+              return versionLabel ? (
+                <span className="mode-badge mode-badge--standalone" title="standalone mode">
+                  <span>{versionLabel}</span>
+                </span>
+              ) : null;
+            }
+
+            // Server/Client: clickable badge with version + mode
+            return (
+              <button
+                className={`mode-badge mode-badge--${mode} ${topologyOpen ? 'mode-badge--active' : ''} ${mismatch ? 'mode-badge--warning' : ''}`}
+                onClick={() => setTopologyOpen(!topologyOpen)}
+                title={mismatch
+                  ? `VERSION MISMATCH — proxy: v${health.proxyVersion}, server: v${health.serverVersion}`
+                  : `${mode} mode ${versionLabel} — click to ${topologyOpen ? 'collapse' : 'expand'} topology`}
+              >
+                {mismatch && <span className="mode-badge-warning-icon">⚠</span>}
+                {versionLabel && <span className="mode-badge-version">{versionLabel}</span>}
+                {mode === 'server' && (
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="2" width="20" height="8" rx="2" ry="2" />
+                    <rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
+                    <line x1="6" y1="6" x2="6.01" y2="6" />
+                    <line x1="6" y1="18" x2="6.01" y2="18" />
+                  </svg>
+                )}
+                {mode === 'client' && (
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                    <line x1="8" y1="21" x2="16" y2="21" />
+                    <line x1="12" y1="17" x2="12" y2="21" />
+                  </svg>
+                )}
+                <span>{mode}</span>
+                {mode === 'server' && totalClients != null && totalClients > 0 && (
+                  <span className="mode-badge-count">{activeClients}/{totalClients}</span>
+                )}
+                <svg className={`mode-badge-chevron ${topologyOpen ? 'rotated' : ''}`} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+            );
+          })()}
         </h1>
         <div className="source-tabs" role="tablist" aria-label="Context source tabs">
           {availableSources.map(source => (
@@ -75,7 +152,8 @@ export function Header({
             </button>
           ))}
         </div>
-      </div>
+      </div> {/* /header-main */}
+      </div> {/* /header */}
       <div className="status">
         <a
           href="https://docs.claude-mem.ai"
@@ -136,6 +214,16 @@ export function Header({
           </svg>
         </button>
       </div>
-    </div>
+
+      {/* Expandable topology panel */}
+      {isNetworked && topologyOpen && (
+        <NetworkTopology
+          mode={mode as 'server' | 'client'}
+          health={health}
+          clients={clients}
+          authToken={authToken}
+        />
+      )}
+    </>
   );
 }

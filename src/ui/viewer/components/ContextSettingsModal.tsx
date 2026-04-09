@@ -54,14 +54,16 @@ function CollapsibleSection({
   );
 }
 
-// Form field with optional tooltip
+// Form field with optional tooltip and help text
 function FormField({
   label,
   tooltip,
+  helpText,
   children
 }: {
   label: string;
   tooltip?: string;
+  helpText?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -79,6 +81,9 @@ function FormField({
         )}
       </label>
       {children}
+      {helpText && (
+        <span className="form-field-help">{helpText}</span>
+      )}
     </div>
   );
 }
@@ -116,6 +121,64 @@ function ToggleSwitch({
       >
         <span className="toggle-knob" />
       </button>
+    </div>
+  );
+}
+
+// Masked token input with reveal toggle
+function TokenField({
+  value,
+  onChange,
+  placeholder
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+}) {
+  const [revealed, setRevealed] = useState(false);
+
+  return (
+    <div className="token-field-wrapper">
+      <input
+        type={revealed ? 'text' : 'password'}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="token-field-input"
+      />
+      <button
+        type="button"
+        className="token-reveal-btn"
+        onClick={() => setRevealed(!revealed)}
+        title={revealed ? 'Hide token' : 'Reveal token'}
+        aria-label={revealed ? 'Hide token' : 'Reveal token'}
+        aria-pressed={revealed}
+      >
+        {revealed ? (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+            <line x1="1" y1="1" x2="23" y2="23" />
+          </svg>
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        )}
+      </button>
+      {value && !revealed && (
+        <button
+          type="button"
+          className="token-copy-btn"
+          onClick={() => navigator.clipboard.writeText(value)}
+          title="Copy token"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }
@@ -329,7 +392,97 @@ export function ContextSettingsModal({
               </div>
             </CollapsibleSection>
 
-            {/* Section 4: Advanced */}
+            {/* Section 4: Node (renamed from Network) */}
+            <CollapsibleSection
+              title="Node"
+              description="Multi-machine node configuration"
+              defaultOpen={false}
+            >
+              <FormField
+                label="Node Mode"
+                tooltip="standalone: single machine; server: accept remote nodes; client: connect to a server"
+                helpText="standalone = single machine, server = accept remote nodes, client = connect to a server"
+              >
+                <select
+                  value={formState.CLAUDE_MEM_NETWORK_MODE || 'standalone'}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_NETWORK_MODE', e.target.value)}
+                >
+                  <option value="standalone">Standalone (default)</option>
+                  <option value="server">Server (accept remote connections)</option>
+                  <option value="client">Client (forward to remote server)</option>
+                </select>
+              </FormField>
+
+              {formState.CLAUDE_MEM_NETWORK_MODE === 'client' && (
+                <>
+                  <FormField
+                    label="Server Host"
+                    tooltip="Hostname or IP of the remote server to forward requests to"
+                    helpText="Hostname of the server node (DNS resolution handles transport)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_SERVER_HOST || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_SERVER_HOST', e.target.value)}
+                      placeholder="server-hostname"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Server Port"
+                    tooltip="Port of the remote server (default: 37777)"
+                    helpText="Must match the server's CLAUDE_MEM_WORKER_PORT"
+                  >
+                    <input
+                      type="number"
+                      value={formState.CLAUDE_MEM_SERVER_PORT || '37777'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_SERVER_PORT', e.target.value)}
+                      min="1024"
+                      max="65535"
+                      placeholder="37777"
+                    />
+                  </FormField>
+                </>
+              )}
+
+              <FormField
+                label="Node Name"
+                tooltip="Override the machine identity (defaults to system hostname)"
+                helpText="How this machine identifies itself (default: os.hostname())"
+              >
+                <input
+                  type="text"
+                  value={formState.CLAUDE_MEM_NODE_NAME || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_NODE_NAME', e.target.value)}
+                  placeholder="Override hostname (leave empty for auto)"
+                />
+              </FormField>
+
+              <FormField
+                label="Instance Name"
+                tooltip="Identity for multi-instance setups on the same machine"
+              >
+                <input
+                  type="text"
+                  value={formState.CLAUDE_MEM_INSTANCE_NAME || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_INSTANCE_NAME', e.target.value)}
+                  placeholder="Auto: session ID (or set for OpenClaw)"
+                />
+              </FormField>
+
+              <FormField
+                label="Auth Token"
+                tooltip="Bearer token for remote authentication (auto-generated in server mode)"
+                helpText="Shared secret for authenticated remote access"
+              >
+                <TokenField
+                  value={formState.CLAUDE_MEM_AUTH_TOKEN || ''}
+                  onChange={(value) => updateSetting('CLAUDE_MEM_AUTH_TOKEN', value)}
+                  placeholder="Auto-generated in server mode"
+                />
+              </FormField>
+            </CollapsibleSection>
+
+            {/* Section 5: Advanced */}
             <CollapsibleSection
               title="Advanced"
               description="AI provider and model selection"
@@ -488,7 +641,7 @@ export function ContextSettingsModal({
         {/* Footer with Save button */}
         <div className="modal-footer">
           <div className="save-status">
-            {saveStatus && <span className={saveStatus.includes('✓') ? 'success' : saveStatus.includes('✗') ? 'error' : ''}>{saveStatus}</span>}
+            {saveStatus && <span className={saveStatus.includes('\u2713') ? 'success' : saveStatus.includes('\u2717') ? 'error' : ''}>{saveStatus}</span>}
           </div>
           <button
             className="save-btn"

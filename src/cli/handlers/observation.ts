@@ -5,13 +5,14 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, bufferedPostRequest } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { isProjectExcluded } from '../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { getLlmSource } from '../../shared/node-identity.js';
 
 export const observationHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -48,18 +49,19 @@ export const observationHandler: EventHandler = {
 
     // Send to worker - worker handles privacy check and database operations
     try {
-      const response = await workerHttpRequest('/api/sessions/observations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const response = await bufferedPostRequest(
+        '/api/sessions/observations',
+        JSON.stringify({
           contentSessionId: sessionId,
           platformSource,
+          llm_source: getLlmSource(),
           tool_name: toolName,
           tool_input: toolInput,
           tool_response: toolResponse,
           cwd
-        })
-      });
+        }),
+        { 'Content-Type': 'application/json' }
+      );
 
       if (!response.ok) {
         // Log but don't throw — observation storage failure should not block tool use

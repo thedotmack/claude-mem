@@ -15,6 +15,9 @@ export interface Observation {
   prompt_number: number | null;
   created_at: string;
   created_at_epoch: number;
+  node: string | null;
+  platform: string | null;
+  instance: string | null;
 }
 
 export interface Summary {
@@ -28,6 +31,9 @@ export interface Summary {
   completed?: string;
   next_steps?: string;
   created_at_epoch: number;
+  node?: string | null;
+  platform?: string | null;
+  instance?: string | null;
 }
 
 export interface UserPrompt {
@@ -38,6 +44,9 @@ export interface UserPrompt {
   prompt_number: number;
   prompt_text: string;
   created_at_epoch: number;
+  node?: string | null;
+  platform?: string | null;
+  instance?: string | null;
 }
 
 export type FeedItem =
@@ -46,7 +55,8 @@ export type FeedItem =
   | (UserPrompt & { itemType: 'prompt' });
 
 export interface StreamEvent {
-  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status';
+  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status'
+    | 'client_connected' | 'client_heartbeat' | 'client_disconnected';
   observations?: Observation[];
   summaries?: Summary[];
   prompts?: UserPrompt[];
@@ -58,6 +68,12 @@ export interface StreamEvent {
   prompt?: UserPrompt;
   isProcessing?: boolean;
   queueDepth?: number;
+  // Network client event fields
+  node?: string;
+  ip?: string;
+  mode?: string;
+  instance?: string;
+  timestamp?: number;
 }
 
 export interface ProjectCatalog {
@@ -96,6 +112,14 @@ export interface Settings {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY?: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
+
+  // Network Mode
+  CLAUDE_MEM_NETWORK_MODE?: string;  // 'standalone' | 'server' | 'client'
+  CLAUDE_MEM_SERVER_HOST?: string;
+  CLAUDE_MEM_SERVER_PORT?: string;
+  CLAUDE_MEM_NODE_NAME?: string;
+  CLAUDE_MEM_INSTANCE_NAME?: string;
+  CLAUDE_MEM_AUTH_TOKEN?: string;
 }
 
 export interface WorkerStats {
@@ -115,4 +139,37 @@ export interface DatabaseStats {
 export interface Stats {
   worker?: WorkerStats;
   database?: DatabaseStats;
+}
+
+export interface HealthData {
+  mode?: 'standalone' | 'server' | 'client';
+  version?: string;
+  commit?: string;
+  connectedClients?: number;
+  node?: string;
+  status?: string;
+  // Client proxy fields
+  proxy?: boolean;
+  proxyVersion?: string;
+  proxyCommit?: string;
+  serverVersion?: string | null;
+  serverCommit?: string | null;
+  versionMatch?: boolean | null;
+  serverReachable?: boolean;
+  serverHost?: string;
+  pendingBuffer?: number;
+}
+
+export interface ClientInfo {
+  node: string;
+  ip: string;
+  mode: string;
+  instance: string;
+  firstSeen: string;
+  lastSeen: string;
+  requestCount: number;
+}
+
+export interface TrackedClient extends ClientInfo {
+  active: boolean;
 }

@@ -54,7 +54,11 @@ export function storeObservationsAndMarkComplete(
   messageId: number,
   promptNumber?: number,
   discoveryTokens: number = 0,
-  overrideTimestampEpoch?: number
+  overrideTimestampEpoch?: number,
+  node?: string,
+  platform?: string,
+  instance?: string,
+  llmSource?: string
 ): StoreAndMarkCompleteResult {
   // Use override timestamp if provided
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -64,17 +68,18 @@ export function storeObservationsAndMarkComplete(
   const storeAndMarkTx = db.transaction(() => {
     const observationIds: number[] = [];
 
-    // 1. Store all observations (with content-hash deduplication)
+    // 1. Store all observations (with content-hash deduplication + provenance)
     const obsStmt = db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+       node, platform, instance, llm_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const observation of observations) {
       const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-      const existing = findDuplicateObservation(db, contentHash, timestampEpoch);
+      const existing = findDuplicateObservation(db, contentHash, timestampEpoch, node);
       if (existing) {
         observationIds.push(existing.id);
         continue;
@@ -95,19 +100,24 @@ export function storeObservationsAndMarkComplete(
         discoveryTokens,
         contentHash,
         timestampIso,
-        timestampEpoch
+        timestampEpoch,
+        node ?? null,
+        platform ?? null,
+        instance ?? null,
+        llmSource ?? null
       );
       observationIds.push(Number(result.lastInsertRowid));
     }
 
-    // 2. Store summary if provided
+    // 2. Store summary if provided (with provenance)
     let summaryId: number | null = null;
     if (summary) {
       const summaryStmt = db.prepare(`
         INSERT INTO session_summaries
         (memory_session_id, project, request, investigated, learned, completed,
-         next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+         node, platform, instance, llm_source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const result = summaryStmt.run(
@@ -122,7 +132,11 @@ export function storeObservationsAndMarkComplete(
         promptNumber || null,
         discoveryTokens,
         timestampIso,
-        timestampEpoch
+        timestampEpoch,
+        node ?? null,
+        platform ?? null,
+        instance ?? null,
+        llmSource ?? null
       );
       summaryId = Number(result.lastInsertRowid);
     }
@@ -173,7 +187,11 @@ export function storeObservations(
   summary: SummaryInput | null,
   promptNumber?: number,
   discoveryTokens: number = 0,
-  overrideTimestampEpoch?: number
+  overrideTimestampEpoch?: number,
+  node?: string,
+  platform?: string,
+  instance?: string,
+  llmSource?: string
 ): StoreObservationsResult {
   // Use override timestamp if provided
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -183,17 +201,18 @@ export function storeObservations(
   const storeTx = db.transaction(() => {
     const observationIds: number[] = [];
 
-    // 1. Store all observations (with content-hash deduplication)
+    // 1. Store all observations (with content-hash deduplication + provenance)
     const obsStmt = db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+       node, platform, instance, llm_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const observation of observations) {
       const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-      const existing = findDuplicateObservation(db, contentHash, timestampEpoch);
+      const existing = findDuplicateObservation(db, contentHash, timestampEpoch, node);
       if (existing) {
         observationIds.push(existing.id);
         continue;
@@ -214,19 +233,24 @@ export function storeObservations(
         discoveryTokens,
         contentHash,
         timestampIso,
-        timestampEpoch
+        timestampEpoch,
+        node ?? null,
+        platform ?? null,
+        instance ?? null,
+        llmSource ?? null
       );
       observationIds.push(Number(result.lastInsertRowid));
     }
 
-    // 2. Store summary if provided
+    // 2. Store summary if provided (with provenance)
     let summaryId: number | null = null;
     if (summary) {
       const summaryStmt = db.prepare(`
         INSERT INTO session_summaries
         (memory_session_id, project, request, investigated, learned, completed,
-         next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+         node, platform, instance, llm_source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const result = summaryStmt.run(
@@ -241,7 +265,11 @@ export function storeObservations(
         promptNumber || null,
         discoveryTokens,
         timestampIso,
-        timestampEpoch
+        timestampEpoch,
+        node ?? null,
+        platform ?? null,
+        instance ?? null,
+        llmSource ?? null
       );
       summaryId = Number(result.lastInsertRowid);
     }

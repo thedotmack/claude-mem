@@ -1,7 +1,13 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Observation, Summary, UserPrompt, StreamEvent, ProjectCatalog } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
+
+export type ClientSSEEvent = StreamEvent & {
+  type: 'client_connected' | 'client_heartbeat' | 'client_disconnected';
+};
+
+type ClientEventHandler = (event: ClientSSEEvent) => void;
 
 export function useSSE() {
   const [observations, setObservations] = useState<Observation[]>([]);
@@ -17,6 +23,12 @@ export function useSSE() {
   const [queueDepth, setQueueDepth] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
+  const clientEventHandlerRef = useRef<ClientEventHandler | null>(null);
+
+  /** Register a handler for client SSE events (connect/heartbeat/disconnect) */
+  const onClientEvent = useCallback((handler: ClientEventHandler) => {
+    clientEventHandlerRef.current = handler;
+  }, []);
 
   const updateCatalogForItem = (project: string, platformSource: string) => {
     setCatalog(prev => {
@@ -51,7 +63,7 @@ export function useSSE() {
       eventSourceRef.current = eventSource;
 
       eventSource.onopen = () => {
-        console.log('[SSE] Connected');
+        // SSE connected
         setIsConnected(true);
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
@@ -112,9 +124,18 @@ export function useSSE() {
 
           case 'processing_status':
             if (typeof data.isProcessing === 'boolean') {
-              console.log('[SSE] Processing status:', data.isProcessing, 'Queue depth:', data.queueDepth);
+              // Processing status update
               setIsProcessing(data.isProcessing);
               setQueueDepth(data.queueDepth || 0);
+            }
+            break;
+
+          case 'client_connected':
+          case 'client_heartbeat':
+          case 'client_disconnected':
+            // Client SSE event
+            if (clientEventHandlerRef.current) {
+              clientEventHandlerRef.current(data as ClientSSEEvent);
             }
             break;
         }
@@ -142,6 +163,7 @@ export function useSSE() {
     projectsBySource: catalog.projectsBySource,
     isProcessing,
     queueDepth,
-    isConnected
+    isConnected,
+    onClientEvent
   };
 }

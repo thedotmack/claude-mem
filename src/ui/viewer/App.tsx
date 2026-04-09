@@ -6,9 +6,11 @@ import { LogsDrawer } from './components/LogsModal';
 import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
+import { useHealth } from './hooks/useHealth';
+import { useClients } from './hooks/useClients';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
-import { Observation, Summary, UserPrompt } from './types';
+import { Observation, Summary, UserPrompt, TrackedClient } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
 
 export function App() {
@@ -20,9 +22,11 @@ export function App() {
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
-  const { observations, summaries, prompts, projects, sources, projectsBySource, isProcessing, queueDepth, isConnected } = useSSE();
+  const { observations, summaries, prompts, projects, sources, projectsBySource, isProcessing, queueDepth, isConnected, onClientEvent } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats, refreshStats } = useStats();
+  const { health } = useHealth();
+  const { clients, activeCount, totalCount, handleClientSSE, sseHandlerRegistered } = useClients(health.mode);
   const { preference, resolvedTheme, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter, currentSource);
 
@@ -45,6 +49,14 @@ export function App() {
       setCurrentFilter('');
     }
   }, [availableProjects, currentFilter]);
+
+  // Wire SSE client events to useClients handler (once)
+  useEffect(() => {
+    if (!sseHandlerRegistered.current) {
+      onClientEvent(handleClientSSE);
+      sseHandlerRegistered.current = true;
+    }
+  }, [onClientEvent, handleClientSSE, sseHandlerRegistered]);
 
   // Merge SSE live data with paginated data, filtering by project when active
   const allObservations = useMemo(() => {
@@ -122,6 +134,13 @@ export function App() {
         themePreference={preference}
         onThemeChange={setThemePreference}
         onContextPreviewToggle={toggleContextPreview}
+        version={stats.worker?.version}
+        mode={health.mode}
+        activeClients={activeCount}
+        totalClients={totalCount}
+        health={health}
+        clients={clients}
+        authToken={settings.CLAUDE_MEM_AUTH_TOKEN}
       />
 
       <Feed
