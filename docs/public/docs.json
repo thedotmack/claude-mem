@@ -40,6 +40,7 @@
           "usage/gemini-provider",
           "usage/docker-model-runner-provider",
           "usage/search-tools",
+          "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",
           "usage/export-import",

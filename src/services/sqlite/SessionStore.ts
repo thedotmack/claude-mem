@@ -2616,6 +2616,23 @@ export class SessionStore {
   }
 
   /**
+   * Rebuild the FTS5 index for observations.
+   * Should be called after bulk imports to ensure imported rows are searchable.
+   * No-op if observations_fts table does not exist.
+   */
+  rebuildObservationsFTSIndex(): void {
+    const hasFTS = (this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='observations_fts'"
+    ).all() as { name: string }[]).length > 0;
+
+    if (!hasFTS) {
+      return;
+    }
+
+    this.db.run("INSERT INTO observations_fts(observations_fts) VALUES('rebuild')");
+  }
+
+  /**
    * Import user prompt with duplicate checking
    * Duplicates are identified by content_session_id + prompt_number
    * Returns: { imported: boolean, id: number }
