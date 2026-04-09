@@ -335,7 +335,12 @@ export class TranscriptEventProcessor {
   }
 
   private async handleSessionEnd(session: SessionState, watch: WatchTarget): Promise<void> {
-    await this.flushTranscriptSegment(session);
+    const flushed = await this.flushTranscriptSegment(session);
+    if (!flushed && session.exchanges.length > 0) {
+      logger.warn('TRANSCRIPT', 'Final flush failed on session end — transcript segment may be lost', {
+        sessionId: session.sessionId, exchangeCount: session.exchanges.length
+      });
+    }
     await this.queueSummary(session);
     await sessionCompleteHandler.execute({
       sessionId: session.sessionId,

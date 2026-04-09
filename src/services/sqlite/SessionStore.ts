@@ -893,10 +893,23 @@ export class SessionStore {
 
   /**
    * Add UNIQUE constraint to user_prompts for deduplication (migration 25)
+   *
+   * Reconciles pre-existing duplicates before creating the index so that
+   * installs with duplicate rows don't fail on CREATE UNIQUE INDEX.
    */
   private addUserPromptsUniqueIndex(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(25) as SchemaVersion | undefined;
     if (applied) return;
+
+    // Remove duplicate rows, keeping the one with the lowest rowid per group
+    this.db.run(`
+      DELETE FROM user_prompts
+      WHERE rowid NOT IN (
+        SELECT MIN(rowid)
+        FROM user_prompts
+        GROUP BY content_session_id, prompt_number
+      )
+    `);
 
     this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_user_prompts_unique_session_prompt ON user_prompts(content_session_id, prompt_number)');
     logger.debug('DB', 'Added unique index on user_prompts(content_session_id, prompt_number)');
