@@ -55,6 +55,13 @@ function findBun() {
   });
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
+    // On Windows, prefer bun.cmd over bun (bun is a shell script, bun.cmd is the Windows batch file)
+    if (IS_WINDOWS) {
+      const bunCmdPath = pathCheck.stdout.split('\n').find(line => line.trim().endsWith('bun.cmd'));
+      if (bunCmdPath) {
+        return bunCmdPath.trim();
+      }
+    }
     return 'bun'; // Found in PATH
   }
 
@@ -152,17 +159,31 @@ const stdinData = await collectStdin();
 
 // Spawn Bun with the provided script and args
 // Use spawn (not spawnSync) to properly handle stdio
-// Note: Don't use shell mode on Windows - it breaks paths with spaces in usernames
+// On Windows, use cmd.exe to execute bun.cmd since npm-installed bun is a batch file
 // Use windowsHide to prevent a visible console window from spawning on Windows
-const child = spawn(bunPath, args, {
-  stdio: [stdinData ? 'pipe' : 'ignore', 'inherit', 'inherit'],
+const spawnOptions = {
+  stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
   env: process.env
-});
+};
 
-// Write buffered stdin to child's pipe, then close it so the child sees EOF
-if (stdinData && child.stdin) {
-  child.stdin.write(stdinData);
+let spawnCmd = bunPath;
+let spawnArgs = args;
+
+if (IS_WINDOWS) {
+  // On Windows, bun.cmd must be executed via cmd /c
+  spawnCmd = 'cmd';
+  spawnArgs = ['/c', bunPath, ...args];
+}
+
+const child = spawn(spawnCmd, spawnArgs, spawnOptions);
+
+// Write buffered stdin to child's pipe, then close it so the child sees EOF.
+// Fall back to '{}' when no stdin data is available so worker-service.cjs
+// always receives valid JSON input even when Claude Code doesn't pipe stdin
+// (e.g. during SessionStart on some platforms). Fixes #1560.
+if (child.stdin) {
+  child.stdin.write(stdinData || '{}');
   child.stdin.end();
 }
 
@@ -171,6 +192,12 @@ child.on('error', (err) => {
   process.exit(1);
 });
 
-child.on('close', (code) => {
+child.on('close', (code, signal) => {
+  // Fix #1505: When the "start" subcommand forks a daemon, the parent bun
+  // process may be killed by signal (e.g. SIGKILL, exit code 137). The daemon
+  // is running fine — treat signal-based exits for "start" as success.
+  if ((signal || code > 128) && args.includes('start')) {
+    process.exit(0);
+  }
   process.exit(code || 0);
 });

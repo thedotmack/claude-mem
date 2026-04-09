@@ -542,6 +542,37 @@ export const migration008: Migration = {
 };
 
 /**
+ * Migration 009: Add missing columns to observations table
+ *
+ * The generated_by_model column tracks which model generated each observation
+ * (required for model selection optimization via Thompson Sampling).
+ * The relevance_count column tracks how many times an observation was reused
+ * (incremented by the feedback recording pipeline).
+ *
+ * Both columns may already exist in databases created by the compiled binary
+ * (v10.6.3) but are missing from the migration source. This migration
+ * conditionally adds them.
+ */
+export const migration009: Migration = {
+  version: 26,
+  up: (db: Database) => {
+    const columns = db.prepare('PRAGMA table_info(observations)').all() as any[];
+    const hasGeneratedByModel = columns.some((c: any) => c.name === 'generated_by_model');
+    const hasRelevanceCount = columns.some((c: any) => c.name === 'relevance_count');
+
+    if (!hasGeneratedByModel) {
+      db.run('ALTER TABLE observations ADD COLUMN generated_by_model TEXT');
+    }
+    if (!hasRelevanceCount) {
+      db.run('ALTER TABLE observations ADD COLUMN relevance_count INTEGER DEFAULT 0');
+    }
+  },
+  down: (_db: Database) => {
+    // SQLite does not support DROP COLUMN in older versions; no-op
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
@@ -552,5 +583,6 @@ export const migrations: Migration[] = [
   migration005,
   migration006,
   migration007,
-  migration008
+  migration008,
+  migration009
 ];

@@ -1,0 +1,207 @@
+---
+title: "Knowledge Agents"
+description: "Build queryable AI brains from your observation history"
+---
+
+# Knowledge Agents
+
+Knowledge agents let you compile a slice of your claude-mem observation history into a **queryable "brain"** that answers questions conversationally. Instead of getting raw search results back, you get synthesized, grounded answers drawn from your actual project history -- decisions, discoveries, bugfixes, and features.
+
+## Quick Start
+
+Three ways to use knowledge agents, from simplest to most powerful.
+
+### 1. Create a Knowledge Agent
+
+Use the `/knowledge-agent` skill or the MCP tools directly:
+
+```
+build_corpus name="hooks-expertise" query="hooks architecture" project="claude-mem" limit=200
+```
+
+This searches your observation history, collects matching records, and saves them as a corpus file. Then prime it — this loads the corpus into a Claude session's context window:
+
+```
+prime_corpus name="hooks-expertise"
+```
+
+Your knowledge agent is ready. The returned `session_id` **is** the agent — a Claude session with your history baked in.
+
+### 2. Ask a Single Question
+
+Once primed, ask any question and get a grounded answer:
+
+```
+query_corpus name="hooks-expertise" question="What are the 5 lifecycle hooks and when does each fire?"
+```
+
+The agent answers grounded in its corpus — responses are drawn from your actual project history, reducing hallucination and guessing. Each follow-up question builds on the prior conversation:
+
+```
+query_corpus name="hooks-expertise" question="Which hook handles context injection?"
+```
+
+### 3. Start a Fresh Conversation
+
+If the conversation drifts, or you want to ask an unrelated question against the same corpus, reprime to start clean:
+
+```
+reprime_corpus name="hooks-expertise"
+```
+
+This creates a **new session** with the full corpus reloaded — like opening a fresh chat with the same "brain." All prior Q&A context is cleared, but the corpus knowledge remains. Use this when:
+
+- The conversation went off-track and you want a clean slate
+- You're switching topics within the same corpus
+- You want to ask a question without prior answers biasing the response
+
+### Keeping It Current
+
+When new observations are added to your project, rebuild the corpus to pull in the latest, then reprime:
+
+```
+rebuild_corpus name="hooks-expertise"
+reprime_corpus name="hooks-expertise"
+```
+
+Rebuild re-runs the original search filters. Reprime loads the refreshed data into a new session.
+
+---
+
+## The Workflow: Build, Prime, Query
+
+```
+BUILD  ──>  PRIME  ──>  QUERY
+```
+
+### 1. Build a Corpus
+
+A corpus is a filtered collection of observations saved as a JSON file. Use search filters to select exactly the slice of history you want.
+
+```bash
+curl -X POST http://localhost:37777/api/corpus \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "hooks-expertise",
+    "query": "hooks architecture",
+    "project": "claude-mem",
+    "types": ["decision", "discovery"],
+    "limit": 200
+  }'
+```
+
+Under the hood, `CorpusBuilder` searches your observations, hydrates full records, parses structured fields (facts, concepts, files), calculates stats, and writes everything to `~/.claude-mem/corpora/hooks-expertise.corpus.json`.
+
+### 2. Prime the Knowledge Agent
+
+Priming loads the entire corpus into a Claude session's context window.
+
+```bash
+curl -X POST http://localhost:37777/api/corpus/hooks-expertise/prime
+```
+
+The agent renders all observations into full-detail text and feeds them to the Claude Agent SDK. Claude reads the corpus and acknowledges the themes. The returned `session_id` **is** the knowledge agent -- a Claude session with your history baked in.
+
+### 3. Query
+
+Resume the primed session and ask questions.
+
+```bash
+curl -X POST http://localhost:37777/api/corpus/hooks-expertise/query \
+  -H "Content-Type: application/json" \
+  -d '{ "question": "What are the 5 lifecycle hooks?" }'
+```
+
+Each follow-up question adds to the conversation naturally. If the session expires, the agent auto-reprimes from the corpus file and retries.
+
+---
+
+## Filter Options
+
+Use these parameters when building a corpus to control which observations are included:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | string | Name for the corpus (used in all subsequent API calls) |
+| `project` | string | Filter by project name |
+| `types` | string[] | Filter by observation type (bugfix, feature, decision, discovery, refactor, change) |
+| `concepts` | string[] | Filter by tagged concepts |
+| `files` | string[] | Filter by files read or modified |
+| `query` | string | Full-text search query |
+| `dateStart` | string | Start date filter (YYYY-MM-DD) |
+| `dateEnd` | string | End date filter (YYYY-MM-DD) |
+| `limit` | number | Maximum observations to include |
+
+---
+
+## Architecture
+
+```
+                MCP Tools                    HTTP API
+            (mcp-server.ts)            (worker on :37777)
+                  |                          |
+   build_corpus ──┤                          |
+   list_corpora ──┤                          |
+   prime_corpus ──┤── callWorkerAPIPost() ──>|
+   query_corpus ──┤                          |
+rebuild_corpus ──┤                          |
+reprime_corpus ──┘                          |
+                                             v
+                                       CorpusRoutes
+                                       (8 endpoints)
+                                        /    |    \
+                              CorpusBuilder  |  KnowledgeAgent
+                                  |          |       |
+                        SearchOrchestrator   |   Agent SDK V1
+                        SessionStore         |   query() + resume
+                                             |
+                                        CorpusStore
+                                    (~/.claude-mem/corpora/)
+```
+
+**Key insight:** The Agent SDK's `resume` option lets you prime a session once (upload the corpus), save the `session_id`, and resume it for every future question. The corpus stays in context permanently -- no re-uploading, no prompt caching tricks. The 1M token context window makes this viable: 2,000 observations at ~300 tokens each fits comfortably.
+
+---
+
+## When to Use `/knowledge-agent` vs `/mem-search`
+
+| | `/mem-search` | `/knowledge-agent` |
+|---|---|---|
+| **Returns** | Raw observation records | Synthesized conversational answers |
+| **Best for** | Finding specific observations, IDs, timelines | Asking questions about patterns, decisions, architecture |
+| **Token model** | Pay-per-query (3-layer progressive disclosure) | Pay-once at prime time, then cheap follow-ups |
+| **Interaction** | Search, filter, fetch | Ask questions in natural language |
+| **Data freshness** | Always current (queries database live) | Snapshot at build time (rebuild to refresh) |
+| **Setup** | None -- works immediately | Build + prime required before first query |
+
+**Rule of thumb:** Use `/mem-search` when you need to find something specific. Use `/knowledge-agent` when you want to understand something broadly.
+
+---
+
+## API Reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/corpus` | Build a new corpus from filters |
+| GET | `/api/corpus` | List all corpora with stats |
+| GET | `/api/corpus/:name` | Get corpus metadata |
+| DELETE | `/api/corpus/:name` | Delete a corpus |
+| POST | `/api/corpus/:name/rebuild` | Rebuild from stored filters |
+| POST | `/api/corpus/:name/prime` | Create AI session with corpus loaded |
+| POST | `/api/corpus/:name/query` | Ask the knowledge agent a question |
+| POST | `/api/corpus/:name/reprime` | Fresh session (wipe prior Q&A) |
+
+---
+
+## Edge Cases
+
+- **Session expiry**: If `resume` fails, the agent auto-reprimes from the corpus file and retries
+- **SDK process exit**: If the Claude process exits after yielding all messages, the agent treats it as success when the session_id or answer was already captured
+- **Empty corpus**: A corpus with 0 observations is valid (just empty)
+- **Model from settings**: Reads `CLAUDE_MEM_MODEL` from user settings -- no hardcoded model IDs
+
+## Next Steps
+
+- [Memory Search](/usage/search-tools) - The 3-layer search workflow for finding specific observations
+- [Progressive Disclosure](/progressive-disclosure) - Philosophy behind token-efficient retrieval
+- [Architecture Overview](/architecture/overview) - System components

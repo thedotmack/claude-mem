@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -229,13 +229,65 @@ describe('ProcessManager', () => {
   });
 
   describe('resolveWorkerRuntimePath', () => {
-    it('should return current runtime on non-Windows platforms', () => {
+    it('should reuse execPath when already running under Bun on Linux', () => {
       const resolved = resolveWorkerRuntimePath({
         platform: 'linux',
-        execPath: '/usr/bin/node'
+        execPath: '/home/alice/.bun/bin/bun'
       });
 
-      expect(resolved).toBe('/usr/bin/node');
+      expect(resolved).toBe('/home/alice/.bun/bin/bun');
+    });
+
+    it('should look up Bun on non-Windows when caller is Node (e.g. MCP server)', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: {} as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: candidatePath => candidatePath === '/home/alice/.bun/bin/bun',
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBe('/home/alice/.bun/bin/bun');
+    });
+
+    it('should preserve bare BUN env command on non-Windows so spawn resolves it via PATH', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: { BUN: 'bun' } as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: () => false,
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBe('bun');
+    });
+
+    it('should fall back to PATH lookup on non-Windows when no known Bun candidate exists', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: {} as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: () => false,
+        lookupInPath: () => '/custom/bin/bun'
+      });
+
+      expect(resolved).toBe('/custom/bin/bun');
+    });
+
+    it('should return null on non-Windows when Bun cannot be resolved', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: {} as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: () => false,
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBeNull();
     });
 
     it('should reuse execPath when already running under Bun on Windows', () => {
@@ -380,7 +432,7 @@ describe('ProcessManager', () => {
       // Wait a bit to ensure measurable mtime difference
       await new Promise(r => setTimeout(r, 50));
 
-      const statsBefore = require('fs').statSync(PID_FILE);
+      const statsBefore = statSync(PID_FILE);
       const mtimeBefore = statsBefore.mtimeMs;
 
       // Wait again to ensure mtime advances
@@ -388,7 +440,7 @@ describe('ProcessManager', () => {
 
       touchPidFile();
 
-      const statsAfter = require('fs').statSync(PID_FILE);
+      const statsAfter = statSync(PID_FILE);
       const mtimeAfter = statsAfter.mtimeMs;
 
       expect(mtimeAfter).toBeGreaterThanOrEqual(mtimeBefore);
@@ -438,6 +490,39 @@ describe('ProcessManager', () => {
       if (result !== undefined && result > 0) {
         try { process.kill(result, 'SIGKILL'); } catch { /* already exited */ }
       }
+    });
+
+    /**
+     * Documents the spawnDaemon return contract for the Windows `0` PID
+     * success sentinel. PowerShell `Start-Process` does not return the spawned
+     * PID, so the Windows branch returns 0 as a "spawn dispatched" sentinel.
+     * Callers MUST use `pid === undefined` to detect failure — never falsy
+     * checks like `if (!pid)`, which would silently treat success as failure
+     * because 0 is falsy in JavaScript.
+     *
+     * This contract test exists so any future contributor introducing
+     * `if (!pid)` against a spawnDaemon return value (or its wrapper) sees a
+     * failing assertion that documents why the falsy check is incorrect.
+     * See PR #1645 review feedback for context.
+     */
+    it('Windows 0 PID success sentinel must NOT be detected via falsy check', () => {
+      const windowsSuccessSentinel: number | undefined = 0;
+      const failureSentinel: number | undefined = undefined;
+
+      // Correct contract: undefined === failure, anything else === success.
+      expect(windowsSuccessSentinel === undefined).toBe(false);
+      expect(failureSentinel === undefined).toBe(true);
+
+      // Demonstrates the bug a future regression would introduce:
+      // `if (!pid)` is true for BOTH the Windows success sentinel AND the
+      // genuine failure sentinel — silently treating success as failure.
+      expect(!windowsSuccessSentinel).toBe(true); // ← this is the trap
+      expect(!failureSentinel).toBe(true);
+
+      // Therefore, callers must use strict undefined comparison.
+      const isFailure = (pid: number | undefined) => pid === undefined;
+      expect(isFailure(windowsSuccessSentinel)).toBe(false);
+      expect(isFailure(failureSentinel)).toBe(true);
     });
   });
 

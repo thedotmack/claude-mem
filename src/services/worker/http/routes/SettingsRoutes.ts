@@ -94,6 +94,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_GEMINI_API_KEY',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
+      'CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES',
+      'CLAUDE_MEM_GEMINI_MAX_TOKENS',
       // OpenRouter Configuration
       'CLAUDE_MEM_OPENROUTER_API_KEY',
       'CLAUDE_MEM_OPENROUTER_MODEL',
@@ -245,6 +247,22 @@ export class SettingsRoutes extends BaseRouteHandler {
       const validGeminiModels = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3-flash-preview'];
       if (!validGeminiModels.includes(settings.CLAUDE_MEM_GEMINI_MODEL)) {
         return { valid: false, error: 'CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-3-flash-preview' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES
+    if (settings.CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES) {
+      const count = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES, 10);
+      if (isNaN(count) || count < 1 || count > 100) {
+        return { valid: false, error: 'CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES must be between 1 and 100' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_GEMINI_MAX_TOKENS
+    if (settings.CLAUDE_MEM_GEMINI_MAX_TOKENS) {
+      const tokens = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_TOKENS, 10);
+      if (isNaN(tokens) || tokens < 1000 || tokens > 1000000) {
+        return { valid: false, error: 'CLAUDE_MEM_GEMINI_MAX_TOKENS must be between 1000 and 1000000' };
       }
     }
 

@@ -1,9 +1,13 @@
 /**
- * CLAUDE.md File Utilities
+ * CLAUDE.md / CLAUDE.local.md File Utilities
  *
- * Shared utilities for writing folder-level CLAUDE.md files with
+ * Shared utilities for writing folder-level context files with
  * auto-generated context sections. Preserves user content outside
  * <claude-mem-context> tags.
+ *
+ * When CLAUDE_MEM_FOLDER_USE_LOCAL_MD is 'true', writes to CLAUDE.local.md
+ * instead of CLAUDE.md. This keeps auto-generated context in a personal,
+ * gitignored file separate from shared project instructions.
  */
 
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
@@ -15,6 +19,22 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../shared/worker-utils.js';
 
 const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
+
+/** Default target filename */
+const CLAUDE_MD_FILENAME = 'CLAUDE.md';
+
+/** Alternative target filename for personal/local context */
+const CLAUDE_LOCAL_MD_FILENAME = 'CLAUDE.local.md';
+
+/**
+ * Get the target filename based on settings.
+ * Returns 'CLAUDE.local.md' when CLAUDE_MEM_FOLDER_USE_LOCAL_MD is 'true',
+ * otherwise returns 'CLAUDE.md'.
+ */
+export function getTargetFilename(settings?: ReturnType<typeof SettingsDefaultsManager.loadFromFile>): string {
+  const s = settings ?? SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
+  return s.CLAUDE_MEM_FOLDER_USE_LOCAL_MD === 'true' ? CLAUDE_LOCAL_MD_FILENAME : CLAUDE_MD_FILENAME;
+}
 
 /**
  * Check for consecutive duplicate path segments like frontend/frontend/ or src/src/.
@@ -112,14 +132,16 @@ export function replaceTaggedContent(existingContent: string, newContent: string
  *
  * @param folderPath - Absolute path to the folder (must already exist)
  * @param newContent - Content to write inside tags
+ * @param targetFilename - Target filename (default: determined by settings)
  */
-export function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
+export function writeClaudeMdToFolder(folderPath: string, newContent: string, targetFilename?: string): void {
   const resolvedPath = path.resolve(folderPath);
 
   // Never write inside .git directories — corrupts refs (#1165)
   if (resolvedPath.includes('/.git/') || resolvedPath.includes('\\.git\\') || resolvedPath.endsWith('/.git') || resolvedPath.endsWith('\\.git')) return;
 
-  const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
+  const filename = targetFilename ?? getTargetFilename();
+  const claudeMdPath = path.join(folderPath, filename);
   const tempFile = `${claudeMdPath}.tmp`;
 
   // Only write to folders that already exist - never create new directories
@@ -329,9 +351,10 @@ export async function updateFolderClaudeMdFiles(
   _port: number,
   projectRoot?: string
 ): Promise<void> {
-  // Load settings to get configurable observation limit and exclude list
+  // Load settings to get configurable observation limit, exclude list, and target filename
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
   const limit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
+  const targetFilename = getTargetFilename(settings);
 
   // Parse exclude paths from settings
   let folderMdExcludePaths: string[] = [];
@@ -349,18 +372,18 @@ export async function updateFolderClaudeMdFiles(
   // See: https://github.com/thedotmack/claude-mem/issues/859
   const foldersWithActiveClaudeMd = new Set<string>();
 
-  // First pass: identify folders with actively-used CLAUDE.md files
+  // First pass: identify folders with actively-used CLAUDE.md or CLAUDE.local.md files
   for (const filePath of filePaths) {
     if (!filePath) continue;
     const basename = path.basename(filePath);
-    if (basename === 'CLAUDE.md') {
+    if (basename === CLAUDE_MD_FILENAME || basename === CLAUDE_LOCAL_MD_FILENAME) {
       let absoluteFilePath = filePath;
       if (projectRoot && !path.isAbsolute(filePath)) {
         absoluteFilePath = path.join(projectRoot, filePath);
       }
       const folderPath = path.dirname(absoluteFilePath);
       foldersWithActiveClaudeMd.add(folderPath);
-      logger.debug('FOLDER_INDEX', 'Detected active CLAUDE.md, will skip folder', { folderPath });
+      logger.debug('FOLDER_INDEX', 'Detected active context file, will skip folder', { folderPath, basename });
     }
   }
 
@@ -435,24 +458,24 @@ export async function updateFolderClaudeMdFiles(
 
       const formatted = formatTimelineForClaudeMd(result.content[0].text);
 
-      // Fix for #794: Don't create new CLAUDE.md files if there's no activity
+      // Fix for #794: Don't create new context files if there's no activity
       // But update existing ones to show "No recent activity" if they already exist
-      const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
+      const claudeMdPath = path.join(folderPath, targetFilename);
       const hasNoActivity = formatted.includes('*No recent activity*');
       const fileExists = existsSync(claudeMdPath);
 
       if (hasNoActivity && !fileExists) {
-        logger.debug('FOLDER_INDEX', 'Skipping empty CLAUDE.md creation', { folderPath });
+        logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
         continue;
       }
 
-      writeClaudeMdToFolder(folderPath, formatted);
+      writeClaudeMdToFolder(folderPath, formatted, targetFilename);
 
-      logger.debug('FOLDER_INDEX', 'Updated CLAUDE.md', { folderPath });
+      logger.debug('FOLDER_INDEX', 'Updated context file', { folderPath, targetFilename });
     } catch (error) {
       // Fire-and-forget: log warning but don't fail
       const err = error as Error;
-      logger.error('FOLDER_INDEX', 'Failed to update CLAUDE.md', {
+      logger.error('FOLDER_INDEX', `Failed to update ${targetFilename}`, {
         folderPath,
         errorMessage: err.message,
         errorStack: err.stack

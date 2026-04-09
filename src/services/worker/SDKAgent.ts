@@ -270,7 +270,8 @@ export class SDKAgent {
             discoveryTokens,
             originalTimestamp,
             'SDK',
-            cwdTracker.lastCwd
+            cwdTracker.lastCwd,
+            modelId
           );
         }
 

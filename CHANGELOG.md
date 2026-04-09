@@ -4,60 +4,242 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [11.0.0] - 2026-
-✅ CHANGELOG.md generated successfully!
-   221 releases processed
-k deletions · 39 patch releases since v10.0.0**
+## [12.1.0] - 2026-04-09
 
-### Breaking: Strict Observer Response Contract
+## Knowledge Agents
 
-The memory agent can no longer return prose-style skip responses. This changes the implicit contract between the prompt layer and the response parser:
+Build queryable AI "brains" from your claude-mem observation history. Compile a filtered slice of your past work into a corpus, prime it into a Claude session, and ask questions conversationally — getting synthesized, grounded answers instead of raw search results.
 
-- **Prompt enforcement** — `buildObservationPrompt` now requires `<observation>` XML blocks or an empty response. Prose like "Skipping — no substantive tool executions" is explicitly forbidden.
-- **Runtime detection** — `ResponseProcessor` warns when non-XML content is received and discarded, making silent data loss visible.
-- **Expanded recording scope** — Concrete debugging findings from logs, queue state, database rows, and code-path inspection are now encouraged as durable discoveries.
+### New Features
 
-### v10.x Highlights (What Got Us Here)
+- **Knowledge Agent system** — full lifecycle: build, prime, query, reprime, rebuild, delete
+- **6 new MCP tools**: `build_corpus`, `list_corpora`, `prime_corpus`, `query_corpus`, `rebuild_corpus`, `reprime_corpus`
+- **8 new HTTP API endpoints** on the worker service (`/api/corpus/*`)
+- **CorpusBuilder** — searches observations, hydrates full records, calculates stats, persists to `~/.claude-mem/corpora/`
+- **CorpusRenderer** — renders observations into full-detail prompt text for the 1M token context window
+- **KnowledgeAgent** — manages Agent SDK sessions with session resume for multi-turn Q&A
+- **Auto-reprime** — expired sessions are automatically reprimed and retried (only for session errors, not all failures)
+- **Knowledge agent skill** (`/knowledge-agent`) for guided corpus creation
 
-#### Multi-IDE Platform (v10.2.0 → v10.7.0)
-- **NPX CLI installer** with interactive `@clack/prompts` UI and `--ide` flag
-- **13 IDE integrations**: Claude Code, Gemini CLI, Windsurf, OpenCode, OpenClaw, Codex CLI, Copilot CLI, Antigravity, Goose, Crush, Roo Code, Warp, and MCP factory pattern for extensibility
-- Claude Code install now delegates to native `claude plugin marketplace add` + `claude plugin install`
+### Security & Robustness
 
-#### OpenClaw Plugin (v10.0.0)
-- Persistent memory for [OpenClaw](https://openclaw.ai) agents — observation recording, MEMORY.md live sync, and real-time observation feeds to Telegram/Discord/Slack/Signal/WhatsApp/LINE
-- System prompt context injection via `before_prompt_build` hook (v10.6.0)
+- Path traversal prevention in CorpusStore (alphanumeric name validation + resolved path check)
+- System prompt hardened against instruction injection from untrusted corpus content
+- Runtime name validation on all MCP corpus tool handlers
+- Question field validated as non-empty string
+- Session state only persisted after successful prime (not null on failure)
+- Refreshed session_id persisted after query execution
+- E2e curl wrappers hardened with connect-timeout and transport failure fallback
 
-#### Smart Explore (v10.5.0)
-- AST-powered code navigation via tree-sitter with 3 MCP tools: `smart_search`, `smart_outline`, `smart_unfold`
-- **6–12× token savings** over traditional Glob → Grep → Read exploration cycles
-- 10 languages: TypeScript, JavaScript, Python, Rust, Go, Java, C, C++, Ruby, PHP
+### Documentation
 
-#### ChromaDB Overhaul (v10.3.0 → v10.7.0)
-- Replaced WASM embeddings with persistent `chroma-mcp` MCP connection
-- Semantic context injection on `UserPromptSubmit` via Chroma vector search
-- Tier routing by queue complexity with observation feedback table
-- Multi-machine sync via `claude-mem-sync`
+- New docs page: Knowledge Agents usage guide with Quick Start, architecture diagram, filter reference, and API reference
+- Knowledge agent skill page with workflow examples
+- Added to docs navigation
 
-#### Stability (v10.4.0 → v10.5.6)
-- **30+ root-cause bug fixes** across 10 triage phases (v10.4.0)
-- Embedded Process Supervisor for unified lifecycle management
-- Content-hash deduplication on observation INSERT
-- Self-healing `claimNextMessage` for stuck processing messages
-- Chroma spawn storm fix (641 processes → max 2)
-- Fixed infinite spinner from orphaned pending messages
+### Testing
 
-#### New Skills & Modes
-- **Timeline Report** — narrative "Journey Into [Project]" reports from development history
-- **Make Plan / Do** — phased implementation planning with subagent execution
-- **Law Study Mode** — purpose-built for law students with Socratic methodology
-- **Smart Explore** — structural code search as an MCP skill
+- Comprehensive e2e test suite (31 tests) covering full corpus lifecycle
 
-#### Platform
-- Windows hardening: PowerShell daemon spawning, backslash path conversion, Chroma re-enabled
-- Linux: stdin buffering fix for Node.js → Bun handoff
-- XDG-compliant environment resolution
-- npm publish workflow on tag push
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v12.0.1...v12.1.0
+
+## [12.0.1] - 2026-04-08
+
+## 🔴 Hotfix: MCP server crashed with `Cannot find module 'bun:sqlite'` under Node
+
+v12.0.0 shipped a broken MCP server bundle that crashed on the very first `require()` call because a transitive import pulled `bun:sqlite` (a Bun-only module) into a bundle that runs under Node. Every MCP-only client (Codex and any flow that boots the MCP tool surface) was completely broken on v12.0.0.
+
+### Root cause
+
+`src/servers/mcp-server.ts` imported `ensureWorkerStarted` from `worker-service.ts`, which transitively pulled in `DatabaseManager` → `bun:sqlite`. The bundle ballooned from ~358KB (v11.0.1) to ~1.96MB (v12.0.0) and `node mcp-server.cjs` immediately threw `Error: Cannot find module 'bun:sqlite'`.
+
+### Fix
+
+- **Extracted** `ensureWorkerStarted` and Windows spawn-cooldown helpers into a new lightweight `src/services/worker-spawner.ts` module that has zero database/SQLite/ChromaDB imports
+- **Wired** `mcp-server.ts` and `worker-service.ts` through the new module via a thin back-compat wrapper
+- **Fixed** `resolveWorkerRuntimePath()` to find Bun on every platform (not just Windows) so the MCP server running under Node can correctly spawn the worker daemon under Bun
+- **Added** two build-time guardrails in `scripts/build-hooks.js`:
+  - Regex check: fails the build if `mcp-server.cjs` ever contains a `require("bun:*")` call
+  - Bundle size budget: fails the build if `mcp-server.cjs` exceeds 600KB
+- **Improved** error messages when Bun cannot be located (now names the install URL and explains *why* Bun is required)
+- **Validated** `workerScriptPath` at the spawner entry point with empty-string and existsSync guards
+- **Memoized** `resolveWorkerRuntimePath()` to skip repeated PATH lookups during crash loops, while never caching the not-found result so a long-running MCP server can recover if Bun is installed mid-session
+
+### Verification
+
+- `node mcp-server.cjs` exits cleanly under Node
+- JSON-RPC `initialize` + `tools/list` + `tools/call search` all succeed end-to-end
+- Bundle is back to ~384KB with zero `require("bun:sqlite")` calls
+- 47 unit tests pass (44 ProcessManager + 3 worker-spawner)
+- Both build guardrails verified to trip on simulated regressions
+- Smoke test: MCP server serves the full 7-tool surface
+
+### What this means for users
+
+- **MCP-only clients (Codex, etc.):** v12.0.0 was broken; v12.0.1 restores full functionality
+- **Claude Code users:** worker startup via the SessionStart hook continued working under Bun on v12.0.0, but the MCP tool surface (`mem-search`, `timeline`, `get_observations`, `smart_*`) was unreliable. v12.0.1 fixes that completely.
+- **Plugin developers:** new build-time guardrails prevent this regression class from shipping again
+
+PR: #1645
+Merge commit: `abd55977`
+
+## [12.0.0] - 2026-04-07
+
+# claude-mem v12.0.0
+
+A major release delivering intelligent file-read gating, expanded language support for smart-explore, platform source isolation, and 40+ bug fixes across Windows, Linux, and macOS.
+
+## Highlights
+
+### File-Read Decision Gate
+Claude Code now intelligently gates redundant file reads. When a file has prior observations in the timeline, the PreToolUse hook injects the observation history and blocks the read — saving tokens and keeping context focused. The gate supports both `Read` and `Edit` tools, uses `permissionDecision` deny with a rich timeline payload, and includes file-size thresholds and observation deduplication.
+
+### Smart-Explore: 24 Language Support
+The `smart-explore` skill now supports **24 programming languages** via tree-sitter AST parsing: TypeScript, JavaScript, Python, Rust, Go, Java, C, C++, C#, Ruby, PHP, Swift, Kotlin, Scala, Bash, CSS, SCSS, HTML, Lua, Haskell, Elixir, Zig, TOML, and YAML. User-installable grammars with `--legacy-peer-deps` support for tree-sitter version conflicts.
+
+### Platform Source Isolation
+Claude and Codex sessions are now fully isolated with `platform_source` column on `sdk_sessions`. Each platform gets its own session namespace, preventing cross-contamination between different AI coding tools. Normalized at route boundaries for consistent behavior.
+
+### Codex & OpenClaw Support
+- Codex plugin manifest added for marketplace discoverability
+- OpenClaw: `workerHost` config for Docker deployments
+- OpenClaw: handle stale `plugins.allow` and non-interactive TTY in installer
+
+## New Features
+
+- **File-read decision gate** — blocks redundant file reads with observation timeline injection (#1564, #1629, #1641)
+- **24-language smart-explore** — AST-based code exploration across all major languages
+- **Platform source isolation** — Claude/Codex session namespacing with DB migration
+- **CLAUDE.local.md support** — `CLAUDE_MEM_FOLDER_USE_LOCAL_MD` setting for writing to local-only config
+- **OpenClaw workerHost** — Docker deployment support for OpenClaw plugin
+- **Codex plugin manifest** — discoverability in Codex marketplace
+- **File-size threshold** — skip file-read gating for small files
+- **Observation deduplication** — prevent duplicate observations in timeline gate
+
+## Bug Fixes
+
+### Worker & Startup
+- Fix worker startup crash with missing observation columns (#1641)
+- Fix SessionStart hooks failing on cold start due to worker race condition
+- Fix worker daemon being killed by its own hooks (#1490)
+- Fail worker-start hook if worker never becomes healthy
+- Fix readiness timeout logging on reused-worker path (#1491)
+- Remove dead `USER_MESSAGE_ONLY` exit code that caused SessionStart hook errors
+- Decouple MCP health from loopback self-check
+
+### Data Integrity
+- Fix migration version conflict: `addSessionPlatformSourceColumn` now correctly uses v25
+- Add migration for `generated_by_model` and `relevance_count` columns
+- Wire `generated_by_model` into observation write path
+- Use null-byte delimiter in observation content hash to prevent collisions
+- Persist session completion to database in `completeByDbId` (#1532)
+- Handle bare path strings in `files_modified`/`files_read` columns (#1359)
+- Guard `json_each()` calls against legacy bare-path rows
+- Deduplicate session init to prevent multiple prompt records
+
+### Security
+- Prevent shell injection in summary workflow (#1285)
+- Sanitize observation titles in file-context deny reason (strip newlines, collapse whitespace)
+- Normalize `platformSource` at route boundary to prevent filter inconsistencies
+- Escape `filePath` in recovery hints to prevent malformed output
+- Address path safety, SQL injection, and gate scoping in file-read hook
+
+### Windows
+- Fix `isMainModule` CJS branch failure on Bun — add `CLAUDE_MEM_MANAGED` fallback
+- Use `cmd /c` to execute `bun.cmd` on Windows
+- Prefer `bun.cmd` over bun shell script on Windows
+- Add `shell: true` on Windows to spawn bun from npm
+
+### Cross-Platform
+- Replace GNU `sort -V` with POSIX-portable version sort
+- Resolve `node not found` on nvm/homebrew installations
+- Resolve hook failures when `CLAUDE_PLUGIN_ROOT` is not injected (#1533)
+- Fix bun-runner signal exit handling — scope to `start` subcommand only
+- Guard `/stream` SSE endpoint with 503 before DB initialization
+- Provide empty JSON fallback when stdin is not piped (#1560)
+
+### Parser & Content
+- Strip `<persisted-output>` tags from memory
+- Strip `<system-reminder>` tags from persisted memory and DRY up regex
+- Skip `parseSummary` false positives with no sub-tags (#1360)
+- Handle bare filenames in `regenerate-claude-md.ts` (#1514)
+- Handle bare filenames in `path-utils.ts isDirectChild`
+- Handle single-quoted paths and dangling var edge case
+- Strip hardcoded `__dirname`/`__filename` from bundled CJS output
+- Add PHP grammar support to smart-file-read parser (#1617)
+
+### Installer & Config
+- Make post-install allowlist write guaranteed
+- Harden plugin manifest sync script
+- Fix `expand ~` to home directory before project resolution
+- Update default model from `claude-sonnet-4-5` to `claude-sonnet-4-6` (#1390)
+- Fix Gemini conversation history truncation to prevent O(N²) token cost growth
+
+## Refactoring
+
+- Rename formatters to `AgentFormatter`/`HumanFormatter` for semantic clarity
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v11.0.1...v12.0.0
+
+## [11.0.1] - 2026-04-06
+
+**Patch release** — Changes `CLAUDE_MEM_SEMANTIC_INJECT` default from `true` to `false`.
+
+### What changed
+- Per-prompt Chroma vector search on `UserPromptSubmit` is now **opt-in** rather than opt-out
+- Reduces latency and context noise for users who haven't explicitly enabled it
+- Users can re-enable via `CLAUDE_MEM_SEMANTIC_INJECT=true` in `~/.claude-mem/settings.json`
+
+### Why
+The semantic inject fires on every prompt and often surfaces tangentially related observations. A more precise file-context approach (PreToolUse timeline gate) is in development as a replacement.
+
+## [11.0.0] - 2026-04-05
+
+## claude-mem v11.0.0
+
+**4 releases today** · 21 commits · 6,051 insertions · 34 files changed
+
+### Features
+
+#### Semantic Context Injection (#1568)
+Every `UserPromptSubmit` now queries ChromaDB for the top-N most relevant past observations and injects them as context. Replaces recency-based "last N observations" with relevance-based semantic search. Survives `/clear`, skips trivial prompts (<20 chars), and degrades gracefully when Chroma is unavailable.
+
+#### Tier Routing by Queue Complexity
+The SDK agent now inspects pending queue complexity before selecting a model. Simple tool-only queues (Read, Glob, Grep) route to Haiku; mixed/complex queues use the default model. Production result: **~52% cost reduction** on SDK agent usage with quality indistinguishable from Sonnet. Includes a new `observation_feedback` table for future Thompson Sampling optimization.
+
+#### Multi-Machine Observation Sync (#1570)
+New `claude-mem-sync` CLI with `push`, `pull`, `sync`, and `status` commands. Bidirectional sync of observations and session summaries between machines via SSH/SCP with deduplication by `(created_at, title)`. Tested syncing 3,400+ observations between two physical servers — a session on the remote machine used transferred memory to deliver a real feature PR.
+
+#### Orphaned Message Drain (#1567)
+When `deleteSession()` aborts the SDK agent via SIGTERM, pending messages are now marked abandoned instead of remaining in `pending` status forever. Production evidence: 15 orphaned messages found before fix → 0 orphaned messages over 23 days after fix.
+
+### Bug Fixes
+
+#### Installer Regression Fixed (v10.7.0 → v10.7.1)
+The install simplification in v10.7.0 over-applied scope — it replaced the entire `runInstallCommand` with just two `claude` CLI commands, gutting the interactive IDE multi-select, `--ide` flag, and all 13 IDE-specific setup dispatchers. v10.7.1 restores the full installer for all non-Claude-Code IDEs while keeping the native plugin delegation for Claude Code.
+
+#### 3 Upstream Production Bugs (#1566)
+Found via analysis of 543K log lines over 17 days across two servers:
+- **summarize.ts**: Skip summary when transcript has no assistant message (was causing ~30 errors/day)
+- **ChromaSync.ts**: Fallback to `chroma_update_documents` when add fails with "IDs already exist"
+- **HealthMonitor.ts**: Replace HTTP-based port check with atomic socket bind (eliminates TOCTOU race on simultaneous session starts)
+
+#### Other Fixes
+- Concept-type cleanup log downgraded from error to debug (reduces log noise)
+
+### Breaking Change
+
+**Strict Observer Response Contract** — The memory agent can no longer return prose-style skip responses like "Skipping — no substantive tool executions." `buildObservationPrompt` now requires `<observation>` XML blocks or an empty response. `ResponseProcessor` warns when non-XML content is received. This prevents silent data loss from the observer deciding on its own that tool output isn't worth recording.
+
+### Community
+
+Features in this release were contributed by **Alessandro Costa** ([@alessandropcostabr](https://github.com/alessandropcostabr)) — semantic injection, tier routing, multi-machine sync, orphan drain, and the 3-bug production fix. All PRs include production data from real multi-server deployments.
+
+### Release History
+
+This release consolidates v10.7.0 through v11.0.0, all shipped on April 4, 2026. For the full v10.x era (267 commits, 39 releases), see [v10.7.0](https://github.com/thedotmack/claude-mem/releases/tag/v10.7.0) and earlier.
 
 ## [10.7.2] - 2026-04-05
 

@@ -1,6 +1,6 @@
 {
   "name": "claude-mem-plugin",
-  "version": "11.1.0",
+  "version": "12.1.0",
   "private": true,
   "description": "Runtime dependencies for claude-mem bundled hooks",
   "type": "module",
@@ -14,7 +14,22 @@
     "tree-sitter-python": "^0.25.0",
     "tree-sitter-ruby": "^0.23.1",
     "tree-sitter-rust": "^0.24.0",
-    "tree-sitter-typescript": "^0.23.2"
+    "tree-sitter-typescript": "^0.23.2",
+    "tree-sitter-kotlin": "^0.3.8",
+    "tree-sitter-swift": "^0.7.1",
+    "tree-sitter-php": "^0.24.2",
+    "tree-sitter-elixir": "^0.3.5",
+    "@tree-sitter-grammars/tree-sitter-lua": "^0.4.1",
+    "tree-sitter-scala": "^0.24.0",
+    "tree-sitter-bash": "^0.25.1",
+    "tree-sitter-haskell": "^0.23.1",
+    "@tree-sitter-grammars/tree-sitter-zig": "^1.1.2",
+    "tree-sitter-css": "^0.25.0",
+    "tree-sitter-scss": "^1.0.0",
+    "@tree-sitter-grammars/tree-sitter-toml": "^0.7.0",
+    "@tree-sitter-grammars/tree-sitter-yaml": "^0.7.1",
+    "@derekstride/tree-sitter-sql": "^0.3.11",
+    "@tree-sitter-grammars/tree-sitter-markdown": "^0.3.2"
   },
   "engines": {
     "node": ">=18.0.0",

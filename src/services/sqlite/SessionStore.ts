@@ -14,6 +14,18 @@ import {
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
 import { computeObservationContentHash, findDuplicateObservation } from './observations/store.js';
+import { parseFileList } from './observations/files.js';
+import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
+
+function resolveCreateSessionArgs(
+  customTitle?: string,
+  platformSource?: string
+): { customTitle?: string; platformSource?: string } {
+  return {
+    customTitle,
+    platformSource: platformSource ? normalizePlatformSource(platformSource) : undefined
+  };
+}
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -52,6 +64,8 @@ export class SessionStore {
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
     this.addUserPromptsUniqueIndex();
+    this.addSessionPlatformSourceColumn();
+    this.addObservationModelColumns();
   }
 
   /**
@@ -79,6 +93,7 @@ export class SessionStore {
         content_session_id TEXT UNIQUE NOT NULL,
         memory_session_id TEXT UNIQUE,
         project TEXT NOT NULL,
+        platform_source TEXT NOT NULL DEFAULT 'claude',
         user_prompt TEXT,
         started_at TEXT NOT NULL,
         started_at_epoch INTEGER NOT NULL,
@@ -890,6 +905,60 @@ export class SessionStore {
   }
 
   /**
+   * Add platform_source column to sdk_sessions for Claude/Codex isolation (migration 24)
+   */
+  private addSessionPlatformSourceColumn(): void {
+    const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'platform_source');
+    const indexInfo = this.db.query('PRAGMA index_list(sdk_sessions)').all() as IndexInfo[];
+    const hasIndex = indexInfo.some(index => index.name === 'idx_sdk_sessions_platform_source');
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
+
+    if (applied && hasColumn && hasIndex) return;
+
+    if (!hasColumn) {
+      this.db.run(`ALTER TABLE sdk_sessions ADD COLUMN platform_source TEXT NOT NULL DEFAULT '${DEFAULT_PLATFORM_SOURCE}'`);
+      logger.debug('DB', 'Added platform_source column to sdk_sessions table');
+    }
+
+    this.db.run(`
+      UPDATE sdk_sessions
+      SET platform_source = '${DEFAULT_PLATFORM_SOURCE}'
+      WHERE platform_source IS NULL OR platform_source = ''
+    `);
+
+    if (!hasIndex) {
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
+  }
+
+  /**
+   * Add generated_by_model and relevance_count columns to observations (migration 26)
+   *
+   * Note: Cannot trust schema_versions alone — the old MigrationRunner may have
+   * recorded version 26 without the ALTER TABLE actually succeeding. Always
+   * check column existence directly.
+   */
+  private addObservationModelColumns(): void {
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasGeneratedByModel = columns.some(col => col.name === 'generated_by_model');
+    const hasRelevanceCount = columns.some(col => col.name === 'relevance_count');
+
+    if (hasGeneratedByModel && hasRelevanceCount) return;
+
+    if (!hasGeneratedByModel) {
+      this.db.run('ALTER TABLE observations ADD COLUMN generated_by_model TEXT');
+    }
+    if (!hasRelevanceCount) {
+      this.db.run('ALTER TABLE observations ADD COLUMN relevance_count INTEGER DEFAULT 0');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
+  }
+
+  /**
    * Update the memory session ID for a session
    * Called by SDKAgent when it captures the session ID from the first SDK message
    * Also used to RESET to null on stale resume failures (worker-service.ts)
@@ -900,6 +969,16 @@ export class SessionStore {
       SET memory_session_id = ?
       WHERE id = ?
     `).run(memorySessionId, sessionDbId);
+  }
+
+  markSessionCompleted(sessionDbId: number): void {
+    const nowEpoch = Date.now();
+    const nowIso = new Date(nowEpoch).toISOString();
+    this.db.prepare(`
+      UPDATE sdk_sessions
+      SET status = 'completed', completed_at = ?, completed_at_epoch = ?
+      WHERE id = ?
+    `).run(nowIso, nowEpoch, sessionDbId);
   }
 
   /**
@@ -1016,14 +1095,26 @@ export class SessionStore {
     subtitle: string | null;
     text: string;
     project: string;
+    platform_source: string;
     prompt_number: number | null;
     created_at: string;
     created_at_epoch: number;
   }> {
     const stmt = this.db.prepare(`
-      SELECT id, type, title, subtitle, text, project, prompt_number, created_at, created_at_epoch
-      FROM observations
-      ORDER BY created_at_epoch DESC
+      SELECT
+        o.id,
+        o.type,
+        o.title,
+        o.subtitle,
+        o.text,
+        o.project,
+        COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+        o.prompt_number,
+        o.created_at,
+        o.created_at_epoch
+      FROM observations o
+      LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+      ORDER BY o.created_at_epoch DESC
       LIMIT ?
     `);
 
@@ -1044,16 +1135,30 @@ export class SessionStore {
     files_edited: string | null;
     notes: string | null;
     project: string;
+    platform_source: string;
     prompt_number: number | null;
     created_at: string;
     created_at_epoch: number;
   }> {
     const stmt = this.db.prepare(`
-      SELECT id, request, investigated, learned, completed, next_steps,
-             files_read, files_edited, notes, project, prompt_number,
-             created_at, created_at_epoch
-      FROM session_summaries
-      ORDER BY created_at_epoch DESC
+      SELECT
+        ss.id,
+        ss.request,
+        ss.investigated,
+        ss.learned,
+        ss.completed,
+        ss.next_steps,
+        ss.files_read,
+        ss.files_edited,
+        ss.notes,
+        ss.project,
+        COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+        ss.prompt_number,
+        ss.created_at,
+        ss.created_at_epoch
+      FROM session_summaries ss
+      LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
+      ORDER BY ss.created_at_epoch DESC
       LIMIT ?
     `);
 
@@ -1067,6 +1172,7 @@ export class SessionStore {
     id: number;
     content_session_id: string;
     project: string;
+    platform_source: string;
     prompt_number: number;
     prompt_text: string;
     created_at: string;
@@ -1077,6 +1183,7 @@ export class SessionStore {
         up.id,
         up.content_session_id,
         s.project,
+        COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
         up.prompt_number,
         up.prompt_text,
         up.created_at,
@@ -1093,16 +1200,72 @@ export class SessionStore {
   /**
    * Get all unique projects from the database (for web UI project filter)
    */
-  getAllProjects(): string[] {
-    const stmt = this.db.prepare(`
+  getAllProjects(platformSource?: string): string[] {
+    const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
+    let query = `
       SELECT DISTINCT project
       FROM sdk_sessions
       WHERE project IS NOT NULL AND project != ''
-      ORDER BY project ASC
-    `);
+    `;
+    const params: unknown[] = [];
 
-    const rows = stmt.all() as Array<{ project: string }>;
+    if (normalizedPlatformSource) {
+      query += ' AND COALESCE(platform_source, ?) = ?';
+      params.push(DEFAULT_PLATFORM_SOURCE, normalizedPlatformSource);
+    }
+
+    query += ' ORDER BY project ASC';
+
+    const rows = this.db.prepare(query).all(...params) as Array<{ project: string }>;
     return rows.map(row => row.project);
+  }
+
+  getProjectCatalog(): {
+    projects: string[];
+    sources: string[];
+    projectsBySource: Record<string, string[]>;
+  } {
+    const rows = this.db.prepare(`
+      SELECT
+        COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+        project,
+        MAX(started_at_epoch) as latest_epoch
+      FROM sdk_sessions
+      WHERE project IS NOT NULL AND project != ''
+      GROUP BY COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}'), project
+      ORDER BY latest_epoch DESC
+    `).all() as Array<{ platform_source: string; project: string; latest_epoch: number }>;
+
+    const projects: string[] = [];
+    const seenProjects = new Set<string>();
+    const projectsBySource: Record<string, string[]> = {};
+
+    for (const row of rows) {
+      const source = normalizePlatformSource(row.platform_source);
+
+      if (!projectsBySource[source]) {
+        projectsBySource[source] = [];
+      }
+
+      if (!projectsBySource[source].includes(row.project)) {
+        projectsBySource[source].push(row.project);
+      }
+
+      if (!seenProjects.has(row.project)) {
+        seenProjects.add(row.project);
+        projects.push(row.project);
+      }
+    }
+
+    const sources = sortPlatformSources(Object.keys(projectsBySource));
+
+    return {
+      projects,
+      sources,
+      projectsBySource: Object.fromEntries(
+        sources.map(source => [source, projectsBySource[source] || []])
+      )
+    };
   }
 
   /**
@@ -1114,6 +1277,7 @@ export class SessionStore {
     content_session_id: string;
     memory_session_id: string;
     project: string;
+    platform_source: string;
     prompt_number: number;
     prompt_text: string;
     created_at_epoch: number;
@@ -1122,7 +1286,8 @@ export class SessionStore {
       SELECT
         up.*,
         s.memory_session_id,
-        s.project
+        s.project,
+        COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source
       FROM user_prompts up
       JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
       WHERE up.content_session_id = ?
@@ -1334,20 +1499,10 @@ export class SessionStore {
 
     for (const row of rows) {
       // Parse files_read
-      if (row.files_read) {
-        const files = JSON.parse(row.files_read);
-        if (Array.isArray(files)) {
-          files.forEach(f => filesReadSet.add(f));
-        }
-      }
+      parseFileList(row.files_read).forEach(f => filesReadSet.add(f));
 
       // Parse files_modified
-      if (row.files_modified) {
-        const files = JSON.parse(row.files_modified);
-        if (Array.isArray(files)) {
-          files.forEach(f => filesModifiedSet.add(f));
-        }
-      }
+      parseFileList(row.files_modified).forEach(f => filesModifiedSet.add(f));
     }
 
     return {
@@ -1364,11 +1519,14 @@ export class SessionStore {
     content_session_id: string;
     memory_session_id: string | null;
     project: string;
+    platform_source: string;
     user_prompt: string;
     custom_title: string | null;
   } | null {
     const stmt = this.db.prepare(`
-      SELECT id, content_session_id, memory_session_id, project, user_prompt, custom_title
+      SELECT id, content_session_id, memory_session_id, project,
+             COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+             user_prompt, custom_title
       FROM sdk_sessions
       WHERE id = ?
       LIMIT 1
@@ -1386,6 +1544,7 @@ export class SessionStore {
     content_session_id: string;
     memory_session_id: string;
     project: string;
+    platform_source: string;
     user_prompt: string;
     custom_title: string | null;
     started_at: string;
@@ -1398,7 +1557,9 @@ export class SessionStore {
 
     const placeholders = memorySessionIds.map(() => '?').join(',');
     const stmt = this.db.prepare(`
-      SELECT id, content_session_id, memory_session_id, project, user_prompt, custom_title,
+      SELECT id, content_session_id, memory_session_id, project,
+             COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+             user_prompt, custom_title,
              started_at, started_at_epoch, completed_at, completed_at_epoch, status
       FROM sdk_sessions
       WHERE memory_session_id IN (${placeholders})
@@ -1443,14 +1604,22 @@ export class SessionStore {
    * Pure get-or-create: never modifies memory_session_id.
    * Multi-terminal isolation is handled by ON UPDATE CASCADE at the schema level.
    */
-  createSDKSession(contentSessionId: string, project: string, userPrompt: string, customTitle?: string): number {
+  createSDKSession(
+    contentSessionId: string,
+    project: string,
+    userPrompt: string,
+    customTitle?: string,
+    platformSource?: string
+  ): number {
     const now = new Date();
     const nowEpoch = now.getTime();
+    const resolved = resolveCreateSessionArgs(customTitle, platformSource);
+    const normalizedPlatformSource = resolved.platformSource ?? DEFAULT_PLATFORM_SOURCE;
 
     // Session reuse: Return existing session ID if already created for this contentSessionId.
     const existing = this.db.prepare(`
-      SELECT id FROM sdk_sessions WHERE content_session_id = ?
-    `).get(contentSessionId) as { id: number } | undefined;
+      SELECT id, platform_source FROM sdk_sessions WHERE content_session_id = ?
+    `).get(contentSessionId) as { id: number; platform_source: string | null } | undefined;
 
     if (existing) {
       // Backfill project if session was created by another hook with empty project
@@ -1461,11 +1630,29 @@ export class SessionStore {
         `).run(project, contentSessionId);
       }
       // Backfill custom_title if provided and not yet set
-      if (customTitle) {
+      if (resolved.customTitle) {
         this.db.prepare(`
           UPDATE sdk_sessions SET custom_title = ?
           WHERE content_session_id = ? AND custom_title IS NULL
-        `).run(customTitle, contentSessionId);
+        `).run(resolved.customTitle, contentSessionId);
+      }
+
+      if (resolved.platformSource) {
+        const storedPlatformSource = existing.platform_source?.trim()
+          ? normalizePlatformSource(existing.platform_source)
+          : undefined;
+
+        if (!storedPlatformSource) {
+          this.db.prepare(`
+            UPDATE sdk_sessions SET platform_source = ?
+            WHERE content_session_id = ?
+              AND COALESCE(platform_source, '') = ''
+          `).run(resolved.platformSource, contentSessionId);
+        } else if (storedPlatformSource !== resolved.platformSource) {
+          throw new Error(
+            `Platform source conflict for session ${contentSessionId}: existing=${storedPlatformSource}, received=${resolved.platformSource}`
+          );
+        }
       }
       return existing.id;
     }
@@ -1476,9 +1663,9 @@ export class SessionStore {
     // must NEVER equal contentSessionId - that would inject memory messages into the user's transcript!
     this.db.prepare(`
       INSERT INTO sdk_sessions
-      (content_session_id, memory_session_id, project, user_prompt, custom_title, started_at, started_at_epoch, status)
-      VALUES (?, NULL, ?, ?, ?, ?, ?, 'active')
-    `).run(contentSessionId, project, userPrompt, customTitle || null, now.toISOString(), nowEpoch);
+      (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status)
+      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
+    `).run(contentSessionId, project, normalizedPlatformSource, userPrompt, resolved.customTitle || null, now.toISOString(), nowEpoch);
 
     // Return new ID
     const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
@@ -1542,7 +1729,8 @@ export class SessionStore {
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    generatedByModel?: string
   ): { id: number; createdAtEpoch: number } {
     // Use override timestamp if provided (for processing backlog messages with original timestamps)
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1558,8 +1746,9 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+       generated_by_model)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1577,7 +1766,8 @@ export class SessionStore {
       discoveryTokens,
       contentHash,
       timestampIso,
-      timestampEpoch
+      timestampEpoch,
+      generatedByModel || null
     );
 
     return {
@@ -1676,7 +1866,8 @@ export class SessionStore {
     } | null,
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    generatedByModel?: string
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     // Use override timestamp if provided
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1690,8 +1881,9 @@ export class SessionStore {
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-         files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+         generated_by_model)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
@@ -1718,7 +1910,8 @@ export class SessionStore {
           discoveryTokens,
           contentHash,
           timestampIso,
-          timestampEpoch
+          timestampEpoch,
+          generatedByModel || null
         );
         observationIds.push(Number(result.lastInsertRowid));
       }
@@ -1805,7 +1998,8 @@ export class SessionStore {
     _pendingStore: PendingMessageStore,
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    generatedByModel?: string
   ): { observationIds: number[]; summaryId?: number; createdAtEpoch: number } {
     // Use override timestamp if provided
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1819,8 +2013,9 @@ export class SessionStore {
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-         files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+         generated_by_model)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
@@ -1847,7 +2042,8 @@ export class SessionStore {
           discoveryTokens,
           contentHash,
           timestampIso,
-          timestampEpoch
+          timestampEpoch,
+          generatedByModel || null
         );
         observationIds.push(Number(result.lastInsertRowid));
       }
@@ -2258,9 +2454,9 @@ export class SessionStore {
     // Create new manual session
     const now = new Date();
     this.db.prepare(`
-      INSERT INTO sdk_sessions (memory_session_id, content_session_id, project, started_at, started_at_epoch, status)
-      VALUES (?, ?, ?, ?, ?, 'active')
-    `).run(memorySessionId, contentSessionId, project, now.toISOString(), now.getTime());
+      INSERT INTO sdk_sessions (memory_session_id, content_session_id, project, platform_source, started_at, started_at_epoch, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'active')
+    `).run(memorySessionId, contentSessionId, project, DEFAULT_PLATFORM_SOURCE, now.toISOString(), now.getTime());
 
     logger.info('SESSION', 'Created manual session', { memorySessionId, project });
 
@@ -2286,6 +2482,7 @@ export class SessionStore {
     content_session_id: string;
     memory_session_id: string;
     project: string;
+    platform_source?: string;
     user_prompt: string;
     started_at: string;
     started_at_epoch: number;
@@ -2304,15 +2501,16 @@ export class SessionStore {
 
     const stmt = this.db.prepare(`
       INSERT INTO sdk_sessions (
-        content_session_id, memory_session_id, project, user_prompt,
+        content_session_id, memory_session_id, project, platform_source, user_prompt,
         started_at, started_at_epoch, completed_at, completed_at_epoch, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
       session.content_session_id,
       session.memory_session_id,
       session.project,
+      normalizePlatformSource(session.platform_source),
       session.user_prompt,
       session.started_at,
       session.started_at_epoch,
@@ -2440,6 +2638,23 @@ export class SessionStore {
     );
 
     return { imported: true, id: result.lastInsertRowid as number };
+  }
+
+  /**
+   * Rebuild the FTS5 index for observations.
+   * Should be called after bulk imports to ensure imported rows are searchable.
+   * No-op if observations_fts table does not exist.
+   */
+  rebuildObservationsFTSIndex(): void {
+    const hasFTS = (this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='observations_fts'"
+    ).all() as { name: string }[]).length > 0;
+
+    if (!hasFTS) {
+      return;
+    }
+
+    this.db.run("INSERT INTO observations_fts(observations_fts) VALUES('rebuild')");
   }
 
   /**

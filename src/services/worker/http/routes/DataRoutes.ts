@@ -18,6 +18,8 @@ import { SessionManager } from '../../SessionManager.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { normalizePlatformSource } from '../../../../shared/platform-source.js';
+import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 
 export class DataRoutes extends BaseRouteHandler {
   constructor(
@@ -39,6 +41,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     // Fetch by ID endpoints
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
+    app.get('/api/observations/by-file', this.handleGetObservationsByFile.bind(this));
     app.post('/api/observations/batch', this.handleGetObservationsByIds.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     app.post('/api/sdk-sessions/batch', this.handleGetSdkSessionsByIds.bind(this));
@@ -66,8 +69,8 @@ export class DataRoutes extends BaseRouteHandler {
    * Get paginated observations
    */
   private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getObservations(offset, limit, project);
+    const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getObservations(offset, limit, project, platformSource);
     res.json(result);
   });
 
@@ -75,8 +78,8 @@ export class DataRoutes extends BaseRouteHandler {
    * Get paginated summaries
    */
   private handleGetSummaries = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getSummaries(offset, limit, project);
+    const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getSummaries(offset, limit, project, platformSource);
     res.json(result);
   });
 
@@ -84,8 +87,8 @@ export class DataRoutes extends BaseRouteHandler {
    * Get paginated user prompts
    */
   private handleGetPrompts = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getPrompts(offset, limit, project);
+    const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getPrompts(offset, limit, project, platformSource);
     res.json(result);
   });
 
@@ -106,6 +109,28 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     res.json(observation);
+  });
+
+  /**
+   * Get observations associated with a file path, scoped to projects
+   * GET /api/observations/by-file?path=<file_path>&projects=<comma,separated>&limit=15
+   */
+  private handleGetObservationsByFile = this.wrapHandler((req: Request, res: Response): void => {
+    const filePath = req.query.path as string | undefined;
+    if (!filePath) {
+      this.badRequest(res, 'path query parameter is required');
+      return;
+    }
+
+    const projectsParam = req.query.projects as string | undefined;
+    const projects = projectsParam ? projectsParam.split(',').filter(Boolean) : undefined;
+    const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+    const limit = Number.isFinite(parsedLimit) && parsedLimit! > 0 ? parsedLimit : undefined;
+
+    const db = this.dbManager.getSessionStore().db;
+    const observations = getObservationsByFilePath(db, filePath, { projects, limit });
+
+    res.json({ observations, count: observations.length });
   });
 
   /**
@@ -256,19 +281,21 @@ export class DataRoutes extends BaseRouteHandler {
    * GET /api/projects
    */
   private handleGetProjects = this.wrapHandler((req: Request, res: Response): void => {
-    const db = this.dbManager.getSessionStore().db;
+    const store = this.dbManager.getSessionStore();
+    const rawPlatformSource = req.query.platformSource as string | undefined;
+    const platformSource = rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
 
-    const rows = db.prepare(`
-      SELECT DISTINCT project
-      FROM observations
-      WHERE project IS NOT NULL
-      GROUP BY project
-      ORDER BY MAX(created_at_epoch) DESC
-    `).all() as Array<{ project: string }>;
+    if (platformSource) {
+      const projects = store.getAllProjects(platformSource);
+      res.json({
+        projects,
+        sources: [platformSource],
+        projectsBySource: { [platformSource]: projects }
+      });
+      return;
+    }
 
-    const projects = rows.map(row => row.project);
-
-    res.json({ projects });
+    res.json(store.getProjectCatalog());
   });
 
   /**
@@ -299,12 +326,14 @@ export class DataRoutes extends BaseRouteHandler {
   /**
    * Parse pagination parameters from request query
    */
-  private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string } {
+  private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string } {
     const offset = parseInt(req.query.offset as string, 10) || 0;
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); // Max 100
     const project = req.query.project as string | undefined;
+    const rawPlatformSource = req.query.platformSource as string | undefined;
+    const platformSource = rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
 
-    return { offset, limit, project };
+    return { offset, limit, project, platformSource };
   }
 
   /**
@@ -361,6 +390,13 @@ export class DataRoutes extends BaseRouteHandler {
         } else {
           stats.observationsSkipped++;
         }
+      }
+
+      // Rebuild FTS index so imported observations are immediately searchable.
+      // The FTS5 content table relies on triggers for incremental updates, but
+      // those triggers may not have fired correctly for all import paths.
+      if (stats.observationsImported > 0) {
+        store.rebuildObservationsFTSIndex();
       }
     }
 
@@ -473,4 +509,5 @@ export class DataRoutes extends BaseRouteHandler {
       clearedCount
     });
   });
+
 }

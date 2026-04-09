@@ -9,6 +9,7 @@ import { writeAgentsMd } from '../../utils/agents-md-utils.js';
 import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
 import { expandHomePath } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 export interface ConversationExchange {
   promptNumber: number;
@@ -18,6 +19,7 @@ export interface ConversationExchange {
 
 interface SessionState {
   sessionId: string;
+  platformSource: string;
   cwd?: string;
   project?: string;
   promptNumber: number;
@@ -61,6 +63,7 @@ export class TranscriptEventProcessor {
         sessionId,
         promptNumber: 0,
         exchanges: [],
+        platformSource: normalizePlatformSource(watch.name),
         pendingTools: new Map()
       };
       this.sessions.set(key, session);
@@ -211,7 +214,7 @@ export class TranscriptEventProcessor {
       sessionId: session.sessionId,
       cwd,
       prompt,
-      platform: 'transcript'
+      platform: session.platformSource
     });
   }
 
@@ -280,7 +283,7 @@ export class TranscriptEventProcessor {
       toolName,
       toolInput: this.maybeParseJson(fields.toolInput),
       toolResponse: this.maybeParseJson(fields.toolResponse),
-      platform: 'transcript'
+      platform: session.platformSource
     });
   }
 
@@ -293,7 +296,7 @@ export class TranscriptEventProcessor {
       cwd: session.cwd ?? process.cwd(),
       filePath,
       edits: Array.isArray(fields.edits) ? fields.edits : undefined,
-      platform: 'transcript'
+      platform: session.platformSource
     });
   }
 
@@ -336,7 +339,7 @@ export class TranscriptEventProcessor {
     await sessionCompleteHandler.execute({
       sessionId: session.sessionId,
       cwd: session.cwd ?? process.cwd(),
-      platform: 'transcript'
+      platform: session.platformSource
     });
     await this.updateContext(session, watch);
     session.pendingTools.clear();
@@ -423,7 +426,8 @@ export class TranscriptEventProcessor {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contentSessionId: session.sessionId,
-          last_assistant_message: lastAssistantMessage
+          last_assistant_message: lastAssistantMessage,
+          platformSource: session.platformSource
         })
       });
     } catch (error) {
@@ -448,7 +452,7 @@ export class TranscriptEventProcessor {
 
     try {
       const response = await workerHttpRequest(
-        `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`
+        `/api/context/inject?projects=${encodeURIComponent(projectsParam)}&platformSource=${encodeURIComponent(session.platformSource)}`
       );
       if (!response.ok) return;
 

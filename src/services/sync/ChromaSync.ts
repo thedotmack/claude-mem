@@ -16,6 +16,7 @@ import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
+import { parseFileList } from '../sqlite/observations/files.js';
 
 interface ChromaDocument {
   id: string;
@@ -125,8 +126,8 @@ export class ChromaSync {
     // Parse JSON fields
     const facts = obs.facts ? JSON.parse(obs.facts) : [];
     const concepts = obs.concepts ? JSON.parse(obs.concepts) : [];
-    const files_read = obs.files_read ? JSON.parse(obs.files_read) : [];
-    const files_modified = obs.files_modified ? JSON.parse(obs.files_modified) : [];
+    const files_read = parseFileList(obs.files_read);
+    const files_modified = parseFileList(obs.files_modified);
 
     const baseMetadata: Record<string, string | number> = {
       sqlite_id: obs.id,

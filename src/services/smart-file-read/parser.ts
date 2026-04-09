@@ -3,13 +3,15 @@
  *
  * No native bindings. No WASM. Just the CLI binary + query patterns.
  *
- * Supported: JS, TS, Python, Go, Rust, Ruby, Java, C, C++
+ * Supported: JS, TS, Python, Go, Rust, Ruby, Java, C, C++,
+ * Kotlin, Swift, PHP, Elixir, Lua, Scala, Bash, Haskell, Zig,
+ * CSS, SCSS, TOML, YAML, SQL, Markdown
  *
  * by Copter Labs
  */
 
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -25,7 +27,7 @@ const _require = typeof __filename !== 'undefined'
 
 export interface CodeSymbol {
   name: string;
-  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter";
+  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "section" | "code" | "metadata" | "reference";
   signature: string;
   jsdoc?: string;
   lineStart: number;
@@ -66,11 +68,162 @@ const LANG_MAP: Record<string, string> = {
   ".cxx": "cpp",
   ".hpp": "cpp",
   ".hh": "cpp",
+  ".kt": "kotlin",
+  ".kts": "kotlin",
+  ".swift": "swift",
+  ".php": "php",
+  ".ex": "elixir",
+  ".exs": "elixir",
+  ".lua": "lua",
+  ".scala": "scala",
+  ".sc": "scala",
+  ".sh": "bash",
+  ".bash": "bash",
+  ".zsh": "bash",
+  ".hs": "haskell",
+  ".zig": "zig",
+  ".css": "css",
+  ".scss": "scss",
+  ".toml": "toml",
+  ".yml": "yaml",
+  ".yaml": "yaml",
+  ".sql": "sql",
+  ".md": "markdown",
+  ".mdx": "markdown",
 };
 
 export function detectLanguage(filePath: string): string {
   const ext = filePath.slice(filePath.lastIndexOf("."));
   return LANG_MAP[ext] || "unknown";
+}
+
+/**
+ * Detect language with fallback to user-configured grammar extensions.
+ * Bundled LANG_MAP takes priority.
+ */
+function detectLanguageWithUserGrammars(filePath: string, userConfig: UserGrammarConfig): string {
+  const ext = filePath.slice(filePath.lastIndexOf("."));
+  if (LANG_MAP[ext]) return LANG_MAP[ext];
+  if (userConfig.extensionToLanguage[ext]) return userConfig.extensionToLanguage[ext];
+  return "unknown";
+}
+
+/**
+ * Get the query key for a language, checking user config for custom queries.
+ */
+function getUserAwareQueryKey(language: string, userConfig: UserGrammarConfig): string {
+  // If user config has a specific query key for this language, use it
+  if (userConfig.languageToQueryKey[language]) {
+    return userConfig.languageToQueryKey[language];
+  }
+  // Otherwise fall back to the bundled query key mapping
+  return getQueryKey(language);
+}
+
+// --- User-installable grammars via .claude-mem.json ---
+
+export interface UserGrammarEntry {
+  package: string;
+  extensions: string[];
+  query?: string;
+}
+
+export interface UserGrammarConfig {
+  /** language name → grammar entry */
+  grammars: Record<string, UserGrammarEntry>;
+  /** file extension → language name (for user-defined extensions only) */
+  extensionToLanguage: Record<string, string>;
+  /** language name → query content (custom .scm file content or "generic") */
+  languageToQueryKey: Record<string, string>;
+}
+
+const userGrammarCache = new Map<string, UserGrammarConfig>();
+
+const EMPTY_USER_GRAMMAR_CONFIG: UserGrammarConfig = {
+  grammars: {},
+  extensionToLanguage: {},
+  languageToQueryKey: {},
+};
+
+/**
+ * Load user grammar configuration from .claude-mem.json in a project root.
+ * Cached per project root. Returns empty config if file doesn't exist or is invalid.
+ * User entries do NOT override bundled grammars.
+ */
+export function loadUserGrammars(projectRoot: string): UserGrammarConfig {
+  if (userGrammarCache.has(projectRoot)) return userGrammarCache.get(projectRoot)!;
+
+  const configPath = join(projectRoot, ".claude-mem.json");
+  let rawConfig: Record<string, unknown>;
+
+  try {
+    const content = readFileSync(configPath, "utf-8");
+    rawConfig = JSON.parse(content);
+  } catch {
+    userGrammarCache.set(projectRoot, EMPTY_USER_GRAMMAR_CONFIG);
+    return EMPTY_USER_GRAMMAR_CONFIG;
+  }
+
+  const grammarsRaw = rawConfig.grammars;
+  if (!grammarsRaw || typeof grammarsRaw !== "object" || Array.isArray(grammarsRaw)) {
+    userGrammarCache.set(projectRoot, EMPTY_USER_GRAMMAR_CONFIG);
+    return EMPTY_USER_GRAMMAR_CONFIG;
+  }
+
+  const config: UserGrammarConfig = {
+    grammars: {},
+    extensionToLanguage: {},
+    languageToQueryKey: {},
+  };
+
+  for (const [language, entry] of Object.entries(grammarsRaw as Record<string, unknown>)) {
+    // Skip if this language is already bundled
+    if (GRAMMAR_PACKAGES[language]) continue;
+
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const typedEntry = entry as Record<string, unknown>;
+
+    const pkg = typedEntry.package;
+    const extensions = typedEntry.extensions;
+    const queryPath = typedEntry.query;
+
+    // Validate required fields
+    if (typeof pkg !== "string" || !Array.isArray(extensions)) continue;
+    if (!extensions.every((e: unknown) => typeof e === "string")) continue;
+
+    config.grammars[language] = {
+      package: pkg,
+      extensions: extensions as string[],
+      query: typeof queryPath === "string" ? queryPath : undefined,
+    };
+
+    // Map extensions to language (skip extensions already handled by bundled LANG_MAP)
+    for (const ext of extensions as string[]) {
+      if (!LANG_MAP[ext]) {
+        config.extensionToLanguage[ext] = language;
+      }
+    }
+
+    // Resolve query content
+    if (typeof queryPath === "string") {
+      const fullQueryPath = join(projectRoot, queryPath);
+      try {
+        const queryContent = readFileSync(fullQueryPath, "utf-8");
+        // Store with a unique key to avoid collisions with built-in queries
+        const queryKey = `user_${language}`;
+        QUERIES[queryKey] = queryContent;
+        config.languageToQueryKey[language] = queryKey;
+      } catch {
+        console.error(`[smart-file-read] Custom query file not found: ${fullQueryPath}, falling back to generic`);
+        config.languageToQueryKey[language] = "generic";
+      }
+    } else {
+      config.languageToQueryKey[language] = "generic";
+    }
+  }
+
+  userGrammarCache.set(projectRoot, config);
+  return config;
 }
 
 // --- Grammar path resolution ---
@@ -86,17 +239,82 @@ const GRAMMAR_PACKAGES: Record<string, string> = {
   java: "tree-sitter-java",
   c: "tree-sitter-c",
   cpp: "tree-sitter-cpp",
+  kotlin: "tree-sitter-kotlin",
+  swift: "tree-sitter-swift",
+  php: "tree-sitter-php/php",
+  elixir: "tree-sitter-elixir",
+  lua: "@tree-sitter-grammars/tree-sitter-lua",
+  scala: "tree-sitter-scala",
+  bash: "tree-sitter-bash",
+  haskell: "tree-sitter-haskell",
+  zig: "@tree-sitter-grammars/tree-sitter-zig",
+  css: "tree-sitter-css",
+  scss: "tree-sitter-scss",
+  toml: "@tree-sitter-grammars/tree-sitter-toml",
+  yaml: "@tree-sitter-grammars/tree-sitter-yaml",
+  sql: "@derekstride/tree-sitter-sql",
+  markdown: "@tree-sitter-grammars/tree-sitter-markdown",
+};
+
+// Grammars where the parser source lives in a subdirectory of the npm package root,
+// AND that subdirectory lacks its own package.json (so require.resolve won't find it).
+// Maps language → subdirectory name under the package root.
+const GRAMMAR_SUBDIR: Record<string, string> = {
+  markdown: "tree-sitter-markdown",
 };
 
 function resolveGrammarPath(language: string): string | null {
   const pkg = GRAMMAR_PACKAGES[language];
   if (!pkg) return null;
+
+  const subdir = GRAMMAR_SUBDIR[language];
+  if (subdir) {
+    // Package root has no sub-package.json — resolve root then append subdir
+    try {
+      const rootPkgPath = _require.resolve(pkg + "/package.json");
+      const resolved = join(dirname(rootPkgPath), subdir);
+      if (existsSync(join(resolved, "src"))) return resolved;
+    } catch { /* fall through */ }
+    return null;
+  }
+
   try {
     const packageJsonPath = _require.resolve(pkg + "/package.json");
     return dirname(packageJsonPath);
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve grammar path with fallback to user-installed grammars.
+ * First tries bundled grammars, then falls back to the project's node_modules.
+ */
+export function resolveGrammarPathWithFallback(language: string, projectRoot?: string): string | null {
+  // Try bundled grammar first
+  const bundled = resolveGrammarPath(language);
+  if (bundled) return bundled;
+
+  // Fall back to user-installed grammar in project's node_modules
+  if (!projectRoot) return null;
+
+  const userConfig = loadUserGrammars(projectRoot);
+  const entry = userConfig.grammars[language];
+  if (!entry) return null;
+
+  try {
+    const packageJsonPath = join(projectRoot, "node_modules", entry.package, "package.json");
+    if (existsSync(packageJsonPath)) {
+      const grammarDir = dirname(packageJsonPath);
+      // Verify it has a src/ directory (required by tree-sitter CLI)
+      if (existsSync(join(grammarDir, "src"))) return grammarDir;
+    }
+  } catch {
+    // Grammar package not installed
+  }
+
+  console.error(`[smart-file-read] Grammar package not found for "${language}": ${entry.package} (install it in your project's node_modules)`);
+  return null;
 }
 
 // --- Query patterns (declarative symbol extraction) ---
@@ -152,6 +370,104 @@ const QUERIES: Record<string, string> = {
 (import_declaration) @imp
 `,
 
+  kotlin: `
+(function_declaration (simple_identifier) @name) @func
+(class_declaration (type_identifier) @name) @cls
+(object_declaration (type_identifier) @name) @cls
+(import_header) @imp
+`,
+
+  swift: `
+(function_declaration name: (simple_identifier) @name) @func
+(class_declaration name: (type_identifier) @name) @cls
+(protocol_declaration name: (type_identifier) @name) @iface
+(import_declaration) @imp
+`,
+
+  php: `
+(function_definition name: (name) @name) @func
+(class_declaration name: (name) @name) @cls
+(interface_declaration name: (name) @name) @iface
+(trait_declaration name: (name) @name) @trait_def
+(method_declaration name: (name) @name) @method
+(namespace_use_declaration) @imp
+`,
+
+  lua: `
+(function_declaration name: (identifier) @name) @func
+(function_declaration name: (dot_index_expression) @name) @func
+(function_declaration name: (method_index_expression) @name) @func
+`,
+
+  scala: `
+(function_definition name: (identifier) @name) @func
+(class_definition name: (identifier) @name) @cls
+(object_definition name: (identifier) @name) @cls
+(trait_definition name: (identifier) @name) @trait_def
+(import_declaration) @imp
+`,
+
+  bash: `
+(function_definition name: (word) @name) @func
+`,
+
+  haskell: `
+(function name: (variable) @name) @func
+(type_synomym name: (name) @name) @tdef
+(newtype name: (name) @name) @tdef
+(data_type name: (name) @name) @tdef
+(class name: (name) @name) @cls
+(import) @imp
+`,
+
+  zig: `
+(function_declaration name: (identifier) @name) @func
+(test_declaration) @func
+`,
+
+  css: `
+(rule_set (selectors) @name) @func
+(media_statement) @cls
+(keyframes_statement (keyframes_name) @name) @cls
+(import_statement) @imp
+`,
+
+  scss: `
+(rule_set (selectors) @name) @func
+(media_statement) @cls
+(keyframes_statement (keyframes_name) @name) @cls
+(import_statement) @imp
+(mixin_statement name: (identifier) @name) @mixin_def
+(function_statement name: (identifier) @name) @func
+(include_statement) @imp
+`,
+
+  toml: `
+(table (bare_key) @name) @cls
+(table (dotted_key) @name) @cls
+(table_array_element (bare_key) @name) @cls
+(table_array_element (dotted_key) @name) @cls
+`,
+
+  yaml: `
+(block_mapping_pair key: (flow_node) @name) @func
+`,
+
+  sql: `
+(create_table (object_reference) @name) @cls
+(create_function (object_reference) @name) @func
+(create_view (object_reference) @name) @cls
+`,
+
+  markdown: `
+(atx_heading heading_content: (inline) @name) @heading
+(setext_heading heading_content: (paragraph) @name) @heading
+(fenced_code_block (info_string (language) @name)) @code_block
+(fenced_code_block) @code_block
+(minus_metadata) @frontmatter
+(link_reference_definition (link_label) @name) @ref
+`,
+
   generic: `
 (function_declaration name: (identifier) @name) @func
 (function_definition name: (identifier) @name) @func
@@ -159,6 +475,15 @@ const QUERIES: Record<string, string> = {
 (class_definition name: (identifier) @name) @cls
 (import_statement) @imp
 (import_declaration) @imp
+`,
+
+  php: `
+(function_definition name: (name) @name) @func
+(method_declaration name: (name) @name) @method
+(class_declaration name: (name) @name) @cls
+(interface_declaration name: (name) @name) @iface
+(trait_declaration name: (name) @name) @trait_def
+(namespace_use_declaration) @imp
 `,
 };
 
@@ -173,6 +498,21 @@ function getQueryKey(language: string): string {
     case "rust": return "rust";
     case "ruby": return "ruby";
     case "java": return "java";
+    case "kotlin": return "kotlin";
+    case "swift": return "swift";
+    case "php": return "php";
+    case "elixir": return "generic";
+    case "lua": return "lua";
+    case "scala": return "scala";
+    case "bash": return "bash";
+    case "haskell": return "haskell";
+    case "zig": return "zig";
+    case "css": return "css";
+    case "scss": return "scss";
+    case "toml": return "toml";
+    case "yaml": return "yaml";
+    case "sql": return "sql";
+    case "markdown": return "markdown";
     default: return "generic";
   }
 }
@@ -308,6 +648,11 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   struct_def: "struct",
   trait_def: "trait",
   impl_def: "impl",
+  mixin_def: "mixin",
+  heading: "section",
+  code_block: "code",
+  frontmatter: "metadata",
+  ref: "reference",
 };
 
 const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait"]);
@@ -407,18 +752,36 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     const nameCapture = match.captures.find(c => c.tag === "name");
     if (!kindCapture) continue;
 
-    const name = nameCapture?.text || "anonymous";
     const startRow = kindCapture.startRow;
     const endRow = kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
+    const name = nameCapture?.text || "anonymous";
 
-    const comment = findCommentAbove(lines, startRow);
+    // Markdown-specific: extract heading level and build signature
+    let signature: string;
+    if (language === "markdown" && kind === "section") {
+      const headingLine = lines[startRow] || "";
+      const hashMatch = headingLine.match(/^(#{1,6})\s/);
+      const level = hashMatch ? hashMatch[1].length : 1;
+      signature = `${"#".repeat(level)} ${name}`;
+    } else if (language === "markdown" && kind === "code") {
+      const langTag = name !== "anonymous" ? name : "";
+      signature = langTag ? "```" + langTag : "```";
+    } else if (language === "markdown" && kind === "metadata") {
+      signature = "---frontmatter---";
+    } else if (language === "markdown" && kind === "reference") {
+      signature = lines[startRow]?.trim() || name;
+    } else {
+      signature = extractSignatureFromLines(lines, startRow, endRow);
+    }
+
+    const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);
     const docstring = language === "python" ? findPythonDocstringFromLines(lines, startRow, endRow) : undefined;
 
     const sym: CodeSymbol = {
       name,
       kind,
-      signature: extractSignatureFromLines(lines, startRow, endRow),
+      signature,
       jsdoc: comment || docstring,
       lineStart: startRow,
       lineEnd: endRow,
@@ -431,6 +794,34 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
 
     symbols.push(sym);
+  }
+
+  // Markdown: deduplicate code_block matches. The catch-all `(fenced_code_block) @code_block`
+  // pattern and the language-specific pattern both match the same block. Keep the named one.
+  if (language === "markdown") {
+    const codeBlocksByRange = new Map<string, CodeSymbol>();
+    const duplicateCodeBlocks = new Set<CodeSymbol>();
+    for (const sym of symbols) {
+      if (sym.kind !== "code") continue;
+      const rangeKey = `${sym.lineStart}:${sym.lineEnd}`;
+      const existing = codeBlocksByRange.get(rangeKey);
+      if (existing) {
+        // Prefer the named version (has actual language tag vs "anonymous")
+        if (sym.name !== "anonymous") {
+          duplicateCodeBlocks.add(existing);
+          codeBlocksByRange.set(rangeKey, sym);
+        } else {
+          duplicateCodeBlocks.add(sym);
+        }
+      } else {
+        codeBlocksByRange.set(rangeKey, sym);
+      }
+    }
+    if (duplicateCodeBlocks.size > 0) {
+      const filtered = symbols.filter(s => !duplicateCodeBlocks.has(s));
+      symbols.length = 0;
+      symbols.push(...filtered);
+    }
   }
 
   // Nest methods inside containers
@@ -451,11 +842,12 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
 
 // --- Main parse functions ---
 
-export function parseFile(content: string, filePath: string): FoldedFile {
-  const language = detectLanguage(filePath);
+export function parseFile(content: string, filePath: string, projectRoot?: string): FoldedFile {
+  const userConfig = projectRoot ? loadUserGrammars(projectRoot) : EMPTY_USER_GRAMMAR_CONFIG;
+  const language = detectLanguageWithUserGrammars(filePath, userConfig);
   const lines = content.split("\n");
 
-  const grammarPath = resolveGrammarPath(language);
+  const grammarPath = resolveGrammarPathWithFallback(language, projectRoot);
   if (!grammarPath) {
     return {
       filePath, language, symbols: [], imports: [],
@@ -463,7 +855,7 @@ export function parseFile(content: string, filePath: string): FoldedFile {
     };
   }
 
-  const queryKey = getQueryKey(language);
+  const queryKey = getUserAwareQueryKey(language, userConfig);
   const queryFile = getQueryFile(queryKey);
 
   // Write content to temp file with correct extension for language detection
@@ -498,20 +890,22 @@ export function parseFile(content: string, filePath: string): FoldedFile {
  * Much faster than calling parseFile() per file (one process spawn per language vs per file).
  */
 export function parseFilesBatch(
-  files: Array<{ absolutePath: string; relativePath: string; content: string }>
+  files: Array<{ absolutePath: string; relativePath: string; content: string }>,
+  projectRoot?: string
 ): Map<string, FoldedFile> {
   const results = new Map<string, FoldedFile>();
+  const userConfig = projectRoot ? loadUserGrammars(projectRoot) : EMPTY_USER_GRAMMAR_CONFIG;
 
   // Group files by language (and thus by query + grammar)
   const languageGroups = new Map<string, typeof files>();
   for (const file of files) {
-    const language = detectLanguage(file.relativePath);
+    const language = detectLanguageWithUserGrammars(file.relativePath, userConfig);
     if (!languageGroups.has(language)) languageGroups.set(language, []);
     languageGroups.get(language)!.push(file);
   }
 
   for (const [language, groupFiles] of languageGroups) {
-    const grammarPath = resolveGrammarPath(language);
+    const grammarPath = resolveGrammarPathWithFallback(language, projectRoot);
     if (!grammarPath) {
       // No grammar — return empty results for these files
       for (const file of groupFiles) {
@@ -524,7 +918,7 @@ export function parseFilesBatch(
       continue;
     }
 
-    const queryKey = getQueryKey(language);
+    const queryKey = getUserAwareQueryKey(language, userConfig);
     const queryFile = getQueryFile(queryKey);
 
     // Run one batch query for all files of this language
@@ -558,6 +952,10 @@ export function parseFilesBatch(
 // --- Formatting ---
 
 export function formatFoldedView(file: FoldedFile): string {
+  if (file.language === "markdown") {
+    return formatMarkdownFoldedView(file);
+  }
+
   const parts: string[] = [];
 
   parts.push(`📁 ${file.filePath} (${file.language}, ${file.totalLines} lines)`);
@@ -579,6 +977,64 @@ export function formatFoldedView(file: FoldedFile): string {
   }
 
   return parts.join("\n");
+}
+
+function formatMarkdownFoldedView(file: FoldedFile): string {
+  const parts: string[] = [];
+  // Total width for the content column (before the line range)
+  const COL_WIDTH = 56;
+
+  parts.push(`📄 ${file.filePath} (${file.language}, ${file.totalLines} lines)`);
+
+  for (const sym of file.symbols) {
+    if (sym.kind === "section") {
+      // Extract heading level from the signature (count leading # characters)
+      const hashMatch = sym.signature.match(/^(#{1,6})\s/);
+      const level = hashMatch ? hashMatch[1].length : 1;
+      const indent = "  ".repeat(level);
+      const lineRange = `L${sym.lineStart + 1}`;
+      const content = `${indent}${sym.signature}`;
+      parts.push(`${content.padEnd(COL_WIDTH)}${lineRange}`);
+    } else if (sym.kind === "code") {
+      // Find containing heading level for indentation
+      const containingLevel = findContainingHeadingLevel(file.symbols, sym.lineStart);
+      const indent = "  ".repeat(containingLevel + 1);
+      const lineRange = sym.lineStart === sym.lineEnd
+        ? `L${sym.lineStart + 1}`
+        : `L${sym.lineStart + 1}-${sym.lineEnd + 1}`;
+      const content = `${indent}${sym.signature}`;
+      parts.push(`${content.padEnd(COL_WIDTH)}${lineRange}`);
+    } else if (sym.kind === "metadata") {
+      const lineRange = sym.lineStart === sym.lineEnd
+        ? `L${sym.lineStart + 1}`
+        : `L${sym.lineStart + 1}-${sym.lineEnd + 1}`;
+      const content = `  ${sym.signature}`;
+      parts.push(`${content.padEnd(COL_WIDTH)}${lineRange}`);
+    } else if (sym.kind === "reference") {
+      const containingLevel = findContainingHeadingLevel(file.symbols, sym.lineStart);
+      const indent = "  ".repeat(containingLevel + 1);
+      const lineRange = `L${sym.lineStart + 1}`;
+      const content = `${indent}↗ ${sym.name}`;
+      parts.push(`${content.padEnd(COL_WIDTH)}${lineRange}`);
+    }
+  }
+
+  return parts.join("\n");
+}
+
+/**
+ * Find the heading level of the most recent section heading before the given line.
+ * Returns 0 if no heading precedes the line.
+ */
+function findContainingHeadingLevel(symbols: CodeSymbol[], lineStart: number): number {
+  let bestLevel = 0;
+  for (const sym of symbols) {
+    if (sym.kind === "section" && sym.lineStart < lineStart) {
+      const hashMatch = sym.signature.match(/^(#{1,6})\s/);
+      bestLevel = hashMatch ? hashMatch[1].length : 1;
+    }
+  }
+  return bestLevel;
 }
 
 function formatSymbol(sym: CodeSymbol, indent: string): string {
@@ -621,7 +1077,8 @@ function getSymbolIcon(kind: CodeSymbol["kind"]): string {
     function: "ƒ", method: "ƒ", class: "◆", interface: "◇",
     type: "◇", const: "●", variable: "○", export: "→",
     struct: "◆", enum: "▣", trait: "◇", impl: "◈",
-    property: "○", getter: "⇢", setter: "⇠",
+    property: "○", getter: "⇢", setter: "⇠", mixin: "◈",
+    section: "§", code: "⌘", metadata: "◊", reference: "↗",
   };
   return icons[kind] || "·";
 }
@@ -646,6 +1103,31 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
   if (!symbol) return null;
 
   const lines = content.split("\n");
+
+  // Markdown section unfold: return from heading to next heading of same or higher level
+  if (file.language === "markdown" && symbol.kind === "section") {
+    const hashMatch = symbol.signature.match(/^(#{1,6})\s/);
+    const level = hashMatch ? hashMatch[1].length : 1;
+    const start = symbol.lineStart;
+
+    // Find the next heading at same or higher (lower number) level
+    let end = lines.length - 1;
+    for (const sym of file.symbols) {
+      if (sym.kind === "section" && sym.lineStart > start) {
+        const otherHashMatch = sym.signature.match(/^(#{1,6})\s/);
+        const otherLevel = otherHashMatch ? otherHashMatch[1].length : 1;
+        if (otherLevel <= level) {
+          end = sym.lineStart - 1;
+          // Trim trailing blank lines
+          while (end > start && lines[end].trim() === "") end--;
+          break;
+        }
+      }
+    }
+
+    const extracted = lines.slice(start, end + 1).join("\n");
+    return `<!-- 📍 ${filePath} L${start + 1}-${end + 1} -->\n${extracted}`;
+  }
 
   // Include preceding comments/decorators
   let start = symbol.lineStart;

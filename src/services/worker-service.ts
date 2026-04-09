@@ -10,7 +10,7 @@
  */
 
 import path from 'path';
-import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { existsSync } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
@@ -23,43 +23,11 @@ import { ChromaSync } from './sync/ChromaSync.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
-// Windows: avoid repeated spawn popups when startup fails (issue #921)
-const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
-
-function getWorkerSpawnLockPath(): string {
-  return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
-}
-
-function shouldSkipSpawnOnWindows(): boolean {
-  if (process.platform !== 'win32') return false;
-  const lockPath = getWorkerSpawnLockPath();
-  if (!existsSync(lockPath)) return false;
-  try {
-    const modifiedTimeMs = statSync(lockPath).mtimeMs;
-    return Date.now() - modifiedTimeMs < WINDOWS_SPAWN_COOLDOWN_MS;
-  } catch {
-    return false;
-  }
-}
-
-function markWorkerSpawnAttempted(): void {
-  if (process.platform !== 'win32') return;
-  try {
-    writeFileSync(getWorkerSpawnLockPath(), '', 'utf-8');
-  } catch {
-    // Best-effort lock file — failure to write shouldn't block startup
-  }
-}
-
-function clearWorkerSpawnAttempted(): void {
-  if (process.platform !== 'win32') return;
-  try {
-    const lockPath = getWorkerSpawnLockPath();
-    if (existsSync(lockPath)) unlinkSync(lockPath);
-  } catch {
-    // Best-effort cleanup
-  }
-}
+// Worker spawn / Windows-cooldown helpers are defined in ./worker-spawner.ts
+// so that lightweight consumers (e.g. the MCP server running under Node) can
+// ensure the worker daemon is up without importing this entire module — which
+// transitively pulls in the SQLite database layer via ChromaSync/DatabaseManager.
+import { ensureWorkerStarted as ensureWorkerStartedShared } from './worker-spawner.js';
 
 // Re-export for backward compatibility — canonical implementation in shared/plugin-state.ts
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -80,7 +48,6 @@ import {
   cleanStalePidFile,
   isProcessAlive,
   spawnDaemon,
-  isPidFileRecent,
   touchPidFile
 } from './infrastructure/ProcessManager.js';
 import {
@@ -88,8 +55,7 @@ import {
   waitForHealth,
   waitForReadiness,
   waitForPortFree,
-  httpShutdown,
-  checkVersionMatch
+  httpShutdown
 } from './infrastructure/HealthMonitor.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 
@@ -118,6 +84,8 @@ import { SearchManager } from './worker/SearchManager.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
+import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './transcripts/config.js';
+import { TranscriptWatcher } from './transcripts/watcher.js';
 
 // HTTP route handlers
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
@@ -127,13 +95,15 @@ import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
+
+// Knowledge agent services
+import { CorpusStore } from './worker/knowledge/CorpusStore.js';
+import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
+import { KnowledgeAgent } from './worker/knowledge/KnowledgeAgent.js';
 
 // Process management for zombie cleanup (Issue #737)
 import { startOrphanReaper, reapOrphanedProcesses, getProcessBySession, ensureProcessExit } from './worker/ProcessRegistry.js';
-
-// Transcript watcher for external CLI session monitoring
-import { TranscriptWatcher } from './transcripts/watcher.js';
-import { loadTranscriptWatchConfig, expandHomePath, DEFAULT_CONFIG_PATH as TRANSCRIPT_CONFIG_PATH } from './transcripts/config.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -179,12 +149,16 @@ export class WorkerService {
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
+  private corpusStore: CorpusStore;
 
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
 
   // Chroma MCP manager (lazy - connects on first use)
   private chromaMcpManager: ChromaMcpManager | null = null;
+
+  // Transcript watcher for Codex and other transcript-based clients
+  private transcriptWatcher: TranscriptWatcher | null = null;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -195,9 +169,6 @@ export class WorkerService {
 
   // Stale session reaper interval (Issue #1168)
   private staleSessionReaperInterval: ReturnType<typeof setInterval> | null = null;
-
-  // Transcript watcher for external CLI sessions (e.g. Codex, Gemini)
-  private transcriptWatcher: TranscriptWatcher | null = null;
 
   // AI interaction tracking for health endpoint
   private lastAiInteraction: {
@@ -224,6 +195,7 @@ export class WorkerService {
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
+    this.corpusStore = new CorpusStore();
 
     // Set callback for when sessions are deleted
     this.sessionManager.setOnSessionDeleted(() => {
@@ -424,6 +396,22 @@ export class WorkerService {
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
+      // Register corpus routes (knowledge agents) — needs SearchOrchestrator from search module
+      const { SearchOrchestrator } = await import('./worker/search/SearchOrchestrator.js');
+      const corpusSearchOrchestrator = new SearchOrchestrator(
+        this.dbManager.getSessionSearch(),
+        this.dbManager.getSessionStore(),
+        this.dbManager.getChromaSync()
+      );
+      const corpusBuilder = new CorpusBuilder(
+        this.dbManager.getSessionStore(),
+        corpusSearchOrchestrator,
+        this.corpusStore
+      );
+      const knowledgeAgent = new KnowledgeAgent(this.corpusStore);
+      this.server.registerRoutes(new CorpusRoutes(this.corpusStore, corpusBuilder, knowledgeAgent));
+      logger.info('WORKER', 'CorpusRoutes registered');
+
       // DB and search are ready — mark initialization complete so hooks can proceed.
       // MCP connection is tracked separately via mcpReady and is NOT required for
       // the worker to serve context/search requests.
@@ -431,21 +419,7 @@ export class WorkerService {
       this.resolveInitialization();
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
 
-      // Auto-start transcript watchers if configured
-      if (existsSync(TRANSCRIPT_CONFIG_PATH)) {
-        try {
-          const transcriptConfig = loadTranscriptWatchConfig(TRANSCRIPT_CONFIG_PATH);
-          if (transcriptConfig.watches.length > 0) {
-            const transcriptStatePath = expandHomePath(transcriptConfig.stateFile ?? '~/.claude-mem/transcript-watch-state.json');
-            this.transcriptWatcher = new TranscriptWatcher(transcriptConfig, transcriptStatePath);
-            await this.transcriptWatcher.start();
-            logger.info('SYSTEM', `Transcript watcher started with ${transcriptConfig.watches.length} watch target(s)`);
-          }
-        } catch (transcriptError) {
-          logger.warn('SYSTEM', 'Failed to start transcript watcher (non-fatal)', {}, transcriptError as Error);
-          // Non-fatal — worker continues without transcript watching
-        }
-      }
+      await this.startTranscriptWatcher(settings);
 
       // Auto-backfill Chroma for all projects if out of sync with SQLite (fire-and-forget)
       if (this.chromaMcpManager) {
@@ -456,8 +430,13 @@ export class WorkerService {
         });
       }
 
-      // Connect to MCP server
+      // Mark MCP as externally ready once the bundled stdio server binary exists.
+      // Codex/Claude Desktop connect to this binary directly; the loopback client
+      // below is only a best-effort self-check and should not mark health false.
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
+      this.mcpReady = existsSync(mcpServerPath);
+
+      // Best-effort loopback MCP self-check
       getSupervisor().assertCanSpawn('mcp server');
       const transport = new StdioClientTransport({
         command: 'node',
@@ -479,7 +458,7 @@ export class WorkerService {
         await Promise.race([mcpConnectionPromise, timeoutPromise]);
       } catch (connectionError) {
         clearTimeout(timeoutId!);
-        logger.warn('WORKER', 'MCP server connection failed, cleaning up subprocess', {
+        logger.warn('WORKER', 'MCP loopback self-check failed, cleaning up subprocess', {
           error: connectionError instanceof Error ? connectionError.message : String(connectionError)
         });
         try {
@@ -487,7 +466,10 @@ export class WorkerService {
         } catch {
           // Best effort: the supervisor handles later process cleanup for survivors.
         }
-        throw connectionError;
+        logger.info('WORKER', 'Bundled MCP server remains available for external stdio clients', {
+          path: mcpServerPath
+        });
+        return;
       }
       clearTimeout(timeoutId!);
 
@@ -502,8 +484,7 @@ export class WorkerService {
           getSupervisor().unregisterProcess('mcp-server');
         });
       }
-      this.mcpReady = true;
-      logger.success('WORKER', 'MCP server connected');
+      logger.success('WORKER', 'MCP loopback self-check connected');
 
       // Start orphan reaper to clean up zombie processes (Issue #737)
       this.stopOrphanReaper = startOrphanReaper(() => {
@@ -542,6 +523,48 @@ export class WorkerService {
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
       throw error;
+    }
+  }
+
+  /**
+   * Start transcript watcher for Codex and other transcript-based clients.
+   * This is intentionally non-fatal so Claude hooks remain usable even if
+   * transcript ingestion is misconfigured.
+   */
+  private async startTranscriptWatcher(settings: ReturnType<typeof SettingsDefaultsManager.loadFromFile>): Promise<void> {
+    const transcriptsEnabled = settings.CLAUDE_MEM_TRANSCRIPTS_ENABLED !== 'false';
+    if (!transcriptsEnabled) {
+      logger.info('TRANSCRIPT', 'Transcript watcher disabled via CLAUDE_MEM_TRANSCRIPTS_ENABLED=false');
+      return;
+    }
+
+    const configPath = settings.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH || DEFAULT_CONFIG_PATH;
+    const resolvedConfigPath = expandHomePath(configPath);
+
+    try {
+      if (!existsSync(resolvedConfigPath)) {
+        writeSampleConfig(configPath);
+        logger.info('TRANSCRIPT', 'Created default transcript watch config', {
+          configPath: resolvedConfigPath
+        });
+      }
+
+      const transcriptConfig = loadTranscriptWatchConfig(configPath);
+      const statePath = expandHomePath(transcriptConfig.stateFile ?? DEFAULT_STATE_PATH);
+
+      this.transcriptWatcher = new TranscriptWatcher(transcriptConfig, statePath);
+      await this.transcriptWatcher.start();
+      logger.info('TRANSCRIPT', 'Transcript watcher started', {
+        configPath: resolvedConfigPath,
+        statePath,
+        watches: transcriptConfig.watches.length
+      });
+    } catch (error) {
+      this.transcriptWatcher?.stop();
+      this.transcriptWatcher = null;
+      logger.error('TRANSCRIPT', 'Failed to start transcript watcher (continuing without Codex ingestion)', {
+        configPath: resolvedConfigPath
+      }, error as Error);
     }
   }
 
@@ -936,6 +959,12 @@ export class WorkerService {
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
+    if (this.transcriptWatcher) {
+      this.transcriptWatcher.stop();
+      this.transcriptWatcher = null;
+      logger.info('TRANSCRIPT', 'Transcript watcher stopped');
+    }
+
     // Stop orphan reaper before shutdown (Issue #737)
     if (this.stopOrphanReaper) {
       this.stopOrphanReaper();
@@ -946,13 +975,6 @@ export class WorkerService {
     if (this.staleSessionReaperInterval) {
       clearInterval(this.staleSessionReaperInterval);
       this.staleSessionReaperInterval = null;
-    }
-
-    // Stop transcript watcher
-    if (this.transcriptWatcher) {
-      this.transcriptWatcher.stop();
-      this.transcriptWatcher = null;
-      logger.info('SYSTEM', 'Transcript watcher stopped');
     }
 
     await performGracefulShutdown({
@@ -992,115 +1014,22 @@ export class WorkerService {
 
 /**
  * Ensures the worker is started and healthy.
- * This function can be called by both 'start' and 'hook' commands.
+ *
+ * Thin wrapper around the canonical implementation in ./worker-spawner.ts.
+ *
+ * `__filename` is forwarded as the worker script path because, in the CJS
+ * bundle that ships to users, `__filename` always resolves to the compiled
+ * `worker-service.cjs` itself — which is exactly the script the spawner
+ * needs to relaunch as a detached daemon. The MCP server (a separate Node
+ * bundle) cannot rely on its own `__filename` because that would point at
+ * `mcp-server.cjs`, so it computes the worker path explicitly via
+ * `dirname(__filename) + 'worker-service.cjs'` instead.
  *
  * @param port - The TCP port (used for port-in-use checks and daemon spawn)
  * @returns true if worker is healthy (existing or newly started), false on failure
  */
-async function ensureWorkerStarted(port: number): Promise<boolean> {
-  // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
-  const pidFileStatus = cleanStalePidFile();
-  if (pidFileStatus === 'alive') {
-    logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
-    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
-    if (healthy) {
-      logger.info('SYSTEM', 'Worker became healthy while waiting on live PID');
-      return true;
-    }
-    logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout');
-    return false;
-  }
-
-  // Check if worker is already running and healthy
-  if (await waitForHealth(port, 1000)) {
-    const versionCheck = await checkVersionMatch(port);
-    if (!versionCheck.matches) {
-      // Guard: If PID file was written recently, another session is likely already
-      // restarting the worker. Poll health instead of starting a concurrent restart.
-      // This prevents the "100 sessions all restart simultaneously" storm (#1145).
-      const RESTART_COORDINATION_THRESHOLD_MS = 15000;
-      if (isPidFileRecent(RESTART_COORDINATION_THRESHOLD_MS)) {
-        logger.info('SYSTEM', 'Version mismatch detected but PID file is recent — another restart likely in progress, polling health', {
-          pluginVersion: versionCheck.pluginVersion,
-          workerVersion: versionCheck.workerVersion
-        });
-        const healthy = await waitForHealth(port, RESTART_COORDINATION_THRESHOLD_MS);
-        if (healthy) {
-          logger.info('SYSTEM', 'Worker became healthy after waiting for concurrent restart');
-          return true;
-        }
-        logger.warn('SYSTEM', 'Worker did not become healthy after waiting — proceeding with own restart');
-      }
-
-      logger.info('SYSTEM', 'Worker version mismatch detected - auto-restarting', {
-        pluginVersion: versionCheck.pluginVersion,
-        workerVersion: versionCheck.workerVersion
-      });
-
-      await httpShutdown(port);
-      const freed = await waitForPortFree(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
-      if (!freed) {
-        logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port });
-        return false;
-      }
-      removePidFile();
-    } else {
-      logger.info('SYSTEM', 'Worker already running and healthy');
-      return true;
-    }
-  }
-
-  // Check if port is in use by something else
-  const portInUse = await isPortInUse(port);
-  if (portInUse) {
-    logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
-    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
-    if (healthy) {
-      logger.info('SYSTEM', 'Worker is now healthy');
-      return true;
-    }
-    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-    return false;
-  }
-
-  // Windows: skip spawn if a recent attempt already failed (prevents repeated bun.exe popups, issue #921)
-  if (shouldSkipSpawnOnWindows()) {
-    logger.warn('SYSTEM', 'Worker unavailable on Windows — skipping spawn (recent attempt failed within cooldown)');
-    return false;
-  }
-
-  // Spawn new worker daemon
-  logger.info('SYSTEM', 'Starting worker daemon');
-  markWorkerSpawnAttempted();
-  const pid = spawnDaemon(__filename, port);
-  if (pid === undefined) {
-    logger.error('SYSTEM', 'Failed to spawn worker daemon');
-    return false;
-  }
-
-  // PID file is written by the worker itself after listen() succeeds
-  // This is race-free and works correctly on Windows where cmd.exe PID is useless
-
-  const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
-  if (!healthy) {
-    removePidFile();
-    logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
-    return false;
-  }
-
-  // Health passed (HTTP listening). Now wait for DB + search initialization
-  // so hooks that run immediately after can actually use the worker.
-  const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
-  if (!ready) {
-    logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
-  }
-
-  clearWorkerSpawnAttempted();
-  // Touch PID file to signal other sessions that a restart just completed.
-  // Other sessions checking isPidFileRecent() will see this and skip their own restart.
-  touchPidFile();
-  logger.info('SYSTEM', 'Worker started successfully');
-  return true;
+export async function ensureWorkerStarted(port: number): Promise<boolean> {
+  return ensureWorkerStartedShared(port, __filename);
 }
 
 // ============================================================================
@@ -1307,8 +1236,10 @@ async function main() {
 }
 
 // Check if running as main module in both ESM and CommonJS
+// The CLAUDE_MEM_MANAGED check handles Bun on Windows where require.main !== module
+// in CJS mode despite being the entry point (see #1450)
 const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefined'
-  ? require.main === module || !module.parent
+  ? require.main === module || !module.parent || process.env.CLAUDE_MEM_MANAGED === 'true'
   : import.meta.url === `file://${process.argv[1]}`
     || process.argv[1]?.endsWith('worker-service')
     || process.argv[1]?.endsWith('worker-service.cjs')

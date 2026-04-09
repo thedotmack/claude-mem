@@ -117,15 +117,15 @@ export class TranscriptWatcher {
     const files = this.resolveWatchFiles(resolvedPath);
 
     for (const filePath of files) {
-      await this.addTailer(filePath, watch, schema);
+      await this.addTailer(filePath, watch, schema, true);
     }
 
     const rescanIntervalMs = watch.rescanIntervalMs ?? 5000;
-    const timer = setInterval(async () => {
+      const timer = setInterval(async () => {
       const newFiles = this.resolveWatchFiles(resolvedPath);
       for (const filePath of newFiles) {
         if (!this.tailers.has(filePath)) {
-          await this.addTailer(filePath, watch, schema);
+          await this.addTailer(filePath, watch, schema, false);
         }
       }
     }, rescanIntervalMs);
@@ -164,13 +164,20 @@ export class TranscriptWatcher {
     return /[*?[\]{}()]/.test(inputPath);
   }
 
-  private async addTailer(filePath: string, watch: WatchTarget, schema: TranscriptSchema): Promise<void> {
+  private async addTailer(
+    filePath: string,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    initialDiscovery: boolean
+  ): Promise<void> {
     if (this.tailers.has(filePath)) return;
 
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
 
     let offset = this.state.offsets[filePath] ?? 0;
-    if (offset === 0 && watch.startAtEnd) {
+    // `startAtEnd` is useful on worker startup to avoid replaying the full backlog,
+    // but new transcript files must be read from byte 0 or we lose session_meta/user_message.
+    if (offset === 0 && watch.startAtEnd && initialDiscovery) {
       try {
         offset = statSync(filePath).size;
       } catch {

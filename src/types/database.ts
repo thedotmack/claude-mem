@@ -103,6 +103,7 @@ export interface UserPromptRecord {
   prompt_number: number;
   prompt_text: string;
   project?: string;  // From JOIN with sdk_sessions
+  platform_source?: string;
   created_at: string;
   created_at_epoch: number;
 }
@@ -115,6 +116,7 @@ export interface LatestPromptResult {
   content_session_id: string;
   memory_session_id: string;
   project: string;
+  platform_source: string;
   prompt_number: number;
   prompt_text: string;
   created_at_epoch: number;
