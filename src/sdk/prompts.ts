@@ -199,7 +199,7 @@ ${mode.prompts.summary_footer}`;
  * Called when: promptNumber > 1 (see SDKAgent.ts line 150)
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
  */
-export function buildContinuationPrompt(userPrompt: string, promptNumber: number, contentSessionId: string, mode: ModeConfig): SplitPrompt {
+export function buildContinuationPrompt(userPrompt: string, _promptNumber: number, _contentSessionId: string, mode: ModeConfig): SplitPrompt {
   const staticPrefix = `${mode.prompts.continuation_greeting}
 
 ${mode.prompts.system_identity}
