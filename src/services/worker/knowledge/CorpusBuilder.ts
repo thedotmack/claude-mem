@@ -18,11 +18,11 @@ import type { CorpusFile, CorpusFilter, CorpusObservation, CorpusStats } from '.
  * Returns the parsed array or an empty array on failure.
  */
 function safeParseJsonArray(value: unknown): string[] {
-  if (Array.isArray(value)) return value;
+  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string');
   if (typeof value !== 'string') return [];
   try {
     const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
   } catch {
     return [];
   }
