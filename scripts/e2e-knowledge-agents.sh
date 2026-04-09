@@ -63,17 +63,18 @@ assert_json_field_numeric_gt() {
 }
 
 curl_get() {
-  curl -s -w '\n%{http_code}' "$WORKER_URL$1" 2>/dev/null
+  curl -sS --connect-timeout 5 --max-time 30 -w '\n%{http_code}' "$WORKER_URL$1" 2>/dev/null || printf '\n000'
 }
 
 curl_post() {
-  curl -s -w '\n%{http_code}' -X POST "$WORKER_URL$1" \
+  local path="$1" body="$2" max_time="${3:-30}"
+  curl -sS --connect-timeout 5 --max-time "$max_time" -w '\n%{http_code}' -X POST "$WORKER_URL$path" \
     -H 'Content-Type: application/json' \
-    -d "$2" 2>/dev/null
+    -d "$body" 2>/dev/null || printf '\n000'
 }
 
 curl_delete() {
-  curl -s -w '\n%{http_code}' -X DELETE "$WORKER_URL$1" 2>/dev/null
+  curl -sS --connect-timeout 5 --max-time 30 -w '\n%{http_code}' -X DELETE "$WORKER_URL$1" 2>/dev/null || printf '\n000'
 }
 
 extract_body_and_status() {
@@ -163,8 +164,7 @@ test_prime_corpus() {
   log "=== Test: Prime Corpus ==="
   log "  (This may take 30-120 seconds — Agent SDK session is being created...)"
   local response
-  response=$(curl -s -w '\n%{http_code}' -X POST "$WORKER_URL/api/corpus/$CORPUS_NAME/prime" \
-    -H 'Content-Type: application/json' -d '{}' --max-time 300 2>/dev/null)
+  response=$(curl_post "/api/corpus/$CORPUS_NAME/prime" '{}' 300)
   extract_body_and_status "$response"
   assert_http_status "Prime corpus" "200" "$RESPONSE_STATUS"
   assert_json_field_not_empty "Prime returns session_id" "$RESPONSE_BODY" ".session_id"
@@ -175,10 +175,7 @@ test_prime_corpus() {
 test_query_corpus() {
   log "=== Test: Query Corpus ==="
   local response
-  response=$(curl -s -w '\n%{http_code}' -X POST "$WORKER_URL/api/corpus/$CORPUS_NAME/query" \
-    -H 'Content-Type: application/json' \
-    -d '{"question": "What are the main topics and themes in this knowledge base? Give a brief summary."}' \
-    --max-time 300 2>/dev/null)
+  response=$(curl_post "/api/corpus/$CORPUS_NAME/query" '{"question": "What are the main topics and themes in this knowledge base? Give a brief summary."}' 300)
   extract_body_and_status "$response"
   assert_http_status "Query corpus" "200" "$RESPONSE_STATUS"
   assert_json_field_not_empty "Query returns answer" "$RESPONSE_BODY" ".answer"
@@ -199,9 +196,7 @@ test_query_without_prime() {
   # Build a second corpus but don't prime it
   curl_post "/api/corpus" "{\"name\": \"e2e-unprimed-test\", \"limit\": 5}" > /dev/null 2>&1
   local response
-  response=$(curl -s -w '\n%{http_code}' -X POST "$WORKER_URL/api/corpus/e2e-unprimed-test/query" \
-    -H 'Content-Type: application/json' \
-    -d '{"question": "test"}' --max-time 30 2>/dev/null)
+  response=$(curl_post "/api/corpus/e2e-unprimed-test/query" '{"question": "test"}' 30)
   extract_body_and_status "$response"
   # Should fail because corpus isn't primed
   if [[ "$RESPONSE_STATUS" != "200" ]] || echo "$RESPONSE_BODY" | jq -r '.error' 2>/dev/null | grep -qi "prime\|session"; then
@@ -224,8 +219,7 @@ test_reprime_corpus() {
   old_session_id=$(echo "$RESPONSE_BODY" | jq -r '.session_id' 2>/dev/null)
 
   local response
-  response=$(curl -s -w '\n%{http_code}' -X POST "$WORKER_URL/api/corpus/$CORPUS_NAME/reprime" \
-    -H 'Content-Type: application/json' -d '{}' --max-time 300 2>/dev/null)
+  response=$(curl_post "/api/corpus/$CORPUS_NAME/reprime" '{}' 300)
   extract_body_and_status "$response"
   assert_http_status "Reprime corpus" "200" "$RESPONSE_STATUS"
   assert_json_field_not_empty "Reprime returns session_id" "$RESPONSE_BODY" ".session_id"
@@ -242,10 +236,7 @@ test_reprime_corpus() {
 test_query_after_reprime() {
   log "=== Test: Query After Reprime ==="
   local response
-  response=$(curl -s -w '\n%{http_code}' -X POST "$WORKER_URL/api/corpus/$CORPUS_NAME/query" \
-    -H 'Content-Type: application/json' \
-    -d '{"question": "List the types of observations in this knowledge base."}' \
-    --max-time 300 2>/dev/null)
+  response=$(curl_post "/api/corpus/$CORPUS_NAME/query" '{"question": "List the types of observations in this knowledge base."}' 300)
   extract_body_and_status "$response"
   assert_http_status "Query after reprime" "200" "$RESPONSE_STATUS"
   assert_json_field_not_empty "Answer after reprime" "$RESPONSE_BODY" ".answer"
@@ -255,8 +246,7 @@ test_query_after_reprime() {
 test_rebuild_corpus() {
   log "=== Test: Rebuild Corpus ==="
   local response
-  response=$(curl -s -w '\n%{http_code}' -X POST "$WORKER_URL/api/corpus/$CORPUS_NAME/rebuild" \
-    -H 'Content-Type: application/json' -d '{}' --max-time 60 2>/dev/null)
+  response=$(curl_post "/api/corpus/$CORPUS_NAME/rebuild" '{}' 60)
   extract_body_and_status "$response"
   assert_http_status "Rebuild corpus" "200" "$RESPONSE_STATUS"
   assert_json_field "Rebuild returns name" "$RESPONSE_BODY" ".name" "$CORPUS_NAME"

@@ -35,7 +35,7 @@ Once primed, ask any question and get a grounded answer:
 query_corpus name="hooks-expertise" question="What are the 5 lifecycle hooks and when does each fire?"
 ```
 
-The agent answers from its corpus — no hallucination, no guessing, just your actual project history. Each follow-up question builds on the prior conversation:
+The agent answers grounded in its corpus — responses are drawn from your actual project history, reducing hallucination and guessing. Each follow-up question builds on the prior conversation:
 
 ```
 query_corpus name="hooks-expertise" question="Which hook handles context injection?"
@@ -141,9 +141,11 @@ Use these parameters when building a corpus to control which observations are in
             (mcp-server.ts)            (worker on :37777)
                   |                          |
    build_corpus ──┤                          |
-   list_corpora ──┤── callWorkerAPIPost() ──>|
-   prime_corpus ──┤                          |
-   query_corpus ──┘                          |
+   list_corpora ──┤                          |
+   prime_corpus ──┤── callWorkerAPIPost() ──>|
+   query_corpus ──┤                          |
+rebuild_corpus ──┤                          |
+reprime_corpus ──┘                          |
                                              v
                                        CorpusRoutes
                                        (8 endpoints)

@@ -485,6 +485,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       const { name, ...rest } = args;
+      if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
       return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/prime`, rest);
     }
   },
@@ -502,6 +503,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       const { name, ...rest } = args;
+      if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
       return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/query`, rest);
     }
   },
@@ -518,6 +520,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       const { name, ...rest } = args;
+      if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
       return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/rebuild`, rest);
     }
   },
@@ -534,6 +537,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       const { name, ...rest } = args;
+      if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
       return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/reprime`, rest);
     }
   }
