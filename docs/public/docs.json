@@ -39,6 +39,7 @@
           "usage/openrouter-provider",
           "usage/gemini-provider",
           "usage/search-tools",
+          "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",
           "usage/export-import",
@@ -58,11 +59,19 @@
         ]
       },
       {
+        "group": "Gemini CLI Integration",
+        "icon": "terminal",
+        "pages": [
+          "gemini-cli/setup"
+        ]
+      },
+      {
         "group": "Best Practices",
         "icon": "lightbulb",
         "pages": [
           "context-engineering",
           "progressive-disclosure",
+          "file-read-gate",
           "smart-explore-benchmark"
         ]
       },

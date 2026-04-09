@@ -199,7 +199,17 @@ export function ContextSettingsModal({
   }, [settings]);
 
   // Get context preview based on current form state
-  const { preview, isLoading, error, projects, selectedProject, setSelectedProject } = useContextPreview(formState);
+  const {
+    preview,
+    isLoading,
+    error,
+    projects,
+    sources,
+    selectedSource,
+    setSelectedSource,
+    selectedProject,
+    setSelectedProject
+  } = useContextPreview(formState);
 
   const updateSetting = useCallback((key: keyof Settings, value: string) => {
     const newState = { ...formState, [key]: value };
@@ -237,10 +247,23 @@ export function ContextSettingsModal({
           <h2>Settings</h2>
           <div className="header-controls">
             <label className="preview-selector">
-              Preview for:
+              Source:
+              <select
+                value={selectedSource || ''}
+                onChange={(e) => setSelectedSource(e.target.value)}
+                disabled={sources.length === 0}
+              >
+                {sources.map(source => (
+                  <option key={source} value={source}>{source}</option>
+                ))}
+              </select>
+            </label>
+            <label className="preview-selector">
+              Project:
               <select
                 value={selectedProject || ''}
                 onChange={(e) => setSelectedProject(e.target.value)}
+                disabled={projects.length === 0}
               >
                 {projects.map(project => (
                   <option key={project} value={project}>{project}</option>

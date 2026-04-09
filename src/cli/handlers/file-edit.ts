@@ -9,6 +9,7 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 export const fileEditHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -20,6 +21,7 @@ export const fileEditHandler: EventHandler = {
     }
 
     const { sessionId, cwd, filePath, edits } = input;
+    const platformSource = normalizePlatformSource(input.platform);
 
     if (!filePath) {
       throw new Error('fileEditHandler requires filePath');
@@ -42,6 +44,7 @@ export const fileEditHandler: EventHandler = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contentSessionId: sessionId,
+          platformSource,
           tool_name: 'write_file',
           tool_input: { filePath, edits },
           tool_response: { success: true },

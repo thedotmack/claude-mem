@@ -15,6 +15,7 @@ export interface ContextInput {
   projects?: string[];
   /** When true, return ALL observations with no limit */
   full?: boolean;
+  platform_source?: string;
   [key: string]: any;
 }
 
@@ -49,6 +50,7 @@ export interface ContextConfig {
 export interface Observation {
   id: number;
   memory_session_id: string;
+  platform_source?: string;
   type: string;
   title: string | null;
   subtitle: string | null;
@@ -70,6 +72,7 @@ export interface Observation {
 export interface SessionSummary {
   id: number;
   memory_session_id: string;
+  platform_source?: string;
   request: string | null;
   investigated: string | null;
   learned: string | null;

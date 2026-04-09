@@ -12,6 +12,7 @@
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 export const sessionCompleteHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -23,6 +24,7 @@ export const sessionCompleteHandler: EventHandler = {
     }
 
     const { sessionId } = input;
+    const platformSource = normalizePlatformSource(input.platform);
 
     if (!sessionId) {
       logger.warn('HOOK', 'session-complete: Missing sessionId, skipping');
@@ -40,6 +42,7 @@ export const sessionCompleteHandler: EventHandler = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contentSessionId: sessionId,
+          platformSource,
           platform: input.platform
         })
       });

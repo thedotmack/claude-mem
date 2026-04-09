@@ -1,0 +1,192 @@
+---
+title: "Gemini CLI Setup"
+description: "Add persistent memory to Gemini CLI with claude-mem"
+---
+
+# Gemini CLI Setup
+
+> **Give Gemini CLI persistent memory across sessions.**
+
+Gemini CLI starts every session from scratch. Claude-mem changes that by capturing observations, decisions, and patterns — then injecting relevant context into each new session.
+
+<Info>
+**How it works:** Claude-mem installs lifecycle hooks into Gemini CLI that capture tool usage, agent responses, and session events. A local worker service extracts semantic observations and injects relevant history at session start.
+</Info>
+
+## Prerequisites
+
+- [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and configured
+- [Node.js](https://nodejs.org/) 18+
+- The `~/.gemini` directory must exist (created by Gemini CLI on first run)
+
+## Installation
+
+### Step 1: Install claude-mem
+
+```bash
+npx claude-mem install
+```
+
+The installer will:
+1. Auto-detect Gemini CLI (checks for `~/.gemini` directory)
+2. Prompt you to select **Gemini CLI** from the IDE picker
+3. Install 8 lifecycle hooks into `~/.gemini/settings.json`
+4. Inject context configuration into `~/.gemini/GEMINI.md`
+5. Start the worker service
+
+### Step 2: Configure an AI provider
+
+Claude-mem needs an AI provider to extract observations from your sessions. Choose one:
+
+<Tabs>
+  <Tab title="Gemini API (Free)">
+    The simplest option — use Gemini's own API for observation extraction:
+
+    1. Get a free API key from [Google AI Studio](https://aistudio.google.com/apikey)
+    2. Add it to your settings:
+
+    ```bash
+    mkdir -p ~/.claude-mem
+    cat > ~/.claude-mem/settings.json << 'EOF'
+    {
+      "CLAUDE_MEM_PROVIDER": "gemini",
+      "CLAUDE_MEM_GEMINI_API_KEY": "YOUR_API_KEY"
+    }
+    EOF
+    ```
+
+    <Tip>
+    **Free tier:** 1,500 requests/day with `gemini-2.5-flash-lite`. Enable billing on Google Cloud for 4,000 RPM without charges.
+    </Tip>
+  </Tab>
+  <Tab title="Claude SDK">
+    If you have a Claude API key:
+
+    ```bash
+    mkdir -p ~/.claude-mem
+    cat > ~/.claude-mem/settings.json << 'EOF'
+    {
+      "CLAUDE_MEM_PROVIDER": "claude"
+    }
+    EOF
+    ```
+
+    Set your API key via environment variable:
+    ```bash
+    export ANTHROPIC_API_KEY="your-key"
+    ```
+  </Tab>
+  <Tab title="OpenRouter">
+    For access to 100+ models:
+
+    ```bash
+    mkdir -p ~/.claude-mem
+    cat > ~/.claude-mem/settings.json << 'EOF'
+    {
+      "CLAUDE_MEM_PROVIDER": "openrouter",
+      "CLAUDE_MEM_OPENROUTER_API_KEY": "YOUR_KEY"
+    }
+    EOF
+    ```
+  </Tab>
+</Tabs>
+
+### Step 3: Verify installation
+
+```bash
+# Check worker is running
+npx claude-mem status
+
+# Check hooks are installed — look for claude-mem entries
+cat ~/.gemini/settings.json | grep claude-mem
+```
+
+Open http://localhost:37777 to see the memory viewer.
+
+### Step 4: Start using Gemini CLI
+
+Launch Gemini CLI normally. Claude-mem works in the background:
+
+```bash
+gemini
+```
+
+On session start, you'll see claude-mem context injected with your recent observations and project history.
+
+## What gets captured
+
+Claude-mem registers 8 of Gemini CLI's 11 lifecycle hooks:
+
+| Hook | Purpose |
+|------|---------|
+| **SessionStart** | Injects memory context into the session |
+| **SessionEnd** | Marks session complete, triggers summary |
+| **PreCompress** | Captures session summary before compression |
+| **Notification** | Records system events (permissions, etc.) |
+| **BeforeAgent** | Captures user prompts |
+| **AfterAgent** | Records full agent responses |
+| **BeforeTool** | Logs tool invocations before execution |
+| **AfterTool** | Captures tool results after execution |
+
+Three model-level hooks (BeforeModel, AfterModel, BeforeToolSelection) are intentionally skipped — they fire per-LLM-call and are too noisy for memory capture.
+
+## Troubleshooting
+
+### Hooks not firing
+
+1. Verify hooks exist in settings:
+   ```bash
+   cat ~/.gemini/settings.json
+   ```
+   You should see entries like `"SessionStart"`, `"AfterTool"`, etc. with claude-mem commands.
+
+2. Restart Gemini CLI after installation.
+
+3. Re-run the installer:
+   ```bash
+   npx claude-mem install
+   ```
+
+### Worker not running
+
+```bash
+# Check status
+npx claude-mem status
+
+# View logs
+npx claude-mem logs
+
+# Restart worker
+npx claude-mem restart
+```
+
+### No context appearing at session start
+
+1. Ensure the worker is running (check http://localhost:37777)
+2. You need at least one previous session with observations for context to appear
+3. Check your AI provider is configured in `~/.claude-mem/settings.json`
+
+### Raw escape codes in output
+
+If you see characters like `[31m` or `[0m` in the session context, your claude-mem version may need updating:
+
+```bash
+npx claude-mem install
+```
+
+This was fixed in v10.6.3+ — the Gemini CLI adapter now strips ANSI color codes automatically.
+
+## Uninstalling
+
+```bash
+npx claude-mem uninstall
+```
+
+This removes hooks from `~/.gemini/settings.json` and cleans up `~/.gemini/GEMINI.md`.
+
+## Next Steps
+
+- [Gemini Provider](/usage/gemini-provider) — Configure the Gemini AI provider for observation extraction
+- [Configuration](/configuration) — All settings options
+- [Search Tools](/usage/search-tools) — Search your memory from within sessions
+- [Troubleshooting](/troubleshooting) — Common issues and solutions

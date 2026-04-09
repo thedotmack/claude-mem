@@ -2,6 +2,7 @@ export interface Observation {
   id: number;
   memory_session_id: string;
   project: string;
+  platform_source: string;
   type: string;
   title: string | null;
   subtitle: string | null;
@@ -23,6 +24,7 @@ export interface Summary {
   id: number;
   session_id: string;
   project: string;
+  platform_source: string;
   request?: string;
   investigated?: string;
   learned?: string;
@@ -38,6 +40,7 @@ export interface UserPrompt {
   id: number;
   content_session_id: string;
   project: string;
+  platform_source: string;
   prompt_number: number;
   prompt_text: string;
   created_at_epoch: number;
@@ -58,6 +61,8 @@ export interface StreamEvent {
   summaries?: Summary[];
   prompts?: UserPrompt[];
   projects?: string[];
+  sources?: string[];
+  projectsBySource?: Record<string, string[]>;
   observation?: Observation;
   summary?: Summary;
   prompt?: UserPrompt;
@@ -69,6 +74,12 @@ export interface StreamEvent {
   mode?: string;
   instance?: string;
   timestamp?: number;
+}
+
+export interface ProjectCatalog {
+  projects: string[];
+  sources: string[];
+  projectsBySource: Record<string, string[]>;
 }
 
 export interface Settings {

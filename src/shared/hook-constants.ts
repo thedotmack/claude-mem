@@ -1,7 +1,7 @@
 export const HOOK_TIMEOUTS = {
   DEFAULT: 300000,            // Standard HTTP timeout (5 min for slow systems)
   HEALTH_CHECK: 3000,         // Worker health check (3s — healthy worker responds in <100ms)
-  POST_SPAWN_WAIT: 5000,      // Wait for daemon to start after spawn (starts in <1s on Linux)
+  POST_SPAWN_WAIT: 15000,     // Wait for daemon to start after spawn (starts in <1s on Linux, 6-8s on macOS with Chroma)
   READINESS_WAIT: 30000,      // Wait for DB + search init after spawn (typically <5s)
   PORT_IN_USE_WAIT: 3000,     // Wait when port occupied but health failing
   WORKER_STARTUP_WAIT: 1000,

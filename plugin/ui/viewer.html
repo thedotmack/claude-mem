@@ -355,6 +355,14 @@
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
     }
 
+    .header-main {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+
     .sidebar-header {
       padding: 14px 18px;
       border-bottom: 1px solid var(--color-border-primary);
@@ -547,6 +555,42 @@
       align-items: center;
       gap: 8px;
       font-size: 13px;
+    }
+
+    .source-tabs {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .source-tab {
+      background: transparent;
+      border: 1px solid var(--color-border-primary);
+      color: var(--color-text-secondary);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 12px;
+      line-height: 1;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      white-space: nowrap;
+    }
+
+    .source-tab:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-border-focus);
+      color: var(--color-text-primary);
+      transform: translateY(-1px);
+    }
+
+    .source-tab.active {
+      background: linear-gradient(135deg, var(--color-bg-button) 0%, var(--color-accent-primary) 100%);
+      border-color: var(--color-bg-button);
+      color: var(--color-text-button);
+      box-shadow: 0 2px 8px rgba(9, 105, 218, 0.18);
     }
 
     .settings-btn,
@@ -885,6 +929,49 @@
       text-transform: uppercase;
       font-size: 11px;
       letter-spacing: 0.5px;
+    }
+
+    .card-source {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-weight: 600;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border: 1px solid transparent;
+    }
+
+    .source-claude {
+      background: rgba(255, 138, 61, 0.12);
+      color: #c25a00;
+      border-color: rgba(255, 138, 61, 0.22);
+    }
+
+    .source-codex {
+      background: rgba(33, 150, 243, 0.12);
+      color: #0f5ba7;
+      border-color: rgba(33, 150, 243, 0.24);
+    }
+
+    .source-cursor {
+      background: rgba(124, 58, 237, 0.12);
+      color: #6d28d9;
+      border-color: rgba(124, 58, 237, 0.24);
+    }
+
+    [data-theme="dark"] .source-claude {
+      color: #ffb067;
+      border-color: rgba(255, 176, 103, 0.2);
+    }
+
+    [data-theme="dark"] .source-codex {
+      color: #8fc7ff;
+      border-color: rgba(143, 199, 255, 0.2);
+    }
+
+    [data-theme="dark"] .source-cursor {
+      color: #c4b5fd;
+      border-color: rgba(196, 181, 253, 0.2);
     }
 
     .card-title {
@@ -1561,12 +1648,21 @@
         padding: 14px 20px;
       }
 
+      .header-main {
+        gap: 12px;
+      }
+
       .status {
         gap: 6px;
       }
 
       .status select {
         max-width: 160px;
+      }
+
+      .source-tab {
+        padding: 6px 10px;
+        font-size: 11px;
       }
 
       /* Hide icon links (docs, github, twitter) on tablet */
@@ -1620,6 +1716,28 @@
       .header h1 {
         font-size: 15px;
         gap: 8px;
+      }
+
+      .header-main {
+        gap: 10px;
+      }
+
+      .source-tabs {
+        width: 100%;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        padding-bottom: 2px;
+        scrollbar-width: none;
+      }
+
+      .source-tabs::-webkit-scrollbar {
+        display: none;
+      }
+
+      .source-tab {
+        flex-shrink: 0;
+        padding: 5px 10px;
+        font-size: 11px;
       }
 
       .logomark {
@@ -1808,6 +1926,11 @@
       font-size: 12px;
       color: var(--color-text-secondary);
       white-space: nowrap;
+    }
+
+    .preview-selector select:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
     }
 
     .preview-selector select {

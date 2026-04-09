@@ -11,7 +11,13 @@ Claude-Mem seamlessly preserves context across sessions by automatically capturi
 
 ## Quick Start
 
-Start a new Claude Code session in the terminal and enter the following commands:
+Install with a single command:
+
+```bash
+npx claude-mem install
+```
+
+Or install from the plugin marketplace inside Claude Code:
 
 ```bash
 /plugin marketplace add thedotmack/claude-mem
@@ -27,6 +33,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - 🌐 **Multilingual Modes** - Supports 28 languages (Spanish, Chinese, French, Japanese, etc.)
 - 🎭 **Mode System** - Switch between workflows (Code, Email Investigation, Chill)
 - 🔍 **MCP Search Tools** - Query your project history with natural language
+- 🧠 **Knowledge Agents** - Build queryable "brains" from your observation history
 - 🌐 **Web Viewer UI** - Real-time memory stream visualization at http://localhost:37777
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
@@ -108,5 +115,8 @@ See [Architecture Overview](architecture/overview) for details.
   </Card>
   <Card title="Search Tools" icon="magnifying-glass" href="/usage/search-tools">
     Query your project history
+  </Card>
+  <Card title="Knowledge Agents" icon="brain" href="/usage/knowledge-agents">
+    Build queryable corpora from your history
   </Card>
 </CardGroup>

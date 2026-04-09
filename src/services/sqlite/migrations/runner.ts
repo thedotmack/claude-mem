@@ -6,6 +6,7 @@ import {
   TableNameRow,
   SchemaVersion
 } from '../../../types/database.js';
+import { DEFAULT_PLATFORM_SOURCE } from '../../../shared/platform-source.js';
 
 /**
  * MigrationRunner handles all database schema migrations
@@ -34,6 +35,8 @@ export class MigrationRunner {
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
+    this.createObservationFeedbackTable();
+    this.addSessionPlatformSourceColumn();
     this.addProvenanceColumns();
     this.addSummaryProvenanceColumns();
   }
@@ -63,6 +66,7 @@ export class MigrationRunner {
         content_session_id TEXT UNIQUE NOT NULL,
         memory_session_id TEXT UNIQUE,
         project TEXT NOT NULL,
+        platform_source TEXT NOT NULL DEFAULT 'claude',
         user_prompt TEXT,
         started_at TEXT NOT NULL,
         started_at_epoch INTEGER NOT NULL,
@@ -655,10 +659,9 @@ export class MigrationRunner {
     this.db.run('BEGIN TRANSACTION');
 
     try {
-      // ==========================================
+      // ===================================
       // 1. Recreate observations table
-      // ==========================================
-
+      // ===================================
       // Drop FTS triggers first (they reference the observations table)
       this.db.run('DROP TRIGGER IF EXISTS observations_ai');
       this.db.run('DROP TRIGGER IF EXISTS observations_ad');
@@ -731,10 +734,9 @@ export class MigrationRunner {
         `);
       }
 
-      // ==========================================
+      // ===================================
       // 2. Recreate session_summaries table
-      // ==========================================
-
+      // ===================================
       // Clean up leftover temp table from a previously-crashed run
       this.db.run('DROP TABLE IF EXISTS session_summaries_new');
 
@@ -867,11 +869,68 @@ export class MigrationRunner {
   }
 
   /**
-   * Add provenance columns to observations and sdk_sessions (migration 24)
+   * Create observation_feedback table for tracking observation usage signals.
+   * Foundation for tier routing optimization and future Thompson Sampling.
+   * Schema version 24.
+   */
+  private createObservationFeedbackTable(): void {
+    const applied = this.db.query('SELECT 1 FROM schema_versions WHERE version = 24').get();
+    if (applied) return;
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS observation_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        observation_id INTEGER NOT NULL,
+        signal_type TEXT NOT NULL,
+        session_db_id INTEGER,
+        created_at_epoch INTEGER NOT NULL,
+        metadata TEXT,
+        FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+      )
+    `);
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_feedback_observation ON observation_feedback(observation_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_feedback_signal ON observation_feedback(signal_type)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
+    logger.debug('DB', 'Created observation_feedback table for usage tracking');
+  }
+
+  /**
+   * Add platform_source column to sdk_sessions for Claude/Codex isolation (migration 25)
+   */
+  private addSessionPlatformSourceColumn(): void {
+    const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'platform_source');
+    const indexInfo = this.db.query('PRAGMA index_list(sdk_sessions)').all() as IndexInfo[];
+    const hasIndex = indexInfo.some(index => index.name === 'idx_sdk_sessions_platform_source');
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(25) as SchemaVersion | undefined;
+
+    if (applied && hasColumn && hasIndex) return;
+
+    if (!hasColumn) {
+      this.db.run(`ALTER TABLE sdk_sessions ADD COLUMN platform_source TEXT NOT NULL DEFAULT '${DEFAULT_PLATFORM_SOURCE}'`);
+      logger.debug('DB', 'Added platform_source column to sdk_sessions table');
+    }
+
+    this.db.run(`
+      UPDATE sdk_sessions
+      SET platform_source = '${DEFAULT_PLATFORM_SOURCE}'
+      WHERE platform_source IS NULL OR platform_source = ''
+    `);
+
+    if (!hasIndex) {
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
+  }
+
+  /**
+   * Add provenance columns to observations and sdk_sessions (migration 27)
    * Tracks which machine/platform/instance created each record for multi-machine networking.
    */
   private addProvenanceColumns(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(27) as SchemaVersion | undefined;
     if (applied) return;
 
     // Check each table independently — after corruption/repair, one table may
@@ -902,15 +961,15 @@ export class MigrationRunner {
     this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_node ON observations(node)');
     logger.debug('DB', 'Added provenance columns (node, platform, instance) to observations, sdk_sessions, and user_prompts');
 
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(27, new Date().toISOString());
   }
 
   /**
-   * Add provenance columns to session_summaries (migration 25)
+   * Add provenance columns to session_summaries (migration 28)
    * Tracks which machine/platform/instance created each summary for multi-machine networking.
    */
   private addSummaryProvenanceColumns(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(25) as SchemaVersion | undefined;
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(28) as SchemaVersion | undefined;
     if (applied) return;
 
     const summaryColumns = new Set(
@@ -925,6 +984,6 @@ export class MigrationRunner {
 
     logger.debug('DB', 'Added provenance columns (node, platform, instance) to session_summaries');
 
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
   }
 }

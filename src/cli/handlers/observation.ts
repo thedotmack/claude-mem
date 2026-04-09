@@ -11,6 +11,7 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { isProjectExcluded } from '../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 export const observationHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -22,6 +23,7 @@ export const observationHandler: EventHandler = {
     }
 
     const { sessionId, cwd, toolName, toolInput, toolResponse } = input;
+    const platformSource = normalizePlatformSource(input.platform);
 
     if (!toolName) {
       // No tool name provided - skip observation gracefully
@@ -51,6 +53,7 @@ export const observationHandler: EventHandler = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contentSessionId: sessionId,
+          platformSource,
           tool_name: toolName,
           tool_input: toolInput,
           tool_response: toolResponse,

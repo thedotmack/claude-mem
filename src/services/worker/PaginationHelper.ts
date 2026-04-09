@@ -71,14 +71,57 @@ export class PaginationHelper {
   /**
    * Get paginated observations
    */
-  getObservations(offset: number, limit: number, project?: string): PaginatedResult<Observation> {
-    const result = this.paginate<Observation>(
-      'observations',
-      'id, memory_session_id, project, type, title, subtitle, narrative, text, facts, concepts, files_read, files_modified, prompt_number, created_at, created_at_epoch, node, platform, instance',
+  getObservations(offset: number, limit: number, project?: string, platformSource?: string): PaginatedResult<Observation> {
+    const db = this.dbManager.getSessionStore().db;
+    let query = `
+      SELECT
+        o.id,
+        o.memory_session_id,
+        o.project,
+        COALESCE(s.platform_source, 'claude') as platform_source,
+        o.type,
+        o.title,
+        o.subtitle,
+        o.narrative,
+        o.text,
+        o.facts,
+        o.concepts,
+        o.files_read,
+        o.files_modified,
+        o.prompt_number,
+        o.created_at,
+        o.created_at_epoch,
+        o.node,
+        o.platform,
+        o.instance
+      FROM observations o
+      LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+    `;
+    const params: unknown[] = [];
+    const conditions: string[] = [];
+
+    if (project) {
+      conditions.push('o.project = ?');
+      params.push(project);
+    }
+    if (platformSource) {
+      conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
+      params.push(platformSource);
+    }
+    if (conditions.length > 0) {
+      query += ` WHERE ${conditions.join(' AND ')}`;
+    }
+
+    query += ' ORDER BY o.created_at_epoch DESC LIMIT ? OFFSET ?';
+    params.push(limit + 1, offset);
+
+    const results = db.prepare(query).all(...params) as Observation[];
+    const result: PaginatedResult<Observation> = {
+      items: results.slice(0, limit),
+      hasMore: results.length > limit,
       offset,
-      limit,
-      project
-    );
+      limit
+    };
 
     // Strip project paths from file paths before returning
     return {
@@ -90,13 +133,14 @@ export class PaginationHelper {
   /**
    * Get paginated summaries
    */
-  getSummaries(offset: number, limit: number, project?: string): PaginatedResult<Summary> {
+  getSummaries(offset: number, limit: number, project?: string, platformSource?: string): PaginatedResult<Summary> {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `
       SELECT
         ss.id,
         s.content_session_id as session_id,
+        COALESCE(s.platform_source, 'claude') as platform_source,
         ss.request,
         ss.investigated,
         ss.learned,
@@ -113,9 +157,20 @@ export class PaginationHelper {
     `;
     const params: any[] = [];
 
+    const conditions: string[] = [];
+
     if (project) {
-      query += ' WHERE ss.project = ?';
+      conditions.push('ss.project = ?');
       params.push(project);
+    }
+
+    if (platformSource) {
+      conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
+      params.push(platformSource);
+    }
+
+    if (conditions.length > 0) {
+      query += ` WHERE ${conditions.join(' AND ')}`;
     }
 
     query += ' ORDER BY ss.created_at_epoch DESC LIMIT ? OFFSET ?';
@@ -135,20 +190,41 @@ export class PaginationHelper {
   /**
    * Get paginated user prompts
    */
-  getPrompts(offset: number, limit: number, project?: string): PaginatedResult<UserPrompt> {
+  getPrompts(offset: number, limit: number, project?: string, platformSource?: string): PaginatedResult<UserPrompt> {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `
-      SELECT up.id, up.content_session_id, s.project, up.prompt_number, up.prompt_text, up.created_at, up.created_at_epoch,
-             up.node, up.platform, up.instance
+      SELECT
+        up.id,
+        up.content_session_id,
+        s.project,
+        COALESCE(s.platform_source, 'claude') as platform_source,
+        up.prompt_number,
+        up.prompt_text,
+        up.created_at,
+        up.created_at_epoch,
+        up.node,
+        up.platform,
+        up.instance
       FROM user_prompts up
       JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
     `;
     const params: any[] = [];
 
+    const conditions: string[] = [];
+
     if (project) {
-      query += ' WHERE s.project = ?';
+      conditions.push('s.project = ?');
       params.push(project);
+    }
+
+    if (platformSource) {
+      conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
+      params.push(platformSource);
+    }
+
+    if (conditions.length > 0) {
+      query += ` WHERE ${conditions.join(' AND ')}`;
     }
 
     query += ' ORDER BY up.created_at_epoch DESC LIMIT ? OFFSET ?';

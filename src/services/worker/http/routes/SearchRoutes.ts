@@ -38,6 +38,7 @@ export class SearchRoutes extends BaseRouteHandler {
     app.get('/api/context/timeline', this.handleGetContextTimeline.bind(this));
     app.get('/api/context/preview', this.handleContextPreview.bind(this));
     app.get('/api/context/inject', this.handleContextInject.bind(this));
+    app.post('/api/context/semantic', this.handleSemanticContext.bind(this));
 
     // Timeline and help endpoints
     app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
@@ -167,6 +168,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleContextPreview = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const projectName = req.query.project as string;
+    const platformSource = req.query.platformSource as string | undefined;
 
     if (!projectName) {
       this.badRequest(res, 'Project parameter is required');
@@ -183,9 +185,11 @@ export class SearchRoutes extends BaseRouteHandler {
     const contextText = await generateContext(
       {
         session_id: 'preview-' + Date.now(),
-        cwd: cwd
+        cwd: cwd,
+        projects: [projectName],
+        platform_source: platformSource
       },
-      true  // useColors=true for ANSI terminal output
+      true  // forHuman=true for ANSI terminal output
     );
 
     // Return as plain text
@@ -207,8 +211,9 @@ export class SearchRoutes extends BaseRouteHandler {
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     // Support both legacy `project` and new `projects` parameter
     const projectsParam = (req.query.projects as string) || (req.query.project as string);
-    const useColors = req.query.colors === 'true';
+    const forHuman = req.query.colors === 'true';
     const full = req.query.full === 'true';
+    const platformSource = req.query.platformSource as string | undefined;
 
     if (!projectsParam) {
       this.badRequest(res, 'Project(s) parameter is required');
@@ -236,14 +241,63 @@ export class SearchRoutes extends BaseRouteHandler {
         session_id: 'context-inject-' + Date.now(),
         cwd: cwd,
         projects: projects,
-        full
+        full,
+        platform_source: platformSource
       },
-      useColors
+      forHuman
     );
 
     // Return as plain text
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.send(contextText);
+  });
+
+  /**
+   * Semantic context search for per-prompt injection
+   * POST /api/context/semantic  { q, project?, limit? }
+   *
+   * Queries Chroma for observations semantically similar to the user's prompt.
+   * Returns compact markdown for injection as additionalContext.
+   */
+  private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const query = (req.body?.q || req.query.q) as string;
+    const project = (req.body?.project || req.query.project) as string;
+    const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
+
+    if (!query || query.length < 20) {
+      res.json({ context: '', count: 0 });
+      return;
+    }
+
+    try {
+      const result = await this.searchManager.search({
+        query,
+        type: 'observations',
+        project,
+        limit: String(limit),
+        format: 'json'
+      });
+
+      const observations = (result as any)?.observations || [];
+      if (!observations.length) {
+        res.json({ context: '', count: 0 });
+        return;
+      }
+
+      // Format as compact markdown for context injection
+      const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
+      for (const obs of observations.slice(0, limit)) {
+        const date = obs.created_at?.slice(0, 10) || '';
+        lines.push(`### ${obs.title || 'Observation'} (${date})`);
+        if (obs.narrative) lines.push(obs.narrative);
+        lines.push('');
+      }
+
+      res.json({ context: lines.join('\n'), count: observations.length });
+    } catch (error) {
+      logger.error('SEARCH', 'Semantic context query failed', {}, error as Error);
+      res.json({ context: '', count: 0 });
+    }
   });
 
   /**

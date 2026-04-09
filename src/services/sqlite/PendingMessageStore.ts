@@ -398,6 +398,19 @@ export class PendingMessageStore {
   }
 
   /**
+   * Peek at pending message types for a session (for tier routing).
+   * Returns list of { message_type, tool_name } without claiming.
+   */
+  peekPendingTypes(sessionDbId: number): Array<{ message_type: string; tool_name: string | null }> {
+    const stmt = this.db.prepare(`
+      SELECT message_type, tool_name FROM pending_messages
+      WHERE session_db_id = ? AND status IN ('pending', 'processing')
+      ORDER BY id ASC
+    `);
+    return stmt.all(sessionDbId) as Array<{ message_type: string; tool_name: string | null }>;
+  }
+
+  /**
    * Check if any session has pending work.
    * Excludes 'processing' messages stuck for >5 minutes (resets them to 'pending' as a side effect).
    */

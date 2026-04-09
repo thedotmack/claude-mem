@@ -15,19 +15,40 @@ import { mergeAndDeduplicateByProject } from './utils/data';
 
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
+  const [currentSource, setCurrentSource] = useState('all');
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
-  const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected, onClientEvent } = useSSE();
+  const { observations, summaries, prompts, projects, sources, projectsBySource, isProcessing, queueDepth, isConnected, onClientEvent } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats, refreshStats } = useStats();
   const { health } = useHealth();
   const { clients, activeCount, totalCount, handleClientSSE, sseHandlerRegistered } = useClients(health.mode);
   const { preference, resolvedTheme, setThemePreference } = useTheme();
-  const pagination = usePagination(currentFilter);
+  const pagination = usePagination(currentFilter, currentSource);
+
+  const availableProjects = useMemo(() => {
+    if (currentSource === 'all') {
+      return projects;
+    }
+
+    return projectsBySource[currentSource] || [];
+  }, [currentSource, projects, projectsBySource]);
+
+  const matchesSelection = useCallback((item: { project: string; platform_source: string }) => {
+    const matchesProject = !currentFilter || item.project === currentFilter;
+    const matchesSource = currentSource === 'all' || (item.platform_source || 'claude') === currentSource;
+    return matchesProject && matchesSource;
+  }, [currentFilter, currentSource]);
+
+  useEffect(() => {
+    if (currentFilter && !availableProjects.includes(currentFilter)) {
+      setCurrentFilter('');
+    }
+  }, [availableProjects, currentFilter]);
 
   // Wire SSE client events to useClients handler (once)
   useEffect(() => {
@@ -39,25 +60,22 @@ export function App() {
 
   // Merge SSE live data with paginated data, filtering by project when active
   const allObservations = useMemo(() => {
-    const live = currentFilter
-      ? observations.filter(o => o.project === currentFilter)
-      : observations;
-    return mergeAndDeduplicateByProject(live, paginatedObservations);
-  }, [observations, paginatedObservations, currentFilter]);
+    const live = observations.filter(matchesSelection);
+    const paginated = paginatedObservations.filter(matchesSelection);
+    return mergeAndDeduplicateByProject(live, paginated);
+  }, [observations, paginatedObservations, matchesSelection]);
 
   const allSummaries = useMemo(() => {
-    const live = currentFilter
-      ? summaries.filter(s => s.project === currentFilter)
-      : summaries;
-    return mergeAndDeduplicateByProject(live, paginatedSummaries);
-  }, [summaries, paginatedSummaries, currentFilter]);
+    const live = summaries.filter(matchesSelection);
+    const paginated = paginatedSummaries.filter(matchesSelection);
+    return mergeAndDeduplicateByProject(live, paginated);
+  }, [summaries, paginatedSummaries, matchesSelection]);
 
   const allPrompts = useMemo(() => {
-    const live = currentFilter
-      ? prompts.filter(p => p.project === currentFilter)
-      : prompts;
-    return mergeAndDeduplicateByProject(live, paginatedPrompts);
-  }, [prompts, paginatedPrompts, currentFilter]);
+    const live = prompts.filter(matchesSelection);
+    const paginated = paginatedPrompts.filter(matchesSelection);
+    return mergeAndDeduplicateByProject(live, paginated);
+  }, [prompts, paginatedPrompts, matchesSelection]);
 
   // Toggle context preview modal
   const toggleContextPreview = useCallback(() => {
@@ -90,24 +108,27 @@ export function App() {
     } catch (error) {
       console.error('Failed to load more data:', error);
     }
-  }, [currentFilter, pagination.observations, pagination.summaries, pagination.prompts]);
+  }, [pagination.observations, pagination.summaries, pagination.prompts]);
 
-  // Reset paginated data and load first page when filter changes
+  // Reset paginated data and load first page when project/source changes
   useEffect(() => {
     setPaginatedObservations([]);
     setPaginatedSummaries([]);
     setPaginatedPrompts([]);
     handleLoadMore();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentFilter]);
+  }, [currentFilter, currentSource]);
 
   return (
     <>
       <Header
         isConnected={isConnected}
-        projects={projects}
+        projects={availableProjects}
+        sources={sources}
         currentFilter={currentFilter}
+        currentSource={currentSource}
         onFilterChange={setCurrentFilter}
+        onSourceChange={setCurrentSource}
         isProcessing={isProcessing}
         queueDepth={queueDepth}
         themePreference={preference}

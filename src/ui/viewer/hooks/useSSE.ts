@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Observation, Summary, UserPrompt, StreamEvent } from '../types';
+import { Observation, Summary, UserPrompt, StreamEvent, ProjectCatalog } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
 
@@ -13,7 +13,11 @@ export function useSSE() {
   const [observations, setObservations] = useState<Observation[]>([]);
   const [summaries, setSummaries] = useState<Summary[]>([]);
   const [prompts, setPrompts] = useState<UserPrompt[]>([]);
-  const [projects, setProjects] = useState<string[]>([]);
+  const [catalog, setCatalog] = useState<ProjectCatalog>({
+    projects: [],
+    sources: [],
+    projectsBySource: {}
+  });
   const [isConnected, setIsConnected] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [queueDepth, setQueueDepth] = useState(0);
@@ -26,9 +30,31 @@ export function useSSE() {
     clientEventHandlerRef.current = handler;
   }, []);
 
+  const updateCatalogForItem = (project: string, platformSource: string) => {
+    setCatalog(prev => {
+      const nextProjects = prev.projects.includes(project)
+        ? prev.projects
+        : [...prev.projects, project];
+      const nextSources = prev.sources.includes(platformSource)
+        ? prev.sources
+        : [...prev.sources, platformSource];
+      const sourceProjects = prev.projectsBySource[platformSource] || [];
+
+      return {
+        projects: nextProjects,
+        sources: nextSources,
+        projectsBySource: {
+          ...prev.projectsBySource,
+          [platformSource]: sourceProjects.includes(project)
+            ? sourceProjects
+            : [...sourceProjects, project]
+        }
+      };
+    });
+  };
+
   useEffect(() => {
     const connect = () => {
-      // Clean up existing connection
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
       }
@@ -39,7 +65,6 @@ export function useSSE() {
       eventSource.onopen = () => {
         // SSE connected
         setIsConnected(true);
-        // Clear any pending reconnect
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
         }
@@ -50,10 +75,9 @@ export function useSSE() {
         setIsConnected(false);
         eventSource.close();
 
-        // Reconnect after delay
         reconnectTimeoutRef.current = setTimeout(() => {
-          reconnectTimeoutRef.current = undefined; // Clear before reconnecting
-          // SSE reconnecting
+          reconnectTimeoutRef.current = undefined;
+          console.log('[SSE] Attempting to reconnect...');
           connect();
         }, TIMING.SSE_RECONNECT_DELAY_MS);
       };
@@ -63,31 +87,38 @@ export function useSSE() {
 
         switch (data.type) {
           case 'initial_load':
-            // Initial load
-            // Only load projects list - data will come via pagination
-            setProjects(data.projects || []);
+            console.log('[SSE] Initial load:', {
+              projects: data.projects?.length || 0,
+              sources: data.sources?.length || 0
+            });
+            setCatalog({
+              projects: data.projects || [],
+              sources: data.sources || [],
+              projectsBySource: data.projectsBySource || {}
+            });
             break;
 
           case 'new_observation':
             if (data.observation) {
-              // New observation received
-              setObservations(prev => [data.observation, ...prev]);
+              console.log('[SSE] New observation:', data.observation.id);
+              updateCatalogForItem(data.observation.project, data.observation.platform_source || 'claude');
+              setObservations(prev => [data.observation!, ...prev]);
             }
             break;
 
           case 'new_summary':
             if (data.summary) {
-              const summary = data.summary;
-              // New summary received
-              setSummaries(prev => [summary, ...prev]);
+              console.log('[SSE] New summary:', data.summary.id);
+              updateCatalogForItem(data.summary.project, data.summary.platform_source || 'claude');
+              setSummaries(prev => [data.summary!, ...prev]);
             }
             break;
 
           case 'new_prompt':
             if (data.prompt) {
-              const prompt = data.prompt;
-              // New prompt received
-              setPrompts(prev => [prompt, ...prev]);
+              console.log('[SSE] New prompt:', data.prompt.id);
+              updateCatalogForItem(data.prompt.project, data.prompt.platform_source || 'claude');
+              setPrompts(prev => [data.prompt!, ...prev]);
             }
             break;
 
@@ -113,7 +144,6 @@ export function useSSE() {
 
     connect();
 
-    // Cleanup on unmount
     return () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
@@ -124,5 +154,16 @@ export function useSSE() {
     };
   }, []);
 
-  return { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected, onClientEvent };
+  return {
+    observations,
+    summaries,
+    prompts,
+    projects: catalog.projects,
+    sources: catalog.sources,
+    projectsBySource: catalog.projectsBySource,
+    isProcessing,
+    queueDepth,
+    isConnected,
+    onClientEvent
+  };
 }

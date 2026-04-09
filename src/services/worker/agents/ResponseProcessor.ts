@@ -55,7 +55,8 @@ export async function processAgentResponse(
   discoveryTokens: number,
   originalTimestamp: number | null,
   agentName: string,
-  projectRoot?: string
+  projectRoot?: string,
+  modelId?: string
 ): Promise<void> {
   // Track generator activity for stale detection (Issue #1099)
   session.lastGeneratorActivity = Date.now();
@@ -68,6 +69,19 @@ export async function processAgentResponse(
   // Parse observations and summary
   const observations = parseObservations(text, session.contentSessionId);
   const summary = parseSummary(text, session.sessionDbId);
+
+  if (
+    text.trim() &&
+    observations.length === 0 &&
+    !summary &&
+    !/<observation>|<summary>|<skip_summary\b/.test(text)
+  ) {
+    const preview = text.length > 200 ? `${text.slice(0, 200)}...` : text;
+    logger.warn('PARSER', `${agentName} returned non-XML response; observation content was discarded`, {
+      sessionId: session.sessionDbId,
+      preview
+    });
+  }
 
   // Convert nullable fields to empty strings for storeSummary (if summary exists)
   const summaryForStore = normalizeSummaryForStorage(summary);
@@ -104,6 +118,7 @@ export async function processAgentResponse(
     session.lastPromptNumber,
     discoveryTokens,
     originalTimestamp ?? undefined,
+    modelId,
     session.node || getNodeName(),
     session.platform || null,
     session.instance ?? null
@@ -228,6 +243,7 @@ async function syncAndBroadcastObservations(
       id: obsId,
       memory_session_id: session.memorySessionId,
       session_id: session.contentSessionId,
+      platform_source: session.platformSource,
       type: obs.type,
       title: obs.title,
       subtitle: obs.subtitle,
@@ -321,6 +337,7 @@ async function syncAndBroadcastSummary(
   broadcastSummary(worker, {
     id: result.summaryId,
     session_id: session.contentSessionId,
+    platform_source: session.platformSource,
     request: summary!.request,
     investigated: summary!.investigated,
     learned: summary!.learned,
