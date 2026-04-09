@@ -95,6 +95,12 @@ import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
+
+// Knowledge agent services
+import { CorpusStore } from './worker/knowledge/CorpusStore.js';
+import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
+import { KnowledgeAgent } from './worker/knowledge/KnowledgeAgent.js';
 
 // Process management for zombie cleanup (Issue #737)
 import { startOrphanReaper, reapOrphanedProcesses, getProcessBySession, ensureProcessExit } from './worker/ProcessRegistry.js';
@@ -143,6 +149,7 @@ export class WorkerService {
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
+  private corpusStore: CorpusStore;
 
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
@@ -188,6 +195,7 @@ export class WorkerService {
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
+    this.corpusStore = new CorpusStore();
 
     // Set callback for when sessions are deleted
     this.sessionManager.setOnSessionDeleted(() => {
@@ -387,6 +395,22 @@ export class WorkerService {
       this.searchRoutes = new SearchRoutes(searchManager);
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
+
+      // Register corpus routes (knowledge agents) — needs SearchOrchestrator from search module
+      const { SearchOrchestrator } = await import('./worker/search/SearchOrchestrator.js');
+      const corpusSearchOrchestrator = new SearchOrchestrator(
+        this.dbManager.getSessionSearch(),
+        this.dbManager.getSessionStore(),
+        this.dbManager.getChromaSync()
+      );
+      const corpusBuilder = new CorpusBuilder(
+        this.dbManager.getSessionStore(),
+        corpusSearchOrchestrator,
+        this.corpusStore
+      );
+      const knowledgeAgent = new KnowledgeAgent(this.corpusStore);
+      this.server.registerRoutes(new CorpusRoutes(this.corpusStore, corpusBuilder, knowledgeAgent));
+      logger.info('WORKER', 'CorpusRoutes registered');
 
       // DB and search are ready — mark initialization complete so hooks can proceed.
       // MCP connection is tracked separately via mcpReady and is NOT required for

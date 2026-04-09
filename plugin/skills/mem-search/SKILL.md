@@ -173,3 +173,7 @@ Add custom tree-sitter grammars for languages not in the bundled set. Place `.cl
 - User grammars do NOT override bundled languages. If a language is already bundled, the entry is ignored.
 - The npm package must be installed in the project (`npm install tree-sitter-gleam`).
 - Config is cached per project root. Changes to `.claude-mem.json` take effect on next worker restart.
+
+## Knowledge Agents
+
+Want synthesized answers instead of raw records? Use `/knowledge-agent` to build a queryable corpus from your observation history. The knowledge agent reads all matching observations and answers questions conversationally.
