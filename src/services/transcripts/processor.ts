@@ -341,7 +341,7 @@ export class TranscriptEventProcessor {
       flushed = await this.flushTranscriptSegment(session);
       if (flushed) break;
       if (attempt < 2) {
-        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+        await new Promise(resolve => setTimeout(resolve, 1000 * (2 ** attempt)));
       }
     }
     if (!flushed && session.exchanges.length > 0) {
@@ -416,9 +416,10 @@ export class TranscriptEventProcessor {
   private fireConversationObservation(session: SessionState, exchanges: ConversationExchange[]): void {
     if (exchanges.length === 0) return;
 
-    ensureWorkerRunning().then(ready => {
+    (async () => {
+      const ready = await ensureWorkerRunning();
       if (!ready) return;
-      workerHttpRequest('/api/sessions/conversation-observe', {
+      const response = await workerHttpRequest('/api/sessions/conversation-observe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -426,14 +427,13 @@ export class TranscriptEventProcessor {
           exchanges,
           project: session.project || 'unknown'
         })
-      }).then(response => {
-        if (!response.ok) {
-          logger.debug('TRANSCRIPT', 'Conversation observation returned non-2xx', { status: response.status });
-        }
-      }).catch(error => {
-        logger.debug('TRANSCRIPT', 'Conversation observation request failed', {
-          error: error instanceof Error ? error.message : String(error)
-        });
+      });
+      if (!response.ok) {
+        logger.debug('TRANSCRIPT', 'Conversation observation returned non-2xx', { status: response.status });
+      }
+    })().catch(error => {
+      logger.debug('TRANSCRIPT', 'Conversation observation failed', {
+        error: error instanceof Error ? error.message : String(error)
       });
     });
   }
