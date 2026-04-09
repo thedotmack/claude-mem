@@ -61,7 +61,7 @@ export class TranscriptEventProcessor {
     if (!session) {
       session = {
         sessionId,
-        promptNumber: 0,
+        promptNumber: 1,
         exchanges: [],
         platformSource: normalizePlatformSource(watch.name),
         pendingTools: new Map()
@@ -335,9 +335,17 @@ export class TranscriptEventProcessor {
   }
 
   private async handleSessionEnd(session: SessionState, watch: WatchTarget): Promise<void> {
-    const flushed = await this.flushTranscriptSegment(session);
+    // Retry final flush up to 3 times with exponential backoff
+    let flushed = false;
+    for (let attempt = 0; attempt < 3 && session.exchanges.length > 0; attempt++) {
+      flushed = await this.flushTranscriptSegment(session);
+      if (flushed) break;
+      if (attempt < 2) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+      }
+    }
     if (!flushed && session.exchanges.length > 0) {
-      logger.warn('TRANSCRIPT', 'Final flush failed on session end — transcript segment may be lost', {
+      logger.warn('TRANSCRIPT', 'Final flush failed after retries on session end — transcript segment lost', {
         sessionId: session.sessionId, exchangeCount: session.exchanges.length
       });
     }
@@ -358,7 +366,7 @@ export class TranscriptEventProcessor {
    * Called on prompt boundary (session_init) and session_end.
    */
   private async flushTranscriptSegment(session: SessionState): Promise<boolean> {
-    if (session.exchanges.length === 0 || session.promptNumber === 0) return false;
+    if (session.exchanges.length === 0) return false;
 
     // Capture exchanges before clearing (needed for conversation observation)
     const exchangesToFlush = [...session.exchanges];
