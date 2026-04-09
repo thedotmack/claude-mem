@@ -495,6 +495,14 @@ describe('MarkdownFormatter', () => {
       expect(joined).toContain('claude-mem');
     });
 
+    it('should clarify observation ID to avoid confusion with user_prompts IDs (#1339)', () => {
+      const result = renderMarkdownFooter(5000, 100);
+      const joined = result.join('\n');
+
+      // Must say "observation ID" to distinguish from user_prompts/session_summaries IDs
+      expect(joined).toContain('observation ID');
+    });
+
     it('should round work tokens to nearest thousand', () => {
       const result = renderMarkdownFooter(15500, 100);
       const joined = result.join('\n');
