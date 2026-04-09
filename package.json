@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "12.0.1",
+  "version": "12.1.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -162,5 +162,18 @@
   },
   "optionalDependencies": {
     "tree-kill": "^1.2.2"
-  }
+  },
+  "trustedDependencies": [
+    "esbuild",
+    "tree-sitter-c",
+    "tree-sitter-cli",
+    "tree-sitter-cpp",
+    "tree-sitter-go",
+    "tree-sitter-java",
+    "tree-sitter-javascript",
+    "tree-sitter-python",
+    "tree-sitter-ruby",
+    "tree-sitter-rust",
+    "tree-sitter-typescript"
+  ]
 }
