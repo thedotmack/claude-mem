@@ -1,6 +1,6 @@
 import { existsSync, statSync, watch as fsWatch, createReadStream } from 'fs';
-import { basename, join } from 'path';
-import { globSync } from 'glob';
+import { basename, join, resolve } from 'path';
+import { Glob } from 'bun';
 import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
@@ -141,7 +141,7 @@ export class TranscriptWatcher {
 
   private resolveWatchFiles(inputPath: string): string[] {
     if (this.hasGlob(inputPath)) {
-      return globSync(inputPath, { nodir: true, absolute: true });
+      return [...new Glob(inputPath).scanSync({ absolute: true, onlyFiles: true })];
     }
 
     if (existsSync(inputPath)) {
@@ -149,7 +149,7 @@ export class TranscriptWatcher {
         const stat = statSync(inputPath);
         if (stat.isDirectory()) {
           const pattern = join(inputPath, '**', '*.jsonl');
-          return globSync(pattern, { nodir: true, absolute: true });
+          return [...new Glob(pattern).scanSync({ absolute: true, onlyFiles: true })];
         }
         return [inputPath];
       } catch {

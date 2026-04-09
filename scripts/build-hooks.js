@@ -161,6 +161,7 @@ async function buildHooks() {
       minify: true,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
+        'bun',
         'bun:sqlite',
         // Optional chromadb embedding providers
         'cohere-ai',

@@ -8,7 +8,7 @@ import { isGeminiSelected, isGeminiAvailable } from './GeminiAgent.js';
 import { isOpenRouterSelected, isOpenRouterAvailable } from './OpenRouterAgent.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { EnvManager } from '../../shared/EnvManager.js';
+import { loadClaudeMemEnv } from '../../shared/EnvManager.js';
 import { logger } from '../../utils/logger.js';
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -128,6 +128,6 @@ async function queryAnthropic(prompt: string, apiKey: string): Promise<string | 
 }
 
 function getAnthropicApiKey(): string | null {
-  const credentials = EnvManager.loadClaudeMemCredentials();
+  const credentials = loadClaudeMemEnv();
   return credentials.ANTHROPIC_API_KEY || null;
 }
