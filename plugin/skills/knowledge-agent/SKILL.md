@@ -64,6 +64,7 @@ Shows all corpora with stats and priming status.
 ## Maintenance
 
 ### Rebuild a corpus (refresh with new observations)
+
 ```text
 rebuild_corpus name="hooks-expertise"
 ```
@@ -71,6 +72,7 @@ rebuild_corpus name="hooks-expertise"
 After rebuilding, reprime to load the updated knowledge:
 
 ### Reprime (fresh session)
+
 ```text
 reprime_corpus name="hooks-expertise"
 ```
