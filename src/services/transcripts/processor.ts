@@ -367,7 +367,7 @@ export class TranscriptEventProcessor {
     if (!workerReady) return;
 
     try {
-      await workerHttpRequest('/api/transcript/store', {
+      const response = await workerHttpRequest('/api/transcript/store', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -377,16 +377,21 @@ export class TranscriptEventProcessor {
           project: session.project || 'unknown'
         })
       });
+      if (!response.ok) {
+        logger.warn('TRANSCRIPT', 'Transcript segment store returned non-2xx', { status: response.status });
+        return;
+      }
     } catch (error) {
       logger.warn('TRANSCRIPT', 'Transcript segment store failed', {
         error: error instanceof Error ? error.message : String(error)
       });
+      return;
     }
 
     // Send exchanges for conversation observation (fire-and-forget)
     this.fireConversationObservation(session, exchangesToFlush);
 
-    // Clear exchanges after flush
+    // Clear exchanges only after successful store
     session.exchanges = [];
   }
 

@@ -20,24 +20,41 @@ const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
  * Priority: Gemini → OpenRouter → Anthropic Messages API
  * Returns the text response or null if no provider is available.
  */
+const ONE_SHOT_TIMEOUT_MS = 30_000;
+
 export async function oneShotQuery(prompt: string): Promise<string | null> {
+  const withTimeout = <T>(p: Promise<T>): Promise<T | null> =>
+    Promise.race([p, new Promise<null>(resolve => setTimeout(() => resolve(null), ONE_SHOT_TIMEOUT_MS))]);
+
   // Try Gemini first (cheapest, simplest)
   if (isGeminiSelected() && isGeminiAvailable()) {
-    return await queryGemini(prompt);
+    try {
+      return await withTimeout(queryGemini(prompt));
+    } catch (error) {
+      logger.debug('ONE_SHOT', 'Gemini provider failed, falling through', { error: (error as Error).message });
+    }
   }
 
   // Try OpenRouter
   if (isOpenRouterSelected() && isOpenRouterAvailable()) {
-    return await queryOpenRouter(prompt);
+    try {
+      return await withTimeout(queryOpenRouter(prompt));
+    } catch (error) {
+      logger.debug('ONE_SHOT', 'OpenRouter provider failed, falling through', { error: (error as Error).message });
+    }
   }
 
   // Try Anthropic Messages API directly (if API key available)
   const anthropicKey = getAnthropicApiKey();
   if (anthropicKey) {
-    return await queryAnthropic(prompt, anthropicKey);
+    try {
+      return await withTimeout(queryAnthropic(prompt, anthropicKey));
+    } catch (error) {
+      logger.debug('ONE_SHOT', 'Anthropic provider failed', { error: (error as Error).message });
+    }
   }
 
-  logger.debug('ONE_SHOT', 'No provider available for one-shot query');
+  logger.debug('ONE_SHOT', 'No provider available or all providers failed');
   return null;
 }
 

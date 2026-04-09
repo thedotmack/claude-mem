@@ -258,10 +258,11 @@ export function buildConversationObservationPrompt(
   exchanges: ConversationExchange[],
   mode: ModeConfig
 ): string {
+  const escapeXml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const exchangeXml = exchanges.map((ex, i) => `
   <exchange index="${i + 1}" prompt_number="${ex.promptNumber}">
-    <user>${ex.userText}</user>
-    <assistant>${ex.assistantText}</assistant>
+    <user>${escapeXml(ex.userText)}</user>
+    <assistant>${escapeXml(ex.assistantText)}</assistant>
   </exchange>`).join('');
 
   return `You are a conversational memory observer. Analyze these exchanges for moments worth remembering.

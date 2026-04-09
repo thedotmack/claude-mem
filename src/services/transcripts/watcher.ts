@@ -64,9 +64,6 @@ class FileTailer {
       data += chunk as string;
     }
 
-    this.tailState.offset = size;
-    this.onOffset(this.tailState.offset);
-
     const combined = this.tailState.partial + data;
     const lines = combined.split('\n');
     this.tailState.partial = lines.pop() ?? '';
@@ -76,6 +73,10 @@ class FileTailer {
       if (!trimmed) continue;
       await this.onLine(trimmed);
     }
+
+    // Persist offset only after all lines have been durably handled
+    this.tailState.offset = size;
+    this.onOffset(this.tailState.offset);
   }
 }
 

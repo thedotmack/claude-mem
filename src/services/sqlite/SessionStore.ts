@@ -63,8 +63,8 @@ export class SessionStore {
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
-    this.addUserPromptsUniqueIndex();
     this.addSessionPlatformSourceColumn();
+    this.addUserPromptsUniqueIndex();
     this.addObservationModelColumns();
   }
 

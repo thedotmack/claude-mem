@@ -131,12 +131,14 @@ get_observations(ids=[11131, 10942, 10855], orderBy="date_desc")
 When observations alone aren't enough, retrieve the original conversation:
 
 **Full segment dump:**
-```
+
+```text
 get_transcript_segment(observation_id=11131)
 ```
 
 **Scoped search within segment:**
-```
+
+```text
 get_transcript_segment(observation_id=11131, query="why did we choose JWT")
 ```
 
