@@ -101,8 +101,8 @@ export class DockerModelRunnerAgent {
 
       if (initResponse.content) {
         const tokensUsed = initResponse.tokensUsed || 0;
-        session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-        session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+        session.cumulativeInputTokens += initResponse.inputTokens ?? Math.floor(tokensUsed * 0.7);
+        session.cumulativeOutputTokens += initResponse.outputTokens ?? Math.floor(tokensUsed * 0.3);
 
         await processAgentResponse(
           initResponse.content,
@@ -159,8 +159,8 @@ export class DockerModelRunnerAgent {
           let tokensUsed = 0;
           if (obsResponse.content) {
             tokensUsed = obsResponse.tokensUsed || 0;
-            session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-            session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+            session.cumulativeInputTokens += obsResponse.inputTokens ?? Math.floor(tokensUsed * 0.7);
+            session.cumulativeOutputTokens += obsResponse.outputTokens ?? Math.floor(tokensUsed * 0.3);
           }
 
           await processAgentResponse(
@@ -195,8 +195,8 @@ export class DockerModelRunnerAgent {
           let tokensUsed = 0;
           if (summaryResponse.content) {
             tokensUsed = summaryResponse.tokensUsed || 0;
-            session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-            session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+            session.cumulativeInputTokens += summaryResponse.inputTokens ?? Math.floor(tokensUsed * 0.7);
+            session.cumulativeOutputTokens += summaryResponse.outputTokens ?? Math.floor(tokensUsed * 0.3);
           }
 
           await processAgentResponse(
@@ -303,7 +303,7 @@ export class DockerModelRunnerAgent {
     history: ConversationMessage[],
     model: string,
     baseUrl: string
-  ): Promise<{ content: string; tokensUsed?: number }> {
+  ): Promise<{ content: string; tokensUsed?: number; inputTokens?: number; outputTokens?: number }> {
     const truncatedHistory = this.truncateHistory(history);
     const messages = this.conversationToOpenAIMessages(truncatedHistory);
     const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
@@ -349,21 +349,20 @@ export class DockerModelRunnerAgent {
 
     const content = data.choices[0].message.content;
     const tokensUsed = data.usage?.total_tokens;
+    const inputTokens = data.usage?.prompt_tokens;
+    const outputTokens = data.usage?.completion_tokens;
 
     if (tokensUsed) {
-      const inputTokens = data.usage?.prompt_tokens || 0;
-      const outputTokens = data.usage?.completion_tokens || 0;
-
       logger.info('SDK', 'Docker Model Runner API usage', {
         model,
-        inputTokens,
-        outputTokens,
+        inputTokens: inputTokens || 0,
+        outputTokens: outputTokens || 0,
         totalTokens: tokensUsed,
         messagesInContext: truncatedHistory.length
       });
     }
 
-    return { content, tokensUsed };
+    return { content, tokensUsed, inputTokens, outputTokens };
   }
 
   /**

@@ -326,7 +326,7 @@ describe('DockerModelRunnerAgent', () => {
     expect(fallbackAgent.startSession).not.toHaveBeenCalled();
   });
 
-  it('should track token usage from API response', async () => {
+  it('should track token usage from API response using actual prompt/completion tokens', async () => {
     const session = createMockSession();
 
     global.fetch = mock(() => Promise.resolve(
@@ -339,9 +339,25 @@ describe('DockerModelRunnerAgent', () => {
 
     await agent.startSession(session);
 
-    // Token usage is split 70/30 (input/output) from total
-    expect(session.cumulativeInputTokens).toBeGreaterThan(0);
-    expect(session.cumulativeOutputTokens).toBeGreaterThan(0);
+    // Should use actual prompt_tokens/completion_tokens, not 70/30 estimate
+    expect(session.cumulativeInputTokens).toBe(200);
+    expect(session.cumulativeOutputTokens).toBe(100);
+  });
+
+  it('should fall back to 70/30 estimate when prompt/completion tokens are missing', async () => {
+    const session = createMockSession();
+
+    global.fetch = mock(() => Promise.resolve(
+      mockOpenAIResponse('response', {
+        total_tokens: 300
+      })
+    ));
+
+    await agent.startSession(session);
+
+    // Falls back to 70/30 split of total_tokens
+    expect(session.cumulativeInputTokens).toBe(Math.floor(300 * 0.7));
+    expect(session.cumulativeOutputTokens).toBe(Math.floor(300 * 0.3));
   });
 
   describe('conversation history truncation', () => {
