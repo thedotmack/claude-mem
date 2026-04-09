@@ -170,10 +170,10 @@ export class CorpusRoutes extends BaseRouteHandler {
   private handleQueryCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { name } = req.params;
 
-    if (!req.body.question) {
+    if (!req.body.question || typeof req.body.question !== 'string' || req.body.question.trim().length === 0) {
       res.status(400).json({
         error: 'Missing required field: question',
-        fix: 'Add a "question" field to your request body',
+        fix: 'Add a non-empty "question" string to your request body',
         example: { question: 'What architectural decisions were made about hooks?' }
       });
       return;

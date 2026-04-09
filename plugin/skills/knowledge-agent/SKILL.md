@@ -17,7 +17,7 @@ Think of them as custom "brains": "everything about hooks", "all decisions from 
 
 ### Step 1: Build a corpus
 
-```
+```text
 build_corpus name="hooks-expertise" description="Everything about the hooks lifecycle" project="claude-mem" concepts="hooks" limit=500
 ```
 
@@ -32,7 +32,7 @@ Filter options:
 
 ### Step 2: Prime the corpus
 
-```
+```text
 prime_corpus name="hooks-expertise"
 ```
 
@@ -40,7 +40,7 @@ This creates an AI session loaded with all the corpus knowledge. Takes a moment 
 
 ### Step 3: Query
 
-```
+```text
 query_corpus name="hooks-expertise" question="What are the 5 lifecycle hooks and when does each fire?"
 ```
 
@@ -48,7 +48,7 @@ The knowledge agent answers from its corpus. Follow-up questions maintain contex
 
 ### Step 4: List corpora
 
-```
+```text
 list_corpora
 ```
 
@@ -64,14 +64,14 @@ Shows all corpora with stats and priming status.
 ## Maintenance
 
 ### Rebuild a corpus (refresh with new observations)
-```
+```text
 rebuild_corpus name="hooks-expertise"
 ```
 
 After rebuilding, reprime to load the updated knowledge:
 
 ### Reprime (fresh session)
-```
+```text
 reprime_corpus name="hooks-expertise"
 ```
 

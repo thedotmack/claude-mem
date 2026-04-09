@@ -102,12 +102,12 @@ export class KnowledgeAgent {
       }
     }
 
-    corpus.session_id = sessionId || null;
-    this.corpusStore.write(corpus);
-
     if (!sessionId) {
       throw new Error(`Failed to capture session_id while priming corpus "${corpus.name}"`);
     }
+
+    corpus.session_id = sessionId;
+    this.corpusStore.write(corpus);
 
     return sessionId;
   }
@@ -124,8 +124,16 @@ export class KnowledgeAgent {
     }
 
     try {
-      return await this.executeQuery(corpus, question);
+      const result = await this.executeQuery(corpus, question);
+      if (result.session_id !== corpus.session_id) {
+        corpus.session_id = result.session_id;
+        this.corpusStore.write(corpus);
+      }
+      return result;
     } catch (error) {
+      if (!this.isSessionResumeError(error)) {
+        throw error;
+      }
       // Session expired or invalid — auto-reprime and retry
       logger.info('WORKER', `Session expired for corpus "${corpus.name}", auto-repriming...`);
       await this.prime(corpus);
@@ -134,7 +142,12 @@ export class KnowledgeAgent {
       if (!refreshedCorpus || !refreshedCorpus.session_id) {
         throw new Error(`Auto-reprime failed for corpus "${corpus.name}"`);
       }
-      return await this.executeQuery(refreshedCorpus, question);
+      const result = await this.executeQuery(refreshedCorpus, question);
+      if (result.session_id !== refreshedCorpus.session_id) {
+        refreshedCorpus.session_id = result.session_id;
+        this.corpusStore.write(refreshedCorpus);
+      }
+      return result;
     }
   }
 
@@ -146,6 +159,15 @@ export class KnowledgeAgent {
   async reprime(corpus: CorpusFile): Promise<string> {
     corpus.session_id = null;  // Clear old session
     return this.prime(corpus);
+  }
+
+  /**
+   * Detect whether an error indicates an expired or invalid session resume.
+   * Only these errors trigger auto-reprime; all others are rethrown.
+   */
+  private isSessionResumeError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /session|resume|expired|invalid.*session|not found/i.test(message);
   }
 
   /**

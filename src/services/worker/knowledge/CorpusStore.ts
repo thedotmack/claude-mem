@@ -95,9 +95,25 @@ export class CorpusStore {
   }
 
   /**
+   * Validate corpus name to prevent path traversal
+   */
+  private validateCorpusName(name: string): string {
+    const trimmed = name.trim();
+    if (!/^[a-zA-Z0-9._-]+$/.test(trimmed)) {
+      throw new Error('Invalid corpus name: only alphanumeric characters, dots, hyphens, and underscores are allowed');
+    }
+    return trimmed;
+  }
+
+  /**
    * Resolve the full file path for a corpus by name
    */
   private getFilePath(name: string): string {
-    return path.join(this.corporaDir, `${name}.corpus.json`);
+    const safeName = this.validateCorpusName(name);
+    const resolved = path.resolve(this.corporaDir, `${safeName}.corpus.json`);
+    if (!resolved.startsWith(path.resolve(this.corporaDir) + path.sep)) {
+      throw new Error('Invalid corpus name');
+    }
+    return resolved;
   }
 }
