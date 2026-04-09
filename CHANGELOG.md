@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.1.0] - 2026-04-09
+
+## Knowledge Agents
+
+Build queryable AI "brains" from your claude-mem observation history. Compile a filtered slice of your past work into a corpus, prime it into a Claude session, and ask questions conversationally — getting synthesized, grounded answers instead of raw search results.
+
+### New Features
+
+- **Knowledge Agent system** — full lifecycle: build, prime, query, reprime, rebuild, delete
+- **6 new MCP tools**: `build_corpus`, `list_corpora`, `prime_corpus`, `query_corpus`, `rebuild_corpus`, `reprime_corpus`
+- **8 new HTTP API endpoints** on the worker service (`/api/corpus/*`)
+- **CorpusBuilder** — searches observations, hydrates full records, calculates stats, persists to `~/.claude-mem/corpora/`
+- **CorpusRenderer** — renders observations into full-detail prompt text for the 1M token context window
+- **KnowledgeAgent** — manages Agent SDK sessions with session resume for multi-turn Q&A
+- **Auto-reprime** — expired sessions are automatically reprimed and retried (only for session errors, not all failures)
+- **Knowledge agent skill** (`/knowledge-agent`) for guided corpus creation
+
+### Security & Robustness
+
+- Path traversal prevention in CorpusStore (alphanumeric name validation + resolved path check)
+- System prompt hardened against instruction injection from untrusted corpus content
+- Runtime name validation on all MCP corpus tool handlers
+- Question field validated as non-empty string
+- Session state only persisted after successful prime (not null on failure)
+- Refreshed session_id persisted after query execution
+- E2e curl wrappers hardened with connect-timeout and transport failure fallback
+
+### Documentation
+
+- New docs page: Knowledge Agents usage guide with Quick Start, architecture diagram, filter reference, and API reference
+- Knowledge agent skill page with workflow examples
+- Added to docs navigation
+
+### Testing
+
+- Comprehensive e2e test suite (31 tests) covering full corpus lifecycle
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v12.0.1...v12.1.0
+
 ## [12.0.1] - 2026-04-08
 
 ## 🔴 Hotfix: MCP server crashed with `Cannot find module 'bun:sqlite'` under Node
