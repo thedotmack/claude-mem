@@ -58,7 +58,12 @@ export function isDirectChild(filePath: string, folderPath: string): boolean {
   const folderSegments = normFolder.split('/');
   const fileSegments = normFile.split('/');
 
-  if (fileSegments.length < 2) return false; // Need at least folder/file
+  // Handle bare filenames (no directory component, e.g. stored as "dashboard.html").
+  // These are root-level files and are a direct child only of the root folder.
+  // Fixes #1514: bare filenames stored in DB were never matched by any folder query.
+  if (fileSegments.length < 2) {
+    return normFolder === '' || normFolder === '.';
+  }
 
   const fileDir = fileSegments.slice(0, -1).join('/'); // Directory part of file
   const fileName = fileSegments[fileSegments.length - 1]; // Actual filename

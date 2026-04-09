@@ -23,6 +23,7 @@ export class SessionEventBroadcaster {
     id: number;
     content_session_id: string;
     project: string;
+    platform_source: string;
     prompt_number: number;
     prompt_text: string;
     created_at_epoch: number;

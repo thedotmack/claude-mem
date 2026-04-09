@@ -77,6 +77,9 @@ export class SessionManager {
         });
         session.project = dbSession.project;
       }
+      if (dbSession.platform_source && dbSession.platform_source !== session.platformSource) {
+        session.platformSource = dbSession.platform_source;
+      }
 
       // Update userPrompt for continuation prompts
       if (currentUserPrompt) {
@@ -144,6 +147,7 @@ export class SessionManager {
       contentSessionId: dbSession.content_session_id,
       memorySessionId: null,  // Always start fresh - SDK will capture new ID
       project: dbSession.project,
+      platformSource: dbSession.platform_source,
       userPrompt,
       pendingMessages: [],
       abortController: new AbortController(),

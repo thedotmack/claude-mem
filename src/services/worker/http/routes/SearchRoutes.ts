@@ -168,6 +168,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleContextPreview = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const projectName = req.query.project as string;
+    const platformSource = req.query.platformSource as string | undefined;
 
     if (!projectName) {
       this.badRequest(res, 'Project parameter is required');
@@ -184,9 +185,11 @@ export class SearchRoutes extends BaseRouteHandler {
     const contextText = await generateContext(
       {
         session_id: 'preview-' + Date.now(),
-        cwd: cwd
+        cwd: cwd,
+        projects: [projectName],
+        platform_source: platformSource
       },
-      true  // useColors=true for ANSI terminal output
+      true  // forHuman=true for ANSI terminal output
     );
 
     // Return as plain text
@@ -208,8 +211,9 @@ export class SearchRoutes extends BaseRouteHandler {
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     // Support both legacy `project` and new `projects` parameter
     const projectsParam = (req.query.projects as string) || (req.query.project as string);
-    const useColors = req.query.colors === 'true';
+    const forHuman = req.query.colors === 'true';
     const full = req.query.full === 'true';
+    const platformSource = req.query.platformSource as string | undefined;
 
     if (!projectsParam) {
       this.badRequest(res, 'Project(s) parameter is required');
@@ -237,9 +241,10 @@ export class SearchRoutes extends BaseRouteHandler {
         session_id: 'context-inject-' + Date.now(),
         cwd: cwd,
         projects: projects,
-        full
+        full,
+        platform_source: platformSource
       },
-      useColors
+      forHuman
     );
 
     // Return as plain text

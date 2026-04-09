@@ -170,6 +170,14 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
   // NOTE FROM THEDOTMACK: 100% of the time we must SAVE the summary, even if fields are missing. 10/24/2025
   // NEVER DO THIS NONSENSE AGAIN.
 
+  // Guard: if NO sub-tags matched at all, this is a false positive —
+  // <summary> accidentally appeared inside an <observation> response with no structured content.
+  // This is NOT the same as missing some fields (which we intentionally allow above).
+  // Fix for #1360.
+  if (!requestResult.value && !investigatedResult.value && !learnedResult.value && !completedResult.value && !nextStepsResult.value) {
+    logger.warn('PARSER', 'Summary match has no sub-tags — skipping false positive', { sessionId });
+    return null;
+  }
   return {
     request: requestResult.value || null,
     investigated: investigatedResult.value || null,

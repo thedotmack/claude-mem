@@ -28,21 +28,21 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 }));
 
 import {
-  renderMarkdownHeader,
-  renderMarkdownLegend,
-  renderMarkdownColumnKey,
-  renderMarkdownContextIndex,
-  renderMarkdownContextEconomics,
-  renderMarkdownDayHeader,
-  renderMarkdownFileHeader,
-  renderMarkdownTableRow,
-  renderMarkdownFullObservation,
-  renderMarkdownSummaryItem,
-  renderMarkdownSummaryField,
-  renderMarkdownPreviouslySection,
-  renderMarkdownFooter,
-  renderMarkdownEmptyState,
-} from '../../../src/services/context/formatters/MarkdownFormatter.js';
+  renderAgentHeader,
+  renderAgentLegend,
+  renderAgentColumnKey,
+  renderAgentContextIndex,
+  renderAgentContextEconomics,
+  renderAgentDayHeader,
+  renderAgentFileHeader,
+  renderAgentTableRow,
+  renderAgentFullObservation,
+  renderAgentSummaryItem,
+  renderAgentSummaryField,
+  renderAgentPreviouslySection,
+  renderAgentFooter,
+  renderAgentEmptyState,
+} from '../../../src/services/context/formatters/AgentFormatter.js';
 
 import type { Observation, TokenEconomics, ContextConfig, PriorMessages } from '../../../src/services/context/types.js';
 
@@ -97,209 +97,164 @@ function createTestConfig(overrides: Partial<ContextConfig> = {}): ContextConfig
   };
 }
 
-describe('MarkdownFormatter', () => {
-  describe('renderMarkdownHeader', () => {
+describe('AgentFormatter', () => {
+  describe('renderAgentHeader', () => {
     it('should produce valid markdown header with project name', () => {
-      const result = renderMarkdownHeader('my-project');
+      const result = renderAgentHeader('my-project');
 
       expect(result).toHaveLength(2);
-      expect(result[0]).toMatch(/^# \[my-project\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
+      expect(result[0]).toMatch(/^# \$CMEM my-project \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
       expect(result[1]).toBe('');
     });
 
     it('should handle special characters in project name', () => {
-      const result = renderMarkdownHeader('project-with-special_chars.v2');
+      const result = renderAgentHeader('project-with-special_chars.v2');
 
       expect(result[0]).toContain('project-with-special_chars.v2');
     });
 
     it('should handle empty project name', () => {
-      const result = renderMarkdownHeader('');
+      const result = renderAgentHeader('');
 
-      expect(result[0]).toMatch(/^# \[\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
+      expect(result[0]).toMatch(/^# \$CMEM  \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
     });
   });
 
-  describe('renderMarkdownLegend', () => {
+  describe('renderAgentLegend', () => {
     it('should produce legend with type items', () => {
-      const result = renderMarkdownLegend();
+      const result = renderAgentLegend();
 
-      expect(result).toHaveLength(2);
-      expect(result[0]).toContain('**Legend:**');
-      expect(result[1]).toBe('');
+      expect(result).toHaveLength(4);
+      expect(result[0]).toContain('Legend:');
+      expect(result[3]).toBe('');
     });
 
-    it('should include session-request in legend', () => {
-      const result = renderMarkdownLegend();
+    it('should include session in legend', () => {
+      const result = renderAgentLegend();
 
-      expect(result[0]).toContain('session-request');
-    });
-  });
-
-  describe('renderMarkdownColumnKey', () => {
-    it('should produce column key explanation', () => {
-      const result = renderMarkdownColumnKey();
-
-      expect(result.length).toBeGreaterThan(0);
-      expect(result[0]).toContain('**Column Key**');
-    });
-
-    it('should explain Read column', () => {
-      const result = renderMarkdownColumnKey();
-      const joined = result.join('\n');
-
-      expect(joined).toContain('Read');
-      expect(joined).toContain('Tokens to read');
-    });
-
-    it('should explain Work column', () => {
-      const result = renderMarkdownColumnKey();
-      const joined = result.join('\n');
-
-      expect(joined).toContain('Work');
-      expect(joined).toContain('Tokens spent');
+      expect(result[0]).toContain('session');
     });
   });
 
-  describe('renderMarkdownContextIndex', () => {
-    it('should produce context index instructions', () => {
-      const result = renderMarkdownContextIndex();
+  describe('renderAgentColumnKey', () => {
+    it('should return empty array in compact format', () => {
+      const result = renderAgentColumnKey();
 
-      expect(result.length).toBeGreaterThan(0);
-      expect(result[0]).toContain('**Context Index:**');
-    });
-
-    it('should mention mem-search skill', () => {
-      const result = renderMarkdownContextIndex();
-      const joined = result.join('\n');
-
-      expect(joined).toContain('mem-search');
+      expect(result).toHaveLength(0);
     });
   });
 
-  describe('renderMarkdownContextEconomics', () => {
+  describe('renderAgentContextIndex', () => {
+    it('should return empty array in compact format', () => {
+      const result = renderAgentContextIndex();
+
+      expect(result).toHaveLength(0);
+    });
+  });
+
+  describe('renderAgentContextEconomics', () => {
     it('should include observation count', () => {
       const economics = createTestEconomics({ totalObservations: 25 });
       const config = createTestConfig();
 
-      const result = renderMarkdownContextEconomics(economics, config);
+      const result = renderAgentContextEconomics(economics, config);
       const joined = result.join('\n');
 
-      expect(joined).toContain('25 observations');
+      expect(joined).toContain('25 obs');
     });
 
     it('should include read tokens', () => {
       const economics = createTestEconomics({ totalReadTokens: 1500 });
       const config = createTestConfig();
 
-      const result = renderMarkdownContextEconomics(economics, config);
+      const result = renderAgentContextEconomics(economics, config);
       const joined = result.join('\n');
 
-      expect(joined).toContain('1,500 tokens');
+      expect(joined).toContain('1,500t read');
     });
 
     it('should include work investment', () => {
       const economics = createTestEconomics({ totalDiscoveryTokens: 10000 });
       const config = createTestConfig();
 
-      const result = renderMarkdownContextEconomics(economics, config);
+      const result = renderAgentContextEconomics(economics, config);
       const joined = result.join('\n');
 
-      expect(joined).toContain('10,000 tokens');
+      expect(joined).toContain('10,000t work');
     });
 
     it('should show savings when config has showSavingsAmount', () => {
       const economics = createTestEconomics({ savings: 4500, savingsPercent: 90, totalDiscoveryTokens: 5000 });
       const config = createTestConfig({ showSavingsAmount: true, showSavingsPercent: false });
 
-      const result = renderMarkdownContextEconomics(economics, config);
+      const result = renderAgentContextEconomics(economics, config);
       const joined = result.join('\n');
 
-      expect(joined).toContain('savings');
-      expect(joined).toContain('4,500 tokens');
+      expect(joined).toContain('4,500t saved');
     });
 
     it('should show savings percent when config has showSavingsPercent', () => {
       const economics = createTestEconomics({ savingsPercent: 85, totalDiscoveryTokens: 1000 });
       const config = createTestConfig({ showSavingsAmount: false, showSavingsPercent: true });
 
-      const result = renderMarkdownContextEconomics(economics, config);
+      const result = renderAgentContextEconomics(economics, config);
       const joined = result.join('\n');
 
-      expect(joined).toContain('85%');
+      expect(joined).toContain('85% savings');
     });
 
     it('should not show savings when discovery tokens is 0', () => {
       const economics = createTestEconomics({ totalDiscoveryTokens: 0, savings: 0, savingsPercent: 0 });
       const config = createTestConfig({ showSavingsAmount: true, showSavingsPercent: true });
 
-      const result = renderMarkdownContextEconomics(economics, config);
+      const result = renderAgentContextEconomics(economics, config);
       const joined = result.join('\n');
 
-      expect(joined).not.toContain('Your savings');
+      expect(joined).not.toContain('savings');
     });
   });
 
-  describe('renderMarkdownDayHeader', () => {
+  describe('renderAgentDayHeader', () => {
     it('should render day as h3 heading', () => {
-      const result = renderMarkdownDayHeader('2025-01-01');
+      const result = renderAgentDayHeader('2025-01-01');
 
-      expect(result).toHaveLength(2);
+      expect(result).toHaveLength(1);
       expect(result[0]).toBe('### 2025-01-01');
-      expect(result[1]).toBe('');
     });
   });
 
-  describe('renderMarkdownFileHeader', () => {
-    it('should render file name in bold', () => {
-      const result = renderMarkdownFileHeader('src/index.ts');
+  describe('renderAgentFileHeader', () => {
+    it('should return empty array in compact format', () => {
+      const result = renderAgentFileHeader('src/index.ts');
 
-      expect(result[0]).toBe('**src/index.ts**');
-    });
-
-    it('should include table headers', () => {
-      const result = renderMarkdownFileHeader('test.ts');
-      const joined = result.join('\n');
-
-      expect(joined).toContain('| ID |');
-      expect(joined).toContain('| Time |');
-      expect(joined).toContain('| T |');
-      expect(joined).toContain('| Title |');
-      expect(joined).toContain('| Read |');
-      expect(joined).toContain('| Work |');
-    });
-
-    it('should include separator row', () => {
-      const result = renderMarkdownFileHeader('test.ts');
-
-      expect(result[2]).toContain('|----');
+      expect(result).toHaveLength(0);
     });
   });
 
-  describe('renderMarkdownTableRow', () => {
-    it('should include observation ID with hash prefix', () => {
+  describe('renderAgentTableRow', () => {
+    it('should include observation ID', () => {
       const obs = createTestObservation({ id: 42 });
       const config = createTestConfig();
 
-      const result = renderMarkdownTableRow(obs, '10:30', config);
+      const result = renderAgentTableRow(obs, '10:30 AM', config);
 
-      expect(result).toContain('#42');
+      expect(result).toContain('42');
     });
 
-    it('should include time display', () => {
+    it('should include compact time display', () => {
       const obs = createTestObservation();
       const config = createTestConfig();
 
-      const result = renderMarkdownTableRow(obs, '14:30', config);
+      const result = renderAgentTableRow(obs, '2:30 PM', config);
 
-      expect(result).toContain('14:30');
+      expect(result).toContain('2:30p');
     });
 
     it('should include title', () => {
       const obs = createTestObservation({ title: 'Important Discovery' });
       const config = createTestConfig();
 
-      const result = renderMarkdownTableRow(obs, '10:00', config);
+      const result = renderAgentTableRow(obs, '10:00 AM', config);
 
       expect(result).toContain('Important Discovery');
     });
@@ -308,30 +263,18 @@ describe('MarkdownFormatter', () => {
       const obs = createTestObservation({ title: null });
       const config = createTestConfig();
 
-      const result = renderMarkdownTableRow(obs, '10:00', config);
+      const result = renderAgentTableRow(obs, '10:00 AM', config);
 
       expect(result).toContain('Untitled');
     });
 
-    it('should show read tokens when config enabled', () => {
-      const obs = createTestObservation();
-      const config = createTestConfig({ showReadTokens: true });
+    it('should produce flat format: ID TIME TYPE TITLE', () => {
+      const obs = createTestObservation({ id: 5 });
+      const config = createTestConfig();
 
-      const result = renderMarkdownTableRow(obs, '10:00', config);
+      const result = renderAgentTableRow(obs, '10:00 AM', config);
 
-      expect(result).toContain('~');
-    });
-
-    it('should hide read tokens when config disabled', () => {
-      const obs = createTestObservation();
-      const config = createTestConfig({ showReadTokens: false });
-
-      const result = renderMarkdownTableRow(obs, '10:00', config);
-
-      // Row should have empty read column
-      const columns = result.split('|');
-      // Find the Read column (5th column, index 5)
-      expect(columns[5].trim()).toBe('');
+      expect(result).toBe('5 10:00a I Test Observation');
     });
 
     it('should use quote mark for repeated time', () => {
@@ -339,21 +282,21 @@ describe('MarkdownFormatter', () => {
       const config = createTestConfig();
 
       // Empty string timeDisplay means "same as previous"
-      const result = renderMarkdownTableRow(obs, '', config);
+      const result = renderAgentTableRow(obs, '', config);
 
       expect(result).toContain('"');
     });
   });
 
-  describe('renderMarkdownFullObservation', () => {
+  describe('renderAgentFullObservation', () => {
     it('should include observation ID and title', () => {
       const obs = createTestObservation({ id: 7, title: 'Full Observation' });
       const config = createTestConfig();
 
-      const result = renderMarkdownFullObservation(obs, '10:00', 'Detail content', config);
+      const result = renderAgentFullObservation(obs, '10:00 AM', 'Detail content', config);
       const joined = result.join('\n');
 
-      expect(joined).toContain('**#7**');
+      expect(joined).toContain('**7**');
       expect(joined).toContain('**Full Observation**');
     });
 
@@ -361,7 +304,7 @@ describe('MarkdownFormatter', () => {
       const obs = createTestObservation();
       const config = createTestConfig();
 
-      const result = renderMarkdownFullObservation(obs, '10:00', 'The detailed narrative here', config);
+      const result = renderAgentFullObservation(obs, '10:00 AM', 'The detailed narrative here', config);
       const joined = result.join('\n');
 
       expect(joined).toContain('The detailed narrative here');
@@ -371,7 +314,7 @@ describe('MarkdownFormatter', () => {
       const obs = createTestObservation();
       const config = createTestConfig();
 
-      const result = renderMarkdownFullObservation(obs, '10:00', null, config);
+      const result = renderAgentFullObservation(obs, '10:00 AM', null, config);
 
       // Should not have an extra content block
       expect(result.length).toBeLessThan(5);
@@ -381,28 +324,30 @@ describe('MarkdownFormatter', () => {
       const obs = createTestObservation({ discovery_tokens: 250 });
       const config = createTestConfig({ showReadTokens: true, showWorkTokens: true });
 
-      const result = renderMarkdownFullObservation(obs, '10:00', null, config);
+      const result = renderAgentFullObservation(obs, '10:00 AM', null, config);
       const joined = result.join('\n');
 
-      expect(joined).toContain('Read:');
-      expect(joined).toContain('Work:');
+      // Compact format: "~{readTokens}t" and "W {discoveryTokens}"
+      expect(joined).toContain('~');
+      expect(joined).toContain('t');
+      expect(joined).toContain('W 250');
     });
   });
 
-  describe('renderMarkdownSummaryItem', () => {
+  describe('renderAgentSummaryItem', () => {
     it('should include session ID with S prefix', () => {
       const summary = { id: 5, request: 'Implement feature' };
 
-      const result = renderMarkdownSummaryItem(summary, '2025-01-01 10:00');
+      const result = renderAgentSummaryItem(summary, '2025-01-01 10:00');
       const joined = result.join('\n');
 
-      expect(joined).toContain('**#S5**');
+      expect(joined).toContain('S5');
     });
 
     it('should include request text', () => {
       const summary = { id: 1, request: 'Build authentication' };
 
-      const result = renderMarkdownSummaryItem(summary, '10:00');
+      const result = renderAgentSummaryItem(summary, '10:00');
       const joined = result.join('\n');
 
       expect(joined).toContain('Build authentication');
@@ -411,16 +356,16 @@ describe('MarkdownFormatter', () => {
     it('should use "Session started" when request is null', () => {
       const summary = { id: 1, request: null };
 
-      const result = renderMarkdownSummaryItem(summary, '10:00');
+      const result = renderAgentSummaryItem(summary, '10:00');
       const joined = result.join('\n');
 
       expect(joined).toContain('Session started');
     });
   });
 
-  describe('renderMarkdownSummaryField', () => {
+  describe('renderAgentSummaryField', () => {
     it('should render label and value in bold', () => {
-      const result = renderMarkdownSummaryField('Learned', 'How to test');
+      const result = renderAgentSummaryField('Learned', 'How to test');
 
       expect(result).toHaveLength(2);
       expect(result[0]).toBe('**Learned**: How to test');
@@ -428,27 +373,27 @@ describe('MarkdownFormatter', () => {
     });
 
     it('should return empty array when value is null', () => {
-      const result = renderMarkdownSummaryField('Learned', null);
+      const result = renderAgentSummaryField('Learned', null);
 
       expect(result).toHaveLength(0);
     });
 
     it('should return empty array when value is empty string', () => {
-      const result = renderMarkdownSummaryField('Learned', '');
+      const result = renderAgentSummaryField('Learned', '');
 
       // Empty string is falsy, so should return empty array
       expect(result).toHaveLength(0);
     });
   });
 
-  describe('renderMarkdownPreviouslySection', () => {
+  describe('renderAgentPreviouslySection', () => {
     it('should render section when assistantMessage exists', () => {
       const priorMessages: PriorMessages = {
         userMessage: '',
         assistantMessage: 'I completed the task successfully.',
       };
 
-      const result = renderMarkdownPreviouslySection(priorMessages);
+      const result = renderAgentPreviouslySection(priorMessages);
       const joined = result.join('\n');
 
       expect(joined).toContain('**Previously**');
@@ -461,7 +406,7 @@ describe('MarkdownFormatter', () => {
         assistantMessage: '',
       };
 
-      const result = renderMarkdownPreviouslySection(priorMessages);
+      const result = renderAgentPreviouslySection(priorMessages);
 
       expect(result).toHaveLength(0);
     });
@@ -472,31 +417,30 @@ describe('MarkdownFormatter', () => {
         assistantMessage: 'Some message',
       };
 
-      const result = renderMarkdownPreviouslySection(priorMessages);
+      const result = renderAgentPreviouslySection(priorMessages);
       const joined = result.join('\n');
 
       expect(joined).toContain('---');
     });
   });
 
-  describe('renderMarkdownFooter', () => {
-    it('should include token amounts', () => {
-      const result = renderMarkdownFooter(10000, 500);
+  describe('renderAgentFooter', () => {
+    it('should include work token amount in k', () => {
+      const result = renderAgentFooter(10000, 500);
       const joined = result.join('\n');
 
       expect(joined).toContain('10k');
-      expect(joined).toContain('500');
     });
 
-    it('should mention claude-mem skill', () => {
-      const result = renderMarkdownFooter(5000, 100);
+    it('should mention mem-search skill', () => {
+      const result = renderAgentFooter(5000, 100);
       const joined = result.join('\n');
 
-      expect(joined).toContain('claude-mem');
+      expect(joined).toContain('mem-search skill');
     });
 
     it('should round work tokens to nearest thousand', () => {
-      const result = renderMarkdownFooter(15500, 100);
+      const result = renderAgentFooter(15500, 100);
       const joined = result.join('\n');
 
       // 15500 / 1000 = 15.5 -> rounds to 16
@@ -504,25 +448,25 @@ describe('MarkdownFormatter', () => {
     });
   });
 
-  describe('renderMarkdownEmptyState', () => {
+  describe('renderAgentEmptyState', () => {
     it('should return helpful message with project name', () => {
-      const result = renderMarkdownEmptyState('my-project');
+      const result = renderAgentEmptyState('my-project');
 
-      expect(result).toContain('# [my-project] recent context');
-      expect(result).toContain('No previous sessions found');
+      expect(result).toContain('# $CMEM my-project');
+      expect(result).toContain('No previous sessions found.');
     });
 
     it('should be valid markdown', () => {
-      const result = renderMarkdownEmptyState('test');
+      const result = renderAgentEmptyState('test');
 
       // Should start with h1
       expect(result.startsWith('#')).toBe(true);
     });
 
     it('should handle empty project name', () => {
-      const result = renderMarkdownEmptyState('');
+      const result = renderAgentEmptyState('');
 
-      expect(result).toContain('# [] recent context');
+      expect(result).toContain('# $CMEM ');
     });
   });
 });

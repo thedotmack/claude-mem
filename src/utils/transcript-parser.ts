@@ -5,6 +5,7 @@
 
 import { readFileSync } from 'fs';
 import { logger } from './logger.js';
+import { SYSTEM_REMINDER_REGEX } from './tag-stripping.js';
 import type {
   TranscriptEntry,
   UserTranscriptEntry,
@@ -163,7 +164,7 @@ export class TranscriptParser {
 
       if (filterSystemReminders) {
         // Filter out system-reminder tags and their content
-        text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '');
+        text = text.replace(SYSTEM_REMINDER_REGEX, '');
         // Clean up excessive whitespace
         text = text.replace(/\n{3,}/g, '\n\n').trim();
       }

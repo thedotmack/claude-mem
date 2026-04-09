@@ -11,12 +11,14 @@
 
 import { SessionManager } from '../SessionManager.js';
 import { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
+import { DatabaseManager } from '../DatabaseManager.js';
 import { logger } from '../../../utils/logger.js';
 
 export class SessionCompletionHandler {
   constructor(
     private sessionManager: SessionManager,
-    private eventBroadcaster: SessionEventBroadcaster
+    private eventBroadcaster: SessionEventBroadcaster,
+    private dbManager: DatabaseManager
   ) {}
 
   /**
@@ -24,6 +26,9 @@ export class SessionCompletionHandler {
    * Used by DELETE /api/sessions/:id and POST /api/sessions/:id/complete
    */
   async completeByDbId(sessionDbId: number): Promise<void> {
+    // Persist completion to database before in-memory cleanup (fix for #1532)
+    this.dbManager.getSessionStore().markSessionCompleted(sessionDbId);
+
     // Delete from session manager (aborts SDK agent via SIGTERM)
     await this.sessionManager.deleteSession(sessionDbId);
 

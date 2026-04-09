@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from 'fs';
 import { logger } from '../utils/logger.js';
+import { SYSTEM_REMINDER_REGEX } from '../utils/tag-stripping.js';
 
 /**
  * Extract last message of specified role from transcript JSONL file
@@ -48,7 +49,7 @@ export function extractLastMessage(
         }
 
         if (stripSystemReminders) {
-          text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '');
+          text = text.replace(SYSTEM_REMINDER_REGEX, '');
           text = text.replace(/\n{3,}/g, '\n\n').trim();
         }
 

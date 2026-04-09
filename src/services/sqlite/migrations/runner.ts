@@ -6,6 +6,7 @@ import {
   TableNameRow,
   SchemaVersion
 } from '../../../types/database.js';
+import { DEFAULT_PLATFORM_SOURCE } from '../../../shared/platform-source.js';
 
 /**
  * MigrationRunner handles all database schema migrations
@@ -37,6 +38,7 @@ export class MigrationRunner {
     this.addSupersessionTrainingTables();
     this.addHandoffObservationType();
     this.createObservationFeedbackTable();
+    this.addSessionPlatformSourceColumn();
   }
 
   /**
@@ -64,6 +66,7 @@ export class MigrationRunner {
         content_session_id TEXT UNIQUE NOT NULL,
         memory_session_id TEXT UNIQUE,
         project TEXT NOT NULL,
+        platform_source TEXT NOT NULL DEFAULT 'claude',
         user_prompt TEXT,
         started_at TEXT NOT NULL,
         started_at_epoch INTEGER NOT NULL,
@@ -656,10 +659,9 @@ export class MigrationRunner {
     this.db.run('BEGIN TRANSACTION');
 
     try {
-      // ==========================================
+      // ===================================
       // 1. Recreate observations table
-      // ==========================================
-
+      // ===================================
       // Drop FTS triggers first (they reference the observations table)
       this.db.run('DROP TRIGGER IF EXISTS observations_ai');
       this.db.run('DROP TRIGGER IF EXISTS observations_ad');
@@ -732,10 +734,9 @@ export class MigrationRunner {
         `);
       }
 
-      // ==========================================
+      // ===================================
       // 2. Recreate session_summaries table
-      // ==========================================
-
+      // ===================================
       // Clean up leftover temp table from a previously-crashed run
       this.db.run('DROP TABLE IF EXISTS session_summaries_new');
 
@@ -1001,5 +1002,35 @@ export class MigrationRunner {
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
     logger.debug('DB', 'Created observation_feedback table for usage tracking');
+  }
+
+  /**
+   * Add platform_source column to sdk_sessions for Claude/Codex isolation (migration 25)
+   */
+  private addSessionPlatformSourceColumn(): void {
+    const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'platform_source');
+    const indexInfo = this.db.query('PRAGMA index_list(sdk_sessions)').all() as IndexInfo[];
+    const hasIndex = indexInfo.some(index => index.name === 'idx_sdk_sessions_platform_source');
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(25) as SchemaVersion | undefined;
+
+    if (applied && hasColumn && hasIndex) return;
+
+    if (!hasColumn) {
+      this.db.run(`ALTER TABLE sdk_sessions ADD COLUMN platform_source TEXT NOT NULL DEFAULT '${DEFAULT_PLATFORM_SOURCE}'`);
+      logger.debug('DB', 'Added platform_source column to sdk_sessions table');
+    }
+
+    this.db.run(`
+      UPDATE sdk_sessions
+      SET platform_source = '${DEFAULT_PLATFORM_SOURCE}'
+      WHERE platform_source IS NULL OR platform_source = ''
+    `);
+
+    if (!hasIndex) {
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
   }
 }

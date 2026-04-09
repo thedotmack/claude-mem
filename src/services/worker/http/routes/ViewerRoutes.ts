@@ -68,6 +68,14 @@ export class ViewerRoutes extends BaseRouteHandler {
    * SSE stream endpoint
    */
   private handleSSEStream = this.wrapHandler((req: Request, res: Response): void => {
+    // Guard: if DB is not yet initialized, return 503 before registering client
+    try {
+      this.dbManager.getSessionStore();
+    } catch {
+      res.status(503).json({ error: 'Service initializing' });
+      return;
+    }
+
     // Setup SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -76,11 +84,13 @@ export class ViewerRoutes extends BaseRouteHandler {
     // Add client to broadcaster
     this.sseBroadcaster.addClient(res);
 
-    // Send initial_load event with projects list
-    const allProjects = this.dbManager.getSessionStore().getAllProjects();
+    // Send initial_load event with project/source catalog
+    const projectCatalog = this.dbManager.getSessionStore().getProjectCatalog();
     this.sseBroadcaster.broadcast({
       type: 'initial_load',
-      projects: allProjects,
+      projects: projectCatalog.projects,
+      sources: projectCatalog.sources,
+      projectsBySource: projectCatalog.projectsBySource,
       timestamp: Date.now()
     });
 

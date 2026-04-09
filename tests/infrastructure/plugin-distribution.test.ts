@@ -67,14 +67,11 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
     expect(parsed.hooks).toBeDefined();
   });
 
-  it('should reference CLAUDE_PLUGIN_ROOT in all hook commands (except inline hooks)', () => {
+  it('should reference CLAUDE_PLUGIN_ROOT in all hook commands', () => {
     const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
-    // SessionEnd uses a lightweight inline node -e command (no plugin root needed)
-    const inlineHookEvents = new Set(['SessionEnd']);
 
     for (const [eventName, matchers] of Object.entries(parsed.hooks)) {
-      if (inlineHookEvents.has(eventName)) continue;
       for (const matcher of matchers as any[]) {
         for (const hook of matcher.hooks) {
           if (hook.type === 'command') {
@@ -85,14 +82,12 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
     }
   });
 
-  it('should include CLAUDE_PLUGIN_ROOT fallback in all hook commands except inline hooks (#1215)', () => {
+  it('should include CLAUDE_PLUGIN_ROOT fallback in all hook commands (#1215)', () => {
     const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
     const expectedFallbackPath = '$HOME/.claude/plugins/marketplaces/thedotmack/plugin';
-    const inlineHookEvents = new Set(['SessionEnd']);
 
     for (const [eventName, matchers] of Object.entries(parsed.hooks)) {
-      if (inlineHookEvents.has(eventName)) continue;
       for (const matcher of matchers as any[]) {
         for (const hook of matcher.hooks) {
           if (hook.type === 'command') {
@@ -103,16 +98,23 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
     }
   });
 
-  it('should use lightweight inline node command for SessionEnd hook', () => {
+  it('should try cache path before marketplaces fallback in all hook commands (#1533)', () => {
     const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
-    const sessionEndHooks = parsed.hooks.SessionEnd;
-    expect(sessionEndHooks).toBeDefined();
-    expect(sessionEndHooks.length).toBe(1);
-    const command = sessionEndHooks[0].hooks[0].command;
-    expect(command).toContain('node -e');
-    expect(command).toContain('/api/sessions/complete');
-    expect(sessionEndHooks[0].hooks[0].timeout).toBeLessThanOrEqual(10);
+    const cachePath = '$HOME/.claude/plugins/cache/thedotmack/claude-mem';
+    const marketplacesPath = '$HOME/.claude/plugins/marketplaces/thedotmack/plugin';
+
+    for (const [eventName, matchers] of Object.entries(parsed.hooks)) {
+      for (const matcher of matchers as any[]) {
+        for (const hook of matcher.hooks) {
+          if (hook.type === 'command') {
+            expect(hook.command).toContain(cachePath);
+            // Cache lookup must appear before the final marketplaces fallback
+            expect(hook.command.indexOf(cachePath)).toBeLessThan(hook.command.indexOf(marketplacesPath));
+          }
+        }
+      }
+    }
   });
 });
 

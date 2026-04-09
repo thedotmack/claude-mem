@@ -111,3 +111,42 @@ export function getObservationsForSession(
 
   return stmt.all(memorySessionId) as ObservationSessionRow[];
 }
+
+/**
+ * Get observations associated with a given file path, scoped to specific projects.
+ * Matches on the full file path (not just basename) to avoid cross-project collisions.
+ */
+export function getObservationsByFilePath(
+  db: Database,
+  filePath: string,
+  options?: { projects?: string[]; limit?: number }
+): ObservationRecord[] {
+  const rawLimit = options?.limit;
+  const limit = Number.isInteger(rawLimit) && (rawLimit as number) > 0
+    ? Math.min(rawLimit as number, 100)
+    : 15;
+  const params: (string | number)[] = [filePath, filePath];
+
+  let projectClause = '';
+  if (options?.projects?.length) {
+    const placeholders = options.projects.map(() => '?').join(',');
+    projectClause = `AND project IN (${placeholders})`;
+    params.push(...options.projects);
+  }
+
+  params.push(limit);
+
+  const stmt = db.prepare(`
+    SELECT *
+    FROM observations
+    WHERE (
+      (files_read LIKE '[%' AND EXISTS (SELECT 1 FROM json_each(files_read) WHERE value = ?))
+      OR (files_modified LIKE '[%' AND EXISTS (SELECT 1 FROM json_each(files_modified) WHERE value = ?))
+    )
+    ${projectClause}
+    ORDER BY created_at_epoch DESC
+    LIMIT ?
+  `);
+
+  return stmt.all(...params) as ObservationRecord[];
+}
