@@ -979,3 +979,89 @@ describe("SSE stream integration", () => {
     await getService().stop({});
   });
 });
+
+describe("circuit breaker", () => {
+  // Reset circuit breaker state before each test by firing gateway_start.
+  // The circuit is module-level state, so tests would otherwise bleed into each other.
+  beforeEach(async () => {
+    const { api, fireEvent } = createMockApi({ workerPort: 59999 });
+    claudeMemPlugin(api);
+    await fireEvent("gateway_start", {}, {});
+  });
+
+  it("opens after threshold failures and stops further requests", async () => {
+    const { api, logs, fireEvent } = createMockApi({ workerPort: 59999 });
+    claudeMemPlugin(api);
+    // Reset circuit inside the test body to guard against timers from preceding
+    // tests (e.g. completionDelayMs timers) that may fire between beforeEach and here.
+    await fireEvent("gateway_start", {}, {});
+
+    // Fire threshold+1 calls so the circuit is open by the end of the loop
+    // regardless of whether a concurrent timer fires at the exact boundary.
+    for (let i = 0; i < 4; i++) {
+      await fireEvent("before_agent_start", { prompt: "hello" }, { sessionKey: `cb-open-${i}` });
+    }
+
+    // Circuit is now OPEN. Subsequent calls must be silently dropped.
+    const logCountBeforeDrop = logs.length;
+    await fireEvent("before_agent_start", { prompt: "hello" }, { sessionKey: "cb-drop" });
+    const noisyDropLogs = logs.slice(logCountBeforeDrop).filter(
+      (l) => l.includes("failed") || l.includes("disabling")
+    );
+    assert.equal(noisyDropLogs.length, 0, "calls when circuit is open should be silently dropped");
+  });
+
+  it("logs individual failures while circuit is closed, then disabling when it opens", async () => {
+    const { api, logs, fireEvent } = createMockApi({ workerPort: 59999 });
+    claudeMemPlugin(api);
+    await fireEvent("gateway_start", {}, {});
+    const logsAfterReset = logs.length;
+
+    // Fire exactly threshold (3) calls
+    for (let i = 0; i < 3; i++) {
+      await fireEvent("before_agent_start", { prompt: "hello" }, { sessionKey: `cb-log-${i}` });
+    }
+
+    const newLogs = logs.slice(logsAfterReset);
+    // At least some failures should have been logged (circuit was active)
+    assert.ok(newLogs.length > 0, "threshold calls should produce log output");
+    // Exactly one disabling warning should appear
+    const disablingLogs = newLogs.filter((l) => l.includes("disabling requests"));
+    assert.equal(disablingLogs.length, 1, "should emit exactly one disabling warning when circuit opens");
+    // The last call (the threshold-crossing one) should NOT log an individual failure
+    const failureLogs = newLogs.filter((l) => l.includes("failed:"));
+    assert.ok(failureLogs.length < 3, "threshold-crossing call should not log an individual failure");
+  });
+
+  it("resets on gateway_start, allowing connections again", async () => {
+    const { api, logs, fireEvent } = createMockApi({ workerPort: 59999 });
+    claudeMemPlugin(api);
+    await fireEvent("gateway_start", {}, {});
+
+    // Open the circuit by firing threshold+1 calls
+    for (let i = 0; i < 4; i++) {
+      await fireEvent("before_agent_start", { prompt: "hello" }, { sessionKey: `cb-reset-${i}` });
+    }
+
+    // Confirm circuit is open (call is silently dropped)
+    const logCountWhileOpen = logs.length;
+    await fireEvent("before_agent_start", { prompt: "hello" }, { sessionKey: "cb-while-open" });
+    assert.equal(
+      logs.slice(logCountWhileOpen).filter((l) => l.includes("failed") || l.includes("disabling")).length,
+      0,
+      "call while circuit is open should be silently dropped"
+    );
+
+    // gateway_start resets the circuit
+    await fireEvent("gateway_start", {}, {});
+
+    // Next call should attempt to connect again (not silently drop)
+    const logCountAfterReset = logs.length;
+    await fireEvent("before_agent_start", { prompt: "hello" }, { sessionKey: "cb-after-reset" });
+    const newLogs = logs.slice(logCountAfterReset);
+    assert.ok(
+      newLogs.some((l) => l.includes("failed:") || l.includes("disabling")),
+      "should attempt worker connection after gateway_start reset"
+    );
+  });
+});
