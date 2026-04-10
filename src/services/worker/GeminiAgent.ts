@@ -200,6 +200,7 @@ export class GeminiAgent {
         // CLAIM-CONFIRM: Track message ID for confirmProcessed() after successful storage
         // The message is now in 'processing' status in DB until ResponseProcessor calls confirmProcessed()
         session.processingMessageIds.push(message._persistentId);
+        session.processingMessageMeta.push({ tool_name: message.tool_name, tool_input: message.tool_input });
 
         // Capture cwd from each message for worktree support
         if (message.cwd) {

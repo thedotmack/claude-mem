@@ -24,6 +24,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
+import { extractSourceMetadata } from '../metadata-extractor.js';
 
 /**
  * Process agent response text (parse XML, save to database, sync to Chroma, broadcast SSE)
@@ -107,6 +108,21 @@ export async function processAgentResponse(
     memorySessionId: session.memorySessionId
   });
 
+  // Build source metadata from the pending message that triggered this LLM turn
+  let sourceMetadata: Record<string, unknown> | undefined;
+
+  // Defensive assertion: parallel arrays must stay in sync
+  if (session.processingMessageIds.length !== session.processingMessageMeta.length) {
+    logger.warn('RESPONSE', `processingMessageIds/Meta length mismatch: ${session.processingMessageIds.length} vs ${session.processingMessageMeta.length}`);
+  }
+
+  if (session.processingMessageMeta.length > 0) {
+    const lastMeta = session.processingMessageMeta[session.processingMessageMeta.length - 1];
+    if (lastMeta.tool_name) {
+      sourceMetadata = { ...extractSourceMetadata(lastMeta.tool_name, lastMeta.tool_input) };
+    }
+  }
+
   // ATOMIC TRANSACTION: Store observations + summary ONCE
   // Messages are already deleted from queue on claim, so no completion tracking needed
   const result = sessionStore.storeObservations(
@@ -137,6 +153,7 @@ export async function processAgentResponse(
   }
   // Clear the tracking array after confirmation
   session.processingMessageIds = [];
+  session.processingMessageMeta = [];
 
   // AFTER transaction commits - async operations (can fail safely without data loss)
   await syncAndBroadcastObservations(
@@ -147,7 +164,8 @@ export async function processAgentResponse(
     worker,
     discoveryTokens,
     agentName,
-    projectRoot
+    projectRoot,
+    sourceMetadata
   );
 
   // Sync and broadcast summary if present
@@ -200,7 +218,8 @@ async function syncAndBroadcastObservations(
   worker: WorkerRef | undefined,
   discoveryTokens: number,
   agentName: string,
-  projectRoot?: string
+  projectRoot?: string,
+  sourceMetadata?: Record<string, unknown>
 ): Promise<void> {
   for (let i = 0; i < observations.length; i++) {
     const obsId = result.observationIds[i];
@@ -250,7 +269,8 @@ async function syncAndBroadcastObservations(
       files_modified: JSON.stringify(obs.files_modified || []),
       project: session.project,
       prompt_number: session.lastPromptNumber,
-      created_at_epoch: result.createdAtEpoch
+      created_at_epoch: result.createdAtEpoch,
+      metadata: sourceMetadata ? JSON.stringify(sourceMetadata) : undefined
     });
   }
 
