@@ -334,7 +334,8 @@ export class SearchRoutes extends BaseRouteHandler {
           description: 'Search session summaries using full-text search',
           parameters: {
             query: 'Search query (required)',
-            limit: 'Number of results (default: 20)'
+            limit: 'Number of results (default: 20)',
+            project: 'Filter by project name (optional)'
           }
         },
         {

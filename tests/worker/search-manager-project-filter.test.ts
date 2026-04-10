@@ -55,22 +55,24 @@ function buildMocks() {
 
 describe('SearchManager - project filter (#1539)', () => {
   describe('searchObservations()', () => {
-    it('passes project to Chroma where filter when project is provided', async () => {
+    it('passes doc_type + project to Chroma where filter when project is provided', async () => {
       const { manager, chromaQueryArgs } = buildMocks();
 
       await manager.searchObservations({ query: 'typescript refactor', project: 'my-project' });
 
       expect(chromaQueryArgs.length).toBe(1);
-      expect(chromaQueryArgs[0].whereFilter).toEqual({ project: 'my-project' });
+      expect(chromaQueryArgs[0].whereFilter).toEqual({
+        $and: [{ doc_type: 'observation' }, { project: 'my-project' }],
+      });
     });
 
-    it('does not add project filter to Chroma when project is absent', async () => {
+    it('scopes to doc_type observation even when project is absent', async () => {
       const { manager, chromaQueryArgs } = buildMocks();
 
       await manager.searchObservations({ query: 'typescript refactor' });
 
       expect(chromaQueryArgs.length).toBe(1);
-      expect(chromaQueryArgs[0].whereFilter).toBeUndefined();
+      expect(chromaQueryArgs[0].whereFilter).toEqual({ doc_type: 'observation' });
     });
 
     it('passes project to SQLite hydration when Chroma returns results', async () => {
