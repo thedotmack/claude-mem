@@ -824,13 +824,14 @@ export class WorkerService {
       }
     }
 
-    // No fallback or both failed: mark messages abandoned and remove session so queue doesn't grow
+    // No fallback or both failed: drain messages and remove session so queue doesn't grow
     const pendingStore = this.sessionManager.getPendingMessageStore();
-    const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
-    if (abandoned > 0) {
-      logger.warn('SDK', 'No fallback available; marked pending messages abandoned', {
+    const { failed, requeued } = pendingStore.drainSessionMessages(sessionDbId);
+    if (failed > 0 || requeued > 0) {
+      logger.warn('SDK', 'No fallback available; drained pending messages', {
         sessionId: sessionDbId,
-        abandoned
+        failed,
+        requeued
       });
     }
     this.sessionManager.removeSessionImmediate(sessionDbId);
@@ -849,12 +850,13 @@ export class WorkerService {
    */
   private terminateSession(sessionDbId: number, reason: string): void {
     const pendingStore = this.sessionManager.getPendingMessageStore();
-    const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+    const { failed, requeued } = pendingStore.drainSessionMessages(sessionDbId);
 
     logger.info('SYSTEM', 'Session terminated', {
       sessionId: sessionDbId,
       reason,
-      abandonedMessages: abandoned
+      drainedFailed: failed,
+      drainedRequeued: requeued
     });
 
     // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()

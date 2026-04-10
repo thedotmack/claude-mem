@@ -34,17 +34,18 @@ export class SessionCompletionHandler {
 
     // Drain orphaned pending messages left by SIGTERM.
     // When deleteSession() aborts the generator, pending messages in the queue
-    // are never processed. Without drain, they stay in 'pending' status forever
-    // since no future generator will pick them up for a completed session.
+    // are never processed. drainSessionMessages() requeues recoverable messages
+    // (retry_count < maxRetries) so processPendingQueues() can recover them on
+    // next startup, and permanently fails exhausted ones.
     // Note: this is best-effort — if a generator outlives the 30s SIGTERM timeout
     // (SessionManager.deleteSession), it may enqueue messages after this drain.
     // In practice this race is rare (zero orphans over 23 days, 3400+ observations).
     try {
       const pendingStore = this.sessionManager.getPendingMessageStore();
-      const drainedCount = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
-      if (drainedCount > 0) {
-        logger.warn('SESSION', `Drained ${drainedCount} orphaned pending messages on session completion`, {
-          sessionId: sessionDbId, drainedCount
+      const { failed, requeued } = pendingStore.drainSessionMessages(sessionDbId);
+      if (failed > 0 || requeued > 0) {
+        logger.warn('SESSION', `Drained pending messages on session completion`, {
+          sessionId: sessionDbId, failed, requeued
         });
       }
     } catch (e) {

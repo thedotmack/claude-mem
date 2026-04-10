@@ -94,7 +94,7 @@ export const summarizeHandler: EventHandler = {
           timeoutMs: 5000
         });
         if (statusResponse.ok) {
-          const status = await statusResponse.json() as { queueLength?: number };
+          const status = await statusResponse.json() as { status?: string; queueLength?: number };
           if ((status.queueLength ?? 0) === 0) {
             logger.info('HOOK', 'Summary processing complete', {
               waitedMs: Date.now() - waitStart

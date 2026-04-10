@@ -43,6 +43,7 @@ describe('ResponseProcessor', () => {
   // Mocks
   let mockStoreObservations: ReturnType<typeof mock>;
   let mockMarkFailed: ReturnType<typeof mock>;
+  let mockConfirmProcessed: ReturnType<typeof mock>;
   let mockChromaSyncObservation: ReturnType<typeof mock>;
   let mockChromaSyncSummary: ReturnType<typeof mock>;
   let mockBroadcast: ReturnType<typeof mock>;
@@ -83,6 +84,7 @@ describe('ResponseProcessor', () => {
     } as unknown as DatabaseManager;
 
     mockMarkFailed = mock(() => {});
+    mockConfirmProcessed = mock(() => {});
 
     mockSessionManager = {
       getMessageIterator: async function* () {
@@ -90,8 +92,8 @@ describe('ResponseProcessor', () => {
       },
       getPendingMessageStore: () => ({
         markProcessed: mock(() => {}),
-        confirmProcessed: mock(() => {}),  // CLAIM-CONFIRM pattern: confirm after successful storage
-        markFailed: mockMarkFailed,         // Preserve messages on error for retry
+        confirmProcessed: mockConfirmProcessed,  // CLAIM-CONFIRM pattern: confirm after successful storage
+        markFailed: mockMarkFailed,               // Preserve messages on error for retry
         cleanupProcessed: mock(() => 0),
         resetStuckMessages: mock(() => 0),
       }),
@@ -478,8 +480,9 @@ describe('ResponseProcessor', () => {
   });
 
   describe('handling empty response', () => {
-    it('preserves pending messages via markFailed on empty response', async () => {
-      // Empty response WITH pending messages = error; preserve them
+    it('confirms and deletes pending messages on empty response (intentional skip)', async () => {
+      // Empty response WITH pending messages = intentional LLM skip per prompt contract.
+      // Messages should be confirmed (deleted) not retried.
       const session = createMockSession({
         processingMessageIds: [201],
       });
@@ -495,9 +498,32 @@ describe('ResponseProcessor', () => {
         'TestAgent'
       );
 
-      expect(mockMarkFailed).toHaveBeenCalledWith(201);
+      expect(mockConfirmProcessed).toHaveBeenCalledWith(201);
+      expect(mockMarkFailed).not.toHaveBeenCalled();
       expect(mockStoreObservations).not.toHaveBeenCalled();
-      expect(result.status).toBe('error');
+      expect(result.status).toBe('skipped');
+      expect(result.observationCount).toBe(0);
+    });
+
+    it('clears processingMessageIds after empty response skip', async () => {
+      const session = createMockSession({
+        processingMessageIds: [201, 202],
+      });
+
+      await processAgentResponse(
+        '',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(mockConfirmProcessed).toHaveBeenCalledWith(201);
+      expect(mockConfirmProcessed).toHaveBeenCalledWith(202);
+      expect(session.processingMessageIds).toHaveLength(0);
     });
 
     it('calls storeObservations normally on empty response with no pending messages (init case)', async () => {

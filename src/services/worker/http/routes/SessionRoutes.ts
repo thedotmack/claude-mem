@@ -658,14 +658,18 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
     const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    const pendingStore = this.sessionManager.getPendingMessageStore();
     const session = this.sessionManager.getSession(sessionDbId);
 
     if (!session) {
-      res.json({ status: 'not_found', queueLength: 0 });
+      // Session not in active map (already cleaned up or not yet started).
+      // Fall back to DB count so the stop hook doesn't exit early if a summarize
+      // message is pending but hasn't been claimed yet (race with session-complete).
+      const queueLength = pendingStore.getPendingCount(sessionDbId);
+      res.json({ status: 'not_found', queueLength });
       return;
     }
 
-    const pendingStore = this.sessionManager.getPendingMessageStore();
     const queueLength = pendingStore.getPendingCount(sessionDbId);
 
     res.json({

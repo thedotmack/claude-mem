@@ -137,15 +137,21 @@ export async function processAgentResponse(
   session.lastGeneratorActivity = Date.now();
 
   // --- GUARD: Empty response with pending messages ---
-  // An empty response when messages are in-flight means the LLM failed to respond.
-  // Preserve the messages for retry rather than silently deleting them.
+  // The observation prompt explicitly allows the LLM to return empty to skip trivial
+  // tool uses. Genuine API failures produce non-empty error text (rate-limit notices,
+  // auth errors, HTTP bodies), so an empty string here is an intentional skip, not a
+  // transient error. Confirm and delete the messages rather than retrying them.
   if (!text.trim() && session.processingMessageIds.length > 0) {
-    logger.warn('PARSER', `${agentName} returned empty response; messages preserved for retry`, {
-      sessionId: session.sessionDbId,
-      count: session.processingMessageIds.length
+    const pendingStore = sessionManager.getPendingMessageStore();
+    for (const messageId of session.processingMessageIds) {
+      pendingStore.confirmProcessed(messageId);
+    }
+    logger.info('QUEUE', `SKIPPED | sessionDbId=${session.sessionDbId} | reason=intentional_skip | count=${session.processingMessageIds.length} | ids=[${session.processingMessageIds.join(',')}]`, {
+      sessionId: session.sessionDbId
     });
-    preserveMessages(session, sessionManager, worker, 'empty_response');
-    return { status: 'error', observationCount: 0, summaryStored: false };
+    session.processingMessageIds = [];
+    cleanupProcessedMessages(session, worker);
+    return { status: 'skipped', observationCount: 0, summaryStored: false };
   }
 
   // Parse observations and summary

@@ -279,9 +279,48 @@ export class PendingMessageStore {
   }
 
   /**
+   * Drain messages for a session that is ending.
+   *
+   * Messages with retries remaining are requeued to 'pending' (incrementing retry_count)
+   * so that processPendingQueues() can recover them on next startup.
+   * Messages that have exhausted their retry budget are permanently failed.
+   *
+   * This prevents the session from appearing in getSessionsWithPendingMessages forever
+   * while still preserving recoverable messages.
+   *
+   * @returns Object with counts of messages that were { failed, requeued }
+   */
+  drainSessionMessages(sessionDbId: number): { failed: number; requeued: number } {
+    const now = Date.now();
+
+    // Permanently fail messages that have exhausted retries
+    const failStmt = this.db.prepare(`
+      UPDATE pending_messages
+      SET status = 'failed', failed_at_epoch = ?
+      WHERE session_db_id = ? AND status IN ('pending', 'processing')
+        AND retry_count >= ?
+    `);
+    const failResult = failStmt.run(now, sessionDbId, this.maxRetries);
+
+    // Requeue messages that still have retries left (drain counts as a retry attempt)
+    const requeueStmt = this.db.prepare(`
+      UPDATE pending_messages
+      SET status = 'pending', retry_count = retry_count + 1, started_processing_at_epoch = NULL
+      WHERE session_db_id = ? AND status IN ('pending', 'processing')
+        AND retry_count < ?
+    `);
+    const requeueResult = requeueStmt.run(sessionDbId, this.maxRetries);
+
+    return {
+      failed: failResult.changes,
+      requeued: requeueResult.changes
+    };
+  }
+
+  /**
    * Mark all pending and processing messages for a session as failed (abandoned).
-   * Used when SDK session is terminated and no fallback agent is available:
-   * prevents the session from appearing in getSessionsWithPendingMessages forever.
+   * @deprecated Use drainSessionMessages() instead, which respects retry budgets and
+   * requeues recoverable messages for pickup by processPendingQueues() on next startup.
    * @returns Number of messages marked failed
    */
   markAllSessionMessagesAbandoned(sessionDbId: number): number {

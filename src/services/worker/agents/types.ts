@@ -111,10 +111,11 @@ export interface ProcessAgentResponseResult {
   /** What happened with the response:
    * - 'ok': XML parsed successfully, observations/summary stored, messages confirmed (deleted from queue)
    * - 'empty': Valid response but no observations produced (e.g. init prompt, <skip_summary/>); messages confirmed
+   * - 'skipped': LLM returned empty response (intentional skip per prompt contract); messages confirmed (deleted from queue)
    * - 'rate_limited': Rate-limit text detected; messages preserved via markFailed() for retry
-   * - 'error': Non-XML/empty/auth error; messages preserved via markFailed() for retry
+   * - 'error': Non-XML/auth error; messages preserved via markFailed() for retry
    */
-  status: 'ok' | 'rate_limited' | 'error' | 'empty';
+  status: 'ok' | 'rate_limited' | 'error' | 'empty' | 'skipped';
   observationCount: number;
   summaryStored: boolean;
 }
