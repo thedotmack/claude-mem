@@ -14,6 +14,8 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { OfflineBuffer } from '../infrastructure/OfflineBuffer.js';
 import { logger } from '../../utils/logger.js';
 
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+
 export interface ProxyServerOptions {
   serverHost: string;
   serverPort: number;
@@ -75,6 +77,7 @@ export class ProxyServer {
   private authToken: string;
   private buffer: OfflineBuffer;
   private serverReachable = false;
+  private serverVersion: string | null = null;
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private healthCheckIntervalMs: number;
   private uiDir: string | null;
@@ -141,11 +144,19 @@ export class ProxyServer {
     // ── Local endpoints (never forwarded) ──
 
     if (method === 'GET' && pathname === '/api/health') {
+      const proxyVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
+        ? __DEFAULT_PACKAGE_VERSION__ : 'development';
+      const versionMatch = this.serverVersion
+        ? proxyVersion === this.serverVersion
+        : null; // null = unknown (server not yet polled)
       this.jsonResponse(res, 200, {
         status: 'ok',
         mode: 'client',
         proxy: true,
         node: getNodeName(),
+        proxyVersion,
+        serverVersion: this.serverVersion,
+        versionMatch,
         serverReachable: this.serverReachable,
         serverHost: this.serverHost,
         pendingBuffer: this.buffer.pendingCount(),
@@ -305,6 +316,16 @@ export class ProxyServer {
       }).then((response) => {
         const wasUnreachable = !this.serverReachable;
         this.serverReachable = response.statusCode === 200;
+
+        // Cache server version from health response
+        if (this.serverReachable && response.body) {
+          try {
+            const serverHealth = JSON.parse(response.body);
+            if (serverHealth.version) {
+              this.serverVersion = serverHealth.version;
+            }
+          } catch { /* ignore parse errors */ }
+        }
 
         if (this.serverReachable && (wasUnreachable || this.buffer.pendingCount() > 0)) {
           // Only log on reconnection transition (not on every tick with stale buffer entries)

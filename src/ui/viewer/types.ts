@@ -143,11 +143,15 @@ export interface Stats {
 
 export interface HealthData {
   mode?: 'standalone' | 'server' | 'client';
+  version?: string;
   connectedClients?: number;
   node?: string;
   status?: string;
   // Client proxy fields
   proxy?: boolean;
+  proxyVersion?: string;
+  serverVersion?: string | null;
+  versionMatch?: boolean | null;
   serverReachable?: boolean;
   serverHost?: string;
   pendingBuffer?: number;

@@ -47,10 +47,13 @@ export function NetworkTopology({ mode, health, clients, authToken }: NetworkTop
             <span className="topology-token">{maskToken(authToken || '')}</span>
           </div>
 
-          {/* Server identity */}
+          {/* Server identity + version */}
           <div className="topology-segment">
             <span className="topology-serving-label">Serving as</span>
             <span className="topology-node-name">{health.node || 'unknown'}</span>
+            {health.version && (
+              <span className="topology-version">v{health.version}</span>
+            )}
           </div>
         </div>
 
@@ -84,15 +87,18 @@ export function NetworkTopology({ mode, health, clients, authToken }: NetworkTop
   return (
     <div className="topology-bar">
       <div className="topology-row">
-        {/* Local node identity */}
+        {/* Local node identity + proxy version */}
         {health.node && (
           <div className="topology-segment">
             <span className="topology-serving-label">Running as</span>
             <span className="topology-node-name">{health.node}</span>
+            {health.proxyVersion && (
+              <span className="topology-version">v{health.proxyVersion}</span>
+            )}
           </div>
         )}
 
-        {/* Connection target */}
+        {/* Connection target + server version */}
         <div className="topology-segment">
           <span className="topology-arrow">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -102,7 +108,21 @@ export function NetworkTopology({ mode, health, clients, authToken }: NetworkTop
           </span>
           <span className="topology-connect-label">Connected to</span>
           <span className="topology-node-name">{health.serverHost || 'unknown'}</span>
+          {health.serverVersion && (
+            <span className={`topology-version ${health.versionMatch === false ? 'topology-version--mismatch' : ''}`}>
+              v{health.serverVersion}
+            </span>
+          )}
         </div>
+
+        {/* Version mismatch warning */}
+        {health.versionMatch === false && (
+          <div className="topology-segment">
+            <span className="topology-buffer-warning">
+              ⚠ Version mismatch — proxy v{health.proxyVersion} ≠ server v{health.serverVersion}
+            </span>
+          </div>
+        )}
 
         {/* Reachable indicator */}
         <div className="topology-segment">
