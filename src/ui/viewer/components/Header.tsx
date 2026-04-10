@@ -85,13 +85,19 @@ export function Header({
             const displayVersion = health.proxy
               ? health.proxyVersion
               : (version || health.version);
+            const displayCommit = health.proxy
+              ? health.proxyCommit
+              : health.commit;
             const mismatch = health.proxy && health.versionMatch === false;
+            const versionLabel = displayVersion
+              ? `v${displayVersion}${displayCommit ? ` (${displayCommit})` : ''}`
+              : '';
 
             if (!isNetworked) {
               // Standalone: simple version badge
-              return displayVersion ? (
+              return versionLabel ? (
                 <span className="mode-badge mode-badge--standalone" title="standalone mode">
-                  <span>v{displayVersion}</span>
+                  <span>{versionLabel}</span>
                 </span>
               ) : null;
             }
@@ -103,10 +109,10 @@ export function Header({
                 onClick={() => setTopologyOpen(!topologyOpen)}
                 title={mismatch
                   ? `VERSION MISMATCH — proxy: v${health.proxyVersion}, server: v${health.serverVersion}`
-                  : `${mode} mode${displayVersion ? ` v${displayVersion}` : ''} — click to ${topologyOpen ? 'collapse' : 'expand'} topology`}
+                  : `${mode} mode ${versionLabel} — click to ${topologyOpen ? 'collapse' : 'expand'} topology`}
               >
                 {mismatch && <span className="mode-badge-warning-icon">⚠</span>}
-                {displayVersion && <span className="mode-badge-version">v{displayVersion}</span>}
+                {versionLabel && <span className="mode-badge-version">{versionLabel}</span>}
                 {mode === 'server' && (
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="2" y="2" width="20" height="8" rx="2" ry="2" />

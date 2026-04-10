@@ -144,13 +144,16 @@ export interface Stats {
 export interface HealthData {
   mode?: 'standalone' | 'server' | 'client';
   version?: string;
+  commit?: string;
   connectedClients?: number;
   node?: string;
   status?: string;
   // Client proxy fields
   proxy?: boolean;
   proxyVersion?: string;
+  proxyCommit?: string;
   serverVersion?: string | null;
+  serverCommit?: string | null;
   versionMatch?: boolean | null;
   serverReachable?: boolean;
   serverHost?: string;

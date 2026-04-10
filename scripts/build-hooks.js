@@ -76,7 +76,14 @@ async function buildHooks() {
     // Read version from package.json
     const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
     const version = packageJson.version;
-    console.log(`📌 Version: ${version}`);
+
+    // Get git commit SHA for dev builds (short hash, 7 chars)
+    let gitCommitSha = '';
+    try {
+      const { execSync } = await import('child_process');
+      gitCommitSha = execSync('git rev-parse --short HEAD', { encoding: 'utf-8' }).trim();
+    } catch { /* not in a git repo — leave empty */ }
+    console.log(`📌 Version: ${version}${gitCommitSha ? ` (${gitCommitSha})` : ''}`);
 
     // Create output directories
     console.log('\n📦 Preparing output directories...');
@@ -170,7 +177,8 @@ async function buildHooks() {
         'onnxruntime-node'
       ],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        '__GIT_COMMIT_SHA__': `"${gitCommitSha}"`
       },
       banner: {
         js: [
@@ -229,7 +237,8 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-markdown',
       ],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        '__GIT_COMMIT_SHA__': `"${gitCommitSha}"`
       },
       banner: {
         js: '#!/usr/bin/env node'
@@ -293,7 +302,8 @@ async function buildHooks() {
       logLevel: 'error',
       external: ['bun:sqlite'],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        '__GIT_COMMIT_SHA__': `"${gitCommitSha}"`
       },
       // No banner needed: CJS files under Node.js have __dirname/__filename natively
     });
@@ -317,7 +327,8 @@ async function buildHooks() {
       logLevel: 'error',
       external: ['bun:sqlite'],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        '__GIT_COMMIT_SHA__': `"${gitCommitSha}"`
       },
       banner: {
         js: '#!/usr/bin/env bun'
@@ -349,7 +360,8 @@ async function buildHooks() {
         'buffer', 'querystring', 'readline', 'tty', 'assert',
       ],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        '__GIT_COMMIT_SHA__': `"${gitCommitSha}"`
       },
     });
 

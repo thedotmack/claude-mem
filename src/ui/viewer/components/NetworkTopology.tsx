@@ -52,7 +52,9 @@ export function NetworkTopology({ mode, health, clients, authToken }: NetworkTop
             <span className="topology-serving-label">Serving as</span>
             <span className="topology-node-name">{health.node || 'unknown'}</span>
             {health.version && (
-              <span className="topology-version">v{health.version}</span>
+              <span className="topology-version">
+                v{health.version}{health.commit ? ` (${health.commit})` : ''}
+              </span>
             )}
           </div>
         </div>
@@ -93,7 +95,9 @@ export function NetworkTopology({ mode, health, clients, authToken }: NetworkTop
             <span className="topology-serving-label">Running as</span>
             <span className="topology-node-name">{health.node}</span>
             {health.proxyVersion && (
-              <span className="topology-version">v{health.proxyVersion}</span>
+              <span className="topology-version">
+                v{health.proxyVersion}{health.proxyCommit ? ` (${health.proxyCommit})` : ''}
+              </span>
             )}
           </div>
         )}
@@ -110,7 +114,7 @@ export function NetworkTopology({ mode, health, clients, authToken }: NetworkTop
           <span className="topology-node-name">{health.serverHost || 'unknown'}</span>
           {health.serverVersion && (
             <span className={`topology-version ${health.versionMatch === false ? 'topology-version--mismatch' : ''}`}>
-              v{health.serverVersion}
+              v{health.serverVersion}{health.serverCommit ? ` (${health.serverCommit})` : ''}
             </span>
           )}
         </div>

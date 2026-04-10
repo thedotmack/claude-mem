@@ -25,11 +25,15 @@ import type { ClientRegistry } from './ClientRegistry.js';
 import { getNetworkMode, getNodeName } from '../../shared/node-identity.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 
-// Build-time injected version constant (set by esbuild define)
+// Build-time injected constants (set by esbuild define)
 declare const __DEFAULT_PACKAGE_VERSION__: string;
+declare const __GIT_COMMIT_SHA__: string;
 const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
   ? __DEFAULT_PACKAGE_VERSION__
   : 'development';
+const BUILT_IN_COMMIT = typeof __GIT_COMMIT_SHA__ !== 'undefined'
+  ? __GIT_COMMIT_SHA__
+  : '';
 
 /**
  * Interface for route handlers that can be registered with the server
@@ -199,6 +203,7 @@ export class Server {
       res.status(200).json({
         status: 'ok',
         version: BUILT_IN_VERSION,
+        commit: BUILT_IN_COMMIT || undefined,
         workerPath: this.options.workerPath,
         uptime: Date.now() - this.startTime,
         managed: process.env.CLAUDE_MEM_MANAGED === 'true',

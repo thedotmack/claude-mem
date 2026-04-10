@@ -15,6 +15,7 @@ import { OfflineBuffer } from '../infrastructure/OfflineBuffer.js';
 import { logger } from '../../utils/logger.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
+declare const __GIT_COMMIT_SHA__: string;
 
 export interface ProxyServerOptions {
   serverHost: string;
@@ -78,6 +79,7 @@ export class ProxyServer {
   private buffer: OfflineBuffer;
   private serverReachable = false;
   private serverVersion: string | null = null;
+  private serverCommit: string | null = null;
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private healthCheckIntervalMs: number;
   private uiDir: string | null;
@@ -146,6 +148,8 @@ export class ProxyServer {
     if (method === 'GET' && pathname === '/api/health') {
       const proxyVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
         ? __DEFAULT_PACKAGE_VERSION__ : 'development';
+      const proxyCommit = typeof __GIT_COMMIT_SHA__ !== 'undefined'
+        ? __GIT_COMMIT_SHA__ : '';
       const versionMatch = this.serverVersion
         ? proxyVersion === this.serverVersion
         : null; // null = unknown (server not yet polled)
@@ -155,7 +159,9 @@ export class ProxyServer {
         proxy: true,
         node: getNodeName(),
         proxyVersion,
+        proxyCommit: proxyCommit || undefined,
         serverVersion: this.serverVersion,
+        serverCommit: this.serverCommit,
         versionMatch,
         serverReachable: this.serverReachable,
         serverHost: this.serverHost,
@@ -323,6 +329,9 @@ export class ProxyServer {
             const serverHealth = JSON.parse(response.body);
             if (serverHealth.version) {
               this.serverVersion = serverHealth.version;
+            }
+            if (serverHealth.commit) {
+              this.serverCommit = serverHealth.commit;
             }
           } catch { /* ignore parse errors */ }
         }
