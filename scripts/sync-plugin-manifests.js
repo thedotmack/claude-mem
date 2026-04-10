@@ -74,6 +74,28 @@ function normalizeRepositoryUrl(repository) {
   return '';
 }
 
+/**
+ * Sync plugin/.mcp.json to the repository root .mcp.json.
+ *
+ * Claude Code reads .mcp.json from the marketplace root directory
+ * (~/.claude/plugins/marketplaces/thedotmack/.mcp.json), not from the
+ * plugin/ subdirectory. The root file must mirror plugin/.mcp.json so that
+ * MCP search tools are automatically registered after install/sync.
+ * See: https://github.com/thedotmack/claude-mem/issues/1471
+ */
+function syncRootMcpJson() {
+  const pluginMcpPath = path.join(rootDir, 'plugin', '.mcp.json');
+  const rootMcpPath = path.join(rootDir, '.mcp.json');
+
+  if (!fs.existsSync(pluginMcpPath)) {
+    console.error(`Missing plugin .mcp.json at: ${pluginMcpPath}`);
+    process.exit(1);
+  }
+
+  writeJson(rootMcpPath, readJson(pluginMcpPath));
+  console.log('✓ Synced root .mcp.json from plugin/.mcp.json');
+}
+
 function main() {
   for (const filePath of [packageJsonPath, codexPluginPath, claudePluginPath]) {
     if (!fs.existsSync(filePath)) {
@@ -90,6 +112,8 @@ function main() {
   writeJson(claudePluginPath, syncClaudePlugin(claudePlugin, pkg));
 
   console.log('✓ Synced plugin manifests from package.json');
+
+  syncRootMcpJson();
 }
 
 main();

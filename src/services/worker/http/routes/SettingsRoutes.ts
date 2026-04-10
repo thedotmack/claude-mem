@@ -9,7 +9,7 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
-import { getPackageRoot } from '../../../../shared/paths.js';
+import { getPackageRoot, MARKETPLACE_ROOT } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
 import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js';
@@ -393,20 +393,34 @@ export class SettingsRoutes extends BaseRouteHandler {
   }
 
   /**
-   * Toggle MCP search server (rename .mcp.json <-> .mcp.json.disabled)
+   * Toggle MCP search server (rename .mcp.json <-> .mcp.json.disabled).
+   *
+   * Updates both plugin/.mcp.json (internal config) and the marketplace root
+   * .mcp.json (the file Claude Code actually reads for MCP server registration).
+   * See: https://github.com/thedotmack/claude-mem/issues/1471
    */
   private toggleMcp(enabled: boolean): void {
     const packageRoot = getPackageRoot();
     const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
     const mcpDisabledPath = path.join(packageRoot, 'plugin', '.mcp.json.disabled');
+    const rootMcpPath = path.join(MARKETPLACE_ROOT, '.mcp.json');
+    const emptyMcpServers = JSON.stringify({ mcpServers: {} }, null, 2) + '\n';
 
     if (enabled && existsSync(mcpDisabledPath)) {
       // Enable: rename .mcp.json.disabled -> .mcp.json
       renameSync(mcpDisabledPath, mcpPath);
+      // Restore root .mcp.json so Claude Code sees the server again
+      if (existsSync(rootMcpPath)) {
+        writeFileSync(rootMcpPath, readFileSync(mcpPath, 'utf-8'), 'utf-8');
+      }
       logger.info('WORKER', 'MCP search server enabled');
     } else if (!enabled && existsSync(mcpPath)) {
       // Disable: rename .mcp.json -> .mcp.json.disabled
       renameSync(mcpPath, mcpDisabledPath);
+      // Empty root .mcp.json so Claude Code stops registering the server
+      if (existsSync(rootMcpPath)) {
+        writeFileSync(rootMcpPath, emptyMcpServers, 'utf-8');
+      }
       logger.info('WORKER', 'MCP search server disabled');
     } else {
       logger.debug('WORKER', 'MCP toggle no-op (already in desired state)', { enabled });
