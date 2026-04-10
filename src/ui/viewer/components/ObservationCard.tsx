@@ -2,6 +2,20 @@ import React, { useState } from 'react';
 import { Observation } from '../types';
 import { formatDate } from '../utils/formatters';
 
+function truncateUrl(url: string, max: number): string {
+  try {
+    const u = new URL(url);
+    const display = u.hostname + u.pathname;
+    return display.length > max ? display.slice(0, max - 3) + '...' : display;
+  } catch { return url.slice(0, max); }
+}
+
+const TITANS_EMOJI: Record<string, string> = {
+  insight: '\u{1F4A1}', commitment: '\u{1F91D}', correction: '\u{1F4D0}',
+  frustration: '\u{1F624}', pattern_recognition: '\u{1F517}',
+  emotional_signal: '\u{1F4AC}', overconfidence: '\u26A0\uFE0F'
+};
+
 interface ObservationCardProps {
   observation: Observation;
 }
@@ -41,6 +55,16 @@ export function ObservationCard({ observation }: ObservationCardProps) {
   const filesRead = observation.files_read ? JSON.parse(observation.files_read).map(stripProjectRoot) : [];
   const filesModified = observation.files_modified ? JSON.parse(observation.files_modified).map(stripProjectRoot) : [];
 
+  let toolName: string | null = null;
+  let sourceUrl: string | null = null;
+  if (observation.metadata) {
+    try {
+      const meta = JSON.parse(observation.metadata);
+      toolName = meta.tool_name || null;
+      sourceUrl = meta.source_url || null;
+    } catch { /* missing metadata is normal for old observations */ }
+  }
+
   // Show facts toggle if there are facts, concepts, or files
   const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;
 
@@ -50,10 +74,10 @@ export function ObservationCard({ observation }: ObservationCardProps) {
       <div className="card-header">
         <div className="card-header-left">
           <span className={`card-type type-${observation.type}`}>
+            {TITANS_EMOJI[observation.type] && (
+              <span aria-hidden="true">{TITANS_EMOJI[observation.type]} </span>
+            )}
             {observation.type}
-          </span>
-          <span className={`card-source source-${observation.platform_source || 'claude'}`}>
-            {observation.platform_source || 'claude'}
           </span>
           <span className="card-project">{observation.project}</span>
         </div>
@@ -118,6 +142,13 @@ export function ObservationCard({ observation }: ObservationCardProps) {
       {/* Metadata footer - id, date, and conditionally concepts/files when facts toggle is on */}
       <div className="card-meta">
         <span className="meta-date">#{observation.id} • {date}</span>
+        {toolName && <span className="meta-tool-name">{toolName}</span>}
+        {sourceUrl && (
+          <a className="meta-source-url" href={sourceUrl} target="_blank" rel="noopener noreferrer"
+             title={sourceUrl}>
+            {truncateUrl(sourceUrl, 40)}
+          </a>
+        )}
         {showFacts && (concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
             {concepts.map((concept: string, i: number) => (

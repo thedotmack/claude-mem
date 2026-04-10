@@ -117,6 +117,11 @@ export class SearchManager {
       normalized.isFolder = false;
     }
 
+    // Parse comma-separated tool_name into array
+    if (normalized.tool_name && typeof normalized.tool_name === 'string' && normalized.tool_name.includes(',')) {
+      normalized.tool_name = normalized.tool_name.split(',').map((s: string) => s.trim()).filter(Boolean);
+    }
+
     return normalized;
   }
 
@@ -165,6 +170,18 @@ export class SearchManager {
         whereFilter = { doc_type: 'session_summary' };
       } else if (type === 'prompts') {
         whereFilter = { doc_type: 'user_prompt' };
+      }
+
+      if (normalized.tool_name && !Array.isArray(normalized.tool_name)) {
+        whereFilter = whereFilter
+          ? { $and: [whereFilter, { tool_name: normalized.tool_name }] }
+          : { tool_name: normalized.tool_name };
+      }
+      if (normalized.source_url) {
+        const sourceUrlFilter = { source_url: normalized.source_url };
+        whereFilter = whereFilter
+          ? { $and: [whereFilter, sourceUrlFilter] }
+          : sourceUrlFilter;
       }
 
       // Include project in the Chroma where clause to scope vector search.

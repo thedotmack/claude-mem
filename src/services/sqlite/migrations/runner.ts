@@ -37,6 +37,8 @@ export class MigrationRunner {
     this.addSessionCustomTitleColumn();
     this.createObservationFeedbackTable();
     this.addSessionPlatformSourceColumn();
+    this.addObservationModelColumns();
+    this.addObservationMetadataColumn();
   }
 
   /**
@@ -921,5 +923,49 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
+  }
+
+  /**
+   * Add generated_by_model and relevance_count columns to observations (migration 26)
+   *
+   * generated_by_model tracks which model generated each observation.
+   * relevance_count tracks how many times an observation was reused.
+   *
+   * Note: Cannot trust schema_versions alone — always check column existence directly.
+   */
+  private addObservationModelColumns(): void {
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasGeneratedByModel = columns.some(col => col.name === 'generated_by_model');
+    const hasRelevanceCount = columns.some(col => col.name === 'relevance_count');
+
+    if (hasGeneratedByModel && hasRelevanceCount) return;
+
+    if (!hasGeneratedByModel) {
+      this.db.run('ALTER TABLE observations ADD COLUMN generated_by_model TEXT');
+    }
+    if (!hasRelevanceCount) {
+      this.db.run('ALTER TABLE observations ADD COLUMN relevance_count INTEGER DEFAULT 0');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
+  }
+
+  /**
+   * Add metadata column to observations for storing source URLs, tool names, etc. (migration 27)
+   */
+  private addObservationMetadataColumn(): void {
+    const applied = this.db.query('SELECT 1 FROM schema_versions WHERE version = 27').get();
+    if (applied) return;
+
+    this.db.run('ALTER TABLE observations ADD COLUMN metadata TEXT');
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_source_url ON observations(
+      json_extract(metadata, '$.source_url')
+    ) WHERE json_extract(metadata, '$.source_url') IS NOT NULL`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_tool_name ON observations(
+      json_extract(metadata, '$.tool_name')
+    ) WHERE json_extract(metadata, '$.tool_name') IS NOT NULL`);
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(27, new Date().toISOString());
+    logger.debug('DB', 'Added metadata column to observations table with computed indexes');
   }
 }

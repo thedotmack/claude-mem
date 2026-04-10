@@ -80,6 +80,18 @@ export function getObservationsByIds(
     additionalConditions.push(`(${fileConditions.join(' OR ')})`);
   }
 
+  // Source URL filter (metadata JSON)
+  if (options.source_url) {
+    additionalConditions.push(`json_extract(metadata, '$.source_url') = ?`);
+    params.push(options.source_url);
+  }
+
+  // Tool name filter (metadata JSON)
+  if (options.tool_name) {
+    additionalConditions.push(`json_extract(metadata, '$.tool_name') = ?`);
+    params.push(options.tool_name);
+  }
+
   const whereClause = additionalConditions.length > 0
     ? `WHERE id IN (${placeholders}) AND ${additionalConditions.join(' AND ')}`
     : `WHERE id IN (${placeholders})`;

@@ -32,6 +32,7 @@ describe('Stale AbortController Guard (#1099)', () => {
         currentProvider: null,
         consecutiveRestarts: 0,
         processingMessageIds: [],
+        processingMessageMeta: [],
         lastGeneratorActivity: Date.now()
       };
 

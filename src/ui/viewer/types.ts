@@ -15,6 +15,7 @@ export interface Observation {
   prompt_number: number | null;
   created_at: string;
   created_at_epoch: number;
+  metadata?: string;
 }
 
 export interface Summary {
@@ -51,8 +52,6 @@ export interface StreamEvent {
   summaries?: Summary[];
   prompts?: UserPrompt[];
   projects?: string[];
-  sources?: string[];
-  projectsBySource?: Record<string, string[]>;
   observation?: Observation;
   summary?: Summary;
   prompt?: UserPrompt;
@@ -62,8 +61,6 @@ export interface StreamEvent {
 
 export interface ProjectCatalog {
   projects: string[];
-  sources: string[];
-  projectsBySource: Record<string, string[]>;
 }
 
 export interface Settings {

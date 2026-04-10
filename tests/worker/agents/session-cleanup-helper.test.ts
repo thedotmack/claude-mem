@@ -38,6 +38,7 @@ describe('SessionCleanupHelper', () => {
       conversationHistory: [],
       currentProvider: 'claude',
       processingMessageIds: [],  // CLAIM-CONFIRM pattern: track message IDs being processed
+      processingMessageMeta: [],
       ...overrides,
     };
   }

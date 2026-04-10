@@ -7,11 +7,8 @@ import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
 interface HeaderProps {
   isConnected: boolean;
   projects: string[];
-  sources: string[];
   currentFilter: string;
-  currentSource: string;
   onFilterChange: (filter: string) => void;
-  onSourceChange: (source: string) => void;
   isProcessing: boolean;
   queueDepth: number;
   themePreference: ThemePreference;
@@ -19,26 +16,11 @@ interface HeaderProps {
   onContextPreviewToggle: () => void;
 }
 
-function formatSourceLabel(source: string): string {
-  if (source === 'all') return 'All';
-  if (source === 'claude') return 'Claude';
-  if (source === 'codex') return 'Codex';
-  return source.charAt(0).toUpperCase() + source.slice(1);
-}
-
-function buildSourceTabs(sources: string[]): string[] {
-  const merged = ['all', 'claude', 'codex', ...sources];
-  return Array.from(new Set(merged.filter(Boolean)));
-}
-
 export function Header({
   isConnected,
   projects,
-  sources,
   currentFilter,
-  currentSource,
   onFilterChange,
-  onSourceChange,
   isProcessing,
   queueDepth,
   themePreference,
@@ -46,7 +28,6 @@ export function Header({
   onContextPreviewToggle
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
-  const availableSources = buildSourceTabs(sources);
 
   return (
     <div className="header">
@@ -62,19 +43,6 @@ export function Header({
           </div>
           <span className="logo-text">claude-mem</span>
         </h1>
-        <div className="source-tabs" role="tablist" aria-label="Context source tabs">
-          {availableSources.map(source => (
-            <button
-              key={source}
-              type="button"
-              className={`source-tab ${currentSource === source ? 'active' : ''}`}
-              onClick={() => onSourceChange(source)}
-              aria-pressed={currentSource === source}
-            >
-              {formatSourceLabel(source)}
-            </button>
-          ))}
-        </div>
       </div>
       <div className="status">
         <a

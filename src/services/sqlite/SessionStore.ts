@@ -65,6 +65,7 @@ export class SessionStore {
     this.addSessionCustomTitleColumn();
     this.addSessionPlatformSourceColumn();
     this.addObservationModelColumns();
+    this.addObservationMetadataColumn();
   }
 
   /**
@@ -945,6 +946,20 @@ export class SessionStore {
   }
 
   /**
+   * Add metadata column to observations for storing source URLs, tool names, etc. (migration 27)
+   */
+  private addObservationMetadataColumn(): void {
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasMetadata = columns.some(col => col.name === 'metadata');
+
+    if (hasMetadata) return;
+
+    this.db.run('ALTER TABLE observations ADD COLUMN metadata TEXT');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(27, new Date().toISOString());
+  }
+
+  /**
    * Update the memory session ID for a session
    * Called by SDKAgent when it captures the session ID from the first SDK message
    * Also used to RESET to null on stale resume failures (worker-service.ts)
@@ -1705,7 +1720,8 @@ export class SessionStore {
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
-    generatedByModel?: string
+    generatedByModel?: string,
+    metadata?: Record<string, unknown>
   ): { id: number; createdAtEpoch: number } {
     // Use override timestamp if provided (for processing backlog messages with original timestamps)
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1718,12 +1734,15 @@ export class SessionStore {
       return { id: existing.id, createdAtEpoch: existing.created_at_epoch };
     }
 
+    // KEEP IN SYNC: All 5 observation INSERT paths must match column list.
+    // See: observations/store.ts, SessionStore.storeObservation, SessionStore.storeObservations,
+    // SessionStore.storeObservationsAndMarkComplete, SessionStore.importObservation
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
        files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
-       generated_by_model)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       generated_by_model, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1742,7 +1761,8 @@ export class SessionStore {
       contentHash,
       timestampIso,
       timestampEpoch,
-      generatedByModel || null
+      generatedByModel || null,
+      metadata ? JSON.stringify(metadata) : null
     );
 
     return {
@@ -1842,7 +1862,8 @@ export class SessionStore {
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
-    generatedByModel?: string
+    generatedByModel?: string,
+    metadata?: Record<string, unknown>
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     // Use override timestamp if provided
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1852,13 +1873,16 @@ export class SessionStore {
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
 
+      // KEEP IN SYNC: All 5 observation INSERT paths must match column list.
+      // See: observations/store.ts, SessionStore.storeObservation, SessionStore.storeObservations,
+      // SessionStore.storeObservationsAndMarkComplete, SessionStore.importObservation
       // 1. Store all observations (with content-hash deduplication)
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
-         generated_by_model)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
@@ -1886,7 +1910,8 @@ export class SessionStore {
           contentHash,
           timestampIso,
           timestampEpoch,
-          generatedByModel || null
+          generatedByModel || null,
+          metadata ? JSON.stringify(metadata) : null
         );
         observationIds.push(Number(result.lastInsertRowid));
       }
@@ -1974,7 +1999,8 @@ export class SessionStore {
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
-    generatedByModel?: string
+    generatedByModel?: string,
+    metadata?: Record<string, unknown>
   ): { observationIds: number[]; summaryId?: number; createdAtEpoch: number } {
     // Use override timestamp if provided
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1984,13 +2010,16 @@ export class SessionStore {
     const storeAndMarkTx = this.db.transaction(() => {
       const observationIds: number[] = [];
 
+      // KEEP IN SYNC: All 5 observation INSERT paths must match column list.
+      // See: observations/store.ts, SessionStore.storeObservation, SessionStore.storeObservations,
+      // SessionStore.storeObservationsAndMarkComplete, SessionStore.importObservation
       // 1. Store all observations (with content-hash deduplication)
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
-         generated_by_model)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
@@ -2018,7 +2047,8 @@ export class SessionStore {
           contentHash,
           timestampIso,
           timestampEpoch,
-          generatedByModel || null
+          generatedByModel || null,
+          metadata ? JSON.stringify(metadata) : null
         );
         observationIds.push(Number(result.lastInsertRowid));
       }
@@ -2575,6 +2605,7 @@ export class SessionStore {
     discovery_tokens: number;
     created_at: string;
     created_at_epoch: number;
+    metadata?: string;
   }): { imported: boolean; id: number } {
     // Check if observation already exists
     const existing = this.db.prepare(`
@@ -2586,12 +2617,16 @@ export class SessionStore {
       return { imported: false, id: existing.id };
     }
 
+    // KEEP IN SYNC: All 5 observation INSERT paths must match column list.
+    // See: observations/store.ts, SessionStore.storeObservation, SessionStore.storeObservations,
+    // SessionStore.storeObservationsAndMarkComplete, SessionStore.importObservation
     const stmt = this.db.prepare(`
       INSERT INTO observations (
         memory_session_id, project, text, type, title, subtitle,
         facts, narrative, concepts, files_read, files_modified,
-        prompt_number, discovery_tokens, created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        prompt_number, discovery_tokens, created_at, created_at_epoch,
+        metadata
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -2609,7 +2644,8 @@ export class SessionStore {
       obs.prompt_number,
       obs.discovery_tokens || 0,
       obs.created_at,
-      obs.created_at_epoch
+      obs.created_at_epoch,
+      obs.metadata || null
     );
 
     return { imported: true, id: result.lastInsertRowid as number };

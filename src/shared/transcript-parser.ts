@@ -28,7 +28,18 @@ export function extractLastMessage(
   let foundMatchingRole = false;
 
   for (let i = lines.length - 1; i >= 0; i--) {
-    const line = JSON.parse(lines[i]);
+    const rawLine = lines[i].trim();
+    if (!rawLine) continue; // skip empty lines
+
+    let line: any;
+    try {
+      line = JSON.parse(rawLine);
+    } catch {
+      // Truncated or malformed JSONL line — skip it, don't abort the whole extraction
+      logger.debug('PARSER', `Skipping malformed JSONL line ${i} in ${transcriptPath}`);
+      continue;
+    }
+
     if (line.type === role) {
       foundMatchingRole = true;
 

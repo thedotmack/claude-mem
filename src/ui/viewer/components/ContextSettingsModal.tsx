@@ -141,9 +141,6 @@ export function ContextSettingsModal({
     isLoading,
     error,
     projects,
-    sources,
-    selectedSource,
-    setSelectedSource,
     selectedProject,
     setSelectedProject
   } = useContextPreview(formState);
@@ -183,18 +180,6 @@ export function ContextSettingsModal({
         <div className="modal-header">
           <h2>Settings</h2>
           <div className="header-controls">
-            <label className="preview-selector">
-              Source:
-              <select
-                value={selectedSource || ''}
-                onChange={(e) => setSelectedSource(e.target.value)}
-                disabled={sources.length === 0}
-              >
-                {sources.map(source => (
-                  <option key={source} value={source}>{source}</option>
-                ))}
-              </select>
-            </label>
             <label className="preview-selector">
               Project:
               <select

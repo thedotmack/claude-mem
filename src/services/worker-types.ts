@@ -41,6 +41,7 @@ export interface ActiveSession {
   // CLAIM-CONFIRM FIX: Track IDs of messages currently being processed
   // These IDs will be confirmed (deleted) after successful storage
   processingMessageIds: number[];
+  processingMessageMeta: Array<{ tool_name?: string; tool_input?: unknown }>;
   // Tier routing: model override per session based on queue complexity
   modelOverride?: string;
 }

@@ -218,6 +218,7 @@ export interface ObservationRow {
   discovery_tokens: number; // ROI metrics: tokens spent discovering this observation
   created_at: string;
   created_at_epoch: number;
+  metadata?: string;
 }
 
 export interface SessionSummaryRow {
@@ -261,6 +262,8 @@ export interface SearchFilters {
   concepts?: string | string[];
   files?: string | string[];
   dateRange?: DateRange;
+  source_url?: string;
+  tool_name?: string | string[];
 }
 
 export interface SearchOptions extends SearchFilters {

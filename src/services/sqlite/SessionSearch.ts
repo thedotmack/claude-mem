@@ -251,6 +251,29 @@ export class SessionSearch {
       }
     }
 
+    // Source URL filter (metadata JSON extraction)
+    if (filters.source_url) {
+      if (filters.source_url.endsWith('/')) {
+        conditions.push(`json_extract(${tableAlias}.metadata, '$.source_url') LIKE ?`);
+        params.push(`${filters.source_url}%`);
+      } else {
+        conditions.push(`json_extract(${tableAlias}.metadata, '$.source_url') = ?`);
+        params.push(filters.source_url);
+      }
+    }
+
+    // Tool name filter (metadata JSON extraction)
+    if (filters.tool_name) {
+      if (Array.isArray(filters.tool_name)) {
+        const placeholders = filters.tool_name.map(() => '?').join(',');
+        conditions.push(`json_extract(${tableAlias}.metadata, '$.tool_name') IN (${placeholders})`);
+        params.push(...filters.tool_name);
+      } else {
+        conditions.push(`json_extract(${tableAlias}.metadata, '$.tool_name') = ?`);
+        params.push(filters.tool_name);
+      }
+    }
+
     return conditions.length > 0 ? conditions.join(' AND ') : '';
   }
 

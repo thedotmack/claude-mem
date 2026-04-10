@@ -55,7 +55,9 @@ export function storeObservation(
   observation: ObservationInput,
   promptNumber?: number,
   discoveryTokens: number = 0,
-  overrideTimestampEpoch?: number
+  overrideTimestampEpoch?: number,
+  generatedByModel?: string,
+  metadata?: Record<string, unknown>
 ): StoreObservationResult {
   // Use override timestamp if provided (for processing backlog messages with original timestamps)
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -72,11 +74,15 @@ export function storeObservation(
     return { id: existing.id, createdAtEpoch: existing.created_at_epoch };
   }
 
+  // KEEP IN SYNC: All 5 observation INSERT paths must match column list.
+  // See: observations/store.ts, SessionStore.storeObservation, SessionStore.storeObservations,
+  // SessionStore.storeObservationsAndMarkComplete, SessionStore.importObservation
   const stmt = db.prepare(`
     INSERT INTO observations
     (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-     files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch,
+     generated_by_model, metadata)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const result = stmt.run(
@@ -94,7 +100,9 @@ export function storeObservation(
     discoveryTokens,
     contentHash,
     timestampIso,
-    timestampEpoch
+    timestampEpoch,
+    generatedByModel || null,
+    metadata ? JSON.stringify(metadata) : null
   );
 
   return {

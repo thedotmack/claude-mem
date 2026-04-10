@@ -8,9 +8,7 @@ export function useSSE() {
   const [summaries, setSummaries] = useState<Summary[]>([]);
   const [prompts, setPrompts] = useState<UserPrompt[]>([]);
   const [catalog, setCatalog] = useState<ProjectCatalog>({
-    projects: [],
-    sources: [],
-    projectsBySource: {}
+    projects: []
   });
   const [isConnected, setIsConnected] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -18,26 +16,13 @@ export function useSSE() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
 
-  const updateCatalogForItem = (project: string, platformSource: string) => {
+  const updateCatalogForItem = (project: string) => {
     setCatalog(prev => {
       const nextProjects = prev.projects.includes(project)
         ? prev.projects
         : [...prev.projects, project];
-      const nextSources = prev.sources.includes(platformSource)
-        ? prev.sources
-        : [...prev.sources, platformSource];
-      const sourceProjects = prev.projectsBySource[platformSource] || [];
 
-      return {
-        projects: nextProjects,
-        sources: nextSources,
-        projectsBySource: {
-          ...prev.projectsBySource,
-          [platformSource]: sourceProjects.includes(project)
-            ? sourceProjects
-            : [...sourceProjects, project]
-        }
-      };
+      return { projects: nextProjects };
     });
   };
 
@@ -76,20 +61,17 @@ export function useSSE() {
         switch (data.type) {
           case 'initial_load':
             console.log('[SSE] Initial load:', {
-              projects: data.projects?.length || 0,
-              sources: data.sources?.length || 0
+              projects: data.projects?.length || 0
             });
             setCatalog({
-              projects: data.projects || [],
-              sources: data.sources || [],
-              projectsBySource: data.projectsBySource || {}
+              projects: data.projects || []
             });
             break;
 
           case 'new_observation':
             if (data.observation) {
               console.log('[SSE] New observation:', data.observation.id);
-              updateCatalogForItem(data.observation.project, data.observation.platform_source || 'claude');
+              updateCatalogForItem(data.observation.project);
               setObservations(prev => [data.observation!, ...prev]);
             }
             break;
@@ -97,7 +79,7 @@ export function useSSE() {
           case 'new_summary':
             if (data.summary) {
               console.log('[SSE] New summary:', data.summary.id);
-              updateCatalogForItem(data.summary.project, data.summary.platform_source || 'claude');
+              updateCatalogForItem(data.summary.project);
               setSummaries(prev => [data.summary!, ...prev]);
             }
             break;
@@ -105,7 +87,7 @@ export function useSSE() {
           case 'new_prompt':
             if (data.prompt) {
               console.log('[SSE] New prompt:', data.prompt.id);
-              updateCatalogForItem(data.prompt.project, data.prompt.platform_source || 'claude');
+              updateCatalogForItem(data.prompt.project);
               setPrompts(prev => [data.prompt!, ...prev]);
             }
             break;
@@ -138,8 +120,6 @@ export function useSSE() {
     summaries,
     prompts,
     projects: catalog.projects,
-    sources: catalog.sources,
-    projectsBySource: catalog.projectsBySource,
     isProcessing,
     queueDepth,
     isConnected

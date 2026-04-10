@@ -16,6 +16,7 @@ export interface ObservationInput {
   concepts: string[];
   files_read: string[];
   files_modified: string[];
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -36,6 +37,8 @@ export interface GetObservationsByIdsOptions {
   type?: string | string[];
   concepts?: string | string[];
   files?: string | string[];
+  source_url?: string;
+  tool_name?: string;
 }
 
 /**

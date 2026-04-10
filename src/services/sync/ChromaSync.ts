@@ -41,6 +41,7 @@ interface StoredObservation {
   discovery_tokens: number; // ROI metrics
   created_at: string;
   created_at_epoch: number;
+  metadata: string | null; // JSON - tool_name, source_url, search_query, command
 }
 
 interface StoredSummary {
@@ -151,6 +152,19 @@ export class ChromaSync {
     }
     if (files_modified.length > 0) {
       baseMetadata.files_modified = files_modified.join(',');
+    }
+
+    // Source metadata from observation's metadata JSON
+    if (obs.metadata) {
+      try {
+        const meta = typeof obs.metadata === 'string' ? JSON.parse(obs.metadata) : obs.metadata;
+        if (meta.tool_name) baseMetadata.tool_name = meta.tool_name;
+        if (meta.source_url) baseMetadata.source_url = meta.source_url;
+        if (meta.search_query) baseMetadata.search_query = meta.search_query;
+        if (meta.command) baseMetadata.command = String(meta.command).slice(0, 200);
+      } catch (e) {
+        logger.debug('ChromaSync', `Malformed metadata JSON for obs ${obs.id}: ${e}`);
+      }
     }
 
     // Narrative as separate document

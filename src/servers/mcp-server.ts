@@ -281,7 +281,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'search',
-    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd, offset, orderBy',
+    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, source_url, tool_name, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
       properties: {},

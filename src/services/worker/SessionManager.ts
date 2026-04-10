@@ -161,6 +161,7 @@ export class SessionManager {
       currentProvider: null,  // Will be set when generator starts
       consecutiveRestarts: 0,  // Track consecutive restart attempts to prevent infinite loops
       processingMessageIds: [],  // CLAIM-CONFIRM: Track message IDs for confirmProcessed()
+      processingMessageMeta: [],
       lastGeneratorActivity: Date.now()  // Initialize for stale detection (Issue #1099)
     };
 

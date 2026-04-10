@@ -167,7 +167,9 @@ async function buildHooks() {
         'ollama',
         // Default embedding function with native binaries
         '@chroma-core/default-embed',
-        'onnxruntime-node'
+        'onnxruntime-node',
+        // lru-cache uses top-level await in ESM — exclude from CJS bundle
+        'lru-cache'
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
