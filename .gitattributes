@@ -1,0 +1,21 @@
+# Normalize all text files to LF on commit and checkout.
+# This prevents CRLF shebang lines in bundled scripts from breaking
+# the MCP server on macOS/Linux when built on Windows. Fixes #1342.
+* text=auto eol=lf
+
+# Compiled plugin scripts must always be LF — CRLF in the shebang
+# causes "env: node\r: No such file or directory" on non-Windows hosts.
+plugin/scripts/*.cjs eol=lf
+plugin/scripts/*.js  eol=lf
+
+# Explicitly mark binary assets so git never modifies them.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+*.gif  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.eot   binary
+*.otf   binary
