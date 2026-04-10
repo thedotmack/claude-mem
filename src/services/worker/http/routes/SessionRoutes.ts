@@ -94,10 +94,30 @@ export class SessionRoutes extends BaseRouteHandler {
    * The next generator will use the new provider with shared conversationHistory.
    */
   private static readonly STALE_GENERATOR_THRESHOLD_MS = 30_000; // 30 seconds (#1099)
+  private static readonly MAX_SESSION_WALL_CLOCK_MS = 4 * 60 * 60 * 1000; // 4 hours (#1590)
 
   private ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
+
+    // Wall-clock age guard: refuse to start new generators for sessions that have
+    // been alive too long to prevent runaway API costs (Issue #1590).
+    const sessionAgeMs = Date.now() - session.startTime;
+    if (sessionAgeMs > SessionRoutes.MAX_SESSION_WALL_CLOCK_MS) {
+      logger.warn('SESSION', 'Session exceeded wall-clock age limit — aborting to prevent runaway spend', {
+        sessionId: sessionDbId,
+        ageHours: Math.round(sessionAgeMs / 3_600_000 * 10) / 10,
+        limitHours: SessionRoutes.MAX_SESSION_WALL_CLOCK_MS / 3_600_000,
+        source
+      });
+      if (!session.abortController.signal.aborted) {
+        session.abortController.abort();
+      }
+      const pendingStore = this.sessionManager.getPendingMessageStore();
+      pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+      this.sessionManager.removeSessionImmediate(sessionDbId);
+      return;
+    }
 
     // GUARD: Prevent duplicate spawns
     if (this.spawnInProgress.get(sessionDbId)) {
@@ -191,7 +211,22 @@ export class SessionRoutes extends BaseRouteHandler {
       .catch(error => {
         // Only log non-abort errors
         if (session.abortController.signal.aborted) return;
-        
+
+        const errorMsg = error instanceof Error ? error.message : String(error);
+
+        // Treat SIGTERM (exit code 143) as intentional termination, not a crash.
+        // When a subprocess is killed externally, abort the controller to prevent
+        // crash recovery from immediately respawning the process (Issue #1590).
+        if (errorMsg.includes('code 143') || errorMsg.includes('signal SIGTERM')) {
+          logger.warn('SESSION', 'Generator killed by external signal — aborting session to prevent respawn', {
+            sessionId: session.sessionDbId,
+            provider,
+            error: errorMsg
+          });
+          session.abortController.abort();
+          return;
+        }
+
         logger.error('SESSION', `Generator failed`, {
           sessionId: session.sessionDbId,
           provider: provider,
