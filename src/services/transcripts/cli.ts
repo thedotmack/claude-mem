@@ -7,6 +7,10 @@ function getArgValue(args: string[], name: string): string | null {
   return args[index + 1] ?? null;
 }
 
+function hasFlag(args: string[], name: string): boolean {
+  return args.includes(name);
+}
+
 export async function runTranscriptCommand(subcommand: string | undefined, args: string[]): Promise<number> {
   switch (subcommand) {
     case 'init': {
@@ -42,6 +46,28 @@ export async function runTranscriptCommand(subcommand: string | undefined, args:
       process.on('SIGTERM', shutdown);
       return await new Promise(() => undefined);
     }
+    case 'backfill': {
+      const { runBackfill } = await import('./backfill.js');
+
+      const options = {
+        path: getArgValue(args, '--path') ?? undefined,
+        dryRun: hasFlag(args, '--dry-run'),
+        limit: getArgValue(args, '--limit') ? parseInt(getArgValue(args, '--limit')!, 10) : undefined,
+        delayMs: getArgValue(args, '--delay') ? parseInt(getArgValue(args, '--delay')!, 10) : undefined,
+        force: hasFlag(args, '--force')
+      };
+
+      const stats = await runBackfill(options);
+
+      console.log('\n--- Backfill Summary ---');
+      console.log(`  Files found:    ${stats.filesFound}`);
+      console.log(`  Processed:      ${stats.filesProcessed}`);
+      console.log(`  Skipped:        ${stats.filesSkipped}`);
+      console.log(`  Sessions:       ${stats.sessionsCreated}`);
+      console.log(`  Observations:   ${stats.observationsSent}`);
+      console.log(`  Errors:         ${stats.errors}`);
+      return stats.errors > 0 ? 1 : 0;
+    }
     case 'validate': {
       const configPath = getArgValue(args, '--config') ?? DEFAULT_CONFIG_PATH;
       try {
@@ -59,7 +85,20 @@ export async function runTranscriptCommand(subcommand: string | undefined, args:
       return 0;
     }
     default:
-      console.log('Usage: claude-mem transcript <init|watch|validate> [--config <path>]');
+      console.log('Usage: claude-mem transcript <init|watch|backfill|validate>');
+      console.log('');
+      console.log('Commands:');
+      console.log('  init       Create sample transcript-watch.json config');
+      console.log('  watch      Start live transcript watcher');
+      console.log('  backfill   Import historical Claude Code sessions');
+      console.log('  validate   Validate transcript-watch.json config');
+      console.log('');
+      console.log('Backfill options:');
+      console.log('  --path <glob>   JSONL file pattern (default: ~/.claude/projects/**/*.jsonl)');
+      console.log('  --dry-run       Preview without submitting');
+      console.log('  --limit <n>     Max files to process');
+      console.log('  --delay <ms>    Delay between sessions in ms (default: 500)');
+      console.log('  --force         Re-process already-processed files');
       return 1;
   }
 }

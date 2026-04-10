@@ -148,6 +148,20 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
 }
 
 /**
+ * Run a transcript subcommand (init, validate, backfill) via Bun worker-service.
+ */
+export function runTranscriptSubcommand(subcommand: string, extraArgs: string[] = []): void {
+  spawnBunWorkerCommand('transcript', [subcommand, ...extraArgs]);
+}
+
+/**
+ * Run the transcript backfill command via Bun worker-service.
+ */
+export function runTranscriptBackfillCommand(extraArgs: string[] = []): void {
+  spawnBunWorkerCommand('transcript', ['backfill', ...extraArgs]);
+}
+
+/**
  * Start the transcript watcher via Bun.
  */
 export function runTranscriptWatchCommand(): void {

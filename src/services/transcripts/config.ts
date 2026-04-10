@@ -6,6 +6,56 @@ import type { TranscriptSchema, TranscriptWatchConfig } from './types.js';
 export const DEFAULT_CONFIG_PATH = join(homedir(), '.claude-mem', 'transcript-watch.json');
 export const DEFAULT_STATE_PATH = join(homedir(), '.claude-mem', 'transcript-watch-state.json');
 
+const CLAUDE_CODE_SAMPLE_SCHEMA: TranscriptSchema = {
+  name: 'claude-code',
+  version: '0.1',
+  description: 'Schema for Claude Code session JSONL files under ~/.claude/projects/.',
+  sessionIdPath: 'sessionId',
+  cwdPath: 'cwd',
+  events: [
+    {
+      name: 'session-context',
+      match: { path: 'sessionId', exists: true },
+      action: 'session_context',
+      fields: {
+        sessionId: 'sessionId',
+        cwd: 'cwd'
+      }
+    },
+    {
+      name: 'user-message',
+      match: { path: 'type', equals: 'user' },
+      action: 'session_init',
+      fields: {
+        sessionId: 'sessionId',
+        prompt: 'message.content'
+      }
+    },
+    {
+      name: 'assistant-message',
+      match: { path: 'type', equals: 'assistant' },
+      action: 'assistant_message',
+      fields: {
+        message: 'message.content'
+      }
+    },
+    {
+      name: 'tool-result',
+      match: { path: 'toolUseResult', exists: true },
+      action: 'tool_result',
+      fields: {
+        toolId: 'sourceToolAssistantUUID',
+        toolResponse: 'toolUseResult'
+      }
+    },
+    {
+      name: 'session-end',
+      match: { path: 'type', equals: 'last-prompt' },
+      action: 'session_end'
+    }
+  ]
+};
+
 const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
   name: 'codex',
   version: '0.3',
@@ -87,9 +137,16 @@ const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
 export const SAMPLE_CONFIG: TranscriptWatchConfig = {
   version: 1,
   schemas: {
+    'claude-code': CLAUDE_CODE_SAMPLE_SCHEMA,
     codex: CODEX_SAMPLE_SCHEMA
   },
   watches: [
+    {
+      name: 'claude-code',
+      path: '~/.claude/projects/**/*.jsonl',
+      schema: 'claude-code',
+      startAtEnd: true
+    },
     {
       name: 'codex',
       path: '~/.codex/sessions/**/*.jsonl',

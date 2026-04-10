@@ -1,6 +1,55 @@
 {
   "version": 1,
   "schemas": {
+    "claude-code": {
+      "name": "claude-code",
+      "version": "0.1",
+      "description": "Schema for Claude Code session JSONL files under ~/.claude/projects/.",
+      "sessionIdPath": "sessionId",
+      "cwdPath": "cwd",
+      "events": [
+        {
+          "name": "session-context",
+          "match": { "path": "sessionId", "exists": true },
+          "action": "session_context",
+          "fields": {
+            "sessionId": "sessionId",
+            "cwd": "cwd"
+          }
+        },
+        {
+          "name": "user-message",
+          "match": { "path": "type", "equals": "user" },
+          "action": "session_init",
+          "fields": {
+            "sessionId": "sessionId",
+            "prompt": "message.content"
+          }
+        },
+        {
+          "name": "assistant-message",
+          "match": { "path": "type", "equals": "assistant" },
+          "action": "assistant_message",
+          "fields": {
+            "message": "message.content"
+          }
+        },
+        {
+          "name": "tool-result",
+          "match": { "path": "toolUseResult", "exists": true },
+          "action": "tool_result",
+          "fields": {
+            "toolId": "sourceToolAssistantUUID",
+            "toolResponse": "toolUseResult"
+          }
+        },
+        {
+          "name": "session-end",
+          "match": { "path": "type", "equals": "last-prompt" },
+          "action": "session_end"
+        }
+      ]
+    },
     "codex": {
       "name": "codex",
       "version": "0.2",
@@ -78,6 +127,12 @@
     }
   },
   "watches": [
+    {
+      "name": "claude-code",
+      "path": "~/.claude/projects/**/*.jsonl",
+      "schema": "claude-code",
+      "startAtEnd": true
+    },
     {
       "name": "codex",
       "path": "~/.codex/sessions/**/*.jsonl",

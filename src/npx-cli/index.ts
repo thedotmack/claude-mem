@@ -53,6 +53,7 @@ ${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
   ${pc.cyan('npx claude-mem status')}               Show worker status
   ${pc.cyan('npx claude-mem search <query>')}       Search observations
   ${pc.cyan('npx claude-mem transcript watch')}     Start transcript watcher
+  ${pc.cyan('npx claude-mem transcript backfill')}  Import historical Claude Code sessions
 
 ${pc.bold('IDE Identifiers')}:
   claude-code, cursor, gemini-cli, opencode, openclaw,
@@ -151,9 +152,15 @@ async function main(): Promise<void> {
       if (subCommand === 'watch') {
         const { runTranscriptWatchCommand } = await import('./commands/runtime.js');
         runTranscriptWatchCommand();
+      } else if (subCommand === 'backfill') {
+        const { runTranscriptBackfillCommand } = await import('./commands/runtime.js');
+        runTranscriptBackfillCommand(args.slice(2));
+      } else if (subCommand === 'init' || subCommand === 'validate') {
+        const { runTranscriptSubcommand } = await import('./commands/runtime.js');
+        runTranscriptSubcommand(subCommand, args.slice(2));
       } else {
         console.error(pc.red(`Unknown transcript subcommand: ${subCommand ?? '(none)'}`));
-        console.error(`Usage: npx claude-mem transcript watch`);
+        console.error(`Usage: npx claude-mem transcript <watch|backfill|init|validate>`);
         process.exit(1);
       }
       break;

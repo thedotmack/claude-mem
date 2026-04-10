@@ -1171,6 +1171,15 @@ async function main() {
       break;
     }
 
+    case 'transcript': {
+      const { runTranscriptCommand } = await import('./transcripts/cli.js');
+      const subcommand = process.argv[3];
+      const transcriptArgs = process.argv.slice(3);
+      const transcriptResult = await runTranscriptCommand(subcommand, transcriptArgs);
+      process.exit(transcriptResult);
+      break;
+    }
+
     case 'generate': {
       const dryRun = process.argv.includes('--dry-run');
       const { generateClaudeMd } = await import('../cli/claude-md-commands.js');
