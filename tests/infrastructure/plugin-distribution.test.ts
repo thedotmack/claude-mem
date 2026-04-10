@@ -116,6 +116,24 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
       }
     }
   });
+
+  it('should include export PATH in all node-invoking hook commands (#1660)', () => {
+    // Ensures node can be found on nvm/homebrew installations regardless of shell PATH.
+    // PreToolUse was introduced without this export, causing hook failures when
+    // CLAUDE_PLUGIN_ROOT is not injected and the user installs Node via nvm.
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+
+    for (const [eventName, matchers] of Object.entries(parsed.hooks)) {
+      for (const matcher of matchers as any[]) {
+        for (const hook of matcher.hooks) {
+          if (hook.type === 'command' && hook.command.includes('node ')) {
+            expect(hook.command).toContain('export PATH=');
+          }
+        }
+      }
+    }
+  });
 });
 
 describe('Plugin Distribution - package.json Files Field', () => {
