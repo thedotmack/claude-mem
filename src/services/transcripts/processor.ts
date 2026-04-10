@@ -5,7 +5,8 @@ import { sessionCompleteHandler } from '../../cli/handlers/session-complete.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext, getProjectName } from '../../utils/project-name.js';
-import { writeAgentsMd } from '../../utils/agents-md-utils.js';
+import { writeAgentsMd, isSafeContextPath } from '../../utils/agents-md-utils.js';
+import { resolve } from 'path';
 import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
 import { expandHomePath } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
@@ -361,7 +362,15 @@ export class TranscriptEventProcessor {
       const content = (await response.text()).trim();
       if (!content) return;
 
-      const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
+      const expandedPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
+      const agentsPath = resolve(cwd, expandedPath);
+      if (!isSafeContextPath(agentsPath, cwd)) {
+        logger.warn('TRANSCRIPT', 'Refusing unsafe context.path — outside project root and ~/.claude-mem', {
+          agentsPath,
+          watch: watch.name
+        });
+        return;
+      }
       writeAgentsMd(agentsPath, content);
       logger.debug('TRANSCRIPT', 'Updated AGENTS.md context', { agentsPath, watch: watch.name });
     } catch (error) {
