@@ -10,6 +10,7 @@ import cors from 'cors';
 import path from 'path';
 import { getPackageRoot } from '../../../shared/paths.js';
 import { logger } from '../../../utils/logger.js';
+import { getNetworkMode } from '../../../shared/node-identity.js';
 import type { ClientRegistry } from '../../server/ClientRegistry.js';
 export { createAuthMiddleware } from './auth-middleware.js';
 
@@ -57,16 +58,23 @@ export function createMiddleware(
     middlewares.push(createClientTrackingMiddleware(clientRegistry));
   }
 
-  // CORS - restrict to localhost origins only
+  // CORS — in standalone/client mode restrict to localhost origins only.
+  // In server mode allow any origin because auth middleware already gates
+  // non-localhost requests via Bearer token, and client proxies or direct
+  // browser access from the LAN (e.g. Thunderbolt IP) must not be blocked.
+  const isServerMode = getNetworkMode() === 'server';
   middlewares.push(cors({
     origin: (origin, callback) => {
-      // Allow: requests without Origin header (hooks, curl, CLI tools)
-      // Allow: localhost and 127.0.0.1 origins
+      // Allow: requests without Origin header (hooks, curl, CLI tools, proxies)
+      // Allow: localhost and 127.0.0.1 origins (always)
+      // Allow: any origin in server mode (auth middleware is the security gate)
       if (!origin ||
           origin.startsWith('http://localhost:') ||
-          origin.startsWith('http://127.0.0.1:')) {
+          origin.startsWith('http://127.0.0.1:') ||
+          isServerMode) {
         callback(null, true);
       } else {
+        logger.warn('CORS', 'Origin rejected', { origin });
         callback(new Error('CORS not allowed'));
       }
     },

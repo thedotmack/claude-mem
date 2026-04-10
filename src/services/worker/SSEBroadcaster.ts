@@ -112,10 +112,11 @@ export class SSEBroadcaster {
   }
 
   /**
-   * Send event to a specific client
+   * Send event to a specific client (e.g. initial_load on connect)
    */
-  private sendToClient(res: Response, event: SSEEvent): void {
-    const data = `data: ${JSON.stringify(event)}\n\n`;
+  sendToClient(res: Response, event: SSEEvent): void {
+    const eventWithTimestamp = { ...event, timestamp: Date.now() };
+    const data = `data: ${JSON.stringify(eventWithTimestamp)}\n\n`;
     res.write(data);
   }
 }
