@@ -138,3 +138,33 @@ describe('Plugin Distribution - Build Script Verification', () => {
     expect(content).toContain('plugin/.claude-plugin/plugin.json');
   });
 });
+
+describe('Plugin Distribution - Setup Hook (#1547)', () => {
+  it('should not reference removed setup.sh in Setup hook', () => {
+    // setup.sh was removed; the Setup hook must not reference it or the
+    // plugin silently fails to install on Linux (hooks disabled on setup failure).
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const content = readFileSync(hooksPath, 'utf-8');
+    expect(content).not.toContain('setup.sh');
+  });
+
+  it('should call smart-install.js in the Setup hook', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+    const setupHooks: any[] = parsed.hooks['Setup'] ?? [];
+
+    expect(setupHooks.length).toBeGreaterThan(0);
+    for (const matcher of setupHooks) {
+      for (const hook of matcher.hooks) {
+        if (hook.type === 'command') {
+          expect(hook.command).toContain('smart-install.js');
+        }
+      }
+    }
+  });
+
+  it('smart-install.js referenced by Setup hook should exist on disk', () => {
+    const smartInstallPath = path.join(projectRoot, 'plugin/scripts/smart-install.js');
+    expect(existsSync(smartInstallPath)).toBe(true);
+  });
+});

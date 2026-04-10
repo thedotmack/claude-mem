@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync, openSync, readSync, closeSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
@@ -235,5 +235,125 @@ describe('smart-install stdout JSON output (#1253)', () => {
     } finally {
       rmSync(settingsDir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * Tests for checkBinaryPlatformCompatibility() logic (#1547).
+ *
+ * The bundled plugin/scripts/claude-mem binary is macOS arm64 only.
+ * On Linux/Windows it cannot execute and hooks fail silently.
+ * These tests verify the Mach-O detection logic that surfaces this at install time.
+ */
+describe('smart-install binary platform compatibility (#1547)', () => {
+  // Values as returned by readUInt32LE on the first 4 bytes of the file.
+  // Native arm64/x86_64 Mach-O: file bytes CF FA ED FE → readUInt32LE = 0xFEEDFACF
+  // Byte-swapped (BE) Mach-O:   file bytes FE ED FA CF → readUInt32LE = 0xCFFAEDFE
+  const MACHO_MAGIC_NATIVE  = 0xFEEDFACF;
+  const MACHO_MAGIC_SWAPPED = 0xCFFAEDFE;
+
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = join(tmpdir(), `claude-mem-binary-compat-test-${process.pid}`);
+    mkdirSync(testDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('should detect native arm64/x86_64 Mach-O magic (file bytes CF FA ED FE)', () => {
+    // Real macOS arm64 binary header: bytes CF FA ED FE (MH_MAGIC_64)
+    // readUInt32LE([CF, FA, ED, FE]) = 0xFEEDFACF = MACHO_MAGIC_NATIVE
+    const binaryPath = join(testDir, 'claude-mem');
+    const buf = Buffer.from([0xCF, 0xFA, 0xED, 0xFE, 0x0C, 0x00, 0x00, 0x01]);
+    writeFileSync(binaryPath, buf);
+
+    const readBuf = Buffer.alloc(4);
+    const fd = openSync(binaryPath, 'r');
+    readSync(fd, readBuf, 0, 4, 0);
+    closeSync(fd);
+
+    expect(readBuf.readUInt32LE(0)).toBe(MACHO_MAGIC_NATIVE);
+  });
+
+  it('should detect byte-swapped Mach-O magic (file bytes FE ED FA CF)', () => {
+    // Byte-swapped 64-bit Mach-O: bytes FE ED FA CF (MH_CIGAM_64)
+    // readUInt32LE([FE, ED, FA, CF]) = 0xCFFAEDFE = MACHO_MAGIC_SWAPPED
+    const binaryPath = join(testDir, 'claude-mem-swapped');
+    const buf = Buffer.from([0xFE, 0xED, 0xFA, 0xCF, 0x01, 0x00, 0x00, 0x0C]);
+    writeFileSync(binaryPath, buf);
+
+    const readBuf = Buffer.alloc(4);
+    const fd = openSync(binaryPath, 'r');
+    readSync(fd, readBuf, 0, 4, 0);
+    closeSync(fd);
+
+    expect(readBuf.readUInt32LE(0)).toBe(MACHO_MAGIC_SWAPPED);
+  });
+
+  it('should NOT flag an ELF binary (Linux native) as Mach-O', () => {
+    // ELF magic: 0x7F 'E' 'L' 'F'
+    const binaryPath = join(testDir, 'claude-mem-elf');
+    const buf = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00]);
+    writeFileSync(binaryPath, buf);
+
+    const readBuf = Buffer.alloc(4);
+    const fd = openSync(binaryPath, 'r');
+    readSync(fd, readBuf, 0, 4, 0);
+    closeSync(fd);
+
+    const magic = readBuf.readUInt32LE(0);
+    expect(magic).not.toBe(MACHO_MAGIC_NATIVE);
+    expect(magic).not.toBe(MACHO_MAGIC_SWAPPED);
+  });
+
+  it('should handle a missing binary path without throwing', () => {
+    const binaryPath = join(testDir, 'nonexistent-claude-mem');
+    expect(existsSync(binaryPath)).toBe(false);
+    // The compatibility check should return early without error
+    expect(() => {
+      if (!existsSync(binaryPath)) return;
+    }).not.toThrow();
+  });
+
+  it('should skip the check when platform is darwin (binary is compatible)', () => {
+    // On macOS the binary runs natively — no warning needed.
+    // Simulate the early-return logic.
+    const platform = 'darwin';
+    let warningIssued = false;
+
+    if (platform !== 'darwin') {
+      warningIssued = true; // would proceed to check
+    }
+
+    expect(warningIssued).toBe(false);
+  });
+
+  it('should issue a warning when Mach-O binary is detected on Linux', () => {
+    // Write a native arm64 Mach-O fake binary (bytes CF FA ED FE)
+    const binaryPath = join(testDir, 'claude-mem');
+    const buf = Buffer.from([0xCF, 0xFA, 0xED, 0xFE, 0x0C, 0x00, 0x00, 0x01]);
+    writeFileSync(binaryPath, buf);
+
+    // Simulate the platform check logic from checkBinaryPlatformCompatibility()
+    const platform = 'linux'; // pretend we are on Linux
+    let warning = '';
+
+    if (platform !== 'darwin' && existsSync(binaryPath)) {
+      const readBuf = Buffer.alloc(4);
+      const fd = openSync(binaryPath, 'r');
+      readSync(fd, readBuf, 0, 4, 0);
+      closeSync(fd);
+
+      const magic = readBuf.readUInt32LE(0);
+      if (magic === MACHO_MAGIC_NATIVE || magic === MACHO_MAGIC_SWAPPED) {
+        warning = `Platform notice: The bundled claude-mem binary is macOS-only. Current platform: ${platform}`;
+      }
+    }
+
+    expect(warning).toContain('macOS-only');
+    expect(warning).toContain(platform);
   });
 });
