@@ -16,15 +16,18 @@ import { ModeManager } from '../../src/services/domain/ModeManager.js';
 const MODES_DIR = join(import.meta.dir, '../../plugin/modes');
 
 describe('code--zh-tw mode file (#1364)', () => {
+  const modePath = join(MODES_DIR, 'code--zh-tw.json');
+  let content: string;
+
+  beforeEach(() => {
+    content = readFileSync(modePath, 'utf-8');
+  });
+
   it('code--zh-tw.json exists in plugin/modes/', () => {
-    const modePath = join(MODES_DIR, 'code--zh-tw.json');
     expect(existsSync(modePath)).toBe(true);
   });
 
   it('contains Traditional Chinese characters (not only Simplified)', () => {
-    const modePath = join(MODES_DIR, 'code--zh-tw.json');
-    const content = readFileSync(modePath, 'utf-8');
-
     // Traditional Chinese characters that differ from Simplified
     // 設 (vs 设), 檔 (vs 档), 開 (vs 开), 為 (vs 为)
     expect(content).toContain('設');
@@ -33,16 +36,11 @@ describe('code--zh-tw mode file (#1364)', () => {
   });
 
   it('explicitly mentions 繁體中文 in language requirements', () => {
-    const modePath = join(MODES_DIR, 'code--zh-tw.json');
-    const content = readFileSync(modePath, 'utf-8');
-
     // Must explicitly request Traditional Chinese, not just 中文
     expect(content).toContain('繁體中文');
   });
 
   it('is valid JSON with required prompt keys', () => {
-    const modePath = join(MODES_DIR, 'code--zh-tw.json');
-    const content = readFileSync(modePath, 'utf-8');
     const parsed = JSON.parse(content);
 
     expect(parsed.name).toBeDefined();
