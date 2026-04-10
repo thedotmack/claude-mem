@@ -20,6 +20,7 @@ export class DatabaseManager {
   private sessionStore: SessionStore | null = null;
   private sessionSearch: SessionSearch | null = null;
   private chromaSync: ChromaSync | null = null;
+  private transcriptChromaSync: ChromaSync | null = null;
 
   /**
    * Initialize database connection (once, stays open)
@@ -34,6 +35,7 @@ export class DatabaseManager {
     const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
     if (chromaEnabled) {
       this.chromaSync = new ChromaSync('claude-mem');
+      this.transcriptChromaSync = new ChromaSync('claude-mem-transcripts');
     } else {
       logger.info('DB', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, using SQLite-only search');
     }
@@ -49,6 +51,10 @@ export class DatabaseManager {
     if (this.chromaSync) {
       await this.chromaSync.close();
       this.chromaSync = null;
+    }
+    if (this.transcriptChromaSync) {
+      await this.transcriptChromaSync.close();
+      this.transcriptChromaSync = null;
     }
 
     if (this.sessionStore) {
@@ -87,6 +93,13 @@ export class DatabaseManager {
    */
   getChromaSync(): ChromaSync | null {
     return this.chromaSync;
+  }
+
+  /**
+   * Get transcript ChromaSync instance (returns null if Chroma is disabled)
+   */
+  getTranscriptChromaSync(): ChromaSync | null {
+    return this.transcriptChromaSync;
   }
 
   // REMOVED: cleanupOrphanedSessions - violates "EVERYTHING SHOULD SAVE ALWAYS"

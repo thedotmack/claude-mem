@@ -253,7 +253,8 @@ const tools = [
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
-NEVER fetch full details without filtering first. 10x token savings.`,
+NEVER fetch full details without filtering first. 10x token savings.
+For complete examples and advanced usage: load Skill(mem-search)`,
     inputSchema: {
       type: 'object',
       properties: {}
@@ -277,13 +278,16 @@ NEVER fetch full details without filtering first. 10x token savings.`,
    \`get_observations(ids=[...])\`  # ALWAYS batch for 2+ items
    Returns: Complete details (~500-1000 tokens/result)
 
-**Why:** 10x token savings. Never fetch full details without filtering first.`
+**Why:** 10x token savings. Never fetch full details without filtering first.
+
+**IMPORTANT:** For complete documentation, examples, and advanced patterns,
+invoke: \`Skill(mem-search)\``
       }]
     })
   },
   {
     name: 'search',
-    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, source_url, tool_name, dateStart, dateEnd, offset, orderBy',
+    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, source_url, tool_name, dateStart, dateEnd, offset, orderBy. Full docs: Skill(mem-search)',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -296,7 +300,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'timeline',
-    description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
+    description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project. Full docs: Skill(mem-search)',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -309,7 +313,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'get_observations',
-    description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project',
+    description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project. Full docs: Skill(mem-search)',
     inputSchema: {
       type: 'object',
       properties: {
@@ -324,6 +328,27 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       return await callWorkerAPIPost('/api/observations/batch', args);
+    }
+  },
+  {
+    name: 'get_transcript_segment',
+    description: 'Layer 3: Get the original conversation that produced an observation. Requires observation_id from search/timeline. Optional query for scoped vector search within segment.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        observation_id: {
+          type: 'number',
+          description: 'Observation ID to retrieve transcript for (required)'
+        },
+        query: {
+          type: 'string',
+          description: 'Optional: scoped vector search within the transcript segment'
+        }
+      },
+      required: ['observation_id']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/transcript/segment', args);
     }
   },
   {

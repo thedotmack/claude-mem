@@ -206,7 +206,7 @@ export interface ObservationRow {
   memory_session_id: string;
   project: string;
   text: string | null;
-  type: 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
+  type: string;  // Validated by ModeManager, not TypeScript
   title: string | null;
   subtitle: string | null;
   facts: string | null; // JSON array

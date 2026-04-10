@@ -89,3 +89,24 @@ export function stripMemoryTagsFromJson(content: string): string {
 export function stripMemoryTagsFromPrompt(content: string): string {
   return stripTagsInternal(content);
 }
+
+/**
+ * Strip privacy tags from transcript text before Chroma storage
+ * Reuses the same internal stripping logic for <private> and <claude-mem-context> tags
+ */
+export function stripTranscriptPrivacyTags(text: string): string {
+  return stripTagsInternal(text);
+}
+
+/**
+ * Split text into chunks of approximately `chunkSize` characters
+ * Used for transcript segment storage in Chroma
+ */
+export function chunkText(text: string, chunkSize: number = 2000): string[] {
+  if (!text) return [];
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += chunkSize) {
+    chunks.push(text.substring(i, i + chunkSize));
+  }
+  return chunks;
+}

@@ -165,7 +165,8 @@ export async function processAgentResponse(
     worker,
     discoveryTokens,
     agentName,
-    projectRoot
+    projectRoot,
+    sourceMetadata
   );
 
   // Sync and broadcast summary if present
@@ -218,7 +219,8 @@ async function syncAndBroadcastObservations(
   worker: WorkerRef | undefined,
   discoveryTokens: number,
   agentName: string,
-  projectRoot?: string
+  projectRoot?: string,
+  sourceMetadata?: Record<string, unknown>
 ): Promise<void> {
   for (let i = 0; i < observations.length; i++) {
     const obsId = result.observationIds[i];

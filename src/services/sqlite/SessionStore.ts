@@ -64,6 +64,7 @@ export class SessionStore {
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
     this.addSessionPlatformSourceColumn();
+    this.addUserPromptsUniqueIndex();
     this.addObservationModelColumns();
     this.addObservationMetadataColumn();
   }
@@ -892,6 +893,32 @@ export class SessionStore {
   }
 
   /**
+   * Add UNIQUE constraint to user_prompts for deduplication (migration 25)
+   *
+   * Reconciles pre-existing duplicates before creating the index so that
+   * installs with duplicate rows don't fail on CREATE UNIQUE INDEX.
+   */
+  private addUserPromptsUniqueIndex(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(25) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // Remove duplicate rows, keeping the one with the lowest rowid per group
+    this.db.run(`
+      DELETE FROM user_prompts
+      WHERE rowid NOT IN (
+        SELECT MIN(rowid)
+        FROM user_prompts
+        GROUP BY content_session_id, prompt_number
+      )
+    `);
+
+    this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_user_prompts_unique_session_prompt ON user_prompts(content_session_id, prompt_number)');
+    logger.debug('DB', 'Added unique index on user_prompts(content_session_id, prompt_number)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
+  }
+
+  /**
    * Add platform_source column to sdk_sessions for Claude/Codex isolation (migration 24)
    */
   private addSessionPlatformSourceColumn(): void {
@@ -1372,6 +1399,17 @@ export class SessionStore {
   }
 
   /**
+   * Look up content_session_id from a memory_session_id
+   * Used by Layer 3 transcript retrieval to bridge observation → transcript segment
+   */
+  getContentSessionIdByMemoryId(memorySessionId: string): string | null {
+    const row = this.db.prepare(
+      'SELECT content_session_id FROM sdk_sessions WHERE memory_session_id = ? LIMIT 1'
+    ).get(memorySessionId) as { content_session_id: string } | undefined;
+    return row?.content_session_id ?? null;
+  }
+
+  /**
    * Get observations by array of IDs with ordering and limit
    */
   getObservationsByIds(
@@ -1681,13 +1719,18 @@ export class SessionStore {
     const now = new Date();
     const nowEpoch = now.getTime();
 
-    const stmt = this.db.prepare(`
-      INSERT INTO user_prompts
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO user_prompts
       (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?)
-    `);
+    `).run(contentSessionId, promptNumber, promptText, now.toISOString(), nowEpoch);
 
-    const result = stmt.run(contentSessionId, promptNumber, promptText, now.toISOString(), nowEpoch);
+    if (result.changes === 0) {
+      const existing = this.db.prepare(
+        'SELECT id FROM user_prompts WHERE content_session_id = ? AND prompt_number = ? LIMIT 1'
+      ).get(contentSessionId, promptNumber) as { id: number } | undefined;
+      return existing?.id ?? 0;
+    }
     return result.lastInsertRowid as number;
   }
 

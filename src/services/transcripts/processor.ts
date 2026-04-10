@@ -11,13 +11,21 @@ import { expandHomePath } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 
+export interface ConversationExchange {
+  promptNumber: number;
+  userText: string;
+  assistantText: string;
+}
+
 interface SessionState {
   sessionId: string;
   platformSource: string;
   cwd?: string;
   project?: string;
+  promptNumber: number;
   lastUserMessage?: string;
   lastAssistantMessage?: string;
+  exchanges: ConversationExchange[];
   pendingTools: Map<string, { name?: string; input?: unknown }>;
 }
 
@@ -53,6 +61,8 @@ export class TranscriptEventProcessor {
     if (!session) {
       session = {
         sessionId,
+        promptNumber: 1,
+        exchanges: [],
         platformSource: normalizePlatformSource(watch.name),
         pendingTools: new Map()
       };
@@ -133,19 +143,40 @@ export class TranscriptEventProcessor {
       case 'session_context':
         this.applySessionContext(session, fields);
         break;
-      case 'session_init':
+      case 'session_init': {
+        // Prompt boundary: flush previous segment before starting new one
+        const flushed = await this.flushTranscriptSegment(session);
+        if (flushed) session.promptNumber++;
         await this.handleSessionInit(session, fields);
         if (watch.context?.updateOn?.includes('session_start')) {
           await this.updateContext(session, watch);
         }
         break;
-      case 'user_message':
-        if (typeof fields.message === 'string') session.lastUserMessage = fields.message;
-        if (typeof fields.prompt === 'string') session.lastUserMessage = fields.prompt;
+      }
+      case 'user_message': {
+        const userText = typeof fields.message === 'string' ? fields.message
+          : typeof fields.prompt === 'string' ? fields.prompt : undefined;
+        if (userText) {
+          session.lastUserMessage = userText;
+          session.exchanges.push({
+            promptNumber: session.promptNumber,
+            userText,
+            assistantText: ''
+          });
+        }
         break;
-      case 'assistant_message':
-        if (typeof fields.message === 'string') session.lastAssistantMessage = fields.message;
+      }
+      case 'assistant_message': {
+        const assistantText = typeof fields.message === 'string' ? fields.message : undefined;
+        if (assistantText) {
+          session.lastAssistantMessage = assistantText;
+          const lastExchange = session.exchanges[session.exchanges.length - 1];
+          if (lastExchange) {
+            lastExchange.assistantText = assistantText;
+          }
+        }
         break;
+      }
       case 'tool_use':
         await this.handleToolUse(session, fields);
         break;
@@ -304,6 +335,20 @@ export class TranscriptEventProcessor {
   }
 
   private async handleSessionEnd(session: SessionState, watch: WatchTarget): Promise<void> {
+    // Retry final flush up to 3 times with exponential backoff
+    let flushed = false;
+    for (let attempt = 0; attempt < 3 && session.exchanges.length > 0; attempt++) {
+      flushed = await this.flushTranscriptSegment(session);
+      if (flushed) break;
+      if (attempt < 2) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * (2 ** attempt)));
+      }
+    }
+    if (!flushed && session.exchanges.length > 0) {
+      logger.warn('TRANSCRIPT', 'Final flush failed after retries on session end — transcript segment lost', {
+        sessionId: session.sessionId, exchangeCount: session.exchanges.length
+      });
+    }
     await this.queueSummary(session);
     await sessionCompleteHandler.execute({
       sessionId: session.sessionId,
@@ -314,6 +359,83 @@ export class TranscriptEventProcessor {
     session.pendingTools.clear();
     const key = this.getSessionKey(watch, session.sessionId);
     this.sessions.delete(key);
+  }
+
+  /**
+   * Flush accumulated transcript exchanges to the worker for Chroma storage.
+   * Called on prompt boundary (session_init) and session_end.
+   */
+  private async flushTranscriptSegment(session: SessionState): Promise<boolean> {
+    if (session.exchanges.length === 0) return false;
+
+    // Capture exchanges before clearing (needed for conversation observation)
+    const exchangesToFlush = [...session.exchanges];
+
+    const text = exchangesToFlush
+      .map(ex => `USER: ${ex.userText}\nASSISTANT: ${ex.assistantText}`)
+      .join('\n\n');
+
+    if (!text.trim()) return false;
+
+    const workerReady = await ensureWorkerRunning();
+    if (!workerReady) return false;
+
+    try {
+      const response = await workerHttpRequest('/api/transcript/store', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contentSessionId: session.sessionId,
+          promptNumber: session.promptNumber,
+          text,
+          project: session.project || 'unknown'
+        })
+      });
+      if (!response.ok) {
+        logger.warn('TRANSCRIPT', 'Transcript segment store returned non-2xx', { status: response.status });
+        return false;
+      }
+    } catch (error) {
+      logger.warn('TRANSCRIPT', 'Transcript segment store failed', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return false;
+    }
+
+    // Send exchanges for conversation observation (fire-and-forget)
+    this.fireConversationObservation(session, exchangesToFlush);
+
+    // Clear exchanges only after successful store
+    session.exchanges = [];
+    return true;
+  }
+
+  /**
+   * Fire-and-forget: send exchanges to worker for TITANS conversation observation
+   */
+  private fireConversationObservation(session: SessionState, exchanges: ConversationExchange[]): void {
+    if (exchanges.length === 0) return;
+
+    (async () => {
+      const ready = await ensureWorkerRunning();
+      if (!ready) return;
+      const response = await workerHttpRequest('/api/sessions/conversation-observe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contentSessionId: session.sessionId,
+          exchanges,
+          project: session.project || 'unknown'
+        })
+      });
+      if (!response.ok) {
+        logger.debug('TRANSCRIPT', 'Conversation observation returned non-2xx', { status: response.status });
+      }
+    })().catch(error => {
+      logger.debug('TRANSCRIPT', 'Conversation observation failed', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
   }
 
   private async queueSummary(session: SessionState): Promise<void> {

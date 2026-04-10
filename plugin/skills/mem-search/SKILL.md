@@ -42,7 +42,7 @@ search(query="authentication", limit=20, project="my-project")
 - `limit` (number) - Max results, default 20, max 100
 - `project` (string) - Project name filter
 - `type` (string, optional) - "observations", "sessions", or "prompts"
-- `obs_type` (string, optional) - Comma-separated: bugfix, feature, decision, discovery, change
+- `obs_type` (string, optional) - Comma-separated: bugfix, feature, decision, discovery, change, refactor, insight, commitment, correction, frustration, pattern_recognition, emotional_signal, overconfidence
 - `dateStart` (string, optional) - YYYY-MM-DD or epoch ms
 - `dateEnd` (string, optional) - YYYY-MM-DD or epoch ms
 - `offset` (number, optional) - Skip N results
@@ -125,6 +125,34 @@ get_observations(ids=[11131, 10942, 10855], orderBy="date_desc")
 - **Full observation:** ~500-1000 tokens each
 - **Batch fetch:** 1 HTTP request vs N individual requests
 - **10x token savings** by filtering before fetching
+
+## Deep Dive: Full Transcript Context (Layer 3)
+
+When observations alone aren't enough, retrieve the original conversation:
+
+**Full segment dump:**
+
+```text
+get_transcript_segment(observation_id=11131)
+```
+
+**Scoped search within segment:**
+
+```text
+get_transcript_segment(observation_id=11131, query="why did we choose JWT")
+```
+
+**Returns:**
+- Without `query`: The full conversation segment (~2000-5000 tokens)
+- With `query`: The most relevant chunks from within that segment (scoped RAG)
+
+**This is a traversal tool, not a search tool.** You must already have an
+observation ID from search/timeline.
+
+**Token cost hierarchy:**
+- Search index: ~50-100 tokens/result
+- Full observation: ~500-1000 tokens
+- Transcript segment: ~2000-5000 tokens (full) or ~500-1000 (scoped query)
 
 ## Smart-Explore Language Support
 
