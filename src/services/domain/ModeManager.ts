@@ -131,22 +131,24 @@ export class ModeManager {
    * - Deep merges override onto parent
    */
   loadMode(modeId: string): ModeConfig {
-    const inheritance = this.parseInheritance(modeId);
+    // Normalize to lowercase so code--zh-TW and code--zh-tw both resolve to code--zh-tw.json
+    const normalizedId = modeId.toLowerCase();
+    const inheritance = this.parseInheritance(normalizedId);
 
     // No inheritance - load file directly (existing behavior)
     if (!inheritance.hasParent) {
       try {
-        const mode = this.loadModeFile(modeId);
+        const mode = this.loadModeFile(normalizedId);
         this.activeMode = mode;
-        logger.debug('SYSTEM', `Loaded mode: ${mode.name} (${modeId})`, undefined, {
+        logger.debug('SYSTEM', `Loaded mode: ${mode.name} (${normalizedId})`, undefined, {
           types: mode.observation_types.map(t => t.id),
           concepts: mode.observation_concepts.map(c => c.id)
         });
         return mode;
       } catch (error) {
-        logger.warn('SYSTEM', `Mode file not found: ${modeId}, falling back to 'code'`);
+        logger.warn('SYSTEM', `Mode file not found: ${normalizedId}, falling back to 'code'`);
         // If we're already trying to load 'code', throw to prevent infinite recursion
-        if (modeId === 'code') {
+        if (normalizedId === 'code') {
           throw new Error('Critical: code.json mode file missing');
         }
         return this.loadMode('code');
@@ -161,7 +163,7 @@ export class ModeManager {
     try {
       parentMode = this.loadMode(parentId);
     } catch (error) {
-      logger.warn('SYSTEM', `Parent mode '${parentId}' not found for ${modeId}, falling back to 'code'`);
+      logger.warn('SYSTEM', `Parent mode '${parentId}' not found for ${normalizedId}, falling back to 'code'`);
       parentMode = this.loadMode('code');
     }
 
@@ -187,7 +189,7 @@ export class ModeManager {
     const mergedMode = this.deepMerge(parentMode, overrideConfig);
     this.activeMode = mergedMode;
 
-    logger.debug('SYSTEM', `Loaded mode with inheritance: ${mergedMode.name} (${modeId} = ${parentId} + ${overrideId})`, undefined, {
+    logger.debug('SYSTEM', `Loaded mode with inheritance: ${mergedMode.name} (${normalizedId} = ${parentId} + ${overrideId})`, undefined, {
       parent: parentId,
       override: overrideId,
       types: mergedMode.observation_types.map(t => t.id),
