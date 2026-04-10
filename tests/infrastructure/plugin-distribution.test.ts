@@ -116,6 +116,23 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
       }
     }
   });
+
+  it('should not use hardcoded port 37777 in curl health check commands (#1683)', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+
+    for (const [eventName, matchers] of Object.entries(parsed.hooks)) {
+      for (const matcher of matchers as any[]) {
+        for (const hook of matcher.hooks) {
+          if (hook.type === 'command' && hook.command.includes('curl') && hook.command.includes('/health')) {
+            // curl health checks must use a variable, not a hardcoded port
+            expect(hook.command).not.toContain('localhost:37777/health');
+            expect(hook.command).toContain('${_WP}');
+          }
+        }
+      }
+    }
+  });
 });
 
 describe('Plugin Distribution - package.json Files Field', () => {
