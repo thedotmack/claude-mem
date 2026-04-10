@@ -6,7 +6,7 @@ import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-util
 import { logger } from '../../utils/logger.js';
 import { getProjectContext, getProjectName } from '../../utils/project-name.js';
 import { writeAgentsMd } from '../../utils/agents-md-utils.js';
-import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
+import { resolveFieldSpec, resolveFields, matchesRule, getValueByPath } from './field-utils.js';
 import { expandHomePath } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -129,6 +129,10 @@ export class TranscriptEventProcessor {
 
     const fields = resolveFields(event.fields, entry, { watch, schema, session });
 
+    // Resolve entry timestamp for historical accuracy.
+    // Checks schema-configured field first, then common JSONL timestamp paths.
+    const entryTimestampEpoch = this.resolveEntryTimestamp(entry, event, watch, schema);
+
     switch (event.action) {
       case 'session_context':
         this.applySessionContext(session, fields);
@@ -147,13 +151,13 @@ export class TranscriptEventProcessor {
         if (typeof fields.message === 'string') session.lastAssistantMessage = fields.message;
         break;
       case 'tool_use':
-        await this.handleToolUse(session, fields);
+        await this.handleToolUse(session, fields, entryTimestampEpoch);
         break;
       case 'tool_result':
-        await this.handleToolResult(session, fields);
+        await this.handleToolResult(session, fields, entryTimestampEpoch);
         break;
       case 'observation':
-        await this.sendObservation(session, fields);
+        await this.sendObservation(session, fields, entryTimestampEpoch);
         break;
       case 'file_edit':
         await this.sendFileEdit(session, fields);
@@ -164,6 +168,46 @@ export class TranscriptEventProcessor {
       default:
         break;
     }
+  }
+
+  /**
+   * Resolve the original timestamp from a transcript entry as epoch ms.
+   * Checks: schema-configured `timestamp` field > entry.timestamp > entry.message.timestamp
+   */
+  private resolveEntryTimestamp(
+    entry: unknown,
+    event: SchemaEvent,
+    watch: WatchTarget,
+    schema: TranscriptSchema
+  ): number | undefined {
+    const ctx = { watch, schema } as any;
+
+    // 1. Schema-configured timestamp field
+    const fieldSpec = event.fields?.timestamp;
+    if (fieldSpec) {
+      const resolved = resolveFieldSpec(fieldSpec, entry, ctx);
+      const epoch = this.parseTimestampToEpoch(resolved);
+      if (epoch) return epoch;
+    }
+
+    // 2. Common JSONL paths: entry.timestamp (Claude Code transcripts)
+    const raw = getValueByPath(entry, 'timestamp');
+    const epoch = this.parseTimestampToEpoch(raw);
+    if (epoch) return epoch;
+
+    return undefined;
+  }
+
+  private parseTimestampToEpoch(value: unknown): number | undefined {
+    if (typeof value === 'number' && value > 0) {
+      // Already epoch ms (or seconds — normalize if < year 2000 in ms)
+      return value < 1e12 ? value * 1000 : value;
+    }
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = new Date(value).getTime();
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+    return undefined;
   }
 
   private applySessionContext(session: SessionState, fields: Record<string, unknown>): void {
@@ -188,7 +232,7 @@ export class TranscriptEventProcessor {
     });
   }
 
-  private async handleToolUse(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async handleToolUse(session: SessionState, fields: Record<string, unknown>, entryTimestampEpoch?: number): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolInput = this.maybeParseJson(fields.toolInput);
@@ -215,11 +259,11 @@ export class TranscriptEventProcessor {
         toolName,
         toolInput,
         toolResponse
-      });
+      }, entryTimestampEpoch);
     }
   }
 
-  private async handleToolResult(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async handleToolResult(session: SessionState, fields: Record<string, unknown>, entryTimestampEpoch?: number): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolResponse = this.maybeParseJson(fields.toolResponse);
@@ -239,11 +283,11 @@ export class TranscriptEventProcessor {
         toolName: name,
         toolInput,
         toolResponse
-      });
+      }, entryTimestampEpoch);
     }
   }
 
-  private async sendObservation(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async sendObservation(session: SessionState, fields: Record<string, unknown>, entryTimestampEpoch?: number): Promise<void> {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     if (!toolName) return;
 
@@ -253,7 +297,8 @@ export class TranscriptEventProcessor {
       toolName,
       toolInput: this.maybeParseJson(fields.toolInput),
       toolResponse: this.maybeParseJson(fields.toolResponse),
-      platform: session.platformSource
+      platform: session.platformSource,
+      overrideTimestampEpoch: entryTimestampEpoch
     });
   }
 

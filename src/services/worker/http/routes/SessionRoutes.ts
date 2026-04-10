@@ -502,10 +502,10 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Queue observations by contentSessionId (post-tool-use-hook uses this)
    * POST /api/sessions/observations
-   * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
+   * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd, override_timestamp_epoch? }
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
+    const { contentSessionId, tool_name, tool_input, tool_response, cwd, override_timestamp_epoch } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
     const project = typeof cwd === 'string' && cwd.trim() ? getProjectName(cwd) : '';
 
@@ -569,6 +569,7 @@ export class SessionRoutes extends BaseRouteHandler {
         : '{}';
 
       // Queue observation
+      const parsedTimestamp = typeof override_timestamp_epoch === 'number' ? override_timestamp_epoch : undefined;
       this.sessionManager.queueObservation(sessionDbId, {
         tool_name,
         tool_input: cleanedToolInput,
@@ -580,7 +581,8 @@ export class SessionRoutes extends BaseRouteHandler {
             tool_name
           });
           return '';
-        })()
+        })(),
+        override_timestamp_epoch: parsedTimestamp
       });
 
       // Ensure SDK agent is running

@@ -217,7 +217,8 @@ export class SessionManager {
       tool_input: data.tool_input,
       tool_response: data.tool_response,
       prompt_number: data.prompt_number,
-      cwd: data.cwd
+      cwd: data.cwd,
+      override_timestamp_epoch: data.override_timestamp_epoch
     };
 
     try {

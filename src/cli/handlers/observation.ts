@@ -22,7 +22,7 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    const { sessionId, cwd, toolName, toolInput, toolResponse } = input;
+    const { sessionId, cwd, toolName, toolInput, toolResponse, overrideTimestampEpoch } = input;
     const platformSource = normalizePlatformSource(input.platform);
 
     if (!toolName) {
@@ -57,7 +57,8 @@ export const observationHandler: EventHandler = {
           tool_name: toolName,
           tool_input: toolInput,
           tool_response: toolResponse,
-          cwd
+          cwd,
+          ...(overrideTimestampEpoch !== undefined && { override_timestamp_epoch: overrideTimestampEpoch })
         })
       });
 

@@ -12,6 +12,8 @@ export interface NormalizedHookInput {
   edits?: unknown[];   // afterFileEdit
   // Platform-specific metadata (source, reason, trigger, mcp_context, etc.)
   metadata?: Record<string, unknown>;
+  // Historical timestamp override (epoch ms) for importing archived transcripts
+  overrideTimestampEpoch?: number;
 }
 
 export interface HookResult {

@@ -53,6 +53,7 @@ export interface PendingMessage {
   prompt_number?: number;
   cwd?: string;
   last_assistant_message?: string;
+  override_timestamp_epoch?: number;
 }
 
 /**
@@ -71,6 +72,7 @@ export interface ObservationData {
   tool_response: any;
   prompt_number: number;
   cwd?: string;
+  override_timestamp_epoch?: number;
 }
 
 // ============================================================================
