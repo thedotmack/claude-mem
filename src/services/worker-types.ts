@@ -43,6 +43,9 @@ export interface ActiveSession {
   processingMessageIds: number[];
   // Tier routing: model override per session based on queue complexity
   modelOverride?: string;
+  // Track whether the most recent storage operation persisted a summary record.
+  // Used by the status endpoint so the Stop hook can detect silent summary loss (#1633).
+  lastSummaryStored?: boolean;
 }
 
 export interface PendingMessage {
