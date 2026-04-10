@@ -27,6 +27,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getWorkerPort, workerHttpRequest } from '../shared/worker-utils.js';
+import { HOOK_TIMEOUTS, getTimeout } from '../shared/hook-constants.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
@@ -119,7 +120,7 @@ async function callWorkerAPI(
     }
 
     const apiPath = `${endpoint}?${searchParams}`;
-    const response = await workerHttpRequest(apiPath);
+    const response = await workerHttpRequest(apiPath, { timeoutMs: getTimeout(HOOK_TIMEOUTS.DEFAULT) });
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -157,7 +158,8 @@ async function callWorkerAPIPost(
     const response = await workerHttpRequest(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      timeoutMs: getTimeout(HOOK_TIMEOUTS.DEFAULT)
     });
 
     if (!response.ok) {
