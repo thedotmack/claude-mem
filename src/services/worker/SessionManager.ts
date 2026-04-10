@@ -365,9 +365,14 @@ export class SessionManager {
   }
 
   private static readonly MAX_SESSION_IDLE_MS = 15 * 60 * 1000; // 15 minutes
+  private static readonly MAX_GENERATOR_IDLE_MS = 5 * 60 * 1000; // 5 minutes (stuck generator detection, Issue #1652)
 
   /**
    * Reap sessions with no active generator and no pending work that have been idle too long.
+   * Also reaps sessions whose generator has been stuck (no lastGeneratorActivity update) for
+   * longer than MAX_GENERATOR_IDLE_MS — these are zombie subprocesses that will never exit
+   * on their own because the orphan reaper skips sessions in the active sessions map. (Issue #1652)
+   *
    * This unblocks the orphan reaper which skips processes for "active" sessions. (Issue #1168)
    */
   async reapStaleSessions(): Promise<number> {
@@ -375,8 +380,31 @@ export class SessionManager {
     const staleSessionIds: number[] = [];
 
     for (const [sessionDbId, session] of this.sessions) {
-      // Skip sessions with active generators
-      if (session.generatorPromise) continue;
+      // Sessions with active generators — check for stuck/zombie generators (Issue #1652)
+      if (session.generatorPromise) {
+        const generatorIdleMs = now - session.lastGeneratorActivity;
+        if (generatorIdleMs > SessionManager.MAX_GENERATOR_IDLE_MS) {
+          logger.warn('SESSION', `Stale generator detected for session ${sessionDbId} (no activity for ${Math.round(generatorIdleMs / 60000)}m) — force-killing subprocess`, {
+            sessionDbId,
+            generatorIdleMs
+          });
+          // Force-kill the subprocess to unblock the stuck for-await in SDKAgent.
+          // Without this the generator is blocked on `for await (const msg of queryResult)`
+          // and will never exit even after abort() is called.
+          const trackedProcess = getProcessBySession(sessionDbId);
+          if (trackedProcess && trackedProcess.process.exitCode === null) {
+            try {
+              trackedProcess.process.kill('SIGKILL');
+            } catch (err) {
+              logger.warn('SESSION', 'Failed to SIGKILL subprocess for stale generator', { sessionDbId }, err as Error);
+            }
+          }
+          // Signal the SDK agent loop to exit after the subprocess dies
+          session.abortController.abort();
+          staleSessionIds.push(sessionDbId);
+        }
+        continue;
+      }
 
       // Skip sessions with pending work
       const pendingCount = this.getPendingStore().getPendingCount(sessionDbId);
@@ -385,12 +413,12 @@ export class SessionManager {
       // No generator + no pending work + old enough = stale
       const sessionAge = now - session.startTime;
       if (sessionAge > SessionManager.MAX_SESSION_IDLE_MS) {
+        logger.warn('SESSION', `Reaping idle session ${sessionDbId} (no activity for >${Math.round(SessionManager.MAX_SESSION_IDLE_MS / 60000)}m)`, { sessionDbId });
         staleSessionIds.push(sessionDbId);
       }
     }
 
     for (const sessionDbId of staleSessionIds) {
-      logger.warn('SESSION', `Reaping stale session ${sessionDbId} (no activity for >${Math.round(SessionManager.MAX_SESSION_IDLE_MS / 60000)}m)`, { sessionDbId });
       await this.deleteSession(sessionDbId);
     }
 
