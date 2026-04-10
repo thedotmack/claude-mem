@@ -108,6 +108,15 @@ export class ModeManager {
   }
 
   /**
+   * Normalize a mode ID to its canonical lowercase form.
+   * Use this at all call sites before comparing or loading mode IDs so that
+   * code--zh-TW, code--zh-Tw, and code--zh-tw all resolve consistently.
+   */
+  static normalizeModeId(modeId: string): string {
+    return modeId.toLowerCase();
+  }
+
+  /**
    * Load a mode file from disk without inheritance processing
    */
   private loadModeFile(modeId: string): ModeConfig {
@@ -131,8 +140,8 @@ export class ModeManager {
    * - Deep merges override onto parent
    */
   loadMode(modeId: string): ModeConfig {
-    // Normalize to lowercase so code--zh-TW and code--zh-tw both resolve to code--zh-tw.json
-    const normalizedId = modeId.toLowerCase();
+    // Normalize via the public utility so all call sites share consistent canonicalization
+    const normalizedId = ModeManager.normalizeModeId(modeId);
     const inheritance = this.parseInheritance(normalizedId);
 
     // No inheritance - load file directly (existing behavior)

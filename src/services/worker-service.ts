@@ -355,7 +355,7 @@ export class WorkerService {
 
       // One-time chroma wipe for users upgrading from versions with duplicate worker bugs.
       // Only runs in local mode (chroma is local-only). Backfill at line ~414 rebuilds from SQLite.
-      if (settings.CLAUDE_MEM_MODE === 'local' || !settings.CLAUDE_MEM_MODE) {
+      if (ModeManager.normalizeModeId(settings.CLAUDE_MEM_MODE ?? '') === 'local' || !settings.CLAUDE_MEM_MODE) {
         runOneTimeChromaMigration();
       }
 
