@@ -19,13 +19,26 @@ import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
 
+/**
+ * Normalize Windows backslash paths to forward slashes.
+ * On Windows with Git Bash, CLAUDE_PLUGIN_ROOT may contain backslashes
+ * (e.g. C:\Users\...) that get corrupted when the shell interprets escape
+ * sequences like \t (tab) or \b (backspace) in the path. Normalizing to
+ * forward slashes is safe because Node.js accepts both on Windows.
+ * Fixes #1281.
+ */
+function normalizePath(p) {
+  if (!p) return p;
+  return p.replace(/\\/g, '/');
+}
+
 // Self-resolve plugin root when CLAUDE_PLUGIN_ROOT is not set by Claude Code.
 // Upstream bug: anthropics/claude-code#24529 — Stop hooks (and on Linux, all hooks)
 // don't receive CLAUDE_PLUGIN_ROOT, causing script paths to resolve to /scripts/...
 // which doesn't exist. This fallback derives the plugin root from bun-runner.js's
 // own filesystem location (this file lives in <plugin-root>/scripts/).
 const __bun_runner_dirname = dirname(fileURLToPath(import.meta.url));
-const RESOLVED_PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || resolve(__bun_runner_dirname, '..');
+const RESOLVED_PLUGIN_ROOT = normalizePath(process.env.CLAUDE_PLUGIN_ROOT) || resolve(__bun_runner_dirname, '..');
 
 /**
  * Fix script path arguments that were broken by empty CLAUDE_PLUGIN_ROOT.
@@ -113,7 +126,8 @@ if (args.length === 0) {
 }
 
 // Fix broken script paths caused by empty CLAUDE_PLUGIN_ROOT (#1215)
-args[0] = fixBrokenScriptPath(args[0]);
+// Also normalize Windows backslash paths to forward slashes (#1281)
+args[0] = normalizePath(fixBrokenScriptPath(args[0]));
 
 const bunPath = findBun();
 
