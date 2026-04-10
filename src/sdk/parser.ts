@@ -125,7 +125,8 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
     if (/<observation>/.test(text)) {
       logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — prompt conditioning may need strengthening', {
         sessionId,
-        responsePrefix: text.slice(0, 120)
+        responseStartsWithObservation: text.trimStart().startsWith('<observation>'),
+        responseLength: text.length
       });
     }
     return null;

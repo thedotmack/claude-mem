@@ -150,10 +150,9 @@ ${mode.prompts.summary_footer}
 
 === CRITICAL FORMAT CONSTRAINT ===
 This turn is a SUMMARY, not an observation. Prior turns in this session used <observation> tags; this turn MUST NOT.
-- REQUIRED: wrap your entire response in a single <summary>...</summary> block using the sub-tags shown above.
+- REQUIRED: unless you are using <skip_summary reason="no_content"/>, wrap your entire response in a single <summary>...</summary> block using the sub-tags shown above.
 - FORBIDDEN: <observation> tags. Any response containing <observation> will be discarded and the session summary will be lost.
-- If there is nothing meaningful to summarize, respond with exactly: <skip_summary reason="no_content"/>
-Begin your response with the literal characters "<summary>" now.`;
+- If there is nothing meaningful to summarize, respond with exactly: <skip_summary reason="no_content"/>`;
 }
 
 /**

@@ -57,6 +57,13 @@ describe('parseSummary (#1649 regression)', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
+  it('accepts the explicit <skip_summary> escape hatch and returns null without warning', () => {
+    const result = parseSummary('<skip_summary reason="no_content"/>', 42);
+
+    expect(result).toBeNull();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
   it('parses a valid <summary> block correctly', () => {
     const validSummary = `
 <summary>
