@@ -7,7 +7,7 @@
  * 2. But Bun isn't in PATH until terminal restart
  * 3. Subsequent hooks fail because they can't find `bun`
  *
- * Usage: node bun-runner.js <script> [args...]
+ * Usage: node bun-runner.mjs <script> [args...]
  *
  * Fixes #818: Worker fails to start on fresh install
  */
@@ -101,7 +101,7 @@ if (isPluginDisabledInClaudeSettings()) {
 const args = process.argv.slice(2);
 
 if (args.length === 0) {
-  console.error('Usage: node bun-runner.js <script> [args...]');
+  console.error('Usage: node bun-runner.mjs <script> [args...]');
   process.exit(1);
 }
 
