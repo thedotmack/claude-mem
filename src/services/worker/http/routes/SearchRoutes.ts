@@ -101,7 +101,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Search session summaries
-   * GET /api/search/sessions?query=...&limit=20
+   * GET /api/search/sessions?query=...&limit=20&project=...
    */
   private handleSearchSessions = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.searchSessions(req.query);
