@@ -80,7 +80,7 @@ const HOOK_TIMEOUT_MS = 10000;
  */
 const GEMINI_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
   'SessionStart': 'context',
-  'BeforeAgent': 'user-message',
+  'BeforeAgent': 'session-init',
   'AfterAgent': 'observation',
   'BeforeTool': 'observation',
   'AfterTool': 'observation',

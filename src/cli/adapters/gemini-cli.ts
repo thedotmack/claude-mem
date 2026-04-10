@@ -13,7 +13,7 @@ import type { PlatformAdapter } from '../types.js';
  *   Notification  → observation (system events like ToolPermission)
  *
  * Agent:
- *   BeforeAgent   → user-message (captures user prompt)
+ *   BeforeAgent   → session-init (initializes session, captures user prompt)
  *   AfterAgent    → observation  (full agent response)
  *
  * Tool:
