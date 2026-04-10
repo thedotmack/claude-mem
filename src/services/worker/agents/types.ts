@@ -46,6 +46,7 @@ export interface ObservationSSEPayload {
   project: string;
   prompt_number: number;
   created_at_epoch: number;
+  metadata?: string;
 }
 
 export interface SummarySSEPayload {

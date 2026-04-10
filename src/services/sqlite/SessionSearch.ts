@@ -251,8 +251,8 @@ export class SessionSearch {
       }
     }
 
-    // Source URL filter (metadata JSON extraction)
-    if (filters.source_url) {
+    // Source URL filter (metadata JSON extraction) — only on observations table (has metadata column)
+    if (filters.source_url && tableAlias === 'o') {
       if (filters.source_url.endsWith('/')) {
         conditions.push(`json_extract(${tableAlias}.metadata, '$.source_url') LIKE ?`);
         params.push(`${filters.source_url}%`);
@@ -262,8 +262,8 @@ export class SessionSearch {
       }
     }
 
-    // Tool name filter (metadata JSON extraction)
-    if (filters.tool_name) {
+    // Tool name filter (metadata JSON extraction) — only on observations table (has metadata column)
+    if (filters.tool_name && tableAlias === 'o') {
       if (Array.isArray(filters.tool_name)) {
         const placeholders = filters.tool_name.map(() => '?').join(',');
         conditions.push(`json_extract(${tableAlias}.metadata, '$.tool_name') IN (${placeholders})`);

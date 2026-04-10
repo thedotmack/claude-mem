@@ -90,7 +90,8 @@ export class PaginationHelper {
         o.files_modified,
         o.prompt_number,
         o.created_at,
-        o.created_at_epoch
+        o.created_at_epoch,
+        o.metadata
       FROM observations o
       LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     `;

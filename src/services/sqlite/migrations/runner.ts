@@ -954,10 +954,15 @@ export class MigrationRunner {
    * Add metadata column to observations for storing source URLs, tool names, etc. (migration 27)
    */
   private addObservationMetadataColumn(): void {
-    const applied = this.db.query('SELECT 1 FROM schema_versions WHERE version = 27').get();
-    if (applied) return;
+    // Check actual column existence (restart-safe: survives crash between ALTER and schema_versions write)
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasMetadata = columns.some(col => col.name === 'metadata');
 
-    this.db.run('ALTER TABLE observations ADD COLUMN metadata TEXT');
+    if (!hasMetadata) {
+      this.db.run('ALTER TABLE observations ADD COLUMN metadata TEXT');
+    }
+
+    // CREATE INDEX IF NOT EXISTS is idempotent — always run to ensure indexes exist
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_source_url ON observations(
       json_extract(metadata, '$.source_url')
     ) WHERE json_extract(metadata, '$.source_url') IS NOT NULL`);

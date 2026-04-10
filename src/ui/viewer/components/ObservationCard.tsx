@@ -143,7 +143,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
       <div className="card-meta">
         <span className="meta-date">#{observation.id} • {date}</span>
         {toolName && <span className="meta-tool-name">{toolName}</span>}
-        {sourceUrl && (
+        {sourceUrl && (sourceUrl.startsWith('https://') || sourceUrl.startsWith('http://')) && (
           <a className="meta-source-url" href={sourceUrl} target="_blank" rel="noopener noreferrer"
              title={sourceUrl}>
             {truncateUrl(sourceUrl, 40)}

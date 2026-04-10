@@ -956,6 +956,14 @@ export class SessionStore {
 
     this.db.run('ALTER TABLE observations ADD COLUMN metadata TEXT');
 
+    // Match MigrationRunner: create computed indexes for metadata JSON fields
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_source_url ON observations(
+      json_extract(metadata, '$.source_url')
+    ) WHERE json_extract(metadata, '$.source_url') IS NOT NULL`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_tool_name ON observations(
+      json_extract(metadata, '$.tool_name')
+    ) WHERE json_extract(metadata, '$.tool_name') IS NOT NULL`);
+
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(27, new Date().toISOString());
   }
 
