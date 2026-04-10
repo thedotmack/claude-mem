@@ -66,7 +66,16 @@ const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam
         colorResponse?.ok ? colorResponse.text() : Promise.resolve('')
       ]);
 
-      const additionalContext = contextResult.trim();
+      const MAX_CONTEXT_BYTES = 9_500; // Claude Code >= v2.1.88 truncates hook outputs > 10KB (#1591)
+      let additionalContext = contextResult.trim();
+      if (Buffer.byteLength(additionalContext, 'utf8') > MAX_CONTEXT_BYTES) {
+        // Trim at the last complete line break under the byte limit to avoid splitting mid-line
+        const buf = Buffer.from(additionalContext, 'utf8').subarray(0, MAX_CONTEXT_BYTES);
+        const truncated = buf.toString('utf8');
+        const lastNewline = truncated.lastIndexOf('\n');
+        additionalContext = (lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated)
+          + '\n[Context trimmed to 9.5KB — lower CLAUDE_MEM_CONTEXT_OBSERVATIONS in settings to avoid truncation (#1591)]';
+      }
       const coloredTimeline = colorResult.trim();
       const platform = input.platform;
 
