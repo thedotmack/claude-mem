@@ -10,6 +10,8 @@
  *    (should not be persisted to memory)
  * 4. <system-reminder> - Claude Code-injected system reminders
  *    (CLAUDE.md contents, deferred tool lists, etc. — should not be persisted)
+ * 5. <task-notification> - Claude Code-injected background task completion events
+ *    (injected into UserPromptSubmit prompt field — system events, not user content)
  *
  * EDGE PROCESSING PATTERN: Filter at hook layer before sending to worker/storage.
  * This keeps the worker service simple and follows one-way data stream.
@@ -22,6 +24,14 @@ import { logger } from './logger.js';
  * Exported for use by transcript parsers that strip system-reminder at read-time.
  */
 export const SYSTEM_REMINDER_REGEX = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
+
+/**
+ * Regex to match <task-notification> tags and their content.
+ * Claude Code injects these into the UserPromptSubmit hook's prompt field when
+ * a background task completes at the same time the user submits a prompt.
+ * These are system events, not user content, and should not be stored in memory.
+ */
+export const TASK_NOTIFICATION_REGEX = /<task-notification>[\s\S]*?<\/task-notification>/g;
 
 /**
  * Maximum number of tags allowed in a single content block
@@ -39,9 +49,10 @@ function countTags(content: string): number {
   const contextCount = (content.match(/<claude-mem-context>/g) || []).length;
   const systemInstructionCount = (content.match(/<system_instruction>/g) || []).length;
   const systemInstructionHyphenCount = (content.match(/<system-instruction>/g) || []).length;
-const persistedOutputCount = (content.match(/<persisted-output>/g) || []).length;
+  const persistedOutputCount = (content.match(/<persisted-output>/g) || []).length;
   const systemReminderCount = (content.match(/<system-reminder>/g) || []).length;
-  return privateCount + contextCount + systemInstructionCount + systemInstructionHyphenCount + persistedOutputCount + systemReminderCount;
+  const taskNotificationCount = (content.match(/<task-notification>/g) || []).length;
+  return privateCount + contextCount + systemInstructionCount + systemInstructionHyphenCount + persistedOutputCount + systemReminderCount + taskNotificationCount;
 }
 
 /**
@@ -65,8 +76,9 @@ function stripTagsInternal(content: string): string {
     .replace(/<private>[\s\S]*?<\/private>/g, '')
     .replace(/<system_instruction>[\s\S]*?<\/system_instruction>/g, '')
     .replace(/<system-instruction>[\s\S]*?<\/system-instruction>/g, '')
-.replace(/<persisted-output>[\s\S]*?<\/persisted-output>/g, '')
+    .replace(/<persisted-output>[\s\S]*?<\/persisted-output>/g, '')
     .replace(SYSTEM_REMINDER_REGEX, '')
+    .replace(TASK_NOTIFICATION_REGEX, '')
     .trim();
 }
 

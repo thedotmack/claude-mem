@@ -134,9 +134,18 @@ export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): strin
     return '';
   })();
 
-  return `--- MODE SWITCH: PROGRESS SUMMARY ---
-Do NOT output <observation> tags. This is a summary request, not an observation request.
-Your response MUST use <summary> tags ONLY. Any <observation> output will be discarded.
+  return `\
+================================================================
+CRITICAL MODE SWITCH — SUMMARY ONLY — READ CAREFULLY
+================================================================
+STOP. The previous instructions in this conversation asked for
+<observation> tags. IGNORE THAT FORMAT FOR THIS MESSAGE ONLY.
+
+THIS REQUEST REQUIRES <summary> tags — NOT <observation> tags.
+- <observation> output will be SILENTLY DISCARDED
+- Only <summary>...</summary> will be stored
+- Any other output is ignored by the parser
+================================================================
 
 ${mode.prompts.header_summary_checkpoint}
 ${mode.prompts.summary_instruction}
@@ -154,7 +163,11 @@ ${mode.prompts.summary_format_instruction}
   <notes>${mode.prompts.xml_summary_notes_placeholder}</notes>
 </summary>
 
-${mode.prompts.summary_footer}`;
+${mode.prompts.summary_footer}
+
+================================================================
+REMINDER: Use <summary> tags above. <observation> = discarded.
+================================================================`;
 }
 
 /**

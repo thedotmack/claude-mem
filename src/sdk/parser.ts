@@ -50,7 +50,17 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
     const files_read = extractArrayElements(obsContent, 'files_read', 'file');
     const files_modified = extractArrayElements(obsContent, 'files_modified', 'file');
 
-    // NOTE FROM THEDOTMACK: ALWAYS save observations - never skip. 10/24/2025
+    // Guard: skip observations with no meaningful content (title, narrative, facts all empty).
+    // These are LLM-generated shells — e.g. <observation><type>bugfix</type></observation> —
+    // that provide no value and pollute the UI with blank "Untitled" cards.
+    // NOTE: "ALWAYS save observations" (10/24/2025) applies to observations with content;
+    // it was never intended to preserve completely empty shells.
+    const hasContent = !!(title || narrative || facts.length > 0);
+    if (!hasContent) {
+      logger.warn('PARSER', 'Skipping empty observation shell (no title, narrative, or facts)', { correlationId, type });
+      continue;
+    }
+
     // All fields except type are nullable in schema
     // If type is missing or invalid, use first type from mode as fallback
 
