@@ -20,6 +20,7 @@ const SCRIPTS_DIR = join(import.meta.dir, '..', 'plugin', 'scripts');
 const SHEBANG_SCRIPTS = [
   'mcp-server.cjs',
   'worker-service.cjs',
+  'context-generator.cjs',
   'bun-runner.js',
   'smart-install.js',
   'worker-cli.js',
@@ -30,10 +31,7 @@ describe('plugin/scripts line endings (#1342)', () => {
     const filePath = join(SCRIPTS_DIR, filename);
 
     it(`${filename} shebang line must not contain CRLF`, () => {
-      if (!existsSync(filePath)) {
-        // Skip if not yet built (CI may not have run the build step)
-        return;
-      }
+      expect(existsSync(filePath)).toBe(true);
       const content = readFileSync(filePath, 'binary');
       const firstLine = content.split('\n')[0];
       // CRLF would leave a trailing \r on the shebang line
@@ -41,9 +39,7 @@ describe('plugin/scripts line endings (#1342)', () => {
     });
 
     it(`${filename} must not contain any CRLF sequences`, () => {
-      if (!existsSync(filePath)) {
-        return;
-      }
+      expect(existsSync(filePath)).toBe(true);
       const content = readFileSync(filePath, 'binary');
       expect(content.includes('\r\n')).toBe(false);
     });
