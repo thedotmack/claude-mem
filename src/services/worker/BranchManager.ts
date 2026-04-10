@@ -2,17 +2,43 @@
  * BranchManager: Git branch detection and switching for beta feature toggle
  *
  * Enables users to switch between stable (main) and beta branches via the UI.
- * The installed plugin at ~/.claude/plugins/marketplaces/thedotmack/ is a git repo.
+ * Supports two install layouts:
+ * - Marketplace: ~/.claude/plugins/marketplaces/thedotmack/ (git-cloned, supports branch switching)
+ * - Cache: ~/.claude/plugins/cache/thedotmack/claude-mem/<version>/ (npm-copied, read-only)
  */
 
 import { execSync, spawnSync } from 'child_process';
-import { existsSync, unlinkSync } from 'fs';
+import { existsSync, readdirSync, statSync, unlinkSync } from 'fs';
+import { homedir } from 'os';
 import { join } from 'path';
 import { logger } from '../../utils/logger.js';
-import { MARKETPLACE_ROOT } from '../../shared/paths.js';
+import { CLAUDE_CONFIG_DIR, MARKETPLACE_ROOT } from '../../shared/paths.js';
 
-// Alias for code clarity - this is the installed plugin path
+// Git-based install path (marketplace layout)
 const INSTALLED_PLUGIN_PATH = MARKETPLACE_ROOT;
+
+// Cache install base: ~/.claude/plugins/cache/thedotmack/claude-mem/
+const PLUGIN_CACHE_BASE = join(CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'thedotmack', 'claude-mem');
+
+/**
+ * Find the latest versioned cache directory, or null if not present.
+ * Cache layout: ~/.claude/plugins/cache/thedotmack/claude-mem/<version>/
+ */
+export function findCacheInstallDirectory(): string | null {
+  if (!existsSync(PLUGIN_CACHE_BASE)) return null;
+  try {
+    const entries = readdirSync(PLUGIN_CACHE_BASE)
+      .filter(d => /^\d/.test(d))
+      .map(d => join(PLUGIN_CACHE_BASE, d))
+      .filter(d => {
+        try { return statSync(d).isDirectory(); } catch { return false; }
+      })
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+    return entries.length > 0 ? entries[0] : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Validate branch name to prevent command injection
@@ -105,9 +131,21 @@ function execNpm(args: string[], timeoutMs: number = NPM_INSTALL_TIMEOUT_MS): st
  * Get current branch information
  */
 export function getBranchInfo(): BranchInfo {
-  // Check if git repo exists
+  // Check if marketplace (git-based) install exists
   const gitDir = join(INSTALLED_PLUGIN_PATH, '.git');
   if (!existsSync(gitDir)) {
+    // Not a git install — check if a cache install is present instead
+    const cacheDir = findCacheInstallDirectory();
+    if (cacheDir) {
+      return {
+        branch: null,
+        isBeta: false,
+        isGitRepo: false,
+        isDirty: false,
+        canSwitch: false,
+        error: 'Plugin is installed via cache (not git-cloned). Update via Claude Code\'s plugin UI or run `npx claude-mem install`.'
+      };
+    }
     return {
       branch: null,
       isBeta: false,
@@ -260,6 +298,13 @@ export async function pullUpdates(): Promise<SwitchResult> {
   const info = getBranchInfo();
 
   if (!info.isGitRepo || !info.branch) {
+    // Provide a more specific error when the plugin is installed via cache
+    if (info.error?.includes('cache')) {
+      return {
+        success: false,
+        error: info.error
+      };
+    }
     return {
       success: false,
       error: 'Cannot pull updates: not a git repository'
