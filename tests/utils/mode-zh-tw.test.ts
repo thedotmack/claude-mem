@@ -9,7 +9,7 @@
  * code--zh-TW and code--zh-tw both resolve correctly on case-sensitive filesystems.
  */
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 
@@ -20,7 +20,10 @@ describe('code--zh-tw mode file (#1364)', () => {
   let content: string;
 
   beforeEach(() => {
-    content = readFileSync(modePath, 'utf-8');
+    // Only load content if the file exists — keeps the existence test independent
+    if (existsSync(modePath)) {
+      content = readFileSync(modePath, 'utf-8');
+    }
   });
 
   it('code--zh-tw.json exists in plugin/modes/', () => {
@@ -53,9 +56,10 @@ describe('code--zh-tw mode file (#1364)', () => {
   });
 
   it('code--zh-TW.json does NOT exist (only lowercase filename is canonical)', () => {
-    // Confirms that case normalization is required — there is no mixed-case alias file
-    const upperPath = join(MODES_DIR, 'code--zh-TW.json');
-    expect(existsSync(upperPath)).toBe(false);
+    // Use readdirSync for exact filename matching — existsSync is unreliable
+    // on case-insensitive filesystems (macOS/Windows)
+    const entries = readdirSync(MODES_DIR);
+    expect(entries.includes('code--zh-TW.json')).toBe(false);
   });
 });
 
