@@ -32,6 +32,7 @@ function mockReq(overrides: Partial<{
   return {
     ip: '127.0.0.1',
     connection: { remoteAddress: '127.0.0.1' },
+      socket: { remoteAddress: '127.0.0.1' },
     path: '/api/test',
     headers: {},
     ...overrides,

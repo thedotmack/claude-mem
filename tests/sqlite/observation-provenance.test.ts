@@ -68,19 +68,21 @@ describe('storeObservation — provenance columns', () => {
       undefined,   // overrideTimestampEpoch
       'MSM4M',     // node
       'darwin',    // platform
-      'inst-abc'   // instance
+      'inst-abc',  // instance
+      'claude'     // llm_source
     );
 
     expect(result.id).toBeGreaterThan(0);
 
     const row = db.query(
-      'SELECT node, platform, instance FROM observations WHERE id = ?'
+      'SELECT node, platform, instance, llm_source FROM observations WHERE id = ?'
     ).get(result.id) as { node: string; platform: string; instance: string } | undefined;
 
     expect(row).toBeDefined();
     expect(row!.node).toBe('MSM4M');
     expect(row!.platform).toBe('darwin');
     expect(row!.instance).toBe('inst-abc');
+    expect(row!.llm_source).toBe('claude');
   });
 
   it('stores NULL for node, platform, instance when not provided (backward compat)', () => {
@@ -96,13 +98,14 @@ describe('storeObservation — provenance columns', () => {
     expect(result.id).toBeGreaterThan(0);
 
     const row = db.query(
-      'SELECT node, platform, instance FROM observations WHERE id = ?'
+      'SELECT node, platform, instance, llm_source FROM observations WHERE id = ?'
     ).get(result.id) as { node: string | null; platform: string | null; instance: string | null } | undefined;
 
     expect(row).toBeDefined();
     expect(row!.node).toBeNull();
     expect(row!.platform).toBeNull();
     expect(row!.instance).toBeNull();
+    expect(row!.llm_source).toBeNull();
   });
 
   it('stores NULL for instance when only node and platform are provided', () => {
@@ -122,7 +125,7 @@ describe('storeObservation — provenance columns', () => {
     );
 
     const row = db.query(
-      'SELECT node, platform, instance FROM observations WHERE id = ?'
+      'SELECT node, platform, instance, llm_source FROM observations WHERE id = ?'
     ).get(result.id) as { node: string; platform: string; instance: string | null } | undefined;
 
     expect(row!.node).toBe('MBPM4M');
@@ -193,7 +196,7 @@ describe('storeObservations (transactions) — provenance columns', () => {
     expect(result.observationIds).toHaveLength(1);
 
     const row = db.query(
-      'SELECT node, platform, instance FROM observations WHERE id = ?'
+      'SELECT node, platform, instance, llm_source FROM observations WHERE id = ?'
     ).get(result.observationIds[0]) as { node: string | null; platform: string | null; instance: string | null } | undefined;
 
     expect(row!.node).toBeNull();

@@ -193,7 +193,7 @@ describe('ClientRegistry', () => {
       // With 0ms timeout, any lastSeen in the past is "disconnected"
       // (edge case — mostly documents the boundary behaviour)
       const disconnected = registry.getDisconnected(0);
-      expect(disconnected.length).toBeGreaterThanOrEqual(0); // timing-sensitive, just no throw
+      expect(disconnected.length).toBe(0); // With timeout=0ms, recently-touched client should not be disconnected // timing-sensitive, just no throw
     });
   });
 
