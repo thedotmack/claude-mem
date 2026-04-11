@@ -10,6 +10,7 @@ import path from 'path';
 import { readFileSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
 import { getPackageRoot } from '../../../../shared/paths.js';
+import { getNetworkMode } from '../../../../shared/node-identity.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SessionManager } from '../../SessionManager.js';

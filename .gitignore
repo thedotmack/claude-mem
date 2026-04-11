@@ -37,4 +37,5 @@ src/ui/viewer.html
 .octo/
 
 # Local contribution analysis (not part of upstream)
-CONTRIB_NOTES.md.local/tests/e2e/reports/
+CONTRIB_NOTES.md
+.local/tests/e2e/reports/

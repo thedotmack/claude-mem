@@ -37,9 +37,15 @@ export async function ensureServerModeReady(
   let settings: Record<string, unknown>;
   try {
     settings = JSON.parse(readFileSync(resolvedPath, 'utf-8'));
-  } catch {
-    // File doesn't exist yet — SettingsDefaultsManager.loadFromFile will create it with defaults
-    settings = { ...SettingsDefaultsManager.loadFromFile(resolvedPath) };
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') {
+      // File doesn't exist yet — create with defaults
+      settings = { ...SettingsDefaultsManager.loadFromFile(resolvedPath) };
+    } else {
+      // Corrupt JSON or permission error — log and use defaults
+      logger.error('SYSTEM', 'Server mode: settings file is corrupt, using defaults', { path: resolvedPath }, error as Error);
+      settings = { ...SettingsDefaultsManager.loadFromFile(resolvedPath) };
+    }
   }
   let changed = false;
 
@@ -48,8 +54,7 @@ export async function ensureServerModeReady(
     settings.CLAUDE_MEM_AUTH_TOKEN = randomBytes(32).toString('hex');
     changed = true;
     logger.info('SYSTEM', 'Auto-generated auth token for server mode', {
-      tokenPreview: String(settings.CLAUDE_MEM_AUTH_TOKEN).substring(0, 8) + '...',
-      note: 'Full token saved in settings.json — copy to client machines'
+      note: 'Token saved in settings.json — copy to client machines'
     });
   }
 

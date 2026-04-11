@@ -18,6 +18,22 @@ export class OfflineBuffer {
   constructor(dataDir: string) {
     this.bufferPath = path.join(dataDir, 'buffer.jsonl');
     mkdirSync(dataDir, { recursive: true });
+
+    // Recover stale .replaying file from a previous crash during replay
+    const replayPath = this.bufferPath + '.replaying';
+    if (existsSync(replayPath)) {
+      try {
+        const staleContent = readFileSync(replayPath, 'utf-8');
+        const existingContent = existsSync(this.bufferPath) ? readFileSync(this.bufferPath, 'utf-8') : '';
+        const tmpPath = this.bufferPath + '.tmp';
+        writeFileSync(tmpPath, staleContent + existingContent, 'utf-8');
+        renameSync(tmpPath, this.bufferPath);
+        unlinkSync(replayPath);
+        logger.info('BUFFER', 'Recovered stale replay file', { path: replayPath });
+      } catch (error) {
+        logger.error('BUFFER', 'Failed to recover stale replay file', { path: replayPath }, error as Error);
+      }
+    }
   }
 
   /** Append a request to the buffer file. Thread-safe (append-only). */

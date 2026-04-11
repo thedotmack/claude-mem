@@ -49,6 +49,10 @@ async function main() {
     process.exit(1);
   }
   const authToken = settings.CLAUDE_MEM_AUTH_TOKEN || '';
+  if (!authToken) {
+    logger.error('PROXY', 'CLAUDE_MEM_AUTH_TOKEN not set — client mode requires an auth token');
+    process.exit(1);
+  }
   const dataDir = settings.CLAUDE_MEM_DATA_DIR || SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
 
   process.on('unhandledRejection', (reason) => {

@@ -720,7 +720,9 @@ export class SessionStore {
       const obsExtraDefs: string[] = [];
       const obsExtraCols: string[] = [];
       if (obsColSet.has('content_hash')) { obsExtraDefs.push('content_hash TEXT'); obsExtraCols.push('content_hash'); }
-      if (obsColSet.has('node')) { obsExtraDefs.push('node TEXT', 'platform TEXT', 'instance TEXT'); obsExtraCols.push('node', 'platform', 'instance'); }
+      if (obsColSet.has('node')) { obsExtraDefs.push('node TEXT'); obsExtraCols.push('node'); }
+      if (obsColSet.has('platform')) { obsExtraDefs.push('platform TEXT'); obsExtraCols.push('platform'); }
+      if (obsColSet.has('instance')) { obsExtraDefs.push('instance TEXT'); obsExtraCols.push('instance'); }
       if (obsColSet.has('llm_source')) { obsExtraDefs.push('llm_source TEXT'); obsExtraCols.push('llm_source'); }
       if (obsColSet.has('generated_by_model')) { obsExtraDefs.push('generated_by_model TEXT'); obsExtraCols.push('generated_by_model'); }
       if (obsColSet.has('relevance_count')) { obsExtraDefs.push('relevance_count INTEGER DEFAULT 0'); obsExtraCols.push('relevance_count'); }
@@ -804,7 +806,9 @@ export class SessionStore {
       );
       const sumExtraDefs: string[] = [];
       const sumExtraCols: string[] = [];
-      if (sumColSet.has('node')) { sumExtraDefs.push('node TEXT', 'platform TEXT', 'instance TEXT'); sumExtraCols.push('node', 'platform', 'instance'); }
+      if (sumColSet.has('node')) { sumExtraDefs.push('node TEXT'); sumExtraCols.push('node'); }
+      if (sumColSet.has('platform')) { sumExtraDefs.push('platform TEXT'); sumExtraCols.push('platform'); }
+      if (sumColSet.has('instance')) { sumExtraDefs.push('instance TEXT'); sumExtraCols.push('instance'); }
       if (sumColSet.has('llm_source')) { sumExtraDefs.push('llm_source TEXT'); sumExtraCols.push('llm_source'); }
       const sumExtraSQL = sumExtraDefs.length > 0 ? `,\n          ${sumExtraDefs.join(',\n          ')}` : '';
       const sumBaseCols = 'id, memory_session_id, project, request, investigated, learned, completed, next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch';

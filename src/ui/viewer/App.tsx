@@ -151,7 +151,7 @@ export function App() {
           Open via local proxy (localhost:37777)
         </a>
         <p style={{ marginTop: '16px', fontSize: '12px', color: 'var(--color-text-tertiary)' }}>
-          If the proxy isn't running: <code>bun ~/.claude/plugins/cache/thedotmack/claude-mem/12.1.0/scripts/proxy-service.cjs</code>
+          If the proxy isn't running: <code>bun ~/.claude/plugins/cache/thedotmack/claude-mem/.../scripts/proxy-service.cjs</code>
         </p>
       </div>
     );
