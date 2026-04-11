@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync, openSync, readSync, closeSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
+import { checkBinaryPlatformCompatibility } from '../plugin/scripts/smart-install.js';
 
 /**
  * Smart Install Script Tests
@@ -239,121 +240,117 @@ describe('smart-install stdout JSON output (#1253)', () => {
 });
 
 /**
- * Tests for checkBinaryPlatformCompatibility() logic (#1547).
+ * Tests for checkBinaryPlatformCompatibility() (#1547).
  *
  * The bundled plugin/scripts/claude-mem binary is macOS arm64 only.
  * On Linux/Windows it cannot execute and hooks fail silently.
- * These tests verify the Mach-O detection logic that surfaces this at install time.
+ * These tests call the production function directly, mocking process.platform
+ * and passing controlled binary paths to verify Mach-O detection behaviour.
  */
 describe('smart-install binary platform compatibility (#1547)', () => {
-  // Values as returned by readUInt32LE on the first 4 bytes of the file.
-  // Native arm64/x86_64 Mach-O: file bytes CF FA ED FE → readUInt32LE = 0xFEEDFACF
-  // Byte-swapped (BE) Mach-O:   file bytes FE ED FA CF → readUInt32LE = 0xCFFAEDFE
-  const MACHO_MAGIC_NATIVE  = 0xFEEDFACF;
-  const MACHO_MAGIC_SWAPPED = 0xCFFAEDFE;
-
   let testDir: string;
+  let originalPlatform: PropertyDescriptor | undefined;
 
   beforeEach(() => {
     testDir = join(tmpdir(), `claude-mem-binary-compat-test-${process.pid}`);
     mkdirSync(testDir, { recursive: true });
+    originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
   });
 
   afterEach(() => {
     rmSync(testDir, { recursive: true, force: true });
+    // Restore process.platform
+    if (originalPlatform) {
+      Object.defineProperty(process, 'platform', originalPlatform);
+    }
   });
 
-  it('should detect native arm64/x86_64 Mach-O magic (file bytes CF FA ED FE)', () => {
+  function setPlatform(value: string) {
+    Object.defineProperty(process, 'platform', { value, configurable: true });
+  }
+
+  it('should detect native arm64/x86_64 Mach-O binary and warn on Linux', () => {
     // Real macOS arm64 binary header: bytes CF FA ED FE (MH_MAGIC_64)
-    // readUInt32LE([CF, FA, ED, FE]) = 0xFEEDFACF = MACHO_MAGIC_NATIVE
     const binaryPath = join(testDir, 'claude-mem');
-    const buf = Buffer.from([0xCF, 0xFA, 0xED, 0xFE, 0x0C, 0x00, 0x00, 0x01]);
-    writeFileSync(binaryPath, buf);
+    writeFileSync(binaryPath, Buffer.from([0xCF, 0xFA, 0xED, 0xFE, 0x0C, 0x00, 0x00, 0x01]));
 
-    const readBuf = Buffer.alloc(4);
-    const fd = openSync(binaryPath, 'r');
-    readSync(fd, readBuf, 0, 4, 0);
-    closeSync(fd);
+    const stderrLines: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: any[]) => stderrLines.push(args.join(' '));
 
-    expect(readBuf.readUInt32LE(0)).toBe(MACHO_MAGIC_NATIVE);
+    setPlatform('linux');
+    try {
+      checkBinaryPlatformCompatibility(binaryPath);
+    } finally {
+      console.error = originalError;
+    }
+
+    expect(stderrLines.some(l => l.includes('macOS-only'))).toBe(true);
+    expect(stderrLines.some(l => l.includes('linux'))).toBe(true);
   });
 
-  it('should detect byte-swapped Mach-O magic (file bytes FE ED FA CF)', () => {
+  it('should detect byte-swapped Mach-O binary and warn on Linux', () => {
     // Byte-swapped 64-bit Mach-O: bytes FE ED FA CF (MH_CIGAM_64)
-    // readUInt32LE([FE, ED, FA, CF]) = 0xCFFAEDFE = MACHO_MAGIC_SWAPPED
     const binaryPath = join(testDir, 'claude-mem-swapped');
-    const buf = Buffer.from([0xFE, 0xED, 0xFA, 0xCF, 0x01, 0x00, 0x00, 0x0C]);
-    writeFileSync(binaryPath, buf);
+    writeFileSync(binaryPath, Buffer.from([0xFE, 0xED, 0xFA, 0xCF, 0x01, 0x00, 0x00, 0x0C]));
 
-    const readBuf = Buffer.alloc(4);
-    const fd = openSync(binaryPath, 'r');
-    readSync(fd, readBuf, 0, 4, 0);
-    closeSync(fd);
+    const stderrLines: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: any[]) => stderrLines.push(args.join(' '));
 
-    expect(readBuf.readUInt32LE(0)).toBe(MACHO_MAGIC_SWAPPED);
+    setPlatform('linux');
+    try {
+      checkBinaryPlatformCompatibility(binaryPath);
+    } finally {
+      console.error = originalError;
+    }
+
+    expect(stderrLines.some(l => l.includes('macOS-only'))).toBe(true);
   });
 
-  it('should NOT flag an ELF binary (Linux native) as Mach-O', () => {
+  it('should NOT warn for an ELF binary (Linux native) on Linux', () => {
     // ELF magic: 0x7F 'E' 'L' 'F'
     const binaryPath = join(testDir, 'claude-mem-elf');
-    const buf = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00]);
-    writeFileSync(binaryPath, buf);
+    writeFileSync(binaryPath, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00]));
 
-    const readBuf = Buffer.alloc(4);
-    const fd = openSync(binaryPath, 'r');
-    readSync(fd, readBuf, 0, 4, 0);
-    closeSync(fd);
+    const stderrLines: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: any[]) => stderrLines.push(args.join(' '));
 
-    const magic = readBuf.readUInt32LE(0);
-    expect(magic).not.toBe(MACHO_MAGIC_NATIVE);
-    expect(magic).not.toBe(MACHO_MAGIC_SWAPPED);
+    setPlatform('linux');
+    try {
+      checkBinaryPlatformCompatibility(binaryPath);
+    } finally {
+      console.error = originalError;
+    }
+
+    expect(stderrLines.some(l => l.includes('macOS-only'))).toBe(false);
   });
 
-  it('should handle a missing binary path without throwing', () => {
+  it('should not throw when binary path does not exist', () => {
     const binaryPath = join(testDir, 'nonexistent-claude-mem');
     expect(existsSync(binaryPath)).toBe(false);
-    // The compatibility check should return early without error
-    expect(() => {
-      if (!existsSync(binaryPath)) return;
-    }).not.toThrow();
+
+    setPlatform('linux');
+    expect(() => checkBinaryPlatformCompatibility(binaryPath)).not.toThrow();
   });
 
-  it('should skip the check when platform is darwin (binary is compatible)', () => {
-    // On macOS the binary runs natively — no warning needed.
-    // Simulate the early-return logic.
-    const platform = 'darwin';
-    let warningIssued = false;
-
-    if (platform !== 'darwin') {
-      warningIssued = true; // would proceed to check
-    }
-
-    expect(warningIssued).toBe(false);
-  });
-
-  it('should issue a warning when Mach-O binary is detected on Linux', () => {
-    // Write a native arm64 Mach-O fake binary (bytes CF FA ED FE)
+  it('should skip the check entirely when platform is darwin', () => {
+    // Write a Mach-O binary — on macOS the check returns early, so no warning
     const binaryPath = join(testDir, 'claude-mem');
-    const buf = Buffer.from([0xCF, 0xFA, 0xED, 0xFE, 0x0C, 0x00, 0x00, 0x01]);
-    writeFileSync(binaryPath, buf);
+    writeFileSync(binaryPath, Buffer.from([0xCF, 0xFA, 0xED, 0xFE, 0x0C, 0x00, 0x00, 0x01]));
 
-    // Simulate the platform check logic from checkBinaryPlatformCompatibility()
-    const platform = 'linux'; // pretend we are on Linux
-    let warning = '';
+    const stderrLines: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: any[]) => stderrLines.push(args.join(' '));
 
-    if (platform !== 'darwin' && existsSync(binaryPath)) {
-      const readBuf = Buffer.alloc(4);
-      const fd = openSync(binaryPath, 'r');
-      readSync(fd, readBuf, 0, 4, 0);
-      closeSync(fd);
-
-      const magic = readBuf.readUInt32LE(0);
-      if (magic === MACHO_MAGIC_NATIVE || magic === MACHO_MAGIC_SWAPPED) {
-        warning = `Platform notice: The bundled claude-mem binary is macOS-only. Current platform: ${platform}`;
-      }
+    setPlatform('darwin');
+    try {
+      checkBinaryPlatformCompatibility(binaryPath);
+    } finally {
+      console.error = originalError;
     }
 
-    expect(warning).toContain('macOS-only');
-    expect(warning).toContain(platform);
+    expect(stderrLines.length).toBe(0);
   });
 });

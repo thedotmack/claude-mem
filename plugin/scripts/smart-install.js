@@ -507,8 +507,7 @@ const MACHO_MAGIC_SWAPPED = 0xCFFAEDFE; // byte-swapped 64-bit             — f
  *
  * Fixes #1547 — Plugin silently fails on Linux ARM64.
  */
-function checkBinaryPlatformCompatibility() {
-  const binaryPath = join(ROOT, 'scripts', 'claude-mem');
+export function checkBinaryPlatformCompatibility(binaryPath = join(ROOT, 'scripts', 'claude-mem')) {
 
   if (!existsSync(binaryPath)) {
     return; // Binary absent — nothing to check (e.g. after npm install which excludes it)
@@ -520,11 +519,11 @@ function checkBinaryPlatformCompatibility() {
   }
 
   // Read the first 4 bytes to identify the binary format.
+  let fd;
   try {
     const buf = Buffer.alloc(4);
-    const fd = openSync(binaryPath, 'r');
+    fd = openSync(binaryPath, 'r');
     readSync(fd, buf, 0, 4, 0);
-    closeSync(fd);
 
     const magic = buf.readUInt32LE(0);
     if (magic === MACHO_MAGIC_NATIVE || magic === MACHO_MAGIC_SWAPPED) {
@@ -536,6 +535,8 @@ function checkBinaryPlatformCompatibility() {
     }
   } catch {
     // Unreadable binary — not critical, skip silently
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
