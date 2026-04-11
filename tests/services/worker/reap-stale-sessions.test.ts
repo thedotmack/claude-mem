@@ -16,12 +16,13 @@
  * - Process mock: Verify SIGKILL is sent and abort is called — no real subprocess needed.
  */
 
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
-
-// Constants mirrored from SessionManager — kept in sync manually.
-// If these values change the tests will catch the drift.
-const MAX_GENERATOR_IDLE_MS = 5 * 60 * 1000;  // 5 minutes
-const MAX_SESSION_IDLE_MS = 15 * 60 * 1000;    // 15 minutes
+import { describe, test, expect, beforeEach, afterEach, mock, setSystemTime } from 'bun:test';
+import {
+  MAX_GENERATOR_IDLE_MS,
+  MAX_SESSION_IDLE_MS,
+  detectStaleGenerator,
+  type StaleGeneratorCandidate,
+} from '../../../src/services/worker/SessionManager.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -47,15 +48,12 @@ function createMockProcess(exitCode: number | null = null): MockProcess {
   return proc;
 }
 
-interface StaleGeneratorCandidate {
+interface TestSession extends StaleGeneratorCandidate {
   sessionDbId: number;
-  generatorPromise: Promise<void> | null;
-  lastGeneratorActivity: number;
-  abortController: AbortController;
   startTime: number;
 }
 
-function createSession(overrides: Partial<StaleGeneratorCandidate> = {}): StaleGeneratorCandidate {
+function createSession(overrides: Partial<TestSession> = {}): TestSession {
   return {
     sessionDbId: 1,
     generatorPromise: null,
@@ -64,35 +62,6 @@ function createSession(overrides: Partial<StaleGeneratorCandidate> = {}): StaleG
     startTime: Date.now(),
     ...overrides,
   };
-}
-
-// ---------------------------------------------------------------------------
-// Detection logic (mirrors reapStaleSessions implementation)
-// ---------------------------------------------------------------------------
-
-/**
- * Runs the stale generator detection logic extracted from reapStaleSessions().
- * Returns whether the session was marked stale.
- */
-function detectStaleGenerator(
-  session: StaleGeneratorCandidate,
-  proc: MockProcess | undefined,
-  now = Date.now()
-): boolean {
-  if (!session.generatorPromise) return false;
-
-  const generatorIdleMs = now - session.lastGeneratorActivity;
-  if (generatorIdleMs <= MAX_GENERATOR_IDLE_MS) return false;
-
-  // Kill subprocess to unblock stuck for-await
-  if (proc && proc.exitCode === null) {
-    try {
-      proc.kill('SIGKILL');
-    } catch {}
-  }
-  // Signal the SDK agent loop to exit
-  session.abortController.abort();
-  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,16 +99,25 @@ describe('reapStaleSessions — stale generator detection (Issue #1652)', () => 
     });
 
     test('should NOT detect generator as stale when idle exactly at threshold', () => {
-      // At exactly the threshold we do NOT yet reap (strictly greater than)
-      const session = createSession({
-        generatorPromise: Promise.resolve(),
-        lastGeneratorActivity: Date.now() - MAX_GENERATOR_IDLE_MS,
-      });
-      const proc = createMockProcess();
+      // At exactly the threshold we do NOT yet reap (strictly greater than).
+      // Freeze time so that both the session creation and detectStaleGenerator
+      // call share the same Date.now() value, preventing a race where the two
+      // calls return different timestamps and push the idle time over the boundary.
+      const now = Date.now();
+      setSystemTime(now);
+      try {
+        const session = createSession({
+          generatorPromise: Promise.resolve(),
+          lastGeneratorActivity: now - MAX_GENERATOR_IDLE_MS,
+        });
+        const proc = createMockProcess();
 
-      const isStale = detectStaleGenerator(session, proc);
+        const isStale = detectStaleGenerator(session, proc);
 
-      expect(isStale).toBe(false);
+        expect(isStale).toBe(false);
+      } finally {
+        setSystemTime(); // restore real time
+      }
     });
 
     test('should NOT detect generator as stale when idle < 5 minutes', () => {

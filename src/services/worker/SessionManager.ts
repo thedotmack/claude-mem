@@ -17,6 +17,64 @@ import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
 import { getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 
+/** Idle threshold before a stuck generator (zombie subprocess) is force-killed. */
+export const MAX_GENERATOR_IDLE_MS = 5 * 60 * 1000; // 5 minutes
+
+/** Idle threshold before a no-generator session with no pending work is reaped. */
+export const MAX_SESSION_IDLE_MS = 15 * 60 * 1000; // 15 minutes
+
+/**
+ * Minimal process interface used by detectStaleGenerator — compatible with
+ * both the real Bun.Subprocess / ChildProcess shapes and test mocks.
+ */
+export interface StaleGeneratorProcess {
+  exitCode: number | null;
+  kill(signal?: string): boolean | void;
+}
+
+/**
+ * Minimal session fields required to evaluate stale-generator status.
+ * This is a subset of ActiveSession, allowing unit tests to pass plain objects.
+ */
+export interface StaleGeneratorCandidate {
+  generatorPromise: Promise<void> | null;
+  lastGeneratorActivity: number;
+  abortController: AbortController;
+}
+
+/**
+ * Detect whether a session's generator is stuck (zombie subprocess) and, if so,
+ * SIGKILL the subprocess and abort the controller.
+ *
+ * Extracted from reapStaleSessions() so tests can import and exercise the exact
+ * same logic rather than duplicating it locally. (Issue #1652)
+ *
+ * @param session  - session to inspect
+ * @param proc     - tracked subprocess (may be undefined if not in ProcessRegistry)
+ * @param now      - current timestamp (defaults to Date.now(); pass explicit value in tests)
+ * @returns true if the session was marked stale, false otherwise
+ */
+export function detectStaleGenerator(
+  session: StaleGeneratorCandidate,
+  proc: StaleGeneratorProcess | undefined,
+  now = Date.now()
+): boolean {
+  if (!session.generatorPromise) return false;
+
+  const generatorIdleMs = now - session.lastGeneratorActivity;
+  if (generatorIdleMs <= MAX_GENERATOR_IDLE_MS) return false;
+
+  // Kill subprocess to unblock stuck for-await
+  if (proc && proc.exitCode === null) {
+    try {
+      proc.kill('SIGKILL');
+    } catch {}
+  }
+  // Signal the SDK agent loop to exit
+  session.abortController.abort();
+  return true;
+}
+
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
@@ -364,9 +422,6 @@ export class SessionManager {
     }
   }
 
-  private static readonly MAX_SESSION_IDLE_MS = 15 * 60 * 1000; // 15 minutes
-  private static readonly MAX_GENERATOR_IDLE_MS = 5 * 60 * 1000; // 5 minutes (stuck generator detection, Issue #1652)
-
   /**
    * Reap sessions with no active generator and no pending work that have been idle too long.
    * Also reaps sessions whose generator has been stuck (no lastGeneratorActivity update) for
@@ -383,7 +438,7 @@ export class SessionManager {
       // Sessions with active generators — check for stuck/zombie generators (Issue #1652)
       if (session.generatorPromise) {
         const generatorIdleMs = now - session.lastGeneratorActivity;
-        if (generatorIdleMs > SessionManager.MAX_GENERATOR_IDLE_MS) {
+        if (generatorIdleMs > MAX_GENERATOR_IDLE_MS) {
           logger.warn('SESSION', `Stale generator detected for session ${sessionDbId} (no activity for ${Math.round(generatorIdleMs / 60000)}m) — force-killing subprocess`, {
             sessionDbId,
             generatorIdleMs
@@ -412,8 +467,8 @@ export class SessionManager {
 
       // No generator + no pending work + old enough = stale
       const sessionAge = now - session.startTime;
-      if (sessionAge > SessionManager.MAX_SESSION_IDLE_MS) {
-        logger.warn('SESSION', `Reaping idle session ${sessionDbId} (no activity for >${Math.round(SessionManager.MAX_SESSION_IDLE_MS / 60000)}m)`, { sessionDbId });
+      if (sessionAge > MAX_SESSION_IDLE_MS) {
+        logger.warn('SESSION', `Reaping idle session ${sessionDbId} (no activity for >${Math.round(MAX_SESSION_IDLE_MS / 60000)}m)`, { sessionDbId });
         staleSessionIds.push(sessionDbId);
       }
     }
