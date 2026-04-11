@@ -264,21 +264,28 @@ else
   fail "No recent prompts with provenance data"
 fi
 
-# 4.3 Provenance matches between API and server DB
-# In client mode, API queries the server DB, not local DB. Compare API with server DB.
-API_NODE=$(echo "$OBS_RESPONSE" | python3 -c "
+# 4.3 Provenance matches between API and server DB (same observation by ID)
+# In multi-node mode, different observations may have different nodes. Compare the SAME observation.
+API_OBS=$(echo "$OBS_RESPONSE" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-items = [i for i in d.get('items', []) if i.get('node')]
-print(items[0]['node'] if items else 'none')
+items = [i for i in d.get('items', []) if i.get('node') and i.get('id')]
+if items:
+    print(f\"{items[0]['id']}|{items[0]['node']}\")
+else:
+    print('none')
 " 2>/dev/null)
-SERVER_DB_NODE=$(ssh "$SERVER_HOST" "sqlite3 ~/.claude-mem/claude-mem.db \"SELECT node FROM observations WHERE node IS NOT NULL ORDER BY created_at_epoch DESC LIMIT 1;\"" 2>/dev/null)
-if [[ "$API_NODE" != "none" && "$API_NODE" == "$SERVER_DB_NODE" ]]; then
-  pass "API node matches server DB node ($API_NODE)"
-elif [[ "$API_NODE" == "none" ]]; then
+if [[ "$API_OBS" == "none" ]]; then
   skip "No observations with node in API response"
 else
-  fail "API node ($API_NODE) != server DB node ($SERVER_DB_NODE)"
+  API_OBS_ID=$(echo "$API_OBS" | cut -d'|' -f1)
+  API_OBS_NODE=$(echo "$API_OBS" | cut -d'|' -f2)
+  SERVER_DB_NODE=$(ssh "$SERVER_HOST" "sqlite3 ~/.claude-mem/claude-mem.db \"SELECT node FROM observations WHERE id = $API_OBS_ID;\"" 2>/dev/null)
+  if [[ "$API_OBS_NODE" == "$SERVER_DB_NODE" ]]; then
+    pass "API node matches server DB for observation $API_OBS_ID ($API_OBS_NODE)"
+  else
+    fail "API node ($API_OBS_NODE) != server DB node ($SERVER_DB_NODE) for observation $API_OBS_ID"
+  fi
 fi
 
 # 4.4 Observations originate from client node, not server

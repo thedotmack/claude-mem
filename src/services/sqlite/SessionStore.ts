@@ -713,6 +713,21 @@ export class SessionStore {
       // Clean up leftover temp table from a previously-crashed run
       this.db.run('DROP TABLE IF EXISTS observations_new');
 
+      // Detect provenance columns added by later migrations to preserve them
+      const obsColSet = new Set(
+        (this.db.prepare('PRAGMA table_info(observations)').all() as { name: string }[]).map(c => c.name)
+      );
+      const obsExtraDefs: string[] = [];
+      const obsExtraCols: string[] = [];
+      if (obsColSet.has('content_hash')) { obsExtraDefs.push('content_hash TEXT'); obsExtraCols.push('content_hash'); }
+      if (obsColSet.has('node')) { obsExtraDefs.push('node TEXT', 'platform TEXT', 'instance TEXT'); obsExtraCols.push('node', 'platform', 'instance'); }
+      if (obsColSet.has('llm_source')) { obsExtraDefs.push('llm_source TEXT'); obsExtraCols.push('llm_source'); }
+      if (obsColSet.has('generated_by_model')) { obsExtraDefs.push('generated_by_model TEXT'); obsExtraCols.push('generated_by_model'); }
+      if (obsColSet.has('relevance_count')) { obsExtraDefs.push('relevance_count INTEGER DEFAULT 0'); obsExtraCols.push('relevance_count'); }
+      const obsExtraSQL = obsExtraDefs.length > 0 ? `,\n          ${',\n          '.join(obsExtraDefs)}` : '';
+      const obsBaseCols = 'id, memory_session_id, project, text, type, title, subtitle, facts, narrative, concepts, files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch';
+      const obsAllCols = obsExtraCols.length > 0 ? `${obsBaseCols}, ${obsExtraCols.join(', ')}` : obsBaseCols;
+
       this.db.run(`
         CREATE TABLE observations_new (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -730,16 +745,14 @@ export class SessionStore {
           prompt_number INTEGER,
           discovery_tokens INTEGER DEFAULT 0,
           created_at TEXT NOT NULL,
-          created_at_epoch INTEGER NOT NULL,
+          created_at_epoch INTEGER NOT NULL${obsExtraSQL},
           FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
         )
       `);
 
       this.db.run(`
         INSERT INTO observations_new
-        SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
-               narrative, concepts, files_read, files_modified, prompt_number,
-               discovery_tokens, created_at, created_at_epoch
+        SELECT ${obsAllCols}
         FROM observations
       `);
 
@@ -785,6 +798,18 @@ export class SessionStore {
       // Clean up leftover temp table from a previously-crashed run
       this.db.run('DROP TABLE IF EXISTS session_summaries_new');
 
+      // Detect provenance columns on session_summaries to preserve them
+      const sumColSet = new Set(
+        (this.db.prepare('PRAGMA table_info(session_summaries)').all() as { name: string }[]).map(c => c.name)
+      );
+      const sumExtraDefs: string[] = [];
+      const sumExtraCols: string[] = [];
+      if (sumColSet.has('node')) { sumExtraDefs.push('node TEXT', 'platform TEXT', 'instance TEXT'); sumExtraCols.push('node', 'platform', 'instance'); }
+      if (sumColSet.has('llm_source')) { sumExtraDefs.push('llm_source TEXT'); sumExtraCols.push('llm_source'); }
+      const sumExtraSQL = sumExtraDefs.length > 0 ? `,\n          ${',\n          '.join(sumExtraDefs)}` : '';
+      const sumBaseCols = 'id, memory_session_id, project, request, investigated, learned, completed, next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch';
+      const sumAllCols = sumExtraCols.length > 0 ? `${sumBaseCols}, ${sumExtraCols.join(', ')}` : sumBaseCols;
+
       this.db.run(`
         CREATE TABLE session_summaries_new (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -801,16 +826,14 @@ export class SessionStore {
           prompt_number INTEGER,
           discovery_tokens INTEGER DEFAULT 0,
           created_at TEXT NOT NULL,
-          created_at_epoch INTEGER NOT NULL,
+          created_at_epoch INTEGER NOT NULL${sumExtraSQL},
           FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
         )
       `);
 
       this.db.run(`
         INSERT INTO session_summaries_new
-        SELECT id, memory_session_id, project, request, investigated, learned,
-               completed, next_steps, files_read, files_edited, notes,
-               prompt_number, discovery_tokens, created_at, created_at_epoch
+        SELECT ${sumAllCols}
         FROM session_summaries
       `);
 

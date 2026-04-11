@@ -39,7 +39,7 @@ export function findDuplicateObservation(
 ): { id: number; created_at_epoch: number } | null {
   const windowStart = timestampEpoch - DEDUP_WINDOW_MS;
   const stmt = db.prepare(
-    'SELECT id, created_at_epoch FROM observations WHERE content_hash = ? AND created_at_epoch > ? AND (node = ? OR node IS NULL)'
+    'SELECT id, created_at_epoch FROM observations WHERE content_hash = ? AND created_at_epoch > ? AND node IS ?'
   );
   return (stmt.get(contentHash, windowStart, node ?? null) as { id: number; created_at_epoch: number } | null);
 }
