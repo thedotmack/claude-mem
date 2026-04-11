@@ -78,7 +78,16 @@ export class SDKAgent {
     // SDK session but we must NOT resume because the SDK context was lost.
     // NEVER use contentSessionId for resume - that would inject messages into the user's transcript!
     const hasRealMemorySessionId = !!session.memorySessionId;
-    const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !session.forceInit;
+
+    // Check if the next pending message is a summarize — if so, start fresh to avoid context overflow.
+    // buildSummaryPrompt is self-contained (includes lastAssistantMessage), so it doesn't need
+    // the full accumulated observation history. Resuming with a bloated context causes
+    // "prompt is too long" errors on long sessions (fixes #1650).
+    const pendingStore = this.sessionManager.getPendingMessageStore();
+    const nextPendingMessages = pendingStore.getAllPending(session.sessionDbId);
+    const nextMessageIsSummarize = nextPendingMessages.length > 0 && nextPendingMessages[0].message_type === 'summarize';
+
+    const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !session.forceInit && !nextMessageIsSummarize;
 
     // Clear forceInit after using it
     if (session.forceInit) {
@@ -87,6 +96,14 @@ export class SDKAgent {
         previousMemorySessionId: session.memorySessionId
       });
       session.forceInit = false;
+    }
+
+    if (nextMessageIsSummarize && hasRealMemorySessionId && session.lastPromptNumber > 1) {
+      logger.info('SDK', 'Summarize detected — skipping resume to avoid context overflow (#1650)', {
+        sessionDbId: session.sessionDbId,
+        previousMemorySessionId: session.memorySessionId,
+        lastPromptNumber: session.lastPromptNumber
+      });
     }
 
     // Wait for agent pool slot (configurable via CLAUDE_MEM_MAX_CONCURRENT_AGENTS)
@@ -113,7 +130,7 @@ export class SDKAgent {
 
     // Debug-level alignment logs for detailed tracing
     if (session.lastPromptNumber > 1) {
-      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | shouldResume=${shouldResume} | resumeWith=${shouldResume ? session.memorySessionId : 'NONE'}`);
+      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | nextMessageIsSummarize=${nextMessageIsSummarize} | shouldResume=${shouldResume} | resumeWith=${shouldResume ? session.memorySessionId : 'NONE'}`);
     } else {
       // INIT prompt - never resume even if memorySessionId exists (stale from previous session)
       const hasStaleMemoryId = hasRealMemorySessionId;
