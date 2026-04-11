@@ -85,12 +85,10 @@ export class OfflineBuffer {
     const replayPath = this.bufferPath + '.replaying';
     try {
       if (!existsSync(this.bufferPath)) return { replayed: 0, remaining: 0 };
-      renameSync(this.bufferPath, replayPath);
-    } catch {
-      return { replayed: 0, remaining: this.pendingCount() };
-    }
+      try { renameSync(this.bufferPath, replayPath); } catch {
+        return { replayed: 0, remaining: this.pendingCount() };
+      }
 
-    try {
       const raw = readFileSync(replayPath, 'utf-8');
       const entries: BufferedRequest[] = raw.split('\n').filter(Boolean).map(line => {
         try { return JSON.parse(line); } catch { return null; }

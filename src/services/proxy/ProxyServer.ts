@@ -217,7 +217,7 @@ export class ProxyServer {
     // ── Static UI files ──
 
     if (method === 'GET' && this.uiDir && !pathname.startsWith('/api/') && pathname !== '/stream') {
-      const requestedPath = pathname === '/' ? 'viewer.html' : pathname;
+      const requestedPath = pathname === '/' ? '/viewer.html' : pathname;
       // Use path.resolve to expand any ".." segments before checking containment.
       // path.join does NOT protect against traversal; resolve + startsWith does.
       const filePath = path.resolve(this.uiDir, '.' + requestedPath);

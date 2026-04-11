@@ -852,9 +852,10 @@ export class SessionRoutes extends BaseRouteHandler {
     store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, prov.node || undefined, prov.platform || undefined, prov.instance || undefined, llmSource || undefined);
 
     // Step 6: Initialize or get existing session with origin node from proxy header
+    // Check BEFORE initialization — contextInjected=true only if session already existed
+    const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
     const activeSession = this.sessionManager.getSession(sessionDbId)
       || this.sessionManager.initializeSession(sessionDbId, cleanedPrompt, promptNumber, prov.node || undefined);
-    const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
 
     // Set provenance from originating client (proxy headers override local identity)
     if (prov.node) activeSession.node = prov.node;
