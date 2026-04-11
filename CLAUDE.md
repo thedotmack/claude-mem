@@ -89,6 +89,31 @@ Claude-mem is designed with a clean separation between open-source core function
 
 This architecture preserves the open-source nature of the project while enabling sustainable development through optional paid features.
 
+## Multi-Node Quality Gate (MANDATORY)
+
+Before ANY push to staging or upstream PR for multi-node features, run the E2E validation suite:
+
+```bash
+bash .local/tests/e2e/multi-node-validation.sh
+```
+
+**78 tests across 8 layers** — ALL must pass with 0 fail, 0 skip:
+
+1. **Schema & Migrations** — provenance columns exist in all 3 tables
+2. **Build & Bundle** — bundles contain expected patterns, no tree-shaking
+3. **API Verification** — all endpoints return provenance columns
+4. **Provenance E2E** — data persists to DB, matches between API and DB
+5. **Deployment** — cache hashes match build, version sync between nodes
+6. **Network Behavior** — auth rejection, admin blocking, SSE through proxy
+7. **Visual (Playwright)** — SSE vs pagination rendering parity, pills persist after refresh, reference screenshot comparison (RMSE < 15000)
+8. **Log Analysis** — no errors/crashes before/during/after, mode-aware assertions
+
+**Skips are failures.** Every test must produce a pass or fail, never a skip. A skip is an untested angle mort.
+
+**No force-push.** Never force-push to an upstream PR. Each fix is a new commit.
+
+**No blind fixes.** Never fix bot review comments without rebuilding, deploying to real nodes, and re-running the validation suite. The cycle that destroyed PR #1722 was: bot comment → blind fix → force-push → repeat.
+
 ## Important
 
 No need to edit the changelog ever, it's generated automatically.
