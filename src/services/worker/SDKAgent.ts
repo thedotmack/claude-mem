@@ -79,6 +79,9 @@ export class SDKAgent {
     // NEVER use contentSessionId for resume - that would inject messages into the user's transcript!
     const hasRealMemorySessionId = !!session.memorySessionId;
 
+    // Capture before clearing so downstream shouldResume / summarize checks use the original value.
+    const originalForceInit = session.forceInit;
+
     // Clear forceInit after using it
     if (session.forceInit) {
       logger.info('SDK', 'forceInit flag set, starting fresh SDK session', {
@@ -103,7 +106,7 @@ export class SDKAgent {
     const nextPendingMessages = pendingStore.getAllPending(session.sessionDbId);
     const nextMessageIsSummarize = nextPendingMessages.length > 0 && nextPendingMessages[0].message_type === 'summarize';
 
-    const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !session.forceInit && !nextMessageIsSummarize;
+    const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !originalForceInit && !nextMessageIsSummarize;
 
     if (nextMessageIsSummarize && hasRealMemorySessionId && session.lastPromptNumber > 1) {
       logger.info('SDK', 'Summarize detected — skipping resume to avoid context overflow (#1650)', {
@@ -113,7 +116,7 @@ export class SDKAgent {
       });
     }
 
-    if (nextMessageIsSummarize && !shouldResume && !session.forceInit) {
+    if (nextMessageIsSummarize && !shouldResume && !originalForceInit) {
       // Force the init-prompt path so buildContinuationPrompt is never called for
       // a summarize message that starts a fresh SDK session (fixes #1650).
       session.lastPromptNumber = 1;
