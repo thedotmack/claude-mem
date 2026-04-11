@@ -114,6 +114,10 @@ bash .local/tests/e2e/multi-node-validation.sh
 
 **No blind fixes.** Never fix bot review comments without rebuilding, deploying to real nodes, and re-running the validation suite. The cycle that destroyed PR #1722 was: bot comment → blind fix → force-push → repeat.
 
+**Provenance is centralized.** All request handlers use `getRequestProvenance(req)` from `middleware.ts` — never read `X-Claude-Mem-*` headers directly. The middleware extracts them once, handlers consume via helper. This prevents type-by-type drift where one message type regresses while others work.
+
+**SSE broadcast parity.** Every message type (prompts, observations, summaries) must be broadcast via SSE in its `ByClaudeId` handler — not just in the legacy handler. Test with the viewer open: new items must appear without refresh.
+
 ## Important
 
 No need to edit the changelog ever, it's generated automatically.

@@ -23,6 +23,7 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProcessBySession, ensureProcessExit } from '../../ProcessRegistry.js';
 import { getProjectName } from '../../../../utils/project-name.js';
+import { getRequestProvenance } from '../middleware.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 
 export class SessionRoutes extends BaseRouteHandler {
@@ -339,23 +340,17 @@ export class SessionRoutes extends BaseRouteHandler {
     if (sessionDbId === null) return;
 
     const { userPrompt, promptNumber } = req.body;
-    const llmSource = req.body.llm_source || (req.headers['x-claude-mem-llm-source'] as string) || '';
-    const originNode = req.headers['x-claude-mem-node'] as string || '';
+    const prov = getRequestProvenance(req);
+    const llmSource = req.body.llm_source || prov.llmSource || '';
     logger.info('HTTP', 'SessionRoutes: handleSessionInit called', {
       sessionDbId,
       promptNumber,
       has_userPrompt: !!userPrompt
     });
 
-    const session = this.sessionManager.initializeSession(sessionDbId, userPrompt, promptNumber);
+    const session = this.sessionManager.initializeSession(sessionDbId, userPrompt, promptNumber, prov.node || undefined);
 
-    // Set provenance from originating node (proxy headers override local identity)
-    if (originNode) {
-      session.node = originNode;
-    }
-    if (llmSource) {
-      session.llm_source = llmSource;
-    }
+    if (llmSource) session.llm_source = llmSource;
 
     // Get the latest user_prompt for this session to sync to Chroma
     const latestPrompt = this.dbManager.getSessionStore().getLatestUserPrompt(session.contentSessionId);
@@ -525,7 +520,8 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
-    const llmSource = req.body.llm_source || (req.headers['x-claude-mem-llm-source'] as string) || '';
+    const prov = getRequestProvenance(req);
+    const llmSource = req.body.llm_source || prov.llmSource || '';
     const project = typeof cwd === 'string' && cwd.trim() ? getProjectName(cwd) : '';
 
     if (!contentSessionId) {
@@ -587,10 +583,11 @@ export class SessionRoutes extends BaseRouteHandler {
         ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
         : '{}';
 
-      // Set llm_source on the active session BEFORE queueing so the generator sees it
-      if (llmSource) {
-        const obsSession = this.sessionManager.getSession(sessionDbId);
-        if (obsSession) obsSession.llm_source = llmSource;
+      // Set provenance on the active session BEFORE queueing so the generator sees it
+      const obsSession = this.sessionManager.getSession(sessionDbId);
+      if (obsSession) {
+        if (prov.node) obsSession.node = prov.node;
+        if (llmSource) obsSession.llm_source = llmSource;
       }
 
       // Queue observation
@@ -632,7 +629,8 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleSummarizeByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { contentSessionId, last_assistant_message } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
-    const llmSource = req.body.llm_source || (req.headers['x-claude-mem-llm-source'] as string) || '';
+    const prov = getRequestProvenance(req);
+    const llmSource = req.body.llm_source || prov.llmSource || '';
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');
@@ -657,10 +655,11 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    // Set llm_source on the active session BEFORE queueing so the generator sees it
-    if (llmSource) {
-      const sumSession = this.sessionManager.getSession(sessionDbId);
-      if (sumSession) sumSession.llm_source = llmSource;
+    // Set provenance on the active session BEFORE queueing so the generator sees it
+    const sumSession = this.sessionManager.getSession(sessionDbId);
+    if (sumSession) {
+      if (prov.node) sumSession.node = prov.node;
+      if (llmSource) sumSession.llm_source = llmSource;
     }
 
     // Queue summarize
@@ -779,7 +778,8 @@ export class SessionRoutes extends BaseRouteHandler {
     const prompt = req.body.prompt || '[media prompt]';
     const platformSource = normalizePlatformSource(req.body.platformSource);
     const customTitle = req.body.customTitle || undefined;
-    const llmSource = req.body.llm_source || (req.headers['x-claude-mem-llm-source'] as string) || '';
+    const prov = getRequestProvenance(req);
+    const llmSource = req.body.llm_source || prov.llmSource || '';
 
     logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {
       contentSessionId,
@@ -839,25 +839,36 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    // Step 5: Save cleaned user prompt
-    // Design note: saveUserPrompt uses SessionStore._currentNode (set at construction time)
-    // for provenance rather than per-request headers. This is intentional — user prompts
-    // originate from the local machine where the worker runs, so _currentNode is always
-    // accurate. Per-request provenance (via X-Claude-Mem-Node header) is used for
-    // observations and summaries where the data may arrive from remote client nodes.
-    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt);
+    // Step 5: Save cleaned user prompt with originating node from proxy header
+    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, prov.node || undefined);
 
-    // Step 6: Check if SDK agent is already running for this session (#1079)
-    // If contextInjected is true, the hook should skip re-initializing the SDK agent
-    const activeSession = this.sessionManager.getSession(sessionDbId);
-    const contextInjected = activeSession !== undefined;
+    // Step 6: Initialize or get existing session with origin node from proxy header
+    const activeSession = this.sessionManager.getSession(sessionDbId)
+      || this.sessionManager.initializeSession(sessionDbId, cleanedPrompt, promptNumber, prov.node || undefined);
+    const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
 
-    // Set llm_source on the active session for provenance tracking
-    if (activeSession && llmSource) {
-      activeSession.llm_source = llmSource;
+    // Set provenance from originating client (proxy headers override local identity)
+    if (prov.node) activeSession.node = prov.node;
+    if (llmSource) activeSession.llm_source = llmSource;
+
+    // Broadcast new prompt to SSE clients (for web UI live updates)
+    const latestPrompt = store.getLatestUserPrompt(contentSessionId);
+    if (latestPrompt) {
+      this.eventBroadcaster.broadcastNewPrompt({
+        id: latestPrompt.id,
+        content_session_id: latestPrompt.content_session_id,
+        project: latestPrompt.project,
+        platform_source: latestPrompt.platform_source,
+        prompt_number: latestPrompt.prompt_number,
+        prompt_text: latestPrompt.prompt_text,
+        created_at_epoch: latestPrompt.created_at_epoch,
+        node: latestPrompt.node ?? null,
+        platform: latestPrompt.platform ?? null,
+        instance: latestPrompt.instance ?? null,
+        llm_source: latestPrompt.llm_source ?? null
+      });
     }
 
-    // Debug-level log since CREATED already logged the key info
     logger.debug('SESSION', 'User prompt saved', {
       sessionId: sessionDbId,
       promptNumber,

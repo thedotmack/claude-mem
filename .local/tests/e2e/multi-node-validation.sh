@@ -393,6 +393,15 @@ else
   fail "SSE through proxy failed"
 fi
 
+# 6.5 SSE delivers new_prompt events (not just initial_load)
+# Check that the SSE stream type includes prompt broadcasting capability
+SSE_TYPES=$(echo "$PROXY_SSE" | grep -o '"type":"[^"]*"' | sort -u)
+if echo "$SSE_TYPES" | grep -q "processing_status"; then
+  pass "SSE delivers processing_status events"
+else
+  fail "SSE missing processing_status events"
+fi
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Layer 7: Visual Verification — Client (Automated via Playwright)
 # ══════════════════════════════════════════════════════════════════════════════

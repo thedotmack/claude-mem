@@ -1733,7 +1733,7 @@ export class SessionStore {
   /**
    * Save a user prompt
    */
-  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string): number {
+  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, originNode?: string): number {
     const now = new Date();
     const nowEpoch = now.getTime();
 
@@ -1744,7 +1744,7 @@ export class SessionStore {
     `);
 
     const result = stmt.run(contentSessionId, promptNumber, promptText, now.toISOString(), nowEpoch,
-      this._currentNode ?? null, this._currentPlatform ?? null, this._currentInstance ?? null, this._currentLlmSource ?? null);
+      originNode || (this._currentNode ?? null), this._currentPlatform ?? null, this._currentInstance ?? null, this._currentLlmSource ?? null);
     return result.lastInsertRowid as number;
   }
 

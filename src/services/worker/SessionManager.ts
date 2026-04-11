@@ -50,7 +50,7 @@ export class SessionManager {
   /**
    * Initialize a new session or return existing one
    */
-  initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number): ActiveSession {
+  initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number, originNode?: string): ActiveSession {
     logger.debug('SESSION', 'initializeSession called', {
       sessionDbId,
       promptNumber,
@@ -80,6 +80,11 @@ export class SessionManager {
       }
       if (dbSession.platform_source && dbSession.platform_source !== session.platformSource) {
         session.platformSource = dbSession.platform_source;
+      }
+
+      // Update node from originating client (proxy header overrides server identity)
+      if (originNode && session.node !== originNode) {
+        session.node = originNode;
       }
 
       // Update userPrompt for continuation prompts
@@ -163,7 +168,7 @@ export class SessionManager {
       consecutiveRestarts: 0,  // Track consecutive restart attempts to prevent infinite loops
       processingMessageIds: [],  // CLAIM-CONFIRM: Track message IDs for confirmProcessed()
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
-      node: getNodeName(),
+      node: originNode || getNodeName(),
       platform: 'claude-code',
       instance: getInstanceName(),
       llm_source: getLlmSource()

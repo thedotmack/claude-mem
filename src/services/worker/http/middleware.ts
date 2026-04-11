@@ -54,6 +54,18 @@ export function createMiddleware(
   middlewares.push(express.static(uiDirCache, staticOptions));
   middlewares.push(express.static(uiDirMarketplace, staticOptions));
 
+  // Extract provenance from proxy headers ONCE for all downstream handlers.
+  // Avoids scattered header reads in individual route handlers.
+  middlewares.push((req: Request, _res: Response, next: NextFunction) => {
+    const originNode = req.headers['x-claude-mem-node'] as string || '';
+    const originInstance = req.headers['x-claude-mem-instance'] as string || '';
+    const originLlmSource = req.headers['x-claude-mem-llm-source'] as string || '';
+    if (originNode || originInstance || originLlmSource) {
+      (req as any)._provenance = { node: originNode, instance: originInstance, llmSource: originLlmSource };
+    }
+    next();
+  });
+
   // Auth — require Bearer token on non-localhost requests in server mode
   const authToken = () => {
     const settings = SettingsDefaultsManager.loadFromFile(
@@ -92,6 +104,15 @@ export function createMiddleware(
   });
 
   return middlewares;
+}
+
+/**
+ * Get origin provenance from request (set by provenance middleware).
+ * Returns the originating client's node/instance/llmSource from proxy headers.
+ * Falls back to empty strings if not a proxied request.
+ */
+export function getRequestProvenance(req: Request): { node: string; instance: string; llmSource: string } {
+  return (req as any)._provenance || { node: '', instance: '', llmSource: '' };
 }
 
 /**

@@ -88,6 +88,9 @@ bash .local/tests/e2e/multi-node-validation.sh
 | Pills provenance absentes après refresh | PaginationHelper sans colonnes node/platform | Vérifier les SELECT dans PaginationHelper.ts |
 | Observations non générées (obsCount=0) | SDK "Not logged in" | Vérifier `claude --version` sur le node serveur |
 | Deploy au mauvais path | Sync vers marketplace au lieu de cache | Toujours `~/.claude/plugins/cache/thedotmack/claude-mem/12.1.0/` |
+| Node provenance = serveur au lieu de client | Headers proxy pas lus par le handler | Tous les handlers doivent utiliser `getRequestProvenance(req)` |
+| Prompts n'apparaissent pas en live | `broadcastNewPrompt` manquant dans ByClaudeId | Vérifier que CHAQUE handler ByClaudeId broadcast via SSE |
+| Un type de message régresse indépendamment | Provenance codée séparément par type | Utiliser le middleware centralisé, jamais lire les headers directement |
 
 ## Configuration (settings.json)
 
