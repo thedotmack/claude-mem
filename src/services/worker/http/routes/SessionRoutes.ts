@@ -688,7 +688,14 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     const store = this.dbManager.getSessionStore();
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    // Read-only lookup — GET must not create DB rows as side-effect
+    const row = store.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
+      .get(contentSessionId) as { id: number } | undefined;
+    if (!row) {
+      res.json({ status: 'not_found', queueLength: 0 });
+      return;
+    }
+    const sessionDbId = row.id;
     const session = this.sessionManager.getSession(sessionDbId);
 
     if (!session) {

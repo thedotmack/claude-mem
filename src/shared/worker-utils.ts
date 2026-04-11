@@ -244,10 +244,11 @@ export async function ensureWorkerRunning(): Promise<boolean> {
 export async function bufferedPostRequest(
   apiPath: string,
   body: string,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  timeoutMs?: number
 ): Promise<Response> {
   try {
-    return await workerHttpRequest(apiPath, { method: 'POST', body, headers });
+    return await workerHttpRequest(apiPath, { method: 'POST', body, headers, timeoutMs });
   } catch (error) {
     // Only buffer in client mode — standalone/server let errors propagate
     if (getNetworkMode() !== 'client') throw error;

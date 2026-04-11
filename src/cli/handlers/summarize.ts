@@ -75,7 +75,8 @@ export const summarizeHandler: EventHandler = {
         last_assistant_message: lastAssistantMessage,
         llm_source: getLlmSource()
       }),
-      { 'Content-Type': 'application/json' }
+      { 'Content-Type': 'application/json' },
+      60_000 // 60s — summarize triggers LLM agent processing
     );
 
     if (!response.ok) {
