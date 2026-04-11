@@ -102,7 +102,13 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Wall-clock age guard: refuse to start new generators for sessions that have
     // been alive too long to prevent runaway API costs (Issue #1590).
-    const sessionAgeMs = Date.now() - session.startTime;
+    // Use the persisted started_at_epoch from the DB so the guard survives worker
+    // restarts (session.startTime is reset to Date.now() on every re-activation).
+    const dbSessionRecord = this.dbManager.getSessionStore().db
+      .prepare('SELECT started_at_epoch FROM sdk_sessions WHERE id = ? LIMIT 1')
+      .get(sessionDbId) as { started_at_epoch: number } | undefined;
+    const sessionOriginMs = dbSessionRecord?.started_at_epoch ?? session.startTime;
+    const sessionAgeMs = Date.now() - sessionOriginMs;
     if (sessionAgeMs > SessionRoutes.MAX_SESSION_WALL_CLOCK_MS) {
       logger.warn('SESSION', 'Session exceeded wall-clock age limit — aborting to prevent runaway spend', {
         sessionId: sessionDbId,
@@ -207,10 +213,16 @@ export class SessionRoutes extends BaseRouteHandler {
     session.currentProvider = provider;
     session.lastGeneratorActivity = Date.now();
 
+    // Capture the AbortController that belongs to THIS generator run.
+    // session.abortController may be replaced (e.g. by stale-recovery) before the
+    // .catch / .finally handlers run, so binding it here prevents a stale rejection
+    // from cancelling a brand-new controller (race condition guard).
+    const myController = session.abortController;
+
     session.generatorPromise = agent.startSession(session, this.workerService)
       .catch(error => {
         // Only log non-abort errors
-        if (session.abortController.signal.aborted) return;
+        if (myController.signal.aborted) return;
 
         const errorMsg = error instanceof Error ? error.message : String(error);
 
@@ -224,7 +236,7 @@ export class SessionRoutes extends BaseRouteHandler {
             provider,
             error: errorMsg
           });
-          session.abortController.abort();
+          myController.abort();
           return;
         }
 
