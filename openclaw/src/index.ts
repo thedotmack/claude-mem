@@ -280,6 +280,7 @@ type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
 let _circuitState: CircuitState = "CLOSED";
 let _circuitFailures = 0;
 let _circuitOpenedAt = 0;
+let _halfOpenProbeInFlight = false;
 
 function circuitAllow(logger: PluginLogger): boolean {
   if (_circuitState === "CLOSED") return true;
@@ -287,11 +288,15 @@ function circuitAllow(logger: PluginLogger): boolean {
     if (Date.now() - _circuitOpenedAt >= CIRCUIT_BREAKER_COOLDOWN_MS) {
       _circuitState = "HALF_OPEN";
       logger.info("[claude-mem] Circuit breaker: probing worker connection");
+      if (_halfOpenProbeInFlight) return false;
+      _halfOpenProbeInFlight = true;
       return true;
     }
     return false;
   }
   // HALF_OPEN: allow one probe through
+  if (_halfOpenProbeInFlight) return false;
+  _halfOpenProbeInFlight = true;
   return true;
 }
 
@@ -301,9 +306,11 @@ function circuitOnSuccess(logger: PluginLogger): void {
   }
   _circuitState = "CLOSED";
   _circuitFailures = 0;
+  _halfOpenProbeInFlight = false;
 }
 
 function circuitOnFailure(logger: PluginLogger): void {
+  _halfOpenProbeInFlight = false;
   _circuitFailures++;
   if (
     _circuitState === "HALF_OPEN" ||
@@ -321,6 +328,7 @@ function circuitReset(): void {
   _circuitState = "CLOSED";
   _circuitFailures = 0;
   _circuitOpenedAt = 0;
+  _halfOpenProbeInFlight = false;
 }
 
 async function workerPost(
@@ -336,11 +344,12 @@ async function workerPost(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    circuitOnSuccess(logger);
     if (!response.ok) {
+      circuitOnFailure(logger);
       logger.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
       return null;
     }
+    circuitOnSuccess(logger);
     return (await response.json()) as Record<string, unknown>;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -363,7 +372,12 @@ function workerPostFireAndForget(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  }).then(() => {
+  }).then((response) => {
+    if (!response.ok) {
+      circuitOnFailure(logger);
+      logger.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
+      return;
+    }
     circuitOnSuccess(logger);
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -382,11 +396,12 @@ async function workerGetText(
   if (!circuitAllow(logger)) return null;
   try {
     const response = await fetch(`${workerBaseUrl(port)}${path}`);
-    circuitOnSuccess(logger);
     if (!response.ok) {
+      circuitOnFailure(logger);
       logger.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
       return null;
     }
+    circuitOnSuccess(logger);
     return await response.text();
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
