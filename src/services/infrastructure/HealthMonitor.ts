@@ -11,6 +11,7 @@
 
 import path from 'path';
 import net from 'net';
+import { execSync } from 'child_process';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
@@ -46,16 +47,19 @@ async function httpRequestToWorker(
  */
 export async function isPortInUse(port: number): Promise<boolean> {
   if (process.platform === 'win32') {
-    // APPROVED OVERRIDE: Windows keeps HTTP health check because socket bind
-    // semantics differ (SO_REUSEADDR defaults, firewall prompts). The TOCTOU
-    // race remains on Windows but is an accepted limitation — the atomic
-    // socket approach would cause false positives or UAC popups.
+    // First: try HTTP health check (fast path — worker is alive and responding)
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/health`);
-      return response.ok;
+      if (response.ok) return true;
     } catch {
-      return false;
+      // Worker not responding — but port might still be occupied
     }
+
+    // Second: check OS-level TCP state via PowerShell.
+    // This catches zombie ports: the worker process crashed but Windows TCP
+    // stack still holds the port in LISTEN/TIME_WAIT/CLOSE_WAIT state.
+    // Without this check, spawn() succeeds but the new worker fails to bind.
+    return isPortOccupiedWindows(port);
   }
 
   // Unix: atomic socket bind check — no TOCTOU race
@@ -73,6 +77,51 @@ export async function isPortInUse(port: number): Promise<boolean> {
     });
     server.listen(port, '127.0.0.1');
   });
+}
+
+/**
+ * Windows-specific: check if a port is occupied at the OS level using
+ * Get-NetTCPConnection. This catches zombie ports where the process
+ * crashed but TCP state lingers (TIME_WAIT, CLOSE_WAIT, or orphaned LISTEN).
+ *
+ * Returns true if the port has any active TCP connection (regardless of state).
+ */
+function isPortOccupiedWindows(port: number): boolean {
+  try {
+    const output = execSync(
+      `powershell -NoProfile -NonInteractive -Command "(Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | Measure-Object).Count"`,
+      { encoding: 'utf-8', timeout: 5000, windowsHide: true }
+    ).trim();
+    return parseInt(output, 10) > 0;
+  } catch {
+    // If PowerShell fails, assume port is free
+    return false;
+  }
+}
+
+/**
+ * Windows-specific: find the PID of the process holding a port in LISTEN state.
+ * Returns the PID, or null if no process found or if the port is only in TIME_WAIT.
+ *
+ * Only returns PIDs in Listen state — TIME_WAIT connections have no owning process
+ * that can be killed (they are handled by the OS TCP stack).
+ */
+export function getPortOwnerPidWindows(port: number): number | null {
+  if (process.platform !== 'win32') return null;
+
+  try {
+    const output = execSync(
+      `powershell -NoProfile -NonInteractive -Command "Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess"`,
+      { encoding: 'utf-8', timeout: 5000, windowsHide: true }
+    ).trim();
+
+    if (!output) return null;
+
+    const pid = parseInt(output.split('\n')[0].trim(), 10);
+    return (Number.isInteger(pid) && pid > 0) ? pid : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

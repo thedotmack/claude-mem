@@ -24,6 +24,7 @@ import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
   cleanStalePidFile,
+  forceKillProcess,
   getPlatformTimeout,
   removePidFile,
   spawnDaemon,
@@ -33,6 +34,7 @@ import {
   isPortInUse,
   waitForHealth,
   waitForReadiness,
+  getPortOwnerPidWindows,
 } from './infrastructure/HealthMonitor.js';
 
 // Windows: avoid repeated spawn popups when startup fails (issue #921)
@@ -167,8 +169,43 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return true;
     }
-    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-    return false;
+
+    // Windows: port is occupied but nobody responds to health checks.
+    // This happens when a worker process crashed but the OS still holds the port
+    // (zombie port). Try to find and kill the owning process so a new worker can bind.
+    if (process.platform === 'win32') {
+      const zombiePid = getPortOwnerPidWindows(port);
+      if (zombiePid !== null && zombiePid !== process.pid) {
+        logger.warn('SYSTEM', 'Port occupied by unresponsive process, killing zombie', { port, zombiePid });
+        try {
+          await forceKillProcess(zombiePid);
+          // Wait briefly for port to be released after kill
+          const { waitForPortFree } = await import('./infrastructure/HealthMonitor.js');
+          const portFreed = await waitForPortFree(port, 5000);
+          if (portFreed) {
+            logger.info('SYSTEM', 'Zombie process killed, port freed — proceeding to spawn');
+            // Fall through to spawn logic below instead of returning false
+          } else {
+            logger.error('SYSTEM', 'Killed zombie process but port still occupied (TIME_WAIT). Will retry after cooldown.');
+            return false;
+          }
+        } catch (error) {
+          logger.error('SYSTEM', 'Failed to kill zombie port owner', { zombiePid }, error as Error);
+          return false;
+        }
+      } else if (zombiePid === null) {
+        // Port is in TIME_WAIT with no owning process — OS will release it eventually.
+        // On Windows, TIME_WAIT typically lasts ~2 minutes.
+        logger.warn('SYSTEM', 'Port in TIME_WAIT state (no owning process). Will retry after cooldown.');
+        return false;
+      } else {
+        logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
+        return false;
+      }
+    } else {
+      logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
+      return false;
+    }
   }
 
   // Windows: skip spawn if a recent attempt already failed (issue #921)
