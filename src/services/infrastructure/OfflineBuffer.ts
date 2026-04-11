@@ -109,9 +109,19 @@ export class OfflineBuffer {
       logger.info('BUFFER', 'Replay complete', { replayed, remaining });
       return { replayed, remaining };
     } catch (error) {
-      // On error, restore the replay file as the buffer
+      // On error, merge replay file with any new appends (don't overwrite them)
       if (existsSync(replayPath)) {
-        try { renameSync(replayPath, this.bufferPath); } catch {}
+        try {
+          const replayContent = readFileSync(replayPath, 'utf-8');
+          const newAppends = existsSync(this.bufferPath) ? readFileSync(this.bufferPath, 'utf-8') : '';
+          const tmpPath = this.bufferPath + '.tmp';
+          writeFileSync(tmpPath, replayContent + newAppends, 'utf-8');
+          renameSync(tmpPath, this.bufferPath);
+          unlinkSync(replayPath);
+        } catch {
+          // Last resort: at least keep the replay file
+          try { renameSync(replayPath, this.bufferPath); } catch {}
+        }
       }
       throw error;
     } finally {

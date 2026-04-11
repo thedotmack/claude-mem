@@ -584,11 +584,13 @@ export class SessionRoutes extends BaseRouteHandler {
         : '{}';
 
       // Set provenance on the active session BEFORE queueing so the generator sees it
-      const obsSession = this.sessionManager.getSession(sessionDbId);
-      if (obsSession) {
-        if (prov.node) obsSession.node = prov.node;
-        if (llmSource) obsSession.llm_source = llmSource;
+      let obsSession = this.sessionManager.getSession(sessionDbId);
+      if (!obsSession) {
+        // Session not in memory (e.g. after worker restart) — initialize with client provenance
+        obsSession = this.sessionManager.initializeSession(sessionDbId, '', promptNumber, prov.node || undefined);
       }
+      if (prov.node) obsSession.node = prov.node;
+      if (llmSource) obsSession.llm_source = llmSource;
 
       // Queue observation
       this.sessionManager.queueObservation(sessionDbId, {
@@ -847,7 +849,7 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Step 5: Save cleaned user prompt with originating node from proxy header
-    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, prov.node || undefined);
+    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, prov.node || undefined, prov.platform || undefined, prov.instance || undefined, llmSource || undefined);
 
     // Step 6: Initialize or get existing session with origin node from proxy header
     const activeSession = this.sessionManager.getSession(sessionDbId)

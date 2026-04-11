@@ -6,6 +6,7 @@
  */
 
 import { hostname } from 'os';
+import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
@@ -126,8 +127,7 @@ export function getLlmSource(): string {
     if (existsSync(settingsPath)) {
       const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
       if (settings.CLAUDE_MEM_PROVIDER) {
-        cachedLlmSource = settings.CLAUDE_MEM_PROVIDER;
-        return cachedLlmSource;
+        return settings.CLAUDE_MEM_PROVIDER;
       }
     }
   } catch {}
