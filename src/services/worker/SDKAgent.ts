@@ -106,6 +106,12 @@ export class SDKAgent {
       });
     }
 
+    if (nextMessageIsSummarize && !shouldResume && !session.forceInit) {
+      // Force the init-prompt path so buildContinuationPrompt is never called for
+      // a summarize message that starts a fresh SDK session (fixes #1650).
+      session.lastPromptNumber = 1;
+    }
+
     // Wait for agent pool slot (configurable via CLAUDE_MEM_MAX_CONCURRENT_AGENTS)
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;

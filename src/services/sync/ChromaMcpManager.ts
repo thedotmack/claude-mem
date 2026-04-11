@@ -390,8 +390,9 @@ export class ChromaMcpManager {
     try {
       let certifiPath: string | undefined;
       try {
+        const uvxBin = getUvxPath() ?? 'uvx';
         certifiPath = execSync(
-          'uvx --with certifi python -c "import certifi; print(certifi.where())"',
+          `${uvxBin} --with certifi python -c "import certifi; print(certifi.where())"`,
           { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 }
         ).trim();
       } catch {
