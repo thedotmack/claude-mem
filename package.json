@@ -138,6 +138,7 @@
     "@types/react-dom": "^18.3.0",
     "esbuild": "^0.27.2",
     "np": "^11.0.2",
+    "playwright": "^1.59.1",
     "tree-sitter-bash": "^0.25.1",
     "tree-sitter-c": "^0.24.1",
     "tree-sitter-cli": "^0.26.5",
