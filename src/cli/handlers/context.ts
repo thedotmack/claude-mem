@@ -68,25 +68,57 @@ const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam
 
       const MAX_CONTEXT_BYTES = 9_500; // Claude Code >= v2.1.88 truncates hook outputs > 10KB (#1591)
       let additionalContext = contextResult.trim();
-      if (Buffer.byteLength(additionalContext, 'utf8') > MAX_CONTEXT_BYTES) {
-        // Trim at the last complete line break under the byte limit to avoid splitting mid-line
-        const buf = Buffer.from(additionalContext, 'utf8').subarray(0, MAX_CONTEXT_BYTES);
-        const truncated = buf.toString('utf8');
-        const lastNewline = truncated.lastIndexOf('\n');
-        additionalContext = (lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated)
-          + '\n[Context trimmed to 9.5KB — lower CLAUDE_MEM_CONTEXT_OBSERVATIONS in settings to avoid truncation (#1591)]';
-      }
       const coloredTimeline = colorResult.trim();
       const platform = input.platform;
 
-      // Use colored timeline for display if available, otherwise fall back to 
-      // plain markdown context (especially useful for platforms like Gemini 
+      // Use colored timeline for display if available, otherwise fall back to
+      // plain markdown context (especially useful for platforms like Gemini
       // where we want to ensure visibility even if colors aren't fetched).
       const displayContent = coloredTimeline || (platform === 'gemini-cli' || platform === 'gemini' ? additionalContext : '');
 
-      const systemMessage = showTerminalOutput && displayContent
+      let systemMessage: string | undefined = showTerminalOutput && displayContent
         ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}`
         : undefined;
+
+      // Enforce MAX_CONTEXT_BYTES on the full serialized payload that claude-code
+      // adapter produces (includes hookSpecificOutput wrapper + systemMessage).
+      // This mirrors the shape built by claudeCodeAdapter.formatOutput().
+      const buildPayload = (): string => {
+        const payload: Record<string, unknown> = {
+          hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext }
+        };
+        if (systemMessage !== undefined) {
+          payload.systemMessage = systemMessage;
+        }
+        return JSON.stringify(payload);
+      };
+
+      let trimmed = false;
+
+      // Step 1: progressively truncate additionalContext until payload fits
+      if (Buffer.byteLength(buildPayload(), 'utf8') > MAX_CONTEXT_BYTES) {
+        // Trim at the last complete line break under the byte limit to avoid splitting mid-line
+        const headroom = MAX_CONTEXT_BYTES - Buffer.byteLength(buildPayload().replace(additionalContext, ''), 'utf8');
+        if (headroom > 0) {
+          const buf = Buffer.from(additionalContext, 'utf8').subarray(0, Math.max(0, headroom));
+          const truncatedStr = buf.toString('utf8');
+          const lastNewline = truncatedStr.lastIndexOf('\n');
+          additionalContext = lastNewline > 0 ? truncatedStr.slice(0, lastNewline) : truncatedStr;
+        } else {
+          additionalContext = '';
+        }
+        trimmed = true;
+      }
+
+      // Step 2: if still over limit, shorten/remove systemMessage
+      if (Buffer.byteLength(buildPayload(), 'utf8') > MAX_CONTEXT_BYTES) {
+        systemMessage = undefined;
+        trimmed = true;
+      }
+
+      if (trimmed) {
+        additionalContext += '\n[Context trimmed to 9.5KB — lower CLAUDE_MEM_CONTEXT_OBSERVATIONS in settings to avoid truncation (#1591)]';
+      }
 
       return {
         hookSpecificOutput: {
