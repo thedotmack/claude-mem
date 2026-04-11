@@ -1,19 +1,31 @@
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, realpathSync } from 'fs';
 import { dirname, resolve, sep } from 'path';
 import { homedir } from 'os';
 import { replaceTaggedContent } from './claude-md-utils.js';
 import { logger } from './logger.js';
 
 /**
+ * Canonicalize a path using realpathSync to resolve symlinks.
+ * Falls back to the input path if it doesn't exist yet (realpathSync requires the path to exist).
+ */
+function canonicalize(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
  * Returns true if resolvedPath is safely within projectRoot or ~/.claude-mem/.
- * Prevents path traversal attacks via watch.context.path in settings.
+ * Prevents path traversal attacks (including symlink escapes) via watch.context.path in settings.
  */
 export function isSafeContextPath(resolvedPath: string, projectRoot: string): boolean {
   const withSep = (p: string) => (p.endsWith(sep) ? p : p + sep);
-  const projectPrefix = withSep(resolve(projectRoot));
-  const dataPrefix = withSep(resolve(homedir(), '.claude-mem'));
-  const normalizedPath = withSep(resolvedPath);
-  return normalizedPath.startsWith(projectPrefix) || normalizedPath.startsWith(dataPrefix);
+  const canonicalPath = withSep(canonicalize(resolve(resolvedPath)));
+  const projectPrefix = withSep(canonicalize(resolve(projectRoot)));
+  const dataPrefix = withSep(canonicalize(resolve(homedir(), '.claude-mem')));
+  return canonicalPath.startsWith(projectPrefix) || canonicalPath.startsWith(dataPrefix);
 }
 
 /**
