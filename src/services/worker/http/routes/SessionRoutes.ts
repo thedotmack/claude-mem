@@ -217,6 +217,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // Treat SIGTERM (exit code 143) as intentional termination, not a crash.
         // When a subprocess is killed externally, abort the controller to prevent
         // crash recovery from immediately respawning the process (Issue #1590).
+        // APPROVED OVERRIDE
         if (errorMsg.includes('code 143') || errorMsg.includes('signal SIGTERM')) {
           logger.warn('SESSION', 'Generator killed by external signal — aborting session to prevent respawn', {
             sessionId: session.sessionDbId,
@@ -230,7 +231,7 @@ export class SessionRoutes extends BaseRouteHandler {
         logger.error('SESSION', `Generator failed`, {
           sessionId: session.sessionDbId,
           provider: provider,
-          error: error.message
+          error: errorMsg
         }, error);
 
         // Mark all processing messages as failed so they can be retried or abandoned
