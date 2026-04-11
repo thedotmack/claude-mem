@@ -72,7 +72,14 @@ export class CorpusRoutes extends BaseRouteHandler {
    */
   private handleListCorpora = this.wrapHandler((_req: Request, res: Response): void => {
     const corpora = this.corpusStore.list();
-    res.json(corpora);
+    // Wrap in MCP CallToolResult shape so the MCP server wrapper (callWorkerAPI)
+    // can forward it without failing tools/call schema validation.
+    // See: #1700 — every other corpus endpoint is a POST that already returns
+    // {content:[...]}, but this GET used to return a bare array, which MCP
+    // rejects with "expected object, received array".
+    res.json({
+      content: [{ type: 'text', text: JSON.stringify(corpora, null, 2) }]
+    });
   });
 
   /**
