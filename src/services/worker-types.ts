@@ -178,10 +178,10 @@ export interface UserPrompt {
   prompt_text: string;
   created_at: string;
   created_at_epoch: number;
-  node?: string | null;
-  platform?: string | null;
-  instance?: string | null;
-  llm_source?: string | null;
+  node: string | null;
+  platform: string | null;
+  instance: string | null;
+  llm_source: string | null;
 }
 
 export interface DBSession {

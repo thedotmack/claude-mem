@@ -73,7 +73,7 @@ export function getInstanceName(): string {
 export function getNetworkMode(): 'standalone' | 'server' | 'client' {
   if (process.env.CLAUDE_MEM_NETWORK_MODE) {
     const envMode = process.env.CLAUDE_MEM_NETWORK_MODE;
-    if (envMode === 'server' || envMode === 'client') return envMode;
+    if (envMode === 'standalone' || envMode === 'server' || envMode === 'client') return envMode;
   }
 
   try {
