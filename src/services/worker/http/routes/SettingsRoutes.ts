@@ -412,6 +412,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       // Restore root .mcp.json so Claude Code sees the server again
       // Always write (create if deleted) so a previously-removed file is recreated
       if (existsSync(mcpPath)) {
+        mkdirSync(path.dirname(rootMcpPath), { recursive: true });
         writeFileSync(rootMcpPath, readFileSync(mcpPath, 'utf-8'), 'utf-8');
       }
       logger.info('WORKER', 'MCP search server enabled');
@@ -420,6 +421,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       renameSync(mcpPath, mcpDisabledPath);
       // Empty root .mcp.json so Claude Code stops registering the server
       // Always write (create if deleted) so a previously-removed file is cleared
+      mkdirSync(path.dirname(rootMcpPath), { recursive: true });
       writeFileSync(rootMcpPath, emptyMcpServers, 'utf-8');
       logger.info('WORKER', 'MCP search server disabled');
     } else {
