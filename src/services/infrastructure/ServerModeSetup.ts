@@ -65,7 +65,8 @@ export async function ensureServerModeReady(
       writeFileSync(resolvedPath, JSON.stringify(settings, null, 2));
       clearPortCache(); // Force re-read of host/port from updated settings
     } catch (error) {
-      logger.error('SYSTEM', 'Server mode: failed to write settings', { path: resolvedPath }, error as Error);
+      logger.error('SYSTEM', 'Server mode: failed to persist settings — auth token exists only in memory', { path: resolvedPath }, error as Error);
+      throw error; // Non-recoverable: crash/restart would lose the auth token
     }
   }
 

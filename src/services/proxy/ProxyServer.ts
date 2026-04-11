@@ -9,7 +9,7 @@
 import http from 'http';
 import path from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { getNodeName, getInstanceName, getLlmSource } from '../../shared/node-identity.js';
+import { getNodeName, getInstanceName, getLlmSource, clearNodeNameCache } from '../../shared/node-identity.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { OfflineBuffer } from '../infrastructure/OfflineBuffer.js';
 import { logger } from '../../utils/logger.js';
@@ -461,7 +461,8 @@ export class ProxyServer {
 
       if (changed) {
         writeFileSync(this.settingsPath, JSON.stringify(current, null, 2));
-        logger.info('PROXY', 'Settings synced from server', {
+        clearNodeNameCache(); // Invalidate cached node name after settings change
+      logger.info('PROXY', 'Settings synced from server', {
           keys: Object.keys(serverSettings).filter(k => !ProxyServer.LOCAL_ONLY_SETTINGS.has(k)).length
         });
       }
@@ -530,7 +531,7 @@ export class ProxyServer {
     let aborted = false;
     req.on('data', (chunk: Buffer) => {
       body += chunk;
-      if (body.length > MAX_BODY_BYTES) {
+      if (Buffer.byteLength(body, 'utf-8') > MAX_BODY_BYTES) {
         aborted = true;
         req.destroy();
         callback(null);

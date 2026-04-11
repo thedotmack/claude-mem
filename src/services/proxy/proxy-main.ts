@@ -55,10 +55,12 @@ async function main() {
     logger.error('PROXY', 'Unhandled rejection', { reason: reason instanceof Error ? reason.message : String(reason) });
   });
 
-  process.on('SIGTERM', () => { removePidFile(); process.exit(0); });
-  process.on('SIGINT', () => { removePidFile(); process.exit(0); });
+  let proxyRef: ProxyServer | null = null;
+process.on('SIGTERM', async () => { if (proxyRef) await proxyRef.stop(); removePidFile(); process.exit(0); });
+  process.on('SIGINT', async () => { if (proxyRef) await proxyRef.stop(); removePidFile(); process.exit(0); });
 
   const proxy = new ProxyServer(serverHost, serverPort, authToken, dataDir);
+  proxyRef = proxy;
   await proxy.start(port);
   writePidFile({ pid: process.pid, port, startedAt: new Date().toISOString() });
   logger.info('PROXY', 'Standalone proxy started', {
