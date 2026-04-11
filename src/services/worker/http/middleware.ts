@@ -44,6 +44,16 @@ export function createMiddleware(
     credentials: false
   }));
 
+  // Serve static files for web UI BEFORE auth — viewer HTML/JS/CSS are public assets.
+  // Only API endpoints and SSE stream require authentication.
+  // Try both cache structure (ui/) and marketplace structure (plugin/ui/).
+  const packageRoot = getPackageRoot();
+  const uiDirCache = path.join(packageRoot, 'ui');
+  const uiDirMarketplace = path.join(packageRoot, 'plugin', 'ui');
+  const staticOptions = { index: 'viewer.html' };
+  middlewares.push(express.static(uiDirCache, staticOptions));
+  middlewares.push(express.static(uiDirMarketplace, staticOptions));
+
   // Auth — require Bearer token on non-localhost requests in server mode
   const authToken = () => {
     const settings = SettingsDefaultsManager.loadFromFile(
@@ -80,11 +90,6 @@ export function createMiddleware(
 
     next();
   });
-
-  // Serve static files for web UI (viewer-bundle.js, logos, fonts, etc.)
-  const packageRoot = getPackageRoot();
-  const uiDir = path.join(packageRoot, 'plugin', 'ui');
-  middlewares.push(express.static(uiDir));
 
   return middlewares;
 }

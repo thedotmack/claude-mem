@@ -90,7 +90,11 @@ export class PaginationHelper {
         o.files_modified,
         o.prompt_number,
         o.created_at,
-        o.created_at_epoch
+        o.created_at_epoch,
+        o.node,
+        o.platform,
+        o.instance,
+        o.llm_source
       FROM observations o
       LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     `;
@@ -145,7 +149,11 @@ export class PaginationHelper {
         ss.next_steps,
         ss.project,
         ss.created_at,
-        ss.created_at_epoch
+        ss.created_at_epoch,
+        ss.node,
+        ss.platform,
+        ss.instance,
+        ss.llm_source
       FROM session_summaries ss
       JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
     `;
@@ -196,7 +204,11 @@ export class PaginationHelper {
         up.prompt_number,
         up.prompt_text,
         up.created_at,
-        up.created_at_epoch
+        up.created_at_epoch,
+        up.node,
+        up.platform,
+        up.instance,
+        up.llm_source
       FROM user_prompts up
       JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
     `;

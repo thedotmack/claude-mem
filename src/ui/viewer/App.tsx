@@ -21,6 +21,17 @@ export function App() {
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
+  const [remoteAccessBlocked, setRemoteAccessBlocked] = useState(false);
+
+  // Detect remote access without proxy (API returns 401)
+  useEffect(() => {
+    const isRemote = !['localhost', '127.0.0.1', '[::1]'].some(h => window.location.hostname.includes(h));
+    if (isRemote) {
+      fetch('/api/health').then(r => {
+        if (r.status === 401) setRemoteAccessBlocked(true);
+      }).catch(() => setRemoteAccessBlocked(true));
+    }
+  }, []);
 
   const { observations, summaries, prompts, projects, sources, projectsBySource, isProcessing, queueDepth, isConnected, onClientEvent } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
@@ -118,6 +129,33 @@ export function App() {
     handleLoadMore();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFilter, currentSource]);
+
+  if (remoteAccessBlocked) {
+    return (
+      <div style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+        minHeight: '60vh', padding: '40px', textAlign: 'center', color: 'var(--color-text-primary)'
+      }}>
+        <h2 style={{ marginBottom: '16px' }}>Remote access requires a local proxy</h2>
+        <p style={{ marginBottom: '24px', color: 'var(--color-text-secondary)', maxWidth: '500px' }}>
+          This server requires authentication for API access. Use the local proxy on your machine instead of connecting directly.
+        </p>
+        <a
+          href="http://localhost:37777"
+          style={{
+            padding: '10px 24px', borderRadius: '6px',
+            background: 'var(--color-bg-button)', color: '#fff', textDecoration: 'none',
+            fontWeight: 600
+          }}
+        >
+          Open via local proxy (localhost:37777)
+        </a>
+        <p style={{ marginTop: '16px', fontSize: '12px', color: 'var(--color-text-tertiary)' }}>
+          If the proxy isn't running: <code>bun ~/.claude/plugins/cache/thedotmack/claude-mem/12.1.0/scripts/proxy-service.cjs</code>
+        </p>
+      </div>
+    );
+  }
 
   return (
     <>

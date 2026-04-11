@@ -27,6 +27,10 @@ export class SessionEventBroadcaster {
     prompt_number: number;
     prompt_text: string;
     created_at_epoch: number;
+    node?: string | null;
+    platform?: string | null;
+    instance?: string | null;
+    llm_source?: string | null;
   }): void {
     // Broadcast prompt details
     this.sseBroadcaster.broadcast({

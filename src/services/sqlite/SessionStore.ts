@@ -1342,6 +1342,10 @@ export class SessionStore {
     prompt_number: number;
     prompt_text: string;
     created_at_epoch: number;
+    node?: string | null;
+    platform?: string | null;
+    instance?: string | null;
+    llm_source?: string | null;
   } | undefined {
     const stmt = this.db.prepare(`
       SELECT

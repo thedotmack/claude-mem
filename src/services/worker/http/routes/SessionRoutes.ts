@@ -365,7 +365,11 @@ export class SessionRoutes extends BaseRouteHandler {
         platform_source: latestPrompt.platform_source,
         prompt_number: latestPrompt.prompt_number,
         prompt_text: latestPrompt.prompt_text,
-        created_at_epoch: latestPrompt.created_at_epoch
+        created_at_epoch: latestPrompt.created_at_epoch,
+        node: latestPrompt.node ?? null,
+        platform: latestPrompt.platform ?? null,
+        instance: latestPrompt.instance ?? null,
+        llm_source: latestPrompt.llm_source ?? null
       });
 
       // Sync user prompt to Chroma
