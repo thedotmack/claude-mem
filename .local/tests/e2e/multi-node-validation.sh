@@ -281,6 +281,31 @@ else
   fail "API node ($API_NODE) != server DB node ($SERVER_DB_NODE)"
 fi
 
+# 4.4 Observations originate from client node, not server
+# In client mode, new observations should carry the CLIENT's node name, not the server's
+if [[ "$LOCAL_MODE" == "client" ]]; then
+  LOCAL_NODE=$(hostname -s 2>/dev/null || hostname)
+  # Check most recent observations for client node name
+  CLIENT_OBS=$(curl -s "http://localhost:$LOCAL_PORT/api/observations?limit=10" 2>/dev/null | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+local = '$LOCAL_NODE'
+# Count observations that have this client's node
+client_obs = [i for i in d.get('items', []) if i.get('node') and local.lower() in i['node'].lower()]
+server_obs = [i for i in d.get('items', []) if i.get('node') and local.lower() not in i['node'].lower()]
+print(f'{len(client_obs)}:{len(server_obs)}')
+" 2>/dev/null)
+  CLIENT_COUNT=$(echo "$CLIENT_OBS" | cut -d: -f1)
+  SERVER_COUNT=$(echo "$CLIENT_OBS" | cut -d: -f2)
+  if [[ "$CLIENT_COUNT" -gt 0 ]]; then
+    pass "Observations carry client node name ($CLIENT_COUNT client, $SERVER_COUNT server)"
+  elif [[ "$SERVER_COUNT" -gt 0 ]]; then
+    fail "Observations carry SERVER node name instead of client ($SERVER_COUNT with server name)"
+  else
+    skip "No observations with node to check origin"
+  fi
+fi
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Layer 5: Deployment Verification
 # ══════════════════════════════════════════════════════════════════════════════

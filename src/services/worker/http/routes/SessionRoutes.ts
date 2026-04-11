@@ -340,6 +340,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const { userPrompt, promptNumber } = req.body;
     const llmSource = req.body.llm_source || (req.headers['x-claude-mem-llm-source'] as string) || '';
+    const originNode = req.headers['x-claude-mem-node'] as string || '';
     logger.info('HTTP', 'SessionRoutes: handleSessionInit called', {
       sessionDbId,
       promptNumber,
@@ -348,7 +349,10 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const session = this.sessionManager.initializeSession(sessionDbId, userPrompt, promptNumber);
 
-    // Set llm_source on the active session for provenance tracking
+    // Set provenance from originating node (proxy headers override local identity)
+    if (originNode) {
+      session.node = originNode;
+    }
     if (llmSource) {
       session.llm_source = llmSource;
     }
