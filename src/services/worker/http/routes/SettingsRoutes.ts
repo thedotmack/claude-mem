@@ -410,7 +410,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       // Enable: rename .mcp.json.disabled -> .mcp.json
       renameSync(mcpDisabledPath, mcpPath);
       // Restore root .mcp.json so Claude Code sees the server again
-      if (existsSync(rootMcpPath)) {
+      // Always write (create if deleted) so a previously-removed file is recreated
+      if (existsSync(mcpPath)) {
         writeFileSync(rootMcpPath, readFileSync(mcpPath, 'utf-8'), 'utf-8');
       }
       logger.info('WORKER', 'MCP search server enabled');
@@ -418,9 +419,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       // Disable: rename .mcp.json -> .mcp.json.disabled
       renameSync(mcpPath, mcpDisabledPath);
       // Empty root .mcp.json so Claude Code stops registering the server
-      if (existsSync(rootMcpPath)) {
-        writeFileSync(rootMcpPath, emptyMcpServers, 'utf-8');
-      }
+      // Always write (create if deleted) so a previously-removed file is cleared
+      writeFileSync(rootMcpPath, emptyMcpServers, 'utf-8');
       logger.info('WORKER', 'MCP search server disabled');
     } else {
       logger.debug('WORKER', 'MCP toggle no-op (already in desired state)', { enabled });
