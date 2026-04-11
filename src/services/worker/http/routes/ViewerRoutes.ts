@@ -40,7 +40,7 @@ export class ViewerRoutes extends BaseRouteHandler {
    * Health check endpoint
    */
   private handleHealth = this.wrapHandler((req: Request, res: Response): void => {
-    res.json({ status: 'ok', timestamp: Date.now() });
+    res.json({ status: 'ok', timestamp: Date.now(), mode: getNetworkMode() });
   });
 
   /**

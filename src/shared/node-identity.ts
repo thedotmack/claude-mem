@@ -120,5 +120,17 @@ export function getLlmSource(): string {
   if (process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY) return 'gemini';
 
   // Default — most claude-mem users are on Claude
+  // Check CLAUDE_MEM_PROVIDER setting as final signal
+  try {
+    const settingsPath = path.join(process.env.HOME || '', '.claude-mem', 'settings.json');
+    if (existsSync(settingsPath)) {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      if (settings.CLAUDE_MEM_PROVIDER) {
+        cachedLlmSource = settings.CLAUDE_MEM_PROVIDER;
+        return cachedLlmSource;
+      }
+    }
+  } catch {}
+
   return 'unknown';
 }
