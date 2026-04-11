@@ -94,24 +94,25 @@ export const summarizeHandler: EventHandler = {
         const statusResponse = await workerHttpRequest(`/api/sessions/status?contentSessionId=${encodeURIComponent(sessionId)}`, {
           timeoutMs: 5000
         });
-        if (statusResponse.ok) {
-          const status = await statusResponse.json() as { queueLength?: number; summaryStored?: boolean | null };
-          if ((status.queueLength ?? 0) === 0) {
-            summaryStored = status.summaryStored ?? null;
-            logger.info('HOOK', 'Summary processing complete', {
-              waitedMs: Date.now() - waitStart,
-              summaryStored
+        const status = await statusResponse.json() as { queueLength?: number; summaryStored?: boolean | null };
+        const queueLength = status.queueLength ?? 0;
+        // Only treat an empty queue as completion when the session exists (non-404).
+        // A 404 means the session was not found — not that processing finished.
+        if (queueLength === 0 && statusResponse.status !== 404) {
+          summaryStored = status.summaryStored ?? null;
+          logger.info('HOOK', 'Summary processing complete', {
+            waitedMs: Date.now() - waitStart,
+            summaryStored
+          });
+          // Warn when the agent processed a summarize request but produced no storable summary.
+          // This is the silent-failure path described in #1633: queue empties but no summary record exists.
+          if (summaryStored === false) {
+            logger.warn('HOOK', 'Summary was not stored: LLM response likely lacked valid <summary> tags (#1633)', {
+              sessionId,
+              waitedMs: Date.now() - waitStart
             });
-            // Warn when the agent processed a summarize request but produced no storable summary.
-            // This is the silent-failure path described in #1633: queue empties but no summary record exists.
-            if (summaryStored === false) {
-              logger.warn('HOOK', 'Summary was not stored: LLM response likely lacked valid <summary> tags (#1633)', {
-                sessionId,
-                waitedMs: Date.now() - waitStart
-              });
-            }
-            break;
           }
+          break;
         }
       } catch {
         // Worker may be busy — keep polling
