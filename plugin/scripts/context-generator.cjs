@@ -477,11 +477,11 @@ ${o.stack}`:` ${o.message}`:this.getLevel()===0&&typeof o=="object"?m=`
       INSERT INTO sdk_sessions
       (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status)
       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
-    `).run(e,t,_,s,d.customTitle||null,i.toISOString(),a),this.db.prepare("SELECT id FROM sdk_sessions WHERE content_session_id = ?").get(e).id}saveUserPrompt(e,t,s){let n=new Date,o=n.getTime();return this.db.prepare(`
+    `).run(e,t,_,s,d.customTitle||null,i.toISOString(),a),this.db.prepare("SELECT id FROM sdk_sessions WHERE content_session_id = ?").get(e).id}saveUserPrompt(e,t,s,n){let o=new Date,i=o.getTime();return this.db.prepare(`
       INSERT INTO user_prompts
       (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch, node, platform, instance, llm_source)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(e,t,s,n.toISOString(),o,this._currentNode??null,this._currentPlatform??null,this._currentInstance??null,this._currentLlmSource??null).lastInsertRowid}getUserPrompt(e,t){return this.db.prepare(`
+    `).run(e,t,s,o.toISOString(),i,n||(this._currentNode??null),this._currentPlatform??null,this._currentInstance??null,this._currentLlmSource??null).lastInsertRowid}getUserPrompt(e,t){return this.db.prepare(`
       SELECT prompt_text
       FROM user_prompts
       WHERE content_session_id = ? AND prompt_number = ?
