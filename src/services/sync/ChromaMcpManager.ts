@@ -14,7 +14,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
@@ -391,8 +391,9 @@ export class ChromaMcpManager {
       let certifiPath: string | undefined;
       try {
         const resolvedUvx = getUvxPath() ?? 'uvx';
-        certifiPath = execSync(
-          `${resolvedUvx} --with certifi python -c "import certifi; print(certifi.where())"`,
+        certifiPath = execFileSync(
+          resolvedUvx,
+          ['--with', 'certifi', 'python', '-c', 'import certifi; print(certifi.where())'],
           { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 }
         ).trim();
       } catch {

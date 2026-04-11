@@ -22,7 +22,7 @@ const IS_WINDOWS = process.platform === 'win32';
 // Self-resolve plugin root when CLAUDE_PLUGIN_ROOT is not set by Claude Code.
 // Upstream bug: anthropics/claude-code#24529 — Stop hooks (and on Linux, all hooks)
 // don't receive CLAUDE_PLUGIN_ROOT, causing script paths to resolve to /scripts/...
-// which doesn't exist. This fallback derives the plugin root from bun-runner.js's
+// which doesn't exist. This fallback derives the plugin root from bun-runner.mjs's
 // own filesystem location (this file lives in <plugin-root>/scripts/).
 const __bun_runner_dirname = dirname(fileURLToPath(import.meta.url));
 const RESOLVED_PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || resolve(__bun_runner_dirname, '..');
@@ -97,7 +97,7 @@ if (isPluginDisabledInClaudeSettings()) {
   process.exit(0);
 }
 
-// Get args: node bun-runner.js <script> [args...]
+// Get args: node bun-runner.mjs <script> [args...]
 const args = process.argv.slice(2);
 
 if (args.length === 0) {
