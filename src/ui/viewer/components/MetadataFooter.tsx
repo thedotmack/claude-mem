@@ -41,24 +41,24 @@ export function MetadataFooter({ id, date, node, platform, instance }: MetadataF
   return (
     <div className="meta-pills">
       <span className="pill pill--id">
-        <span className="pill-ico">#</span>{id}
+        <span className="pill-ico" aria-hidden="true">#</span>{id}
       </span>
       <span className="pill pill--date">
-        <span className="pill-ico">⏱</span>{shortDate(date)}
+        <span className="pill-ico" aria-hidden="true">⏱</span>{shortDate(date)}
       </span>
       {node && (
         <span className="pill pill--node" title={node}>
-          <span className="pill-ico">◉</span>{node}
+          <span className="pill-ico" aria-hidden="true">◉</span>{node}
         </span>
       )}
       {platform && (
         <span className={`pill ${platformPillClass(platform)}`}>
-          <span className="pill-ico">⚙</span>{platform}
+          <span className="pill-ico" aria-hidden="true">⚙</span>{platform}
         </span>
       )}
       {instance && (
         <span className="pill pill--instance" title={instance}>
-          <span className="pill-ico">⧈</span>{instance}
+          <span className="pill-ico" aria-hidden="true">⧈</span>{instance}
         </span>
       )}
     </div>

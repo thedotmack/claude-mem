@@ -9,7 +9,7 @@ interface NetworkTopologyProps {
 }
 
 function formatTimeAgo(isoString: string): string {
-  const diff = Date.now() - new Date(isoString).getTime();
+  const diff = Math.max(0, Date.now() - new Date(isoString).getTime());
   const seconds = Math.floor(diff / 1000);
   if (seconds < 60) return `${seconds}s ago`;
   const minutes = Math.floor(seconds / 60);
