@@ -724,7 +724,7 @@ export class SessionStore {
       if (obsColSet.has('llm_source')) { obsExtraDefs.push('llm_source TEXT'); obsExtraCols.push('llm_source'); }
       if (obsColSet.has('generated_by_model')) { obsExtraDefs.push('generated_by_model TEXT'); obsExtraCols.push('generated_by_model'); }
       if (obsColSet.has('relevance_count')) { obsExtraDefs.push('relevance_count INTEGER DEFAULT 0'); obsExtraCols.push('relevance_count'); }
-      const obsExtraSQL = obsExtraDefs.length > 0 ? `,\n          ${',\n          '.join(obsExtraDefs)}` : '';
+      const obsExtraSQL = obsExtraDefs.length > 0 ? `,\n          ${obsExtraDefs.join(',\n          ')}` : '';
       const obsBaseCols = 'id, memory_session_id, project, text, type, title, subtitle, facts, narrative, concepts, files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch';
       const obsAllCols = obsExtraCols.length > 0 ? `${obsBaseCols}, ${obsExtraCols.join(', ')}` : obsBaseCols;
 
@@ -806,7 +806,7 @@ export class SessionStore {
       const sumExtraCols: string[] = [];
       if (sumColSet.has('node')) { sumExtraDefs.push('node TEXT', 'platform TEXT', 'instance TEXT'); sumExtraCols.push('node', 'platform', 'instance'); }
       if (sumColSet.has('llm_source')) { sumExtraDefs.push('llm_source TEXT'); sumExtraCols.push('llm_source'); }
-      const sumExtraSQL = sumExtraDefs.length > 0 ? `,\n          ${',\n          '.join(sumExtraDefs)}` : '';
+      const sumExtraSQL = sumExtraDefs.length > 0 ? `,\n          ${sumExtraDefs.join(',\n          ')}` : '';
       const sumBaseCols = 'id, memory_session_id, project, request, investigated, learned, completed, next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch';
       const sumAllCols = sumExtraCols.length > 0 ? `${sumBaseCols}, ${sumExtraCols.join(', ')}` : sumBaseCols;
 

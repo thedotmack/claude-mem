@@ -76,7 +76,7 @@ export const summarizeHandler: EventHandler = {
         llm_source: getLlmSource()
       }),
       { 'Content-Type': 'application/json' },
-      60_000 // 60s — summarize triggers LLM agent processing
+      MAX_WAIT_FOR_SUMMARY_MS // Use configured summarize timeout
     );
 
     if (!response.ok) {

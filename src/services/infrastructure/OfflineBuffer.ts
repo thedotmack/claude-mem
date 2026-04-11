@@ -105,7 +105,8 @@ export class OfflineBuffer {
       }
       // If all replayed, any new appends in bufferPath remain untouched for next cycle
 
-      const remaining = unreplayed.length + (existsSync(this.bufferPath) ? this.pendingCount() : 0);
+      // pendingCount() already includes unreplayed entries (just written) + any new appends
+      const remaining = existsSync(this.bufferPath) ? this.pendingCount() : 0;
       logger.info('BUFFER', 'Replay complete', { replayed, remaining });
       return { replayed, remaining };
     } catch (error) {
