@@ -121,6 +121,7 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
     const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
 
+    let validatedCount = 0;
     for (const [eventName, matchers] of Object.entries(parsed.hooks)) {
       for (const matcher of matchers as any[]) {
         for (const hook of matcher.hooks) {
@@ -128,10 +129,12 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
             // curl health checks must use a variable, not a hardcoded port
             expect(hook.command).not.toContain('localhost:37777/health');
             expect(hook.command).toContain('${_WP}');
+            validatedCount++;
           }
         }
       }
     }
+    expect(validatedCount).toBeGreaterThan(0);
   });
 });
 
