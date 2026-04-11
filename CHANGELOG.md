@@ -217,7 +217,7 @@ The standard exploration cycle (Glob → Grep → Read) forces agents to consume
 ## Bug Fixes
 
 - **Fix PostToolUse hook crashes and 5-second latency (#1220)**: Added missing `break` statements to all 7 switch cases in `worker-service.ts` preventing fall-through execution, added `.catch()` on `main()` to handle unhandled promise rejections, and removed redundant `start` commands from hook groups that triggered the 5-second `collectStdin()` timeout
-- **Fix CLAUDE_PLUGIN_ROOT fallback for Stop hooks (#1215)**: Added POSIX shell-level `CLAUDE_PLUGIN_ROOT` fallback in `hooks.json` for environments where the variable isn't injected, added script-level self-resolution via `import.meta.url` in `bun-runner.js`, and regression test added in `plugin-distribution.test.ts`
+- **Fix CLAUDE_PLUGIN_ROOT fallback for Stop hooks (#1215)**: Added POSIX shell-level `CLAUDE_PLUGIN_ROOT` fallback in `hooks.json` for environments where the variable isn't injected, added script-level self-resolution via `import.meta.url` in `bun-runner.mjs`, and regression test added in `plugin-distribution.test.ts`
 
 ## Maintenance
 
@@ -228,7 +228,7 @@ The standard exploration cycle (Glob → Grep → Read) forces agents to consume
 ## Bug Fixes
 
 - **Fix PostToolUse hook crashes and 5-second latency (#1220)**: Added missing `break` statements to all 7 switch cases in `worker-service.ts` preventing fall-through execution, added `.catch()` on `main()` to handle unhandled promise rejections, and removed redundant `start` commands from hook groups that triggered the 5-second `collectStdin()` timeout
-- **Fix CLAUDE_PLUGIN_ROOT fallback for Stop hooks (#1215)**: Added POSIX shell-level `CLAUDE_PLUGIN_ROOT` fallback in `hooks.json` for environments where the variable isn't injected, added script-level self-resolution via `import.meta.url` in `bun-runner.js`, and regression test added in `plugin-distribution.test.ts`
+- **Fix CLAUDE_PLUGIN_ROOT fallback for Stop hooks (#1215)**: Added POSIX shell-level `CLAUDE_PLUGIN_ROOT` fallback in `hooks.json` for environments where the variable isn't injected, added script-level self-resolution via `import.meta.url` in `bun-runner.mjs`, and regression test added in `plugin-distribution.test.ts`
 - **Sync plugin.json version**: Fixed `plugin.json` being stuck at 10.4.0 while other version files were at 10.4.1
 
 ## [v10.4.1] - 2026-02-24
@@ -807,7 +807,7 @@ Hooks no longer block Claude Code when the worker is unavailable or slow:
 
 ### Windows Stability
 
-- **Path spaces fix** — bun-runner.js no longer fails for Windows usernames with spaces (PR #972 by @farikh)
+- **Path spaces fix** — bun-runner.mjs no longer fails for Windows usernames with spaces (PR #972 by @farikh)
 - **Spawn guard** — 2-minute cooldown prevents repeated worker popup windows on startup failure
 
 ### Process & Zombie Management
@@ -877,7 +877,7 @@ Thank you to the 35+ contributors whose PRs were reviewed in this release:
 
 On fresh installations, hooks would fail because Bun wasn't in PATH until terminal restart. The `smart-install.js` script installs Bun to `~/.bun/bin/bun`, but the current shell session doesn't have it in PATH.
 
-**Fix:** Introduced `bun-runner.js` — a Node.js wrapper that searches common Bun installation locations across all platforms:
+**Fix:** Introduced `bun-runner.mjs` — a Node.js wrapper that searches common Bun installation locations across all platforms:
 - PATH (via `which`/`where`)
 - `~/.bun/bin/bun` (default install location)
 - `/usr/local/bin/bun`
@@ -885,10 +885,10 @@ On fresh installations, hooks would fail because Bun wasn't in PATH until termin
 - `/home/linuxbrew/.linuxbrew/bin/bun` (Linuxbrew)
 - Windows: `%LOCALAPPDATA%\bun` or fallback paths
 
-All 9 hook definitions updated to use `node bun-runner.js` instead of direct `bun` calls.
+All 9 hook definitions updated to use `node bun-runner.mjs` instead of direct `bun` calls.
 
 **Files changed:**
-- `plugin/scripts/bun-runner.js` — New 88-line Bun discovery script
+- `plugin/scripts/bun-runner.mjs` — New 88-line Bun discovery script
 - `plugin/hooks/hooks.json` — All hook commands now route through bun-runner
 
 Fixes #818 | PR #827 by @bigphoot

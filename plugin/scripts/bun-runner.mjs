@@ -97,7 +97,7 @@ if (isPluginDisabledInClaudeSettings()) {
   process.exit(0);
 }
 
-// Get args: node bun-runner.js <script> [args...]
+// Get args: node bun-runner.mjs <script> [args...]
 const args = process.argv.slice(2);
 
 if (args.length === 0) {

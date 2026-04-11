@@ -79,16 +79,6 @@ export class SDKAgent {
     // NEVER use contentSessionId for resume - that would inject messages into the user's transcript!
     const hasRealMemorySessionId = !!session.memorySessionId;
 
-    // Check if the next pending message is a summarize — if so, start fresh to avoid context overflow.
-    // buildSummaryPrompt is self-contained (includes lastAssistantMessage), so it doesn't need
-    // the full accumulated observation history. Resuming with a bloated context causes
-    // "prompt is too long" errors on long sessions (fixes #1650).
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const nextPendingMessages = pendingStore.getAllPending(session.sessionDbId);
-    const nextMessageIsSummarize = nextPendingMessages.length > 0 && nextPendingMessages[0].message_type === 'summarize';
-
-    const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !session.forceInit && !nextMessageIsSummarize;
-
     // Clear forceInit after using it
     if (session.forceInit) {
       logger.info('SDK', 'forceInit flag set, starting fresh SDK session', {
@@ -97,6 +87,23 @@ export class SDKAgent {
       });
       session.forceInit = false;
     }
+
+    // Wait for agent pool slot (configurable via CLAUDE_MEM_MAX_CONCURRENT_AGENTS)
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
+    await waitForSlot(maxConcurrent);
+
+    // Check if the next pending message is a summarize — if so, start fresh to avoid context overflow.
+    // buildSummaryPrompt is self-contained (includes lastAssistantMessage), so it doesn't need
+    // the full accumulated observation history. Resuming with a bloated context causes
+    // "prompt is too long" errors on long sessions (fixes #1650).
+    // NOTE: This check is intentionally done AFTER waitForSlot so we get a fresh snapshot
+    // of the pending queue (a summarize could have been enqueued during the slot wait).
+    const pendingStore = this.sessionManager.getPendingMessageStore();
+    const nextPendingMessages = pendingStore.getAllPending(session.sessionDbId);
+    const nextMessageIsSummarize = nextPendingMessages.length > 0 && nextPendingMessages[0].message_type === 'summarize';
+
+    const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !session.forceInit && !nextMessageIsSummarize;
 
     if (nextMessageIsSummarize && hasRealMemorySessionId && session.lastPromptNumber > 1) {
       logger.info('SDK', 'Summarize detected — skipping resume to avoid context overflow (#1650)', {
@@ -111,11 +118,6 @@ export class SDKAgent {
       // a summarize message that starts a fresh SDK session (fixes #1650).
       session.lastPromptNumber = 1;
     }
-
-    // Wait for agent pool slot (configurable via CLAUDE_MEM_MAX_CONCURRENT_AGENTS)
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
-    await waitForSlot(maxConcurrent);
 
     // Build isolated environment from ~/.claude-mem/.env
     // This prevents Issue #733: random ANTHROPIC_API_KEY from project .env files

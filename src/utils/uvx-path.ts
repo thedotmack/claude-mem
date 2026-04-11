@@ -59,10 +59,13 @@ export function getUvxPath(): string | null {
 export function getUvxPathOrThrow(): string {
   const uvxPath = getUvxPath();
   if (!uvxPath) {
+    const installInstructions = process.platform === 'win32'
+      ? 'Install it from https://astral.sh/uv or run: winget install astral-sh.uv\n' +
+        'Then ensure the uv installation directory is in your PATH.'
+      : 'Install it with: curl -LsSf https://astral.sh/uv/install.sh | sh\n' +
+        'Then ensure ~/.local/bin is in your PATH.';
     throw new Error(
-      'uvx is required but not found in PATH or common locations.\n' +
-      'Install it with: curl -LsSf https://astral.sh/uv/install.sh | sh\n' +
-      'Then ensure ~/.local/bin is in your PATH.'
+      `uvx is required but not found in PATH or common locations.\n${installInstructions}`
     );
   }
   return uvxPath;
