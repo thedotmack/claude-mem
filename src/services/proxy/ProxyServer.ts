@@ -293,11 +293,16 @@ export class ProxyServer {
         proxyRes.pipe(res);
       });
 
+      // Track whether request body has been written to upstream.
+      // After write, we can't guarantee upstream didn't receive it,
+      // so buffering would risk duplicate non-idempotent writes.
+      let requestWritten = false;
+
       proxyReq.on('error', () => {
         this.serverReachable = false;
-        if (['POST', 'PUT', 'PATCH'].includes(method)) {
+        if (['POST', 'PUT', 'PATCH'].includes(method) && !requestWritten) {
+          // Safe to buffer: no bytes reached upstream yet
           try {
-            // Strip auth token before persisting to disk — re-added on replay
             const { Authorization: _, ...safeHeaders } = this.proxyHeaders();
             this.buffer.append({
               ts: new Date().toISOString(),
@@ -312,13 +317,25 @@ export class ProxyServer {
             logger.error('PROXY', 'Buffer failed', { path: pathname }, e as Error);
             this.jsonResponse(res, 502, { error: 'buffer_failed', path: pathname });
           }
+        } else if (requestWritten) {
+          // Ambiguous: upstream may have received the request — don't replay
+          this.jsonResponse(res, 502, { error: 'upstream_error_after_send', path: pathname });
         } else {
           this.jsonResponse(res, 503, { error: 'server_unreachable', serverHost: this.serverHost });
         }
       });
 
-      proxyReq.on('timeout', () => proxyReq.destroy());
-      if (body) proxyReq.write(body);
+      proxyReq.on('timeout', () => {
+        proxyReq.destroy();
+        // Timeout after write is ambiguous — don't buffer
+        if (!res.headersSent) {
+          this.jsonResponse(res, 504, { error: 'upstream_timeout', path: pathname });
+        }
+      });
+      if (body) {
+        proxyReq.write(body);
+        requestWritten = true;
+      }
       proxyReq.end();
     });
   }
@@ -535,11 +552,12 @@ export class ProxyServer {
     let body = '';
     let aborted = false;
     req.on('data', (chunk: Buffer) => {
+      if (aborted) return; // Stop accumulating after limit exceeded
       body += chunk;
       if (Buffer.byteLength(body, 'utf-8') > MAX_BODY_BYTES) {
         aborted = true;
-        req.destroy();
-        callback(null);
+        req.pause(); // Stop reading without destroying the socket
+        callback(null); // Caller sends 413, socket stays alive for response
       }
     });
     req.on('end', () => { if (!aborted) callback(body); });
