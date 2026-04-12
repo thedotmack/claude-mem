@@ -38,8 +38,9 @@ function httpRequest(
       headers: options.headers || {},
       timeout: options.timeout || 10000,
     }, (res) => {
+      res.setEncoding('utf8');
       let data = '';
-      res.on('data', (chunk: Buffer) => { data += chunk; });
+      res.on('data', (chunk: string) => { data += chunk; });
       res.on('end', () => resolve({ statusCode: res.statusCode || 0, headers: res.headers, body: data }));
     });
     req.on('error', reject);
@@ -295,13 +296,14 @@ export class ProxyServer {
         proxyRes.pipe(res);
       });
 
-      // Track whether request body has been written to upstream.
-      // After write, we can't guarantee upstream didn't receive it,
-      // so buffering would risk duplicate non-idempotent writes.
+      // Track request lifecycle to prevent double-response and unsafe replay.
       let requestWritten = false;
+      let timedOut = false;
 
       proxyReq.on('error', () => {
+        if (timedOut) return; // timeout handler already responded
         this.serverReachable = false;
+        if (res.headersSent) return; // response already sent
         if (['POST', 'PUT', 'PATCH'].includes(method) && !requestWritten) {
           // Safe to buffer: no bytes reached upstream yet
           try {
@@ -310,17 +312,16 @@ export class ProxyServer {
               ts: new Date().toISOString(),
               method,
               path: pathname + url.search,
-              body: body ? JSON.parse(body) : {},
+              body: body ? JSON.parse(body) : null,
               node: getNodeName(),
               headers: safeHeaders,
             });
             this.jsonResponse(res, 202, { buffered: true, path: pathname });
           } catch (e) {
             logger.error('PROXY', 'Buffer failed', { path: pathname }, e as Error);
-            this.jsonResponse(res, 502, { error: 'buffer_failed', path: pathname });
+            if (!res.headersSent) this.jsonResponse(res, 502, { error: 'buffer_failed', path: pathname });
           }
         } else if (requestWritten) {
-          // Ambiguous: upstream may have received the request — don't replay
           this.jsonResponse(res, 502, { error: 'upstream_error_after_send', path: pathname });
         } else {
           this.jsonResponse(res, 503, { error: 'server_unreachable', serverHost: this.serverHost });
@@ -328,6 +329,7 @@ export class ProxyServer {
       });
 
       proxyReq.on('timeout', () => {
+        timedOut = true;
         proxyReq.destroy();
         if (!res.headersSent) {
           this.jsonResponse(res, 504, { error: 'upstream_timeout', path: pathname });
@@ -464,7 +466,7 @@ export class ProxyServer {
         }
       });
     });
-    req.on('error', () => {}); // Silent — will retry next interval
+    req.on('error', (err) => logger.debug('PROXY', 'Settings sync transport error, will retry', { error: (err as Error).message }));
     req.on('timeout', () => req.destroy());
     req.end();
   }
