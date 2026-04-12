@@ -131,13 +131,14 @@ export class OfflineBuffer {
       return { replayed, remaining };
     } catch (error) {
       // On error, merge ONLY unreplayed entries with any new appends (not full file).
-      // 'replayed' is scoped above; entries that succeeded should not be requeued.
+      // Use the same parsed+filtered entries array to stay aligned with replayed count.
       if (existsSync(replayPath)) {
         try {
-          const allLines = readFileSync(replayPath, 'utf-8').split('\n').filter(Boolean);
-          // Only keep entries that were NOT successfully replayed
-          const unreplayedLines = allLines.slice(replayed);
-          const unreplayedContent = unreplayedLines.length > 0 ? unreplayedLines.join('\n') + '\n' : '';
+          const allEntries: BufferedRequest[] = readFileSync(replayPath, 'utf-8').split('\n').filter(Boolean)
+            .map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
+          const unreplayedEntries = allEntries.slice(replayed);
+          const unreplayedContent = unreplayedEntries.length > 0
+            ? unreplayedEntries.map(e => JSON.stringify(e)).join('\n') + '\n' : '';
           const newAppends = existsSync(this.bufferPath) ? readFileSync(this.bufferPath, 'utf-8') : '';
           if (unreplayedContent || newAppends) {
             const tmpPath = this.bufferPath + '.tmp';

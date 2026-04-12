@@ -194,7 +194,8 @@ export class ProxyServer {
       }
       if (method === 'PUT' || method === 'POST') {
         this.readBody(req, (body) => {
-          if (body === null) { this.jsonResponse(res, 413, { error: 'payload_too_large' }); return; }
+          if (body === 'too_large') { this.jsonResponse(res, 413, { error: 'payload_too_large' }); return; }
+          if (body === 'error') { this.jsonResponse(res, 502, { error: 'request_read_error' }); return; }
           try {
             const updates = JSON.parse(body);
             if (typeof updates !== 'object' || updates === null || Array.isArray(updates)) {
@@ -274,7 +275,8 @@ export class ProxyServer {
     // ── Forward all other requests to server ──
 
     this.readBody(req, (body) => {
-      if (body === null) { this.jsonResponse(res, 413, { error: 'payload_too_large' }); return; }
+      if (body === 'too_large') { this.jsonResponse(res, 413, { error: 'payload_too_large' }); return; }
+          if (body === 'error') { this.jsonResponse(res, 502, { error: 'request_read_error' }); return; }
       const proxyReq = http.request({
         hostname: this.serverHost,
         port: this.serverPort,
@@ -547,21 +549,25 @@ export class ProxyServer {
    * Read request body with size limit. Calls callback with null on oversized payloads
    * so callers can respond with 413 instead of forwarding empty data.
    */
-  private readBody(req: http.IncomingMessage, callback: (body: string | null) => void): void {
+  /**
+   * Read request body with size limit.
+   * Callback receives: body string on success, 'too_large' on size exceeded, 'error' on socket failure.
+   */
+  private readBody(req: http.IncomingMessage, callback: (body: string | 'too_large' | 'error') => void): void {
     const MAX_BODY_BYTES = 50 * 1024 * 1024; // 50 MB — matches worker's express.json limit
     let body = '';
-    let aborted = false;
+    let done = false;
     req.on('data', (chunk: Buffer) => {
-      if (aborted) return; // Stop accumulating after limit exceeded
+      if (done) return;
       body += chunk;
       if (Buffer.byteLength(body, 'utf-8') > MAX_BODY_BYTES) {
-        aborted = true;
-        req.pause(); // Stop reading without destroying the socket
-        callback(null); // Caller sends 413, socket stays alive for response
+        done = true;
+        req.pause();
+        callback('too_large');
       }
     });
-    req.on('end', () => { if (!aborted) callback(body); });
-    req.on('error', () => { if (!aborted) callback(null); });
+    req.on('end', () => { if (!done) { done = true; callback(body); } });
+    req.on('error', () => { if (!done) { done = true; callback('error'); } });
   }
 
   getPendingCount(): number {
