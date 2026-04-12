@@ -124,6 +124,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
+      // Deduplication
+      'CLAUDE_MEM_DEDUP_SIMILARITY_THRESHOLD',
     ];
 
     for (const key of settingKeys) {
@@ -271,6 +273,14 @@ export class SettingsRoutes extends BaseRouteHandler {
       const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
       if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_DEDUP_SIMILARITY_THRESHOLD
+    if (settings.CLAUDE_MEM_DEDUP_SIMILARITY_THRESHOLD !== undefined) {
+      const threshold = parseFloat(settings.CLAUDE_MEM_DEDUP_SIMILARITY_THRESHOLD);
+      if (isNaN(threshold) || threshold < 0 || threshold > 1) {
+        return { valid: false, error: 'CLAUDE_MEM_DEDUP_SIMILARITY_THRESHOLD must be a number between 0 and 1 (inclusive)' };
       }
     }
 

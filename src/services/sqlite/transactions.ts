@@ -10,7 +10,7 @@ import { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import type { ObservationInput } from './observations/types.js';
 import type { SummaryInput } from './summaries/types.js';
-import { computeObservationContentHash, findDuplicateObservation } from './observations/store.js';
+import { computeObservationContentHash, findDuplicateObservation, getDedupThreshold } from './observations/store.js';
 
 /**
  * Result from storeObservations / storeObservationsAndMarkComplete transaction
@@ -60,6 +60,11 @@ export function storeObservationsAndMarkComplete(
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
+  // Read dedup threshold once before the transaction — avoids repeated settings reads
+  // inside the hot loop. SQLite's single-writer serialization within this process
+  // ensures the check-then-insert inside db.transaction() is atomic in practice.
+  const dedupThreshold = getDedupThreshold();
+
   // Create transaction that wraps all operations
   const storeAndMarkTx = db.transaction(() => {
     const observationIds: number[] = [];
@@ -74,7 +79,7 @@ export function storeObservationsAndMarkComplete(
 
     for (const observation of observations) {
       const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-      const existing = findDuplicateObservation(db, contentHash, timestampEpoch);
+      const existing = findDuplicateObservation(db, memorySessionId, contentHash, timestampEpoch, observation.title, observation.narrative, dedupThreshold);
       if (existing) {
         observationIds.push(existing.id);
         continue;
@@ -179,6 +184,8 @@ export function storeObservations(
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
+  const dedupThreshold = getDedupThreshold();
+
   // Create transaction that wraps all operations
   const storeTx = db.transaction(() => {
     const observationIds: number[] = [];
@@ -193,7 +200,7 @@ export function storeObservations(
 
     for (const observation of observations) {
       const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-      const existing = findDuplicateObservation(db, contentHash, timestampEpoch);
+      const existing = findDuplicateObservation(db, memorySessionId, contentHash, timestampEpoch, observation.title, observation.narrative, dedupThreshold);
       if (existing) {
         observationIds.push(existing.id);
         continue;

@@ -13,7 +13,7 @@ import {
   LatestPromptResult
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
-import { computeObservationContentHash, findDuplicateObservation } from './observations/store.js';
+import { computeObservationContentHash, findDuplicateObservation, getDedupThreshold } from './observations/store.js';
 import { parseFileList } from './observations/files.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 
@@ -1713,7 +1713,7 @@ export class SessionStore {
 
     // Content-hash deduplication
     const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-    const existing = findDuplicateObservation(this.db, contentHash, timestampEpoch);
+    const existing = findDuplicateObservation(this.db, memorySessionId, contentHash, timestampEpoch, observation.title, observation.narrative, getDedupThreshold());
     if (existing) {
       return { id: existing.id, createdAtEpoch: existing.created_at_epoch };
     }
@@ -1847,6 +1847,7 @@ export class SessionStore {
     // Use override timestamp if provided
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
+    const dedupThreshold = getDedupThreshold();
 
     // Create transaction that wraps all operations
     const storeTx = this.db.transaction(() => {
@@ -1864,7 +1865,7 @@ export class SessionStore {
       for (const observation of observations) {
         // Content-hash deduplication (same logic as storeObservation singular)
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-        const existing = findDuplicateObservation(this.db, contentHash, timestampEpoch);
+        const existing = findDuplicateObservation(this.db, memorySessionId, contentHash, timestampEpoch, observation.title, observation.narrative, dedupThreshold);
         if (existing) {
           observationIds.push(existing.id);
           continue;
@@ -1979,6 +1980,7 @@ export class SessionStore {
     // Use override timestamp if provided
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
+    const dedupThreshold = getDedupThreshold();
 
     // Create transaction that wraps all operations
     const storeAndMarkTx = this.db.transaction(() => {
@@ -1996,7 +1998,7 @@ export class SessionStore {
       for (const observation of observations) {
         // Content-hash deduplication (same logic as storeObservation singular)
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-        const existing = findDuplicateObservation(this.db, contentHash, timestampEpoch);
+        const existing = findDuplicateObservation(this.db, memorySessionId, contentHash, timestampEpoch, observation.title, observation.narrative, dedupThreshold);
         if (existing) {
           observationIds.push(existing.id);
           continue;

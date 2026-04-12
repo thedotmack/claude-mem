@@ -125,6 +125,21 @@ describe('TRIAGE-03: Data Integrity', () => {
       expect(row.content_hash).toBeTruthy();
       expect(row.content_hash.length).toBe(16);
     });
+
+    it('does NOT deduplicate across different memory sessions (session-scoped)', () => {
+      const now = Date.now();
+      const obs = createObservationInput({ title: 'Shared Title', narrative: 'Shared narrative content' });
+      const memIdA = createSessionWithMemoryId(db, 'content-cross-a', 'mem-cross-a');
+      const memIdB = createSessionWithMemoryId(db, 'content-cross-b', 'mem-cross-b');
+
+      const resultA = storeObservation(db, memIdA, 'test-project', obs, 1, 0, now);
+      const resultB = storeObservation(db, memIdB, 'test-project', obs, 1, 0, now + 1000);
+
+      // Different sessions — dedup must NOT fire across session boundaries
+      expect(resultB.id).not.toBe(resultA.id);
+      const count = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
+      expect(count.count).toBe(2);
+    });
   });
 
   describe('Transaction-level deduplication', () => {
