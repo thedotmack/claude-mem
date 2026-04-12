@@ -321,7 +321,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
-    , 'CLAUDE_MEM_SETTINGS_SYNC_ENABLED'];
+      'CLAUDE_MEM_SETTINGS_SYNC_ENABLED',
+    ];
 
     for (const key of booleanSettings) {
       if (settings[key] && !['true', 'false'].includes(settings[key])) {

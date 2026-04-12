@@ -339,6 +339,22 @@ describe('createAuthMiddleware', () => {
       expect(rejected).toHaveLength(0);
     });
 
+    it('should require auth for localhost requests with non-local Origin', () => {
+      const TOKEN = 'secret-token';
+      const middleware = createAuthMiddleware(() => TOKEN);
+      const req = mockReq({
+        ip: '127.0.0.1',
+        headers: { origin: 'https://evil.com' },
+      });
+      const { res, statusCode, jsonBody } = mockRes();
+      const next = mock(() => {});
+
+      middleware(req, res, next as unknown as NextFunction);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(statusCode()).toBe(401);
+    });
+
     it('should work without onAuthRejected option (no callback — no throw)', () => {
       const middleware = createAuthMiddleware(() => '');
       const req = mockReq({ ip: '10.0.0.5' });
