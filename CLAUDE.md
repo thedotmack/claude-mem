@@ -108,7 +108,7 @@ bash .local/tests/e2e/multi-node-validation.sh
 7. **Visual (Playwright)** — SSE vs pagination rendering parity, pills persist after refresh, reference screenshot comparison (RMSE < 15000)
 8. **Log Analysis** — no errors/crashes before/during/after, mode-aware assertions
 
-**Skips are failures.** Every test must produce a pass or fail, never a skip. A skip is an untested angle mort.
+**Skips are failures.** Every test must produce a pass or fail, never a skip. A skip is an untested blind spot.
 
 **No force-push.** Never force-push to an upstream PR. Each fix is a new commit.
 
@@ -144,6 +144,7 @@ bash .local/tests/e2e/multi-node-validation.sh
 ```
 
 **During staging**, run a full-diff sweep periodically (every ~4 rounds) instead of only at the end:
+
 ```bash
 cr review --base main --agent  # Full sweep at R5, R9, etc.
 ```
