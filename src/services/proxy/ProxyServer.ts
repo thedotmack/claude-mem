@@ -329,15 +329,14 @@ export class ProxyServer {
 
       proxyReq.on('timeout', () => {
         proxyReq.destroy();
-        // Timeout after write is ambiguous — don't buffer
         if (!res.headersSent) {
           this.jsonResponse(res, 504, { error: 'upstream_timeout', path: pathname });
         }
       });
-      if (body) {
-        proxyReq.write(body);
-        requestWritten = true;
-      }
+      if (body) proxyReq.write(body);
+      // Mark as written BEFORE end() — even empty-body mutating requests
+      // send headers to upstream via end(), making replay ambiguous.
+      if (['POST', 'PUT', 'PATCH'].includes(method)) requestWritten = true;
       proxyReq.end();
     });
   }
@@ -448,12 +447,17 @@ export class ProxyServer {
       headers: this.proxyHeaders(),
       timeout: 10000,
     }, (res) => {
+      res.setEncoding('utf8');
       let body = '';
-      res.on('data', (chunk: Buffer) => { body += chunk; });
+      res.on('data', (chunk: string) => { body += chunk; });
       res.on('end', () => {
         if (res.statusCode !== 200) return;
         try {
           const serverSettings = JSON.parse(body);
+          if (typeof serverSettings !== 'object' || serverSettings === null || Array.isArray(serverSettings)) {
+            logger.warn('PROXY', 'Server settings response is not a plain object, skipping');
+            return;
+          }
           this.applyServerSettings(serverSettings);
         } catch {
           logger.warn('PROXY', 'Failed to parse server settings');
@@ -555,9 +559,10 @@ export class ProxyServer {
    */
   private readBody(req: http.IncomingMessage, callback: (body: string | 'too_large' | 'error') => void): void {
     const MAX_BODY_BYTES = 50 * 1024 * 1024; // 50 MB — matches worker's express.json limit
+    req.setEncoding('utf8'); // Decode UTF-8 at stream level to avoid multi-byte split across chunks
     let body = '';
     let done = false;
-    req.on('data', (chunk: Buffer) => {
+    req.on('data', (chunk: string) => {
       if (done) return;
       body += chunk;
       if (Buffer.byteLength(body, 'utf-8') > MAX_BODY_BYTES) {
