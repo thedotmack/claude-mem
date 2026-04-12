@@ -6,7 +6,6 @@
  */
 
 import { hostname } from 'os';
-import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
@@ -103,11 +102,12 @@ export function getLlmSource(): string {
     return process.env.CLAUDE_MEM_LLM_SOURCE;
   }
 
-  // Check settings file
+  // Check settings file (single read for both LLM_SOURCE and PROVIDER)
+  let settings: Record<string, any> | null = null;
   try {
     const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
     const settingsPath = path.join(dataDir, 'settings.json');
-    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     if (settings.CLAUDE_MEM_LLM_SOURCE) {
       return settings.CLAUDE_MEM_LLM_SOURCE;
     }
@@ -120,19 +120,9 @@ export function getLlmSource(): string {
   if (process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY) return 'codex';
   if (process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY) return 'gemini';
 
-  // Default — most claude-mem users are on Claude
-  // Check CLAUDE_MEM_PROVIDER setting as final signal
-  try {
-    const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
-    const settingsPath = path.join(dataDir, 'settings.json');
-    if (existsSync(settingsPath)) {
-      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      if (settings.CLAUDE_MEM_PROVIDER) {
-        return settings.CLAUDE_MEM_PROVIDER;
-      }
-    }
-  } catch (error) {
-    logger.debug('SYSTEM', 'Failed to load provider from settings', { error: error instanceof Error ? error.message : String(error) });
+  // Check CLAUDE_MEM_PROVIDER from the already-loaded settings as final signal
+  if (settings?.CLAUDE_MEM_PROVIDER) {
+    return settings.CLAUDE_MEM_PROVIDER;
   }
 
   return 'unknown';

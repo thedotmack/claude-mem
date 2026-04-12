@@ -131,8 +131,8 @@ export function Header({
                   </svg>
                 )}
                 <span>{mode}</span>
-                {mode === 'server' && totalClients != null && totalClients > 0 && (
-                  <span className="mode-badge-count">{activeClients ?? 0}/{totalClients}</span>
+                {mode === 'server' && activeClients != null && totalClients != null && totalClients > 0 && (
+                  <span className="mode-badge-count">{activeClients}/{totalClients}</span>
                 )}
                 <svg className={`mode-badge-chevron ${topologyOpen ? 'rotated' : ''}`} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <polyline points="6 9 12 15 18 9" />

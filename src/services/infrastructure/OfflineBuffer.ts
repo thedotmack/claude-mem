@@ -83,6 +83,7 @@ export class OfflineBuffer {
     // Atomic rename: move buffer to .replaying so new appends go to a fresh file.
     // This eliminates the race between replay processing and concurrent appends.
     const replayPath = this.bufferPath + '.replaying';
+    let replayed = 0;  // Declared outside try so catch can use it for partial recovery
     try {
       if (!existsSync(this.bufferPath)) return { replayed: 0, remaining: 0 };
       try { renameSync(this.bufferPath, replayPath); } catch {
@@ -97,15 +98,18 @@ export class OfflineBuffer {
         try { unlinkSync(replayPath); } catch {}
         return { replayed: 0, remaining: 0 };
       }
-
-      let replayed = 0;
       for (const entry of entries) {
-        const ok = await replayFn(entry);
-        if (!ok) break;
-        replayed++;
+        try {
+          const ok = await replayFn(entry);
+          if (!ok) break;
+          replayed++;
+        } catch (replayError) {
+          logger.warn('BUFFER', 'replayFn threw, stopping replay', { replayed, total: entries.length }, replayError as Error);
+          break;
+        }
       }
 
-      // Write back unreplayed entries, then merge any new appends
+      // Write back ONLY unreplayed entries, then merge any new appends
       const unreplayed = entries.slice(replayed);
 
       if (unreplayed.length > 0) {
@@ -117,27 +121,34 @@ export class OfflineBuffer {
         renameSync(tmpPath, this.bufferPath);
       }
       // Delete replayPath AFTER unreplayed data is safely written to bufferPath.
-      // Previous ordering (unlink before write) caused data loss if the write failed.
       try { unlinkSync(replayPath); } catch {}
-      // If all replayed, any new appends in bufferPath remain untouched for next cycle
 
-      // pendingCount() already includes unreplayed entries (just written) + any new appends
       const remaining = existsSync(this.bufferPath) ? this.pendingCount() : 0;
       logger.info('BUFFER', 'Replay complete', { replayed, remaining });
       return { replayed, remaining };
     } catch (error) {
-      // On error, merge replay file with any new appends (don't overwrite them)
+      // On error, merge ONLY unreplayed entries with any new appends (not full file).
+      // 'replayed' is scoped above; entries that succeeded should not be requeued.
       if (existsSync(replayPath)) {
         try {
-          const replayContent = readFileSync(replayPath, 'utf-8');
+          const allLines = readFileSync(replayPath, 'utf-8').split('\n').filter(Boolean);
+          // Only keep entries that were NOT successfully replayed
+          const unreplayedLines = allLines.slice(replayed);
+          const unreplayedContent = unreplayedLines.length > 0 ? unreplayedLines.join('\n') + '\n' : '';
           const newAppends = existsSync(this.bufferPath) ? readFileSync(this.bufferPath, 'utf-8') : '';
-          const tmpPath = this.bufferPath + '.tmp';
-          writeFileSync(tmpPath, replayContent + newAppends, 'utf-8');
-          renameSync(tmpPath, this.bufferPath);
+          if (unreplayedContent || newAppends) {
+            const tmpPath = this.bufferPath + '.tmp';
+            writeFileSync(tmpPath, unreplayedContent + newAppends, 'utf-8');
+            renameSync(tmpPath, this.bufferPath);
+          }
           unlinkSync(replayPath);
         } catch {
-          // Last resort: at least keep the replay file
-          try { renameSync(replayPath, this.bufferPath); } catch {}
+          // Last resort: keep replay file only if bufferPath doesn't exist (avoid overwriting fresh appends)
+          if (!existsSync(this.bufferPath)) {
+            try { renameSync(replayPath, this.bufferPath); } catch {}
+          } else {
+            logger.error('BUFFER', 'Recovery failed, replay file preserved', { replayPath });
+          }
         }
       }
       throw error;

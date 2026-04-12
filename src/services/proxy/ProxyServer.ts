@@ -197,6 +197,10 @@ export class ProxyServer {
           if (body === null) { this.jsonResponse(res, 413, { error: 'payload_too_large' }); return; }
           try {
             const updates = JSON.parse(body);
+            if (typeof updates !== 'object' || updates === null || Array.isArray(updates)) {
+              this.jsonResponse(res, 400, { error: 'Settings must be a JSON object' });
+              return;
+            }
             let current: Record<string, unknown> = {};
             try {
               current = JSON.parse(readFileSync(this.settingsPath, 'utf-8'));
@@ -205,6 +209,7 @@ export class ProxyServer {
             }
             const merged = { ...current, ...updates };
             writeFileSync(this.settingsPath, JSON.stringify(merged, null, 2));
+            clearNodeNameCache(); // Invalidate cached identity after local settings change
             this.jsonResponse(res, 200, { success: true });
           } catch {
             this.jsonResponse(res, 400, { error: 'Invalid settings' });
