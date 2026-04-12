@@ -178,16 +178,15 @@ export const fileContextHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    // Honor user-supplied offset/limit so Claude can re-read specific sections
-    // after the initial truncated read. Without this, the hook strips offset/limit
-    // and the Claude Code harness's read-dedup cache returns "File unchanged"
-    // because every rewritten input collapses to the same {file_path, limit:1}.
-    // See issue #1719.
-    const userOffset = typeof toolInput?.offset === 'number' ? (toolInput.offset as number) : undefined;
-    const userLimit = typeof toolInput?.limit === 'number' ? (toolInput.limit as number) : undefined;
+    // Preserve user-supplied offset/limit to avoid read-dedup collisions (fixes #1719)
+    const userOffset = typeof toolInput?.offset === 'number' && Number.isFinite(toolInput.offset) && toolInput.offset >= 0
+      ? Math.floor(toolInput.offset) : undefined;
+    const userLimit = typeof toolInput?.limit === 'number' && Number.isFinite(toolInput.limit) && toolInput.limit > 0
+      ? Math.floor(toolInput.limit) : undefined;
     const isTargetedRead = userOffset !== undefined || userLimit !== undefined;
 
-    // Stat the file once: we need both size (gate) and mtime (cache invalidation).
+    // Stat the file once: size (gate) + mtime (cache invalidation).
+    // 0 = stat failed non-fatally (e.g. EPERM) — skip mtime check, fall through to truncation.
     let fileMtimeMs = 0;
     try {
       const statPath = path.isAbsolute(filePath)
@@ -247,13 +246,11 @@ export const fileContextHandler: EventHandler = {
         return { continue: true, suppressOutput: true };
       }
 
-      // mtime invalidation: if the file has been modified since the most recent
-      // observation, the cached timeline is stale. Pass the read through unchanged
-      // so Claude (or its parent agent after a subagent edit) sees fresh content.
-      // Observation epochs are in milliseconds, matching stat.mtimeMs.
+      // mtime invalidation: bypass truncation when the file is newer than the latest observation.
+      // Uses >= to handle same-millisecond edits (cost: one extra full read vs risk of stuck truncation).
       if (fileMtimeMs > 0) {
         const newestObservationMs = Math.max(...data.observations.map(o => o.created_at_epoch));
-        if (fileMtimeMs > newestObservationMs) {
+        if (fileMtimeMs >= newestObservationMs) {
           logger.debug('HOOK', 'File modified since last observation, skipping truncation', {
             filePath: relativePath,
             fileMtimeMs,
@@ -269,11 +266,7 @@ export const fileContextHandler: EventHandler = {
         return { continue: true, suppressOutput: true };
       }
 
-      // For an unconstrained read, truncate to 1 line — enough to satisfy Edit's
-      // "file must be read" precondition while keeping token cost near zero. For a
-      // targeted read (offset/limit supplied), preserve Claude's request so it can
-      // actually fetch the section it asked for. The observation timeline accompanies
-      // both as additional context.
+      // Unconstrained → truncate to 1 line; targeted → preserve offset/limit.
       const truncated = !isTargetedRead;
       const timeline = formatFileTimeline(dedupedObservations, filePath, truncated);
       const updatedInput: Record<string, unknown> = { file_path: filePath };

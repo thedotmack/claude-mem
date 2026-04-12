@@ -1,19 +1,4 @@
-/**
- * Tests for File Context Handler — Cache Validation Fix (#1719)
- *
- * Validates the two-part fix for the PreToolUse:Read hook getting stuck:
- *
- * 1. **Targeted re-reads pass through**: when Claude supplies offset/limit,
- *    the hook preserves them instead of stripping to {limit:1}, so the Claude
- *    Code harness's read-dedup cache doesn't trigger "File unchanged".
- *
- * 2. **mtime invalidation**: if the file has been modified since the most
- *    recent observation timestamp (e.g., a subagent edited it), the hook
- *    bypasses truncation entirely so the parent agent sees fresh content.
- *
- * 3. **Existing behavior preserved**: an unconstrained Read still gets
- *    rewritten to {limit:1} alongside the observation timeline.
- */
+// Tests for file-context cache validation fix (#1719)
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import { mkdtempSync, writeFileSync, utimesSync, rmSync } from 'fs';
 import { tmpdir, homedir } from 'os';
@@ -145,6 +130,26 @@ describe('fileContextHandler — cache validation fix (#1719)', () => {
       offset: 289,
       limit: 140,
     });
+  });
+
+  it('preserves user-supplied offset only', async () => {
+    const future = Date.now() + 60_000;
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeObservationsResponse([{ id: 1, created_at_epoch: future }])
+    );
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile, offset: 100 },
+    });
+
+    expect(result.hookSpecificOutput!.updatedInput).toEqual({
+      file_path: testFile,
+      offset: 100,
+    });
+    expect((result.hookSpecificOutput!.updatedInput as any).limit).toBeUndefined();
   });
 
   it('preserves user-supplied limit only', async () => {
