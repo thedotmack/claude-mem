@@ -710,7 +710,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       tool_name: toolName,
       tool_input: event.params || {},
       tool_response: toolResponseText,
-      cwd: "",
+      cwd: ctx.workspaceDir || "",
     }, api.logger);
   });
 
