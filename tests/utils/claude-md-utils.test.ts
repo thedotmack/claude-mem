@@ -594,6 +594,94 @@ describe('path validation in updateFolderClaudeMdFiles', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // Regression: phantom CLAUDE.md directories created from URL schemes
+  // leaking into filePaths (e.g. Bash commands referencing `gs://bucket/obj`).
+  // Before the fix, `path.dirname('gs://foo/bar')` yielded `gs:/foo` which
+  // Node.js happily mkdir'd at the repo root.
+  it('should reject gs:// cloud storage URLs', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['gs://galaxy-hq-dev-harness/sessions/2026-04-11/foo/bar.jsonl'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject s3:// cloud storage URLs', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['s3://my-bucket/key/object.txt'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject file:// URLs', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['file:///etc/passwd'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject git:// URLs', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['git://github.com/foo/bar.git'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject mailto: URI scheme', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['mailto:user@example.com'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject javascript: URI scheme', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['javascript:alert(1)'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('should reject paths with spaces', async () => {
     const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
     global.fetch = fetchMock;

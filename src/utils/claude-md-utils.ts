@@ -66,8 +66,20 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
   // Reject tilde paths (Node.js doesn't expand ~)
   if (filePath.startsWith('~')) return false;
 
-  // Reject URLs
+  // Reject URLs — http/https explicit (kept for readability)
   if (filePath.startsWith('http://') || filePath.startsWith('https://')) return false;
+
+  // Reject ANY URL scheme (gs://, s3://, file://, git://, ftp://, ssh://, ...).
+  // Root-cause fix for phantom directories like `gs:/bucket-name/...` which
+  // appeared when Bash commands referencing cloud-storage URLs leaked into
+  // filePaths via PostToolUse hooks. Using path.dirname('gs://foo/bar')
+  // yields 'gs:/foo' which Node then happily mkdir's.
+  if (filePath.includes('://')) return false;
+
+  // Reject paths starting with a URI scheme prefix (e.g., `file:`, `mailto:`,
+  // `javascript:`). Regex: RFC-3986-ish scheme — letter followed by
+  // [letters/digits/+/./-] then `:`.
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(filePath)) return false;
 
   // Reject paths with spaces (likely command text or PR references)
   if (filePath.includes(' ')) return false;
