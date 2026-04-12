@@ -391,12 +391,19 @@ export function createPidCapturingSpawn(sessionDbId: number) {
         existingPid: existing.pid,
         sessionDbId
       });
+      let exited = false;
       try {
         existing.process.kill('SIGTERM');
+        exited = existing.process.exitCode !== null;
       } catch {
-        // Already dead
+        // Already dead — safe to unregister immediately
+        exited = true;
       }
-      unregisterProcess(existing.pid);
+
+      if (exited) {
+        unregisterProcess(existing.pid);
+      }
+      // If still alive, the 'exit' handler (line ~440) will unregister it.
     }
 
     getSupervisor().assertCanSpawn('claude sdk');

@@ -121,10 +121,18 @@ describe('Wall-clock age limit (Issue #1590)', () => {
     expect(sessionAgeMs).toBeLessThan(MAX_SESSION_WALL_CLOCK_MS);
   });
 
-  it('should terminate a session started exactly 4 hours ago', () => {
+  it('should NOT terminate a session started exactly 4 hours ago (strict >)', () => {
+    // Production uses strict `>` (not `>=`), so exactly 4h is still alive.
     const startTime = Date.now() - MAX_SESSION_WALL_CLOCK_MS;
     const sessionAgeMs = Date.now() - startTime;
-    expect(sessionAgeMs).toBeGreaterThanOrEqual(MAX_SESSION_WALL_CLOCK_MS);
+    // At exactly the boundary, sessionAgeMs === MAX, and `>` is false → no termination.
+    expect(sessionAgeMs).toBeLessThanOrEqual(MAX_SESSION_WALL_CLOCK_MS);
+  });
+
+  it('should terminate a session started more than 4 hours ago', () => {
+    const startTime = Date.now() - MAX_SESSION_WALL_CLOCK_MS - 1;
+    const sessionAgeMs = Date.now() - startTime;
+    expect(sessionAgeMs).toBeGreaterThan(MAX_SESSION_WALL_CLOCK_MS);
   });
 
   it('should terminate a session started 13+ hours ago (the issue scenario)', () => {
