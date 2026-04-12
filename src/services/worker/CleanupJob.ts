@@ -11,8 +11,10 @@
  */
 
 import { Database } from 'bun:sqlite';
-import { statSync } from 'node:fs';
+import { readdirSync, statSync, rmSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { logger } from '../../utils/logger.js';
+import { OBSERVER_SESSIONS_DIR, CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import { ForgettingPolicy } from './ForgettingPolicy.js';
 import { AccessTracker } from './AccessTracker.js';
 import { checkpointManager } from '../batch/checkpoint.js';
@@ -36,6 +38,11 @@ export interface CleanupConfig {
   enableImportanceRecalc: boolean;
   importanceRecalcLimit: number;          // Max memories to recalculate per run
   importanceRecalcLookbackDays: number;   // How far back to look for recalculation
+
+  // Observer session JSONL cleanup
+  enableObserverSessionCleanup: boolean;  // Delete stale/large observer session files
+  observerSessionMaxAgeDays: number;      // Delete if older than this many days
+  observerSessionMaxSizeMB: number;       // Delete if larger than this (MB)
 }
 
 /**
@@ -53,6 +60,10 @@ const DEFAULT_CONFIG: CleanupConfig = {
   enableImportanceRecalc: true,
   importanceRecalcLimit: 500,
   importanceRecalcLookbackDays: 180,    // 6 months lookback window
+
+  enableObserverSessionCleanup: true,
+  observerSessionMaxAgeDays: 30,
+  observerSessionMaxSizeMB: 500,
 };
 
 /**
@@ -75,6 +86,11 @@ export interface CleanupResult {
   importanceRecalc: {
     enabled: boolean;
     recalculated: number;
+  };
+  observerSessionCleanup: {
+    enabled: boolean;
+    deleted: number;
+    freedBytes: number;
   };
 }
 
@@ -141,6 +157,11 @@ export class CleanupJob {
         enabled: this.config.enableImportanceRecalc,
         recalculated: 0,
       },
+      observerSessionCleanup: {
+        enabled: this.config.enableObserverSessionCleanup,
+        deleted: 0,
+        freedBytes: 0,
+      },
     };
 
     try {
@@ -148,7 +169,8 @@ export class CleanupJob {
       const totalSteps =
         (this.config.enableMemoryCleanup ? 1 : 0) +
         (this.config.enableAccessCleanup ? 1 : 0) +
-        (this.config.enableImportanceRecalc ? 1 : 0);
+        (this.config.enableImportanceRecalc ? 1 : 0) +
+        (this.config.enableObserverSessionCleanup ? 1 : 0);
 
       checkpointManager.updateProgress(jobState.jobId, { totalItems: totalSteps });
       checkpointManager.updateStage(jobState.jobId, 'executing');
@@ -197,6 +219,19 @@ export class CleanupJob {
         });
       }
 
+      // Step 4: Observer session JSONL cleanup (if enabled)
+      if (this.config.enableObserverSessionCleanup) {
+        const obsResult = await this.runObserverSessionCleanup();
+        result.observerSessionCleanup.deleted = obsResult.deleted;
+        result.observerSessionCleanup.freedBytes = obsResult.freedBytes;
+
+        completedSteps++;
+        checkpointManager.updateProgress(jobState.jobId, {
+          processedItems: completedSteps,
+          completedItems: completedSteps,
+        });
+      }
+
       result.duration = Date.now() - startTime;
 
       // Mark job as completed
@@ -208,6 +243,7 @@ export class CleanupJob {
         memoryCleanup: result.memoryCleanup,
         accessCleanup: result.accessCleanup,
         importanceRecalc: result.importanceRecalc,
+        observerSessionCleanup: result.observerSessionCleanup,
       });
 
       this.lastRun = result;
@@ -293,6 +329,97 @@ export class CleanupJob {
   }
 
   /**
+   * Clean up stale or oversized observer session JSONL files.
+   *
+   * Observer sessions are background agents spawned by claude-mem. Their
+   * conversation transcripts accumulate in the Claude Code projects directory
+   * under a path derived from OBSERVER_SESSIONS_DIR (each '/' replaced by '-').
+   *
+   * A file is deleted when EITHER:
+   *   - age > observerSessionMaxAgeDays
+   *   - size > observerSessionMaxSizeMB
+   *
+   * Matching subdirectories (created by Claude Code alongside JSONL files)
+   * are also removed.
+   */
+  private async runObserverSessionCleanup(): Promise<{ deleted: number; freedBytes: number }> {
+    // Derive the Claude Code project dir name from the observer sessions cwd:
+    // each '/' in the path becomes '-' (Claude Code convention)
+    const projectDirName = OBSERVER_SESSIONS_DIR.replace(/\//g, '-');
+    const projectDir = join(CLAUDE_CONFIG_DIR, 'projects', projectDirName);
+
+    if (!existsSync(projectDir)) {
+      logger.debug('CleanupJob', 'Observer sessions project dir not found, skipping', { projectDir });
+      return { deleted: 0, freedBytes: 0 };
+    }
+
+    const maxAgeMs = this.config.observerSessionMaxAgeDays * 24 * 60 * 60 * 1000;
+    const maxSizeBytes = this.config.observerSessionMaxSizeMB * 1024 * 1024;
+    const now = Date.now();
+
+    let entries: string[];
+    try {
+      entries = readdirSync(projectDir);
+    } catch (error) {
+      logger.warn('CleanupJob', 'Could not read observer sessions project dir', { projectDir }, error as Error);
+      return { deleted: 0, freedBytes: 0 };
+    }
+
+    let deleted = 0;
+    let freedBytes = 0;
+
+    for (const entry of entries) {
+      if (!entry.endsWith('.jsonl')) continue;
+
+      const filePath = join(projectDir, entry);
+      let fileStat;
+      try {
+        fileStat = statSync(filePath);
+      } catch {
+        continue; // file removed between readdir and stat
+      }
+
+      const ageMs = now - fileStat.mtimeMs;
+      const tooOld = ageMs > maxAgeMs;
+      const tooBig = fileStat.size > maxSizeBytes;
+
+      if (!tooOld && !tooBig) continue;
+
+      try {
+        const fileSize = fileStat.size;
+        rmSync(filePath, { force: true });
+
+        // Also remove matching subdirectory if present (same name without .jsonl)
+        const subDirPath = join(projectDir, entry.slice(0, -6));
+        if (existsSync(subDirPath)) {
+          rmSync(subDirPath, { recursive: true, force: true });
+        }
+
+        deleted++;
+        freedBytes += fileSize;
+
+        logger.debug('CleanupJob', 'Deleted observer session file', {
+          file: entry,
+          reason: tooOld ? 'age' : 'size',
+          ageDays: Math.round(ageMs / 86400000),
+          sizeMB: (fileSize / 1024 / 1024).toFixed(1),
+        });
+      } catch (error) {
+        logger.warn('CleanupJob', 'Failed to delete observer session file', { filePath }, error as Error);
+      }
+    }
+
+    if (deleted > 0) {
+      logger.info('CleanupJob', `Observer session cleanup: deleted ${deleted} files, freed ${(freedBytes / 1024 / 1024).toFixed(1)} MB`, {
+        deleted,
+        freedBytes,
+      });
+    }
+
+    return { deleted, freedBytes };
+  }
+
+  /**
    * Start scheduled cleanup
    */
   startScheduled(): void {
@@ -301,7 +428,12 @@ export class CleanupJob {
       return;
     }
 
-    if (!this.config.enableMemoryCleanup && !this.config.enableAccessCleanup) {
+    const anyEnabled =
+      this.config.enableMemoryCleanup ||
+      this.config.enableAccessCleanup ||
+      this.config.enableObserverSessionCleanup;
+
+    if (!anyEnabled) {
       logger.debug('CleanupJob', 'Cleanup disabled, not scheduling');
       return;
     }
