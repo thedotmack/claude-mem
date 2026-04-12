@@ -92,7 +92,10 @@ export class OfflineBuffer {
 
       const raw = readFileSync(replayPath, 'utf-8');
       const entries: BufferedRequest[] = raw.split('\n').filter(Boolean).map(line => {
-        try { return JSON.parse(line); } catch { return null; }
+        try { return JSON.parse(line); } catch (e) {
+          logger.warn('BUFFER', 'Corrupt JSONL line skipped during replay', { line: line.slice(0, 100), path: replayPath });
+          return null;
+        }
       }).filter(Boolean);
       if (entries.length === 0) {
         try { unlinkSync(replayPath); } catch {}

@@ -105,18 +105,19 @@ export function Header({
             // Server/Client: clickable badge with version + mode
             return (
               <button
+                type="button"
                 className={`mode-badge mode-badge--${mode} ${topologyOpen ? 'mode-badge--active' : ''} ${mismatch ? 'mode-badge--warning' : ''}`}
                 onClick={() => setTopologyOpen(!topologyOpen)}
                 aria-expanded={topologyOpen}
                 aria-controls="network-topology-panel"
                 title={mismatch
-                  ? `VERSION MISMATCH — proxy: v${health.proxyVersion}, server: v${health.serverVersion}`
+                  ? `VERSION MISMATCH — proxy: v${health.proxyVersion ?? 'unknown'}, server: v${health.serverVersion ?? 'unknown'}`
                   : `${mode} mode ${versionLabel} — click to ${topologyOpen ? 'collapse' : 'expand'} topology`}
               >
                 {mismatch && <span className="mode-badge-warning-icon">⚠</span>}
                 {versionLabel && <span className="mode-badge-version">{versionLabel}</span>}
                 {mode === 'server' && (
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="2" y="2" width="20" height="8" rx="2" ry="2" />
                     <rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
                     <line x1="6" y1="6" x2="6.01" y2="6" />
@@ -124,7 +125,7 @@ export function Header({
                   </svg>
                 )}
                 {mode === 'client' && (
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
                     <line x1="8" y1="21" x2="16" y2="21" />
                     <line x1="12" y1="17" x2="12" y2="21" />
@@ -134,7 +135,7 @@ export function Header({
                 {mode === 'server' && activeClients != null && totalClients != null && totalClients > 0 && (
                   <span className="mode-badge-count">{activeClients}/{totalClients}</span>
                 )}
-                <svg className={`mode-badge-chevron ${topologyOpen ? 'rotated' : ''}`} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <svg aria-hidden="true" className={`mode-badge-chevron ${topologyOpen ? 'rotated' : ''}`} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <polyline points="6 9 12 15 18 9" />
                 </svg>
               </button>

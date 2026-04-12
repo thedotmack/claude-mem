@@ -29,8 +29,9 @@ export function getNodeName(): string {
     const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
     const settingsPath = path.join(dataDir, 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    if (settings.CLAUDE_MEM_NODE_NAME) {
-      cachedNodeName = settings.CLAUDE_MEM_NODE_NAME;
+    const nodeName = settings.CLAUDE_MEM_NODE_NAME;
+    if (typeof nodeName === 'string' && nodeName.length > 0) {
+      cachedNodeName = nodeName;
       return cachedNodeName!;
     }
   } catch (error) {
@@ -57,7 +58,8 @@ export function getInstanceName(): string {
     const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
     const settingsPath = path.join(dataDir, 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    return settings.CLAUDE_MEM_INSTANCE_NAME || '';
+    const inst = settings.CLAUDE_MEM_INSTANCE_NAME;
+    return (typeof inst === 'string' && inst.length > 0) ? inst : '';
   } catch (error) {
     logger.debug('SYSTEM', 'Failed to load instance name from settings', { error: error instanceof Error ? error.message : String(error) });
   }
