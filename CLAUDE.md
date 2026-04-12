@@ -89,66 +89,6 @@ Claude-mem is designed with a clean separation between open-source core function
 
 This architecture preserves the open-source nature of the project while enabling sustainable development through optional paid features.
 
-## Multi-Node Quality Gate (MANDATORY)
-
-Before ANY push to staging or upstream PR for multi-node features, run the E2E validation suite:
-
-```bash
-bash .local/tests/e2e/multi-node-validation.sh
-```
-
-**80 tests across 8 layers** — ALL must pass with 0 fail, 0 skip:
-
-1. **Schema & Migrations** — provenance columns exist in all 3 tables
-2. **Build & Bundle** — bundles contain expected patterns, no tree-shaking
-3. **API Verification** — all endpoints return provenance columns
-4. **Provenance E2E** — data persists to DB, matches between API and DB
-5. **Deployment** — cache hashes match build, version sync between nodes
-6. **Network Behavior** — auth rejection, admin blocking, SSE through proxy
-7. **Visual (Playwright)** — SSE vs pagination rendering parity, pills persist after refresh, reference screenshot comparison (RMSE < 15000)
-8. **Log Analysis** — no errors/crashes before/during/after, mode-aware assertions
-
-**Skips are failures.** Every test must produce a pass or fail, never a skip. A skip is an untested blind spot.
-
-**No force-push.** Never force-push to an upstream PR. Each fix is a new commit.
-
-**No blind fixes.** Never fix bot review comments without rebuilding, deploying to real nodes, and re-running the validation suite. The cycle that destroyed PR #1722 was: bot comment → blind fix → force-push → repeat.
-
-**Provenance is centralized.** All request handlers use `getRequestProvenance(req)` from `middleware.ts` — never read `X-Claude-Mem-*` headers directly. The middleware extracts them once, handlers consume via helper. This prevents type-by-type drift where one message type regresses while others work.
-
-**SSE broadcast parity.** Every message type (prompts, observations, summaries) must be broadcast via SSE in its `ByClaudeId` handler — not just in the legacy handler. Test with the viewer open: new items must appear without refresh.
-
-## Pre-Upstream Full-Diff Gate (MANDATORY)
-
-Before opening an upstream PR, run a **full-diff review** against main — not just incremental reviews on fix commits.
-
-**Why:** Staging reviews are incremental (per-commit). Files from the initial feature commit that aren't touched by fix rounds are never re-reviewed. Upstream bots see the full diff and find issues in those untouched files. This blind spot caused 21/23 upstream findings on PR #1741 to be in files staging never re-examined.
-
-**Required steps:**
-
-```bash
-# 1. Full-diff bot reviews (same scope upstream will see)
-cr review --base main --agent
-codex review --base main
-
-# 2. Identify files never re-reviewed during staging fix rounds
-FEATURE_FILES=$(git diff --name-only upstream/main...HEAD -- '*.ts' '*.tsx' | sort)
-FIX_FILES=$(git diff --name-only HEAD~N..HEAD -- '*.ts' '*.tsx' | sort)  # N = number of fix commits
-UNCOVERED=$(comm -23 <(echo "$FEATURE_FILES") <(echo "$FIX_FILES"))
-echo "Uncovered files: $(echo "$UNCOVERED" | wc -l)"
-echo "$UNCOVERED"
-# Review each uncovered file manually or via: cr review --base main --files $UNCOVERED
-
-# 3. E2E validation suite (80/80 gate)
-bash .local/tests/e2e/multi-node-validation.sh
-```
-
-**During staging**, run a full-diff sweep periodically (every ~4 rounds) instead of only at the end:
-
-```bash
-cr review --base main --agent  # Full sweep at R5, R9, etc.
-```
-
 ## Important
 
 No need to edit the changelog ever, it's generated automatically.
