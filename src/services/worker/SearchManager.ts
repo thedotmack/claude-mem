@@ -1881,4 +1881,126 @@ export class SearchManager {
       };
     }
   }
+
+  /**
+   * Associative search: query Chroma with raw text and return scored results.
+   *
+   * Unlike the standard search, this method:
+   * 1. Returns distance scores alongside results
+   * 2. Filters by a distance threshold (lower = more relevant)
+   * 3. Only returns observations (not sessions/prompts) for concise injection
+   * 4. Formats results as "triggered thoughts" for context injection
+   *
+   * Used by PostToolUse (thought-triggered actions) and enhanced semantic injection.
+   */
+  async associativeSearch(args: {
+    text: string;
+    project?: string;
+    limit?: number;
+    threshold?: number;
+  }): Promise<{
+    thoughts: Array<{
+      id: number;
+      title: string;
+      narrative: string;
+      type: string;
+      distance: number;
+      created_at: string;
+      concepts: string[];
+    }>;
+    context: string;
+    count: number;
+  }> {
+    const { text, project, limit = 3, threshold = 1.2 } = args;
+
+    if (!this.chromaSync || !text || text.length < 20) {
+      return { thoughts: [], context: '', count: 0 };
+    }
+
+    try {
+      // Build where filter: observations only, optionally scoped to project
+      const whereFilter: Record<string, any> = { doc_type: 'observation' };
+      const filter = project
+        ? { $and: [whereFilter, { project }] }
+        : whereFilter;
+
+      // Query Chroma for semantically similar observations
+      const chromaResults = await this.chromaSync.queryChroma(
+        text,
+        limit * 2, // Over-fetch to account for threshold filtering
+        filter
+      );
+
+      if (chromaResults.ids.length === 0) {
+        return { thoughts: [], context: '', count: 0 };
+      }
+
+      // Filter by distance threshold
+      const passingIndices: number[] = [];
+      for (let i = 0; i < chromaResults.ids.length; i++) {
+        if (chromaResults.distances[i] <= threshold) {
+          passingIndices.push(i);
+        }
+      }
+
+      if (passingIndices.length === 0) {
+        return { thoughts: [], context: '', count: 0 };
+      }
+
+      // Take top N passing results
+      const topIndices = passingIndices.slice(0, limit);
+      const topIds = topIndices.map(i => chromaResults.ids[i]);
+      const topDistances = topIndices.map(i => chromaResults.distances[i]);
+
+      // Hydrate from SQLite
+      const observations = this.sessionStore.getObservationsByIds(topIds, {
+        orderBy: 'date_desc',
+        limit
+      });
+
+      // Build thoughts array with scores
+      const thoughts = observations.map((obs, idx) => {
+        let concepts: string[] = [];
+        try {
+          concepts = obs.concepts ? JSON.parse(obs.concepts) : [];
+        } catch { concepts = []; }
+
+        return {
+          id: obs.id,
+          title: obs.title || 'Observation',
+          narrative: obs.narrative || '',
+          type: obs.type || 'observation',
+          distance: topDistances[idx] ?? 0,
+          created_at: obs.created_at || '',
+          concepts
+        };
+      });
+
+      // Format as compact markdown for context injection
+      if (thoughts.length === 0) {
+        return { thoughts: [], context: '', count: 0 };
+      }
+
+      const lines: string[] = ['<associative-recall>'];
+      lines.push('_These past observations were triggered by semantic similarity to the current context:_\n');
+      for (const thought of thoughts) {
+        const date = thought.created_at?.slice(0, 10) || '';
+        const score = (1 - thought.distance / 2).toFixed(2); // Normalize to 0-1 relevance
+        lines.push(`**${thought.title}** (${date}, relevance: ${score})`);
+        if (thought.narrative) lines.push(thought.narrative);
+        if (thought.concepts.length > 0) lines.push(`_Concepts: ${thought.concepts.join(', ')}_`);
+        lines.push('');
+      }
+      lines.push('</associative-recall>');
+
+      return {
+        thoughts,
+        context: lines.join('\n'),
+        count: thoughts.length
+      };
+    } catch (error) {
+      logger.error('SEARCH', 'Associative search failed', {}, error as Error);
+      return { thoughts: [], context: '', count: 0 };
+    }
+  }
 }

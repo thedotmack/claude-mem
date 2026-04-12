@@ -39,6 +39,7 @@ export class SearchRoutes extends BaseRouteHandler {
     app.get('/api/context/preview', this.handleContextPreview.bind(this));
     app.get('/api/context/inject', this.handleContextInject.bind(this));
     app.post('/api/context/semantic', this.handleSemanticContext.bind(this));
+    app.post('/api/context/associative', this.handleAssociativeContext.bind(this));
 
     // Timeline and help endpoints
     app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
@@ -298,6 +299,36 @@ export class SearchRoutes extends BaseRouteHandler {
       logger.error('SEARCH', 'Semantic context query failed', {}, error as Error);
       res.json({ context: '', count: 0 });
     }
+  });
+
+  /**
+   * Associative context search for thought-triggered actions
+   * POST /api/context/associative  { text, project?, limit?, threshold? }
+   *
+   * Queries Chroma for observations semantically similar to arbitrary text
+   * (tool output, assistant message, etc.) and returns scored results.
+   * Only returns results above the distance threshold.
+   * Used by PostToolUse hook for "thought triggers thought" behavior.
+   */
+  private handleAssociativeContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const text = (req.body?.text || req.query.text) as string;
+    const project = (req.body?.project || req.query.project) as string | undefined;
+    const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '3'), 10) || 3, 1), 10);
+    const threshold = parseFloat(String(req.body?.threshold || req.query.threshold || '1.2')) || 1.2;
+
+    if (!text || text.length < 20) {
+      res.json({ thoughts: [], context: '', count: 0 });
+      return;
+    }
+
+    const result = await this.searchManager.associativeSearch({
+      text,
+      project,
+      limit,
+      threshold
+    });
+
+    res.json(result);
   });
 
   /**

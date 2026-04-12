@@ -125,31 +125,62 @@ export const sessionInitHandler: EventHandler = {
 
     // Semantic context injection: query Chroma for relevant past observations
     // and inject as additionalContext so Claude receives relevant memory each prompt.
-    // Controlled by CLAUDE_MEM_SEMANTIC_INJECT setting (default: true).
+    //
+    // Two modes:
+    // 1. CLAUDE_MEM_SEMANTIC_INJECT (legacy): basic semantic search, returns top-N matches
+    // 2. CLAUDE_MEM_THOUGHT_ACTIONS_ENABLED: associative recall with distance scoring
+    //    and threshold filtering — only injects when relevance is high enough
+    //
+    // When thought actions are enabled, we use the associative endpoint which
+    // provides scored results. This implements the "hearing something triggers
+    // an ancient related thought" pattern.
     const semanticInject =
       String(settings.CLAUDE_MEM_SEMANTIC_INJECT).toLowerCase() === 'true';
+    const thoughtActionsEnabled =
+      String(settings.CLAUDE_MEM_THOUGHT_ACTIONS_ENABLED).toLowerCase() === 'true';
     let additionalContext = '';
 
-    if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
+    if ((semanticInject || thoughtActionsEnabled) && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
       try {
-        const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
-        const semanticRes = await workerHttpRequest('/api/context/semantic', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ q: prompt, project, limit })
-        });
-        if (semanticRes.ok) {
-          const data = await semanticRes.json() as { context: string; count: number };
-          if (data.context) {
-            additionalContext = data.context;
-            logger.debug('HOOK', `Semantic injection: ${data.count} observations for prompt`, {
-              sessionId: sessionDbId, count: data.count
-            });
+        if (thoughtActionsEnabled) {
+          // Associative recall: scored search with threshold filtering
+          const limit = parseInt(settings.CLAUDE_MEM_THOUGHT_ACTIONS_LIMIT || '3', 10);
+          const threshold = parseFloat(settings.CLAUDE_MEM_THOUGHT_ACTIONS_THRESHOLD || '1.2');
+          const associativeRes = await workerHttpRequest('/api/context/associative', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: prompt, project, limit, threshold })
+          });
+          if (associativeRes.ok) {
+            const data = await associativeRes.json() as { context: string; count: number };
+            if (data.context && data.count > 0) {
+              additionalContext = data.context;
+              logger.info('HOOK', `Associative recall: ${data.count} memories triggered by prompt`, {
+                sessionId: sessionDbId, count: data.count
+              });
+            }
+          }
+        } else {
+          // Legacy semantic injection: top-N without scoring
+          const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
+          const semanticRes = await workerHttpRequest('/api/context/semantic', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ q: prompt, project, limit })
+          });
+          if (semanticRes.ok) {
+            const data = await semanticRes.json() as { context: string; count: number };
+            if (data.context) {
+              additionalContext = data.context;
+              logger.debug('HOOK', `Semantic injection: ${data.count} observations for prompt`, {
+                sessionId: sessionDbId, count: data.count
+              });
+            }
           }
         }
       } catch (e) {
-        // Graceful degradation — semantic injection is optional
-        logger.debug('HOOK', 'Semantic injection unavailable', {
+        // Graceful degradation — semantic/associative injection is optional
+        logger.debug('HOOK', 'Semantic/associative injection unavailable', {
           error: e instanceof Error ? e.message : String(e)
         });
       }
