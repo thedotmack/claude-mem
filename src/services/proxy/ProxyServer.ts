@@ -462,7 +462,7 @@ export class ProxyServer {
       if (changed) {
         writeFileSync(this.settingsPath, JSON.stringify(current, null, 2));
         clearNodeNameCache(); // Invalidate cached node name after settings change
-      logger.info('PROXY', 'Settings synced from server', {
+        logger.info('PROXY', 'Settings synced from server', {
           keys: Object.keys(serverSettings).filter(k => !ProxyServer.LOCAL_ONLY_SETTINGS.has(k)).length
         });
       }

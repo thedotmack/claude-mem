@@ -111,8 +111,8 @@ export function getLlmSource(): string {
     if (settings.CLAUDE_MEM_LLM_SOURCE) {
       return settings.CLAUDE_MEM_LLM_SOURCE;
     }
-  } catch (e) {
-    // Settings read failure is non-fatal — fall through to env detection
+  } catch (error) {
+    logger.debug('SYSTEM', 'Failed to load LLM source from settings', { error: error instanceof Error ? error.message : String(error) });
   }
 
   // Detect from environment signals
@@ -123,14 +123,17 @@ export function getLlmSource(): string {
   // Default — most claude-mem users are on Claude
   // Check CLAUDE_MEM_PROVIDER setting as final signal
   try {
-    const settingsPath = path.join(process.env.HOME || '', '.claude-mem', 'settings.json');
+    const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+    const settingsPath = path.join(dataDir, 'settings.json');
     if (existsSync(settingsPath)) {
       const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
       if (settings.CLAUDE_MEM_PROVIDER) {
         return settings.CLAUDE_MEM_PROVIDER;
       }
     }
-  } catch {}
+  } catch (error) {
+    logger.debug('SYSTEM', 'Failed to load provider from settings', { error: error instanceof Error ? error.message : String(error) });
+  }
 
   return 'unknown';
 }

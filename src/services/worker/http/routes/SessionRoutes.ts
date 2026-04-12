@@ -590,6 +590,7 @@ export class SessionRoutes extends BaseRouteHandler {
         obsSession = this.sessionManager.initializeSession(sessionDbId, '', promptNumber, prov.node || undefined);
       }
       if (prov.node) obsSession.node = prov.node;
+      if (prov.instance) obsSession.instance = prov.instance;
       if (llmSource) obsSession.llm_source = llmSource;
 
       // Queue observation
@@ -658,11 +659,14 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Set provenance on the active session BEFORE queueing so the generator sees it
-    const sumSession = this.sessionManager.getSession(sessionDbId);
-    if (sumSession) {
-      if (prov.node) sumSession.node = prov.node;
-      if (llmSource) sumSession.llm_source = llmSource;
+    // Recreate session if missing (e.g. after worker restart) — same pattern as observation handler
+    let sumSession = this.sessionManager.getSession(sessionDbId);
+    if (!sumSession) {
+      sumSession = this.sessionManager.initializeSession(sessionDbId, '', promptNumber, prov.node || undefined);
     }
+    if (prov.node) sumSession.node = prov.node;
+    if (prov.instance) sumSession.instance = prov.instance;
+    if (llmSource) sumSession.llm_source = llmSource;
 
     // Queue summarize
     this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
@@ -849,7 +853,7 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Step 5: Save cleaned user prompt with originating node from proxy header
-    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, prov.node || undefined, prov.platform || undefined, prov.instance || undefined, llmSource || undefined);
+    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, prov.node || undefined, platformSource || undefined, prov.instance || undefined, llmSource || undefined);
 
     // Step 6: Initialize or get existing session with origin node from proxy header
     // Check BEFORE initialization — contextInjected=true only if session already existed

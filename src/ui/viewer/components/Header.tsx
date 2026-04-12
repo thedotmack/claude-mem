@@ -107,6 +107,8 @@ export function Header({
               <button
                 className={`mode-badge mode-badge--${mode} ${topologyOpen ? 'mode-badge--active' : ''} ${mismatch ? 'mode-badge--warning' : ''}`}
                 onClick={() => setTopologyOpen(!topologyOpen)}
+                aria-expanded={topologyOpen}
+                aria-controls="network-topology-panel"
                 title={mismatch
                   ? `VERSION MISMATCH — proxy: v${health.proxyVersion}, server: v${health.serverVersion}`
                   : `${mode} mode ${versionLabel} — click to ${topologyOpen ? 'collapse' : 'expand'} topology`}
@@ -217,12 +219,14 @@ export function Header({
 
       {/* Expandable topology panel */}
       {isNetworked && topologyOpen && (
-        <NetworkTopology
-          mode={mode as 'server' | 'client'}
-          health={health}
-          clients={clients}
-          authToken={authToken}
-        />
+        <div id="network-topology-panel">
+          <NetworkTopology
+            mode={mode as 'server' | 'client'}
+            health={health}
+            clients={clients}
+            authToken={authToken}
+          />
+        </div>
       )}
     </>
   );

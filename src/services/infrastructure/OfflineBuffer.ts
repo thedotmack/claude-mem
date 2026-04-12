@@ -107,7 +107,6 @@ export class OfflineBuffer {
 
       // Write back unreplayed entries, then merge any new appends
       const unreplayed = entries.slice(replayed);
-      try { unlinkSync(replayPath); } catch {}
 
       if (unreplayed.length > 0) {
         // Prepend unreplayed entries to whatever was appended during replay
@@ -117,6 +116,9 @@ export class OfflineBuffer {
         writeFileSync(tmpPath, unreplayedContent + newAppends, 'utf-8');
         renameSync(tmpPath, this.bufferPath);
       }
+      // Delete replayPath AFTER unreplayed data is safely written to bufferPath.
+      // Previous ordering (unlink before write) caused data loss if the write failed.
+      try { unlinkSync(replayPath); } catch {}
       // If all replayed, any new appends in bufferPath remain untouched for next cycle
 
       // pendingCount() already includes unreplayed entries (just written) + any new appends
