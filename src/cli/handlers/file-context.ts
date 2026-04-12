@@ -106,7 +106,11 @@ function deduplicateObservations(
   return scored.slice(0, displayLimit).map(s => s.obs);
 }
 
-function formatFileTimeline(observations: ObservationRow[], filePath: string): string {
+function formatFileTimeline(
+  observations: ObservationRow[],
+  filePath: string,
+  truncated: boolean
+): string {
   // Escape filePath for safe interpolation into recovery hints (quotes, backslashes, newlines)
   const safePath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
   // Group observations by day
@@ -136,9 +140,13 @@ function formatFileTimeline(observations: ObservationRow[], filePath: string): s
   }).toLowerCase().replace(' ', '');
   const currentTimezone = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
 
+  const headerLine = truncated
+    ? `This file has prior observations. Only line 1 was read to save tokens.`
+    : `This file has prior observations. The requested section was read normally.`;
+
   const lines: string[] = [
     `Current: ${currentDate} ${currentTime} ${currentTimezone}`,
-    `This file has prior observations. Only line 1 was read to save tokens.`,
+    headerLine,
     `- **Already know enough?** The timeline below may be all you need (semantic priming).`,
     `- **Need details?** get_observations([IDs]) — ~300 tokens each.`,
     `- **Need full file?** Read again with offset/limit for the section you need.`,
@@ -170,16 +178,28 @@ export const fileContextHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    // Skip gate for files below the token-economics threshold — timeline (~370 tokens)
-    // costs more than reading small files directly.
+    // Honor user-supplied offset/limit so Claude can re-read specific sections
+    // after the initial truncated read. Without this, the hook strips offset/limit
+    // and the Claude Code harness's read-dedup cache returns "File unchanged"
+    // because every rewritten input collapses to the same {file_path, limit:1}.
+    // See issue #1719.
+    const userOffset = typeof toolInput?.offset === 'number' ? (toolInput.offset as number) : undefined;
+    const userLimit = typeof toolInput?.limit === 'number' ? (toolInput.limit as number) : undefined;
+    const isTargetedRead = userOffset !== undefined || userLimit !== undefined;
+
+    // Stat the file once: we need both size (gate) and mtime (cache invalidation).
+    let fileMtimeMs = 0;
     try {
       const statPath = path.isAbsolute(filePath)
         ? filePath
         : path.resolve(input.cwd || process.cwd(), filePath);
       const stat = statSync(statPath);
+      // Skip gate for files below the token-economics threshold — timeline (~370 tokens)
+      // costs more than reading small files directly.
       if (stat.size < FILE_READ_GATE_MIN_BYTES) {
         return { continue: true, suppressOutput: true };
       }
+      fileMtimeMs = stat.mtimeMs;
     } catch (err: any) {
       if (err.code === 'ENOENT') return { continue: true, suppressOutput: true };
       // Other errors (symlink, permission denied) — fall through and let gate proceed
@@ -227,25 +247,49 @@ export const fileContextHandler: EventHandler = {
         return { continue: true, suppressOutput: true };
       }
 
+      // mtime invalidation: if the file has been modified since the most recent
+      // observation, the cached timeline is stale. Pass the read through unchanged
+      // so Claude (or its parent agent after a subagent edit) sees fresh content.
+      // Observation epochs are in milliseconds, matching stat.mtimeMs.
+      if (fileMtimeMs > 0) {
+        const newestObservationMs = Math.max(...data.observations.map(o => o.created_at_epoch));
+        if (fileMtimeMs > newestObservationMs) {
+          logger.debug('HOOK', 'File modified since last observation, skipping truncation', {
+            filePath: relativePath,
+            fileMtimeMs,
+            newestObservationMs,
+          });
+          return { continue: true, suppressOutput: true };
+        }
+      }
+
       // Deduplicate: one per session, ranked by specificity to this file
       const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
       if (dedupedObservations.length === 0) {
         return { continue: true, suppressOutput: true };
       }
 
-      // Allow the read with limit: 1 line — just enough for Edit's "file must be read"
-      // check to pass, while keeping token cost near zero. The observation timeline
-      // gives Claude full context about prior work on this file.
-      const timeline = formatFileTimeline(dedupedObservations, filePath);
+      // For an unconstrained read, truncate to 1 line — enough to satisfy Edit's
+      // "file must be read" precondition while keeping token cost near zero. For a
+      // targeted read (offset/limit supplied), preserve Claude's request so it can
+      // actually fetch the section it asked for. The observation timeline accompanies
+      // both as additional context.
+      const truncated = !isTargetedRead;
+      const timeline = formatFileTimeline(dedupedObservations, filePath, truncated);
+      const updatedInput: Record<string, unknown> = { file_path: filePath };
+      if (isTargetedRead) {
+        if (userOffset !== undefined) updatedInput.offset = userOffset;
+        if (userLimit !== undefined) updatedInput.limit = userLimit;
+      } else {
+        updatedInput.limit = 1;
+      }
+
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
           additionalContext: timeline,
           permissionDecision: 'allow',
-          updatedInput: {
-            file_path: filePath,
-            limit: 1,
-          },
+          updatedInput,
         },
       };
     } catch (error) {
