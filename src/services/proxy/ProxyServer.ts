@@ -196,7 +196,7 @@ export class ProxyServer {
       if (method === 'PUT' || method === 'POST') {
         this.readBody(req, (body) => {
           if (body === 'too_large') { this.jsonResponse(res, 413, { error: 'payload_too_large' }); return; }
-          if (body === 'error') { this.jsonResponse(res, 502, { error: 'request_read_error' }); return; }
+      if (body === 'error') { this.jsonResponse(res, 502, { error: 'request_read_error' }); return; }
           try {
             const updates = JSON.parse(body);
             if (typeof updates !== 'object' || updates === null || Array.isArray(updates)) {
@@ -277,7 +277,7 @@ export class ProxyServer {
 
     this.readBody(req, (body) => {
       if (body === 'too_large') { this.jsonResponse(res, 413, { error: 'payload_too_large' }); return; }
-          if (body === 'error') { this.jsonResponse(res, 502, { error: 'request_read_error' }); return; }
+      if (body === 'error') { this.jsonResponse(res, 502, { error: 'request_read_error' }); return; }
       const proxyReq = http.request({
         hostname: this.serverHost,
         port: this.serverPort,
@@ -546,7 +546,7 @@ export class ProxyServer {
     return h;
   }
 
-  private jsonResponse(res: http.ServerResponse, status: number, data: any): void {
+  private jsonResponse(res: http.ServerResponse, status: number, data: Record<string, unknown>): void {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(data));
   }
