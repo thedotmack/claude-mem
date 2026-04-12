@@ -564,11 +564,11 @@ export class SessionRoutes extends BaseRouteHandler {
         tool_response: cleanedToolResponse,
         prompt_number: promptNumber,
         cwd: cwd || (() => {
-          logger.error('SESSION', 'Missing cwd when queueing observation in SessionRoutes', {
+          logger.warn('SESSION', 'Missing cwd when queueing observation, using HOME as fallback', {
             sessionId: sessionDbId,
             tool_name
           });
-          return '';
+          return process.env.HOME || '';
         })()
       });
 
