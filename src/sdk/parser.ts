@@ -71,6 +71,24 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
 
     // All other fields are optional - save whatever we have
 
+    // Fallback: if SDK returned plain text without XML sub-tags, salvage the content
+    // instead of storing an empty observation (see AAR 2026-04-13 — "Untitled" observations)
+    let finalTitle = title;
+    let finalNarrative = narrative;
+    if (!title && !narrative && obsContent.trim().length > 0) {
+      const hasAnyXmlTag = /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified)>[\s\S]*?<\/\1>/.test(obsContent);
+      if (!hasAnyXmlTag) {
+        const rawText = obsContent.trim();
+        // Use first line (up to 120 chars) as title, full text as narrative
+        const firstLine = rawText.split('\n')[0].trim();
+        finalTitle = firstLine.length > 120 ? firstLine.slice(0, 117) + '...' : firstLine;
+        finalNarrative = rawText;
+        logger.warn('PARSER', 'Observation had no XML sub-tags, salvaged raw text as narrative', {
+          correlationId, chars: rawText.length,
+        });
+      }
+    }
+
     // Filter out type from concepts array (types and concepts are separate dimensions)
     const cleanedConcepts = concepts.filter(c => c !== finalType);
 
@@ -85,10 +103,10 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
 
     observations.push({
       type: finalType,
-      title,
+      title: finalTitle,
       subtitle,
       facts,
-      narrative,
+      narrative: finalNarrative,
       concepts: cleanedConcepts,
       files_read,
       files_modified
