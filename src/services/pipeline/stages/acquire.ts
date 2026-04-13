@@ -41,14 +41,17 @@ export class AcquireStage {
     this.recentHashes.set(hash, Date.now());
     this.cleanupOldHashes();
 
-    // Stringify inputs/outputs
-    const toolInputStr = typeof input.toolInput === 'string'
-      ? input.toolInput
-      : JSON.stringify(input.toolInput, null, 2);
+    // Stringify inputs/outputs (guard against undefined/null)
+    const rawToolInput = input.toolInput ?? '';
+    const rawToolOutput = input.toolOutput ?? '';
 
-    const toolOutputStr = typeof input.toolOutput === 'string'
-      ? input.toolOutput
-      : JSON.stringify(input.toolOutput, null, 2);
+    const toolInputStr = typeof rawToolInput === 'string'
+      ? rawToolInput
+      : JSON.stringify(rawToolInput, null, 2) || '';
+
+    const toolOutputStr = typeof rawToolOutput === 'string'
+      ? rawToolOutput
+      : JSON.stringify(rawToolOutput, null, 2) || '';
 
     // Estimate tokens (rough approximation: 1 token ≈ 4 characters)
     const inputTokenEstimate = Math.ceil(toolInputStr.length / 4);

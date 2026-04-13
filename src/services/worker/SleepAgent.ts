@@ -49,6 +49,7 @@ export class SleepAgent {
   private isRunning: boolean = false;
   private activeSessions: Set<string> = new Set();
   private lastCycle: SleepCycleResult | null = null;
+  private cycleInFlight: Promise<SleepCycleResult> | null = null;
   private stats = {
     totalCycles: 0,
     totalSupersessions: 0,
@@ -166,9 +167,11 @@ export class SleepAgent {
 
     // Check for deep sleep threshold
     if (idleState.idleDurationMs >= this.idleConfig.deepSleepAfterMs) {
-      await this.runCycleIfNotBusy('deep');
-      // Reset timer after deep sleep to prevent immediate re-trigger
-      this.recordActivity();
+      const ran = await this.runCycleIfNotBusy('deep');
+      // Only reset timer if a deep cycle actually ran
+      if (ran) {
+        this.recordActivity();
+      }
       return;
     }
 
@@ -182,17 +185,28 @@ export class SleepAgent {
   /**
    * Run a sleep cycle if not already running one
    */
-  private async runCycleIfNotBusy(type: SleepCycleType): Promise<void> {
+  private async runCycleIfNotBusy(type: SleepCycleType): Promise<boolean> {
+    // Guard: prevent overlapping cycles
+    if (this.cycleInFlight) {
+      return false;
+    }
+
     // Check if we recently ran a cycle of this type
     if (this.lastCycle && this.lastCycle.type === type) {
       const timeSinceLast = Date.now() - this.lastCycle.completedAt;
       const minInterval = type === 'light' ? MIN_LIGHT_CYCLE_INTERVAL_MS : MIN_DEEP_CYCLE_INTERVAL_MS;
       if (timeSinceLast < minInterval) {
-        return;
+        return false;
       }
     }
 
-    await this.runCycle(type);
+    this.cycleInFlight = this.runCycle(type);
+    try {
+      await this.cycleInFlight;
+      return true;
+    } finally {
+      this.cycleInFlight = null;
+    }
   }
 
   /**

@@ -397,7 +397,7 @@ export class SurpriseMetric {
     limit: number,
     lookbackDays: number,
     project?: string
-  ): Promise<Array<{ id: number; distance: number; type: string; created_at: string }>> {
+  ): Promise<Array<{ id: number; distance: number; type: string; created_at: string; created_at_epoch?: number }>> {
     try {
       // Query Chroma for similar memories
       const results = await this.chroma.queryObservations(
@@ -413,6 +413,7 @@ export class SurpriseMetric {
           distance: 1 - r.score, // Convert similarity (0-1) to distance (0-1)
           type: r.type,
           created_at: r.created_at,
+          created_at_epoch: r.created_at_epoch,
         }));
     } catch (error: unknown) {
       logger.debug('SurpriseMetric', 'Chroma query failed, using database fallback', {}, error instanceof Error ? error : new Error(String(error)));
@@ -421,7 +422,7 @@ export class SurpriseMetric {
       const cutoff = Date.now() - (lookbackDays * 24 * 60 * 60 * 1000);
 
       let query = `
-        SELECT id, type, created_at FROM observations
+        SELECT id, type, created_at, created_at_epoch FROM observations
         WHERE id != ? AND created_at_epoch > ?
       `;
       const params: any[] = [observation.id, cutoff];
@@ -435,7 +436,7 @@ export class SurpriseMetric {
       params.push(limit);
 
       const stmt = this.db.prepare(query);
-      const results = stmt.all(...params) as Array<{ id: number; type: string; created_at: string }>;
+      const results = stmt.all(...params) as Array<{ id: number; type: string; created_at: string; created_at_epoch: number }>;
 
       // Return with neutral distance (0.5)
       return results.map(r => ({
@@ -443,6 +444,7 @@ export class SurpriseMetric {
         distance: 0.5,
         type: r.type,
         created_at: r.created_at,
+        created_at_epoch: r.created_at_epoch,
       }));
     }
   }
@@ -471,12 +473,15 @@ export class SurpriseMetric {
    */
   private calculateTemporalNovelty(
     observation: ObservationRecord,
-    similarMemories: Array<{ distance: number; created_at: string }>
+    similarMemories: Array<{ distance: number; created_at: string; created_at_epoch?: number }>
   ): number {
     if (similarMemories.length === 0) return 1.0; // Completely novel if no similar memories
 
-    const obsTime = new Date(observation.created_at).getTime();
-    const now = Date.now();
+    // Prefer created_at_epoch (always a valid number) over created_at (may be undefined)
+    const obsTime = observation.created_at_epoch
+      ? observation.created_at_epoch
+      : new Date(observation.created_at).getTime();
+    if (isNaN(obsTime)) return 1.0; // Defensive: treat as fully novel on invalid date
 
     // Calculate weighted recency of similar memories
     // More recent similar memories = lower temporal novelty
@@ -484,7 +489,11 @@ export class SurpriseMetric {
     let totalWeight = 0;
 
     for (const mem of similarMemories) {
-      const memTime = new Date(mem.created_at).getTime();
+      const memTime = mem.created_at_epoch
+        ? mem.created_at_epoch
+        : new Date(mem.created_at).getTime();
+      if (isNaN(memTime)) continue; // Skip memories with invalid dates
+
       const ageHours = (obsTime - memTime) / (60 * 60 * 1000);
 
       // Weight by similarity (closer = more weight) and recency
