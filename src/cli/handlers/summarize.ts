@@ -101,6 +101,11 @@ export const summarizeHandler: EventHandler = {
             });
             break;
           }
+        } else if (statusResponse.status === 404) {
+          // Worker does not support /api/sessions/status (version < 12.1.0).
+          // Treat queue as empty so we don't spin for 110s.
+          logger.warn('HOOK', 'Worker does not support /api/sessions/status (old version) — skipping poll');
+          break;
         }
       } catch {
         // Worker may be busy — keep polling
