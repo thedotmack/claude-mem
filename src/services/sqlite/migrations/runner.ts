@@ -189,7 +189,13 @@ export class MigrationRunner {
   private removeSessionSummariesUniqueConstraint(): void {
     // Check actual constraint state — don't rely on version tracking alone (issue #979)
     const summariesIndexes = this.db.query('PRAGMA index_list(session_summaries)').all() as IndexInfo[];
-    const hasUniqueConstraint = summariesIndexes.some(idx => idx.unique === 1);
+    // Only count non-primary-key unique indexes.
+    // PRAGMA index_list returns the PK index with unique=1 and origin='pk', so
+    // checking unique===1 alone always returns true, causing the table to be
+    // unnecessarily re-created on every startup after migration 7 already ran.
+    const hasUniqueConstraint = summariesIndexes.some(
+      idx => idx.unique === 1 && idx.origin !== 'pk'
+    );
 
     if (!hasUniqueConstraint) {
       // Already migrated (no constraint exists)
