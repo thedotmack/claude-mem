@@ -114,6 +114,11 @@ describe('MigrationRunner', () => {
       expect(columnNames).toContain('prompt_number');
       expect(columnNames).toContain('discovery_tokens');
       expect(columnNames).toContain('content_hash');
+      expect(columnNames).toContain('last_accessed_at');
+      expect(columnNames).toContain('access_count');
+      expect(columnNames).toContain('importance');
+      expect(columnNames).toContain('is_stale');
+      expect(columnNames).toContain('corrected_by_id');
     });
 
     it('should record all migration versions', () => {
@@ -136,6 +141,10 @@ describe('MigrationRunner', () => {
       expect(versions).toContain(20);  // failed_at_epoch
       expect(versions).toContain(21);  // ON UPDATE CASCADE
       expect(versions).toContain(22);  // content_hash
+      expect(versions).toContain(24);  // observation_feedback
+      expect(versions).toContain(25);  // platform_source
+      expect(versions).toContain(26);  // observation model columns
+      expect(versions).toContain(27);  // temporal scoring
     });
   });
 

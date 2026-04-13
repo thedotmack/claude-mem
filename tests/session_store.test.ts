@@ -118,4 +118,15 @@ describe('SessionStore', () => {
     expect(stored).not.toBeNull();
     expect(stored?.created_at_epoch).toBe(pastTimestamp);
   });
+
+  it('should create temporal scoring columns on a fresh database', () => {
+    const columns = store.db.query('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
+    const columnNames = columns.map(column => column.name);
+
+    expect(columnNames).toContain('last_accessed_at');
+    expect(columnNames).toContain('access_count');
+    expect(columnNames).toContain('importance');
+    expect(columnNames).toContain('is_stale');
+    expect(columnNames).toContain('corrected_by_id');
+  });
 });

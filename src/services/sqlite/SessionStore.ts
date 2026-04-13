@@ -16,6 +16,7 @@ import type { PendingMessageStore } from './PendingMessageStore.js';
 import { computeObservationContentHash, findDuplicateObservation } from './observations/store.js';
 import { parseFileList } from './observations/files.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
+import { MigrationRunner } from './migrations/runner.js';
 
 function resolveCreateSessionArgs(
   customTitle?: string,
@@ -48,23 +49,9 @@ export class SessionStore {
     // Initialize schema if needed (fresh database)
     this.initializeSchema();
 
-    // Run migrations
-    this.ensureWorkerPortColumn();
-    this.ensurePromptTrackingColumns();
-    this.removeSessionSummariesUniqueConstraint();
-    this.addObservationHierarchicalFields();
-    this.makeObservationsTextNullable();
-    this.createUserPromptsTable();
-    this.ensureDiscoveryTokensColumn();
-    this.createPendingMessagesTable();
-    this.renameSessionIdColumns();
-    this.repairSessionIdColumnRename();
-    this.addFailedAtEpochColumn();
-    this.addOnUpdateCascadeToForeignKeys();
-    this.addObservationContentHashColumn();
-    this.addSessionCustomTitleColumn();
-    this.addSessionPlatformSourceColumn();
-    this.addObservationModelColumns();
+    // Run the shared migration pipeline so worker and standalone DB paths stay aligned.
+    const migrationRunner = new MigrationRunner(this.db);
+    migrationRunner.runAllMigrations();
   }
 
   /**

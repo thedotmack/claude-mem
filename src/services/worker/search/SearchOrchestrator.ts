@@ -73,7 +73,7 @@ export class SearchOrchestrator {
 
     const result = await this.executeWithFallback(options);
 
-    if (result.results.observations && result.results.observations.length > 0) {
+    if (!options.query && result.results.observations && result.results.observations.length > 0) {
       result.results.observations = this.sessionSearch.rankByTemporalScore(result.results.observations);
     }
 

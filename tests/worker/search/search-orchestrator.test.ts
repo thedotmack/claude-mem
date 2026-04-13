@@ -151,6 +151,14 @@ describe('SearchOrchestrator', () => {
         expect(mockChromaSync.queryChroma).toHaveBeenCalled();
       });
 
+      it('should preserve semantic ordering for text queries', async () => {
+        await orchestrator.search({
+          query: 'semantic search query'
+        });
+
+        expect(mockSessionSearch.rankByTemporalScore).not.toHaveBeenCalled();
+      });
+
       it('should fall back to SQLite when Chroma fails', async () => {
         mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma unavailable')));
 
