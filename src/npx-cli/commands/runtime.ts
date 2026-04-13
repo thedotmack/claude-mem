@@ -102,7 +102,7 @@ export function runStatusCommand(): void {
 }
 
 /**
- * Search the worker API at `GET /api/search?q=<query>`.
+ * Search the worker API at `GET /api/search?query=<query>`.
  */
 export async function runSearchCommand(queryParts: string[]): Promise<void> {
   ensureInstalledOrExit();
@@ -114,7 +114,7 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
   }
 
   const workerPort = process.env.CLAUDE_MEM_WORKER_PORT || '37777';
-  const searchUrl = `http://127.0.0.1:${workerPort}/api/search?q=${encodeURIComponent(query)}`;
+  const searchUrl = `http://127.0.0.1:${workerPort}/api/search?query=${encodeURIComponent(query)}`;
 
   try {
     const response = await fetch(searchUrl);
