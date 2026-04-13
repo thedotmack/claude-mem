@@ -24,15 +24,23 @@ export interface SDKSession {
 }
 
 /**
- * Build initial prompt to initialize the SDK agent
+ * Build system prompt from mode configuration.
+ * This contains all the system-level instructions that should be passed as
+ * the SDK's systemPrompt option rather than buried in user messages.
+ *
+ * Following Anthropic's context engineering best practices:
+ * - Minimal: Only system-level directives
+ * - Structured: Clear section delineation
+ * - Instruction priority: Format requirements in system prompt
+ *
+ * The system prompt includes:
+ * - Identity and role definition
+ * - Output format instructions
+ * - XML schema with placeholders
+ * - Examples and footer guidance
  */
-export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): string {
+export function buildSystemPrompt(mode: ModeConfig): string {
   return `${mode.prompts.system_identity}
-
-<observed_from_primary_session>
-  <user_request>${userPrompt}</user_request>
-  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
-</observed_from_primary_session>
 
 ${mode.prompts.observer_role}
 
@@ -41,6 +49,85 @@ ${mode.prompts.spatial_awareness}
 ${mode.prompts.recording_focus}
 
 ${mode.prompts.skip_guidance}
+
+${mode.prompts.output_format_header}
+
+\`\`\`xml
+<observation>
+  <type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
+  <!--
+    ${mode.prompts.type_guidance}
+  -->
+  <title>${mode.prompts.xml_title_placeholder}</title>
+  <subtitle>${mode.prompts.xml_subtitle_placeholder}</subtitle>
+  <facts>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
+  </facts>
+  <!--
+    ${mode.prompts.field_guidance}
+  -->
+  <narrative>${mode.prompts.xml_narrative_placeholder}</narrative>
+  <concepts>
+    <concept>${mode.prompts.xml_concept_placeholder}</concept>
+    <concept>${mode.prompts.xml_concept_placeholder}</concept>
+  </concepts>
+  <!--
+    ${mode.prompts.concept_guidance}
+  -->
+  <files_read>
+    <file>${mode.prompts.xml_file_placeholder}</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
+  </files_read>
+  <files_modified>
+    <file>${mode.prompts.xml_file_placeholder}</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
+  </files_modified>
+</observation>
+\`\`\`
+${mode.prompts.format_examples}
+
+${mode.prompts.footer}`;
+}
+
+/**
+ * Build initial prompt to initialize the SDK agent.
+ *
+ * @param project - Project name
+ * @param sessionId - Content session ID
+ * @param userPrompt - User's original prompt
+ * @param mode - Active mode configuration
+ * @param includeSystemPrompts - When true (default), include system prompts in user message.
+ *   When false (using buildSystemPrompt separately), exclude them to avoid duplication.
+ */
+export function buildInitPrompt(
+  project: string,
+  sessionId: string,
+  userPrompt: string,
+  mode: ModeConfig,
+  includeSystemPrompts: boolean = true
+): string {
+  // System prompts are included in user message unless explicitly excluded
+  // When using buildSystemPrompt() separately, set includeSystemPrompts=false
+  const systemSection = includeSystemPrompts
+    ? `${mode.prompts.system_identity}
+
+${mode.prompts.observer_role}
+
+${mode.prompts.spatial_awareness}
+
+${mode.prompts.recording_focus}
+
+${mode.prompts.skip_guidance}
+
+`
+    : '';
+
+  return `${systemSection}<observed_from_primary_session>
+  <user_request>${userPrompt}</user_request>
+  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
+</observed_from_primary_session>
 
 ${mode.prompts.output_format_header}
 
@@ -160,6 +247,13 @@ ${mode.prompts.summary_footer}`;
 /**
  * Build prompt for continuation of existing session
  *
+ * @param userPrompt - User's original prompt
+ * @param promptNumber - Current prompt number in the session
+ * @param contentSessionId - Content session ID for tracking
+ * @param mode - Active mode configuration
+ * @param includeSystemPrompts - When true (default), include system prompts in user message.
+ *   When false (using buildSystemPrompt separately), exclude them to avoid duplication.
+ *
  * CRITICAL: Why contentSessionId Parameter is Required
  * ====================================================
  * This function receives contentSessionId from SDKAgent.ts, which comes from:
@@ -178,15 +272,15 @@ ${mode.prompts.summary_footer}`;
  * Called when: promptNumber > 1 (see SDKAgent.ts line 150)
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
  */
-export function buildContinuationPrompt(userPrompt: string, promptNumber: number, contentSessionId: string, mode: ModeConfig): string {
-  return `${mode.prompts.continuation_greeting}
-
-<observed_from_primary_session>
-  <user_request>${userPrompt}</user_request>
-  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
-</observed_from_primary_session>
-
-${mode.prompts.system_identity}
+export function buildContinuationPrompt(
+  userPrompt: string,
+  promptNumber: number,
+  contentSessionId: string,
+  mode: ModeConfig,
+  includeSystemPrompts: boolean = true
+): string {
+  const systemSection = includeSystemPrompts
+    ? `${mode.prompts.system_identity}
 
 ${mode.prompts.observer_role}
 
@@ -195,6 +289,16 @@ ${mode.prompts.spatial_awareness}
 ${mode.prompts.recording_focus}
 
 ${mode.prompts.skip_guidance}
+
+`
+    : '';
+
+  return `${mode.prompts.continuation_greeting}
+
+${systemSection}<observed_from_primary_session>
+  <user_request>${userPrompt}</user_request>
+  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
+</observed_from_primary_session>
 
 ${mode.prompts.continuation_instruction}
 
@@ -239,4 +343,4 @@ ${mode.prompts.format_examples}
 ${mode.prompts.footer}
 
 ${mode.prompts.header_memory_continued}`;
-} 
+}

@@ -11,7 +11,7 @@
  * - Support dynamic model selection across providers
  */
 
-import { buildContinuationPrompt, buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from '../../sdk/prompts.js';
+import { buildSystemPrompt, buildContinuationPrompt, buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from '../../sdk/prompts.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -103,14 +103,20 @@ export class OpenRouterAgent {
       // Load active mode
       const mode = ModeManager.getInstance().getActiveMode();
 
+      // Build system prompt for improved instruction adherence
+      // Following Anthropic's best practices: system-level instructions in system prompt,
+      // task-specific content in user messages. This reduces XML tag misclassification.
+      const systemPrompt = buildSystemPrompt(mode);
+
       // Build initial prompt
+      // Use includeSystemPrompts=false since system prompts are passed separately
       const initPrompt = session.lastPromptNumber === 1
-        ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
-        : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+        ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, false)
+        : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, false);
 
       // Add to conversation history and query OpenRouter with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+      const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, systemPrompt);
 
       if (initResponse.content) {
         // Add response to conversation history
@@ -181,7 +187,7 @@ export class OpenRouterAgent {
 
           // Add to conversation history and query OpenRouter with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+          const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, systemPrompt);
 
           let tokensUsed = 0;
           if (obsResponse.content) {
@@ -224,7 +230,7 @@ export class OpenRouterAgent {
 
           // Add to conversation history and query OpenRouter with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+          const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, systemPrompt);
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
@@ -339,12 +345,26 @@ export class OpenRouterAgent {
 
   /**
    * Convert shared ConversationMessage array to OpenAI-compatible message format
+   * Optionally prepends a system message for improved instruction adherence
    */
-  private conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIMessage[] {
-    return history.map(msg => ({
+  private conversationToOpenAIMessages(history: ConversationMessage[], systemPrompt?: string): OpenAIMessage[] {
+    const messages: OpenAIMessage[] = [];
+
+    // Prepend system message if provided (improves format instruction adherence)
+    if (systemPrompt) {
+      messages.push({
+        role: 'system',
+        content: systemPrompt
+      });
+    }
+
+    // Add conversation history
+    messages.push(...history.map(msg => ({
       role: msg.role === 'assistant' ? 'assistant' : 'user',
       content: msg.content
-    }));
+    })));
+
+    return messages;
   }
 
   /**
@@ -356,17 +376,20 @@ export class OpenRouterAgent {
     apiKey: string,
     model: string,
     siteUrl?: string,
-    appName?: string
+    appName?: string,
+    systemPrompt?: string
   ): Promise<{ content: string; tokensUsed?: number }> {
     // Truncate history to prevent runaway costs
     const truncatedHistory = this.truncateHistory(history);
-    const messages = this.conversationToOpenAIMessages(truncatedHistory);
+    const messages = this.conversationToOpenAIMessages(truncatedHistory, systemPrompt);
     const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
     const estimatedTokens = this.estimateTokens(truncatedHistory.map(m => m.content).join(''));
 
     logger.debug('SDK', `Querying OpenRouter multi-turn (${model})`, {
       turns: truncatedHistory.length,
       totalChars,
+      hasSystemPrompt: !!systemPrompt,
+      systemPromptLength: systemPrompt?.length ?? 0,
       estimatedTokens
     });
 

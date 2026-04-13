@@ -14,7 +14,7 @@ import path from 'path';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { buildSystemPrompt, buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../shared/paths.js';
 import { buildIsolatedEnv, getAuthMethodDescription } from '../../shared/EnvManager.js';
@@ -67,8 +67,16 @@ export class SDKAgent {
       'TodoWrite'       // No todo management
     ];
 
+    // Load active mode and build system prompt
+    // This follows Anthropic's best practices: system-level instructions in system prompt,
+    // task-specific content in user messages. This improves instruction adherence and
+    // reduces the 70%+ XML tag misclassification rate.
+    const mode = ModeManager.getInstance().getActiveMode();
+    const systemPrompt = buildSystemPrompt(mode);
+
     // Create message generator (event-driven)
-    const messageGenerator = this.createMessageGenerator(session, cwdTracker);
+    // Pass systemPrompt so it can exclude system prompts from user messages
+    const messageGenerator = this.createMessageGenerator(session, cwdTracker, systemPrompt);
 
     // CRITICAL: Only resume if:
     // 1. memorySessionId exists (was captured from a previous SDK response)
@@ -129,10 +137,17 @@ export class SDKAgent {
     // Use dedicated cwd to isolate observer sessions from user's `claude --resume` list
     ensureDir(OBSERVER_SESSIONS_DIR);
     // CRITICAL: Pass isolated env to prevent Issue #733 (API key pollution from project .env files)
+    // Run Agent SDK query loop with system prompt for improved instruction adherence
+    // Following Anthropic's best practices: system-level instructions in system prompt,
+    // task-specific content in user messages. This improves format adherence and
+    // reduces XML tag misclassification (was 70%+).
     const queryResult = query({
       prompt: messageGenerator,
       options: {
         model: modelId,
+        // System prompt: mode-level instructions for better adherence
+        // User messages only contain task-specific content (observations, summaries)
+        systemPrompt,
         // Isolate observer sessions - they'll appear under project "observer-sessions"
         // instead of polluting user's actual project resume lists
         cwd: OBSERVER_SESSIONS_DIR,
@@ -333,24 +348,28 @@ export class SDKAgent {
    */
   private async *createMessageGenerator(
     session: ActiveSession,
-    cwdTracker: { lastCwd: string | undefined }
+    cwdTracker: { lastCwd: string | undefined },
+    systemPrompt: string
   ): AsyncIterableIterator<SDKUserMessage> {
-    // Load active mode
+    // Load active mode for format guidance in user messages
+    // Note: System prompts (identity, role, etc.) are passed separately via systemPrompt parameter
     const mode = ModeManager.getInstance().getActiveMode();
 
     // Build initial prompt
+    // Use includeSystemPrompts=false since system prompts are passed separately via systemPrompt
     const isInitPrompt = session.lastPromptNumber === 1;
     logger.info('SDK', 'Creating message generator', {
       sessionDbId: session.sessionDbId,
       contentSessionId: session.contentSessionId,
       lastPromptNumber: session.lastPromptNumber,
       isInitPrompt,
-      promptType: isInitPrompt ? 'INIT' : 'CONTINUATION'
+      promptType: isInitPrompt ? 'INIT' : 'CONTINUATION',
+      systemPromptLength: systemPrompt.length
     });
 
     const initPrompt = isInitPrompt
-      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
-      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, false)
+      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, false);
 
     // Add to shared conversation history for provider interop
     session.conversationHistory.push({ role: 'user', content: initPrompt });

@@ -15,7 +15,7 @@ import { homedir } from 'os';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { buildSystemPrompt, buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -154,14 +154,20 @@ export class GeminiAgent {
       // Load active mode
       const mode = ModeManager.getInstance().getActiveMode();
 
+      // Build system prompt for improved instruction adherence
+      // Following Anthropic's best practices: system-level instructions in system prompt,
+      // task-specific content in user messages. This reduces XML tag misclassification.
+      const systemPrompt = buildSystemPrompt(mode);
+
       // Build initial prompt
+      // Use includeSystemPrompts=false since system prompts are passed separately
       const initPrompt = session.lastPromptNumber === 1
-        ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
-        : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+        ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, false)
+        : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, false);
 
       // Add to conversation history and query Gemini with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+      const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled, systemPrompt);
 
       if (initResponse.content) {
         // Add response to conversation history
@@ -233,7 +239,7 @@ export class GeminiAgent {
 
           // Add to conversation history and query Gemini with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+          const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled, systemPrompt);
 
           let tokensUsed = 0;
           if (obsResponse.content) {
@@ -284,7 +290,7 @@ export class GeminiAgent {
 
           // Add to conversation history and query Gemini with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+          const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled, systemPrompt);
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
@@ -419,7 +425,8 @@ export class GeminiAgent {
     history: ConversationMessage[],
     apiKey: string,
     model: GeminiModel,
-    rateLimitingEnabled: boolean
+    rateLimitingEnabled: boolean,
+    systemInstruction?: string
   ): Promise<{ content: string; tokensUsed?: number }> {
     const truncatedHistory = this.truncateHistory(history);
     const contents = this.conversationToGeminiContents(truncatedHistory);
@@ -428,7 +435,9 @@ export class GeminiAgent {
     logger.debug('SDK', `Querying Gemini multi-turn (${model})`, {
       turns: truncatedHistory.length,
       totalTurns: history.length,
-      totalChars
+      totalChars,
+      hasSystemInstruction: !!systemInstruction,
+      systemInstructionLength: systemInstruction?.length ?? 0
     });
 
     const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
@@ -436,18 +445,29 @@ export class GeminiAgent {
     // Enforce RPM rate limit for free tier (skipped if rate limiting disabled)
     await enforceRateLimitForModel(model, rateLimitingEnabled);
 
+    // Build request body with optional system instruction
+    // System instruction improves format adherence (reduces XML tag misclassification)
+    const requestBody: Record<string, unknown> = {
+      contents,
+      generationConfig: {
+        temperature: 0.3,  // Lower temperature for structured extraction
+        maxOutputTokens: 4096,
+      },
+    };
+
+    // Add system instruction if provided (improves instruction adherence)
+    if (systemInstruction) {
+      requestBody.systemInstruction = {
+        parts: [{ text: systemInstruction }]
+      };
+    }
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        contents,
-        generationConfig: {
-          temperature: 0.3,  // Lower temperature for structured extraction
-          maxOutputTokens: 4096,
-        },
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
