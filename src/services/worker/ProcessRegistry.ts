@@ -388,15 +388,21 @@ export function createPidCapturingSpawn(sessionDbId: number) {
     const useCmdWrapper = process.platform === 'win32' && spawnOptions.command.endsWith('.cmd');
     const env = sanitizeEnv(spawnOptions.env ?? process.env);
 
+    // Filter empty string args: Bun's spawn() silently drops empty strings from argv,
+    // causing subsequent flags to be consumed as values for the preceding flag.
+    // The Agent SDK may produce empty-string args (e.g., settingSources defaults to []
+    // which joins to ""). Node preserves these, but Bun drops them, breaking CLI parsing.
+    const args = spawnOptions.args.filter(arg => arg !== '');
+
     const child = useCmdWrapper
-      ? spawn('cmd.exe', ['/d', '/c', spawnOptions.command, ...spawnOptions.args], {
+      ? spawn('cmd.exe', ['/d', '/c', spawnOptions.command, ...args], {
           cwd: spawnOptions.cwd,
           env,
           stdio: ['pipe', 'pipe', 'pipe'],
           signal: spawnOptions.signal,
           windowsHide: true
         })
-      : spawn(spawnOptions.command, spawnOptions.args, {
+      : spawn(spawnOptions.command, args, {
           cwd: spawnOptions.cwd,
           env,
           stdio: ['pipe', 'pipe', 'pipe'],
