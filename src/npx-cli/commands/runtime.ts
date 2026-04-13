@@ -150,6 +150,16 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
 /**
  * Start the transcript watcher via Bun.
  */
+/** Export claude-mem data to a portable JSON file */
+export function runExportCommand(extraArgs: string[] = []): void {
+  spawnBunWorkerCommand('export', extraArgs);
+}
+
+/** Import claude-mem data from a JSON export file */
+export function runImportCommand(extraArgs: string[] = []): void {
+  spawnBunWorkerCommand('import', extraArgs);
+}
+
 export function runTranscriptWatchCommand(): void {
   ensureInstalledOrExit();
   const bunPath = resolveBunOrExit();

@@ -13,6 +13,8 @@
  *   npx claude-mem restart             → restart worker service
  *   npx claude-mem status              → show worker status
  *   npx claude-mem search <query>      → search observations
+ *   npx claude-mem export              → export memories to JSON
+ *   npx claude-mem import <file>      → import memories from JSON
  *   npx claude-mem transcript watch    → start transcript watcher
  *
  * This file is pure Node.js — Bun is NOT required for install commands.
@@ -52,6 +54,8 @@ ${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
   ${pc.cyan('npx claude-mem restart')}              Restart worker service
   ${pc.cyan('npx claude-mem status')}               Show worker status
   ${pc.cyan('npx claude-mem search <query>')}       Search observations
+  ${pc.cyan('npx claude-mem export [--output <path>]')} Export memories to JSON
+  ${pc.cyan('npx claude-mem import <file>')}        Import memories from JSON
   ${pc.cyan('npx claude-mem transcript watch')}     Start transcript watcher
 
 ${pc.bold('IDE Identifiers')}:
@@ -142,6 +146,19 @@ async function main(): Promise<void> {
     case 'search': {
       const { runSearchCommand } = await import('./commands/runtime.js');
       await runSearchCommand(args.slice(1));
+      break;
+    }
+
+    // -- Export / Import ---------------------------------------------------
+    case 'export': {
+      const { runExportCommand } = await import('./commands/runtime.js');
+      runExportCommand(args.slice(1));
+      break;
+    }
+
+    case 'import': {
+      const { runImportCommand } = await import('./commands/runtime.js');
+      runImportCommand(args.slice(1));
       break;
     }
 

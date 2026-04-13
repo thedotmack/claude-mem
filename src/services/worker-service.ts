@@ -1187,6 +1187,30 @@ async function main() {
       break;
     }
 
+    case 'export': {
+      try {
+        const { runExportCli } = await import('./data-portability/export.js');
+        runExportCli(process.argv.slice(3));
+        process.exit(0);
+      } catch (err) {
+        console.error(`Export failed: ${(err as Error).message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case 'import': {
+      try {
+        const { runImportCli } = await import('./data-portability/import.js');
+        runImportCli(process.argv.slice(3));
+        process.exit(0);
+      } catch (err) {
+        console.error(`Import failed: ${(err as Error).message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
     case '--daemon':
     default: {
       // GUARD 1: Refuse to start if another worker is already alive (PID check).
