@@ -48,7 +48,6 @@ class Logger {
 
     // Rotate log file when the date changes (long-running server processes)
     if (this.logFileDate === today) return;
-    this.logFileDate = today;
 
     try {
       // Use default data directory to avoid circular dependency with SettingsDefaultsManager
@@ -62,10 +61,12 @@ class Logger {
 
       // Create log file path with current date
       this.logFilePath = join(logsDir, `claude-mem-${today}.log`);
+      this.logFileDate = today;
     } catch (error) {
-      // If log file initialization fails, just log to console
+      // If log file initialization fails, allow retry on next call
       console.error('[LOGGER] Failed to initialize log file:', error);
       this.logFilePath = null;
+      this.logFileDate = null;
     }
   }
 
