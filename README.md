@@ -314,22 +314,28 @@ Edit your settings file:
 
 ```text
 ~/.claude-mem/settings.json
+```
 
 Example:
+
+```json
 {
   "CLAUDE_MEM_MODE": "code--zh"
 }
+```
 
-Available modes
 Modes are defined in:
 plugin/modes/
 
 Common examples:
 
-Mode	Description
-code	Default English coding mode
-code--zh	Simplified Chinese mode
-code--ja	Japanese mode
+#### Available modes
+
+| Mode       | Description             |
+|------------|-------------------------|
+| `code`     | Default English mode    |
+| `code--zh` | Simplified Chinese mode |
+| `code--ja` | Japanese mode           |
 
 Note: code--zh (Simplified Chinese) is already built-in.
 No additional installation or plugin update is required.
