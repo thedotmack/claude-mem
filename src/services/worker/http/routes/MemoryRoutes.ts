@@ -140,17 +140,15 @@ export class MemoryRoutes extends BaseRouteHandler {
       files_modified: [] as string[]
     };
 
-    // 4. Store correction to SQLite
-    const result = sessionStore.storeObservation(
+    // 4. Atomically store the correction and mark the original stale
+    const result = sessionStore.contradictObservation(
+      stale_id,
       memorySessionId,
       targetProject,
       observation,
       0,  // promptNumber
       0   // discoveryTokens
     );
-
-    // 5. Mark original observation stale
-    sessionStore.markObservationStale(stale_id, result.id);
 
     logger.info('HTTP', 'Memory contradicted', {
       stale_id,
@@ -194,7 +192,13 @@ export class MemoryRoutes extends BaseRouteHandler {
       return;
     }
 
-    if (importance === undefined || typeof importance !== 'number' || importance < 1 || importance > 10) {
+    if (
+      importance === undefined ||
+      typeof importance !== 'number' ||
+      !Number.isFinite(importance) ||
+      importance < 1 ||
+      importance > 10
+    ) {
       this.badRequest(res, 'importance is required and must be a number between 1 and 10');
       return;
     }
@@ -208,7 +212,7 @@ export class MemoryRoutes extends BaseRouteHandler {
     }
 
     const clamped = Math.min(10, Math.max(1, Math.round(importance)));
-    sessionStore.setObservationImportance(id, importance);
+    sessionStore.setObservationImportance(id, clamped);
 
     logger.info('HTTP', 'Observation importance updated', { id, importance: clamped });
 

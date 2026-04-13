@@ -42,6 +42,7 @@ describe('DataRoutes Type Coercion', () => {
   let routes: DataRoutes;
   let mockGetObservationsByIds: ReturnType<typeof mock>;
   let mockGetSdkSessionsBySessionIds: ReturnType<typeof mock>;
+  let mockUpdateAccessTracking: ReturnType<typeof mock>;
 
   beforeEach(() => {
     loggerSpies = [
@@ -54,11 +55,15 @@ describe('DataRoutes Type Coercion', () => {
 
     mockGetObservationsByIds = mock(() => [{ id: 1 }, { id: 2 }]);
     mockGetSdkSessionsBySessionIds = mock(() => [{ id: 'abc' }]);
+    mockUpdateAccessTracking = mock(() => {});
 
     const mockDbManager = {
       getSessionStore: () => ({
         getObservationsByIds: mockGetObservationsByIds,
         getSdkSessionsBySessionIds: mockGetSdkSessionsBySessionIds,
+      }),
+      getSessionSearch: () => ({
+        updateAccessTracking: mockUpdateAccessTracking,
       }),
     };
 
@@ -136,6 +141,42 @@ describe('DataRoutes Type Coercion', () => {
       handler(req as Request, res as Response);
 
       expect(jsonSpy).toHaveBeenCalledWith([]);
+    });
+
+    it('should track access using returned observation ids', async () => {
+      mockGetObservationsByIds = mock(() => [{ id: 9 }, { id: 4 }]);
+      const mockDbManager = {
+        getSessionStore: () => ({
+          getObservationsByIds: mockGetObservationsByIds,
+          getSdkSessionsBySessionIds: mockGetSdkSessionsBySessionIds,
+        }),
+        getSessionSearch: () => ({
+          updateAccessTracking: mockUpdateAccessTracking,
+        }),
+      };
+      routes = new DataRoutes(
+        {} as any,
+        mockDbManager as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        Date.now()
+      );
+
+      const mockApp = {
+        get: mock(() => {}),
+        post: mock((path: string, fn: any) => {
+          if (path === '/api/observations/batch') handler = fn;
+        }),
+        delete: mock(() => {}),
+      };
+      routes.setupRoutes(mockApp as any);
+
+      const { req, res } = createMockReqRes({ ids: [1, 2, 3] });
+      handler(req as Request, res as Response);
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      expect(mockUpdateAccessTracking).toHaveBeenCalledWith([9, 4]);
     });
   });
 

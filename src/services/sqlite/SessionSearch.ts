@@ -312,26 +312,14 @@ export class SessionSearch {
       WHERE fts.observations_fts MATCH ?
     `;
 
-    const filterClauses: string[] = [];
-    if (filters.project) {
-      filterClauses.push('o.project = ?');
-      params.push(filters.project);
-    }
-    if (filters.type) {
-      if (Array.isArray(filters.type)) {
-        const placeholders = filters.type.map(() => '?').join(',');
-        filterClauses.push(`o.type IN (${placeholders})`);
-        params.push(...filters.type);
-      } else {
-        filterClauses.push('o.type = ?');
-        params.push(filters.type);
-      }
-    }
-    if (filterClauses.length > 0) {
-      sql += ` AND ${filterClauses.join(' AND ')}`;
+    const filterParams: any[] = [];
+    const filterClause = this.buildFilterClause(filters, filterParams, 'o');
+    if (filterClause) {
+      sql += ` AND ${filterClause}`;
+      params.push(...filterParams);
     }
 
-    sql += ` ORDER BY rank LIMIT ? OFFSET ?`;
+    sql += ` ${this.buildOrderClause(orderBy, true, 'fts')} LIMIT ? OFFSET ?`;
     params.push(limit, offset);
 
     try {
@@ -645,15 +633,22 @@ export class SessionSearch {
   rankByTemporalScore(observations: ObservationSearchResult[]): ObservationSearchResult[] {
     if (observations.length === 0) return observations;
 
-    const now = Date.now() / 1000;
+    const now = Date.now();
+    const normalizeEpochMs = (epoch: number | null | undefined): number => {
+      if (!epoch || epoch <= 0) return 0;
+      return epoch < 1_000_000_000_000 ? epoch * 1000 : epoch;
+    };
 
     return observations
       .map(obs => {
         const importance = Math.min(10, Math.max(1, obs.importance ?? 5));
         const halfLifeDays = 90 * (importance / 5); // 18d at imp=1, 90d at imp=5, 180d at imp=10
         const lambda = Math.log(2) / halfLifeDays;
-        const createdEpoch = obs.created_at_epoch / 1000; // created_at_epoch is ms
-        const daysSince = Math.max(0, (now - createdEpoch) / 86400);
+        const referenceEpoch = Math.max(
+          normalizeEpochMs(obs.created_at_epoch),
+          normalizeEpochMs(obs.last_accessed_at)
+        );
+        const daysSince = Math.max(0, (now - referenceEpoch) / 86_400_000);
         const decayFactor = Math.exp(-lambda * daysSince);
         const accessBoost = Math.log1p(obs.access_count ?? 0) * 0.1;
         const stalenessPenalty = obs.is_stale ? 0.1 : 1.0;
@@ -670,7 +665,7 @@ export class SessionSearch {
    */
   updateAccessTracking(ids: number[]): void {
     if (ids.length === 0) return;
-    const now = Math.floor(Date.now() / 1000);
+    const now = Date.now();
     const placeholders = ids.map(() => '?').join(',');
     this.db.prepare(
       `UPDATE observations SET last_accessed_at = ?, access_count = COALESCE(access_count, 0) + 1 WHERE id IN (${placeholders})`

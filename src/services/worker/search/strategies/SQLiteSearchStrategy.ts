@@ -72,7 +72,7 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
           concepts,
           files
         };
-        observations = this.sessionSearch.searchObservations(undefined, obsOptions);
+        observations = this.sessionSearch.searchObservations(options.query, obsOptions);
       }
 
       if (searchSessions) {

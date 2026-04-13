@@ -330,6 +330,10 @@ describe('SearchOrchestrator', () => {
         // Without Chroma, falls back to SQLite FTS5 search
         expect(result.usedChroma).toBe(false);
         expect(result.strategy).toBe('sqlite');
+        expect(mockSessionSearch.searchObservations).toHaveBeenCalledWith(
+          'semantic query',
+          expect.objectContaining({})
+        );
       });
 
       it('should still work for filter-only queries', async () => {

@@ -188,6 +188,37 @@ async function callWorkerAPIPost(
   }
 }
 
+async function callWorkerAPIPostPassthrough(
+  endpoint: string,
+  body: Record<string, any>
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  logger.debug('HTTP', 'Worker API request (POST passthrough)', undefined, { endpoint });
+
+  try {
+    const response = await workerHttpRequest(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Worker API error (${response.status}): ${errorText}`);
+    }
+
+    return await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
+  } catch (error) {
+    logger.error('HTTP', 'Worker API error (POST passthrough)', { endpoint }, error as Error);
+    return {
+      content: [{
+        type: 'text' as const,
+        text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}`
+      }],
+      isError: true
+    };
+  }
+}
+
 /**
  * Verify Worker is accessible
  */
@@ -582,7 +613,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       }
     },
     handler: async (args: any) => {
-      return await callWorkerAPIPost('/api/memory/drift-check', args);
+      return await callWorkerAPIPostPassthrough('/api/memory/drift-check', args);
     }
   }
 ];

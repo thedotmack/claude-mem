@@ -1758,6 +1758,53 @@ export class SessionStore {
   }
 
   /**
+   * ATOMIC: store a correction observation and mark the original observation stale.
+   */
+  contradictObservation(
+    staleId: number,
+    memorySessionId: string,
+    project: string,
+    observation: {
+      type: string;
+      title: string | null;
+      subtitle: string | null;
+      facts: string[];
+      narrative: string | null;
+      concepts: string[];
+      files_read: string[];
+      files_modified: string[];
+    },
+    promptNumber?: number,
+    discoveryTokens: number = 0,
+    overrideTimestampEpoch?: number,
+    generatedByModel?: string
+  ): { id: number; createdAtEpoch: number } {
+    const contradictTx = this.db.transaction(() => {
+      const result = this.storeObservation(
+        memorySessionId,
+        project,
+        observation,
+        promptNumber,
+        discoveryTokens,
+        overrideTimestampEpoch,
+        generatedByModel
+      );
+
+      const updateResult = this.db.prepare(
+        'UPDATE observations SET is_stale = 1, corrected_by_id = ? WHERE id = ?'
+      ).run(result.id, staleId);
+
+      if (updateResult.changes === 0) {
+        throw new Error(`Observation #${staleId} not found`);
+      }
+
+      return result;
+    });
+
+    return contradictTx();
+  }
+
+  /**
    * Store a session summary (from SDK parsing)
    * Assumes session already exists - will fail with FK error if not
    */

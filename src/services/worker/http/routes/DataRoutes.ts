@@ -168,7 +168,10 @@ export class DataRoutes extends BaseRouteHandler {
     // fire-and-forget — don't block response
     setTimeout(() => {
       try {
-        this.dbManager.getSessionSearch().updateAccessTracking(ids.map(Number));
+        const returnedIds = observations
+          .map(observation => observation?.id)
+          .filter((id): id is number => typeof id === 'number' && Number.isInteger(id));
+        this.dbManager.getSessionSearch().updateAccessTracking(returnedIds);
       } catch {
         // ignore tracking failures
       }

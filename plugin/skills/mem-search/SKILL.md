@@ -97,7 +97,7 @@ get_observations(ids=[11131, 10942])
 
 Use the `save_memory` MCP tool to store manual observations:
 
-```
+```text
 save_memory(text="Important discovery about the auth system", title="Auth Architecture", project="my-project")
 ```
 
@@ -111,7 +111,7 @@ save_memory(text="Important discovery about the auth system", title="Auth Archit
 
 Use the `contradict` MCP tool when a stored memory is no longer accurate:
 
-```
+```text
 contradict(stale_id=11131, correction="Auth now uses session cookies, not JWT tokens", title="Auth Architecture Update")
 ```
 
