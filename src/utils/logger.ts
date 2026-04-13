@@ -44,7 +44,8 @@ class Logger {
    * Initialize log file path and ensure directory exists (lazy initialization)
    */
   private ensureLogFileInitialized(): void {
-    const today = new Date().toISOString().split('T')[0];
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
     // Rotate log file when the date changes (long-running server processes)
     if (this.logFileDate === today) return;
