@@ -11,12 +11,17 @@ export interface BufferedRequest {
   headers?: Record<string, string>; // extra headers to replay
 }
 
+/** Outcome of replaying a single buffered request. */
+export type ReplayResult = 'ok' | 'skip' | 'retry';
+
 export class OfflineBuffer {
   private bufferPath: string;
+  private deadLetterPath: string;
   private replaying = false;  // serialization lock
 
   constructor(dataDir: string) {
     this.bufferPath = path.join(dataDir, 'buffer.jsonl');
+    this.deadLetterPath = path.join(dataDir, 'dead-letter.jsonl');
     mkdirSync(dataDir, { recursive: true });
 
     // Recover stale .replaying file from a previous crash during replay
@@ -70,24 +75,39 @@ export class OfflineBuffer {
     return content.split('\n').filter(line => line.trim().length > 0).length;
   }
 
+  /** Append a permanently-failed request to the dead-letter file. */
+  private deadLetter(entry: BufferedRequest, reason?: string): void {
+    const record = { ...entry, _deadLetterTs: new Date().toISOString(), _reason: reason };
+    appendFileSync(this.deadLetterPath, JSON.stringify(record) + '\n', 'utf-8');
+  }
+
+  /** Get number of dead-lettered requests. */
+  deadLetterCount(): number {
+    if (!existsSync(this.deadLetterPath)) return 0;
+    const content = readFileSync(this.deadLetterPath, 'utf-8').trim();
+    if (!content) return 0;
+    return content.split('\n').filter(line => line.trim().length > 0).length;
+  }
+
   /**
    * Replay buffered requests by calling replayFn for each.
-   * Removes successfully replayed entries via atomic rewrite.
-   * Stops on first failure (retry next cycle).
-   * Returns { replayed, remaining }.
+   * replayFn returns: 'ok' (success), 'skip' (permanent failure → dead-letter), 'retry' (transient → stop).
+   * Returns { replayed, skipped, remaining }.
    */
-  async replay(replayFn: (req: BufferedRequest) => Promise<boolean>): Promise<{ replayed: number; remaining: number }> {
-    if (this.replaying) return { replayed: 0, remaining: this.pendingCount() };
+  async replay(replayFn: (req: BufferedRequest) => Promise<ReplayResult>): Promise<{ replayed: number; skipped: number; remaining: number }> {
+    if (this.replaying) return { replayed: 0, skipped: 0, remaining: this.pendingCount() };
     this.replaying = true;
 
     // Atomic rename: move buffer to .replaying so new appends go to a fresh file.
     // This eliminates the race between replay processing and concurrent appends.
     const replayPath = this.bufferPath + '.replaying';
-    let replayed = 0;  // Declared outside try so catch can use it for partial recovery
+    let processedUpTo = 0;  // index of first unprocessed entry
+    let replayed = 0;
+    let skipped = 0;
     try {
-      if (!existsSync(this.bufferPath)) return { replayed: 0, remaining: 0 };
+      if (!existsSync(this.bufferPath)) return { replayed: 0, skipped: 0, remaining: 0 };
       try { renameSync(this.bufferPath, replayPath); } catch {
-        return { replayed: 0, remaining: this.pendingCount() };
+        return { replayed: 0, skipped: 0, remaining: this.pendingCount() };
       }
 
       const raw = readFileSync(replayPath, 'utf-8');
@@ -99,55 +119,64 @@ export class OfflineBuffer {
       }).filter(Boolean);
       if (entries.length === 0) {
         try { unlinkSync(replayPath); } catch {}
-        return { replayed: 0, remaining: 0 };
+        return { replayed: 0, skipped: 0, remaining: 0 };
       }
-      for (const entry of entries) {
+      for (let i = 0; i < entries.length; i++) {
         try {
-          const ok = await replayFn(entry);
-          if (!ok) break;
-          replayed++;
+          const result = await replayFn(entries[i]);
+          if (result === 'ok') {
+            replayed++;
+            processedUpTo = i + 1;
+          } else if (result === 'skip') {
+            this.deadLetter(entries[i], 'permanent_failure');
+            skipped++;
+            processedUpTo = i + 1;
+            logger.warn('BUFFER', 'Skipped permanently-failed request to dead-letter', {
+              path: entries[i].path, node: entries[i].node, ts: entries[i].ts,
+            });
+          } else {
+            // 'retry' — stop here, keep this entry and all following for next cycle
+            break;
+          }
         } catch (replayError) {
-          logger.warn('BUFFER', 'replayFn threw, stopping replay', { replayed, total: entries.length }, replayError as Error);
+          logger.warn('BUFFER', 'replayFn threw, stopping replay', { replayed, skipped, total: entries.length }, replayError as Error);
           break;
         }
       }
 
-      // Write back ONLY unreplayed entries, then merge any new appends
-      const unreplayed = entries.slice(replayed);
+      // Write back ONLY unprocessed entries, then merge any new appends
+      const unprocessed = entries.slice(processedUpTo);
 
-      if (unreplayed.length > 0) {
-        // Prepend unreplayed entries to whatever was appended during replay
-        const unreplayedContent = unreplayed.map(e => JSON.stringify(e)).join('\n') + '\n';
+      if (unprocessed.length > 0) {
+        const unprocessedContent = unprocessed.map(e => JSON.stringify(e)).join('\n') + '\n';
         const newAppends = existsSync(this.bufferPath) ? readFileSync(this.bufferPath, 'utf-8') : '';
         const tmpPath = this.bufferPath + '.tmp';
-        writeFileSync(tmpPath, unreplayedContent + newAppends, 'utf-8');
+        writeFileSync(tmpPath, unprocessedContent + newAppends, 'utf-8');
         renameSync(tmpPath, this.bufferPath);
       }
-      // Delete replayPath AFTER unreplayed data is safely written to bufferPath.
+      // Delete replayPath AFTER unprocessed data is safely written to bufferPath.
       try { unlinkSync(replayPath); } catch {}
 
       const remaining = existsSync(this.bufferPath) ? this.pendingCount() : 0;
-      logger.info('BUFFER', 'Replay complete', { replayed, remaining });
-      return { replayed, remaining };
+      logger.info('BUFFER', 'Replay complete', { replayed, skipped, remaining });
+      return { replayed, skipped, remaining };
     } catch (error) {
-      // On error, merge ONLY unreplayed entries with any new appends (not full file).
-      // Use the same parsed+filtered entries array to stay aligned with replayed count.
+      // On error, merge ONLY unprocessed entries with any new appends (not full file).
       if (existsSync(replayPath)) {
         try {
           const allEntries: BufferedRequest[] = readFileSync(replayPath, 'utf-8').split('\n').filter(Boolean)
             .map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
-          const unreplayedEntries = allEntries.slice(replayed);
-          const unreplayedContent = unreplayedEntries.length > 0
-            ? unreplayedEntries.map(e => JSON.stringify(e)).join('\n') + '\n' : '';
+          const unprocessedEntries = allEntries.slice(processedUpTo);
+          const unprocessedContent = unprocessedEntries.length > 0
+            ? unprocessedEntries.map(e => JSON.stringify(e)).join('\n') + '\n' : '';
           const newAppends = existsSync(this.bufferPath) ? readFileSync(this.bufferPath, 'utf-8') : '';
-          if (unreplayedContent || newAppends) {
+          if (unprocessedContent || newAppends) {
             const tmpPath = this.bufferPath + '.tmp';
-            writeFileSync(tmpPath, unreplayedContent + newAppends, 'utf-8');
+            writeFileSync(tmpPath, unprocessedContent + newAppends, 'utf-8');
             renameSync(tmpPath, this.bufferPath);
           }
           unlinkSync(replayPath);
         } catch {
-          // Last resort: keep replay file only if bufferPath doesn't exist (avoid overwriting fresh appends)
           if (!existsSync(this.bufferPath)) {
             try { renameSync(replayPath, this.bufferPath); } catch {}
           } else {

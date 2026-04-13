@@ -11,7 +11,7 @@ import path from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { getNodeName, getInstanceName, getLlmSource, clearNodeNameCache } from '../../shared/node-identity.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { OfflineBuffer } from '../infrastructure/OfflineBuffer.js';
+import { OfflineBuffer, type ReplayResult } from '../infrastructure/OfflineBuffer.js';
 import { logger } from '../../utils/logger.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -312,7 +312,7 @@ export class ProxyServer {
               ts: new Date().toISOString(),
               method,
               path: pathname + url.search,
-              body: body ? JSON.parse(body) : null,
+              body: (body && body.trim()) ? JSON.parse(body) : null,
               node: getNodeName(),
               headers: safeHeaders,
             });
@@ -505,7 +505,7 @@ export class ProxyServer {
 
   private replayBuffer(): void {
     this.buffer.replay((entry) => {
-      return new Promise<boolean>((resolve) => {
+      return new Promise<ReplayResult>((resolve) => {
         const headers: Record<string, string> = {
           'Content-Type': 'application/json',
           ...(entry.headers || {}),
@@ -521,12 +521,24 @@ export class ProxyServer {
           method: entry.method,
           headers,
           body: JSON.stringify(entry.body),
-        }).then((r) => resolve(r.statusCode >= 200 && r.statusCode < 300))
-          .catch(() => resolve(false));
+        }).then((r) => {
+          if (r.statusCode >= 200 && r.statusCode < 300) return resolve('ok');
+          // 4xx = permanent failure (bad request, not found, validation error) → skip to dead-letter
+          if (r.statusCode >= 400 && r.statusCode < 500) {
+            logger.warn('PROXY', 'Replay got permanent rejection, skipping', {
+              status: r.statusCode, path: entry.path, node: entry.node,
+            });
+            return resolve('skip');
+          }
+          // 5xx or unexpected status → transient, retry next cycle
+          return resolve('retry');
+        }).catch(() => resolve('retry')); // network error = transient
       });
     }).then((result) => {
-      if (result.replayed > 0) {
-        logger.info('PROXY', 'Buffer replay', { replayed: result.replayed, remaining: result.remaining });
+      if (result.replayed > 0 || result.skipped > 0) {
+        logger.info('PROXY', 'Buffer replay', {
+          replayed: result.replayed, skipped: result.skipped, remaining: result.remaining,
+        });
       }
     }).catch((error) => {
       logger.warn('PROXY', 'Buffer replay error', { error: error instanceof Error ? error.message : String(error) });
