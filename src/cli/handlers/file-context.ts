@@ -106,7 +106,7 @@ function deduplicateObservations(
   return scored.slice(0, displayLimit).map(s => s.obs);
 }
 
-function formatFileTimeline(observations: ObservationRow[], filePath: string): string {
+function formatFileTimeline(observations: ObservationRow[], filePath: string, fileModifiedSinceObservation: boolean): string {
   // Escape filePath for safe interpolation into recovery hints (quotes, backslashes, newlines)
   const safePath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
   // Group observations by day
@@ -138,7 +138,9 @@ function formatFileTimeline(observations: ObservationRow[], filePath: string): s
 
   const lines: string[] = [
     `Current: ${currentDate} ${currentTime} ${currentTimezone}`,
-    `This file has prior observations. Only line 1 was read to save tokens.`,
+    fileModifiedSinceObservation
+      ? `This file has prior observations but has been modified since then. Reading the full file.`
+      : `This file has prior observations. Only line 1 was read to save tokens.`,
     `- **Already know enough?** The timeline below may be all you need (semantic priming).`,
     `- **Need details?** get_observations([IDs]) — ~300 tokens each.`,
     `- **Need full file?** Read again with offset/limit for the section you need.`,
@@ -172,11 +174,14 @@ export const fileContextHandler: EventHandler = {
 
     // Skip gate for files below the token-economics threshold — timeline (~370 tokens)
     // costs more than reading small files directly.
+    // Also capture mtimeMs for later comparison with observation timestamps (issue #1719).
+    let fileMtimeMs: number | null = null;
     try {
       const statPath = path.isAbsolute(filePath)
         ? filePath
         : path.resolve(input.cwd || process.cwd(), filePath);
       const stat = statSync(statPath);
+      fileMtimeMs = stat.mtimeMs;
       if (stat.size < FILE_READ_GATE_MIN_BYTES) {
         return { continue: true, suppressOutput: true };
       }
@@ -233,10 +238,29 @@ export const fileContextHandler: EventHandler = {
         return { continue: true, suppressOutput: true };
       }
 
+      // Check if the file was modified after the most recent observation (issue #1719).
+      // deduplicateObservations input is sorted newest-first, so dedupedObservations
+      // retains the most recent observation per session — the max epoch is preserved.
+      const mostRecentEpoch = Math.max(...dedupedObservations.map(o => o.created_at_epoch));
+      const fileModifiedSinceObservation = fileMtimeMs !== null && fileMtimeMs > mostRecentEpoch;
+
       // Allow the read with limit: 1 line — just enough for Edit's "file must be read"
       // check to pass, while keeping token cost near zero. The observation timeline
       // gives Claude full context about prior work on this file.
-      const timeline = formatFileTimeline(dedupedObservations, filePath);
+      // Exception: if the file was modified after the last observation, allow a full read
+      // so Claude sees the current content (observations may be stale).
+      const timeline = formatFileTimeline(dedupedObservations, filePath, fileModifiedSinceObservation);
+
+      if (fileModifiedSinceObservation) {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            additionalContext: timeline,
+            permissionDecision: 'allow',
+          },
+        };
+      }
+
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
