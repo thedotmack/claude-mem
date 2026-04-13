@@ -136,6 +136,9 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
     if (!existsSync(DATA_DIR)) {
       mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
     }
+    // Fix permissions on pre-existing directories (mode: is only applied on creation)
+    // Note: On Windows, chmod has no effect — permissions are controlled via ACLs.
+    chmodSync(DATA_DIR, 0o700);
 
     // Load existing to preserve any extra keys
     const existing = existsSync(ENV_FILE_PATH)
@@ -176,7 +179,9 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
     }
 
     writeFileSync(ENV_FILE_PATH, serializeEnvFile(updated), { encoding: 'utf-8', mode: 0o600 });
-    // Explicitly set permissions in case the file already existed before this fix
+    // Explicitly set permissions in case the file already existed before this fix.
+    // writeFileSync's mode option only applies on file creation (O_CREAT), not on overwrites.
+    // Note: On Windows, chmod has no effect — permissions are controlled via ACLs.
     chmodSync(ENV_FILE_PATH, 0o600);
   } catch (error) {
     logger.error('ENV', 'Failed to save .env file', { path: ENV_FILE_PATH }, error as Error);
