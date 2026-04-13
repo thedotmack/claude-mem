@@ -300,6 +300,43 @@ Settings are managed in `~/.claude-mem/settings.json` (auto-created with default
 
 See the **[Configuration Guide](https://docs.claude-mem.ai/configuration)** for all available settings and examples.
 
+### Mode & Language Configuration
+
+Claude-Mem supports multiple workflow modes and languages via the `CLAUDE_MEM_MODE` setting.
+
+This option controls both:
+- The workflow behavior (e.g. code, chill, investigation)
+- The language used in generated observations
+
+#### How to configure
+
+Edit your settings file:
+
+```text
+~/.claude-mem/settings.json
+
+Example:
+{
+  "CLAUDE_MEM_MODE": "code--zh"
+}
+
+Available modes
+Modes are defined in:
+plugin/modes/
+
+Common examples:
+
+Mode	Description
+code	Default English coding mode
+code--zh	Simplified Chinese mode
+code--ja	Japanese mode
+
+Note: code--zh (Simplified Chinese) is already built-in.
+No additional installation or plugin update is required.
+
+After changing mode
+Restart Claude Code to apply changes.
+
 ---
 
 ## Development
