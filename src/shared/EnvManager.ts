@@ -9,7 +9,7 @@
  * causing memory operations to bill personal API accounts instead of CLI subscription.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { logger } from '../utils/logger.js';
@@ -132,9 +132,9 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
  */
 export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
   try {
-    // Ensure directory exists
+    // Ensure directory exists with restricted permissions (owner only)
     if (!existsSync(DATA_DIR)) {
-      mkdirSync(DATA_DIR, { recursive: true });
+      mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
     }
 
     // Load existing to preserve any extra keys
@@ -175,7 +175,9 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
       }
     }
 
-    writeFileSync(ENV_FILE_PATH, serializeEnvFile(updated), 'utf-8');
+    writeFileSync(ENV_FILE_PATH, serializeEnvFile(updated), { encoding: 'utf-8', mode: 0o600 });
+    // Explicitly set permissions in case the file already existed before this fix
+    chmodSync(ENV_FILE_PATH, 0o600);
   } catch (error) {
     logger.error('ENV', 'Failed to save .env file', { path: ENV_FILE_PATH }, error as Error);
     throw error;
