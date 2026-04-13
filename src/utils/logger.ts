@@ -33,6 +33,7 @@ class Logger {
   private useColor: boolean;
   private logFilePath: string | null = null;
   private logFileInitialized: boolean = false;
+  private logFileDate: string | null = null;
 
   constructor() {
     // Disable colors when output is not a TTY (e.g., PM2 logs)
@@ -44,8 +45,12 @@ class Logger {
    * Initialize log file path and ensure directory exists (lazy initialization)
    */
   private ensureLogFileInitialized(): void {
-    if (this.logFileInitialized) return;
+    const today = new Date().toISOString().split('T')[0];
+
+    // Rotate log file when the date changes (long-running server processes)
+    if (this.logFileInitialized && this.logFileDate === today) return;
     this.logFileInitialized = true;
+    this.logFileDate = today;
 
     try {
       // Use default data directory to avoid circular dependency with SettingsDefaultsManager
@@ -57,9 +62,8 @@ class Logger {
         mkdirSync(logsDir, { recursive: true });
       }
 
-      // Create log file path with date
-      const date = new Date().toISOString().split('T')[0];
-      this.logFilePath = join(logsDir, `claude-mem-${date}.log`);
+      // Create log file path with current date
+      this.logFilePath = join(logsDir, `claude-mem-${today}.log`);
     } catch (error) {
       // If log file initialization fails, just log to console
       console.error('[LOGGER] Failed to initialize log file:', error);
