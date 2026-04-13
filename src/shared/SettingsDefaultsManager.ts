@@ -19,7 +19,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SKIP_TOOLS: string;
   // AI Provider Configuration
   CLAUDE_MEM_PROVIDER: string;  // 'claude' | 'gemini' | 'openrouter'
-  CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  // 'cli' | 'api' - how Claude provider authenticates
+  CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  // 'cli' | 'api' | 'bedrock' - how Claude provider authenticates
+  CLAUDE_MEM_BEDROCK_AWS_REGION: string;  // AWS region for Bedrock (e.g., 'us-east-1')
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  // 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-3-flash-preview'
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;  // 'true' | 'false' - enable rate limiting for free tier
@@ -91,6 +92,7 @@ export class SettingsDefaultsManager {
     // AI Provider Configuration
     CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'cli',  // Default to CLI subscription billing (not API key)
+    CLAUDE_MEM_BEDROCK_AWS_REGION: 'us-east-1',  // Default AWS region for Bedrock
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',  // Default Gemini model (highest free tier RPM)
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users

@@ -223,7 +223,15 @@ export class WorkerService {
         else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
         return {
           provider,
-          authMethod: getAuthMethodDescription(),
+          authMethod: (() => {
+            try {
+              const { USER_SETTINGS_PATH } = require('../shared/paths.js');
+              const s = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+              return getAuthMethodDescription(s.CLAUDE_MEM_CLAUDE_AUTH_METHOD);
+            } catch {
+              return getAuthMethodDescription();
+            }
+          })(),
           lastInteraction: this.lastAiInteraction
             ? {
                 timestamp: this.lastAiInteraction.timestamp,

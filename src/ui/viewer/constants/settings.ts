@@ -10,6 +10,8 @@ export const DEFAULT_SETTINGS = {
 
   // AI Provider Configuration
   CLAUDE_MEM_PROVIDER: 'claude',
+  CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'cli',
+  CLAUDE_MEM_BEDROCK_AWS_REGION: 'us-east-1',
   CLAUDE_MEM_GEMINI_API_KEY: '',
   CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
   CLAUDE_MEM_OPENROUTER_API_KEY: '',

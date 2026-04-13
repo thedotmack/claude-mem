@@ -35,6 +35,10 @@ export const MANAGED_CREDENTIAL_KEYS = [
   'ANTHROPIC_API_KEY',
   'GEMINI_API_KEY',
   'OPENROUTER_API_KEY',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_REGION',
 ];
 
 export interface ClaudeMemEnv {
@@ -43,6 +47,11 @@ export interface ClaudeMemEnv {
   ANTHROPIC_BASE_URL?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
+  // AWS Bedrock credentials (optional - for Bedrock auth method)
+  AWS_ACCESS_KEY_ID?: string;
+  AWS_SECRET_ACCESS_KEY?: string;
+  AWS_SESSION_TOKEN?: string;
+  AWS_REGION?: string;
 }
 
 /**
@@ -119,6 +128,11 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
     if (parsed.ANTHROPIC_BASE_URL) result.ANTHROPIC_BASE_URL = parsed.ANTHROPIC_BASE_URL;
     if (parsed.GEMINI_API_KEY) result.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
     if (parsed.OPENROUTER_API_KEY) result.OPENROUTER_API_KEY = parsed.OPENROUTER_API_KEY;
+    // AWS Bedrock credentials
+    if (parsed.AWS_ACCESS_KEY_ID) result.AWS_ACCESS_KEY_ID = parsed.AWS_ACCESS_KEY_ID;
+    if (parsed.AWS_SECRET_ACCESS_KEY) result.AWS_SECRET_ACCESS_KEY = parsed.AWS_SECRET_ACCESS_KEY;
+    if (parsed.AWS_SESSION_TOKEN) result.AWS_SESSION_TOKEN = parsed.AWS_SESSION_TOKEN;
+    if (parsed.AWS_REGION) result.AWS_REGION = parsed.AWS_REGION;
 
     return result;
   } catch (error) {
@@ -174,6 +188,16 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
         delete updated.OPENROUTER_API_KEY;
       }
     }
+    // AWS Bedrock credentials
+    const setOrDelete = (key: keyof ClaudeMemEnv) => {
+      if (env[key] !== undefined) {
+        if (env[key]) { updated[key] = env[key]!; } else { delete updated[key]; }
+      }
+    };
+    setOrDelete('AWS_ACCESS_KEY_ID');
+    setOrDelete('AWS_SECRET_ACCESS_KEY');
+    setOrDelete('AWS_SESSION_TOKEN');
+    setOrDelete('AWS_REGION');
 
     writeFileSync(ENV_FILE_PATH, serializeEnvFile(updated), 'utf-8');
   } catch (error) {
@@ -233,6 +257,27 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     if (credentials.OPENROUTER_API_KEY) {
       isolatedEnv.OPENROUTER_API_KEY = credentials.OPENROUTER_API_KEY;
     }
+    // AWS Bedrock credentials from managed .env take precedence over ambient env.
+    // When managed keys are present, clear ALL ambient AWS credential vars first
+    // to prevent hybrid credential sets (e.g., managed key pair + stale ambient session token).
+    const hasManagedAwsCreds = !!(credentials.AWS_ACCESS_KEY_ID || credentials.AWS_SECRET_ACCESS_KEY || credentials.AWS_SESSION_TOKEN);
+    if (hasManagedAwsCreds) {
+      delete isolatedEnv.AWS_ACCESS_KEY_ID;
+      delete isolatedEnv.AWS_SECRET_ACCESS_KEY;
+      delete isolatedEnv.AWS_SESSION_TOKEN;
+    }
+    if (credentials.AWS_ACCESS_KEY_ID) {
+      isolatedEnv.AWS_ACCESS_KEY_ID = credentials.AWS_ACCESS_KEY_ID;
+    }
+    if (credentials.AWS_SECRET_ACCESS_KEY) {
+      isolatedEnv.AWS_SECRET_ACCESS_KEY = credentials.AWS_SECRET_ACCESS_KEY;
+    }
+    if (credentials.AWS_SESSION_TOKEN) {
+      isolatedEnv.AWS_SESSION_TOKEN = credentials.AWS_SESSION_TOKEN;
+    }
+    if (credentials.AWS_REGION) {
+      isolatedEnv.AWS_REGION = credentials.AWS_REGION;
+    }
 
     // 4. Pass through Claude CLI's OAuth token if available (fallback for CLI subscription billing)
     // When no ANTHROPIC_API_KEY is configured, the spawned CLI uses subscription billing
@@ -241,6 +286,34 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     if (!isolatedEnv.ANTHROPIC_API_KEY && process.env.CLAUDE_CODE_OAUTH_TOKEN) {
       isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
     }
+  }
+
+  return isolatedEnv;
+}
+
+/**
+ * Build isolated env with Bedrock support if configured.
+ * Consolidates the sanitizeEnv + buildIsolatedEnv + Bedrock injection pattern
+ * used by SDKAgent and KnowledgeAgent.
+ *
+ * @param settings - Settings object with Bedrock config
+ * @param sanitizeEnv - Environment sanitizer function (passed to avoid circular imports)
+ */
+export function buildIsolatedEnvWithBedrock(
+  settings: { CLAUDE_MEM_CLAUDE_AUTH_METHOD?: string; CLAUDE_MEM_BEDROCK_AWS_REGION?: string },
+  sanitizeEnv: (env: Record<string, string>) => Record<string, string>
+): Record<string, string> {
+  const isolatedEnv = sanitizeEnv(buildIsolatedEnv());
+
+  if (settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD === 'bedrock') {
+    isolatedEnv.CLAUDE_CODE_USE_BEDROCK = '1';
+    if (settings.CLAUDE_MEM_BEDROCK_AWS_REGION) {
+      isolatedEnv.AWS_REGION = settings.CLAUDE_MEM_BEDROCK_AWS_REGION;
+    }
+  } else {
+    // Clear inherited Bedrock flag so switching away from Bedrock auth
+    // doesn't leave subprocesses in Bedrock mode
+    delete isolatedEnv.CLAUDE_CODE_USE_BEDROCK;
   }
 
   return isolatedEnv;
@@ -276,8 +349,12 @@ export function hasAnthropicApiKey(): boolean {
 
 /**
  * Get auth method description for logging
+ * @param authMethod - Optional auth method override (avoids circular dep on SettingsDefaultsManager)
  */
-export function getAuthMethodDescription(): string {
+export function getAuthMethodDescription(authMethod?: string): string {
+  if (authMethod === 'bedrock') {
+    return 'AWS Bedrock (credentials from ~/.claude-mem/.env or ambient AWS config)';
+  }
   if (hasAnthropicApiKey()) {
     return 'API key (from ~/.claude-mem/.env)';
   }

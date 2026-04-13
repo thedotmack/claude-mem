@@ -16,7 +16,7 @@ import type { CorpusFile, QueryResult } from './types.js';
 import { logger } from '../../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../../shared/paths.js';
-import { buildIsolatedEnv } from '../../../shared/EnvManager.js';
+import { buildIsolatedEnvWithBedrock } from '../../../shared/EnvManager.js';
 import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
 
 // Import Agent SDK (V1 API — same pattern as SDKAgent.ts)
@@ -70,7 +70,7 @@ export class KnowledgeAgent {
 
     ensureDir(OBSERVER_SESSIONS_DIR);
     const claudePath = this.findClaudeExecutable();
-    const isolatedEnv = sanitizeEnv(buildIsolatedEnv());
+    const isolatedEnv = this.buildAgentEnv();
 
     const queryResult = query({
       prompt: primePrompt,
@@ -176,7 +176,7 @@ export class KnowledgeAgent {
   private async executeQuery(corpus: CorpusFile, question: string): Promise<QueryResult> {
     ensureDir(OBSERVER_SESSIONS_DIR);
     const claudePath = this.findClaudeExecutable();
-    const isolatedEnv = sanitizeEnv(buildIsolatedEnv());
+    const isolatedEnv = this.buildAgentEnv();
 
     const queryResult = query({
       prompt: question,
@@ -214,6 +214,14 @@ export class KnowledgeAgent {
     }
 
     return { answer, session_id: newSessionId };
+  }
+
+  /**
+   * Build isolated environment with Bedrock support if configured
+   */
+  private buildAgentEnv(): Record<string, string> {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    return buildIsolatedEnvWithBedrock(settings, sanitizeEnv);
   }
 
   /**

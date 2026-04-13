@@ -10,6 +10,7 @@ export const ENV_EXACT_MATCHES = new Set([
 export const ENV_PRESERVE = new Set([
   'CLAUDE_CODE_OAUTH_TOKEN',
   'CLAUDE_CODE_GIT_BASH_PATH',
+  'CLAUDE_CODE_USE_BEDROCK',
 ]);
 
 export function sanitizeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {

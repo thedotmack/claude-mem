@@ -17,7 +17,7 @@ import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../shared/paths.js';
-import { buildIsolatedEnv, getAuthMethodDescription } from '../../shared/EnvManager.js';
+import { buildIsolatedEnvWithBedrock, getAuthMethodDescription } from '../../shared/EnvManager.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
@@ -94,11 +94,12 @@ export class SDKAgent {
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
     await waitForSlot(maxConcurrent);
 
-    // Build isolated environment from ~/.claude-mem/.env
+    // Build isolated environment from ~/.claude-mem/.env with Bedrock support
     // This prevents Issue #733: random ANTHROPIC_API_KEY from project .env files
     // being used instead of the configured auth method (CLI subscription or explicit API key)
-    const isolatedEnv = sanitizeEnv(buildIsolatedEnv());
-    const authMethod = getAuthMethodDescription();
+    const isolatedEnv = buildIsolatedEnvWithBedrock(settings, sanitizeEnv);
+
+    const authMethod = getAuthMethodDescription(settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD);
 
     logger.info('SDK', 'Starting SDK query', {
       sessionDbId: session.sessionDbId,

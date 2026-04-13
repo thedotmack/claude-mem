@@ -10,6 +10,7 @@ import path from 'path';
 import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { getPackageRoot } from '../../../../shared/paths.js';
+import { loadClaudeMemEnv } from '../../../../shared/EnvManager.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
 import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js';
@@ -17,6 +18,9 @@ import { ModeManager } from '../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
+
+/** AWS region format: standard (us-east-1), GovCloud (us-gov-west-1), ISO (us-iso-east-1) */
+export const AWS_REGION_PATTERN = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/;
 
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
@@ -91,6 +95,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORKER_HOST',
       // AI Provider Configuration
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
+      'CLAUDE_MEM_BEDROCK_AWS_REGION',
       'CLAUDE_MEM_GEMINI_API_KEY',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
@@ -239,6 +245,33 @@ export class SettingsRoutes extends BaseRouteHandler {
     const validProviders = ['claude', 'gemini', 'openrouter'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
       return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_CLAUDE_AUTH_METHOD
+    if (settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD) {
+      const validAuthMethods = ['cli', 'api', 'bedrock'];
+      if (!validAuthMethods.includes(settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD)) {
+        return { valid: false, error: 'CLAUDE_MEM_CLAUDE_AUTH_METHOD must be "cli", "api", or "bedrock"' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_BEDROCK_AWS_REGION (supports standard, GovCloud, and iso regions)
+    if (settings.CLAUDE_MEM_BEDROCK_AWS_REGION) {
+      const validRegionPattern = AWS_REGION_PATTERN;
+      if (!validRegionPattern.test(settings.CLAUDE_MEM_BEDROCK_AWS_REGION)) {
+        return { valid: false, error: 'CLAUDE_MEM_BEDROCK_AWS_REGION must be a valid AWS region (e.g., us-east-1, eu-west-2, us-gov-west-1)' };
+      }
+    }
+
+    // Warn if Bedrock auth is selected but no AWS credentials are configured
+    if (settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD === 'bedrock') {
+      const env = loadClaudeMemEnv();
+      const hasFileKeyPair = !!(env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY);
+      const hasAmbientKeyPair = !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
+      const hasProfile = !!(process.env.AWS_PROFILE);
+      if (!hasFileKeyPair && !hasAmbientKeyPair && !hasProfile) {
+        return { valid: false, error: 'Bedrock auth requires AWS credentials. Set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY in ~/.claude-mem/.env or configure AWS_PROFILE in your shell environment.' };
       }
     }
 
