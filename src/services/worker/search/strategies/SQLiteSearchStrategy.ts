@@ -75,11 +75,11 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
         observations = this.sessionSearch.searchObservations(options.query, obsOptions);
       }
 
-      if (searchSessions) {
+      if (!options.query && searchSessions) {
         sessions = this.sessionSearch.searchSessions(undefined, baseOptions);
       }
 
-      if (searchPrompts) {
+      if (!options.query && searchPrompts) {
         prompts = this.sessionSearch.searchUserPrompts(undefined, baseOptions);
       }
 

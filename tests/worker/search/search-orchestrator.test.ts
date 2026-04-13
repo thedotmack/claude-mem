@@ -334,6 +334,8 @@ describe('SearchOrchestrator', () => {
           'semantic query',
           expect.objectContaining({})
         );
+        expect(mockSessionSearch.searchSessions).not.toHaveBeenCalled();
+        expect(mockSessionSearch.searchUserPrompts).not.toHaveBeenCalled();
       });
 
       it('should still work for filter-only queries', async () => {
