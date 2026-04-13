@@ -30,6 +30,7 @@ interface BackfillState {
   lastRun?: string;
 }
 
+/** Options for controlling the transcript backfill process. */
 export interface BackfillOptions {
   path?: string;
   dryRun?: boolean;
@@ -38,6 +39,7 @@ export interface BackfillOptions {
   force?: boolean;
 }
 
+/** Statistics returned after a backfill run completes. */
 export interface BackfillStats {
   filesFound: number;
   filesProcessed: number;
@@ -92,6 +94,7 @@ interface ToolObservation {
 
 const STATE_PATH = join(homedir(), '.claude-mem', 'backfill-state.json');
 
+/** Load persisted backfill state from disk for resume support. */
 function loadBackfillState(): BackfillState {
   if (existsSync(STATE_PATH)) {
     try {
@@ -103,6 +106,7 @@ function loadBackfillState(): BackfillState {
   return { processedFiles: {} };
 }
 
+/** Persist backfill state to disk so interrupted runs can resume. */
 function saveBackfillState(state: BackfillState): void {
   const dir = dirname(STATE_PATH);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -128,12 +132,14 @@ function parseJsonlFile(filePath: string): ClaudeCodeEvent[] {
   return events;
 }
 
+/** Extract a UUID session ID from a JSONL filename, or null if the name is not a valid UUID. */
 function extractSessionId(filePath: string): string | null {
   const name = basename(filePath, '.jsonl');
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   return uuidPattern.test(name) ? name : null;
 }
 
+/** Extract the working directory from the first event that carries a `cwd` field. */
 function extractCwd(events: ClaudeCodeEvent[]): string {
   for (const event of events) {
     if (event.cwd) return event.cwd;
@@ -141,6 +147,7 @@ function extractCwd(events: ClaudeCodeEvent[]): string {
   return process.cwd();
 }
 
+/** Extract the first non-meta user text prompt from a session's events. */
 function extractFirstUserPrompt(events: ClaudeCodeEvent[]): string | null {
   for (const event of events) {
     if (event.type !== 'user') continue;
@@ -155,6 +162,7 @@ function extractFirstUserPrompt(events: ClaudeCodeEvent[]): string | null {
   return null;
 }
 
+/** Extract the last text block from the final assistant message in the event stream. */
 function extractLastAssistantMessage(events: ClaudeCodeEvent[]): string {
   let lastText = '';
   for (const event of events) {
@@ -169,6 +177,7 @@ function extractLastAssistantMessage(events: ClaudeCodeEvent[]): string {
   return lastText;
 }
 
+/** Pair tool_use requests with their corresponding tool_result responses into observations. */
 function extractToolObservations(events: ClaudeCodeEvent[]): ToolObservation[] {
   const observations: ToolObservation[] = [];
   const pendingTools = new Map<string, { name: string; input: unknown }>();

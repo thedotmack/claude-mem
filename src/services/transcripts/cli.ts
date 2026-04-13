@@ -1,16 +1,19 @@
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './config.js';
 import { TranscriptWatcher } from './watcher.js';
 
+/** Get the value following a named argument flag (e.g. `--path /foo` returns `/foo`). */
 function getArgValue(args: string[], name: string): string | null {
   const index = args.indexOf(name);
   if (index === -1) return null;
   return args[index + 1] ?? null;
 }
 
+/** Check whether a boolean flag (e.g. `--dry-run`) is present in the argument list. */
 function hasFlag(args: string[], name: string): boolean {
   return args.includes(name);
 }
 
+/** Dispatch a transcript CLI subcommand (init, watch, backfill, validate) and return its exit code. */
 export async function runTranscriptCommand(subcommand: string | undefined, args: string[]): Promise<number> {
   switch (subcommand) {
     case 'init': {

@@ -162,6 +162,7 @@ export const SAMPLE_CONFIG: TranscriptWatchConfig = {
   stateFile: DEFAULT_STATE_PATH
 };
 
+/** Expand a leading `~` in a file path to the user's home directory. */
 export function expandHomePath(inputPath: string): string {
   if (!inputPath) return inputPath;
   if (inputPath.startsWith('~')) {
@@ -170,6 +171,7 @@ export function expandHomePath(inputPath: string): string {
   return inputPath;
 }
 
+/** Load and validate a transcript watch configuration from a JSON file. */
 export function loadTranscriptWatchConfig(path = DEFAULT_CONFIG_PATH): TranscriptWatchConfig {
   const resolvedPath = expandHomePath(path);
   if (!existsSync(resolvedPath)) {
@@ -186,6 +188,7 @@ export function loadTranscriptWatchConfig(path = DEFAULT_CONFIG_PATH): Transcrip
   return parsed;
 }
 
+/** Write the default sample transcript watch configuration to disk. */
 export function writeSampleConfig(path = DEFAULT_CONFIG_PATH): void {
   const resolvedPath = expandHomePath(path);
   const dir = dirname(resolvedPath);
