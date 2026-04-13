@@ -66,7 +66,7 @@ describe('CleanupJob - runObserverSessionCleanup', () => {
     }
   });
 
-  /** Create a CleanupJob with only observerSessionCleanup enabled, using test dirs */
+  /** Create a CleanupJob with only observerSessionCleanup enabled */
   function makeJob(overrides: { observerSessionMaxAgeDays?: number; observerSessionMaxSizeMB?: number } = {}) {
     const db = new Database(':memory:');
     return new CleanupJob(
@@ -78,8 +78,7 @@ describe('CleanupJob - runObserverSessionCleanup', () => {
         enableObserverSessionCleanup: true,
         observerSessionMaxAgeDays: overrides.observerSessionMaxAgeDays ?? 30,
         observerSessionMaxSizeMB: overrides.observerSessionMaxSizeMB ?? 500,
-      },
-      { observerSessionsDir, claudeConfigDir }
+      }
     );
   }
 
@@ -323,7 +322,9 @@ export interface CleanupResult {
 }
 ```
 
-- [ ] **Step 5: Add `testPaths` parameter to the constructor**
+- [ ] **Step 5: Verify constructor accepts config parameter**
+
+The constructor already accepts `config?: Partial<CleanupConfig>`:
 
 ```typescript
 export class CleanupJob {
@@ -334,8 +335,7 @@ export class CleanupJob {
 
   constructor(
     private db: Database,
-    config?: Partial<CleanupConfig>,
-    private testPaths?: { observerSessionsDir?: string; claudeConfigDir?: string }
+    config?: Partial<CleanupConfig>
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
@@ -460,13 +460,10 @@ Add after `runImportanceRecalc()` and before `startScheduled()`:
    * Matching subdirectories (same name without .jsonl) are also removed.
    */
   private async runObserverSessionCleanup(): Promise<{ deleted: number; freedBytes: number }> {
-    const obsDir = this.testPaths?.observerSessionsDir ?? OBSERVER_SESSIONS_DIR;
-    const claudeDir = this.testPaths?.claudeConfigDir ?? CLAUDE_CONFIG_DIR;
-
     // Derive Claude Code project dir name: replace each '/' with '-'
     // e.g. /Users/foo/.claude-mem/observer-sessions → -Users-foo--claude-mem-observer-sessions
-    const projectDirName = obsDir.replace(/\//g, '-');
-    const projectDir = join(claudeDir, 'projects', projectDirName);
+    const projectDirName = OBSERVER_SESSIONS_DIR.replace(/\//g, '-');
+    const projectDir = join(CLAUDE_CONFIG_DIR, 'projects', projectDirName);
 
     if (!existsSync(projectDir)) {
       logger.debug('CleanupJob', 'Observer sessions project dir not found, skipping', { projectDir });
@@ -651,4 +648,4 @@ EOF
 **Type consistency:**
 - `observerSessionCleanup` field name is consistent across `CleanupResult` (Step 4), `result` initializer (Step 6), Step 4 in `run()` (Step 8), and log statement (Step 9).
 - `runObserverSessionCleanup()` returns `{ deleted: number; freedBytes: number }` — matches usage in Step 8.
-- `testPaths` parameter type `{ observerSessionsDir?: string; claudeConfigDir?: string }` — matches usage in method body and test `makeJob()` call.
+- Constructor accepts `config?: Partial<CleanupConfig>` — matches usage in test `makeJob()` call.

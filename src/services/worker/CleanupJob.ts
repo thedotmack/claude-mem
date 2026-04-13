@@ -431,6 +431,7 @@ export class CleanupJob {
     const anyEnabled =
       this.config.enableMemoryCleanup ||
       this.config.enableAccessCleanup ||
+      this.config.enableImportanceRecalc ||
       this.config.enableObserverSessionCleanup;
 
     if (!anyEnabled) {
@@ -444,7 +445,7 @@ export class CleanupJob {
       try {
         await this.run();
       } catch (error) {
-        logger.error('CleanupJob', 'Scheduled cleanup failed', {}, error);
+        logger.error('CleanupJob', 'Scheduled cleanup failed', {}, error instanceof Error ? error : new Error(String(error)));
       }
     }, intervalMs);
 
