@@ -32,7 +32,6 @@ class Logger {
   private level: LogLevel | null = null;
   private useColor: boolean;
   private logFilePath: string | null = null;
-  private logFileInitialized: boolean = false;
   private logFileDate: string | null = null;
 
   constructor() {
@@ -48,8 +47,7 @@ class Logger {
     const today = new Date().toISOString().split('T')[0];
 
     // Rotate log file when the date changes (long-running server processes)
-    if (this.logFileInitialized && this.logFileDate === today) return;
-    this.logFileInitialized = true;
+    if (this.logFileDate === today) return;
     this.logFileDate = today;
 
     try {
