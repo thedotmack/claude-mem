@@ -347,6 +347,16 @@ export class Server {
    *   Authorization: Bearer <token>
    */
   private initAdminToken(): string {
+    // Ensure DATA_DIR exists before writing token
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+    } catch (mkdirErr) {
+      logger.warn('SECURITY', 'Failed to create data directory for admin token', {
+        dataDir: DATA_DIR,
+        error: mkdirErr instanceof Error ? mkdirErr.message : String(mkdirErr),
+      });
+    }
+
     const token = crypto.randomBytes(32).toString('hex');
     const tokenPath = path.join(DATA_DIR, 'admin.token');
     try {
