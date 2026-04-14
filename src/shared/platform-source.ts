@@ -15,11 +15,14 @@ export function normalizePlatformSource(value?: string | null): string {
   if (source.includes('cursor')) return 'cursor';
   if (source.includes('claude')) return 'claude';
 
+  const piIdentifiers = new Set(['pi', 'pi-agent', 'pi_agent', 'piagent', 'pi-coding-agent']);
+  if (piIdentifiers.has(source)) return 'pi-agent';
+
   return source;
 }
 
 export function sortPlatformSources(sources: string[]): string[] {
-  const priority = ['claude', 'codex', 'cursor'];
+  const priority = ['claude', 'codex', 'cursor', 'pi-agent'];
 
   return [...sources].sort((a, b) => {
     const aPriority = priority.indexOf(a);

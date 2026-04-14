@@ -1,0 +1,10 @@
+This package is part of claude-mem (https://github.com/thedotmack/claude-mem)
+and is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
+Pi-agent adapter contributed by ArtemisAI.
+
+See the full license text at:
+https://github.com/thedotmack/claude-mem/blob/main/LICENSE
+
+SPDX-License-Identifier: AGPL-3.0-or-later

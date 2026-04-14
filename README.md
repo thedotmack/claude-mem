@@ -161,6 +161,16 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 The installer handles dependencies, plugin setup, AI provider configuration, worker startup, and optional real-time observation feeds to Telegram, Discord, Slack, and more. See the [OpenClaw Integration Guide](https://docs.claude-mem.ai/openclaw-integration) for details.
 
+### Pi-Agent (pi-mono)
+
+Install claude-mem as a persistent memory extension for [pi-agents](https://github.com/badlogic/pi-mono):
+
+```bash
+pi install npm:pi-agent-memory
+```
+
+Gives any pi-mono-based agent (pi-coding-agent, OpenClaw, custom runtimes) cross-session memory. Observations are shared across all engines in the same database. See the [pi-agent README](pi-agent/README.md) for full details.
+
 **Key Features:**
 
 - 🧠 **Persistent Memory** - Context survives across sessions

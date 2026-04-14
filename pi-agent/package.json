@@ -1,0 +1,45 @@
+{
+  "name": "pi-agent-memory",
+  "version": "0.2.3",
+  "description": "Persistent memory for pi-agents, powered by claude-mem. Cross-session, cross-engine memory with hybrid search.",
+  "keywords": [
+    "pi-package",
+    "claude-mem",
+    "pi-agent",
+    "pi-coding-agent",
+    "memory",
+    "persistent-memory",
+    "cross-session",
+    "cross-engine"
+  ],
+  "author": "ArtemisAI",
+  "license": "AGPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thedotmack/claude-mem.git",
+    "directory": "pi-agent"
+  },
+  "homepage": "https://github.com/thedotmack/claude-mem/tree/main/pi-agent#readme",
+  "bugs": {
+    "url": "https://github.com/thedotmack/claude-mem/issues"
+  },
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"]
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-ai": "*"
+  },
+  "files": [
+    "extensions",
+    "skills",
+    "banner.png",
+    "README.md",
+    "LICENSE"
+  ]
+}
