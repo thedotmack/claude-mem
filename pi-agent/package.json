@@ -26,7 +26,8 @@
   "type": "module",
   "pi": {
     "extensions": ["./extensions"],
-    "skills": ["./skills"]
+    "skills": ["./skills"],
+    "image": "https://raw.githubusercontent.com/thedotmack/claude-mem/main/pi-agent/banner.png"
   },
   "publishConfig": {
     "access": "public"
