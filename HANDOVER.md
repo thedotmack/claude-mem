@@ -1,7 +1,7 @@
 # Claude-Mem 安全补丁项目 — 交接文档
 
 ## 项目位置
-`F:/AI_tool/claude-mem-patched`
+本仓库根目录（克隆后即可使用）
 
 ## 项目背景
 Claude-mem 是一个 Claude Code 插件，提供跨会话的持久化记忆。本轮工作是对其进行安全加固，防止 token 爆炸、数据库膨胀、OOM、DoS 和 prompt 注入等攻击。

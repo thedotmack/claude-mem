@@ -9,14 +9,15 @@ import { createMiddleware, rateLimit } from '../../src/services/worker/http/midd
 const openServers = new Set<http.Server>();
 
 async function startServer(app: express.Application): Promise<number> {
-  const port = 42000 + Math.floor(Math.random() * 10000);
-  const server = app.listen(port, '127.0.0.1');
+  const server = app.listen(0, '127.0.0.1');
   openServers.add(server);
   await new Promise<void>((resolve, reject) => {
     server.once('listening', resolve);
     server.once('error', reject);
   });
-  return port;
+  const addr = server.address();
+  if (!addr || typeof addr === 'string') throw new Error('unexpected server address');
+  return addr.port;
 }
 
 afterEach(async () => {

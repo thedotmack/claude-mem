@@ -117,9 +117,9 @@ function buildContextOutput(
   // Final output length guard to prevent token explosion
   const MAX_OUTPUT_CHARS = 500_000;
   const rendered = output.join('\n').trimEnd();
+  const TRUNCATION_MARKER = '\n\n... [context truncated — exceeded ' + MAX_OUTPUT_CHARS.toLocaleString() + ' char limit]';
   if (rendered.length > MAX_OUTPUT_CHARS) {
-    return rendered.slice(0, MAX_OUTPUT_CHARS) +
-      '\n\n... [context truncated — exceeded ' + MAX_OUTPUT_CHARS.toLocaleString() + ' char limit]';
+    return rendered.slice(0, MAX_OUTPUT_CHARS - TRUNCATION_MARKER.length) + TRUNCATION_MARKER;
   }
   return rendered;
 }
