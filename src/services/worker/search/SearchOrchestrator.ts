@@ -31,6 +31,9 @@ import type {
   ObservationSearchResult
 } from './types.js';
 import { logger } from '../../../utils/logger.js';
+import { dedupResults } from './dedup.js';
+// NOTE: rrfFusion is available in ./rrf-fusion.js for future use when
+// the strategy pattern is refactored to support parallel FTS5+Chroma execution.
 
 /**
  * Normalized parameters from URL-friendly format
@@ -76,15 +79,17 @@ export class SearchOrchestrator {
   }
 
   /**
-   * Execute search with fallback logic
+   * Execute search with dedup post-processing and fallback logic
    */
   private async executeWithFallback(
     options: NormalizedParams
   ): Promise<StrategySearchResult> {
-    // PATH 1: FILTER-ONLY (no query text) - Use SQLite
+    // PATH 1: FILTER-ONLY (no query text) - Use SQLite, apply dedup
     if (!options.query) {
       logger.debug('SEARCH', 'Orchestrator: Filter-only query, using SQLite', {});
-      return await this.sqliteStrategy.search(options);
+      const result = await this.sqliteStrategy.search(options);
+      result.results.observations = dedupResults(result.results.observations);
+      return result;
     }
 
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
@@ -92,8 +97,8 @@ export class SearchOrchestrator {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
       const result = await this.chromaStrategy.search(options);
 
-      // If Chroma succeeded (even with 0 results), return
       if (result.usedChroma) {
+        result.results.observations = dedupResults(result.results.observations);
         return result;
       }
 
@@ -103,6 +108,7 @@ export class SearchOrchestrator {
         ...options,
         query: undefined // Remove query for SQLite fallback
       });
+      fallbackResult.results.observations = dedupResults(fallbackResult.results.observations);
 
       return {
         ...fallbackResult,
