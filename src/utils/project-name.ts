@@ -78,10 +78,10 @@ export interface ProjectContext {
  * @returns ProjectContext with worktree info
  */
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {
-  const primary = getProjectName(cwd);
+  const cwdProjectName = getProjectName(cwd);
 
   if (!cwd) {
-    return { primary, parent: null, isWorktree: false, allProjects: [primary] };
+    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
   }
 
   const expandedCwd = expandTilde(cwd);
@@ -90,13 +90,14 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
     // In a worktree: use parent project name as primary so observations
     // are stored under the same project as the main repo (#1081, #1500, #1819)
+    const allProjects = Array.from(new Set([worktreeInfo.parentProjectName, cwdProjectName]));
     return {
       primary: worktreeInfo.parentProjectName,
       parent: worktreeInfo.parentProjectName,
       isWorktree: true,
-      allProjects: [worktreeInfo.parentProjectName, primary]
+      allProjects
     };
   }
 
-  return { primary, parent: null, isWorktree: false, allProjects: [primary] };
+  return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
 }
