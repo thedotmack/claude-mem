@@ -9,12 +9,14 @@
  * - Core system endpoints (health, readiness, version, admin)
  */
 
-import express, { Request, Response, Application } from 'express';
+import crypto from 'crypto';
+import express, { Request, Response, NextFunction, Application } from 'express';
 import http from 'http';
 import * as fs from 'fs';
 import path from 'path';
 import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
+import { DATA_DIR } from '../../shared/paths.js';
 import { createMiddleware, summarizeRequestBody, requireLocalhost } from './Middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
@@ -74,10 +76,12 @@ export class Server {
   private server: http.Server | null = null;
   private readonly options: ServerOptions;
   private readonly startTime: number = Date.now();
+  private readonly adminToken: string;
 
   constructor(options: ServerOptions) {
     this.options = options;
     this.app = express();
+    this.adminToken = this.initAdminToken();
     this.setupMiddleware();
     this.setupCoreRoutes();
   }
@@ -237,8 +241,10 @@ export class Server {
       }
     });
 
-    // Admin endpoints for process management (localhost-only)
-    this.app.post('/api/admin/restart', requireLocalhost, async (_req: Request, res: Response) => {
+    // Admin endpoints for process management (localhost-only, token-required)
+    const adminTokenMiddleware = (req: Request, res: Response, next: NextFunction) =>
+      this.requireAdminToken(req, res, next);
+    this.app.post('/api/admin/restart', requireLocalhost, adminTokenMiddleware, async (_req: Request, res: Response) => {
       res.json({ status: 'restarting' });
 
       // Handle Windows managed mode via IPC
@@ -263,7 +269,7 @@ export class Server {
       }
     });
 
-    this.app.post('/api/admin/shutdown', requireLocalhost, async (_req: Request, res: Response) => {
+    this.app.post('/api/admin/shutdown', requireLocalhost, adminTokenMiddleware, async (_req: Request, res: Response) => {
       res.json({ status: 'shutting_down' });
 
       // Handle Windows managed mode via IPC
@@ -290,7 +296,7 @@ export class Server {
     });
 
     // Doctor endpoint - diagnostic view of supervisor, processes, and health
-    this.app.get('/api/admin/doctor', requireLocalhost, (_req: Request, res: Response) => {
+    this.app.get('/api/admin/doctor', requireLocalhost, adminTokenMiddleware, (_req: Request, res: Response) => {
       const supervisor = getSupervisor();
       const registry = supervisor.getRegistry();
       const allRecords = registry.getAll();
@@ -332,6 +338,56 @@ export class Server {
         },
       });
     });
+  }
+
+  /**
+   * Generate a cryptographically random admin token, persist it to disk with
+   * mode 0o600 (owner read/write only), and return it.  Authorised callers
+   * read the token from DATA_DIR/admin.token and pass it as:
+   *   Authorization: Bearer <token>
+   */
+  private initAdminToken(): string {
+    const token = crypto.randomBytes(32).toString('hex');
+    const tokenPath = path.join(DATA_DIR, 'admin.token');
+    try {
+      fs.writeFileSync(tokenPath, token, { mode: 0o600 });
+    } catch (err) {
+      logger.warn('SECURITY', 'Failed to write admin token file - admin endpoints still require a valid token', {
+        tokenPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return token;
+  }
+
+  /**
+   * Middleware that enforces a shared-secret Bearer token on admin endpoints.
+   * Uses a constant-time comparison to prevent timing-based token oracle attacks.
+   */
+  private requireAdminToken(req: Request, res: Response, next: NextFunction): void {
+    const authHeader = req.headers['authorization'] ?? '';
+    const provided = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+
+    const providedBuf = Buffer.from(provided);
+    const expectedBuf = Buffer.from(this.adminToken);
+
+    // Lengths must match before timingSafeEqual (different lengths → immediate reject)
+    const valid =
+      providedBuf.length === expectedBuf.length &&
+      crypto.timingSafeEqual(providedBuf, expectedBuf);
+
+    if (!valid) {
+      logger.warn('SECURITY', 'Admin endpoint access denied - invalid or missing token', {
+        endpoint: req.path,
+        method: req.method,
+      });
+      res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Valid admin token required',
+      });
+      return;
+    }
+    next();
   }
 
   /**
