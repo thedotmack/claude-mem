@@ -308,9 +308,6 @@ This option controls both:
 - The workflow behavior (e.g. code, chill, investigation)
 - The language used in generated observations
 
-#### How to configure
-
-Edit your settings file:
 
 #### How to Configure
 
@@ -320,9 +317,7 @@ Modes are defined in:
 
 ```text
 plugin/modes/
-
 ```
-
 
 #### Available modes
 
@@ -332,12 +327,10 @@ plugin/modes/
 | `code--zh` | Simplified Chinese mode |
 | `code--ja` | Japanese mode           |
 
-
-Note: code--zh (Simplified Chinese) is already built-in.
-No additional installation or plugin update is required.
-
-After changing mode
-Restart Claude Code to apply changes.
+> Note: `code--zh` (Simplified Chinese) is already built-in.  
+> No additional installation or plugin update is required.
+>After changing mode
+>Restart Claude Code to apply changes.
 
 ---
 
