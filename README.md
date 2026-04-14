@@ -312,17 +312,9 @@ This option controls both:
 
 Edit your settings file:
 
-```text
-~/.claude-mem/settings.json
-```
+#### How to Configure
 
-Example:
-
-```json
-{
-  "CLAUDE_MEM_MODE": "code--zh"
-}
-```
+Edit your settings file at `~/.claude-mem/settings.json`:
 
 Modes are defined in:
 
