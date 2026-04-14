@@ -88,9 +88,10 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   const worktreeInfo = detectWorktree(expandedCwd);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
-    // In a worktree: include parent first for chronological ordering
+    // In a worktree: use parent project name as primary so observations
+    // are stored under the same project as the main repo (#1081, #1500, #1819)
     return {
-      primary,
+      primary: worktreeInfo.parentProjectName,
       parent: worktreeInfo.parentProjectName,
       isWorktree: true,
       allProjects: [worktreeInfo.parentProjectName, primary]

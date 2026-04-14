@@ -22,7 +22,7 @@ import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProcessBySession, ensureProcessExit } from '../../ProcessRegistry.js';
-import { getProjectName } from '../../../../utils/project-name.js';
+import { getProjectContext } from '../../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 
 export class SessionRoutes extends BaseRouteHandler {
@@ -507,7 +507,7 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
-    const project = typeof cwd === 'string' && cwd.trim() ? getProjectName(cwd) : '';
+    const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : '';
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');

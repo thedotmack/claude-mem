@@ -96,4 +96,39 @@ describe('getProjectContext', () => {
     expect(ctx.primary).toBe('unknown-project');
     expect(ctx.parent).toBeNull();
   });
+
+  describe('worktree regression (#1081, #1500, #1819)', () => {
+    it('uses parent project name as primary when in a worktree', async () => {
+      // Set up a temporary worktree-like structure:
+      // tmpdir/main-repo/.git/worktrees/my-worktree/  (git metadata)
+      // tmpdir/main-repo/.worktrees/my-worktree/.git  (file pointing to metadata)
+      const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('fs');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      const tmp = mkdtempSync(join(tmpdir(), 'cm-wt-'));
+      const mainRepo = join(tmp, 'main-repo');
+      const worktreeGitDir = join(mainRepo, '.git', 'worktrees', 'my-worktree');
+      const worktreeCheckout = join(tmp, 'my-worktree');
+
+      try {
+        // Create main repo .git dir with worktree metadata
+        mkdirSync(worktreeGitDir, { recursive: true });
+        // Create worktree checkout with .git file pointing to main repo
+        mkdirSync(worktreeCheckout, { recursive: true });
+        writeFileSync(
+          join(worktreeCheckout, '.git'),
+          `gitdir: ${worktreeGitDir}\n`
+        );
+
+        const ctx = getProjectContext(worktreeCheckout);
+        expect(ctx.isWorktree).toBe(true);
+        expect(ctx.primary).toBe('main-repo');
+        expect(ctx.parent).toBe('main-repo');
+        expect(ctx.allProjects).toEqual(['main-repo', 'my-worktree']);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+  });
 });
