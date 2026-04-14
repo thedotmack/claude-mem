@@ -114,7 +114,14 @@ function buildContextOutput(
   // Render footer
   output.push(...renderFooter(economics, config, forHuman));
 
-  return output.join('\n').trimEnd();
+  // Final output length guard to prevent token explosion
+  const MAX_OUTPUT_CHARS = 500_000;
+  const rendered = output.join('\n').trimEnd();
+  if (rendered.length > MAX_OUTPUT_CHARS) {
+    return rendered.slice(0, MAX_OUTPUT_CHARS) +
+      '\n\n... [context truncated — exceeded ' + MAX_OUTPUT_CHARS.toLocaleString() + ' char limit]';
+  }
+  return rendered;
 }
 
 /**
@@ -135,10 +142,13 @@ export async function generateContext(
   // Use provided projects array (for worktree support) or fall back to single project
   const projects = input?.projects || [project];
 
-  // Full mode: fetch all observations but keep normal rendering (level 1 summaries)
+  // Full mode: fetch more observations but enforce hard caps to prevent token explosion
+  const FULL_MODE_MAX_OBSERVATIONS = 500;
+  const FULL_MODE_MAX_SESSIONS = 50;
+
   if (input?.full) {
-    config.totalObservationCount = 999999;
-    config.sessionCount = 999999;
+    config.totalObservationCount = FULL_MODE_MAX_OBSERVATIONS;
+    config.sessionCount = FULL_MODE_MAX_SESSIONS;
   }
 
   // Initialize database

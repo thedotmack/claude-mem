@@ -26,6 +26,7 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
 import { isDirectChild } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
+import { sanitizeContextContent } from '../utils/context-injection.js';
 
 const DB_PATH = path.join(os.homedir(), '.claude-mem', 'claude-mem.db');
 const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
@@ -281,22 +282,23 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
     existingContent = readFileSync(claudeMdPath, 'utf-8');
   }
 
+  const sanitized = sanitizeContextContent(newContent);
   const startTag = '<claude-mem-context>';
   const endTag = '</claude-mem-context>';
 
   let finalContent: string;
   if (!existingContent) {
-    finalContent = `${startTag}\n${newContent}\n${endTag}`;
+    finalContent = `${startTag}\n${sanitized}\n${endTag}`;
   } else {
     const startIdx = existingContent.indexOf(startTag);
     const endIdx = existingContent.indexOf(endTag);
 
     if (startIdx !== -1 && endIdx !== -1) {
       finalContent = existingContent.substring(0, startIdx) +
-        `${startTag}\n${newContent}\n${endTag}` +
+        `${startTag}\n${sanitized}\n${endTag}` +
         existingContent.substring(endIdx + endTag.length);
     } else {
-      finalContent = existingContent + `\n\n${startTag}\n${newContent}\n${endTag}`;
+      finalContent = existingContent + `\n\n${startTag}\n${sanitized}\n${endTag}`;
     }
   }
 

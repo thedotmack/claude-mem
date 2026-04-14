@@ -13,6 +13,19 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 
+// --- Payload truncation to prevent database bloat (P2 patch) ---
+const MAX_INPUT_CHARS = 50 * 1024;   // ~50K characters
+const MAX_RESPONSE_CHARS = 100 * 1024; // ~100K characters
+const LIGHTWEIGHT_INPUT_CHARS = 1024;  // ~1K characters for low-value tools
+const LIGHTWEIGHT_TOOLS = new Set(['Read', 'Glob', 'Grep', 'Ls', 'ListMcpResourcesTool']);
+
+export function truncatePayload(text: string | undefined, maxChars: number): string {
+  if (!text) return '';
+  if (text.length <= maxChars) return text;
+  const truncated = text.slice(0, maxChars);
+  return truncated + `\n... [truncated, ${(text.length - maxChars).toLocaleString()} chars omitted]`;
+}
+
 export const observationHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     // Ensure worker is running before any other logic
@@ -47,6 +60,8 @@ export const observationHandler: EventHandler = {
     }
 
     // Send to worker - worker handles privacy check and database operations
+    const isLightweight = LIGHTWEIGHT_TOOLS.has(toolName);
+
     try {
       const response = await workerHttpRequest('/api/sessions/observations', {
         method: 'POST',
@@ -55,8 +70,8 @@ export const observationHandler: EventHandler = {
           contentSessionId: sessionId,
           platformSource,
           tool_name: toolName,
-          tool_input: toolInput,
-          tool_response: toolResponse,
+          tool_input: truncatePayload(toolInput, isLightweight ? LIGHTWEIGHT_INPUT_CHARS : MAX_INPUT_CHARS),
+          tool_response: isLightweight ? '' : truncatePayload(toolResponse, MAX_RESPONSE_CHARS),
           cwd
         })
       });

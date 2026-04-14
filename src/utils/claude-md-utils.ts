@@ -14,6 +14,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { logger } from './logger.js';
+import { sanitizeContextContent } from './context-injection.js';
 import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../shared/worker-utils.js';
@@ -103,12 +104,13 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
  * 3. No tags in existing content → appends tagged content at end
  */
 export function replaceTaggedContent(existingContent: string, newContent: string): string {
+  const sanitized = sanitizeContextContent(newContent);
   const startTag = '<claude-mem-context>';
   const endTag = '</claude-mem-context>';
 
   // If no existing content, wrap new content in tags
   if (!existingContent) {
-    return `${startTag}\n${newContent}\n${endTag}`;
+    return `${startTag}\n${sanitized}\n${endTag}`;
   }
 
   // If existing has tags, replace only tagged section
@@ -117,12 +119,12 @@ export function replaceTaggedContent(existingContent: string, newContent: string
 
   if (startIdx !== -1 && endIdx !== -1) {
     return existingContent.substring(0, startIdx) +
-      `${startTag}\n${newContent}\n${endTag}` +
+      `${startTag}\n${sanitized}\n${endTag}` +
       existingContent.substring(endIdx + endTag.length);
   }
 
   // If no tags exist, append tagged content at end
-  return existingContent + `\n\n${startTag}\n${newContent}\n${endTag}`;
+  return existingContent + `\n\n${startTag}\n${sanitized}\n${endTag}`;
 }
 
 /**

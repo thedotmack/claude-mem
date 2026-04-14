@@ -17,6 +17,22 @@ export const CONTEXT_TAG_OPEN = '<claude-mem-context>';
 export const CONTEXT_TAG_CLOSE = '</claude-mem-context>';
 
 // ============================================================================
+// Sanitization
+// ============================================================================
+
+/**
+ * Escape context tags in content to prevent tag injection.
+ * If observation data contains a literal <claude-mem-context> or
+ * </claude-mem-context>, it could create false boundaries and
+ * corrupt the markdown file structure.
+ */
+export function sanitizeContextContent(content: string): string {
+  return content
+    .replace(/<claude-mem-context>/gi, '&lt;claude-mem-context&gt;')
+    .replace(/<\/claude-mem-context>/gi, '&lt;/claude-mem-context&gt;');
+}
+
+// ============================================================================
 // Context Injection
 // ============================================================================
 
@@ -37,7 +53,8 @@ export function injectContextIntoMarkdownFile(
   const parentDirectory = path.dirname(filePath);
   mkdirSync(parentDirectory, { recursive: true });
 
-  const wrappedContent = `${CONTEXT_TAG_OPEN}\n${contextContent}\n${CONTEXT_TAG_CLOSE}`;
+  const sanitized = sanitizeContextContent(contextContent);
+  const wrappedContent = `${CONTEXT_TAG_OPEN}\n${sanitized}\n${CONTEXT_TAG_CLOSE}`;
 
   if (existsSync(filePath)) {
     let existingContent = readFileSync(filePath, 'utf-8');

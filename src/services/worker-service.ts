@@ -87,7 +87,8 @@ import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
 
-// HTTP route handlers
+// HTTP route handlers & middleware
+import { rateLimit } from './worker/http/middleware.js';
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
@@ -294,6 +295,10 @@ export class WorkerService {
         });
       }
     });
+
+    // Rate-limit all /api routes (300 req/min per client+method+route)
+    // Excludes health/readiness/version (registered in Server.ts before this)
+    this.server.app.use('/api', rateLimit(300, 60_000));
 
     // Standard routes (registered AFTER guard middleware)
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));

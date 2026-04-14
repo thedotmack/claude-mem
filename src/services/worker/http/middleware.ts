@@ -21,8 +21,8 @@ export function createMiddleware(
 ): RequestHandler[] {
   const middlewares: RequestHandler[] = [];
 
-  // JSON parsing with 50mb limit
-  middlewares.push(express.json({ limit: '50mb' }));
+  // JSON parsing with 5mb limit (reduced from 50mb to prevent OOM)
+  middlewares.push(express.json({ limit: '5mb' }));
 
   // CORS - restrict to localhost origins only
   middlewares.push(cors({
@@ -76,6 +76,61 @@ export function createMiddleware(
   middlewares.push(express.static(uiDir));
 
   return middlewares;
+}
+
+interface RateLimitEntry {
+  count: number;
+  resetTime: number;
+}
+
+/**
+ * Simple in-memory rate limiter for context API endpoints.
+ * Limits are scoped per middleware instance and per client/method/route tuple.
+ */
+export function rateLimit(maxRequests: number, windowMs: number): RequestHandler {
+  if (!Number.isInteger(maxRequests) || maxRequests < 1) {
+    throw new RangeError('maxRequests must be a positive integer');
+  }
+
+  if (!Number.isInteger(windowMs) || windowMs < 1) {
+    throw new RangeError('windowMs must be a positive integer');
+  }
+
+  const counters = new Map<string, RateLimitEntry>();
+  let lastPruneTime = 0;
+
+  return (req: Request, res: Response, next: NextFunction) => {
+    const now = Date.now();
+
+    // Opportunistically prune expired entries so the map does not grow forever.
+    if (now - lastPruneTime >= windowMs) {
+      for (const [key, entry] of counters.entries()) {
+        if (now >= entry.resetTime) {
+          counters.delete(key);
+        }
+      }
+      lastPruneTime = now;
+    }
+
+    const clientId = req.ip || req.socket.remoteAddress || 'unknown';
+    const route = `${req.baseUrl}${req.path}`;
+    const key = `${clientId}:${req.method}:${route}`;
+    const entry = counters.get(key);
+
+    if (!entry || now >= entry.resetTime) {
+      counters.set(key, { count: 1, resetTime: now + windowMs });
+      return next();
+    }
+
+    if (entry.count >= maxRequests) {
+      const retryAfterMs = Math.max(entry.resetTime - now, 0);
+      res.setHeader('Retry-After', String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
+      return res.status(429).json({ error: 'Too many requests', retryAfterMs });
+    }
+
+    entry.count += 1;
+    return next();
+  };
 }
 
 /**
