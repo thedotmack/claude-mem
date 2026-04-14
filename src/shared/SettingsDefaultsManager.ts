@@ -66,6 +66,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TIER_ROUTING_ENABLED: string;   // 'true' | 'false' - enable model tier routing
   CLAUDE_MEM_TIER_SIMPLE_MODEL: string;      // Tier alias or model ID for simple tool observations (Read, Glob, Grep)
   CLAUDE_MEM_TIER_SUMMARY_MODEL: string;     // Tier alias or model ID for session summaries
+  // Search Dedup Pipeline
+  CLAUDE_MEM_SEARCH_DEDUP_ENABLED: string;          // 'true' | 'false' - enable post-search dedup pipeline
+  CLAUDE_MEM_SEARCH_DEDUP_MAX_PROJECT_RATIO: string; // Max ratio of results from a single project (default: 0.6)
+  CLAUDE_MEM_SEARCH_DEDUP_MAX_PER_SESSION: string;   // Max results per session in final output (default: 8)
   // Chroma Vector Database Configuration
   CLAUDE_MEM_CHROMA_ENABLED: string;   // 'true' | 'false' - set to 'false' for SQLite-only mode
   CLAUDE_MEM_CHROMA_MODE: string;      // 'local' | 'remote'
@@ -137,6 +141,10 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',         // Route observations to models by complexity
     CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku', // Portable tier alias — works across Direct API, Bedrock, Vertex, Azure (see #1463)
     CLAUDE_MEM_TIER_SUMMARY_MODEL: '',                // Empty = use default model for summaries
+    // Search Dedup Pipeline
+    CLAUDE_MEM_SEARCH_DEDUP_ENABLED: 'true',            // Post-search dedup to reduce redundancy and save tokens
+    CLAUDE_MEM_SEARCH_DEDUP_MAX_PROJECT_RATIO: '0.6',   // No single project > 60% of results
+    CLAUDE_MEM_SEARCH_DEDUP_MAX_PER_SESSION: '8',       // Conservative: ~10% token savings, ~10% fact loss, 0 high-score drops
     // Chroma Vector Database Configuration
     CLAUDE_MEM_CHROMA_ENABLED: 'true',         // Set to 'false' to disable Chroma and use SQLite-only search
     CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' uses persistent chroma-mcp via uvx, 'remote' connects to existing server

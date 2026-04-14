@@ -28,9 +28,11 @@ import { ModeManager } from '../domain/ModeManager.js';
 import {
   SearchOrchestrator,
   TimelineBuilder,
-  SEARCH_CONSTANTS
+  SEARCH_CONSTANTS,
+  dedupResults
 } from './search/index.js';
-import type { TimelineData } from './search/index.js';
+import type { TimelineData, DedupOptions } from './search/index.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
@@ -260,6 +262,23 @@ export class SearchManager {
       observations = [];
       sessions = [];
       prompts = [];
+    }
+
+    // Apply dedup pipeline to observations (project diversity + session cap)
+    if (observations.length > 1 && SettingsDefaultsManager.getBool('CLAUDE_MEM_SEARCH_DEDUP_ENABLED')) {
+      const beforeCount = observations.length;
+      const dedupOpts: DedupOptions = {
+        maxProjectRatio: parseFloat(SettingsDefaultsManager.get('CLAUDE_MEM_SEARCH_DEDUP_MAX_PROJECT_RATIO')),
+        maxPerSession: SettingsDefaultsManager.getInt('CLAUDE_MEM_SEARCH_DEDUP_MAX_PER_SESSION'),
+      };
+      observations = dedupResults(observations, dedupOpts);
+      if (observations.length < beforeCount) {
+        logger.debug('SEARCH', 'Dedup pipeline reduced observations', {
+          before: beforeCount,
+          after: observations.length,
+          dropped: beforeCount - observations.length,
+        });
+      }
     }
 
     const totalResults = observations.length + sessions.length + prompts.length;

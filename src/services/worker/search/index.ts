@@ -7,6 +7,10 @@
 // Main orchestrator
 export { SearchOrchestrator } from './SearchOrchestrator.js';
 
+// Dedup pipeline
+export { dedupResults, jaccardSimilarity } from './dedup.js';
+export type { DedupableResult, DedupOptions } from './dedup.js';
+
 // Formatters
 export { ResultFormatter } from './ResultFormatter.js';
 export { TimelineBuilder } from './TimelineBuilder.js';
