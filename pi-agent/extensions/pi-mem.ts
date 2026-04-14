@@ -251,7 +251,7 @@ export default function piMemExtension(pi: ExtensionAPI) {
 
 		// Truncate to prevent oversized payloads
 		if (toolResponseText.length > MAX_TOOL_RESPONSE_LENGTH) {
-			toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
+			toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH - 12) + " [truncated]";
 		}
 
 		workerPostFireAndForget("/api/sessions/observations", {
@@ -289,7 +289,7 @@ export default function piMemExtension(pi: ExtensionAPI) {
 						lastAssistantMessage = msg.content;
 					} else if (Array.isArray(msg.content)) {
 						lastAssistantMessage = msg.content
-							.filter((block): block is { type: "text"; text: string } => block.type === "text")
+							.filter((block): block is { type: "text"; text: string } => block.type === "text" && "text" in block)
 							.map((block) => block.text)
 							.join("\n");
 					}
