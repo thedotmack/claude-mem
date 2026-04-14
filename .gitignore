@@ -38,3 +38,10 @@ src/ui/viewer.html
 
 # Local contribution analysis (not part of upstream)
 CONTRIB_NOTES.md
+
+# Python bytecode from scripts/swebench/
+__pycache__/
+*.pyc
+
+# SWE-bench runner outputs
+scripts/swebench/out/
