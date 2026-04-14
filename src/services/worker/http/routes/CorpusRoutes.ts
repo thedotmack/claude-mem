@@ -11,6 +11,7 @@ import { CorpusStore } from '../../knowledge/CorpusStore.js';
 import { CorpusBuilder } from '../../knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from '../../knowledge/KnowledgeAgent.js';
 import type { CorpusFilter } from '../../knowledge/types.js';
+import { logger } from '../../../../utils/logger.js';
 
 export class CorpusRoutes extends BaseRouteHandler {
   constructor(
@@ -30,6 +31,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     app.post('/api/corpus/:name/prime', this.handlePrimeCorpus.bind(this));
     app.post('/api/corpus/:name/query', this.handleQueryCorpus.bind(this));
     app.post('/api/corpus/:name/reprime', this.handleReprimeCorpus.bind(this));
+    logger.debug('ROUTES', 'Corpus routes registered');
   }
 
   /**

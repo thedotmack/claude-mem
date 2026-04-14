@@ -38,6 +38,10 @@ const EXCLUDED_PATTERNS = [
   /cli\/hook-command\.ts$/,  // CLI hook command uses console.log/error for hook protocol output
   /cli\/handlers\/user-message\.ts$/,  // User message handler uses console.error for user-visible context
   /services\/transcripts\/cli\.ts$/,  // CLI transcript subcommands use console.log for user-visible interactive output
+  /^npx-cli\//,  // npx CLI commands use console.log for user-visible installation/runtime output
+  /smart-file-read\/parser\.ts$/,  // Grammar loading uses console.error for missing optional dependencies
+  /integrations\/McpIntegrations\.ts$/,  // MCP installer uses console.log for user-visible installation output
+  /knowledge\/CorpusRenderer\.ts$/,  // Pure data transformer — no I/O or error paths to log
 ];
 
 // Files that should always use logger (core business logic)
