@@ -32,7 +32,7 @@ export const summarizeHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    const { sessionId, transcriptPath } = input;
+    const { sessionId, transcriptPath, metadata } = input;
 
     // Validate required fields before processing
     if (!transcriptPath) {
@@ -66,13 +66,18 @@ export const summarizeHandler: EventHandler = {
       hasLastAssistantMessage: !!lastAssistantMessage
     });
 
+    // Detect platform source (Gemini CLI sets hook_event_name in metadata)
+    const platformSource = metadata?.hook_event_name ? 'gemini-cli' : 'claude';
+
     // 1. Queue summarize request — worker returns immediately with { status: 'queued' }
     const response = await workerHttpRequest('/api/sessions/summarize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contentSessionId: sessionId,
-        last_assistant_message: lastAssistantMessage
+        last_assistant_message: lastAssistantMessage,
+        platform_source: platformSource,
+        platformSource
       }),
       timeoutMs: SUMMARIZE_TIMEOUT_MS
     });
@@ -114,7 +119,11 @@ export const summarizeHandler: EventHandler = {
       await workerHttpRequest('/api/sessions/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contentSessionId: sessionId }),
+        body: JSON.stringify({
+          contentSessionId: sessionId,
+          platform_source: platformSource,
+          platformSource
+        }),
         timeoutMs: 10_000
       });
       logger.info('HOOK', 'Session completed in Stop hook', { contentSessionId: sessionId });
