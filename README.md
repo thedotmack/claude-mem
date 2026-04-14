@@ -324,9 +324,12 @@ Example:
 }
 ```
 
-Modes are defined in:-
+Modes are defined in:
+
+```text
 plugin/modes/
 
+```
 #### Available modes
 
 | Mode       | Description             |
@@ -334,7 +337,6 @@ plugin/modes/
 | `code`     | Default English mode    |
 | `code--zh` | Simplified Chinese mode |
 | `code--ja` | Japanese mode           |
-
 Note: code--zh (Simplified Chinese) is already built-in.
 No additional installation or plugin update is required.
 
