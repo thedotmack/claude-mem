@@ -129,11 +129,12 @@ export async function generateContext(
 ): Promise<string> {
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
-  const project = getProjectContext(cwd).primary;
+  const context = getProjectContext(cwd);
+  const project = context.primary;
   const platformSource = input?.platform_source;
 
-  // Use provided projects array (for worktree support) or fall back to single project
-  const projects = input?.projects || [project];
+  // Use provided projects array (for worktree support) or fall back to all known projects
+  const projects = input?.projects ?? context.allProjects;
 
   // Full mode: fetch all observations but keep normal rendering (level 1 summaries)
   if (input?.full) {

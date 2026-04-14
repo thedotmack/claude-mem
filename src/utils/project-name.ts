@@ -58,13 +58,13 @@ export function getProjectName(cwd: string | null | undefined): string {
  * Project context with worktree awareness
  */
 export interface ProjectContext {
-  /** The current project name (worktree or main repo) */
+  /** Canonical project name for writes/queries (parent repo in worktrees) */
   primary: string;
   /** Parent project name if in a worktree, null otherwise */
   parent: string | null;
   /** True if currently in a worktree */
   isWorktree: boolean;
-  /** All projects to query: [primary] for main repo, [parent, primary] for worktree */
+  /** All projects to query: [primary] for main repo, [parentRepo, worktreeName] for worktree */
   allProjects: string[];
 }
 

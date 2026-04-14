@@ -5,7 +5,7 @@
  * Source: src/utils/project-name.ts
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { homedir } from 'os';
 import { getProjectName, getProjectContext } from '../../src/utils/project-name.js';
 
@@ -98,37 +98,49 @@ describe('getProjectContext', () => {
   });
 
   describe('worktree regression (#1081, #1500, #1819)', () => {
-    it('uses parent project name as primary when in a worktree', async () => {
-      // Set up a temporary worktree-like structure:
-      // tmpdir/main-repo/.git/worktrees/my-worktree/  (git metadata)
-      // tmpdir/main-repo/.worktrees/my-worktree/.git  (file pointing to metadata)
-      const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('fs');
+    let tmp: string;
+    let mainRepo: string;
+    let worktreeCheckout: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, writeFileSync } = await import('fs');
       const { join } = await import('path');
       const { tmpdir } = await import('os');
 
-      const tmp = mkdtempSync(join(tmpdir(), 'cm-wt-'));
-      const mainRepo = join(tmp, 'main-repo');
+      tmp = mkdtempSync(join(tmpdir(), 'cm-wt-'));
+      mainRepo = join(tmp, 'main-repo');
       const worktreeGitDir = join(mainRepo, '.git', 'worktrees', 'my-worktree');
-      const worktreeCheckout = join(tmp, 'my-worktree');
+      worktreeCheckout = join(tmp, 'my-worktree');
 
-      try {
-        // Create main repo .git dir with worktree metadata
-        mkdirSync(worktreeGitDir, { recursive: true });
-        // Create worktree checkout with .git file pointing to main repo
-        mkdirSync(worktreeCheckout, { recursive: true });
-        writeFileSync(
-          join(worktreeCheckout, '.git'),
-          `gitdir: ${worktreeGitDir}\n`
-        );
+      mkdirSync(worktreeGitDir, { recursive: true });
+      mkdirSync(worktreeCheckout, { recursive: true });
+      writeFileSync(
+        join(worktreeCheckout, '.git'),
+        `gitdir: ${worktreeGitDir}\n`
+      );
+    });
 
-        const ctx = getProjectContext(worktreeCheckout);
-        expect(ctx.isWorktree).toBe(true);
-        expect(ctx.primary).toBe('main-repo');
-        expect(ctx.parent).toBe('main-repo');
-        expect(ctx.allProjects).toEqual(['main-repo', 'my-worktree']);
-      } finally {
-        rmSync(tmp, { recursive: true, force: true });
-      }
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('uses parent project name as primary when in a worktree', () => {
+      const ctx = getProjectContext(worktreeCheckout);
+      expect(ctx.isWorktree).toBe(true);
+      expect(ctx.primary).toBe('main-repo');
+      expect(ctx.parent).toBe('main-repo');
+      expect(ctx.allProjects).toEqual(['main-repo', 'my-worktree']);
+    });
+
+    it('write-path call sites resolve to parent project in worktrees', () => {
+      // Mirrors the pattern used by session-init.ts and SessionRoutes.ts:
+      //   const project = getProjectContext(cwd).primary;
+      // This must resolve to the parent repo, not the worktree name,
+      // so observations are stored under the correct project.
+      const project = getProjectContext(worktreeCheckout).primary;
+      expect(project).toBe('main-repo');
+      expect(project).not.toBe('my-worktree');
     });
   });
 });
