@@ -375,29 +375,33 @@ export class Server {
    * Uses a constant-time comparison to prevent timing-based token oracle attacks.
    */
   private requireAdminToken(req: Request, res: Response, next: NextFunction): void {
-    const authHeader = req.headers['authorization'] ?? '';
-    const provided = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-
-    const providedBuf = Buffer.from(provided);
-    const expectedBuf = Buffer.from(this.adminToken);
-
-    // Lengths must match before timingSafeEqual (different lengths → immediate reject)
-    const valid =
-      providedBuf.length === expectedBuf.length &&
-      crypto.timingSafeEqual(providedBuf, expectedBuf);
-
-    if (!valid) {
-      logger.warn('SECURITY', 'Admin endpoint access denied - invalid or missing token', {
-        endpoint: req.path,
-        method: req.method,
+  /**
+   * Generate a cryptographically random admin token, persist it to disk with
+   * mode 0o600 (owner read/write only), and return it.  Authorised callers
+   * read the token from DATA_DIR/admin.token and pass it as:
+   *   Authorization: Bearer <token>
+   *
+   * Security note: The disk-backed token can be read by any process running as
+   * the same OS user. This is an accepted trade-off to allow legitimate admin
+   * tools to authenticate. For stronger isolation, consider Unix domain sockets
+   * with peer credential checking.
+   */
+  private initAdminToken(): string {
+    const token = crypto.randomBytes(32).toString('hex');
+    const tokenPath = path.join(DATA_DIR, 'admin.token');
+    try {
+      // Ensure DATA_DIR exists before writing the token file
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+      }
+      fs.writeFileSync(tokenPath, token, { mode: 0o600 });
+    } catch (err) {
+      logger.warn('SECURITY', 'Failed to write admin token file - admin endpoints still require a valid token', {
+        tokenPath,
+        error: err instanceof Error ? err.message : String(err),
       });
-      res.status(401).json({
-        error: 'Unauthorized',
-        message: 'Valid admin token required',
-      });
-      return;
     }
-    next();
+    return token;
   }
 
   /**
