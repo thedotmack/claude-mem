@@ -4,6 +4,8 @@
   "description": "Persistent memory for pi-agents, powered by claude-mem. Cross-session, cross-engine memory with hybrid search.",
   "keywords": [
     "pi-package",
+    "pi-extension",
+    "pi-skill",
     "claude-mem",
     "pi-agent",
     "pi-coding-agent",
