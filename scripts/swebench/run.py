@@ -34,7 +34,11 @@ from typing import Iterable, Iterator
 CUSTOM_PROMPT_PREFIX = "use the /make-plan and /do skill to "
 DEFAULT_MODEL_NAME = "claude-mem"
 DEFAULT_SPLIT = "test"
-DEFAULT_DATASET = "princeton-nlp/SWE-bench_Verified"
+# Canonical HF id after the 2025 org rename (the harness default now points at
+# the SWE-bench/ namespace; princeton-nlp/ still resolves via HF alias but is
+# deprecated).
+# Source: https://github.com/SWE-bench/SWE-bench/blob/main/swebench/harness/run_evaluation.py#L590
+DEFAULT_DATASET = "SWE-bench/SWE-bench_Verified"
 
 
 @dataclass
@@ -145,13 +149,32 @@ def invoke_claude(
     model: str | None,
     permission_mode: str,
 ) -> subprocess.CompletedProcess[str]:
-    """Run Claude Code headlessly inside ``repo_dir``."""
+    """Run Claude Code headlessly inside ``repo_dir``.
+
+    Flags verified against
+    https://code.claude.com/docs/en/cli-reference.md and
+    https://code.claude.com/docs/en/headless.md:
+      * ``--print`` (alias ``-p``) is one-shot/non-interactive mode with the
+        prompt as a positional arg.
+      * ``--permission-mode`` accepts ``bypassPermissions`` (camelCase),
+        ``acceptEdits``, ``plan``, ``auto``, ``dontAsk``, ``default``.
+      * ``--model`` takes a full id (``claude-sonnet-4-6``) or an alias
+        (``sonnet``, ``opus``).
+      * Working directory is set by invoking from ``repo_dir`` (``--add-dir``
+        is for *additional* dirs, not the primary cwd).
+      * ``--bare`` is deliberately NOT passed: it would disable plugin auto-
+        discovery and therefore silently deactivate claude-mem's hooks and
+        skills, which is the whole point of this runner.
+    The prompt deliberately contains the literal ``/make-plan`` and ``/do``
+    tokens: in ``-p`` mode slash commands are not expanded, but skill
+    descriptions still match against the prompt, so naming the skills steers
+    the model toward them the same way description-driven auto-invocation
+    works for any skill.
+    """
     cmd = [
         claude_bin,
         "--print",
         "--permission-mode", permission_mode,
-        "--output-format", "stream-json",
-        "--verbose",
     ]
     if model:
         cmd += ["--model", model]
@@ -161,17 +184,23 @@ def invoke_claude(
 
 def capture_diff(repo_dir: Path, base_commit: str) -> str:
     """Return a unified diff against ``base_commit`` for all tracked and
-    untracked text changes."""
+    untracked text changes.
+
+    ``--binary`` is intentionally omitted: the SWE-bench evaluator applies
+    ``model_patch`` with plain ``git apply`` / ``patch`` and does not handle
+    binary hunks reliably.
+    Source: https://github.com/SWE-bench/SWE-bench/blob/main/swebench/harness/run_evaluation.py#L155-L200
+    """
     # Stage everything (including untracked) so ``git diff --cached`` captures
-    # new files; a temporary index keeps the worktree untouched.
+    # new files.
     run(["git", "add", "-A"], cwd=repo_dir)
     res = run(
-        ["git", "diff", "--cached", "--binary", base_commit],
+        ["git", "diff", "--cached", base_commit],
         cwd=repo_dir,
     )
     if res.returncode != 0:
         # Fall back to worktree diff if cached diff fails (detached edge cases).
-        res = run(["git", "diff", "--binary", base_commit], cwd=repo_dir)
+        res = run(["git", "diff", base_commit], cwd=repo_dir)
     return res.stdout
 
 

@@ -29,8 +29,11 @@ if ! python -c "import swebench" >/dev/null 2>&1; then
   python -m pip install --upgrade swebench >&2
 fi
 
+# Harness CLI uses underscored flag names.
+# Source: https://github.com/SWE-bench/SWE-bench/blob/main/swebench/harness/run_evaluation.py#L587-L670
 exec python -m swebench.harness.run_evaluation \
-  --dataset_name princeton-nlp/SWE-bench_Verified \
+  --dataset_name SWE-bench/SWE-bench_Verified \
+  --split test \
   --predictions_path "$PREDICTIONS" \
   --run_id "$RUN_ID" \
   --max_workers "${SWEBENCH_MAX_WORKERS:-4}"
