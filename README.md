@@ -308,30 +308,37 @@ This option controls both:
 - The workflow behavior (e.g. code, chill, investigation)
 - The language used in generated observations
 
-
 #### How to Configure
 
 Edit your settings file at `~/.claude-mem/settings.json`:
 
-Modes are defined in:
-
-```text
-plugin/modes/
+```json
+{
+  "CLAUDE_MEM_MODE": "code--zh"
+}
 ```
 
-#### Available modes
+Modes are defined in `plugin/modes/`. To see all available modes locally:
 
-| Mode       | Description             |
+```bash
+ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
+```
+
+#### Available Modes
+
+| Mode | Description |
 |------------|-------------------------|
-| `code`     | Default English mode    |
+| `code` | Default English mode |
 | `code--zh` | Simplified Chinese mode |
-| `code--ja` | Japanese mode           |
+| `code--ja` | Japanese mode |
 
-> Note: `code--zh` (Simplified Chinese) is already built-in.  
-> No additional installation or plugin update is required.
->After changing mode
->Restart Claude Code to apply changes.
+Language-specific modes follow the pattern `code--[lang]` where `[lang]` is the ISO 639-1 language code (e.g., `zh` for Chinese, `ja` for Japanese, `es` for Spanish).
 
+> Note: `code--zh` (Simplified Chinese) is already built-in — no additional installation or plugin update is required.
+
+#### After Changing Mode
+
+Restart Claude Code to apply the new mode configuration.
 ---
 
 ## Development
