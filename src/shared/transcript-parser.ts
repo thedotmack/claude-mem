@@ -28,16 +28,21 @@ export function extractLastMessage(
   let isJSONL = false;
 
   // Try parsing as standard JSON (Gemini CLI format)
-  try {
-    const data = JSON.parse(rawContent);
-    if (Array.isArray(data.messages)) {
-      messages = data.messages;
-    } else if (Array.isArray(data)) {
-      messages = data;
-    } else {
+  const firstChar = rawContent[0];
+  if (firstChar === '{' || firstChar === '[') {
+    try {
+      const data = JSON.parse(rawContent);
+      if (Array.isArray(data.messages)) {
+        messages = data.messages;
+      } else if (Array.isArray(data)) {
+        messages = data;
+      } else {
+        isJSONL = true;
+      }
+    } catch {
       isJSONL = true;
     }
-  } catch {
+  } else {
     isJSONL = true;
   }
 
@@ -67,7 +72,12 @@ export function extractLastMessage(
   // Search backwards for the last message from the requested role
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
-    if (targetTypes.includes(msg.type)) {
+    if (typeof msg !== 'object' || msg === null) {
+      continue;
+    }
+
+    const type = msg.type;
+    if (typeof type === 'string' && targetTypes.includes(type)) {
       foundMatchingRole = true;
 
       // Extract text content based on format (line.message.content or msg.content)
