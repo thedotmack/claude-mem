@@ -10,11 +10,11 @@ const openServers = new Set<http.Server>();
 
 async function startServer(app: express.Application): Promise<number> {
   const server = app.listen(0, '127.0.0.1');
-  openServers.add(server);
   await new Promise<void>((resolve, reject) => {
     server.once('listening', resolve);
     server.once('error', reject);
   });
+  openServers.add(server);
   const addr = server.address();
   if (!addr || typeof addr === 'string') throw new Error('unexpected server address');
   return addr.port;

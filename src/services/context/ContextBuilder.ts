@@ -119,7 +119,7 @@ function buildContextOutput(
   const rendered = output.join('\n').trimEnd();
   const TRUNCATION_MARKER = '\n\n... [context truncated — exceeded ' + MAX_OUTPUT_CHARS.toLocaleString() + ' char limit]';
   if (rendered.length > MAX_OUTPUT_CHARS) {
-    return rendered.slice(0, MAX_OUTPUT_CHARS - TRUNCATION_MARKER.length) + TRUNCATION_MARKER;
+    return rendered.slice(0, Math.max(0, MAX_OUTPUT_CHARS - TRUNCATION_MARKER.length)) + TRUNCATION_MARKER;
   }
   return rendered;
 }
