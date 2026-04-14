@@ -324,10 +324,8 @@ Example:
 }
 ```
 
-Modes are defined in:
+Modes are defined in:-
 plugin/modes/
-
-Common examples:
 
 #### Available modes
 
