@@ -146,6 +146,19 @@ describe('CorpusRoutes Type Coercion', () => {
     expect(mockBuild).not.toHaveBeenCalled();
   });
 
+  it('rejects unsupported corpus types before calling CorpusBuilder', async () => {
+    const { req, res, statusSpy } = createMockReqRes({
+      name: 'bad-type',
+      types: ['typo'],
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(statusSpy).toHaveBeenCalledWith(400);
+    expect(mockBuild).not.toHaveBeenCalled();
+  });
+
   it('rejects invalid limit before calling CorpusBuilder', async () => {
     const { req, res, statusSpy } = createMockReqRes({
       name: 'bad-limit',
