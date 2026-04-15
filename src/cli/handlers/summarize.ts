@@ -18,6 +18,7 @@ import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-util
 import { logger } from '../../utils/logger.js';
 import { extractLastMessage } from '../../shared/transcript-parser.js';
 import { HOOK_EXIT_CODES, HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 const SUMMARIZE_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.DEFAULT);
 const POLL_INTERVAL_MS = 500;
@@ -66,13 +67,16 @@ export const summarizeHandler: EventHandler = {
       hasLastAssistantMessage: !!lastAssistantMessage
     });
 
+    const platformSource = normalizePlatformSource(input.platform);
+
     // 1. Queue summarize request — worker returns immediately with { status: 'queued' }
     const response = await workerHttpRequest('/api/sessions/summarize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contentSessionId: sessionId,
-        last_assistant_message: lastAssistantMessage
+        last_assistant_message: lastAssistantMessage,
+        platformSource
       }),
       timeoutMs: SUMMARIZE_TIMEOUT_MS
     });
