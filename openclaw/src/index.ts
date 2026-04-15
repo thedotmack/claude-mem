@@ -592,16 +592,11 @@ async function connectToSSEStream(
             if (parsed.type === "new_observation" && parsed.observation) {
               const event = parsed as SSENewObservationEvent;
               const obs = event.observation;
-              // Skip observations that have no body content — they would render as just the
-              // source label + "Untitled" in the feed, which is noise without signal.
-              const hasBody =
-                obs.subtitle ||
-                obs.narrative ||
-                (obs.facts && obs.facts !== "[]") ||
-                (obs.concepts && obs.concepts !== "[]") ||
-                (obs.files_read && obs.files_read !== "[]") ||
-                (obs.files_modified && obs.files_modified !== "[]");
-              if (!hasBody && !obs.title) continue;
+              // Skip observations that have no renderable content — formatObservationMessage
+              // only outputs title and subtitle, so guard against exactly those two fields.
+              // Observations with only narrative/facts/concepts would produce an "Untitled"
+              // message with no body, which is noise without signal.
+              if (!obs.title && !obs.subtitle) continue;
               const message = formatObservationMessage(obs, getSourceLabel);
               // Use the agent's own bot account when the observation comes from an openclaw agent,
               // falling back to the configured accountId for Claude Code sessions.

@@ -56,6 +56,10 @@ function getDatabase(): SessionStore | null {
   try {
     _sharedDb = new SessionStore();
   } catch (error: any) {
+    // APPROVED OVERRIDE: ERR_DLOPEN_FAILED requires process-level filesystem cleanup
+    // (unlinking the version marker) so the native module rebuilds on next startup.
+    // This intentionally sets _sharedDb = null to short-circuit all future calls
+    // without rethrowing, keeping the worker alive in a degraded state.
     if (error.code === 'ERR_DLOPEN_FAILED') {
       try {
         unlinkSync(VERSION_MARKER_PATH);
@@ -69,6 +73,17 @@ function getDatabase(): SessionStore | null {
     }
   }
   return _sharedDb;
+}
+
+/**
+ * Close the shared database connection and reset the singleton.
+ * Call this from the worker shutdown path alongside DatabaseManager.close().
+ */
+export function closeSharedDatabase(): void {
+  if (_sharedDb) {
+    _sharedDb.close();
+  }
+  _sharedDb = undefined;
 }
 
 /**
