@@ -97,7 +97,6 @@ export const SAMPLE_CONFIG: TranscriptWatchConfig = {
       startAtEnd: true,
       context: {
         mode: 'agents',
-        path: '~/.codex/AGENTS.md',
         updateOn: ['session_start', 'session_end']
       }
     }
