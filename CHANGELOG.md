@@ -4,10 +4,49 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [12.1.1] - 2026-
+## [12.1.3] - 2026-
 ✅ CHANGELOG.md generated successfully!
-   226 releases processed
-dresses the most impactful bugs across summary persistence, MCP compliance, cross-platform compatibility, and data integrity.
+   228 releases processed
+mary salvage logic** (#1850) — Reverts PR #1718 which fabricated synthetic summaries from observation data when the AI returned `<observation>` instead of `<summary>` tags. Missing a summary is preferable to creating a fake one with poorly-mapped fields.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v12.1.2...v12.1.3
+
+## [12.1.2] - 2026-04-15
+
+## Community PRs merged (15)
+
+**Runtime & reliability**
+- #1698 Reap stuck generators in reapStaleSessions (@ousamabenyounes)
+- #1697 Circuit breaker on OpenClaw worker client (@ousamabenyounes)
+- #1696 Resolve Setup hook reference, warn on macOS-only binary (@ousamabenyounes)
+- #1693 Session lifecycle guards to prevent runaway API spend (@ousamabenyounes)
+- #1692 Resolve Gemini CLI 0.37.0 session capture failures (@ousamabenyounes)
+
+**Cross-platform & hooks**
+- #1833 Replace hardcoded nvm/homebrew PATH with login-shell resolution (@masak1yu)
+- #1781 Filter empty-string args before Bun spawn() (@biswanath-cmd)
+- #1780 Fix npx search, default Codex context to workspace-local AGENTS (@enma998)
+
+**Data integrity**
+- #1820 Use parent project name for worktree observation writes (@0xLeathery)
+- #1771 Exclude primary-key index from unique-constraint check in migration 7 (@derjochenmeyer)
+- #1770 Restrict ~/.claude-mem/.env permissions to 0600 (@derjochenmeyer)
+- #1729 Preserve targeted file reads and invalidate on mtime (@quangtran88)
+- #1776 Coerce corpus route filters (@suyua9)
+
+**Docs**
+- #1777 Document CLAUDE_MEM_MODE (@AviArora02-commits)
+- #1765 Update opencode install instructions (@s-uryansh)
+
+## Held for rebase
+- #1748, #1694, #1695 — developed conflicts during batch merge
+
+## Test baseline
+1429 pass / 11 fail (improved from 18 fail at v12.1.1)
+
+## [12.1.1] - 2026-04-15
+
+14 community PRs merged + 1 post-merge bug fix. This patch addresses the most impactful bugs across summary persistence, MCP compliance, cross-platform compatibility, and data integrity.
 
 ### Highlights
 
