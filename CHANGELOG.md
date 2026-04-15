@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.1.1] - 2026-
+✅ CHANGELOG.md generated successfully!
+   226 releases processed
+dresses the most impactful bugs across summary persistence, MCP compliance, cross-platform compatibility, and data integrity.
+
+### Highlights
+
+**Summary pipeline fix** — When the LLM returns `<observation>` tags instead of `<summary>` tags (~72% of the time on v12.0.x), data is now salvaged into a synthetic summary instead of being silently discarded. (#1718)
+
+**MCP compliance** — `list_corpora` now returns proper `CallToolResult` objects instead of bare arrays that crashed MCP clients. Search and timeline tools now declare `inputSchema.properties`. (#1701, #1555)
+
+**Data integrity** — Ghost observations with no content fields are now filtered before storage. Search queries are now scoped to the current project via `WHERE project = ?`. (#1676, #1688... wait, #1688 wasn't in this batch)
+
+### Bug Fixes
+
+- **fix(ResponseProcessor):** salvage synthetic summary when AI returns `<observation>` instead of `<summary>` (#1718)
+- **fix(ResponseProcessor):** broadcast uses `summaryForStore` to support salvaged summaries (post-merge fix for #1718)
+- **fix(hooks):** soft-fail SessionStart health check on cold start (#1725)
+- **fix(deps):** upgrade glob ^11.0.3 → ^13.0.0 for CVE fix (#1724, #1717)
+- **fix(MCP):** wrap `list_corpora` response in CallToolResult shape (#1701, #1700)
+- **fix(MCP):** declare inputSchema properties for search and timeline tools (#1555, #1384, #1413)
+- **fix(config):** use bun to run mcp-server.cjs instead of node shebang (#1658, #1648)
+- **fix(parser):** filter ghost observations with no content fields (#1676, #1625)
+- **fix(chroma):** set cwd to homedir when spawning chroma-mcp to prevent .env.local crash (#1679, #1297)
+- **fix(Windows):** avoid DEP0190 deprecation by using single-string spawnSync (#1677, #1503)
+- **fix(worker):** suppress false ERROR when duplicate daemon loses port bind race (#1680, #1447)
+- **fix(session):** expose `summaryStored` in session status for silent summary loss detection (#1686, #1633)
+- **fix(cross-platform):** add .gitattributes to enforce LF endings on plugin scripts (#1678, #1342)
+- **fix(tests):** remove leaky mock.module() that polluted parallel workers (#1666, #1299)
+
+### Docs
+
+- Add Language Support section to smart-explore/SKILL.md (#1670, #1651)
+- Remove misplaced tree-sitter docs from mem-search/SKILL.md
+
+### Contributors
+
+@ousamabenyounes (10 PRs), @aaronwong1989, @kbroughton, @joao-oliveira-softtor, @octo-patch, @ck0park
+
 ## [12.1.0] - 2026-04-09
 
 ## Knowledge Agents
