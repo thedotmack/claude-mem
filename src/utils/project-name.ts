@@ -58,13 +58,13 @@ export function getProjectName(cwd: string | null | undefined): string {
  * Project context with worktree awareness
  */
 export interface ProjectContext {
-  /** The current project name (worktree or main repo) */
+  /** Canonical project name for writes/queries (parent repo in worktrees) */
   primary: string;
   /** Parent project name if in a worktree, null otherwise */
   parent: string | null;
   /** True if currently in a worktree */
   isWorktree: boolean;
-  /** All projects to query: [primary] for main repo, [parent, primary] for worktree */
+  /** All projects to query: [primary] for main repo, [parentRepo, worktreeName] for worktree */
   allProjects: string[];
 }
 
@@ -78,24 +78,26 @@ export interface ProjectContext {
  * @returns ProjectContext with worktree info
  */
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {
-  const primary = getProjectName(cwd);
+  const cwdProjectName = getProjectName(cwd);
 
   if (!cwd) {
-    return { primary, parent: null, isWorktree: false, allProjects: [primary] };
+    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
   }
 
   const expandedCwd = expandTilde(cwd);
   const worktreeInfo = detectWorktree(expandedCwd);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
-    // In a worktree: include parent first for chronological ordering
+    // In a worktree: use parent project name as primary so observations
+    // are stored under the same project as the main repo (#1081, #1500, #1819)
+    const allProjects = Array.from(new Set([worktreeInfo.parentProjectName, cwdProjectName]));
     return {
-      primary,
+      primary: worktreeInfo.parentProjectName,
       parent: worktreeInfo.parentProjectName,
       isWorktree: true,
-      allProjects: [worktreeInfo.parentProjectName, primary]
+      allProjects
     };
   }
 
-  return { primary, parent: null, isWorktree: false, allProjects: [primary] };
+  return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
 }
