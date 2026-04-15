@@ -132,7 +132,13 @@ interface OpenClawPluginApi {
       ((event: "after_compaction", callback: EventCallback<AfterCompactionEvent>) => void) &
       ((event: "gateway_start", callback: EventCallback<Record<string, never>>) => void);
   runtime: {
-    channel: Record<string, Record<string, (...args: any[]) => Promise<any>>>;
+    channel: {
+      outbound: {
+        loadAdapter: (channelId: string) => Promise<{
+          sendText?: (ctx: { to: string; text: string; accountId?: string; cfg?: unknown }) => Promise<unknown>;
+        } | undefined>;
+      };
+    };
   };
 }
 
@@ -189,6 +195,7 @@ interface ClaudeMemPluginConfig {
     channel?: string;
     to?: string;
     botToken?: string;
+    accountId?: string;
     emojis?: FeedEmojiConfig;
   };
 }
@@ -446,17 +453,6 @@ function formatObservationMessage(
   return message;
 }
 
-// Explicit mapping from channel name to [runtime namespace key, send function name].
-// These match the PluginRuntime.channel structure in the OpenClaw SDK.
-const CHANNEL_SEND_MAP: Record<string, { namespace: string; functionName: string }> = {
-  telegram: { namespace: "telegram", functionName: "sendMessageTelegram" },
-  whatsapp: { namespace: "whatsapp", functionName: "sendMessageWhatsApp" },
-  discord: { namespace: "discord", functionName: "sendMessageDiscord" },
-  slack: { namespace: "slack", functionName: "sendMessageSlack" },
-  signal: { namespace: "signal", functionName: "sendMessageSignal" },
-  imessage: { namespace: "imessage", functionName: "sendMessageIMessage" },
-  line: { namespace: "line", functionName: "sendMessageLine" },
-};
 
 async function sendDirectTelegram(
   botToken: string,
@@ -484,42 +480,43 @@ async function sendDirectTelegram(
   }
 }
 
-function sendToChannel(
+async function sendToChannel(
   api: OpenClawPluginApi,
   channel: string,
   to: string,
   text: string,
-  botToken?: string
+  botToken?: string,
+  accountId?: string
 ): Promise<void> {
   // If a dedicated bot token is provided for Telegram, send directly
   if (botToken && channel === "telegram") {
     return sendDirectTelegram(botToken, to, text, api.logger);
   }
 
-  const mapping = CHANNEL_SEND_MAP[channel];
-  if (!mapping) {
-    api.logger.warn(`[claude-mem] Unsupported channel type: ${channel}`);
-    return Promise.resolve();
+  // Use the outbound adapter API: api.runtime.channel.outbound.loadAdapter(channelId)
+  // Note: api.runtime.channel does NOT have per-channel namespaces (no .discord, .slack, etc.)
+  const outbound = api.runtime.channel.outbound;
+  if (!outbound?.loadAdapter) {
+    api.logger.warn(`[claude-mem] Channel outbound API not available`);
+    return;
   }
 
-  const channelApi = api.runtime.channel[mapping.namespace];
-  if (!channelApi) {
-    api.logger.warn(`[claude-mem] Channel "${channel}" not available in runtime`);
-    return Promise.resolve();
+  let adapter: { sendText?: (ctx: { to: string; text: string; accountId?: string; cfg?: unknown }) => Promise<unknown> } | undefined;
+  try {
+    adapter = await outbound.loadAdapter(channel);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    api.logger.warn(`[claude-mem] Failed to load adapter for channel "${channel}": ${message}`);
+    return;
   }
 
-  const senderFunction = channelApi[mapping.functionName];
-  if (!senderFunction) {
-    api.logger.warn(`[claude-mem] Channel "${channel}" has no ${mapping.functionName} function`);
-    return Promise.resolve();
+  if (!adapter?.sendText) {
+    api.logger.warn(`[claude-mem] Channel "${channel}" not available as outbound adapter`);
+    return;
   }
 
-  // WhatsApp requires a third options argument with { verbose: boolean }
-  const args: unknown[] = channel === "whatsapp"
-    ? [to, text, { verbose: false }]
-    : [to, text];
-
-  return senderFunction(...args).catch((error: unknown) => {
+  // cfg intentionally omitted — channel implementations fall back to loadConfig() when cfg is undefined
+  await adapter.sendText({ to, text, ...(accountId ? { accountId } : {}) }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     api.logger.error(`[claude-mem] Failed to send to ${channel}: ${message}`);
   });
@@ -533,7 +530,8 @@ async function connectToSSEStream(
   abortController: AbortController,
   setConnectionState: (state: ConnectionState) => void,
   getSourceLabel: (project: string | null | undefined) => string,
-  botToken?: string
+  botToken?: string,
+  accountId?: string
 ): Promise<void> {
   let backoffMs = 1000;
   const maxBackoffMs = 30000;
@@ -593,8 +591,25 @@ async function connectToSSEStream(
             const parsed = JSON.parse(jsonStr);
             if (parsed.type === "new_observation" && parsed.observation) {
               const event = parsed as SSENewObservationEvent;
-              const message = formatObservationMessage(event.observation, getSourceLabel);
-              await sendToChannel(api, channel, to, message, botToken);
+              const obs = event.observation;
+              // Skip observations that have no body content — they would render as just the
+              // source label + "Untitled" in the feed, which is noise without signal.
+              const hasBody =
+                obs.subtitle ||
+                obs.narrative ||
+                (obs.facts && obs.facts !== "[]") ||
+                (obs.concepts && obs.concepts !== "[]") ||
+                (obs.files_read && obs.files_read !== "[]") ||
+                (obs.files_modified && obs.files_modified !== "[]");
+              if (!hasBody && !obs.title) continue;
+              const message = formatObservationMessage(obs, getSourceLabel);
+              // Use the agent's own bot account when the observation comes from an openclaw agent,
+              // falling back to the configured accountId for Claude Code sessions.
+              const project = obs.project ?? "";
+              const resolvedAccountId = project.startsWith("openclaw-")
+                ? project.slice("openclaw-".length) || accountId
+                : accountId;
+              await sendToChannel(api, channel, to, message, botToken, resolvedAccountId);
             }
           } catch (parseError: unknown) {
             const errorMessage = parseError instanceof Error ? parseError.message : String(parseError);
@@ -1000,7 +1015,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         sseAbortController,
         (state) => { connectionState = state; },
         getSourceLabel,
-        feedConfig.botToken
+        feedConfig.botToken,
+        feedConfig.accountId
       );
     },
     stop: async (_ctx) => {

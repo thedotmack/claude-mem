@@ -6,6 +6,7 @@
  */
 
 import express, { Request, Response } from 'express';
+import { generateContext } from '../../../context-generator.js';
 import { SearchManager } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { logger } from '../../../../utils/logger.js';
@@ -175,8 +176,6 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
-    // Import context generator (runs in worker, has access to database)
-    const { generateContext } = await import('../../../context-generator.js');
 
     // Use project name as CWD (generateContext uses path.basename to get project)
     const cwd = `/preview/${projectName}`;
@@ -228,8 +227,6 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
-    // Import context generator (runs in worker, has access to database)
-    const { generateContext } = await import('../../../context-generator.js');
 
     // Use first project name as CWD (for display purposes)
     const primaryProject = projects[projects.length - 1]; // Last is the current/primary project

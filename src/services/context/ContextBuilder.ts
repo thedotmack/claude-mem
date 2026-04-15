@@ -43,12 +43,18 @@ const VERSION_MARKER_PATH = path.join(
   '.install-version'
 );
 
+// Module-level singleton — avoids re-opening the database and re-running
+// migration checks on every context inject call.
+let _sharedDb: SessionStore | null | undefined;
+
 /**
- * Initialize database connection with error handling
+ * Return the shared database connection, creating it on first call.
+ * Returns null when the native module needs a rebuild (ERR_DLOPEN_FAILED).
  */
-function initializeDatabase(): SessionStore | null {
+function getDatabase(): SessionStore | null {
+  if (_sharedDb !== undefined) return _sharedDb;
   try {
-    return new SessionStore();
+    _sharedDb = new SessionStore();
   } catch (error: any) {
     if (error.code === 'ERR_DLOPEN_FAILED') {
       try {
@@ -57,10 +63,12 @@ function initializeDatabase(): SessionStore | null {
         logger.debug('SYSTEM', 'Marker file cleanup failed (may not exist)', {}, unlinkError as Error);
       }
       logger.error('SYSTEM', 'Native module rebuild needed - restart Claude Code to auto-fix');
-      return null;
+      _sharedDb = null;
+    } else {
+      throw error;
     }
-    throw error;
   }
+  return _sharedDb;
 }
 
 /**
@@ -142,39 +150,34 @@ export async function generateContext(
     config.sessionCount = 999999;
   }
 
-  // Initialize database
-  const db = initializeDatabase();
+  // Reuse the shared database connection (singleton) — avoids reopening the
+  // database and rerunning migration checks on every context inject call.
+  const db = getDatabase();
   if (!db) {
     return '';
   }
 
-  try {
-    // Query data for all projects (supports worktree: parent + worktree combined)
-    const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config, platformSource)
-      : queryObservations(db, project, config, platformSource);
-    const summaries = projects.length > 1
-      ? querySummariesMulti(db, projects, config, platformSource)
-      : querySummaries(db, project, config, platformSource);
+  // Query data for all projects (supports worktree: parent + worktree combined)
+  const observations = projects.length > 1
+    ? queryObservationsMulti(db, projects, config, platformSource)
+    : queryObservations(db, project, config, platformSource);
+  const summaries = projects.length > 1
+    ? querySummariesMulti(db, projects, config, platformSource)
+    : querySummaries(db, project, config, platformSource);
 
-    // Handle empty state
-    if (observations.length === 0 && summaries.length === 0) {
-      return renderEmptyState(project, forHuman);
-    }
-
-    // Build and return context
-    const output = buildContextOutput(
-      project,
-      observations,
-      summaries,
-      config,
-      cwd,
-      input?.session_id,
-      forHuman
-    );
-
-    return output;
-  } finally {
-    db.close();
+  // Handle empty state
+  if (observations.length === 0 && summaries.length === 0) {
+    return renderEmptyState(project, forHuman);
   }
+
+  // Build and return context
+  return buildContextOutput(
+    project,
+    observations,
+    summaries,
+    config,
+    cwd,
+    input?.session_id,
+    forHuman
+  );
 }
