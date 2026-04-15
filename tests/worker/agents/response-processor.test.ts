@@ -319,7 +319,9 @@ describe('ResponseProcessor', () => {
       );
 
       const [, , , summary] = mockStoreObservations.mock.calls[0];
-      expect(summary).toBeNull();
+      // #1718: When observations exist without <summary> tags, a synthetic summary is salvaged
+      expect(summary).not.toBeNull();
+      expect(summary.notes).toContain('Salvaged from');
     });
   });
 
