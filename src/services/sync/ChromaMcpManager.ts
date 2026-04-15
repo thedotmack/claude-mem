@@ -120,10 +120,16 @@ export class ChromaMcpManager {
       args: uvxSpawnArgs.join(' ')
     });
 
+    // Run chroma-mcp from the home directory so that pydantic-settings (used
+    // by chroma-mcp internally) does not pick up .env / .env.local files from
+    // the project directory. Those files often contain project-specific vars
+    // that pydantic rejects with "Extra inputs are not permitted", crashing the
+    // subprocess immediately. Fixes #1297.
     this.transport = new StdioClientTransport({
       command: uvxSpawnCommand,
       args: uvxSpawnArgs,
       env: spawnEnvironment,
+      cwd: os.homedir(),
       stderr: 'pipe'
     });
 
