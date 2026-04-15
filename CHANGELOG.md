@@ -4,10 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [12.1.4] - 2026-
-✅ CHANGELOG.md generated successfully!
-   229 releases processed
-or Claude instance inserted `$CMEM` token branding into the context injection header during a compression refactor. Reverted back to the original descriptive format: `# [project] recent context, datetime`
+## [12.1.5] - 2026-04-15
+
+## Forced update to ship --setting-sources fix
+
+Users on v12.1.3 experience 100% observation failure due to empty-string arg filtering corrupting `--setting-sources` on Claude Code 2.1.109+. The fix landed in v12.1.4 (commit 3d92684 — `fix: filter empty string args before Bun spawn()`). This release forces the update to propagate across npm and the marketplace.
+
+Also shipped earlier today: the April 2026 backlog consolidation merged 93 PRs and 147 issues into 138 clean tracking issues (95 bugs, 43 feature requests).
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v12.1.4...v12.1.5
+
+## [12.1.4] - 2026-04-15
+
+A Claude instance inserted `$CMEM` token branding into the context injection header during a compression refactor. Reverted back to the original descriptive format: `# [project] recent context, datetime`
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v12.1.3...v12.1.4
 
 ## [12.1.3] - 2026-04-15
 
