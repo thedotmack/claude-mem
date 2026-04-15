@@ -9,7 +9,7 @@
  * for both cache and marketplace installs), falling back to script location
  * and legacy paths.
  */
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, openSync, readSync, closeSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
@@ -490,6 +490,56 @@ function verifyCriticalModules() {
   return true;
 }
 
+// Mach-O 64-bit magic values as seen when reading the first 4 file bytes with readUInt32LE.
+// Native arm64/x86_64 Mach-O files start with bytes [CF FA ED FE]; readUInt32LE gives 0xFEEDFACF.
+// Byte-swapped (big-endian) Mach-O files start with bytes [FE ED FA CF]; readUInt32LE gives 0xCFFAEDFE.
+const MACHO_MAGIC_NATIVE  = 0xFEEDFACF; // native 64-bit (arm64/x86_64) — file bytes CF FA ED FE
+const MACHO_MAGIC_SWAPPED = 0xCFFAEDFE; // byte-swapped 64-bit             — file bytes FE ED FA CF
+
+/**
+ * Warn when the bundled claude-mem binary cannot run on the current platform.
+ *
+ * The committed binary (plugin/scripts/claude-mem) is compiled for macOS arm64.
+ * On Linux or Windows it produces "Exec format error" and silently fails.
+ * This check surfaces the incompatibility at install time so users know why
+ * the binary path doesn't work, and confirms the JS fallback (bun-runner.js →
+ * worker-service.cjs) is active and covers all functionality.
+ *
+ * Fixes #1547 — Plugin silently fails on Linux ARM64.
+ */
+export function checkBinaryPlatformCompatibility(binaryPath = join(ROOT, 'scripts', 'claude-mem')) {
+
+  if (!existsSync(binaryPath)) {
+    return; // Binary absent — nothing to check (e.g. after npm install which excludes it)
+  }
+
+  // The binary only matters on non-macOS platforms; on macOS it works correctly.
+  if (process.platform === 'darwin') {
+    return;
+  }
+
+  // Read the first 4 bytes to identify the binary format.
+  let fd;
+  try {
+    const buf = Buffer.alloc(4);
+    fd = openSync(binaryPath, 'r');
+    readSync(fd, buf, 0, 4, 0);
+
+    const magic = buf.readUInt32LE(0);
+    if (magic === MACHO_MAGIC_NATIVE || magic === MACHO_MAGIC_SWAPPED) {
+      console.error('⚠️  Platform notice: The bundled claude-mem binary is macOS-only.');
+      console.error(`   Current platform: ${process.platform} ${process.arch}`);
+      console.error('   The binary will not execute on this platform.');
+      console.error('   Plugin functionality is provided by the JS fallback');
+      console.error('   (bun-runner.js → worker-service.cjs) which works on all platforms.');
+    }
+  } catch {
+    // Unreadable binary — not critical, skip silently
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 // Main execution
 try {
   // Step 1: Ensure Bun is installed and meets minimum version (REQUIRED)
@@ -581,6 +631,9 @@ try {
 
   // Step 4: Install CLI to PATH
   installCLI();
+
+  // Step 5: Warn if the bundled native binary is incompatible with this platform
+  checkBinaryPlatformCompatibility();
 
   // Output valid JSON for Claude Code hook contract
   console.log(JSON.stringify({ continue: true, suppressOutput: true }));
