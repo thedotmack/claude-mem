@@ -476,6 +476,14 @@ export class SDKAgent {
       logger.debug('SDK', 'Claude executable auto-detection failed', {}, error as Error);
     }
 
+    // 4. Fallback: check ~/.local/bin/claude (installed via official installer, not in hook PATH)
+    const localBinClaude = path.join(homedir(), '.local', 'bin', 'claude');
+    const { existsSync } = require('fs');
+    if (existsSync(localBinClaude)) {
+      logger.info('SDK', 'Found claude at ~/.local/bin');
+      return localBinClaude;
+    }
+
     throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json');
   }
 
