@@ -1224,7 +1224,18 @@ async function main() {
       });
 
       const worker = new WorkerService();
-      worker.start().catch((error) => {
+      worker.start().catch(async (error) => {
+        // Port race: when the MCP server and SessionStart hook both spawn a daemon
+        // concurrently, one will lose the bind race with EADDRINUSE or Bun's equivalent
+        // "port in use" error. If the winner is already healthy, exit cleanly (#1447).
+        const isPortConflict = error instanceof Error && (
+          (error as NodeJS.ErrnoException).code === 'EADDRINUSE' ||
+          /port.*in use|address.*in use/i.test(error.message)
+        );
+        if (isPortConflict && await waitForHealth(port, 3000)) {
+          logger.info('SYSTEM', 'Duplicate daemon exiting — another worker already claimed port', { port });
+          process.exit(0);
+        }
         logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
         removePidFile();
         // Exit gracefully: Windows Terminal won't keep tab open on exit 0
