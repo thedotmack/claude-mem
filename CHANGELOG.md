@@ -4,6 +4,137 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.1.4] - 2026-04-15
+
+Revert release: rolls codebase back to the v12.1.0 baseline state.
+
+This release removes recent patch-series changes (12.1.1–12.1.3) and returns to the known-good v12.1.0 code, then re-tags as 12.1.4.
+
+### Included
+- All files reset to v12.1.0 tree
+- Version strings bumped to 12.1.4 across package.json, marketplace.json, plugin.json
+
+Co-Authored-By: Claude Opus 4.6 (1M context)
+
+## [12.1.3] - 2026-04-15
+
+## What's Changed
+
+### Reverted
+- **Remove overengineered summary salvage logic** (#1850) — Reverts PR #1718 which fabricated synthetic summaries from observation data when the AI returned `<observation>` instead of `<summary>` tags. Missing a summary is preferable to creating a fake one with poorly-mapped fields.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v12.1.2...v12.1.3
+
+## [12.1.2] - 2026-04-15
+
+## Community PRs merged (15)
+
+**Runtime & reliability**
+- #1698 Reap stuck generators in reapStaleSessions (@ousamabenyounes)
+- #1697 Circuit breaker on OpenClaw worker client (@ousamabenyounes)
+- #1696 Resolve Setup hook reference, warn on macOS-only binary (@ousamabenyounes)
+- #1693 Session lifecycle guards to prevent runaway API spend (@ousamabenyounes)
+- #1692 Resolve Gemini CLI 0.37.0 session capture failures (@ousamabenyounes)
+
+**Cross-platform & hooks**
+- #1833 Replace hardcoded nvm/homebrew PATH with login-shell resolution (@masak1yu)
+- #1781 Filter empty-string args before Bun spawn() (@biswanath-cmd)
+- #1780 Fix npx search, default Codex context to workspace-local AGENTS (@enma998)
+
+**Data integrity**
+- #1820 Use parent project name for worktree observation writes (@0xLeathery)
+- #1771 Exclude primary-key index from unique-constraint check in migration 7 (@derjochenmeyer)
+- #1770 Restrict ~/.claude-mem/.env permissions to 0600 (@derjochenmeyer)
+- #1729 Preserve targeted file reads and invalidate on mtime (@quangtran88)
+- #1776 Coerce corpus route filters (@suyua9)
+
+**Docs**
+- #1777 Document CLAUDE_MEM_MODE (@AviArora02-commits)
+- #1765 Update opencode install instructions (@s-uryansh)
+
+## Held for rebase
+- #1748, #1694, #1695 — developed conflicts during batch merge
+
+## Test baseline
+1429 pass / 11 fail (improved from 18 fail at v12.1.1)
+
+## [12.1.1] - 2026-04-15
+
+14 community PRs merged + 1 post-merge bug fix. This patch addresses the most impactful bugs across summary persistence, MCP compliance, cross-platform compatibility, and data integrity.
+
+### Highlights
+
+**Summary pipeline fix** — When the LLM returns `<observation>` tags instead of `<summary>` tags (~72% of the time on v12.0.x), data is now salvaged into a synthetic summary instead of being silently discarded. (#1718)
+
+**MCP compliance** — `list_corpora` now returns proper `CallToolResult` objects instead of bare arrays that crashed MCP clients. Search and timeline tools now declare `inputSchema.properties`. (#1701, #1555)
+
+**Data integrity** — Ghost observations with no content fields are now filtered before storage. Search queries are now scoped to the current project via `WHERE project = ?`. (#1676, #1688... wait, #1688 wasn't in this batch)
+
+### Bug Fixes
+
+- **fix(ResponseProcessor):** salvage synthetic summary when AI returns `<observation>` instead of `<summary>` (#1718)
+- **fix(ResponseProcessor):** broadcast uses `summaryForStore` to support salvaged summaries (post-merge fix for #1718)
+- **fix(hooks):** soft-fail SessionStart health check on cold start (#1725)
+- **fix(deps):** upgrade glob ^11.0.3 → ^13.0.0 for CVE fix (#1724, #1717)
+- **fix(MCP):** wrap `list_corpora` response in CallToolResult shape (#1701, #1700)
+- **fix(MCP):** declare inputSchema properties for search and timeline tools (#1555, #1384, #1413)
+- **fix(config):** use bun to run mcp-server.cjs instead of node shebang (#1658, #1648)
+- **fix(parser):** filter ghost observations with no content fields (#1676, #1625)
+- **fix(chroma):** set cwd to homedir when spawning chroma-mcp to prevent .env.local crash (#1679, #1297)
+- **fix(Windows):** avoid DEP0190 deprecation by using single-string spawnSync (#1677, #1503)
+- **fix(worker):** suppress false ERROR when duplicate daemon loses port bind race (#1680, #1447)
+- **fix(session):** expose `summaryStored` in session status for silent summary loss detection (#1686, #1633)
+- **fix(cross-platform):** add .gitattributes to enforce LF endings on plugin scripts (#1678, #1342)
+- **fix(tests):** remove leaky mock.module() that polluted parallel workers (#1666, #1299)
+
+### Docs
+
+- Add Language Support section to smart-explore/SKILL.md (#1670, #1651)
+- Remove misplaced tree-sitter docs from mem-search/SKILL.md
+
+### Contributors
+
+@ousamabenyounes (10 PRs), @aaronwong1989, @kbroughton, @joao-oliveira-softtor, @octo-patch, @ck0park
+
+## [12.1.0] - 2026-04-09
+
+## Knowledge Agents
+
+Build queryable AI "brains" from your claude-mem observation history. Compile a filtered slice of your past work into a corpus, prime it into a Claude session, and ask questions conversationally — getting synthesized, grounded answers instead of raw search results.
+
+### New Features
+
+- **Knowledge Agent system** — full lifecycle: build, prime, query, reprime, rebuild, delete
+- **6 new MCP tools**: `build_corpus`, `list_corpora`, `prime_corpus`, `query_corpus`, `rebuild_corpus`, `reprime_corpus`
+- **8 new HTTP API endpoints** on the worker service (`/api/corpus/*`)
+- **CorpusBuilder** — searches observations, hydrates full records, calculates stats, persists to `~/.claude-mem/corpora/`
+- **CorpusRenderer** — renders observations into full-detail prompt text for the 1M token context window
+- **KnowledgeAgent** — manages Agent SDK sessions with session resume for multi-turn Q&A
+- **Auto-reprime** — expired sessions are automatically reprimed and retried (only for session errors, not all failures)
+- **Knowledge agent skill** (`/knowledge-agent`) for guided corpus creation
+
+### Security & Robustness
+
+- Path traversal prevention in CorpusStore (alphanumeric name validation + resolved path check)
+- System prompt hardened against instruction injection from untrusted corpus content
+- Runtime name validation on all MCP corpus tool handlers
+- Question field validated as non-empty string
+- Session state only persisted after successful prime (not null on failure)
+- Refreshed session_id persisted after query execution
+- E2e curl wrappers hardened with connect-timeout and transport failure fallback
+
+### Documentation
+
+- New docs page: Knowledge Agents usage guide with Quick Start, architecture diagram, filter reference, and API reference
+- Knowledge agent skill page with workflow examples
+- Added to docs navigation
+
+### Testing
+
+- Comprehensive e2e test suite (31 tests) covering full corpus lifecycle
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v12.0.1...v12.1.0
+
 ## [12.0.1] - 2026-04-08
 
 ## 🔴 Hotfix: MCP server crashed with `Cannot find module 'bun:sqlite'` under Node
