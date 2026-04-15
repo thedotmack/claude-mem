@@ -382,6 +382,30 @@ export function createPidCapturingSpawn(sessionDbId: number) {
     env?: NodeJS.ProcessEnv;
     signal?: AbortSignal;
   }) => {
+    // Kill any existing process for this session before spawning a new one.
+    // Multiple processes sharing the same --resume UUID waste API credits and
+    // can conflict with each other (Issue #1590).
+    const existing = getProcessBySession(sessionDbId);
+    if (existing && existing.process.exitCode === null) {
+      logger.warn('PROCESS', `Killing duplicate process PID ${existing.pid} before spawning new one for session ${sessionDbId}`, {
+        existingPid: existing.pid,
+        sessionDbId
+      });
+      let exited = false;
+      try {
+        existing.process.kill('SIGTERM');
+        exited = existing.process.exitCode !== null;
+      } catch {
+        // Already dead — safe to unregister immediately
+        exited = true;
+      }
+
+      if (exited) {
+        unregisterProcess(existing.pid);
+      }
+      // If still alive, the 'exit' handler (line ~440) will unregister it.
+    }
+
     getSupervisor().assertCanSpawn('claude sdk');
 
     // On Windows, use cmd.exe wrapper for .cmd files to properly handle paths with spaces
