@@ -103,7 +103,7 @@ describe('AgentFormatter', () => {
       const result = renderAgentHeader('my-project');
 
       expect(result).toHaveLength(2);
-      expect(result[0]).toMatch(/^# \$CMEM my-project \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
+      expect(result[0]).toMatch(/^# \[my-project\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
       expect(result[1]).toBe('');
     });
 
@@ -116,7 +116,7 @@ describe('AgentFormatter', () => {
     it('should handle empty project name', () => {
       const result = renderAgentHeader('');
 
-      expect(result[0]).toMatch(/^# \$CMEM  \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
+      expect(result[0]).toMatch(/^# \[\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
     });
   });
 
@@ -452,7 +452,7 @@ describe('AgentFormatter', () => {
     it('should return helpful message with project name', () => {
       const result = renderAgentEmptyState('my-project');
 
-      expect(result).toContain('# $CMEM my-project');
+      expect(result).toContain('# [my-project] recent context,');
       expect(result).toContain('No previous sessions found.');
     });
 
@@ -466,7 +466,7 @@ describe('AgentFormatter', () => {
     it('should handle empty project name', () => {
       const result = renderAgentEmptyState('');
 
-      expect(result).toContain('# $CMEM ');
+      expect(result).toContain('# [] recent context,');
     });
   });
 });

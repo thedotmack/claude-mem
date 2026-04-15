@@ -35,7 +35,7 @@ function formatHeaderDateTime(): string {
  */
 export function renderAgentHeader(project: string): string[] {
   return [
-    `# $CMEM ${project} ${formatHeaderDateTime()}`,
+    `# [${project}] recent context, ${formatHeaderDateTime()}`,
     ''
   ];
 }
@@ -223,5 +223,5 @@ export function renderAgentFooter(totalDiscoveryTokens: number, totalReadTokens:
  * Render agent empty state
  */
 export function renderAgentEmptyState(project: string): string {
-  return `# $CMEM ${project} ${formatHeaderDateTime()}\n\nNo previous sessions found.`;
+  return `# [${project}] recent context, ${formatHeaderDateTime()}\n\nNo previous sessions found.`;
 }
