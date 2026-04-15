@@ -23,6 +23,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
+import { isPidAlive } from '../../supervisor/process-registry.js';
 
 const CHROMA_MCP_CLIENT_NAME = 'claude-mem-chroma';
 const CHROMA_MCP_CLIENT_VERSION = '1.0.0';
@@ -101,6 +102,34 @@ export class ChromaMcpManager {
     this.client = null;
     this.transport = null;
     this.connected = false;
+
+    // Kill any orphaned chroma-mcp from a previous worker run.
+    // When the worker process is killed hard (OOM, SIGKILL), chroma-mcp survives
+    // as an orphan: this.transport is null in the new worker instance, so the old
+    // PID was never cleaned up. Kill it before spawning a fresh subprocess,
+    // otherwise each reconnect accumulates one extra chroma-mcp process.
+    const registry = getSupervisor().getRegistry();
+    const orphanEntry = registry.getAll().find(r => r.id === CHROMA_SUPERVISOR_ID);
+    if (orphanEntry && isPidAlive(orphanEntry.pid)) {
+      logger.warn('CHROMA_MCP', 'Found orphaned chroma-mcp from previous worker run, killing before reconnect', {
+        pid: orphanEntry.pid,
+        startedAt: orphanEntry.startedAt
+      });
+      try {
+        process.kill(orphanEntry.pid, 'SIGTERM');
+        // Wait up to 2s for graceful exit, then SIGKILL if still alive
+        const deadline = Date.now() + 2_000;
+        while (Date.now() < deadline && isPidAlive(orphanEntry.pid)) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        if (isPidAlive(orphanEntry.pid)) {
+          process.kill(orphanEntry.pid, 'SIGKILL');
+        }
+      } catch {
+        // ESRCH: already dead, ignore
+      }
+      registry.unregister(CHROMA_SUPERVISOR_ID);
+    }
 
     const commandArgs = this.buildCommandArgs();
     const spawnEnvironment = this.getSpawnEnv();
