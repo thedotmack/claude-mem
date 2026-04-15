@@ -376,8 +376,10 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
     if (isWindows) {
       // Windows: Use WQL -Filter for server-side filtering (no $_ pipeline syntax).
       // Avoids Git Bash $_ interpretation (#1062) and PowerShell syntax errors (#1024).
+      // Inner single quotes must be doubled ('') to escape them within PowerShell
+      // single-quoted strings — otherwise '%pattern%' breaks the filter parsing (#1832).
       const wqlPatternConditions = ORPHAN_PROCESS_PATTERNS
-        .map(p => `CommandLine LIKE '%${p}%'`)
+        .map(p => `CommandLine LIKE ''%${p}%''`)
         .join(' OR ');
 
       const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter '(${wqlPatternConditions}) AND ProcessId != ${currentPid}' | Select-Object ProcessId, CreationDate | ConvertTo-Json"`;
@@ -526,8 +528,10 @@ export async function aggressiveStartupCleanup(): Promise<void> {
     if (isWindows) {
       // Use WQL -Filter for server-side filtering (no $_ pipeline syntax).
       // Avoids Git Bash $_ interpretation (#1062) and PowerShell syntax errors (#1024).
+      // Inner single quotes must be doubled ('') to escape them within PowerShell
+      // single-quoted strings — otherwise '%pattern%' breaks the filter parsing (#1832).
       const wqlPatternConditions = allPatterns
-        .map(p => `CommandLine LIKE '%${p}%'`)
+        .map(p => `CommandLine LIKE ''%${p}%''`)
         .join(' OR ');
 
       const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter '(${wqlPatternConditions}) AND ProcessId != ${currentPid}' | Select-Object ProcessId, CommandLine, CreationDate | ConvertTo-Json"`;
