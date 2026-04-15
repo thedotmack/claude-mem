@@ -50,9 +50,8 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
     const files_read = extractArrayElements(obsContent, 'files_read', 'file');
     const files_modified = extractArrayElements(obsContent, 'files_modified', 'file');
 
-    // NOTE FROM THEDOTMACK: ALWAYS save observations - never skip. 10/24/2025
-    // All fields except type are nullable in schema
-    // If type is missing or invalid, use first type from mode as fallback
+    // All fields except type are nullable in schema.
+    // If type is missing or invalid, use first type from mode as fallback.
 
     // Determine final type using active mode's valid types
     const mode = ModeManager.getInstance().getActiveMode();
@@ -81,6 +80,19 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
         originalConcepts: concepts,
         cleanedConcepts
       });
+    }
+
+    // Skip ghost observations — records where every content field is null/empty.
+    // These accumulate when the LLM emits a bare <observation/> (or one with only <type>)
+    // due to context overflow. They carry no information and pollute the context window.
+    // (subtitle and file lists are intentionally excluded from this guard: an observation
+    // with only a subtitle is still too thin to be useful on its own.)
+    if (!title && !narrative && facts.length === 0 && cleanedConcepts.length === 0) {
+      logger.warn('PARSER', 'Skipping empty observation (all content fields null)', {
+        correlationId,
+        type: finalType
+      });
+      continue;
     }
 
     observations.push({
