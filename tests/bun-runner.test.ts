@@ -45,3 +45,17 @@ describe('bun-runner.js findBun: DEP0190 regression guard (#1503)', () => {
     expect(source).toContain("spawnSync('which', ['bun']");
   });
 });
+
+describe('bun-runner.js Windows pipe mode fix (#1482)', () => {
+  it('skips stdin collection for the start subcommand', () => {
+    // The "start" subcommand spawns a daemon and never reads stdin.
+    // Collecting stdin blocks --print mode on Windows for up to 5s per hook.
+    expect(source).toContain("!args.includes('start')");
+  });
+
+  it('uses a shorter stdin timeout on Windows', () => {
+    // The 5s stdin timeout causes --print (pipe) mode to hang on Windows.
+    // Claude Code delivers hook stdin in milliseconds; 500ms is sufficient.
+    expect(source).toContain('IS_WINDOWS ? 500 : 5000');
+  });
+});

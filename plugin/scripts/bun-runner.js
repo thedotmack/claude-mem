@@ -154,16 +154,25 @@ function collectStdin() {
       resolve(null);
     });
 
-    // Safety: if no data arrives within 5s, proceed without stdin
+    // Safety: if no data arrives within timeout, proceed without stdin.
+    // On Windows, use a shorter timeout (500ms) because the 5s wait causes
+    // --print (pipe) mode to hang or produce empty output — Claude Code's hook
+    // stdin data arrives in milliseconds when present, and the long timeout
+    // blocks SessionStart hooks for up to 15s total (3 hooks × 5s). Fixes #1482.
+    const stdinTimeoutMs = IS_WINDOWS ? 500 : 5000;
     setTimeout(() => {
       process.stdin.removeAllListeners();
       process.stdin.pause();
       resolve(chunks.length > 0 ? Buffer.concat(chunks) : null);
-    }, 5000);
+    }, stdinTimeoutMs);
   });
 }
 
-const stdinData = await collectStdin();
+// Skip stdin collection for the "start" subcommand — it spawns a daemon and
+// never reads stdin. This avoids a blocking wait on Windows in --print mode
+// where stdin.isTTY is false but no hook data is piped. Fixes #1482.
+const needsStdin = !args.includes('start');
+const stdinData = needsStdin ? await collectStdin() : null;
 
 // Spawn Bun with the provided script and args
 // Use spawn (not spawnSync) to properly handle stdio
