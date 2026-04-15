@@ -66,6 +66,7 @@ function getDatabase(): SessionStore | null {
       } catch (unlinkError) {
         logger.debug('SYSTEM', 'Marker file cleanup failed (may not exist)', {}, unlinkError as Error);
       }
+      logger.debug('SYSTEM', 'ERR_DLOPEN_FAILED detail', {}, error as Error);
       logger.error('SYSTEM', 'Native module rebuild needed - restart Claude Code to auto-fix');
       _sharedDb = null;
     } else {
@@ -80,10 +81,13 @@ function getDatabase(): SessionStore | null {
  * Call this from the worker shutdown path alongside DatabaseManager.close().
  */
 export function closeSharedDatabase(): void {
-  if (_sharedDb) {
-    _sharedDb.close();
+  try {
+    if (_sharedDb) {
+      _sharedDb.close();
+    }
+  } finally {
+    _sharedDb = undefined;
   }
-  _sharedDb = undefined;
 }
 
 /**
