@@ -53,6 +53,7 @@ ${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
   ${pc.cyan('npx claude-mem status')}               Show worker status
   ${pc.cyan('npx claude-mem search <query>')}       Search observations
   ${pc.cyan('npx claude-mem transcript watch')}     Start transcript watcher
+  ${pc.cyan('npx claude-mem import <path>')}        Import transcript JSONL with historical timestamps
 
 ${pc.bold('IDE Identifiers')}:
   claude-code, cursor, gemini-cli, opencode, openclaw,
@@ -156,6 +157,13 @@ async function main(): Promise<void> {
         console.error(`Usage: npx claude-mem transcript watch`);
         process.exit(1);
       }
+      break;
+    }
+
+    // -- Import ------------------------------------------------------------
+    case 'import': {
+      const { runImportCommand } = await import('./commands/runtime.js');
+      await runImportCommand(args.slice(1));
       break;
     }
 

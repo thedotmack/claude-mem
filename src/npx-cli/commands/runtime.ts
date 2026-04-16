@@ -148,6 +148,14 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
 }
 
 /**
+ * Import a Claude Code transcript JSONL with historical timestamps.
+ * Delegates to worker-service.cjs `import` subcommand.
+ */
+export async function runImportCommand(importArgs: string[]): Promise<void> {
+  spawnBunWorkerCommand('import', importArgs);
+}
+
+/**
  * Start the transcript watcher via Bun.
  */
 export function runTranscriptWatchCommand(): void {

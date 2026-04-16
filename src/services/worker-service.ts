@@ -1187,6 +1187,17 @@ async function main() {
       break;
     }
 
+    case 'import': {
+      // One-shot transcript import CLI. Uses Phase 1 HTTP field
+      // `historical_timestamp_from_import_epoch_ms` and Phase 2 per-line
+      // timestamp resolution to stamp observations/summaries with historical
+      // dates instead of import-run wall clock.
+      const { runImportTranscriptCommand } = await import('../cli/commands/import-transcript.js');
+      const importResult = await runImportTranscriptCommand(process.argv.slice(3));
+      process.exit(importResult);
+      break;
+    }
+
     case '--daemon':
     default: {
       // GUARD 1: Refuse to start if another worker is already alive (PID check).
