@@ -108,12 +108,24 @@ export class ModeManager {
   }
 
   /**
-   * Load a mode file from disk without inheritance processing
+   * Load a mode file from disk without inheritance processing.
+   * Tries exact modeId first, then lowercased version for case-insensitive
+   * locale matching (e.g., code--zh-TW -> code--zh-tw).
    */
   private loadModeFile(modeId: string): ModeConfig {
     const modePath = join(this.modesDir, `${modeId}.json`);
 
     if (!existsSync(modePath)) {
+      // Try lowercased version for case-insensitive locale matching
+      // (e.g., zh-TW -> zh-tw on case-sensitive filesystems like Linux)
+      const lowerModeId = modeId.toLowerCase();
+      if (lowerModeId !== modeId) {
+        const lowerPath = join(this.modesDir, `${lowerModeId}.json`);
+        if (existsSync(lowerPath)) {
+          const jsonContent = readFileSync(lowerPath, 'utf-8');
+          return JSON.parse(jsonContent) as ModeConfig;
+        }
+      }
       throw new Error(`Mode file not found: ${modePath}`);
     }
 
