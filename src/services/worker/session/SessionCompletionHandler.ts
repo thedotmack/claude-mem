@@ -24,10 +24,16 @@ export class SessionCompletionHandler {
   /**
    * Complete session by database ID
    * Used by DELETE /api/sessions/:id and POST /api/sessions/:id/complete
+   *
+   * @param sessionDbId - Session row ID
+   * @param overrideCompletedAtEpoch - Optional historical epoch (ms) from
+   *   transcript-import callers. Forwarded to markSessionCompleted so the
+   *   completion row reflects the transcript's original end-time. Live hooks
+   *   (DELETE, live /complete) omit this and fall back to Date.now().
    */
-  async completeByDbId(sessionDbId: number): Promise<void> {
+  async completeByDbId(sessionDbId: number, overrideCompletedAtEpoch?: number): Promise<void> {
     // Persist completion to database before in-memory cleanup (fix for #1532)
-    this.dbManager.getSessionStore().markSessionCompleted(sessionDbId);
+    this.dbManager.getSessionStore().markSessionCompleted(sessionDbId, overrideCompletedAtEpoch);
 
     // Delete from session manager (aborts SDK agent via SIGTERM)
     await this.sessionManager.deleteSession(sessionDbId);

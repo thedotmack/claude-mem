@@ -24,6 +24,7 @@ export const observationHandler: EventHandler = {
 
     const { sessionId, cwd, toolName, toolInput, toolResponse } = input;
     const platformSource = normalizePlatformSource(input.platform);
+    const historicalTimestampFromImportEpochMs = input.historicalTimestampFromImportEpochMs;
 
     if (!toolName) {
       // No tool name provided - skip observation gracefully
@@ -57,7 +58,12 @@ export const observationHandler: EventHandler = {
           tool_name: toolName,
           tool_input: toolInput,
           tool_response: toolResponse,
-          cwd
+          cwd,
+          // Transcript-import path forwards the original entry timestamp; live
+          // hook path leaves it undefined and the worker falls back to now().
+          ...(historicalTimestampFromImportEpochMs !== undefined
+            ? { historical_timestamp_from_import_epoch_ms: historicalTimestampFromImportEpochMs }
+            : {})
         })
       });
 

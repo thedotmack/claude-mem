@@ -68,6 +68,7 @@ export const summarizeHandler: EventHandler = {
     });
 
     const platformSource = normalizePlatformSource(input.platform);
+    const historicalTimestampFromImportEpochMs = input.historicalTimestampFromImportEpochMs;
 
     // 1. Queue summarize request — worker returns immediately with { status: 'queued' }
     const response = await workerHttpRequest('/api/sessions/summarize', {
@@ -76,7 +77,13 @@ export const summarizeHandler: EventHandler = {
       body: JSON.stringify({
         contentSessionId: sessionId,
         last_assistant_message: lastAssistantMessage,
-        platformSource
+        platformSource,
+        // Transcript-import path forwards the last transcript message epoch so
+        // the summary row is stamped with the transcript end-time; live hook
+        // path omits this and the worker falls back to Date.now().
+        ...(historicalTimestampFromImportEpochMs !== undefined
+          ? { historical_timestamp_from_import_epoch_ms: historicalTimestampFromImportEpochMs }
+          : {})
       }),
       timeoutMs: SUMMARIZE_TIMEOUT_MS
     });

@@ -269,13 +269,19 @@ export class SessionManager {
     }
 
     // CRITICAL: Persist to database FIRST
+    // Forward optional historical timestamp from transcript-import path; when
+    // present, PendingMessageStore.enqueue uses it as the row's
+    // created_at_epoch instead of Date.now(), and the existing
+    // _originalTimestamp → earliestPendingTimestamp → overrideTimestampEpoch
+    // chain replays the observation with the transcript's original epoch.
     const message: PendingMessage = {
       type: 'observation',
       tool_name: data.tool_name,
       tool_input: data.tool_input,
       tool_response: data.tool_response,
       prompt_number: data.prompt_number,
-      cwd: data.cwd
+      cwd: data.cwd,
+      historicalTimestampFromImportEpochMs: data.historicalTimestampFromImportEpochMs
     };
 
     try {
@@ -304,8 +310,17 @@ export class SessionManager {
    *
    * CRITICAL: Persists to database FIRST before adding to in-memory queue.
    * This ensures summarize requests survive worker crashes.
+   *
+   * @param historicalTimestampFromImportEpochMs - Optional epoch ms from the
+   *   transcript-import path (typically the last transcript message's
+   *   timestamp). Stamps the summary row with the transcript's original
+   *   end-time rather than the import run time.
    */
-  queueSummarize(sessionDbId: number, lastAssistantMessage?: string): void {
+  queueSummarize(
+    sessionDbId: number,
+    lastAssistantMessage?: string,
+    historicalTimestampFromImportEpochMs?: number
+  ): void {
     // Auto-initialize from database if needed (handles worker restarts)
     let session = this.sessions.get(sessionDbId);
     if (!session) {
@@ -315,7 +330,8 @@ export class SessionManager {
     // CRITICAL: Persist to database FIRST
     const message: PendingMessage = {
       type: 'summarize',
-      last_assistant_message: lastAssistantMessage
+      last_assistant_message: lastAssistantMessage,
+      historicalTimestampFromImportEpochMs
     };
 
     try {

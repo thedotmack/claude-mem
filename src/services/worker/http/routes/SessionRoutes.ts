@@ -96,6 +96,45 @@ export class SessionRoutes extends BaseRouteHandler {
   private static readonly STALE_GENERATOR_THRESHOLD_MS = 30_000; // 30 seconds (#1099)
   private static readonly MAX_SESSION_WALL_CLOCK_MS = 4 * 60 * 60 * 1000; // 4 hours (#1590)
 
+  // Max allowed clock skew on transcript-import historical timestamps. Guards
+  // against malformed input or badly-skewed source clocks while still tolerating
+  // normal timezone/NTP drift. Live-hook traffic never supplies this field.
+  private static readonly MAX_HISTORICAL_TIMESTAMP_FUTURE_SKEW_MS = 24 * 60 * 60 * 1000;
+
+  /**
+   * Parse the optional `historical_timestamp_from_import_epoch_ms` body field.
+   *
+   * Transcript-import callers (Phase 3 CLI) supply this field so each observation,
+   * summary, and session-completion record gets stamped with the transcript's
+   * original epoch rather than the import-run wall-clock time. Live hook traffic
+   * omits the field and falls back to Date.now() at enqueue/storage time.
+   *
+   * Contract:
+   * - `undefined` or `null` → absent, no error (returns `{ value: undefined }`).
+   * - Must be a positive integer epoch-ms.
+   * - Must not exceed now + 24h (MAX_HISTORICAL_TIMESTAMP_FUTURE_SKEW_MS).
+   *
+   * Returns the parsed value or an error message — never throws, so callers stay
+   * in the `this.badRequest(res, error)` pattern already used in this file.
+   */
+  private parseOptionalHistoricalTimestamp(rawValue: unknown): { value?: number; error?: string } {
+    if (rawValue === undefined || rawValue === null) {
+      return { value: undefined };
+    }
+    if (
+      typeof rawValue !== 'number' ||
+      !Number.isFinite(rawValue) ||
+      !Number.isInteger(rawValue) ||
+      rawValue <= 0 ||
+      rawValue > Date.now() + SessionRoutes.MAX_HISTORICAL_TIMESTAMP_FUTURE_SKEW_MS
+    ) {
+      return {
+        error: 'historical_timestamp_from_import_epoch_ms must be a positive integer (epoch ms) no more than 24h in the future'
+      };
+    }
+    return { value: rawValue };
+  }
+
   private ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
@@ -561,6 +600,10 @@ export class SessionRoutes extends BaseRouteHandler {
       return this.badRequest(res, 'Missing contentSessionId');
     }
 
+    const { value: historicalTimestampFromImportEpochMs, error: historicalTimestampError } =
+      this.parseOptionalHistoricalTimestamp(req.body.historical_timestamp_from_import_epoch_ms);
+    if (historicalTimestampError) return this.badRequest(res, historicalTimestampError);
+
     // Load skip tools from settings
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const skipTools = new Set(settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim()).filter(Boolean));
@@ -628,7 +671,8 @@ export class SessionRoutes extends BaseRouteHandler {
             tool_name
           });
           return '';
-        })()
+        })(),
+        historicalTimestampFromImportEpochMs
       });
 
       // Ensure SDK agent is running
@@ -660,6 +704,10 @@ export class SessionRoutes extends BaseRouteHandler {
       return this.badRequest(res, 'Missing contentSessionId');
     }
 
+    const { value: historicalTimestampFromImportEpochMs, error: historicalTimestampError } =
+      this.parseOptionalHistoricalTimestamp(req.body.historical_timestamp_from_import_epoch_ms);
+    if (historicalTimestampError) return this.badRequest(res, historicalTimestampError);
+
     const store = this.dbManager.getSessionStore();
 
     // Get or create session
@@ -680,7 +728,11 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Queue summarize
-    this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
+    this.sessionManager.queueSummarize(
+      sessionDbId,
+      last_assistant_message,
+      historicalTimestampFromImportEpochMs
+    );
 
     // Ensure SDK agent is running
     this.ensureGeneratorRunning(sessionDbId, 'summarize');
@@ -747,6 +799,10 @@ export class SessionRoutes extends BaseRouteHandler {
       return this.badRequest(res, 'Missing contentSessionId');
     }
 
+    const { value: historicalTimestampFromImportEpochMs, error: historicalTimestampError } =
+      this.parseOptionalHistoricalTimestamp(req.body.historical_timestamp_from_import_epoch_ms);
+    if (historicalTimestampError) return this.badRequest(res, historicalTimestampError);
+
     const store = this.dbManager.getSessionStore();
 
     // Look up sessionDbId from contentSessionId (createSDKSession is idempotent)
@@ -764,10 +820,13 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    // Complete the session (removes from active sessions map if present)
-    // Note: The Stop hook (summarize handler) waits for pending work before calling
-    // this endpoint. No polling here — that's the hook's responsibility.
-    await this.completionHandler.completeByDbId(sessionDbId);
+    // Complete the session (removes from active sessions map if present).
+    // The historical timestamp (when supplied by the import CLI) is threaded
+    // into markSessionCompleted so sdk_sessions.completed_at_epoch reflects the
+    // transcript's last-message epoch, not the import-run wall-clock time.
+    // Note: The Stop hook (summarize handler) waits for pending work before
+    // calling this endpoint. No polling here — that's the hook's responsibility.
+    await this.completionHandler.completeByDbId(sessionDbId, historicalTimestampFromImportEpochMs);
 
     logger.info('SESSION', 'Session completed via API', {
       contentSessionId,

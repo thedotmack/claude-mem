@@ -25,6 +25,7 @@ export const sessionCompleteHandler: EventHandler = {
 
     const { sessionId } = input;
     const platformSource = normalizePlatformSource(input.platform);
+    const historicalTimestampFromImportEpochMs = input.historicalTimestampFromImportEpochMs;
 
     if (!sessionId) {
       logger.warn('HOOK', 'session-complete: Missing sessionId, skipping');
@@ -42,7 +43,13 @@ export const sessionCompleteHandler: EventHandler = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contentSessionId: sessionId,
-          platformSource
+          platformSource,
+          // Transcript-import path supplies the last transcript message's epoch
+          // so the summary row gets stamped with the transcript end-time rather
+          // than now(). Live hook path omits it.
+          ...(historicalTimestampFromImportEpochMs !== undefined
+            ? { historical_timestamp_from_import_epoch_ms: historicalTimestampFromImportEpochMs }
+            : {})
         })
       });
 

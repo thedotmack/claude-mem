@@ -957,14 +957,25 @@ export class SessionStore {
     `).run(memorySessionId, sessionDbId);
   }
 
-  markSessionCompleted(sessionDbId: number): void {
-    const nowEpoch = Date.now();
-    const nowIso = new Date(nowEpoch).toISOString();
+  /**
+   * Mark a session as completed.
+   *
+   * @param sessionDbId - Session row ID
+   * @param overrideCompletedAtEpoch - Optional historical epoch (ms) from
+   *   transcript-import callers. When supplied, the completion row is stamped
+   *   with this value instead of Date.now() — so imported transcripts report
+   *   their original end-time rather than the import-run wall-clock time.
+   *   Mirrors the `overrideTimestampEpoch ?? Date.now()` pattern used by the
+   *   observation/summary storage paths.
+   */
+  markSessionCompleted(sessionDbId: number, overrideCompletedAtEpoch?: number): void {
+    const epoch = overrideCompletedAtEpoch ?? Date.now();
+    const iso = new Date(epoch).toISOString();
     this.db.prepare(`
       UPDATE sdk_sessions
       SET status = 'completed', completed_at = ?, completed_at_epoch = ?
       WHERE id = ?
-    `).run(nowIso, nowEpoch, sessionDbId);
+    `).run(iso, epoch, sessionDbId);
   }
 
   /**

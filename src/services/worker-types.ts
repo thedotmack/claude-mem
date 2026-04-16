@@ -56,6 +56,14 @@ export interface PendingMessage {
   prompt_number?: number;
   cwd?: string;
   last_assistant_message?: string;
+  /**
+   * Optional historical timestamp (epoch ms) supplied by the transcript-import
+   * path. When present, this replaces the normal Date.now() used for
+   * pending_messages.created_at_epoch, which downstream becomes
+   * _originalTimestamp → earliestPendingTimestamp → overrideTimestampEpoch
+   * at the SessionStore insert boundary. Absent for live hook traffic.
+   */
+  historicalTimestampFromImportEpochMs?: number;
 }
 
 /**
@@ -74,6 +82,13 @@ export interface ObservationData {
   tool_response: any;
   prompt_number: number;
   cwd?: string;
+  /**
+   * Optional historical timestamp (epoch ms) used by the transcript-import path
+   * to stamp the pending_messages row with the original transcript entry time
+   * instead of now(). Flows through to SessionStore via the existing
+   * overrideTimestampEpoch chain.
+   */
+  historicalTimestampFromImportEpochMs?: number;
 }
 
 // ============================================================================

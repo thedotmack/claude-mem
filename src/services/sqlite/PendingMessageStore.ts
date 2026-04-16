@@ -55,10 +55,20 @@ export class PendingMessageStore {
 
   /**
    * Enqueue a new message (persist before processing)
+   *
+   * The `created_at_epoch` column is the source-of-truth for a message's
+   * "original timestamp" — it flows through SessionQueueProcessor as
+   * `_originalTimestamp`, then SessionManager aggregates it into
+   * `earliestPendingTimestamp`, and finally SessionStore consumes it as
+   * `overrideTimestampEpoch` at insert time. Transcript imports supply
+   * `historicalTimestampFromImportEpochMs` on the PendingMessage to replay
+   * observations with their original epoch; live hook traffic omits it and
+   * falls back to Date.now().
+   *
    * @returns The database ID of the persisted message
    */
   enqueue(sessionDbId: number, contentSessionId: string, message: PendingMessage): number {
-    const now = Date.now();
+    const createdAtEpoch = message.historicalTimestampFromImportEpochMs ?? Date.now();
     const stmt = this.db.prepare(`
       INSERT INTO pending_messages (
         session_db_id, content_session_id, message_type,
@@ -78,7 +88,7 @@ export class PendingMessageStore {
       message.cwd || null,
       message.last_assistant_message || null,
       message.prompt_number || null,
-      now
+      createdAtEpoch
     );
 
     return result.lastInsertRowid as number;

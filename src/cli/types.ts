@@ -12,6 +12,14 @@ export interface NormalizedHookInput {
   edits?: unknown[];   // afterFileEdit
   // Platform-specific metadata (source, reason, trigger, mcp_context, etc.)
   metadata?: Record<string, unknown>;
+  /**
+   * Optional historical timestamp (epoch ms) supplied by the transcript-import
+   * path only. Live platform adapters never set this. When present, the
+   * observation/session-complete handler forwards it to the worker as
+   * `historical_timestamp_from_import_epoch_ms` so the row is stamped with
+   * the transcript's original time instead of import-run time.
+   */
+  historicalTimestampFromImportEpochMs?: number;
 }
 
 export interface HookResult {
