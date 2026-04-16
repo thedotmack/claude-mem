@@ -412,11 +412,22 @@ export function createPidCapturingSpawn(sessionDbId: number) {
     const useCmdWrapper = process.platform === 'win32' && spawnOptions.command.endsWith('.cmd');
     const env = sanitizeEnv(spawnOptions.env ?? process.env);
 
-    // Filter empty string args: Bun's spawn() silently drops empty strings from argv,
-    // causing subsequent flags to be consumed as values for the preceding flag.
-    // The Agent SDK may produce empty-string args (e.g., settingSources defaults to []
-    // which joins to ""). Node preserves these, but Bun drops them, breaking CLI parsing.
-    const args = spawnOptions.args.filter(arg => arg !== '');
+    // Filter empty string args AND their preceding flag (Issue #2049).
+    // The Agent SDK emits ["--setting-sources", ""] when settingSources defaults to [].
+    // Simply dropping "" leaves an orphan --setting-sources that consumes the next
+    // flag (e.g. --permission-mode) as its value, crashing Claude Code 2.1.109+ with
+    // "Invalid setting source: --permission-mode". Drop the flag too so the SDK
+    // default (no setting sources) is preserved by omission.
+    const args: string[] = [];
+    for (const arg of spawnOptions.args) {
+      if (arg === '') {
+        if (args.length > 0 && args[args.length - 1].startsWith('--')) {
+          args.pop();
+        }
+        continue;
+      }
+      args.push(arg);
+    }
 
     const child = useCmdWrapper
       ? spawn('cmd.exe', ['/d', '/c', spawnOptions.command, ...args], {
