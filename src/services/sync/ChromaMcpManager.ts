@@ -197,6 +197,10 @@ export class ChromaMcpManager {
     const chromaMode = settings.CLAUDE_MEM_CHROMA_MODE || 'local';
     const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || settings.CLAUDE_MEM_PYTHON_VERSION || '3.13';
 
+    // Explicitly include httpcore and httpx to prevent ModuleNotFoundError on
+    // platforms where transitive dependency resolution through chromadb fails (#2046)
+    const extraDeps = ['--with', 'httpcore', '--with', 'httpx'];
+
     if (chromaMode === 'remote') {
       const chromaHost = settings.CLAUDE_MEM_CHROMA_HOST || '127.0.0.1';
       const chromaPort = settings.CLAUDE_MEM_CHROMA_PORT || '8000';
@@ -207,6 +211,7 @@ export class ChromaMcpManager {
 
       const args = [
         '--python', pythonVersion,
+        ...extraDeps,
         'chroma-mcp',
         '--client-type', 'http',
         '--host', chromaHost,
@@ -233,6 +238,7 @@ export class ChromaMcpManager {
     // Local mode: persistent client with data directory
     return [
       '--python', pythonVersion,
+      ...extraDeps,
       'chroma-mcp',
       '--client-type', 'persistent',
       '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
