@@ -80,6 +80,12 @@ export class SearchManager {
       delete normalized.filePath;
     }
 
+    // Remap singular 'concept' to plural 'concepts' (API uses singular, internal uses plural)
+    if (normalized.concept && !normalized.concepts) {
+      normalized.concepts = normalized.concept;
+      delete normalized.concept;
+    }
+
     // Parse comma-separated concepts into array
     if (normalized.concepts && typeof normalized.concepts === 'string') {
       normalized.concepts = normalized.concepts.split(',').map((s: string) => s.trim()).filter(Boolean);
@@ -1061,7 +1067,10 @@ export class SearchManager {
    */
   async findByConcept(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { concepts: concept, ...filters } = normalized;
+    // Extract concept - may be a string or array after normalizeParams
+    const rawConcept = normalized.concepts;
+    const concept = Array.isArray(rawConcept) ? rawConcept[0] : rawConcept;
+    const { concepts: _, ...filters } = normalized;
     let results: ObservationSearchResult[] = [];
 
     // Metadata-first, semantic-enhanced search
