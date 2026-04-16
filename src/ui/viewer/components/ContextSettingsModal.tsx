@@ -352,16 +352,20 @@ export function ContextSettingsModal({
               {formState.CLAUDE_MEM_PROVIDER === 'claude' && (
                 <FormField
                   label="Claude Model"
-                  tooltip="Claude model used for generating observations"
+                  tooltip="Claude model used for generating observations. Select a preset or type a precise model ID (e.g., claude-sonnet-4-6)."
                 >
-                  <select
+                  <input
+                    list="claude-model-presets"
                     value={formState.CLAUDE_MEM_MODEL || 'haiku'}
                     onChange={(e) => updateSetting('CLAUDE_MEM_MODEL', e.target.value)}
-                  >
+                    placeholder="haiku, sonnet, opus, or exact model ID..."
+                    style={{ width: '100%' }}
+                  />
+                  <datalist id="claude-model-presets">
                     <option value="haiku">haiku (fastest)</option>
                     <option value="sonnet">sonnet (balanced)</option>
                     <option value="opus">opus (highest quality)</option>
-                  </select>
+                  </datalist>
                 </FormField>
               )}
 
