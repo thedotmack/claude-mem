@@ -283,6 +283,12 @@ function main() {
       continue;
     }
 
+    // Convert ISO timestamp to epoch ms for historical-timestamp override.
+    // Falls back to undefined if the parsed date is invalid, so the
+    // `?? Date.now()` default inside SessionStore still applies.
+    const parsedEpochMs = new Date(timestampIso).getTime();
+    const overrideTimestampEpoch = Number.isFinite(parsedEpochMs) ? parsedEpochMs : undefined;
+
     // Look up session metadata
     const sessionMeta = timestampMap[timestampIso];
     if (!sessionMeta) {
@@ -319,7 +325,10 @@ function main() {
         db.storeObservation(
           memorySessionId,
           sessionMeta.project,
-          observation
+          observation,
+          undefined,
+          0,
+          overrideTimestampEpoch
         );
         importedObs++;
 
@@ -351,7 +360,10 @@ function main() {
         db.storeSummary(
           memorySessionId,
           sessionMeta.project,
-          summary
+          summary,
+          undefined,
+          0,
+          overrideTimestampEpoch
         );
         importedSum++;
 
