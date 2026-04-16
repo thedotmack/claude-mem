@@ -10,6 +10,7 @@ const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
   name: 'codex',
   version: '0.3',
   description: 'Schema for Codex session JSONL files under ~/.codex/sessions.',
+  timestampPath: 'timestamp',
   events: [
     {
       name: 'session-meta',

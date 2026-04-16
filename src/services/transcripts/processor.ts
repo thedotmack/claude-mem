@@ -77,6 +77,31 @@ export class TranscriptEventProcessor {
     return null;
   }
 
+  private resolveHistoricalTimestamp(
+    entry: unknown,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    event: SchemaEvent
+  ): number | undefined {
+    // Silent when timestamp is absent (normal live-hook case); warn only when a value exists but fails to parse.
+    if (!schema.timestampPath) return undefined;
+    const ctx = { watch, schema } as any;
+    const fieldSpec = event.fields?.timestamp ?? { path: schema.timestampPath };
+    const resolved = resolveFieldSpec(fieldSpec, entry, ctx);
+    if (resolved === undefined || resolved === null) return undefined;
+    if (typeof resolved !== 'string' && typeof resolved !== 'number') return undefined;
+    const parsed = typeof resolved === 'number' ? resolved : Date.parse(resolved);
+    if (Number.isNaN(parsed)) {
+      logger.warn('TRANSCRIPT', 'Failed to parse transcript entry timestamp; falling back to live time', {
+        timestampPath: schema.timestampPath,
+        value: resolved,
+        watch: watch.name
+      });
+      return undefined;
+    }
+    return parsed;
+  }
+
   private resolveCwd(
     entry: unknown,
     watch: WatchTarget,
@@ -127,6 +152,8 @@ export class TranscriptEventProcessor {
     const project = this.resolveProject(entry, watch, schema, event, session);
     if (project) session.project = project;
 
+    const historicalTimestampEpochMs = this.resolveHistoricalTimestamp(entry, watch, schema, event);
+
     const fields = resolveFields(event.fields, entry, { watch, schema, session });
 
     switch (event.action) {
@@ -147,13 +174,13 @@ export class TranscriptEventProcessor {
         if (typeof fields.message === 'string') session.lastAssistantMessage = fields.message;
         break;
       case 'tool_use':
-        await this.handleToolUse(session, fields);
+        await this.handleToolUse(session, fields, historicalTimestampEpochMs);
         break;
       case 'tool_result':
-        await this.handleToolResult(session, fields);
+        await this.handleToolResult(session, fields, historicalTimestampEpochMs);
         break;
       case 'observation':
-        await this.sendObservation(session, fields);
+        await this.sendObservation(session, fields, historicalTimestampEpochMs);
         break;
       case 'file_edit':
         await this.sendFileEdit(session, fields);
@@ -188,7 +215,11 @@ export class TranscriptEventProcessor {
     });
   }
 
-  private async handleToolUse(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async handleToolUse(
+    session: SessionState,
+    fields: Record<string, unknown>,
+    historicalTimestampEpochMs?: number
+  ): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolInput = this.maybeParseJson(fields.toolInput);
@@ -215,11 +246,15 @@ export class TranscriptEventProcessor {
         toolName,
         toolInput,
         toolResponse
-      });
+      }, historicalTimestampEpochMs);
     }
   }
 
-  private async handleToolResult(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async handleToolResult(
+    session: SessionState,
+    fields: Record<string, unknown>,
+    historicalTimestampEpochMs?: number
+  ): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolResponse = this.maybeParseJson(fields.toolResponse);
@@ -239,11 +274,15 @@ export class TranscriptEventProcessor {
         toolName: name,
         toolInput,
         toolResponse
-      });
+      }, historicalTimestampEpochMs);
     }
   }
 
-  private async sendObservation(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async sendObservation(
+    session: SessionState,
+    fields: Record<string, unknown>,
+    historicalTimestampEpochMs?: number
+  ): Promise<void> {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     if (!toolName) return;
 
@@ -253,7 +292,10 @@ export class TranscriptEventProcessor {
       toolName,
       toolInput: this.maybeParseJson(fields.toolInput),
       toolResponse: this.maybeParseJson(fields.toolResponse),
-      platform: session.platformSource
+      platform: session.platformSource,
+      ...(historicalTimestampEpochMs !== undefined
+        ? { historicalTimestampFromImportEpochMs: historicalTimestampEpochMs }
+        : {})
     });
   }
 

@@ -40,6 +40,7 @@ export interface TranscriptSchema {
   description?: string;
   eventTypePath?: string;
   sessionIdPath?: string;
+  timestampPath?: string;
   cwdPath?: string;
   projectPath?: string;
   events: SchemaEvent[];
