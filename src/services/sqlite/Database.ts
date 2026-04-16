@@ -166,6 +166,8 @@ export class ClaudeMemDatabase {
     this.db.run('PRAGMA temp_store = memory');
     this.db.run(`PRAGMA mmap_size = ${SQLITE_MMAP_SIZE_BYTES}`);
     this.db.run(`PRAGMA cache_size = ${SQLITE_CACHE_SIZE_PAGES}`);
+    // Cap WAL file size at 2MB to prevent unbounded growth (Issue #1956)
+    this.db.run('PRAGMA journal_size_limit = 2097152');
 
     // Run all migrations
     const migrationRunner = new MigrationRunner(this.db);
@@ -229,6 +231,8 @@ export class DatabaseManager {
     this.db.run('PRAGMA temp_store = memory');
     this.db.run(`PRAGMA mmap_size = ${SQLITE_MMAP_SIZE_BYTES}`);
     this.db.run(`PRAGMA cache_size = ${SQLITE_CACHE_SIZE_PAGES}`);
+    // Cap WAL file size at 2MB to prevent unbounded growth (Issue #1956)
+    this.db.run('PRAGMA journal_size_limit = 2097152');
 
     // Initialize schema_versions table
     this.initializeSchemaVersions();

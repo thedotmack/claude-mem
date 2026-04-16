@@ -173,6 +173,9 @@ export class WorkerService {
   // Failed message purge interval (Issue #1957)
   private failedMessagePurgeInterval: ReturnType<typeof setInterval> | null = null;
 
+  // WAL checkpoint interval (Issue #1956)
+  private walCheckpointInterval: ReturnType<typeof setInterval> | null = null;
+
   // AI interaction tracking for health endpoint
   private lastAiInteraction: {
     timestamp: number;
@@ -526,6 +529,17 @@ export class WorkerService {
       };
       purgeFailedMessages(); // Run immediately on startup
       this.failedMessagePurgeInterval = setInterval(purgeFailedMessages, 10 * 60 * 1000);
+
+      // Periodic WAL checkpoint to prevent unbounded WAL growth (Issue #1956)
+      this.walCheckpointInterval = setInterval(() => {
+        try {
+          const db = this.dbManager.getSessionStore().db;
+          db.run('PRAGMA wal_checkpoint(TRUNCATE)');
+          logger.debug('SYSTEM', 'WAL checkpoint completed');
+        } catch (e) {
+          logger.error('SYSTEM', 'WAL checkpoint error', { error: e instanceof Error ? e.message : String(e) });
+        }
+      }, 5 * 60 * 1000); // Every 5 minutes
 
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
@@ -1000,6 +1014,12 @@ export class WorkerService {
     if (this.failedMessagePurgeInterval) {
       clearInterval(this.failedMessagePurgeInterval);
       this.failedMessagePurgeInterval = null;
+    }
+
+    // Stop WAL checkpoint (Issue #1956)
+    if (this.walCheckpointInterval) {
+      clearInterval(this.walCheckpointInterval);
+      this.walCheckpointInterval = null;
     }
 
     await performGracefulShutdown({
