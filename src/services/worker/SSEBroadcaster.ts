@@ -14,6 +14,15 @@ import type { SSEEvent, SSEClient } from '../worker-types.js';
 
 export class SSEBroadcaster {
   private sseClients: Set<SSEClient> = new Set();
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+
+  constructor() {
+    // Periodic heartbeat to detect and prune stale SSE connections.
+    // This catches connections that died without firing 'close' (e.g., after /reload-plugins).
+    this.heartbeatInterval = setInterval(() => {
+      this.pruneDeadClients();
+    }, 30_000); // Every 30 seconds
+  }
 
   /**
    * Add a new SSE client connection
@@ -24,6 +33,11 @@ export class SSEBroadcaster {
 
     // Setup cleanup on disconnect
     res.on('close', () => {
+      this.removeClient(res);
+    });
+
+    // Also listen for error events to catch broken pipes
+    res.on('error', () => {
       this.removeClient(res);
     });
 
@@ -40,7 +54,7 @@ export class SSEBroadcaster {
   }
 
   /**
-   * Broadcast an event to all connected clients (single-pass)
+   * Broadcast an event to all connected clients (single-pass with dead client cleanup)
    */
   broadcast(event: SSEEvent): void {
     if (this.sseClients.size === 0) {
@@ -53,9 +67,33 @@ export class SSEBroadcaster {
 
     logger.debug('WORKER', 'SSE broadcast sent', { eventType: event.type, clients: this.sseClients.size });
 
-    // Single-pass write
+    // Single-pass write with dead client detection.
+    // After /reload-plugins, some SSE clients may be stale (connection dropped
+    // without firing 'close' event). Detect and remove them on write failure.
+    const deadClients: SSEClient[] = [];
     for (const client of this.sseClients) {
-      client.write(data);
+      try {
+        // Check if the underlying socket is still writable
+        const res = client as any;
+        if (res.writableEnded || res.destroyed || (res.socket && res.socket.destroyed)) {
+          deadClients.push(client);
+          continue;
+        }
+        client.write(data);
+      } catch {
+        deadClients.push(client);
+      }
+    }
+
+    // Clean up dead clients detected during broadcast
+    if (deadClients.length > 0) {
+      for (const dead of deadClients) {
+        this.sseClients.delete(dead);
+      }
+      logger.debug('WORKER', 'SSE dead clients cleaned up during broadcast', {
+        removed: deadClients.length,
+        remaining: this.sseClients.size
+      });
     }
   }
 
@@ -64,6 +102,43 @@ export class SSEBroadcaster {
    */
   getClientCount(): number {
     return this.sseClients.size;
+  }
+
+  /**
+   * Prune stale SSE connections that are no longer writable.
+   * Called periodically by the heartbeat and during broadcast.
+   */
+  private pruneDeadClients(): void {
+    if (this.sseClients.size === 0) return;
+
+    const deadClients: SSEClient[] = [];
+    for (const client of this.sseClients) {
+      const res = client as any;
+      if (res.writableEnded || res.destroyed || (res.socket && res.socket.destroyed)) {
+        deadClients.push(client);
+      }
+    }
+
+    if (deadClients.length > 0) {
+      for (const dead of deadClients) {
+        this.sseClients.delete(dead);
+      }
+      logger.debug('WORKER', 'SSE heartbeat pruned dead clients', {
+        removed: deadClients.length,
+        remaining: this.sseClients.size
+      });
+    }
+  }
+
+  /**
+   * Stop the heartbeat and clean up all clients
+   */
+  destroy(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    this.sseClients.clear();
   }
 
   /**
