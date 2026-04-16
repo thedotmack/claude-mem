@@ -150,10 +150,12 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
   const summaryMatch = summaryRegex.exec(text);
 
   if (!summaryMatch) {
-    // Log when the response contains <observation> instead of <summary>
-    // to help diagnose prompt conditioning issues (see #1312)
+    // When the LLM emits <observation> instead of <summary> (pattern conditioning carryover),
+    // salvage a synthetic summary from the observation data rather than discarding everything.
+    // This prevents ~72% summary failure rate observed with Sonnet on resumed sessions (#1908).
     if (/<observation>/.test(text)) {
-      logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — prompt conditioning may need strengthening', { sessionId });
+      logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — attempting salvage', { sessionId });
+      return salvageSummaryFromObservations(text, sessionId);
     }
     return null;
   }
@@ -248,4 +250,59 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
   }
 
   return elements;
+}
+
+/**
+ * Salvage a synthetic summary from <observation> tags when the LLM
+ * emits observations instead of a summary (pattern conditioning carryover).
+ *
+ * Extracts title/narrative/facts from all observations in the response and
+ * maps them into summary fields. This prevents total summary loss when the
+ * LLM format is wrong but the content is useful.
+ */
+function salvageSummaryFromObservations(text: string, sessionId?: number): ParsedSummary | null {
+  const observations = parseObservations(text);
+
+  if (observations.length === 0) {
+    logger.warn('PARSER', 'Salvage failed: no parseable observations in summary response', { sessionId });
+    return null;
+  }
+
+  // Combine observation data into summary fields
+  const titles = observations.map(o => o.title).filter(Boolean) as string[];
+  const narratives = observations.map(o => o.narrative).filter(Boolean) as string[];
+  const allFacts = observations.flatMap(o => o.facts);
+
+  // Map observation content to summary structure:
+  // - request: first observation title (most likely the session's main topic)
+  // - completed: all titles combined (work items)
+  // - learned: all narratives combined (detailed findings)
+  // - investigated: facts joined (discrete findings)
+  const request = titles[0] || null;
+  const completed = titles.length > 1 ? titles.join('; ') : titles[0] || null;
+  const learned = narratives.join('\n\n') || null;
+  const investigated = allFacts.length > 0 ? allFacts.join('; ') : null;
+
+  // Must have at least one meaningful field
+  if (!request && !completed && !learned && !investigated) {
+    logger.warn('PARSER', 'Salvage produced empty summary', { sessionId });
+    return null;
+  }
+
+  logger.info('PARSER', 'Salvaged synthetic summary from observation tags', {
+    sessionId,
+    observationCount: observations.length,
+    hasRequest: !!request,
+    hasCompleted: !!completed,
+    hasLearned: !!learned
+  });
+
+  return {
+    request,
+    investigated,
+    learned,
+    completed,
+    next_steps: null,
+    notes: '[auto-salvaged from observation tags]'
+  };
 }
