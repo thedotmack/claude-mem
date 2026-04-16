@@ -907,11 +907,14 @@ export class SearchManager {
       logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
-        // Step 2: Filter by recency (90 days)
+        // Step 2: Filter by recency (90 days) and project
         const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
         const recentIds = chromaResults.ids.filter((_id, idx) => {
           const meta = chromaResults.metadatas[idx];
-          return meta && meta.created_at_epoch > ninetyDaysAgo;
+          if (!meta || meta.created_at_epoch <= ninetyDaysAgo) return false;
+          // Apply project filter if specified
+          if (options.project && meta.project && meta.project !== options.project) return false;
+          return true;
         });
 
         logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
@@ -919,10 +922,16 @@ export class SearchManager {
         // Step 3: Hydrate from SQLite in temporal order
         if (recentIds.length > 0) {
           const limit = options.limit || 20;
-          results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit });
+          results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
           logger.debug('SEARCH', 'Hydrated observations from SQLite', { count: results.length });
         }
       }
+    }
+
+    // Fall back to FTS5 when Chroma is unavailable
+    if (!this.chromaSync && query) {
+      const searchOptions = { limit: options.limit || 20, project: options.project, dateRange: options.dateRange, orderBy: options.orderBy };
+      results = this.sessionSearch.searchObservations(query, searchOptions);
     }
 
     if (results.length === 0) {
@@ -964,11 +973,13 @@ export class SearchManager {
       logger.debug('SEARCH', 'Chroma returned semantic matches for sessions', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
-        // Step 2: Filter by recency (90 days)
+        // Step 2: Filter by recency (90 days) and project
         const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
         const recentIds = chromaResults.ids.filter((_id, idx) => {
           const meta = chromaResults.metadatas[idx];
-          return meta && meta.created_at_epoch > ninetyDaysAgo;
+          if (!meta || meta.created_at_epoch <= ninetyDaysAgo) return false;
+          if (options.project && meta.project && meta.project !== options.project) return false;
+          return true;
         });
 
         logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
@@ -976,10 +987,16 @@ export class SearchManager {
         // Step 3: Hydrate from SQLite in temporal order
         if (recentIds.length > 0) {
           const limit = options.limit || 20;
-          results = this.sessionStore.getSessionSummariesByIds(recentIds, { orderBy: 'date_desc', limit });
+          results = this.sessionStore.getSessionSummariesByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
           logger.debug('SEARCH', 'Hydrated sessions from SQLite', { count: results.length });
         }
       }
+    }
+
+    // Fall back to FTS5 when Chroma is unavailable
+    if (!this.chromaSync && query) {
+      const searchOptions = { limit: options.limit || 20, project: options.project, dateRange: options.dateRange, orderBy: options.orderBy };
+      results = this.sessionSearch.searchSessions(query, searchOptions);
     }
 
     if (results.length === 0) {
@@ -1021,11 +1038,13 @@ export class SearchManager {
       logger.debug('SEARCH', 'Chroma returned semantic matches for prompts', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
-        // Step 2: Filter by recency (90 days)
+        // Step 2: Filter by recency (90 days) and project
         const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
         const recentIds = chromaResults.ids.filter((_id, idx) => {
           const meta = chromaResults.metadatas[idx];
-          return meta && meta.created_at_epoch > ninetyDaysAgo;
+          if (!meta || meta.created_at_epoch <= ninetyDaysAgo) return false;
+          if (options.project && meta.project && meta.project !== options.project) return false;
+          return true;
         });
 
         logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
@@ -1033,10 +1052,16 @@ export class SearchManager {
         // Step 3: Hydrate from SQLite in temporal order
         if (recentIds.length > 0) {
           const limit = options.limit || 20;
-          results = this.sessionStore.getUserPromptsByIds(recentIds, { orderBy: 'date_desc', limit });
+          results = this.sessionStore.getUserPromptsByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
           logger.debug('SEARCH', 'Hydrated user prompts from SQLite', { count: results.length });
         }
       }
+    }
+
+    // Fall back to FTS5 when Chroma is unavailable
+    if (!this.chromaSync && query) {
+      const searchOptions = { limit: options.limit || 20, project: options.project, dateRange: options.dateRange, orderBy: options.orderBy };
+      results = this.sessionSearch.searchUserPrompts(query, searchOptions);
     }
 
     if (results.length === 0) {
