@@ -37,6 +37,7 @@ export class MigrationRunner {
     this.addSessionCustomTitleColumn();
     this.createObservationFeedbackTable();
     this.addSessionPlatformSourceColumn();
+    this.addObservationModelAndRelevanceColumns();
   }
 
   /**
@@ -921,5 +922,36 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
+  }
+
+  /**
+   * Add generated_by_model and relevance_count columns to observations (migration 26)
+   *
+   * generated_by_model tracks which model generated each observation
+   * (required for model selection optimization).
+   * relevance_count tracks how many times an observation was reused in context.
+   *
+   * Fixes #1954: these columns were missing from the migration runner while present
+   * in SessionStore and migrations.ts, causing schema mismatch when building from source.
+   */
+  private addObservationModelAndRelevanceColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(26) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasGeneratedByModel = columns.some(col => col.name === 'generated_by_model');
+    const hasRelevanceCount = columns.some(col => col.name === 'relevance_count');
+
+    if (!hasGeneratedByModel) {
+      this.db.run('ALTER TABLE observations ADD COLUMN generated_by_model TEXT');
+      logger.debug('DB', 'Added generated_by_model column to observations');
+    }
+
+    if (!hasRelevanceCount) {
+      this.db.run('ALTER TABLE observations ADD COLUMN relevance_count INTEGER DEFAULT 0');
+      logger.debug('DB', 'Added relevance_count column to observations');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
   }
 }
