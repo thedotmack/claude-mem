@@ -32,6 +32,8 @@ export interface ParsedSummary {
  */
 export function parseObservations(text: string, correlationId?: string): ParsedObservation[] {
   const observations: ParsedObservation[] = [];
+  // Intra-response dedup: track (title, narrative) pairs already emitted in this response
+  const seenKeys = new Set<string>();
 
   // Match <observation>...</observation> blocks (non-greedy)
   const observationRegex = /<observation>([\s\S]*?)<\/observation>/g;
@@ -94,6 +96,22 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
       });
       continue;
     }
+
+    // Intra-response dedup: skip near-identical observations in the same response.
+    // Normalize to catch whitespace/casing differences (complementary to DB-level dedup).
+    const dedupKey = [
+      (title || '').toLowerCase().replace(/\s+/g, ' ').trim(),
+      (narrative || '').toLowerCase().replace(/\s+/g, ' ').trim()
+    ].join('\x00');
+
+    if (seenKeys.has(dedupKey)) {
+      logger.debug('PARSER', 'Skipping duplicate observation within same response', {
+        correlationId,
+        title
+      });
+      continue;
+    }
+    seenKeys.add(dedupKey);
 
     observations.push({
       type: finalType,

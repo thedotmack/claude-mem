@@ -13,8 +13,24 @@ import type { ObservationInput, StoreObservationResult } from './types.js';
 const DEDUP_WINDOW_MS = 30_000;
 
 /**
+ * Normalize text for content-hash deduplication.
+ * Collapses whitespace, trims, lowercases, and applies Unicode NFC normalization
+ * to catch near-identical observations that differ only in formatting or encoding.
+ */
+function normalizeForDedup(text: string | null): string {
+  if (!text) return '';
+  return text
+    .normalize('NFC')           // Unicode normalization (e.g., combining characters)
+    .toLowerCase()              // Case-insensitive dedup
+    .replace(/\s+/g, ' ')      // Collapse all whitespace runs to single space
+    .trim();
+}
+
+/**
  * Compute a short content hash for deduplication.
  * Uses (memory_session_id, title, narrative) as the semantic identity of an observation.
+ * Normalizes text before hashing to catch near-duplicates from Gemini and other providers
+ * that differ only in whitespace, Unicode normalization, or casing.
  */
 export function computeObservationContentHash(
   memorySessionId: string,
@@ -22,7 +38,7 @@ export function computeObservationContentHash(
   narrative: string | null
 ): string {
   return createHash('sha256')
-    .update([memorySessionId || '', title || '', narrative || ''].join('\x00'))
+    .update([memorySessionId || '', normalizeForDedup(title), normalizeForDedup(narrative)].join('\x00'))
     .digest('hex')
     .slice(0, 16);
 }
