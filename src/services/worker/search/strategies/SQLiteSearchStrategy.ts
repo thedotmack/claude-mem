@@ -1,13 +1,12 @@
 /**
- * SQLiteSearchStrategy - Direct SQLite queries for filter-only searches
+ * SQLiteSearchStrategy - Direct SQLite queries for filter and text searches
  *
- * This strategy handles searches without query text (filter-only):
- * - Date range filtering
- * - Project filtering
- * - Type filtering
- * - Concept/file filtering
+ * This strategy handles:
+ * - Filter-only searches (date range, project, type, concept/file)
+ * - FTS5 keyword text searches (fallback when Chroma is unavailable)
+ * - LIKE-based text searches (fallback when FTS5 tables are missing)
  *
- * Used when: No query text is provided, or as a fallback when Chroma fails
+ * Used when: No query text is provided, Chroma is disabled, or as a fallback when Chroma fails
  */
 
 import { BaseSearchStrategy, SearchStrategy } from './SearchStrategy.js';
@@ -30,13 +29,14 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
   }
 
   canHandle(options: StrategySearchOptions): boolean {
-    // Can handle filter-only queries (no query text)
+    // Can handle filter-only queries and text queries (via FTS5 fallback)
     // Also used as fallback when Chroma is unavailable
     return !options.query || options.strategyHint === 'sqlite';
   }
 
   async search(options: StrategySearchOptions): Promise<StrategySearchResult> {
     const {
+      query,
       searchType = 'all',
       obsType,
       concepts,
@@ -58,7 +58,8 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     const baseOptions = { limit, offset, orderBy, project, dateRange };
 
-    logger.debug('SEARCH', 'SQLiteSearchStrategy: Filter-only query', {
+    logger.debug('SEARCH', 'SQLiteSearchStrategy: Query', {
+      hasQuery: !!query,
       searchType,
       hasDateRange: !!dateRange,
       hasProject: !!project
@@ -72,15 +73,15 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
           concepts,
           files
         };
-        observations = this.sessionSearch.searchObservations(undefined, obsOptions);
+        observations = this.sessionSearch.searchObservations(query, obsOptions);
       }
 
       if (searchSessions) {
-        sessions = this.sessionSearch.searchSessions(undefined, baseOptions);
+        sessions = this.sessionSearch.searchSessions(query, baseOptions);
       }
 
       if (searchPrompts) {
-        prompts = this.sessionSearch.searchUserPrompts(undefined, baseOptions);
+        prompts = this.sessionSearch.searchUserPrompts(query, baseOptions);
       }
 
       logger.debug('SEARCH', 'SQLiteSearchStrategy: Results', {
