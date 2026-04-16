@@ -359,6 +359,11 @@ export class OpenRouterAgent {
     appName?: string,
     baseUrl?: string
   ): Promise<{ content: string; tokensUsed?: number }> {
+    // Validate API key before making request to prevent confusing 401 errors
+    if (!apiKey || !apiKey.trim()) {
+      throw new Error('OpenRouter API key is empty. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY in ~/.claude-mem/.env');
+    }
+
     // Truncate history to prevent runaway costs
     const truncatedHistory = this.truncateHistory(history);
     const messages = this.conversationToOpenAIMessages(truncatedHistory);
