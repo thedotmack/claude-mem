@@ -311,11 +311,12 @@ export function buildTimeline(
     ...summaries.map(summary => ({ type: 'summary' as const, data: summary }))
   ];
 
-  // Sort chronologically
+  // Sort reverse-chronologically (newest first) so the 2KB context preview
+  // shown to the user displays recent observations instead of stale ones (#1917)
   timeline.sort((a, b) => {
     const aEpoch = a.type === 'observation' ? a.data.created_at_epoch : a.data.displayEpoch;
     const bEpoch = b.type === 'observation' ? b.data.created_at_epoch : b.data.displayEpoch;
-    return aEpoch - bEpoch;
+    return bEpoch - aEpoch;
   });
 
   return timeline;
