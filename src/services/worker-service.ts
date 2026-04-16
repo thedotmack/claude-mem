@@ -170,6 +170,9 @@ export class WorkerService {
   // Stale session reaper interval (Issue #1168)
   private staleSessionReaperInterval: ReturnType<typeof setInterval> | null = null;
 
+  // Failed message purge interval (Issue #1957)
+  private failedMessagePurgeInterval: ReturnType<typeof setInterval> | null = null;
+
   // AI interaction tracking for health endpoint
   private lastAiInteraction: {
     timestamp: number;
@@ -507,6 +510,22 @@ export class WorkerService {
           logger.error('SYSTEM', 'Stale session reaper error', { error: e instanceof Error ? e.message : String(e) });
         }
       }, 2 * 60 * 1000);
+
+      // Purge failed messages to prevent unbounded queue growth (Issue #1957)
+      // Run on startup immediately, then every 10 minutes
+      const purgeFailedMessages = () => {
+        try {
+          const pendingStore = this.dbManager.getPendingMessageStore();
+          const cleared = pendingStore.clearFailed();
+          if (cleared > 0) {
+            logger.info('SYSTEM', `Purged ${cleared} failed messages from pending queue`);
+          }
+        } catch (e) {
+          logger.error('SYSTEM', 'Failed message purge error', { error: e instanceof Error ? e.message : String(e) });
+        }
+      };
+      purgeFailedMessages(); // Run immediately on startup
+      this.failedMessagePurgeInterval = setInterval(purgeFailedMessages, 10 * 60 * 1000);
 
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
@@ -975,6 +994,12 @@ export class WorkerService {
     if (this.staleSessionReaperInterval) {
       clearInterval(this.staleSessionReaperInterval);
       this.staleSessionReaperInterval = null;
+    }
+
+    // Stop failed message purge (Issue #1957)
+    if (this.failedMessagePurgeInterval) {
+      clearInterval(this.failedMessagePurgeInterval);
+      this.failedMessagePurgeInterval = null;
     }
 
     await performGracefulShutdown({
