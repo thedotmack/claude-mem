@@ -32,7 +32,7 @@ export class MigrationRunner {
     this.renameSessionIdColumns();
     this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
-    this.addOnUpdateCascadeToForeignKeys();
+    this.skipOnUpdateCascadeMigration();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
     this.createObservationFeedbackTable();
@@ -88,7 +88,7 @@ export class MigrationRunner {
         type TEXT NOT NULL,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
       );
 
       CREATE INDEX IF NOT EXISTS idx_observations_sdk_session ON observations(memory_session_id);
@@ -110,7 +110,7 @@ export class MigrationRunner {
         notes TEXT,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
       );
 
       CREATE INDEX IF NOT EXISTS idx_session_summaries_sdk_session ON session_summaries(memory_session_id);
@@ -639,15 +639,29 @@ export class MigrationRunner {
   }
 
   /**
-   * Add ON UPDATE CASCADE to FK constraints on observations and session_summaries (migration 21)
+   * Migration 21 (skipped): Originally added ON UPDATE CASCADE to FK constraints.
    *
-   * Both tables have FK(memory_session_id) -> sdk_sessions(memory_session_id) with ON DELETE CASCADE
-   * but missing ON UPDATE CASCADE. This causes FK constraint violations when code updates
-   * sdk_sessions.memory_session_id while child rows still reference the old value.
-   *
-   * SQLite doesn't support ALTER TABLE for FK changes, so we recreate both tables.
+   * ON UPDATE CASCADE was removed because it silently rewrites historical session
+   * attribution when memory_session_id is updated during stale-ID recovery (#1952).
+   * This migration now only marks version 21 as applied to prevent the old destructive
+   * table rebuild from running on fresh databases.
    */
-  private addOnUpdateCascadeToForeignKeys(): void {
+  private skipOnUpdateCascadeMigration(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(21) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // Just mark as applied - no schema changes needed
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+    logger.debug('DB', 'Skipped ON UPDATE CASCADE migration (removed per #1952)');
+  }
+
+  /**
+   * DEPRECATED: Original migration 21 that added ON UPDATE CASCADE.
+   * Kept as dead code for reference. The skipOnUpdateCascadeMigration() method
+   * above replaces this in the migration chain.
+   * @deprecated Replaced by skipOnUpdateCascadeMigration
+   */
+  private _deprecated_addOnUpdateCascadeToForeignKeys(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(21) as SchemaVersion | undefined;
     if (applied) return;
 
