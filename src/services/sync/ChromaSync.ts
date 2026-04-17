@@ -831,6 +831,72 @@ export class ChromaSync {
   }
 
   /**
+   * Stamp `merged_into_project` on every Chroma document whose metadata
+   * `sqlite_id` is in the provided set. Used by the worktree adoption engine
+   * to keep Chroma's metadata in lockstep with SQLite after a parent branch
+   * absorbs a worktree branch via merge.
+   *
+   * Batched: fetches docs by `sqlite_id IN sqliteIds`, rewrites metadata with
+   * the new field, and calls `chroma_update_documents` once per page of up to
+   * BATCH_SIZE ids. Idempotent — re-running with the same value is a no-op
+   * because the write doesn't depend on the prior value.
+   */
+  async updateMergedIntoProject(
+    sqliteIds: number[],
+    mergedIntoProject: string
+  ): Promise<void> {
+    if (sqliteIds.length === 0) return;
+
+    await this.ensureCollectionExists();
+    const chromaMcp = ChromaMcpManager.getInstance();
+
+    let totalPatched = 0;
+
+    // Chunk the sqlite_id set to keep each Chroma call bounded.
+    for (let i = 0; i < sqliteIds.length; i += this.BATCH_SIZE) {
+      const idBatch = sqliteIds.slice(i, i + this.BATCH_SIZE);
+
+      const existing = await chromaMcp.callTool('chroma_get_documents', {
+        collection_name: this.collectionName,
+        where: { sqlite_id: { $in: idBatch } },
+        include: ['metadatas']
+      }) as { ids?: string[]; metadatas?: Array<Record<string, any> | null> };
+
+      const docIds: string[] = existing?.ids ?? [];
+      if (docIds.length === 0) continue;
+
+      const metadatas = (existing?.metadatas ?? []).map(m => {
+        // Merge old metadata with the new field, then filter out null/undefined/''
+        // to match the sanitization other callTool sites apply (chroma-mcp
+        // rejects null values in metadata).
+        const merged: Record<string, any> = {
+          ...(m ?? {}),
+          merged_into_project: mergedIntoProject
+        };
+        return Object.fromEntries(
+          Object.entries(merged).filter(
+            ([, v]) => v !== null && v !== undefined && v !== ''
+          )
+        );
+      });
+
+      await chromaMcp.callTool('chroma_update_documents', {
+        collection_name: this.collectionName,
+        ids: docIds,
+        metadatas
+      });
+      totalPatched += docIds.length;
+    }
+
+    logger.info('CHROMA_SYNC', 'merged_into_project metadata patched', {
+      collection: this.collectionName,
+      mergedIntoProject,
+      sqliteIdCount: sqliteIds.length,
+      chromaDocsPatched: totalPatched
+    });
+  }
+
+  /**
    * Close the ChromaSync instance
    * ChromaMcpManager is a singleton and manages its own lifecycle
    * We don't close it here - it's closed during graceful shutdown
