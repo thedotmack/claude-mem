@@ -45,6 +45,7 @@ import {
   getPlatformTimeout,
   aggressiveStartupCleanup,
   runOneTimeChromaMigration,
+  runOneTimeCwdRemap,
   cleanStalePidFile,
   isProcessAlive,
   spawnDaemon,
@@ -358,6 +359,10 @@ export class WorkerService {
       if (settings.CLAUDE_MEM_MODE === 'local' || !settings.CLAUDE_MEM_MODE) {
         runOneTimeChromaMigration();
       }
+
+      // One-time remap of pre-worktree project names using pending_messages.cwd.
+      // Must run before dbManager.initialize() so we don't hold the DB open.
+      runOneTimeCwdRemap();
 
       // Initialize ChromaMcpManager only if Chroma is enabled
       const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
