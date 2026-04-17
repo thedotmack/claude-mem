@@ -1192,6 +1192,7 @@ export class SessionStore {
       SELECT DISTINCT project
       FROM sdk_sessions
       WHERE project IS NOT NULL AND project != ''
+        AND project != 'observer-sessions'
     `;
     const params: unknown[] = [];
 
@@ -1218,6 +1219,7 @@ export class SessionStore {
         MAX(started_at_epoch) as latest_epoch
       FROM sdk_sessions
       WHERE project IS NOT NULL AND project != ''
+        AND project != 'observer-sessions'
       GROUP BY COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}'), project
       ORDER BY latest_epoch DESC
     `).all() as Array<{ platform_source: string; project: string; latest_epoch: number }>;

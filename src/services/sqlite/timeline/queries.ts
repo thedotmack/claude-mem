@@ -210,6 +210,7 @@ export function getAllProjects(db: Database): string[] {
     SELECT DISTINCT project
     FROM sdk_sessions
     WHERE project IS NOT NULL AND project != ''
+      AND project != 'observer-sessions'
     ORDER BY project ASC
   `);
 

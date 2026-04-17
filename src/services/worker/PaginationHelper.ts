@@ -105,6 +105,9 @@ export class PaginationHelper {
       // surfaces observations that originated under its merged children.
       conditions.push('(o.project = ? OR o.merged_into_project = ?)');
       params.push(project, project);
+    } else {
+      // Hide internal observer-session rows from the unfiltered UI list.
+      conditions.push("o.project != 'observer-sessions'");
     }
     if (platformSource) {
       conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
@@ -163,6 +166,9 @@ export class PaginationHelper {
       // surfaces rows that originated under its merged children.
       conditions.push('(ss.project = ? OR ss.merged_into_project = ?)');
       params.push(project, project);
+    } else {
+      // Hide internal observer-session rows from the unfiltered UI list.
+      conditions.push("ss.project != 'observer-sessions'");
     }
 
     if (platformSource) {
@@ -214,6 +220,9 @@ export class PaginationHelper {
     if (project) {
       conditions.push('s.project = ?');
       params.push(project);
+    } else {
+      // Hide internal observer-session rows from the unfiltered UI list.
+      conditions.push("s.project != 'observer-sessions'");
     }
 
     if (platformSource) {
