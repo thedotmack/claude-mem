@@ -80,6 +80,7 @@ export class PaginationHelper {
         o.id,
         o.memory_session_id,
         o.project,
+        o.merged_into_project,
         COALESCE(s.platform_source, 'claude') as platform_source,
         o.type,
         o.title,
@@ -100,8 +101,10 @@ export class PaginationHelper {
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('o.project = ?');
-      params.push(project);
+      // Include adopted merged-worktree rows so the parent project's view
+      // surfaces observations that originated under its merged children.
+      conditions.push('(o.project = ? OR o.merged_into_project = ?)');
+      params.push(project, project);
     }
     if (platformSource) {
       conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
@@ -156,8 +159,10 @@ export class PaginationHelper {
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('ss.project = ?');
-      params.push(project);
+      // Include adopted merged-worktree summaries so the parent project's view
+      // surfaces rows that originated under its merged children.
+      conditions.push('(ss.project = ? OR ss.merged_into_project = ?)');
+      params.push(project, project);
     }
 
     if (platformSource) {
