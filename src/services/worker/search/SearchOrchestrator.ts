@@ -110,13 +110,12 @@ export class SearchOrchestrator {
       };
     }
 
-    // PATH 3: No Chroma available
-    logger.debug('SEARCH', 'Orchestrator: Chroma not available', {});
+    // PATH 3: No Chroma available - fall back to SQLite FTS5/LIKE keyword search
+    logger.debug('SEARCH', 'Orchestrator: Chroma not available, falling back to SQLite keyword search', {});
+    const fallbackResult = await this.sqliteStrategy.search(options);
     return {
-      results: { observations: [], sessions: [], prompts: [] },
-      usedChroma: false,
-      fellBack: false,
-      strategy: 'sqlite'
+      ...fallbackResult,
+      fellBack: true
     };
   }
 

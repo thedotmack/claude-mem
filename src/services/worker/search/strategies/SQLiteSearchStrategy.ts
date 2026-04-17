@@ -37,6 +37,7 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
 
   async search(options: StrategySearchOptions): Promise<StrategySearchResult> {
     const {
+      query,
       searchType = 'all',
       obsType,
       concepts,
@@ -58,7 +59,8 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     const baseOptions = { limit, offset, orderBy, project, dateRange };
 
-    logger.debug('SEARCH', 'SQLiteSearchStrategy: Filter-only query', {
+    logger.debug('SEARCH', 'SQLiteSearchStrategy: query', {
+      hasQuery: !!query,
       searchType,
       hasDateRange: !!dateRange,
       hasProject: !!project
@@ -72,15 +74,15 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
           concepts,
           files
         };
-        observations = this.sessionSearch.searchObservations(undefined, obsOptions);
+        observations = this.sessionSearch.searchObservations(query, obsOptions);
       }
 
       if (searchSessions) {
-        sessions = this.sessionSearch.searchSessions(undefined, baseOptions);
+        sessions = this.sessionSearch.searchSessions(query, baseOptions);
       }
 
       if (searchPrompts) {
-        prompts = this.sessionSearch.searchUserPrompts(undefined, baseOptions);
+        prompts = this.sessionSearch.searchUserPrompts(query, baseOptions);
       }
 
       logger.debug('SEARCH', 'SQLiteSearchStrategy: Results', {

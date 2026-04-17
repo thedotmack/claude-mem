@@ -226,6 +226,39 @@ describe('SQLiteSearchStrategy', () => {
       expect(result.results.prompts).toHaveLength(0);
       expect(result.usedChroma).toBe(false);
     });
+
+    it('should pass query text through to SessionSearch for FTS5/LIKE fallback', async () => {
+      const options: StrategySearchOptions = {
+        query: 'authentication bug',
+        limit: 10
+      };
+
+      const result = await strategy.search(options);
+
+      expect(result.usedChroma).toBe(false);
+      expect(result.strategy).toBe('sqlite');
+      expect(result.results.observations).toHaveLength(1);
+      // Verify query was passed to search methods
+      expect(mockSessionSearch.searchObservations).toHaveBeenCalledWith('authentication bug', expect.any(Object));
+      expect(mockSessionSearch.searchSessions).toHaveBeenCalledWith('authentication bug', expect.any(Object));
+      expect(mockSessionSearch.searchUserPrompts).toHaveBeenCalledWith('authentication bug', expect.any(Object));
+    });
+
+    it('should pass query with filters for combined text + filter search', async () => {
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        project: 'my-project',
+        dateRange: { start: '2025-01-01', end: '2025-01-31' },
+        limit: 10
+      };
+
+      await strategy.search(options);
+
+      const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
+      expect(callArgs[0]).toBe('test query');
+      expect(callArgs[1].project).toBe('my-project');
+      expect(callArgs[1].dateRange).toEqual({ start: '2025-01-01', end: '2025-01-31' });
+    });
   });
 
   describe('findByConcept', () => {
