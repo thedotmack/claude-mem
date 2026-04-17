@@ -24,15 +24,17 @@ export class PaginationHelper {
    * Uses first occurrence of project name from left (project root)
    */
   private stripProjectPath(filePath: string, projectName: string): string {
-    const marker = `/${projectName}/`;
+    // Composite names ("parent/worktree") don't appear in on-disk paths for
+    // standard git worktrees — only the checkout basename does. Match on the
+    // leaf segment so the heuristic works regardless of worktree layout.
+    const leaf = projectName.includes('/') ? projectName.split('/').pop()! : projectName;
+    const marker = `/${leaf}/`;
     const index = filePath.indexOf(marker);
 
     if (index !== -1) {
-      // Strip everything before and including the project name
       return filePath.substring(index + marker.length);
     }
 
-    // Fallback: return original path if project name not found
     return filePath;
   }
 

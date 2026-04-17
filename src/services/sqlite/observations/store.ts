@@ -6,7 +6,7 @@
 import { createHash } from 'crypto';
 import { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
-import { getCurrentProjectName } from '../../../shared/paths.js';
+import { getProjectContext } from '../../../utils/project-name.js';
 import type { ObservationInput, StoreObservationResult } from './types.js';
 
 /** Deduplication window: observations with the same content hash within this window are skipped */
@@ -62,7 +62,7 @@ export function storeObservation(
   const timestampIso = new Date(timestampEpoch).toISOString();
 
   // Guard against empty project string (race condition where project isn't set yet)
-  const resolvedProject = project || getCurrentProjectName();
+  const resolvedProject = project || getProjectContext(process.cwd()).primary;
 
   // Content-hash deduplication
   const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
