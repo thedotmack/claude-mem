@@ -127,15 +127,17 @@ function listMergedBranches(mainRepo: string): Set<string> {
  * Stamp `merged_into_project` on observations and session_summaries for every
  * worktree of `opts.repoPath` whose branch has been merged into the parent's HEAD.
  *
- * Idempotent: a row is only touched when its `merged_into_project IS NULL`.
+ * SQL writes are idempotent: an UPDATE only touches rows where
+ * `merged_into_project IS NULL`. `result.adoptedObservations` / `adoptedSummaries`
+ * reflect the actual SQL changes on each run.
  *
- * Chroma is patched AFTER SQL commits. Chroma failure does NOT roll back SQL —
- * SQL is source of truth. A transient Chroma failure does NOT auto-retry:
- * once SQL commits, `merged_into_project IS NULL` no longer matches those rows,
- * so the same adoption pass won't rediscover them. If Chroma patching fails,
- * `result.chromaFailed` reflects the count — callers should surface this to
- * the operator, and re-running adoption after clearing `merged_into_project`
- * (or reseeding Chroma) is the recovery path.
+ * Chroma patches are self-healing: the Chroma id set is built from ALL
+ * observations whose `project` matches a merged worktree (both unadopted rows
+ * AND rows previously stamped to this parent), and `updateMergedIntoProject`
+ * is idempotent, so a transient Chroma failure on an earlier run is retried
+ * automatically on the next adoption pass. `result.chromaUpdates` therefore
+ * counts the total Chroma writes performed this pass (which may exceed
+ * `adoptedObservations` when retries happen).
  */
 export async function adoptMergedWorktrees(opts: {
   repoPath?: string;
@@ -228,8 +230,16 @@ export async function adoptMergedWorktrees(opts: {
       return result;
     }
 
-    const selectObs = db.prepare(
-      'SELECT id FROM observations WHERE project = ? AND merged_into_project IS NULL'
+    // Select ALL observations for the worktree project (both unadopted rows
+    // AND rows already stamped to this parent), not just unadopted ones. This
+    // ensures a transient Chroma failure on a prior run gets retried the next
+    // time adoption executes: SQL may already be stamped, but we re-include
+    // those ids in the Chroma patch set (updateMergedIntoProject is idempotent
+    // — it replays the same metadata write).
+    const selectObsForPatch = db.prepare(
+      `SELECT id FROM observations
+       WHERE project = ?
+         AND (merged_into_project IS NULL OR merged_into_project = ?)`
     );
     const updateObs = db.prepare(
       'UPDATE observations SET merged_into_project = ? WHERE project = ? AND merged_into_project IS NULL'
@@ -242,9 +252,14 @@ export async function adoptMergedWorktrees(opts: {
       for (const wt of targets) {
         try {
           const worktreeProject = getProjectContext(wt.path).primary;
-          const rows = selectObs.all(worktreeProject) as Array<{ id: number }>;
+          const rows = selectObsForPatch.all(
+            worktreeProject,
+            parentProject
+          ) as Array<{ id: number }>;
           for (const r of rows) adoptedSqliteIds.push(r.id);
 
+          // updateObs/updateSum only touch WHERE merged_into_project IS NULL,
+          // so .changes reflects only newly-adopted rows (not the re-patched ones).
           const obsChanges = updateObs.run(parentProject, worktreeProject).changes;
           const sumChanges = updateSum.run(parentProject, worktreeProject).changes;
           result.adoptedObservations += obsChanges;
