@@ -32,7 +32,13 @@ type Classification =
 
 function git(cwd: string, args: string[]): string | null {
   const r = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
-  if (r.status !== 0) return null;
+  if (r.status !== 0) {
+    const stderr = (r.stderr ?? '').trim();
+    if (stderr && !/not a git repository/i.test(stderr)) {
+      console.error(`git ${args.join(' ')} failed in ${cwd}: ${stderr}`);
+    }
+    return null;
+  }
   return r.stdout.trim();
 }
 
@@ -54,8 +60,11 @@ function classify(cwd: string): Classification {
     return { kind: 'main', project: leaf };
   }
 
-  // worktree: common-dir = <parent-repo>/.git (or <parent>.git for bare)
-  const parentRepoDir = commonDir.endsWith('/.git') ? dirname(commonDir) : dirname(commonDir);
+  // worktree: common-dir = <parent-repo>/.git (normal) or <parent>.git (bare).
+  // Normal: dirname strips the trailing /.git. Bare: strip the .git suffix.
+  const parentRepoDir = commonDir.endsWith('/.git')
+    ? dirname(commonDir)
+    : commonDir.replace(/\.git$/, '');
   const parent = basename(parentRepoDir);
   return { kind: 'worktree', project: `${parent}/${leaf}`, parent };
 }
@@ -149,6 +158,7 @@ function main() {
 
   if (!APPLY) {
     console.log('\nDry-run only. Re-run with --apply to perform UPDATEs.');
+    db.close();
     return;
   }
 
@@ -169,6 +179,7 @@ function main() {
   tx();
 
   console.log(`\nApplied. sessions=${sessionN} observations=${obsN} session_summaries=${sumN}`);
+  db.close();
 }
 
 main();
