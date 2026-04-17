@@ -64,7 +64,9 @@ export interface ProjectContext {
   parent: string | null;
   /** True if currently in a worktree */
   isWorktree: boolean;
-  /** Projects to query — always `[primary]` so observations don't cross worktrees */
+  /** Projects to query for reads. In a worktree: `[parent, composite]` so
+   *  main-repo context flows into every worktree while sibling worktrees stay
+   *  isolated. In the main repo: `[primary]`. Writes always use `.primary`. */
   allProjects: string[];
 }
 
@@ -96,7 +98,7 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
       primary: composite,
       parent: worktreeInfo.parentProjectName,
       isWorktree: true,
-      allProjects: [composite]
+      allProjects: [worktreeInfo.parentProjectName, composite]
     };
   }
 
