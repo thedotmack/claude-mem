@@ -319,8 +319,7 @@ export class SessionRoutes extends BaseRouteHandler {
                   action: 'Generator will NOT restart. Messages will be marked abandoned.'
                 });
                 // Mark pending messages as abandoned so they don't strand forever
-                const pendingStore2 = this.sessionManager.getPendingMessageStore();
-                const abandoned = pendingStore2.markAllSessionMessagesAbandoned(sessionDbId);
+                const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
                 logger.info('SESSION', 'Marked stranded messages as abandoned after restart guard trip', {
                   sessionId: sessionDbId,
                   abandoned
