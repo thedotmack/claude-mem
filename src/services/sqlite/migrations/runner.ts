@@ -937,19 +937,19 @@ export class MigrationRunner {
       .all() as TableColumnInfo[];
     if (!obsCols.some(c => c.name === 'merged_into_project')) {
       this.db.run('ALTER TABLE observations ADD COLUMN merged_into_project TEXT');
-      this.db.run(
-        'CREATE INDEX IF NOT EXISTS idx_observations_merged_into ON observations(merged_into_project)'
-      );
     }
+    this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_observations_merged_into ON observations(merged_into_project)'
+    );
 
     const sumCols = this.db
       .query('PRAGMA table_info(session_summaries)')
       .all() as TableColumnInfo[];
     if (!sumCols.some(c => c.name === 'merged_into_project')) {
       this.db.run('ALTER TABLE session_summaries ADD COLUMN merged_into_project TEXT');
-      this.db.run(
-        'CREATE INDEX IF NOT EXISTS idx_summaries_merged_into ON session_summaries(merged_into_project)'
-      );
     }
+    this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_summaries_merged_into ON session_summaries(merged_into_project)'
+    );
   }
 }

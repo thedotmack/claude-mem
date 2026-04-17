@@ -1211,11 +1211,21 @@ async function main() {
     case 'adopt': {
       const dryRun = process.argv.includes('--dry-run');
       const branchIndex = process.argv.indexOf('--branch');
-      const onlyBranch = branchIndex !== -1 ? process.argv[branchIndex + 1] : undefined;
+      const branchValue = branchIndex !== -1 ? process.argv[branchIndex + 1] : undefined;
+      if (branchIndex !== -1 && (!branchValue || branchValue.startsWith('--'))) {
+        console.error('Usage: adopt [--dry-run] [--branch <branch>] [--cwd <path>]');
+        process.exit(1);
+      }
+      const onlyBranch = branchValue;
       // Honor an explicit --cwd override so the NPX CLI can pass through the
       // user's working directory (the spawn sets cwd to the marketplace dir).
       const cwdIndex = process.argv.indexOf('--cwd');
-      const repoPath = cwdIndex !== -1 ? process.argv[cwdIndex + 1] : process.cwd();
+      const cwdValue = cwdIndex !== -1 ? process.argv[cwdIndex + 1] : undefined;
+      if (cwdIndex !== -1 && (!cwdValue || cwdValue.startsWith('--'))) {
+        console.error('Usage: adopt [--dry-run] [--branch <branch>] [--cwd <path>]');
+        process.exit(1);
+      }
+      const repoPath = cwdValue ?? process.cwd();
 
       const result = await adoptMergedWorktrees({ repoPath, dryRun, onlyBranch });
 

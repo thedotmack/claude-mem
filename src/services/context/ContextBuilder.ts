@@ -136,8 +136,8 @@ export async function generateContext(
   // `project` (used for header + single-project query) is always the last entry
   // of `projects` so the empty-state header and the query target stay in sync
   // when a caller passes `projects` without a matching cwd (e.g. worker route).
-  const projects = input?.projects ?? context.allProjects;
-  const project = projects[projects.length - 1];
+  const projects = input?.projects?.length ? input.projects : context.allProjects;
+  const project = projects[projects.length - 1] ?? context.primary;
 
   // Full mode: fetch all observations but keep normal rendering (level 1 summaries)
   if (input?.full) {
