@@ -59,6 +59,7 @@ import {
   httpShutdown
 } from './infrastructure/HealthMonitor.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
+import { adoptMergedWorktrees } from './infrastructure/WorktreeAdoption.js';
 
 // Server imports
 import { Server } from './server/Server.js';
@@ -363,6 +364,21 @@ export class WorkerService {
       // One-time remap of pre-worktree project names using pending_messages.cwd.
       // Must run before dbManager.initialize() so we don't hold the DB open.
       runOneTimeCwdRemap();
+
+      // Stamp merged worktrees so their observations surface under the parent
+      // project. Runs every startup (not marker-gated) because git state evolves
+      // and the engine is fully idempotent. Must also precede dbManager.initialize().
+      try {
+        const adoption = await adoptMergedWorktrees({});
+        if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
+          logger.info('SYSTEM', 'Merged worktrees adopted on startup', adoption);
+        }
+        if (adoption.errors.length > 0) {
+          logger.warn('SYSTEM', 'Worktree adoption had per-branch errors', { errors: adoption.errors });
+        }
+      } catch (err) {
+        logger.error('SYSTEM', 'Worktree adoption failed (non-fatal)', {}, err as Error);
+      }
 
       // Initialize ChromaMcpManager only if Chroma is enabled
       const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
