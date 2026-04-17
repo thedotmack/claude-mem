@@ -170,8 +170,16 @@ export class SearchManager {
       // Include project in the Chroma where clause to scope vector search.
       // Without this, larger projects dominate the top-N results and smaller
       // projects get crowded out before the post-hoc SQLite filter.
+      // Match both native-provenance rows (project) and adopted merged-worktree
+      // rows (merged_into_project) so a parent-project query surfaces its
+      // merged children's observations too.
       if (options.project) {
-        const projectFilter = { project: options.project };
+        const projectFilter = {
+          $or: [
+            { project: options.project },
+            { merged_into_project: options.project }
+          ]
+        };
         whereFilter = whereFilter
           ? { $and: [whereFilter, projectFilter] }
           : projectFilter;

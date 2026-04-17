@@ -141,7 +141,8 @@ export function queryObservationsMulti(
       o.project
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE o.project IN (${projectPlaceholders})
+    WHERE (o.project IN (${projectPlaceholders})
+           OR o.merged_into_project IN (${projectPlaceholders}))
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(o.concepts)
@@ -151,6 +152,7 @@ export function queryObservationsMulti(
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
   `).all(
+    ...projects,
     ...projects,
     ...typeArray,
     ...conceptArray,
@@ -189,11 +191,12 @@ export function querySummariesMulti(
       ss.project
     FROM session_summaries ss
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    WHERE ss.project IN (${projectPlaceholders})
+    WHERE (ss.project IN (${projectPlaceholders})
+           OR ss.merged_into_project IN (${projectPlaceholders}))
       ${platformSource ? "AND COALESCE(s.platform_source, 'claude') = ?" : ''}
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
-  `).all(...projects, ...(platformSource ? [platformSource] : []), config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+  `).all(...projects, ...projects, ...(platformSource ? [platformSource] : []), config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
 }
 
 /**

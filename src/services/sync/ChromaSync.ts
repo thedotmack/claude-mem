@@ -28,6 +28,7 @@ interface StoredObservation {
   id: number;
   memory_session_id: string;
   project: string;
+  merged_into_project: string | null;
   text: string | null;
   type: string;
   title: string | null;
@@ -47,6 +48,7 @@ interface StoredSummary {
   id: number;
   memory_session_id: string;
   project: string;
+  merged_into_project: string | null;
   request: string | null;
   investigated: string | null;
   learned: string | null;
@@ -129,11 +131,12 @@ export class ChromaSync {
     const files_read = parseFileList(obs.files_read);
     const files_modified = parseFileList(obs.files_modified);
 
-    const baseMetadata: Record<string, string | number> = {
+    const baseMetadata: Record<string, string | number | null> = {
       sqlite_id: obs.id,
       doc_type: 'observation',
       memory_session_id: obs.memory_session_id,
       project: obs.project,
+      merged_into_project: obs.merged_into_project ?? null,
       created_at_epoch: obs.created_at_epoch,
       type: obs.type || 'discovery',
       title: obs.title || 'Untitled'
@@ -190,11 +193,12 @@ export class ChromaSync {
   private formatSummaryDocs(summary: StoredSummary): ChromaDocument[] {
     const documents: ChromaDocument[] = [];
 
-    const baseMetadata: Record<string, string | number> = {
+    const baseMetadata: Record<string, string | number | null> = {
       sqlite_id: summary.id,
       doc_type: 'session_summary',
       memory_session_id: summary.memory_session_id,
       project: summary.project,
+      merged_into_project: summary.merged_into_project ?? null,
       created_at_epoch: summary.created_at_epoch,
       prompt_number: summary.prompt_number || 0
     };
@@ -346,6 +350,7 @@ export class ChromaSync {
       id: observationId,
       memory_session_id: memorySessionId,
       project: project,
+      merged_into_project: null,
       text: null, // Legacy field, not used
       type: obs.type,
       title: obs.title,
@@ -390,6 +395,7 @@ export class ChromaSync {
       id: summaryId,
       memory_session_id: memorySessionId,
       project: project,
+      merged_into_project: null,
       request: summary.request,
       investigated: summary.investigated,
       learned: summary.learned,
