@@ -35,6 +35,7 @@ export interface ActiveSession {
   conversationHistory: ConversationMessage[];  // Shared conversation history for provider switching
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;  // Track which provider is currently running
   consecutiveRestarts: number;  // Track consecutive restart attempts to prevent infinite loops
+  restartTimestamps: number[];  // Windowed restart tracking — timestamps of recent restarts (see RestartGuard.ts)
   forceInit?: boolean;  // Force fresh SDK session (skip resume)
   idleTimedOut?: boolean;  // Set when session exits due to idle timeout (prevents restart loop)
   lastGeneratorActivity: number;  // Timestamp of last generator progress (for stale detection, Issue #1099)

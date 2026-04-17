@@ -21,6 +21,7 @@ import { SessionCompletionHandler } from '../../session/SessionCompletionHandler
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { recordRestart, resetRestarts, RESTART_WINDOW_MS, MAX_RESTARTS_IN_WINDOW } from '../../RestartGuard.js';
 import { getProcessBySession, ensureProcessExit } from '../../ProcessRegistry.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
@@ -289,9 +290,9 @@ export class SessionRoutes extends BaseRouteHandler {
             const pendingStore = this.sessionManager.getPendingMessageStore();
             const pendingCount = pendingStore.getPendingCount(sessionDbId);
 
-            // CRITICAL: Limit consecutive restarts to prevent infinite loops
-            // This prevents runaway API costs when there's a persistent error (e.g., memorySessionId not captured)
-            const MAX_CONSECUTIVE_RESTARTS = 3;
+            // CRITICAL: Windowed restart guard — only counts restarts within a recent
+            // time window to prevent tight crash-loops while allowing healthy long-running
+            // sessions to restart occasionally without hitting the cap. (RestartGuard.ts)
 
             if (pendingCount > 0) {
               // GUARD: Prevent duplicate crash recovery spawns
@@ -300,17 +301,30 @@ export class SessionRoutes extends BaseRouteHandler {
                 return;
               }
 
-              session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1;
+              // Initialize restartTimestamps for sessions created before the field existed
+              if (!session.restartTimestamps) {
+                session.restartTimestamps = [];
+              }
 
-              if (session.consecutiveRestarts > MAX_CONSECUTIVE_RESTARTS) {
+              const allowed = recordRestart(session);
+
+              if (!allowed) {
                 logger.error('SESSION', `CRITICAL: Generator restart limit exceeded - stopping to prevent runaway costs`, {
                   sessionId: sessionDbId,
                   pendingCount,
                   consecutiveRestarts: session.consecutiveRestarts,
-                  maxRestarts: MAX_CONSECUTIVE_RESTARTS,
-                  action: 'Generator will NOT restart. Check logs for root cause. Messages remain in pending state.'
+                  restartsInWindow: session.restartTimestamps.length,
+                  windowMs: RESTART_WINDOW_MS,
+                  maxRestartsInWindow: MAX_RESTARTS_IN_WINDOW,
+                  action: 'Generator will NOT restart. Messages will be marked abandoned.'
                 });
-                // Don't restart - abort to prevent further API calls
+                // Mark pending messages as abandoned so they don't strand forever
+                const pendingStore2 = this.sessionManager.getPendingMessageStore();
+                const abandoned = pendingStore2.markAllSessionMessagesAbandoned(sessionDbId);
+                logger.info('SESSION', 'Marked stranded messages as abandoned after restart guard trip', {
+                  sessionId: sessionDbId,
+                  abandoned
+                });
                 session.abortController.abort();
                 return;
               }
@@ -319,7 +333,8 @@ export class SessionRoutes extends BaseRouteHandler {
                 sessionId: sessionDbId,
                 pendingCount,
                 consecutiveRestarts: session.consecutiveRestarts,
-                maxRestarts: MAX_CONSECUTIVE_RESTARTS
+                restartsInWindow: session.restartTimestamps.length,
+                maxRestartsInWindow: MAX_RESTARTS_IN_WINDOW
               });
 
               // Abort OLD controller before replacing to prevent child process leaks
@@ -344,8 +359,8 @@ export class SessionRoutes extends BaseRouteHandler {
             } else {
               // No pending work - abort to kill the child process
               session.abortController.abort();
-              // Reset restart counter on successful completion
-              session.consecutiveRestarts = 0;
+              // Reset restart tracker on successful completion
+              resetRestarts(session);
               logger.debug('SESSION', 'Aborted controller after natural completion', {
                 sessionId: sessionDbId
               });

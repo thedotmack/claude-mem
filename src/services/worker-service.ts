@@ -84,6 +84,7 @@ import { SearchManager } from './worker/SearchManager.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
+import { recordRestart, resetRestarts, RESTART_WINDOW_MS, MAX_RESTARTS_IN_WINDOW } from './worker/RestartGuard.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
 
@@ -729,19 +730,25 @@ export class WorkerService {
           }
           // Fall through to pending-work restart below
         }
-        const MAX_PENDING_RESTARTS = 3;
-
         if (pendingCount > 0) {
-          // Track consecutive pending-work restarts to prevent infinite loops (e.g. FK errors)
-          session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1;
+          // Initialize restartTimestamps for sessions created before the field existed
+          if (!session.restartTimestamps) {
+            session.restartTimestamps = [];
+          }
 
-          if (session.consecutiveRestarts > MAX_PENDING_RESTARTS) {
-            logger.error('SYSTEM', 'Exceeded max pending-work restarts, stopping to prevent infinite loop', {
+          // Windowed restart guard — only counts restarts within a recent window
+          const allowed = recordRestart(session);
+
+          if (!allowed) {
+            logger.error('SYSTEM', 'Exceeded max pending-work restarts (windowed), stopping to prevent infinite loop', {
               sessionId: session.sessionDbId,
               pendingCount,
-              consecutiveRestarts: session.consecutiveRestarts
+              consecutiveRestarts: session.consecutiveRestarts,
+              restartsInWindow: session.restartTimestamps.length,
+              windowMs: RESTART_WINDOW_MS,
+              maxRestartsInWindow: MAX_RESTARTS_IN_WINDOW
             });
-            session.consecutiveRestarts = 0;
+            resetRestarts(session);
             this.terminateSession(session.sessionDbId, 'max_restarts_exceeded');
             return;
           }
@@ -749,7 +756,9 @@ export class WorkerService {
           logger.info('SYSTEM', 'Pending work remains after generator exit, restarting with fresh AbortController', {
             sessionId: session.sessionDbId,
             pendingCount,
-            attempt: session.consecutiveRestarts
+            attempt: session.consecutiveRestarts,
+            restartsInWindow: session.restartTimestamps.length,
+            maxRestartsInWindow: MAX_RESTARTS_IN_WINDOW
           });
           // Reset AbortController for restart
           session.abortController = new AbortController();
@@ -759,7 +768,7 @@ export class WorkerService {
         } else {
           // Successful completion with no pending work — clean up session
           // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
-          session.consecutiveRestarts = 0;
+          resetRestarts(session);
           this.sessionManager.removeSessionImmediate(session.sessionDbId);
         }
       });

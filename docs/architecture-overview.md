@@ -73,16 +73,22 @@ markFailed()        -> UPDATE status='failed' (retry < 3)
 Self-healing: messages in 'processing' for >60s reset to 'pending'
 ```
 
-### Circuit-Breaker (SessionRoutes)
+### Circuit-Breaker (SessionRoutes / WorkerService)
 
 ```text
-Generator crash -> retry 1 (1s) -> retry 2 (2s) -> retry 3 (4s)
-  -> consecutiveRestarts > 3 -> CIRCUIT-BREAKER
+Generator crash -> retry 1 (1s) -> retry 2 (2s) -> retry 3 (4s) -> ...
+  -> windowed guard: >5 restarts in 60s -> CIRCUIT-BREAKER
   -> markAllSessionMessagesAbandoned(sessionDbId)
   -> Stop. No infinite loop.
 ```
 
-Counter resets to 0 when generator completes work naturally.
+Uses a **windowed restart guard** (see `src/services/worker/RestartGuard.ts`):
+only restarts within a 60-second window count toward the limit.
+Long-running sessions that occasionally restart will never trip the guard;
+tight crash-loops (e.g. persistent FK error) are caught within seconds.
+
+Counter decays automatically as timestamps leave the window, and resets
+fully on clean completion (no pending work).
 
 ### Graceful Degradation (hook-command.ts)
 
