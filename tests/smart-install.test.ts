@@ -249,6 +249,14 @@ describe('smart-install stdout JSON output (#1253)', () => {
 describe('smart-install installCLI alias stability', () => {
   const SCRIPT_PATH = join(__dirname, '..', 'plugin', 'scripts', 'smart-install.js');
 
+  /** Extract the installCLI() function body from the source file. */
+  function getInstallCLIBody(): string {
+    const content = readFileSync(SCRIPT_PATH, 'utf-8');
+    const funcStart = content.indexOf('function installCLI()');
+    const funcEnd = content.indexOf('\n/**', funcStart + 1);
+    return content.slice(funcStart, funcEnd);
+  }
+
   it('should use the stable marketplace path instead of ROOT for the alias', () => {
     const content = readFileSync(SCRIPT_PATH, 'utf-8');
     // The alias must point to the stable marketplace path, not a version-pinned ROOT
@@ -260,42 +268,31 @@ describe('smart-install installCLI alias stability', () => {
   });
 
   it('should not compose the alias from ROOT (which is version-pinned)', () => {
-    const content = readFileSync(SCRIPT_PATH, 'utf-8');
-    // Extract just the installCLI function body
-    const funcStart = content.indexOf('function installCLI()');
-    const funcEnd = content.indexOf('\n/**', funcStart + 1);
-    const funcBody = content.slice(funcStart, funcEnd);
-    // Should not use ROOT-derived WORKER_CLI for the alias
+    const funcBody = getInstallCLIBody();
     expect(funcBody).not.toContain("join(ROOT, 'scripts', 'worker-service.cjs')");
   });
 
   it('should use a regex guard instead of simple includes() for alias detection', () => {
-    const content = readFileSync(SCRIPT_PATH, 'utf-8');
-    const funcStart = content.indexOf('function installCLI()');
-    const funcEnd = content.indexOf('\n/**', funcStart + 1);
-    const funcBody = content.slice(funcStart, funcEnd);
-    // Should use regex, not includes('alias claude-mem=')
+    const funcBody = getInstallCLIBody();
     expect(funcBody).not.toContain("content.includes('alias claude-mem=')");
     expect(funcBody).toContain('ALIAS_RE');
     expect(funcBody).toContain('content.match(ALIAS_RE)');
   });
 
   it('should have logic to update stale aliases, not just skip them', () => {
-    const content = readFileSync(SCRIPT_PATH, 'utf-8');
-    const funcStart = content.indexOf('function installCLI()');
-    const funcEnd = content.indexOf('\n/**', funcStart + 1);
-    const funcBody = content.slice(funcStart, funcEnd);
-    // Should contain update logic (replace + log message)
+    const funcBody = getInstallCLIBody();
     expect(funcBody).toContain('content.replace(ALIAS_RE, aliasLine)');
     expect(funcBody).toContain('Alias updated in');
   });
 
   it('should not use .cli-installed marker for early return', () => {
-    const content = readFileSync(SCRIPT_PATH, 'utf-8');
-    const funcStart = content.indexOf('function installCLI()');
-    const funcEnd = content.indexOf('\n/**', funcStart + 1);
-    const funcBody = content.slice(funcStart, funcEnd);
+    const funcBody = getInstallCLIBody();
     expect(funcBody).not.toContain('.cli-installed');
+  });
+
+  it('should use $HOME literal in the alias for portability', () => {
+    const funcBody = getInstallCLIBody();
+    expect(funcBody).toContain("'$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs'");
   });
 
   // --- Runtime simulation tests ---
@@ -323,7 +320,6 @@ describe('smart-install installCLI alias stability', () => {
     const match = shellContent.match(ALIAS_RE);
     expect(match).not.toBeNull();
     expect(match![0]).toBe(canonical);
-    // No update needed
   });
 
   it('should replace a stale version-pinned alias with the canonical one', () => {
@@ -347,16 +343,6 @@ describe('smart-install installCLI alias stability', () => {
 
     const match = shellContent.match(ALIAS_RE);
     expect(match).toBeNull();
-    // Commented line starts with '#', not 'alias', so regex doesn't match
-  });
-
-  it('should use $HOME literal in the alias for portability', () => {
-    const content = readFileSync(SCRIPT_PATH, 'utf-8');
-    const funcStart = content.indexOf('function installCLI()');
-    const funcEnd = content.indexOf('\n/**', funcStart + 1);
-    const funcBody = content.slice(funcStart, funcEnd);
-    // Alias path should use $HOME, not homedir() or an absolute path
-    expect(funcBody).toContain("'$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs'");
   });
 });
 
