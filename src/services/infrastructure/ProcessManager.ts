@@ -685,7 +685,10 @@ type CwdClassification =
   | { kind: 'skip' };
 
 function gitQuery(cwd: string, args: string[]): string | null {
-  const r = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
+  const r = spawnSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    timeout: 5000
+  });
   if (r.status !== 0) return null;
   return (r.stdout ?? '').trim();
 }

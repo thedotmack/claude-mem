@@ -130,7 +130,7 @@ describe('getProjectContext', () => {
       expect(ctx.isWorktree).toBe(true);
       expect(ctx.primary).toBe('main-repo/my-worktree');
       expect(ctx.parent).toBe('main-repo');
-      expect(ctx.allProjects).toEqual(['main-repo/my-worktree']);
+      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/my-worktree']);
     });
 
     it('write-path call sites resolve to composite name in worktrees', () => {

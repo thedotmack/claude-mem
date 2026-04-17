@@ -48,8 +48,20 @@ interface WorktreeEntry {
   branch: string | null;
 }
 
+const GIT_TIMEOUT_MS = 5000;
+
+class DryRunRollback extends Error {
+  constructor() {
+    super('dry-run rollback');
+    this.name = 'DryRunRollback';
+  }
+}
+
 function gitCapture(cwd: string, args: string[]): string | null {
-  const r = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
+  const r = spawnSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    timeout: GIT_TIMEOUT_MS
+  });
   if (r.status !== 0) return null;
   return (r.stdout ?? '').trim();
 }
@@ -221,16 +233,15 @@ export async function adoptMergedWorktrees(opts: {
         }
       }
       if (dryRun) {
-        // Throw to force rollback. Sentinel caught below.
-        throw new Error('__DRY_RUN_ROLLBACK__');
+        // Throw a dedicated error to force rollback. Caught below by instanceof check.
+        throw new DryRunRollback();
       }
     });
 
     try {
       tx();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (message === '__DRY_RUN_ROLLBACK__') {
+      if (err instanceof DryRunRollback) {
         // Rolled back as intended for dry-run — counts are still useful.
       } else {
         throw err;

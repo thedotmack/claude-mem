@@ -1235,7 +1235,6 @@ async function main() {
         console.log(`  ! ${err.worktree}: ${err.error}`);
       }
       process.exit(0);
-      break;
     }
 
     case '--daemon':
