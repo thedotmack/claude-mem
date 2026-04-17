@@ -77,7 +77,7 @@ export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');
 
 // Project name assigned to observer sessions (basename of OBSERVER_SESSIONS_DIR).
 // UI queries filter this out so internal worker sessions don't pollute project lists.
-export const OBSERVER_SESSIONS_PROJECT = 'observer-sessions';
+export const OBSERVER_SESSIONS_PROJECT = basename(OBSERVER_SESSIONS_DIR);
 
 // Claude integration paths
 export const CLAUDE_SETTINGS_PATH = join(CLAUDE_CONFIG_DIR, 'settings.json');

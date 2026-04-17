@@ -9,6 +9,7 @@
 
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
+import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import type { PaginatedResult, Observation, Summary, UserPrompt } from '../worker-types.js';
 
 export class PaginationHelper {
@@ -107,7 +108,8 @@ export class PaginationHelper {
       params.push(project, project);
     } else {
       // Hide internal observer-session rows from the unfiltered UI list.
-      conditions.push("o.project != 'observer-sessions'");
+      conditions.push('o.project != ?');
+      params.push(OBSERVER_SESSIONS_PROJECT);
     }
     if (platformSource) {
       conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);

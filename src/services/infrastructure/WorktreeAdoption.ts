@@ -130,8 +130,12 @@ function listMergedBranches(mainRepo: string): Set<string> {
  * Idempotent: a row is only touched when its `merged_into_project IS NULL`.
  *
  * Chroma is patched AFTER SQL commits. Chroma failure does NOT roll back SQL —
- * SQL is source of truth; a subsequent run will retry the Chroma patch because
- * the filter in `updateMergedIntoProject` keys on `sqlite_id`.
+ * SQL is source of truth. A transient Chroma failure does NOT auto-retry:
+ * once SQL commits, `merged_into_project IS NULL` no longer matches those rows,
+ * so the same adoption pass won't rediscover them. If Chroma patching fails,
+ * `result.chromaFailed` reflects the count — callers should surface this to
+ * the operator, and re-running adoption after clearing `merged_into_project`
+ * (or reseeding Chroma) is the recovery path.
  */
 export async function adoptMergedWorktrees(opts: {
   repoPath?: string;
@@ -200,6 +204,29 @@ export async function adoptMergedWorktrees(opts: {
   try {
     const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
     db = new Database(dbPath);
+
+    // Schema guard: adoption may be invoked on worker startup before
+    // DatabaseManager runs migrations. If the `merged_into_project` column
+    // isn't present yet, prepared statements below will fail with
+    // "no such column", silently skipping adoption until the next restart.
+    // Return early so the next boot (post-migration) picks this up.
+    interface ColumnInfo { name: string }
+    const obsColumns = db
+      .prepare('PRAGMA table_info(observations)')
+      .all() as ColumnInfo[];
+    const sumColumns = db
+      .prepare('PRAGMA table_info(session_summaries)')
+      .all() as ColumnInfo[];
+    const obsHasColumn = obsColumns.some(c => c.name === 'merged_into_project');
+    const sumHasColumn = sumColumns.some(c => c.name === 'merged_into_project');
+    if (!obsHasColumn || !sumHasColumn) {
+      logger.debug(
+        'SYSTEM',
+        'Worktree adoption skipped (merged_into_project column missing; will run after migration)',
+        { obsHasColumn, sumHasColumn }
+      );
+      return result;
+    }
 
     const selectObs = db.prepare(
       'SELECT id FROM observations WHERE project = ? AND merged_into_project IS NULL'
@@ -289,4 +316,84 @@ export async function adoptMergedWorktrees(opts: {
   }
 
   return result;
+}
+
+/**
+ * Run adoption once per distinct parent repo referenced by recorded cwds.
+ *
+ * Worker startup adoption cannot use `process.cwd()` as a seed — the daemon is
+ * spawned with cwd=marketplace-plugin-dir, which isn't a git repo. Instead, we
+ * derive candidate parent repos from `pending_messages.cwd` (the user's actual
+ * working directories), dedupe via `resolveMainRepoPath`, and run adoption
+ * against each. Failures on individual repos are logged but don't short-circuit
+ * the others.
+ *
+ * Safe to call before `dbManager.initialize()`: opens its own short-lived DB
+ * handle (readonly) to enumerate cwds, then delegates to `adoptMergedWorktrees`
+ * which opens its own writable handle.
+ */
+export async function adoptMergedWorktreesForAllKnownRepos(opts: {
+  dataDirectory?: string;
+  dryRun?: boolean;
+} = {}): Promise<AdoptionResult[]> {
+  const dataDirectory = opts.dataDirectory ?? DEFAULT_DATA_DIR;
+  const dbPath = path.join(dataDirectory, 'claude-mem.db');
+  const results: AdoptionResult[] = [];
+
+  if (!existsSync(dbPath)) {
+    logger.debug('SYSTEM', 'Worktree adoption skipped (no DB yet)', { dbPath });
+    return results;
+  }
+
+  const uniqueParents = new Set<string>();
+  let db: import('bun:sqlite').Database | null = null;
+  try {
+    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+    db = new Database(dbPath, { readonly: true });
+
+    const hasPending = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'"
+    ).get() as { name: string } | undefined;
+    if (!hasPending) {
+      logger.debug('SYSTEM', 'Worktree adoption skipped (pending_messages table missing)');
+      return results;
+    }
+
+    const cwdRows = db.prepare(`
+      SELECT cwd FROM pending_messages
+      WHERE cwd IS NOT NULL AND cwd != ''
+      GROUP BY cwd
+    `).all() as Array<{ cwd: string }>;
+
+    for (const { cwd } of cwdRows) {
+      const mainRepo = resolveMainRepoPath(cwd);
+      if (mainRepo) uniqueParents.add(mainRepo);
+    }
+  } finally {
+    db?.close();
+  }
+
+  if (uniqueParents.size === 0) {
+    logger.debug('SYSTEM', 'Worktree adoption found no known parent repos');
+    return results;
+  }
+
+  for (const repoPath of uniqueParents) {
+    try {
+      const result = await adoptMergedWorktrees({
+        repoPath,
+        dataDirectory,
+        dryRun: opts.dryRun
+      });
+      results.push(result);
+    } catch (err) {
+      logger.warn(
+        'SYSTEM',
+        'Worktree adoption failed for parent repo (continuing)',
+        { repoPath, error: err instanceof Error ? err.message : String(err) }
+      );
+    }
+  }
+
+  return results;
 }

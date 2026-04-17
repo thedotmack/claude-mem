@@ -52,7 +52,7 @@ export function queryObservations(
       o.created_at_epoch
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE o.project = ?
+    WHERE (o.project = ? OR o.merged_into_project = ?)
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(o.concepts)
@@ -62,6 +62,7 @@ export function queryObservations(
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
   `).all(
+    project,
     project,
     ...typeArray,
     ...conceptArray,
@@ -93,12 +94,12 @@ export function querySummaries(
       ss.created_at_epoch
     FROM session_summaries ss
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    WHERE ss.project = ?
+    WHERE (ss.project = ? OR ss.merged_into_project = ?)
       ${platformSource ? "AND COALESCE(s.platform_source, 'claude') = ?" : ''}
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
   `).all(
-    ...[project, ...(platformSource ? [platformSource] : []), config.sessionCount + SUMMARY_LOOKAHEAD]
+    ...[project, project, ...(platformSource ? [platformSource] : []), config.sessionCount + SUMMARY_LOOKAHEAD]
   ) as SessionSummary[];
 }
 

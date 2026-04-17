@@ -59,7 +59,7 @@ import {
   httpShutdown
 } from './infrastructure/HealthMonitor.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
-import { adoptMergedWorktrees } from './infrastructure/WorktreeAdoption.js';
+import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos } from './infrastructure/WorktreeAdoption.js';
 
 // Server imports
 import { Server } from './server/Server.js';
@@ -368,13 +368,22 @@ export class WorkerService {
       // Stamp merged worktrees so their observations surface under the parent
       // project. Runs every startup (not marker-gated) because git state evolves
       // and the engine is fully idempotent. Must also precede dbManager.initialize().
+      //
+      // The worker daemon is spawned with cwd=marketplace-plugin-dir (not a git
+      // repo), so we can't seed adoption with process.cwd(). Instead, discover
+      // parent repos from recorded pending_messages.cwd values.
       try {
-        const adoption = await adoptMergedWorktrees({});
-        if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
-          logger.info('SYSTEM', 'Merged worktrees adopted on startup', adoption);
-        }
-        if (adoption.errors.length > 0) {
-          logger.warn('SYSTEM', 'Worktree adoption had per-branch errors', { errors: adoption.errors });
+        const adoptions = await adoptMergedWorktreesForAllKnownRepos({});
+        for (const adoption of adoptions) {
+          if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
+            logger.info('SYSTEM', 'Merged worktrees adopted on startup', adoption);
+          }
+          if (adoption.errors.length > 0) {
+            logger.warn('SYSTEM', 'Worktree adoption had per-branch errors', {
+              repoPath: adoption.repoPath,
+              errors: adoption.errors
+            });
+          }
         }
       } catch (err) {
         logger.error('SYSTEM', 'Worktree adoption failed (non-fatal)', {}, err as Error);
