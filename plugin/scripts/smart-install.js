@@ -343,54 +343,71 @@ function installUv() {
  * Add shell alias for claude-mem command
  */
 function installCLI() {
-  const WORKER_CLI = join(ROOT, 'scripts', 'worker-service.cjs');
   const bunPath = getBunPath() || 'bun';
-  const aliasLine = `alias claude-mem='${bunPath} "${WORKER_CLI}"'`;
-  const markerPath = join(ROOT, '.cli-installed');
 
-  // Skip if already installed
-  if (existsSync(markerPath)) return;
+  // Use the stable marketplace path so the alias survives plugin upgrades.
+  // $HOME is expanded at shell invocation time, keeping the line portable.
+  const STABLE_WORKER_PATH = '$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs';
+  const aliasLine = `alias claude-mem='${bunPath} "${STABLE_WORKER_PATH}"'`;
+
+  // Regex anchored to line start (multiline) — ignores commented-out lines.
+  const ALIAS_RE = /^alias claude-mem=.*$/m;
 
   try {
     if (IS_WINDOWS) {
-      // Windows: Add to PATH via PowerShell profile
+      // Windows: Add/update PowerShell function in profile
       const profilePath = join(process.env.USERPROFILE || homedir(), 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1');
       const profileDir = join(process.env.USERPROFILE || homedir(), 'Documents', 'PowerShell');
-      const functionDef = `function claude-mem { & "${bunPath}" "${WORKER_CLI}" $args }\n`;
+      const STABLE_WORKER_PATH_WIN = '$HOME\\.claude\\plugins\\marketplaces\\thedotmack\\plugin\\scripts\\worker-service.cjs';
+      const functionDef = `function claude-mem { & "${bunPath}" "${STABLE_WORKER_PATH_WIN}" $args }`;
+      const PS_FUNC_RE = /^function claude-mem \{[^}]*\}$/m;
 
       if (!existsSync(profileDir)) {
         execSync(`mkdir "${profileDir}"`, { stdio: 'ignore', shell: true });
       }
 
       const existingContent = existsSync(profilePath) ? readFileSync(profilePath, 'utf-8') : '';
-      if (!existingContent.includes('function claude-mem')) {
-        writeFileSync(profilePath, existingContent + '\n' + functionDef);
+      const psMatch = existingContent.match(PS_FUNC_RE);
+
+      if (!psMatch) {
+        writeFileSync(profilePath, existingContent.trimEnd() + '\n' + functionDef + '\n');
         console.error(`✅ PowerShell function added to profile`);
         console.error('   Restart your terminal to use: claude-mem <command>');
+      } else if (psMatch[0] !== functionDef) {
+        writeFileSync(profilePath, existingContent.replace(PS_FUNC_RE, functionDef));
+        console.error(`✅ PowerShell function updated in profile`);
       }
     } else {
-      // Unix: Add alias to shell configs
+      // Unix: Add/update alias in shell configs
       const shellConfigs = [
         join(homedir(), '.bashrc'),
         join(homedir(), '.zshrc')
       ];
 
       for (const config of shellConfigs) {
-        if (existsSync(config)) {
-          const content = readFileSync(config, 'utf-8');
-          if (!content.includes('alias claude-mem=')) {
-            writeFileSync(config, content + '\n' + aliasLine + '\n');
-            console.error(`✅ Alias added to ${config}`);
-          }
+        if (!existsSync(config)) continue;
+        let content = readFileSync(config, 'utf-8');
+        const match = content.match(ALIAS_RE);
+
+        if (!match) {
+          // Not present — append it.
+          writeFileSync(config, content.trimEnd() + '\n' + aliasLine + '\n');
+          console.error(`✅ Alias added to ${config}`);
+          continue;
         }
+
+        if (match[0] === aliasLine) continue;   // already canonical
+
+        // Replace existing (potentially stale) alias line with the canonical one.
+        content = content.replace(ALIAS_RE, aliasLine);
+        writeFileSync(config, content);
+        console.error(`✅ Alias updated in ${config}`);
       }
       console.error('   Restart your terminal to use: claude-mem <command>');
     }
-
-    writeFileSync(markerPath, new Date().toISOString());
   } catch (error) {
     console.error(`⚠️  Could not add shell alias: ${error.message}`);
-    console.error(`   Use directly: ${bunPath} "${WORKER_CLI}" <command>`);
+    console.error(`   Use directly: ${bunPath} "${STABLE_WORKER_PATH}" <command>`);
   }
 }
 

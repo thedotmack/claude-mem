@@ -240,6 +240,127 @@ describe('smart-install stdout JSON output (#1253)', () => {
 });
 
 /**
+ * Tests for installCLI() alias stability (version-pinning fix).
+ *
+ * installCLI() is not exported, so these tests verify the source-level
+ * patterns (stable path, regex guard, update logic) and the runtime
+ * behaviour via a helper that simulates the alias write/update cycle.
+ */
+describe('smart-install installCLI alias stability', () => {
+  const SCRIPT_PATH = join(__dirname, '..', 'plugin', 'scripts', 'smart-install.js');
+
+  it('should use the stable marketplace path instead of ROOT for the alias', () => {
+    const content = readFileSync(SCRIPT_PATH, 'utf-8');
+    // The alias must point to the stable marketplace path, not a version-pinned ROOT
+    expect(content).toContain(
+      "const STABLE_WORKER_PATH = '$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs'"
+    );
+    // The alias line should be composed from STABLE_WORKER_PATH, not WORKER_CLI/ROOT
+    expect(content).toContain("const aliasLine = `alias claude-mem='${bunPath} \"${STABLE_WORKER_PATH}\"'`");
+  });
+
+  it('should not compose the alias from ROOT (which is version-pinned)', () => {
+    const content = readFileSync(SCRIPT_PATH, 'utf-8');
+    // Extract just the installCLI function body
+    const funcStart = content.indexOf('function installCLI()');
+    const funcEnd = content.indexOf('\n/**', funcStart + 1);
+    const funcBody = content.slice(funcStart, funcEnd);
+    // Should not use ROOT-derived WORKER_CLI for the alias
+    expect(funcBody).not.toContain("join(ROOT, 'scripts', 'worker-service.cjs')");
+  });
+
+  it('should use a regex guard instead of simple includes() for alias detection', () => {
+    const content = readFileSync(SCRIPT_PATH, 'utf-8');
+    const funcStart = content.indexOf('function installCLI()');
+    const funcEnd = content.indexOf('\n/**', funcStart + 1);
+    const funcBody = content.slice(funcStart, funcEnd);
+    // Should use regex, not includes('alias claude-mem=')
+    expect(funcBody).not.toContain("content.includes('alias claude-mem=')");
+    expect(funcBody).toContain('ALIAS_RE');
+    expect(funcBody).toContain('content.match(ALIAS_RE)');
+  });
+
+  it('should have logic to update stale aliases, not just skip them', () => {
+    const content = readFileSync(SCRIPT_PATH, 'utf-8');
+    const funcStart = content.indexOf('function installCLI()');
+    const funcEnd = content.indexOf('\n/**', funcStart + 1);
+    const funcBody = content.slice(funcStart, funcEnd);
+    // Should contain update logic (replace + log message)
+    expect(funcBody).toContain('content.replace(ALIAS_RE, aliasLine)');
+    expect(funcBody).toContain('Alias updated in');
+  });
+
+  it('should not use .cli-installed marker for early return', () => {
+    const content = readFileSync(SCRIPT_PATH, 'utf-8');
+    const funcStart = content.indexOf('function installCLI()');
+    const funcEnd = content.indexOf('\n/**', funcStart + 1);
+    const funcBody = content.slice(funcStart, funcEnd);
+    expect(funcBody).not.toContain('.cli-installed');
+  });
+
+  // --- Runtime simulation tests ---
+  // These simulate the regex-based alias write/update logic
+  // without calling installCLI() directly.
+
+  const ALIAS_RE = /^alias claude-mem=.*$/m;
+
+  it('should add alias when none exists', () => {
+    const canonical = `alias claude-mem='bun "$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs"'`;
+    const shellContent = '# some existing config\nexport PATH="/usr/bin:$PATH"\n';
+
+    const match = shellContent.match(ALIAS_RE);
+    expect(match).toBeNull();
+
+    // Simulates the append path
+    const updated = shellContent.trimEnd() + '\n' + canonical + '\n';
+    expect(updated).toContain(canonical);
+  });
+
+  it('should not modify config when alias is already canonical', () => {
+    const canonical = `alias claude-mem='bun "$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs"'`;
+    const shellContent = `# config\n${canonical}\nexport FOO=bar\n`;
+
+    const match = shellContent.match(ALIAS_RE);
+    expect(match).not.toBeNull();
+    expect(match![0]).toBe(canonical);
+    // No update needed
+  });
+
+  it('should replace a stale version-pinned alias with the canonical one', () => {
+    const canonical = `alias claude-mem='bun "$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs"'`;
+    const staleAlias = `alias claude-mem='bun "/Users/someone/.claude/plugins/cache/thedotmack/claude-mem/10.5.2/scripts/worker-service.cjs"'`;
+    const shellContent = `# config\n${staleAlias}\nexport FOO=bar\n`;
+
+    const match = shellContent.match(ALIAS_RE);
+    expect(match).not.toBeNull();
+    expect(match![0]).not.toBe(canonical);
+
+    const updated = shellContent.replace(ALIAS_RE, canonical);
+    expect(updated).toContain(canonical);
+    expect(updated).not.toContain('10.5.2');
+    expect(updated).toContain('export FOO=bar'); // other content preserved
+  });
+
+  it('should not match commented-out alias lines', () => {
+    const commentedAlias = `# alias claude-mem='bun "/old/path/worker-service.cjs"'`;
+    const shellContent = `# config\n${commentedAlias}\nexport FOO=bar\n`;
+
+    const match = shellContent.match(ALIAS_RE);
+    expect(match).toBeNull();
+    // Commented line starts with '#', not 'alias', so regex doesn't match
+  });
+
+  it('should use $HOME literal in the alias for portability', () => {
+    const content = readFileSync(SCRIPT_PATH, 'utf-8');
+    const funcStart = content.indexOf('function installCLI()');
+    const funcEnd = content.indexOf('\n/**', funcStart + 1);
+    const funcBody = content.slice(funcStart, funcEnd);
+    // Alias path should use $HOME, not homedir() or an absolute path
+    expect(funcBody).toContain("'$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs'");
+  });
+});
+
+/**
  * Tests for checkBinaryPlatformCompatibility() (#1547).
  *
  * The bundled plugin/scripts/claude-mem binary is macOS arm64 only.
