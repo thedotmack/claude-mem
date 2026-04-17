@@ -1208,6 +1208,36 @@ async function main() {
       break;
     }
 
+    case 'adopt': {
+      const dryRun = process.argv.includes('--dry-run');
+      const branchIndex = process.argv.indexOf('--branch');
+      const onlyBranch = branchIndex !== -1 ? process.argv[branchIndex + 1] : undefined;
+      // Honor an explicit --cwd override so the NPX CLI can pass through the
+      // user's working directory (the spawn sets cwd to the marketplace dir).
+      const cwdIndex = process.argv.indexOf('--cwd');
+      const repoPath = cwdIndex !== -1 ? process.argv[cwdIndex + 1] : process.cwd();
+
+      const result = await adoptMergedWorktrees({ repoPath, dryRun, onlyBranch });
+
+      const tag = result.dryRun ? '(dry-run)' : '(applied)';
+      console.log(`\nWorktree adoption ${tag}`);
+      console.log(`  Parent project:       ${result.parentProject || '(unknown)'}`);
+      console.log(`  Repo:                 ${result.repoPath}`);
+      console.log(`  Worktrees scanned:    ${result.scannedWorktrees}`);
+      console.log(`  Merged branches:      ${result.mergedBranches.join(', ') || '(none)'}`);
+      console.log(`  Observations adopted: ${result.adoptedObservations}`);
+      console.log(`  Summaries adopted:    ${result.adoptedSummaries}`);
+      console.log(`  Chroma docs updated:  ${result.chromaUpdates}`);
+      if (result.chromaFailed > 0) {
+        console.log(`  Chroma sync failures: ${result.chromaFailed} (will retry on next run)`);
+      }
+      for (const err of result.errors) {
+        console.log(`  ! ${err.worktree}: ${err.error}`);
+      }
+      process.exit(0);
+      break;
+    }
+
     case '--daemon':
     default: {
       // GUARD 1: Refuse to start if another worker is already alive (PID check).
