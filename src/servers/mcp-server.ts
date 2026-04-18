@@ -104,7 +104,8 @@ const TOOL_ENDPOINT_MAP: Record<string, string> = {
  */
 async function callWorkerAPI(
   endpoint: string,
-  params: Record<string, any>
+  params: Record<string, any>,
+  timeoutMs?: number
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint, params });
 
@@ -119,7 +120,7 @@ async function callWorkerAPI(
     }
 
     const apiPath = `${endpoint}?${searchParams}`;
-    const response = await workerHttpRequest(apiPath);
+    const response = await workerHttpRequest(apiPath, timeoutMs ? { timeoutMs } : undefined);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -149,7 +150,8 @@ async function callWorkerAPI(
  */
 async function callWorkerAPIPost(
   endpoint: string,
-  body: Record<string, any>
+  body: Record<string, any>,
+  timeoutMs?: number
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('HTTP', 'Worker API request (POST)', undefined, { endpoint });
 
@@ -157,7 +159,8 @@ async function callWorkerAPIPost(
     const response = await workerHttpRequest(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      ...(timeoutMs ? { timeoutMs } : {})
     });
 
     if (!response.ok) {
@@ -473,7 +476,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      return await callWorkerAPIPost('/api/corpus', args);
+      return await callWorkerAPIPost('/api/corpus', args, 120000);
     }
   },
   {
@@ -502,7 +505,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/prime`, rest);
+      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/prime`, rest, 60000);
     }
   },
   {
@@ -520,7 +523,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/query`, rest);
+      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/query`, rest, 60000);
     }
   },
   {
@@ -537,7 +540,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/rebuild`, rest);
+      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/rebuild`, rest, 120000);
     }
   },
   {
@@ -554,7 +557,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/reprime`, rest);
+      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/reprime`, rest, 60000);
     }
   }
 ];

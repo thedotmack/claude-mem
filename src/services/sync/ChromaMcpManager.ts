@@ -207,7 +207,7 @@ export class ChromaMcpManager {
 
       const args = [
         '--python', pythonVersion,
-        'chroma-mcp',
+        'chroma-mcp==0.2.3',
         '--client-type', 'http',
         '--host', chromaHost,
         '--port', chromaPort
@@ -233,7 +233,7 @@ export class ChromaMcpManager {
     // Local mode: persistent client with data directory
     return [
       '--python', pythonVersion,
-      'chroma-mcp',
+      'chroma-mcp==0.2.3',
       '--client-type', 'persistent',
       '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
     ];
@@ -264,9 +264,14 @@ export class ChromaMcpManager {
       // Transport error: chroma-mcp subprocess likely died (e.g., killed by orphan reaper,
       // HNSW index corruption). Mark connection dead and retry once after reconnect (#1131).
       // Without this retry, callers see a one-shot error even though reconnect would succeed.
+      // IMPORTANT: Close transport BEFORE nulling to prevent subprocess leaks (#1925).
       this.connected = false;
+      const staleTransport = this.transport;
+      const staleClient = this.client;
       this.client = null;
       this.transport = null;
+      try { if (staleTransport) await staleTransport.close(); } catch { /* already dead */ }
+      try { if (staleClient) await staleClient.close(); } catch { /* already dead */ }
 
       logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
@@ -355,6 +360,26 @@ export class ChromaMcpManager {
   }
 
   /**
+   * Synchronous shutdown — kills the chroma-mcp subprocess immediately.
+   * Called from process 'exit' handler where async operations are not possible.
+   * Ensures no orphaned chroma-mcp processes survive the worker.
+   */
+  shutdownSync(): void {
+    const transportRef = this.transport as unknown as { _process?: import('child_process').ChildProcess } | null;
+    const childProcess = transportRef?._process;
+    if (childProcess?.pid && !childProcess.killed) {
+      try {
+        childProcess.kill('SIGKILL');
+        logger.info('CHROMA_MCP', 'Killed chroma-mcp subprocess on shutdown', { pid: childProcess.pid });
+      } catch { /* best effort */ }
+    }
+    this.client = null;
+    this.transport = null;
+    this.connected = false;
+    this.connecting = null;
+  }
+
+  /**
    * Reset the singleton instance (for testing).
    * Awaits stop() to prevent dual subprocesses.
    */
@@ -434,15 +459,26 @@ export class ChromaMcpManager {
     }
   }
 
+  /** Proxy env var names to strip -- chroma-mcp uses local persistent storage
+   *  and doesn't need network proxies. SOCKS5 proxies in particular break the
+   *  stdio handshake by interfering with Python's HTTP client initialization. */
+  private static readonly PROXY_ENV_VARS_TO_STRIP = new Set([
+    'ALL_PROXY', 'all_proxy',
+    'HTTP_PROXY', 'http_proxy',
+    'HTTPS_PROXY', 'https_proxy',
+    'NO_PROXY', 'no_proxy',
+  ]);
+
   /**
    * Build subprocess environment with SSL certificate overrides for enterprise proxy compatibility.
+   * Strips proxy env vars that break chroma-mcp's stdio handshake (#1927).
    * If a combined cert bundle exists (Zscaler), injects SSL_CERT_FILE, REQUESTS_CA_BUNDLE, etc.
    * Otherwise returns a plain string-keyed copy of process.env.
    */
   private getSpawnEnv(): Record<string, string> {
     const baseEnv: Record<string, string> = {};
     for (const [key, value] of Object.entries(sanitizeEnv(process.env))) {
-      if (value !== undefined) {
+      if (value !== undefined && !ChromaMcpManager.PROXY_ENV_VARS_TO_STRIP.has(key)) {
         baseEnv[key] = value;
       }
     }
@@ -482,3 +518,12 @@ export class ChromaMcpManager {
     });
   }
 }
+
+// Safety net: kill chroma-mcp subprocess on process exit to prevent orphans.
+// The 'exit' event is the last chance to clean up — only synchronous code runs here.
+process.on('exit', () => {
+  const instance = ChromaMcpManager['instance'];
+  if (instance) {
+    instance.shutdownSync();
+  }
+});
