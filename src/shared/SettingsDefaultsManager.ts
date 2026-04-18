@@ -7,9 +7,27 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
-import { homedir } from 'os';
+import { homedir, userInfo } from 'os';
 // NOTE: Do NOT import logger here - it creates a circular dependency
 // logger.ts depends on SettingsDefaultsManager for its initialization
+
+/**
+ * Derive a per-user default port from the OS UID to prevent cross-user
+ * collisions on shared machines (Bug #1936).
+ * Falls back to base port 37777 if UID is unavailable (e.g., Windows).
+ */
+function derivePerUserDefaultPort(): string {
+  const basePort = 37777;
+  try {
+    const info = userInfo();
+    if (info.uid >= 0) {
+      return String(basePort + (info.uid % 10000));
+    }
+  } catch {
+    // userInfo() can throw on some platforms — fall back to base port
+  }
+  return String(basePort);
+}
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
@@ -88,7 +106,7 @@ export class SettingsDefaultsManager {
   private static readonly DEFAULTS: SettingsDefaults = {
     CLAUDE_MEM_MODEL: 'claude-sonnet-4-6',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
-    CLAUDE_MEM_WORKER_PORT: '37777',
+    CLAUDE_MEM_WORKER_PORT: derivePerUserDefaultPort(),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
     // AI Provider Configuration

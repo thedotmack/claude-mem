@@ -15,7 +15,7 @@ import * as fs from 'fs';
 import path from 'path';
 import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
-import { createMiddleware, summarizeRequestBody, requireLocalhost } from './Middleware.js';
+import { createMiddleware, summarizeRequestBody, requireLocalhost, requireAdminToken, rateLimiter } from './Middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
@@ -78,6 +78,10 @@ export class Server {
   constructor(options: ServerOptions) {
     this.options = options;
     this.app = express();
+
+    // Disable trust proxy to prevent X-Forwarded-For spoofing (Bug #1932)
+    this.app.set('trust proxy', false);
+
     this.setupMiddleware();
     this.setupCoreRoutes();
   }
@@ -161,6 +165,10 @@ export class Server {
    * Setup core system routes (health, readiness, version, admin)
    */
   private setupCoreRoutes(): void {
+    // Apply requireLocalhost and rate limiting to ALL /api/* routes (Bug #1933)
+    // This is a local-only tool — no remote access should be allowed.
+    this.app.use('/api', requireLocalhost, rateLimiter);
+
     // Health check endpoint - always responds, even during initialization
     this.app.get('/api/health', (_req: Request, res: Response) => {
       res.status(200).json({
@@ -237,8 +245,8 @@ export class Server {
       }
     });
 
-    // Admin endpoints for process management (localhost-only)
-    this.app.post('/api/admin/restart', requireLocalhost, async (_req: Request, res: Response) => {
+    // Admin endpoints for process management (localhost + token auth — Bug #1932)
+    this.app.post('/api/admin/restart', requireAdminToken, async (_req: Request, res: Response) => {
       res.json({ status: 'restarting' });
 
       // Handle Windows managed mode via IPC
@@ -263,7 +271,7 @@ export class Server {
       }
     });
 
-    this.app.post('/api/admin/shutdown', requireLocalhost, async (_req: Request, res: Response) => {
+    this.app.post('/api/admin/shutdown', requireAdminToken, async (_req: Request, res: Response) => {
       res.json({ status: 'shutting_down' });
 
       // Handle Windows managed mode via IPC
@@ -290,7 +298,7 @@ export class Server {
     });
 
     // Doctor endpoint - diagnostic view of supervisor, processes, and health
-    this.app.get('/api/admin/doctor', requireLocalhost, (_req: Request, res: Response) => {
+    this.app.get('/api/admin/doctor', requireAdminToken, (_req: Request, res: Response) => {
       const supervisor = getSupervisor();
       const registry = supervisor.getRegistry();
       const allRecords = registry.getAll();

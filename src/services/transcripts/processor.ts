@@ -1,3 +1,6 @@
+import path from 'path';
+import fs from 'fs';
+import os from 'os';
 import { sessionInitHandler } from '../../cli/handlers/session-init.js';
 import { observationHandler } from '../../cli/handlers/observation.js';
 import { fileEditHandler } from '../../cli/handlers/file-edit.js';
@@ -362,6 +365,24 @@ export class TranscriptEventProcessor {
       if (!content) return;
 
       const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
+
+      // Validate resolved path stays within project root or data directory (Bug #1934)
+      // Use realpathSync to follow symlinks for safe path comparison
+      const resolvedAgentsPath = fs.realpathSync(path.resolve(agentsPath));
+      const projectRoot = fs.realpathSync(path.resolve(cwd));
+      const dataDir = path.resolve(os.homedir(), '.claude-mem');
+      if (!resolvedAgentsPath.startsWith(projectRoot + path.sep) &&
+          resolvedAgentsPath !== projectRoot &&
+          !resolvedAgentsPath.startsWith(dataDir + path.sep) &&
+          resolvedAgentsPath !== dataDir) {
+        logger.warn('SECURITY', `Context path "${watch.context.path}" resolves outside allowed directories`, {
+          resolvedAgentsPath,
+          projectRoot,
+          dataDir
+        });
+        return;
+      }
+
       writeAgentsMd(agentsPath, content);
       logger.debug('TRANSCRIPT', 'Updated AGENTS.md context', { agentsPath, watch: watch.name });
     } catch (error) {

@@ -2,14 +2,96 @@
  * HTTP Middleware for Worker Service
  *
  * Extracted from WorkerService.ts for better organization.
- * Handles request/response logging, CORS, JSON parsing, and static file serving.
+ * Handles request/response logging, CORS, JSON parsing, static file serving,
+ * admin token auth, and rate limiting.
  */
 
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import cors from 'cors';
+import crypto from 'crypto';
+import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { getPackageRoot } from '../../../shared/paths.js';
 import { logger } from '../../../utils/logger.js';
+
+/**
+ * Admin token file path — generated once on first startup, stored per-user.
+ */
+const ADMIN_TOKEN_PATH = path.join(os.homedir(), '.claude-mem', 'admin.token');
+
+/**
+ * Lazily-initialized admin token. Generated via crypto.randomBytes if not on disk.
+ */
+let cachedAdminToken: string | null = null;
+
+/**
+ * Get or create the admin bearer token.
+ * On first call, reads from ~/.claude-mem/admin.token or generates a new one.
+ */
+export function getAdminToken(): string {
+  if (cachedAdminToken) return cachedAdminToken;
+
+  const tokenDir = path.dirname(ADMIN_TOKEN_PATH);
+  if (!fs.existsSync(tokenDir)) {
+    fs.mkdirSync(tokenDir, { recursive: true });
+  }
+
+  if (fs.existsSync(ADMIN_TOKEN_PATH)) {
+    const stored = fs.readFileSync(ADMIN_TOKEN_PATH, 'utf-8').trim();
+    if (stored.length >= 32) {
+      cachedAdminToken = stored;
+      return cachedAdminToken;
+    }
+  }
+
+  // Generate a new token
+  cachedAdminToken = crypto.randomBytes(32).toString('hex');
+  fs.writeFileSync(ADMIN_TOKEN_PATH, cachedAdminToken, { mode: 0o600 });
+  logger.info('SECURITY', 'Generated new admin token', { path: ADMIN_TOKEN_PATH });
+  return cachedAdminToken;
+}
+
+/**
+ * Simple in-memory rate limiter.
+ * Tracks request counts per endpoint group in a sliding window.
+ */
+const rateLimitWindowMs = 60_000; // 1 minute
+const rateLimitMaxRequests = 100; // max requests per window per endpoint group
+const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function getRateLimitGroup(requestPath: string): string {
+  // Group by first two path segments: /api/search, /api/data, /api/admin, etc.
+  const segments = requestPath.split('/').filter(Boolean);
+  return `/${segments.slice(0, 2).join('/')}`;
+}
+
+/**
+ * Rate limiting middleware — max 100 requests/minute per endpoint group.
+ */
+export function rateLimiter(req: Request, res: Response, next: NextFunction): void {
+  const group = getRateLimitGroup(req.path);
+  const now = Date.now();
+
+  let bucket = rateLimitBuckets.get(group);
+  if (!bucket || now >= bucket.resetAt) {
+    bucket = { count: 0, resetAt: now + rateLimitWindowMs };
+    rateLimitBuckets.set(group, bucket);
+  }
+
+  bucket.count++;
+
+  if (bucket.count > rateLimitMaxRequests) {
+    logger.warn('SECURITY', 'Rate limit exceeded', { group, count: bucket.count });
+    res.status(429).json({
+      error: 'Too Many Requests',
+      message: `Rate limit exceeded for ${group}. Max ${rateLimitMaxRequests} requests per minute.`
+    });
+    return;
+  }
+
+  next();
+}
 
 /**
  * Create all middleware for the worker service
@@ -21,8 +103,8 @@ export function createMiddleware(
 ): RequestHandler[] {
   const middlewares: RequestHandler[] = [];
 
-  // JSON parsing with 50mb limit
-  middlewares.push(express.json({ limit: '50mb' }));
+  // JSON parsing with 1mb limit (hardened from 50mb — Bug #1935)
+  middlewares.push(express.json({ limit: '1mb' }));
 
   // CORS - restrict to localhost origins only
   middlewares.push(cors({
@@ -79,26 +161,68 @@ export function createMiddleware(
 }
 
 /**
- * Middleware to require localhost-only access
- * Used for admin endpoints that should not be exposed when binding to 0.0.0.0
+ * Middleware to require localhost-only access.
+ * Uses req.socket.remoteAddress (not req.ip) to avoid X-Forwarded-For spoofing.
+ * Used for all API endpoints since this is a local-only tool.
  */
 export function requireLocalhost(req: Request, res: Response, next: NextFunction): void {
-  const clientIp = req.ip || req.connection.remoteAddress || '';
+  // Use socket-level address to ignore X-Forwarded-For entirely (Bug #1932)
+  const clientIp = req.socket.remoteAddress || '';
   const isLocalhost =
     clientIp === '127.0.0.1' ||
     clientIp === '::1' ||
-    clientIp === '::ffff:127.0.0.1' ||
-    clientIp === 'localhost';
+    clientIp === '::ffff:127.0.0.1';
 
   if (!isLocalhost) {
-    logger.warn('SECURITY', 'Admin endpoint access denied - not localhost', {
+    logger.warn('SECURITY', 'API access denied - not localhost', {
       endpoint: req.path,
       clientIp,
       method: req.method
     });
     res.status(403).json({
       error: 'Forbidden',
+      message: 'API endpoints are only accessible from localhost'
+    });
+    return;
+  }
+
+  next();
+}
+
+/**
+ * Middleware to require admin bearer token for admin endpoints.
+ * Admin routes must include `Authorization: Bearer <token>` header.
+ * Token is auto-generated on first access if not already on disk.
+ */
+export function requireAdminToken(req: Request, res: Response, next: NextFunction): void {
+  // First, verify localhost via socket (not req.ip)
+  const clientIp = req.socket.remoteAddress || '';
+  const isLocalhost =
+    clientIp === '127.0.0.1' ||
+    clientIp === '::1' ||
+    clientIp === '::ffff:127.0.0.1';
+
+  if (!isLocalhost) {
+    res.status(403).json({
+      error: 'Forbidden',
       message: 'Admin endpoints are only accessible from localhost'
+    });
+    return;
+  }
+
+  // Always require a valid bearer token (auto-generated on first access)
+  const expectedToken = getAdminToken();
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+
+  if (!token || token !== expectedToken) {
+    logger.warn('SECURITY', 'Admin endpoint: missing or invalid bearer token', {
+      endpoint: req.path,
+      method: req.method
+    });
+    res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Valid admin bearer token required'
     });
     return;
   }
