@@ -8,6 +8,7 @@
 import type { Database } from 'bun:sqlite';
 import type { ObservationRecord, SessionSummaryRecord, UserPromptRecord } from '../../../types/database.js';
 import { logger } from '../../../utils/logger.js';
+import { OBSERVER_SESSIONS_PROJECT } from '../../../shared/paths.js';
 
 /**
  * Timeline result containing observations, sessions, and prompts within a time window
@@ -210,9 +211,10 @@ export function getAllProjects(db: Database): string[] {
     SELECT DISTINCT project
     FROM sdk_sessions
     WHERE project IS NOT NULL AND project != ''
+      AND project != ?
     ORDER BY project ASC
   `);
 
-  const rows = stmt.all() as Array<{ project: string }>;
+  const rows = stmt.all(OBSERVER_SESSIONS_PROJECT) as Array<{ project: string }>;
   return rows.map(row => row.project);
 }

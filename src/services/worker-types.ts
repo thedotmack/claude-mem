@@ -124,6 +124,7 @@ export interface Observation {
   id: number;
   memory_session_id: string;  // Renamed from sdk_session_id
   project: string;
+  merged_into_project: string | null;
   platform_source: string;
   type: string;
   title: string;

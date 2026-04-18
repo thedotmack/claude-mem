@@ -102,6 +102,44 @@ export function runStatusCommand(): void {
 }
 
 /**
+ * Stamp merged-worktree provenance on observations/summaries and keep Chroma
+ * metadata in lockstep. Delegates to the worker-service.cjs `adopt` subcommand
+ * so adoption runs in Bun (needed for bun:sqlite) while preserving the user's
+ * working directory — that's what the engine uses to locate the parent repo.
+ */
+export function runAdoptCommand(extraArgs: string[] = []): void {
+  ensureInstalledOrExit();
+  const bunPath = resolveBunOrExit();
+  const workerScript = workerServiceScriptPath();
+
+  if (!existsSync(workerScript)) {
+    console.error(pc.red(`Worker script not found at: ${workerScript}`));
+    console.error('The installation may be corrupted. Try: npx claude-mem install');
+    process.exit(1);
+  }
+
+  // Pass user's cwd explicitly via --cwd because we override cwd on spawn to
+  // marketplaceDirectory() (required for the worker's own file resolution).
+  const userCwd = process.cwd();
+  const args = [workerScript, 'adopt', '--cwd', userCwd, ...extraArgs];
+
+  const child = spawn(bunPath, args, {
+    stdio: 'inherit',
+    cwd: marketplaceDirectory(),
+    env: process.env,
+  });
+
+  child.on('error', (error) => {
+    console.error(pc.red(`Failed to start Bun: ${error.message}`));
+    process.exit(1);
+  });
+
+  child.on('close', (exitCode) => {
+    process.exit(exitCode ?? 0);
+  });
+}
+
+/**
  * Search the worker API at `GET /api/search?query=<query>`.
  */
 export async function runSearchCommand(queryParts: string[]): Promise<void> {

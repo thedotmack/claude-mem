@@ -130,11 +130,14 @@ export async function generateContext(
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
   const context = getProjectContext(cwd);
-  const project = context.primary;
   const platformSource = input?.platform_source;
 
-  // Use provided projects array (for worktree support) or fall back to all known projects
-  const projects = input?.projects ?? context.allProjects;
+  // Single source of truth: explicit projects override cwd-derived context.
+  // `project` (used for header + single-project query) is always the last entry
+  // of `projects` so the empty-state header and the query target stay in sync
+  // when a caller passes `projects` without a matching cwd (e.g. worker route).
+  const projects = input?.projects?.length ? input.projects : context.allProjects;
+  const project = projects[projects.length - 1] ?? context.primary;
 
   // Full mode: fetch all observations but keep normal rendering (level 1 summaries)
   if (input?.full) {

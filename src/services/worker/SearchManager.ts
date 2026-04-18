@@ -13,7 +13,6 @@
  * - TimelineBuilder: Timeline construction
  */
 
-import { basename } from 'path';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
@@ -22,6 +21,7 @@ import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { logger } from '../../utils/logger.js';
+import { getProjectContext } from '../../utils/project-name.js';
 import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
@@ -170,8 +170,16 @@ export class SearchManager {
       // Include project in the Chroma where clause to scope vector search.
       // Without this, larger projects dominate the top-N results and smaller
       // projects get crowded out before the post-hoc SQLite filter.
+      // Match both native-provenance rows (project) and adopted merged-worktree
+      // rows (merged_into_project) so a parent-project query surfaces its
+      // merged children's observations too.
       if (options.project) {
-        const projectFilter = { project: options.project };
+        const projectFilter = {
+          $or: [
+            { project: options.project },
+            { merged_into_project: options.project }
+          ]
+        };
         whereFilter = whereFilter
           ? { $and: [whereFilter, projectFilter] }
           : projectFilter;
@@ -1319,7 +1327,7 @@ export class SearchManager {
    * Tool handler: get_recent_context
    */
   async getRecentContext(args: any): Promise<any> {
-    const project = args.project || basename(process.cwd());
+    const project = args.project || getProjectContext(process.cwd()).primary;
     const limit = args.limit || 3;
 
     const sessions = this.sessionStore.getRecentSessionsWithStatus(project, limit);

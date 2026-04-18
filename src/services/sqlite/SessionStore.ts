@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
+import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
@@ -65,6 +65,7 @@ export class SessionStore {
     this.addSessionCustomTitleColumn();
     this.addSessionPlatformSourceColumn();
     this.addObservationModelColumns();
+    this.ensureMergedIntoProjectColumns();
   }
 
   /**
@@ -945,6 +946,36 @@ export class SessionStore {
   }
 
   /**
+   * Ensure merged_into_project columns + indices exist on observations and session_summaries.
+   *
+   * Self-idempotent via PRAGMA table_info guard — does NOT bump schema_versions.
+   * Mirrors MigrationRunner.ensureMergedIntoProjectColumns so bundled artifacts
+   * that embed SessionStore (e.g. context-generator.cjs) stay schema-consistent
+   * with the standalone migration path.
+   */
+  private ensureMergedIntoProjectColumns(): void {
+    const obsCols = this.db
+      .query('PRAGMA table_info(observations)')
+      .all() as TableColumnInfo[];
+    if (!obsCols.some(c => c.name === 'merged_into_project')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN merged_into_project TEXT');
+    }
+    this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_observations_merged_into ON observations(merged_into_project)'
+    );
+
+    const sumCols = this.db
+      .query('PRAGMA table_info(session_summaries)')
+      .all() as TableColumnInfo[];
+    if (!sumCols.some(c => c.name === 'merged_into_project')) {
+      this.db.run('ALTER TABLE session_summaries ADD COLUMN merged_into_project TEXT');
+    }
+    this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_summaries_merged_into ON session_summaries(merged_into_project)'
+    );
+  }
+
+  /**
    * Update the memory session ID for a session
    * Called by SDKAgent when it captures the session ID from the first SDK message
    * Also used to RESET to null on stale resume failures (worker-service.ts)
@@ -1192,8 +1223,9 @@ export class SessionStore {
       SELECT DISTINCT project
       FROM sdk_sessions
       WHERE project IS NOT NULL AND project != ''
+        AND project != ?
     `;
-    const params: unknown[] = [];
+    const params: unknown[] = [OBSERVER_SESSIONS_PROJECT];
 
     if (normalizedPlatformSource) {
       query += ' AND COALESCE(platform_source, ?) = ?';
@@ -1218,9 +1250,10 @@ export class SessionStore {
         MAX(started_at_epoch) as latest_epoch
       FROM sdk_sessions
       WHERE project IS NOT NULL AND project != ''
+        AND project != ?
       GROUP BY COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}'), project
       ORDER BY latest_epoch DESC
-    `).all() as Array<{ platform_source: string; project: string; latest_epoch: number }>;
+    `).all(OBSERVER_SESSIONS_PROJECT) as Array<{ platform_source: string; project: string; latest_epoch: number }>;
 
     const projects: string[] = [];
     const seenProjects = new Set<string>();

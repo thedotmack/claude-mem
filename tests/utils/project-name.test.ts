@@ -97,7 +97,7 @@ describe('getProjectContext', () => {
     expect(ctx.parent).toBeNull();
   });
 
-  describe('worktree regression (#1081, #1500, #1819)', () => {
+  describe('worktree isolation', () => {
     let tmp: string;
     let mainRepo: string;
     let worktreeCheckout: string;
@@ -125,21 +125,18 @@ describe('getProjectContext', () => {
       rmSync(tmp, { recursive: true, force: true });
     });
 
-    it('uses parent project name as primary when in a worktree', () => {
+    it('uses parent/worktree composite as primary when in a worktree', () => {
       const ctx = getProjectContext(worktreeCheckout);
       expect(ctx.isWorktree).toBe(true);
-      expect(ctx.primary).toBe('main-repo');
+      expect(ctx.primary).toBe('main-repo/my-worktree');
       expect(ctx.parent).toBe('main-repo');
-      expect(ctx.allProjects).toEqual(['main-repo', 'my-worktree']);
+      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/my-worktree']);
     });
 
-    it('write-path call sites resolve to parent project in worktrees', () => {
-      // Mirrors the pattern used by session-init.ts and SessionRoutes.ts:
-      //   const project = getProjectContext(cwd).primary;
-      // This must resolve to the parent repo, not the worktree name,
-      // so observations are stored under the correct project.
+    it('write-path call sites resolve to composite name in worktrees', () => {
       const project = getProjectContext(worktreeCheckout).primary;
-      expect(project).toBe('main-repo');
+      expect(project).toBe('main-repo/my-worktree');
+      expect(project).not.toBe('main-repo');
       expect(project).not.toBe('my-worktree');
     });
   });

@@ -10,8 +10,8 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmSync, statSync, utimesSync } from 'fs';
-import { exec, execSync, spawn } from 'child_process';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmSync, statSync, utimesSync, copyFileSync } from 'fs';
+import { exec, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
@@ -675,6 +675,161 @@ export function runOneTimeChromaMigration(dataDirectory?: string): void {
   mkdirSync(effectiveDataDir, { recursive: true });
   writeFileSync(markerPath, new Date().toISOString());
   logger.info('SYSTEM', 'Chroma migration marker written', { markerPath });
+}
+
+const CWD_REMAP_MARKER_FILENAME = '.cwd-remap-applied-v1';
+
+type CwdClassification =
+  | { kind: 'main'; project: string }
+  | { kind: 'worktree'; project: string }
+  | { kind: 'skip' };
+
+function gitQuery(cwd: string, args: string[]): string | null {
+  const r = spawnSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    timeout: 5000
+  });
+  if (r.status !== 0) return null;
+  return (r.stdout ?? '').trim();
+}
+
+function classifyCwdForRemap(cwd: string): CwdClassification {
+  if (!existsSync(cwd)) return { kind: 'skip' };
+
+  const gitDir = gitQuery(cwd, ['rev-parse', '--absolute-git-dir']);
+  if (!gitDir) return { kind: 'skip' };
+
+  const commonDir = gitQuery(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  if (!commonDir) return { kind: 'skip' };
+
+  const toplevel = gitQuery(cwd, ['rev-parse', '--show-toplevel']);
+  if (!toplevel) return { kind: 'skip' };
+  const leaf = path.basename(toplevel);
+
+  if (gitDir === commonDir) {
+    return { kind: 'main', project: leaf };
+  }
+
+  const parentRepoDir = commonDir.endsWith('/.git')
+    ? path.dirname(commonDir)
+    : commonDir.replace(/\.git$/, '');
+  const parent = path.basename(parentRepoDir);
+  return { kind: 'worktree', project: `${parent}/${leaf}` };
+}
+
+/**
+ * One-time remap of sdk_sessions.project (+ observations.project,
+ * session_summaries.project) using the cwd captured in pending_messages.cwd
+ * as the source of truth. Required because pre-worktree builds stored bare
+ * project names that collide across parent/worktree checkouts.
+ *
+ * Backs up the DB before writes. Idempotent via marker file. Skips silently
+ * if the DB or pending_messages table doesn't exist yet (fresh install).
+ *
+ * @param dataDirectory - Override for DATA_DIR (used in tests)
+ */
+export function runOneTimeCwdRemap(dataDirectory?: string): void {
+  const effectiveDataDir = dataDirectory ?? DATA_DIR;
+  const markerPath = path.join(effectiveDataDir, CWD_REMAP_MARKER_FILENAME);
+  const dbPath = path.join(effectiveDataDir, 'claude-mem.db');
+
+  if (existsSync(markerPath)) {
+    logger.debug('SYSTEM', 'cwd-remap marker exists, skipping');
+    return;
+  }
+
+  if (!existsSync(dbPath)) {
+    mkdirSync(effectiveDataDir, { recursive: true });
+    writeFileSync(markerPath, new Date().toISOString());
+    logger.debug('SYSTEM', 'No DB present, cwd-remap marker written without work', { dbPath });
+    return;
+  }
+
+  logger.warn('SYSTEM', 'Running one-time cwd-based project remap', { dbPath });
+
+  let db: import('bun:sqlite').Database | null = null;
+  try {
+    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+
+    const probe = new Database(dbPath, { readonly: true });
+    const hasPending = probe.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'"
+    ).get() as { name: string } | undefined;
+    probe.close();
+
+    if (!hasPending) {
+      mkdirSync(effectiveDataDir, { recursive: true });
+      writeFileSync(markerPath, new Date().toISOString());
+      logger.info('SYSTEM', 'pending_messages table not present, cwd-remap skipped');
+      return;
+    }
+
+    const backup = `${dbPath}.bak-cwd-remap-${Date.now()}`;
+    copyFileSync(dbPath, backup);
+    logger.info('SYSTEM', 'DB backed up before cwd-remap', { backup });
+
+    db = new Database(dbPath);
+
+    const cwdRows = db.prepare(`
+      SELECT cwd FROM pending_messages
+      WHERE cwd IS NOT NULL AND cwd != ''
+      GROUP BY cwd
+    `).all() as Array<{ cwd: string }>;
+
+    const byCwd = new Map<string, CwdClassification>();
+    for (const { cwd } of cwdRows) byCwd.set(cwd, classifyCwdForRemap(cwd));
+
+    const sessionRows = db.prepare(`
+      SELECT s.id AS session_id, s.memory_session_id, s.project AS old_project, p.cwd
+      FROM sdk_sessions s
+      JOIN pending_messages p ON p.content_session_id = s.content_session_id
+      WHERE p.cwd IS NOT NULL AND p.cwd != ''
+        AND p.id = (
+          SELECT MIN(p2.id) FROM pending_messages p2
+          WHERE p2.content_session_id = s.content_session_id
+            AND p2.cwd IS NOT NULL AND p2.cwd != ''
+        )
+    `).all() as Array<{ session_id: number; memory_session_id: string | null; old_project: string; cwd: string }>;
+
+    type Target = { sessionId: number; memorySessionId: string | null; newProject: string };
+    const targets: Target[] = [];
+    for (const r of sessionRows) {
+      const c = byCwd.get(r.cwd);
+      if (!c || c.kind === 'skip') continue;
+      if (r.old_project === c.project) continue;
+      targets.push({ sessionId: r.session_id, memorySessionId: r.memory_session_id, newProject: c.project });
+    }
+
+    if (targets.length === 0) {
+      logger.info('SYSTEM', 'cwd-remap: no sessions need updating');
+    } else {
+      const updSession = db.prepare('UPDATE sdk_sessions      SET project = ? WHERE id = ?');
+      const updObs     = db.prepare('UPDATE observations      SET project = ? WHERE memory_session_id = ?');
+      const updSum     = db.prepare('UPDATE session_summaries SET project = ? WHERE memory_session_id = ?');
+
+      let sessionN = 0, obsN = 0, sumN = 0;
+      const tx = db.transaction(() => {
+        for (const t of targets) {
+          sessionN += updSession.run(t.newProject, t.sessionId).changes;
+          if (t.memorySessionId) {
+            obsN += updObs.run(t.newProject, t.memorySessionId).changes;
+            sumN += updSum.run(t.newProject, t.memorySessionId).changes;
+          }
+        }
+      });
+      tx();
+
+      logger.info('SYSTEM', 'cwd-remap applied', { sessions: sessionN, observations: obsN, summaries: sumN, backup });
+    }
+
+    mkdirSync(effectiveDataDir, { recursive: true });
+    writeFileSync(markerPath, new Date().toISOString());
+    logger.info('SYSTEM', 'cwd-remap marker written', { markerPath });
+  } catch (err) {
+    logger.error('SYSTEM', 'cwd-remap failed, marker not written (will retry on next startup)', {}, err as Error);
+  } finally {
+    db?.close();
+  }
 }
 
 /**

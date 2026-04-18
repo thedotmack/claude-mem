@@ -45,6 +45,7 @@ import {
   getPlatformTimeout,
   aggressiveStartupCleanup,
   runOneTimeChromaMigration,
+  runOneTimeCwdRemap,
   cleanStalePidFile,
   isProcessAlive,
   spawnDaemon,
@@ -58,6 +59,7 @@ import {
   httpShutdown
 } from './infrastructure/HealthMonitor.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
+import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos } from './infrastructure/WorktreeAdoption.js';
 
 // Server imports
 import { Server } from './server/Server.js';
@@ -357,6 +359,34 @@ export class WorkerService {
       // Only runs in local mode (chroma is local-only). Backfill at line ~414 rebuilds from SQLite.
       if (settings.CLAUDE_MEM_MODE === 'local' || !settings.CLAUDE_MEM_MODE) {
         runOneTimeChromaMigration();
+      }
+
+      // One-time remap of pre-worktree project names using pending_messages.cwd.
+      // Must run before dbManager.initialize() so we don't hold the DB open.
+      runOneTimeCwdRemap();
+
+      // Stamp merged worktrees so their observations surface under the parent
+      // project. Runs every startup (not marker-gated) because git state evolves
+      // and the engine is fully idempotent. Must also precede dbManager.initialize().
+      //
+      // The worker daemon is spawned with cwd=marketplace-plugin-dir (not a git
+      // repo), so we can't seed adoption with process.cwd(). Instead, discover
+      // parent repos from recorded pending_messages.cwd values.
+      try {
+        const adoptions = await adoptMergedWorktreesForAllKnownRepos({});
+        for (const adoption of adoptions) {
+          if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
+            logger.info('SYSTEM', 'Merged worktrees adopted on startup', adoption);
+          }
+          if (adoption.errors.length > 0) {
+            logger.warn('SYSTEM', 'Worktree adoption had per-branch errors', {
+              repoPath: adoption.repoPath,
+              errors: adoption.errors
+            });
+          }
+        }
+      } catch (err) {
+        logger.error('SYSTEM', 'Worktree adoption failed (non-fatal)', {}, err as Error);
       }
 
       // Initialize ChromaMcpManager only if Chroma is enabled
@@ -1185,6 +1215,45 @@ async function main() {
       const result = await cleanClaudeMd(dryRun);
       process.exit(result);
       break;
+    }
+
+    case 'adopt': {
+      const dryRun = process.argv.includes('--dry-run');
+      const branchIndex = process.argv.indexOf('--branch');
+      const branchValue = branchIndex !== -1 ? process.argv[branchIndex + 1] : undefined;
+      if (branchIndex !== -1 && (!branchValue || branchValue.startsWith('--'))) {
+        console.error('Usage: adopt [--dry-run] [--branch <branch>] [--cwd <path>]');
+        process.exit(1);
+      }
+      const onlyBranch = branchValue;
+      // Honor an explicit --cwd override so the NPX CLI can pass through the
+      // user's working directory (the spawn sets cwd to the marketplace dir).
+      const cwdIndex = process.argv.indexOf('--cwd');
+      const cwdValue = cwdIndex !== -1 ? process.argv[cwdIndex + 1] : undefined;
+      if (cwdIndex !== -1 && (!cwdValue || cwdValue.startsWith('--'))) {
+        console.error('Usage: adopt [--dry-run] [--branch <branch>] [--cwd <path>]');
+        process.exit(1);
+      }
+      const repoPath = cwdValue ?? process.cwd();
+
+      const result = await adoptMergedWorktrees({ repoPath, dryRun, onlyBranch });
+
+      const tag = result.dryRun ? '(dry-run)' : '(applied)';
+      console.log(`\nWorktree adoption ${tag}`);
+      console.log(`  Parent project:       ${result.parentProject || '(unknown)'}`);
+      console.log(`  Repo:                 ${result.repoPath}`);
+      console.log(`  Worktrees scanned:    ${result.scannedWorktrees}`);
+      console.log(`  Merged branches:      ${result.mergedBranches.join(', ') || '(none)'}`);
+      console.log(`  Observations adopted: ${result.adoptedObservations}`);
+      console.log(`  Summaries adopted:    ${result.adoptedSummaries}`);
+      console.log(`  Chroma docs updated:  ${result.chromaUpdates}`);
+      if (result.chromaFailed > 0) {
+        console.log(`  Chroma sync failures: ${result.chromaFailed} (will retry on next run)`);
+      }
+      for (const err of result.errors) {
+        console.log(`  ! ${err.worktree}: ${err.error}`);
+      }
+      process.exit(0);
     }
 
     case '--daemon':
