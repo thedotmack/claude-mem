@@ -455,8 +455,7 @@ export class SearchManager {
         logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
       }
     }
-    // Bug #1913: ChromaDB not initialized - fall back to FTS5 MATCH query
-    // instead of returning empty results
+    // Bug #1913/#2048: ChromaDB not initialized - fall back to FTS5 MATCH query
     else if (query) {
       logger.debug('SEARCH', 'ChromaDB not initialized - falling back to FTS5 text search', {});
 
@@ -476,9 +475,6 @@ export class SearchManager {
         // FTS5 also unavailable
         chromaFailed = true;
         logger.debug('SEARCH', 'FTS5 also unavailable - no text search backend', {});
-        observations = [];
-        sessions = [];
-        prompts = [];
       }
     }
 

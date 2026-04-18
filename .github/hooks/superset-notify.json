@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "/Users/alexnewman/.superset/hooks/copilot-hook.sh sessionStart",
+        "timeoutSec": 5
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": "/Users/alexnewman/.superset/hooks/copilot-hook.sh sessionEnd",
+        "timeoutSec": 5
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "/Users/alexnewman/.superset/hooks/copilot-hook.sh userPromptSubmitted",
+        "timeoutSec": 5
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "/Users/alexnewman/.superset/hooks/copilot-hook.sh postToolUse",
+        "timeoutSec": 5
+      }
+    ]
+  }
+}

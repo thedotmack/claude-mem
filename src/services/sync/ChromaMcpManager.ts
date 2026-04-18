@@ -208,6 +208,9 @@ export class ChromaMcpManager {
       const args = [
         '--python', pythonVersion,
         'chroma-mcp==0.2.3',
+        '--with', 'httpcore',
+        '--with', 'httpx',
+        'chroma-mcp==0.2.3',
         '--client-type', 'http',
         '--host', chromaHost,
         '--port', chromaPort
@@ -233,6 +236,9 @@ export class ChromaMcpManager {
     // Local mode: persistent client with data directory
     return [
       '--python', pythonVersion,
+      'chroma-mcp==0.2.3',
+      '--with', 'httpcore',
+      '--with', 'httpx',
       'chroma-mcp==0.2.3',
       '--client-type', 'persistent',
       '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')

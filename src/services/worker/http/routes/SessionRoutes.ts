@@ -290,10 +290,6 @@ export class SessionRoutes extends BaseRouteHandler {
             const pendingStore = this.sessionManager.getPendingMessageStore();
             const pendingCount = pendingStore.getPendingCount(sessionDbId);
 
-            // CRITICAL: Limit consecutive restarts to prevent infinite loops
-            // This prevents runaway API costs when there's a persistent error (e.g., memorySessionId not captured)
-            const MAX_CONSECUTIVE_RESTARTS = 3;
-
             if (pendingCount > 0) {
               // GUARD: Prevent duplicate crash recovery spawns
               if (this.crashRecoveryScheduled.has(sessionDbId)) {
@@ -301,16 +297,10 @@ export class SessionRoutes extends BaseRouteHandler {
                 return;
               }
 
-              session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1;
+              // Time-windowed restart guard: only count restarts within last 60s, cap at 10
+              const { recordRestartAndCheckAllowed } = await import('../../RestartGuard.js');
 
-              if (session.consecutiveRestarts > MAX_CONSECUTIVE_RESTARTS) {
-                logger.error('SESSION', `CRITICAL: Generator restart limit exceeded - stopping to prevent runaway costs`, {
-                  sessionId: sessionDbId,
-                  pendingCount,
-                  consecutiveRestarts: session.consecutiveRestarts,
-                  maxRestarts: MAX_CONSECUTIVE_RESTARTS,
-                  action: 'Generator will NOT restart. Check logs for root cause. Messages remain in pending state.'
-                });
+              if (!recordRestartAndCheckAllowed(session, 'Crash-recovery restart')) {
                 // Don't restart - abort to prevent further API calls
                 session.abortController.abort();
                 return;
@@ -320,7 +310,7 @@ export class SessionRoutes extends BaseRouteHandler {
                 sessionId: sessionDbId,
                 pendingCount,
                 consecutiveRestarts: session.consecutiveRestarts,
-                maxRestarts: MAX_CONSECUTIVE_RESTARTS
+                restartsInWindow: session.restartTimestamps?.length ?? 0
               });
 
               // Abort OLD controller before replacing to prevent child process leaks
@@ -346,7 +336,8 @@ export class SessionRoutes extends BaseRouteHandler {
               // No pending work - abort to kill the child process
               session.abortController.abort();
               // Reset restart counter on successful completion
-              session.consecutiveRestarts = 0;
+              const { resetRestartCounter } = await import('../../RestartGuard.js');
+              resetRestartCounter(session);
               logger.debug('SESSION', 'Aborted controller after natural completion', {
                 sessionId: sessionDbId
               });

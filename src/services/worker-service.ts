@@ -538,6 +538,13 @@ export class WorkerService {
           if (reaped > 0) {
             logger.info('SYSTEM', `Reaped ${reaped} stale sessions`);
           }
+
+          // Apply restart decay: if a session has been processing successfully
+          // for 5+ minutes since its last restart, clear the restart history
+          const { applyRestartDecay } = await import('./worker/RestartGuard.js');
+          this.sessionManager.forEachActiveSession((session) => {
+            applyRestartDecay(session);
+          });
         } catch (e) {
           logger.error('SYSTEM', 'Stale session reaper error', { error: e instanceof Error ? e.message : String(e) });
         }
@@ -782,19 +789,12 @@ export class WorkerService {
           }
           // Fall through to pending-work restart below
         }
-        const MAX_PENDING_RESTARTS = 3;
-
         if (pendingCount > 0) {
-          // Track consecutive pending-work restarts to prevent infinite loops (e.g. FK errors)
-          session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1;
+          // Time-windowed restart guard: only count restarts within last 60s, cap at 10
+          const { recordRestartAndCheckAllowed, resetRestartCounter } = await import('./worker/RestartGuard.js');
 
-          if (session.consecutiveRestarts > MAX_PENDING_RESTARTS) {
-            logger.error('SYSTEM', 'Exceeded max pending-work restarts, stopping to prevent infinite loop', {
-              sessionId: session.sessionDbId,
-              pendingCount,
-              consecutiveRestarts: session.consecutiveRestarts
-            });
-            session.consecutiveRestarts = 0;
+          if (!recordRestartAndCheckAllowed(session, 'Pending-work restart')) {
+            resetRestartCounter(session);
             this.terminateSession(session.sessionDbId, 'max_restarts_exceeded');
             return;
           }
@@ -812,7 +812,8 @@ export class WorkerService {
         } else {
           // Successful completion with no pending work — clean up session
           // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
-          session.consecutiveRestarts = 0;
+          const { resetRestartCounter: resetCounter } = await import('./worker/RestartGuard.js');
+          resetCounter(session);
           this.sessionManager.removeSessionImmediate(session.sessionDbId);
         }
       });
@@ -1035,6 +1036,9 @@ export class WorkerService {
       clearInterval(this.failedMessagesPurgeInterval);
       this.failedMessagesPurgeInterval = null;
     }
+
+    // Stop SSE broadcaster cleanup interval to prevent timer leak
+    this.sseBroadcaster.dispose();
 
     await performGracefulShutdown({
       server: this.server.getHttpServer(),
