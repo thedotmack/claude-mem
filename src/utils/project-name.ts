@@ -1,5 +1,6 @@
 import { homedir } from 'os'
 import path from 'path';
+import { spawnSync } from 'child_process';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
 
@@ -15,8 +16,53 @@ function expandTilde(p: string): string {
 }
 
 /**
+ * Try to derive a stable project name from the git common directory.
+ *
+ * Uses `git rev-parse --git-common-dir` which resolves to the shared .git
+ * directory for both main repos and worktrees. This ensures:
+ * - All worktrees of the same repo share the same project name
+ * - Different repos with the same directory basename get different keys
+ *   (because the common git dir's parent path will differ)
+ *
+ * Returns null if the cwd is not inside a git repository.
+ */
+function getGitProjectName(cwd: string): string | null {
+  try {
+    const result = spawnSync('git', ['-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+
+    if (result.status !== 0 || !result.stdout) return null;
+
+    const gitCommonDir = result.stdout.trim();
+    if (!gitCommonDir) return null;
+
+    // The common git dir is typically "/path/to/repo/.git"
+    // We want the basename of the parent: "repo"
+    const parentOfGitDir = gitCommonDir.endsWith('.git')
+      ? path.dirname(gitCommonDir)
+      : gitCommonDir;
+
+    const projectName = path.basename(parentOfGitDir);
+
+    // Guard against degenerate cases (root dir, empty basename)
+    if (!projectName || projectName === '.' || projectName === '/') return null;
+
+    return projectName;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Extract project name from working directory path
  * Handles edge cases: null/undefined cwd, drive roots, trailing slashes, unexpanded ~
+ *
+ * Strategy:
+ * 1. First try git-common-dir to unify worktrees and avoid basename collisions
+ * 2. Fall back to path.basename(cwd) if not in a git repo
  *
  * @param cwd - Current working directory (absolute path, or ~-prefixed path)
  * @returns Project name or "unknown-project" if extraction fails
@@ -30,7 +76,13 @@ export function getProjectName(cwd: string | null | undefined): string {
   // Expand leading ~ before path operations
   const expanded = expandTilde(cwd)
 
-  // Extract basename (handles trailing slashes automatically)
+  // Try git-common-dir first for stable, worktree-aware project naming
+  const gitProjectName = getGitProjectName(expanded);
+  if (gitProjectName) {
+    return gitProjectName;
+  }
+
+  // Fall back to basename for non-git directories
   const basename = path.basename(expanded);
 
   // Edge case: Drive roots on Windows (C:\, J:\) or Unix root (/)

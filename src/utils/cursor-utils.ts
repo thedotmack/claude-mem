@@ -8,6 +8,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
 import { join, basename } from 'path';
 import { logger } from './logger.js';
+import { getProjectName as getProjectNameFromGit } from './project-name.js';
 
 // ============================================================================
 // Types
@@ -228,25 +229,12 @@ export function jsonGet(json: Record<string, unknown>, field: string, fallback: 
 
 /**
  * Get project name from workspace path (mirrors common.sh get_project_name)
+ *
+ * Delegates to the canonical implementation in project-name.ts which handles
+ * git-common-dir for stable worktree-aware naming and falls back to basename.
  */
 export function getProjectName(workspacePath: string): string {
-  if (!workspacePath) return 'unknown-project';
-
-  // Handle Windows drive root (C:\ or C:)
-  const driveMatch = workspacePath.match(/^([A-Za-z]):[\\\/]?$/);
-  if (driveMatch) {
-    return `drive-${driveMatch[1].toUpperCase()}`;
-  }
-
-  // Normalize to forward slashes for cross-platform support
-  const normalized = workspacePath.replace(/\\/g, '/');
-  const name = basename(normalized);
-
-  if (!name) {
-    return 'unknown-project';
-  }
-
-  return name;
+  return getProjectNameFromGit(workspacePath);
 }
 
 /**

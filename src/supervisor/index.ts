@@ -18,6 +18,8 @@ interface PidInfo {
 interface ValidateWorkerPidOptions {
   logAlive?: boolean;
   pidFilePath?: string;
+  /** If true, skip PID liveness check and treat PID file as stale. Used by --force flag. */
+  forceRemoveStale?: boolean;
 }
 
 export type ValidateWorkerPidStatus = 'missing' | 'alive' | 'stale' | 'invalid';
@@ -165,6 +167,17 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
     logger.warn('SYSTEM', 'Failed to parse worker PID file, removing it', { path: pidFilePath }, error as Error);
     rmSync(pidFilePath, { force: true });
     return 'invalid';
+  }
+
+  // --force flag: skip liveness check, treat as stale and remove
+  if (options.forceRemoveStale) {
+    logger.info('SYSTEM', 'Force flag: removing PID file regardless of process state', {
+      pid: pidInfo.pid,
+      port: pidInfo.port,
+      startedAt: pidInfo.startedAt
+    });
+    rmSync(pidFilePath, { force: true });
+    return 'stale';
   }
 
   if (isPidAlive(pidInfo.pid)) {
