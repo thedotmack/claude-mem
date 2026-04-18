@@ -8,8 +8,19 @@ import { describe, it, expect } from 'bun:test';
 import { parseSummary } from '../../src/sdk/parser.js';
 
 describe('parseSummary', () => {
-  it('returns null when no <summary> tag present', () => {
-    expect(parseSummary('<observation><title>foo</title></observation>')).toBeNull();
+  // Intentional behavior change from #1908: parseSummary now salvages data from
+  // <observation> tags when no <summary> tags are present, rather than discarding
+  // the output. Previously this returned null (see #1360), but #1908 determined
+  // that discarding observation-tagged output loses valuable session data.
+  it('salvages summary from <observation> tags when no <summary> tag present (#1908)', () => {
+    const result = parseSummary('<observation><title>foo</title></observation>');
+    expect(result).not.toBeNull();
+    expect(result?.request).toBe('foo');
+    expect(result?.investigated).toBeNull();
+    expect(result?.learned).toBeNull();
+    expect(result?.completed).toBeNull();
+    expect(result?.next_steps).toBeNull();
+    expect(result?.notes).toBeNull();
   });
 
   it('returns null when <summary> has no sub-tags (false positive — fix for #1360)', () => {

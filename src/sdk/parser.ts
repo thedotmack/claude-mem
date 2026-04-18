@@ -206,7 +206,8 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
 /**
  * Salvage a ParsedSummary from <observation> tags when the LLM failed to
  * emit <summary> tags. Extracts title → request, narrative → learned,
- * and facts → investigated/completed fields from the first observation.
+ * and facts → investigated/completed fields from all observations,
+ * joining multiple values with semicolons or double newlines.
  * Returns null only if the observation content is completely empty. (#1908)
  */
 function salvageSummaryFromObservationTags(text: string, sessionId?: number): ParsedSummary | null {
