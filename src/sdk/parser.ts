@@ -132,11 +132,26 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
   const summaryMatch = summaryRegex.exec(text);
 
   if (!summaryMatch) {
-    // Log when the response contains <observation> instead of <summary>
-    // to help diagnose prompt conditioning issues (see #1312)
+    // Salvage fallback: LLM emitted <observation> tags instead of <summary> (see #1908)
     if (/<observation>/.test(text)) {
-      logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — prompt conditioning may need strengthening', { sessionId });
+      logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — attempting salvage', { sessionId });
+      return salvageSummaryFromObservationTags(text, sessionId);
     }
+
+    // Raw text fallback: no XML tags at all — use full text as narrative (see #1908)
+    const stripped = text.trim();
+    if (stripped.length > 0) {
+      logger.warn('PARSER', 'Summary response contained no XML tags — salvaging raw text as narrative', { sessionId });
+      return {
+        request: null,
+        investigated: null,
+        learned: stripped,
+        completed: null,
+        next_steps: null,
+        notes: null
+      };
+    }
+
     return null;
   }
 
@@ -182,6 +197,45 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
     completed,
     next_steps,
     notes
+  };
+}
+
+/**
+ * Salvage a ParsedSummary from <observation> tags when the LLM failed to
+ * emit <summary> tags. Extracts title → request, narrative → learned,
+ * and facts → investigated/completed fields from the first observation.
+ * Returns null only if the observation content is completely empty. (#1908)
+ */
+function salvageSummaryFromObservationTags(text: string, sessionId?: number): ParsedSummary | null {
+  const observationRegex = /<observation>([\s\S]*?)<\/observation>/g;
+  const titles: string[] = [];
+  const narratives: string[] = [];
+  const allFacts: string[] = [];
+
+  let match;
+  while ((match = observationRegex.exec(text)) !== null) {
+    const obsContent = match[1];
+    const title = extractField(obsContent, 'title');
+    const narrative = extractField(obsContent, 'narrative');
+    const facts = extractArrayElements(obsContent, 'facts', 'fact');
+
+    if (title) titles.push(title);
+    if (narrative) narratives.push(narrative);
+    allFacts.push(...facts);
+  }
+
+  if (titles.length === 0 && narratives.length === 0 && allFacts.length === 0) {
+    logger.warn('PARSER', 'Observation tags present but all content fields empty — salvage failed', { sessionId });
+    return null;
+  }
+
+  return {
+    request: titles.length > 0 ? titles.join('; ') : null,
+    investigated: allFacts.length > 0 ? allFacts.join('; ') : null,
+    learned: narratives.length > 0 ? narratives.join('\n\n') : null,
+    completed: null,
+    next_steps: null,
+    notes: null
   };
 }
 

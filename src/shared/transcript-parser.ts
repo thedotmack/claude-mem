@@ -92,8 +92,30 @@ function extractLastMessageFromGeminiTranscript(
 }
 
 /**
- * Extract last message from Claude Code JSONL transcript.
- * Each line is an independent JSON object with `type: "assistant"` or `type: "user"`.
+ * Map a JSONL entry's `type` field to the internal role.
+ * Handles Claude Code ("assistant"/"user") and Gemini CLI ("gemini"/"model"/"user")
+ * transcript formats. Returns null for unrecognized types. (#1909)
+ */
+function mapJsonlTypeToRole(type: string): 'user' | 'assistant' | null {
+  switch (type) {
+    case 'user':
+      return 'user';
+    case 'assistant':
+    case 'gemini':
+    case 'model':
+      return 'assistant';
+    default:
+      return null;
+  }
+}
+
+/**
+ * Extract last message from JSONL transcript.
+ * Each line is an independent JSON object.
+ *
+ * Supports two JSONL conventions:
+ * - Claude Code: `type: "assistant"` or `type: "user"`, content in `message.content`
+ * - Gemini CLI JSONL: `type: "gemini"|"model"` or `type: "user"`, content in `content` (string) or `message.content`
  */
 function extractLastMessageFromJsonl(
   content: string,
@@ -104,10 +126,32 @@ function extractLastMessageFromJsonl(
   let foundMatchingRole = false;
 
   for (let i = lines.length - 1; i >= 0; i--) {
-    const line = JSON.parse(lines[i]);
-    if (line.type === role) {
+    const trimmedLine = lines[i].trim();
+    if (!trimmedLine) continue;
+
+    let line: any;
+    try {
+      line = JSON.parse(trimmedLine);
+    } catch {
+      // Skip unparseable lines
+      continue;
+    }
+
+    const mappedRole = mapJsonlTypeToRole(line.type);
+    if (mappedRole === role) {
       foundMatchingRole = true;
 
+      // Gemini JSONL: content is a top-level string field
+      if (typeof line.content === 'string') {
+        let text = line.content;
+        if (stripSystemReminders) {
+          text = text.replace(SYSTEM_REMINDER_REGEX, '');
+          text = text.replace(/\n{3,}/g, '\n\n').trim();
+        }
+        return text;
+      }
+
+      // Claude Code JSONL: content is nested in message.content
       if (line.message?.content) {
         let text = '';
         const msgContent = line.message.content;

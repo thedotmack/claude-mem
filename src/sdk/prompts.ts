@@ -134,11 +134,16 @@ export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): strin
     return '';
   })();
 
-  return `--- MODE SWITCH: PROGRESS SUMMARY ---
-Do NOT output <observation> tags. This is a summary request, not an observation request.
-Your response MUST use <summary> tags ONLY. Any <observation> output will be discarded.
+  // Include user_prompt for grounding the summary against the original request (#1910)
+  const userPromptSection = session.user_prompt
+    ? `<original_user_request>${session.user_prompt}</original_user_request>\n\n`
+    : '';
 
-${mode.prompts.header_summary_checkpoint}
+  return `--- MODE SWITCH: PROGRESS SUMMARY ---
+You MUST use only <summary> tags in your response. Do NOT use <observation> tags.
+Any output not wrapped in <summary> tags will be discarded.
+
+${userPromptSection}${mode.prompts.header_summary_checkpoint}
 ${mode.prompts.summary_instruction}
 
 ${mode.prompts.summary_context_label}
