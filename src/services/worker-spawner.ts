@@ -25,7 +25,9 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
   cleanStalePidFile,
   getPlatformTimeout,
+  readPidFile,
   removePidFile,
+  isProcessAliveAndHealthy,
   spawnDaemon,
   touchPidFile,
 } from './infrastructure/ProcessManager.js';
@@ -126,7 +128,8 @@ export async function ensureWorkerStarted(
   // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
   const pidFileStatus = cleanStalePidFile();
   if (pidFileStatus === 'alive') {
-    logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
+    logger.info('SYSTEM', 'Worker PID file points to a live process, checking health');
+    const pidInfo = readPidFile();
     const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
     if (healthy) {
       // A previous failed spawn may have left a stale Windows cooldown marker
@@ -138,8 +141,20 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker became healthy while waiting on live PID');
       return true;
     }
-    logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout');
-    return false;
+
+    // Process is alive but not responding to health checks — zombie/deadlocked.
+    // Remove stale PID file and proceed to spawn a new worker.
+    if (pidInfo) {
+      logger.warn('SYSTEM', 'Live PID detected but worker not responding to health checks — removing stale PID and proceeding to restart', {
+        pid: pidInfo.pid,
+        port: pidInfo.port
+      });
+      removePidFile();
+      // Fall through to spawn logic below
+    } else {
+      logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout');
+      return false;
+    }
   }
 
   // Check if worker is already running and healthy.

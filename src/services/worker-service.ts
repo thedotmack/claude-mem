@@ -48,6 +48,7 @@ import {
   runOneTimeCwdRemap,
   cleanStalePidFile,
   isProcessAlive,
+  forceKillProcess,
   spawnDaemon,
   touchPidFile
 } from './infrastructure/ProcessManager.js';
@@ -1110,8 +1111,25 @@ async function main() {
     }
 
     case 'restart': {
-      logger.info('SYSTEM', 'Restarting worker');
-      await httpShutdown(port);
+      const forceRestart = process.argv.includes('--force');
+      logger.info('SYSTEM', 'Restarting worker', { force: forceRestart });
+
+      if (forceRestart) {
+        // --force: skip graceful shutdown, remove PID file, and force-kill if needed
+        const pidInfo = readPidFile();
+        if (pidInfo) {
+          logger.info('SYSTEM', 'Force restart: killing existing worker process', { pid: pidInfo.pid });
+          try {
+            await forceKillProcess(pidInfo.pid);
+          } catch {
+            // Process may already be dead — continue
+          }
+        }
+        removePidFile();
+      } else {
+        await httpShutdown(port);
+      }
+
       const restartFreed = await waitForPortFree(port, getPlatformTimeout(15000));
       if (!restartFreed) {
         logger.error('SYSTEM', 'Port did not free up after shutdown, aborting restart', { port });

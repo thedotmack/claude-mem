@@ -970,6 +970,51 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 /**
+ * Check if a worker process is both alive (PID exists) and healthy
+ * (responding to HTTP health checks).
+ *
+ * On Linux, zombie or deadlocked processes keep a live PID but stop
+ * responding to HTTP. This function detects that case: if the process
+ * is alive but fails the health check within `healthTimeoutMs`, the
+ * PID file is removed so a restart can proceed.
+ *
+ * @param pid - Worker process PID
+ * @param port - Worker HTTP port for health check
+ * @param healthTimeoutMs - How long to wait for a health response (default: 10000)
+ * @returns true if alive AND healthy, false otherwise
+ */
+export async function isProcessAliveAndHealthy(
+  pid: number,
+  port: number,
+  healthTimeoutMs: number = 10000
+): Promise<boolean> {
+  if (!isProcessAlive(pid)) {
+    return false;
+  }
+
+  // Process is alive — verify it's actually responsive via HTTP health check
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), healthTimeoutMs);
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: controller.signal
+    });
+
+    clearTimeout(timeout);
+    return response.ok;
+  } catch {
+    // Process is alive but not responding to health checks — zombie/deadlocked
+    logger.warn('SYSTEM', 'Process is alive but not responding to health checks (zombie/deadlocked)', {
+      pid,
+      port,
+      healthTimeoutMs
+    });
+    return false;
+  }
+}
+
+/**
  * Check if the PID file was written recently (within thresholdMs).
  *
  * Used to coordinate restarts across concurrent sessions: if the PID file

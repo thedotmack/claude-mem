@@ -439,14 +439,16 @@ export class SDKAgent {
 
   /**
    * Find Claude executable (inline, called once per session)
+   *
+   * cmux.app-aware: if `which claude` resolves to a cmux wrapper, we skip
+   * it and check standard Claude Code install locations instead.
    */
   private findClaudeExecutable(): string {
+    const { existsSync } = require('fs');
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
     // 1. Check configured path
     if (settings.CLAUDE_CODE_PATH) {
-      // Lazy load fs to keep startup fast
-      const { existsSync } = require('fs');
       if (!existsSync(settings.CLAUDE_CODE_PATH)) {
         throw new Error(`CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but the file does not exist.`);
       }
@@ -459,21 +461,42 @@ export class SDKAgent {
         execSync('where claude.cmd', { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
         return 'claude.cmd'; // Let Windows resolve via PATHEXT
       } catch {
-        // Fall through to generic error
+        // Fall through to generic detection
       }
     }
 
-    // 3. Try auto-detection for non-Windows platforms
+    // 3. Try auto-detection
     try {
       const claudePath = execSync(
         process.platform === 'win32' ? 'where claude' : 'which claude',
         { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
       ).trim().split('\n')[0].trim();
 
-      if (claudePath) return claudePath;
+      // If the resolved path is a cmux wrapper, skip it and try fallback paths
+      if (claudePath && !claudePath.includes('cmux.app')) {
+        return claudePath;
+      }
+
+      if (claudePath && claudePath.includes('cmux.app')) {
+        logger.debug('SDK', 'Detected cmux.app wrapper, checking standard install locations', { cmuxPath: claudePath });
+      }
     } catch (error) {
-      // [ANTI-PATTERN IGNORED]: Fallback behavior - which/where failed, continue to throw clear error
+      // [ANTI-PATTERN IGNORED]: Fallback behavior - which/where failed, continue to fallback paths
       logger.debug('SDK', 'Claude executable auto-detection failed', {}, error as Error);
+    }
+
+    // 4. Check standard Claude Code install locations (fallback for cmux or missing PATH)
+    const standardClaudePaths = [
+      path.join(homedir(), '.local', 'bin', 'claude'),
+      path.join(homedir(), '.claude', 'local', 'claude'),
+      '/usr/local/bin/claude',
+    ];
+
+    for (const candidatePath of standardClaudePaths) {
+      if (existsSync(candidatePath)) {
+        logger.info('SDK', 'Found Claude executable at standard location', { path: candidatePath });
+        return candidatePath;
+      }
     }
 
     throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json');

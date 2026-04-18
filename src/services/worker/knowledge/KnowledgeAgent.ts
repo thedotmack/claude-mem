@@ -227,13 +227,16 @@ export class KnowledgeAgent {
   /**
    * Find the Claude executable path.
    * Mirrors SDKAgent.findClaudeExecutable() logic.
+   *
+   * cmux.app-aware: if `which claude` resolves to a cmux wrapper, we skip
+   * it and check standard Claude Code install locations instead.
    */
   private findClaudeExecutable(): string {
+    const { existsSync } = require('fs');
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
     // 1. Check configured path
     if (settings.CLAUDE_CODE_PATH) {
-      const { existsSync } = require('fs');
       if (!existsSync(settings.CLAUDE_CODE_PATH)) {
         throw new Error(`CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but the file does not exist.`);
       }
@@ -257,9 +260,32 @@ export class KnowledgeAgent {
         { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
       ).trim().split('\n')[0].trim();
 
-      if (claudePath) return claudePath;
+      // If the resolved path is a cmux wrapper, skip it and try fallback paths
+      if (claudePath && !claudePath.includes('cmux.app')) {
+        return claudePath;
+      }
+
+      if (claudePath && claudePath.includes('cmux.app')) {
+        logger.debug('WORKER', 'Detected cmux.app wrapper, checking standard install locations', { cmuxPath: claudePath });
+      }
     } catch (error) {
       logger.debug('WORKER', 'Claude executable auto-detection failed', {}, error as Error);
+    }
+
+    // 4. Check standard Claude Code install locations (fallback for cmux or missing PATH)
+    const { homedir } = require('os');
+    const { join } = require('path');
+    const standardClaudePaths = [
+      join(homedir(), '.local', 'bin', 'claude'),
+      join(homedir(), '.claude', 'local', 'claude'),
+      '/usr/local/bin/claude',
+    ];
+
+    for (const candidatePath of standardClaudePaths) {
+      if (existsSync(candidatePath)) {
+        logger.info('WORKER', 'Found Claude executable at standard location', { path: candidatePath });
+        return candidatePath;
+      }
     }
 
     throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json');
