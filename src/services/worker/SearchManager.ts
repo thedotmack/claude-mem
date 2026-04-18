@@ -260,8 +260,10 @@ export class SearchManager {
    */
   private deduplicateResults<T extends { id: number; content_hash?: string; project?: string; memory_session_id?: string }>(
     results: T[],
-    maxPerProjectSession: number = 5
+    options: { maxPerProjectSession?: number; skipDiversityCap?: boolean } = {}
   ): T[] {
+    const { maxPerProjectSession = 5, skipDiversityCap = false } = options;
+
     // Step 1: Deduplicate by content_hash, keeping first occurrence (highest-scored)
     const seenHashes = new Set<string>();
     const deduped: T[] = [];
@@ -276,7 +278,19 @@ export class SearchManager {
       deduped.push(result);
     }
 
-    // Step 2: Apply per-project+session diversity cap
+    // Step 2: Apply per-project+session diversity cap only for text queries.
+    // Filter-only searches (no text query) should return all matching results
+    // without artificial truncation per project/session.
+    if (skipDiversityCap) {
+      if (deduped.length !== results.length) {
+        logger.debug('SEARCH', 'Deduplication applied (hash only, diversity cap skipped)', {
+          original: results.length,
+          afterHashDedup: deduped.length
+        });
+      }
+      return deduped;
+    }
+
     const projectSessionCounts = new Map<string, number>();
     const diversified: T[] = [];
 
@@ -468,10 +482,13 @@ export class SearchManager {
       }
     }
 
-    // Bug #1915: Deduplicate results by content hash and apply diversity cap
-    observations = this.deduplicateResults(observations);
-    sessions = this.deduplicateResults(sessions);
-    prompts = this.deduplicateResults(prompts);
+    // Bug #1915: Deduplicate results by content hash and apply diversity cap.
+    // Only apply diversity cap for text queries - filter-only searches should
+    // return all matching results without per-project/session truncation.
+    const skipDiversityCap = !query;
+    observations = this.deduplicateResults(observations, { skipDiversityCap });
+    sessions = this.deduplicateResults(sessions, { skipDiversityCap });
+    prompts = this.deduplicateResults(prompts, { skipDiversityCap });
 
     const totalResults = observations.length + sessions.length + prompts.length;
 
