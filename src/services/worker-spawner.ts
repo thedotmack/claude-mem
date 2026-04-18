@@ -130,29 +130,34 @@ export async function ensureWorkerStarted(
   if (pidFileStatus === 'alive') {
     logger.info('SYSTEM', 'Worker PID file points to a live process, checking health');
     const pidInfo = readPidFile();
-    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
-    if (healthy) {
-      // A previous failed spawn may have left a stale Windows cooldown marker
-      // on disk. Now that the worker is confirmed healthy via this alternate
-      // path, clear it so a future genuine outage isn't suppressed for the
-      // remainder of the 2-minute window. Per CodeRabbit on PR #1645.
-      // No-op on non-Windows.
-      clearWorkerSpawnAttempted();
-      logger.info('SYSTEM', 'Worker became healthy while waiting on live PID');
-      return true;
-    }
-
-    // Process is alive but not responding to health checks — zombie/deadlocked.
-    // Remove stale PID file and proceed to spawn a new worker.
     if (pidInfo) {
-      logger.warn('SYSTEM', 'Live PID detected but worker not responding to health checks — removing stale PID and proceeding to restart', {
+      const healthy = await isProcessAliveAndHealthy(pidInfo.pid, port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
+      if (healthy) {
+        // A previous failed spawn may have left a stale Windows cooldown marker
+        // on disk. Now that the worker is confirmed healthy via this alternate
+        // path, clear it so a future genuine outage isn't suppressed for the
+        // remainder of the 2-minute window. Per CodeRabbit on PR #1645.
+        // No-op on non-Windows.
+        clearWorkerSpawnAttempted();
+        logger.info('SYSTEM', 'Worker became healthy while waiting on live PID');
+        return true;
+      }
+
+      // Process is alive but not responding to health checks — zombie/deadlocked.
+      // Kill the zombie process, remove stale PID file, and proceed to spawn a new worker.
+      logger.warn('SYSTEM', 'Live PID detected but worker not responding to health checks — killing zombie and proceeding to restart', {
         pid: pidInfo.pid,
         port: pidInfo.port
       });
+      try {
+        process.kill(pidInfo.pid, 'SIGKILL');
+      } catch {
+        // Process may have already exited between the check and kill attempt
+      }
       removePidFile();
       // Fall through to spawn logic below
     } else {
-      logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout');
+      logger.warn('SYSTEM', 'Live PID detected but could not read PID info — cannot verify health');
       return false;
     }
   }

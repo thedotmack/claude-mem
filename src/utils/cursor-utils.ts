@@ -7,8 +7,8 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
 import { join, basename } from 'path';
-import { spawnSync } from 'child_process';
 import { logger } from './logger.js';
+import { getProjectName as getProjectNameFromGit } from './project-name.js';
 
 // ============================================================================
 // Types
@@ -230,52 +230,11 @@ export function jsonGet(json: Record<string, unknown>, field: string, fallback: 
 /**
  * Get project name from workspace path (mirrors common.sh get_project_name)
  *
- * Uses git-common-dir for stable, worktree-aware naming when in a git repo.
- * Falls back to basename for non-git directories.
+ * Delegates to the canonical implementation in project-name.ts which handles
+ * git-common-dir for stable worktree-aware naming and falls back to basename.
  */
 export function getProjectName(workspacePath: string): string {
-  if (!workspacePath) return 'unknown-project';
-
-  // Handle Windows drive root (C:\ or C:)
-  const driveMatch = workspacePath.match(/^([A-Za-z]):[\\\/]?$/);
-  if (driveMatch) {
-    return `drive-${driveMatch[1].toUpperCase()}`;
-  }
-
-  // Try git-common-dir first for stable, worktree-aware project naming
-  try {
-    const result = spawnSync('git', ['-C', workspacePath, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
-      encoding: 'utf8',
-      timeout: 5000,
-      stdio: ['ignore', 'pipe', 'ignore']
-    });
-
-    if (result.status === 0 && result.stdout) {
-      const gitCommonDir = result.stdout.trim();
-      if (gitCommonDir) {
-        const { dirname } = require('path');
-        const parentOfGitDir = gitCommonDir.endsWith('.git')
-          ? dirname(gitCommonDir)
-          : gitCommonDir;
-        const projectName = basename(parentOfGitDir);
-        if (projectName && projectName !== '.' && projectName !== '/') {
-          return projectName;
-        }
-      }
-    }
-  } catch {
-    // Not in a git repo — fall through to basename
-  }
-
-  // Normalize to forward slashes for cross-platform support
-  const normalized = workspacePath.replace(/\\/g, '/');
-  const name = basename(normalized);
-
-  if (!name) {
-    return 'unknown-project';
-  }
-
-  return name;
+  return getProjectNameFromGit(workspacePath);
 }
 
 /**
