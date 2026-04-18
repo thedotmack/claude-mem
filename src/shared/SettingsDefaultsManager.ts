@@ -78,6 +78,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_DATABASE: string;
 }
 
+/** Prevents repeated console.log/warn on every get('CLAUDE_MEM_MODEL') call */
+const loggedProviderMappings = new Set<string>();
+
 export class SettingsDefaultsManager {
   /**
    * Default values for all settings
@@ -195,19 +198,32 @@ export class SettingsDefaultsManager {
     // If the user explicitly set CLAUDE_MEM_MODEL, trust their value
     if (process.env.CLAUDE_MEM_MODEL) return modelId;
 
+    // Only remap the model when it matches the hardcoded default.
+    // If the user explicitly configured a different model in settings.json,
+    // they know their provider format — don't override their choice.
+    if (modelId !== this.DEFAULTS.CLAUDE_MEM_MODEL) return modelId;
+
     const map = provider === 'bedrock' ? this.BEDROCK_MODEL_MAP : this.VERTEX_MODEL_MAP;
     const mapped = map[modelId];
 
+    const logKey = `${provider}|${modelId}`;
+
     if (mapped) {
-      console.log(`[SETTINGS] Cloud provider "${provider}" detected — mapping model "${modelId}" → "${mapped}"`);
+      if (!loggedProviderMappings.has(logKey)) {
+        loggedProviderMappings.add(logKey);
+        console.log(`[SETTINGS] Cloud provider "${provider}" detected — mapping model "${modelId}" → "${mapped}"`);
+      }
       return mapped;
     }
 
     // Model not in our mapping table — warn and pass through
-    console.warn(
-      `[SETTINGS] Cloud provider "${provider}" detected but no mapping for model "${modelId}". ` +
-      `Set CLAUDE_MEM_MODEL to your provider-specific model ID (e.g. ${provider === 'bedrock' ? '"anthropic.claude-sonnet-4-6-v1:0"' : '"claude-sonnet-4-6@20250514"'}).`
-    );
+    if (!loggedProviderMappings.has(logKey)) {
+      loggedProviderMappings.add(logKey);
+      console.warn(
+        `[SETTINGS] Cloud provider "${provider}" detected but no mapping for model "${modelId}". ` +
+        `Set CLAUDE_MEM_MODEL to your provider-specific model ID (e.g. ${provider === 'bedrock' ? '"anthropic.claude-sonnet-4-6-v1:0"' : '"claude-sonnet-4-6@20250514"'}).`
+      );
+    }
     return modelId;
   }
 
@@ -239,7 +255,7 @@ export class SettingsDefaultsManager {
 
     if (provider === 'bedrock') {
       // Bedrock uses AWS IAM — OAuth token and ANTHROPIC_API_KEY are not required
-      if (!process.env.AWS_ACCESS_KEY_ID && !process.env.AWS_PROFILE && !process.env.AWS_DEFAULT_REGION && !process.env.AWS_REGION) {
+      if (!process.env.AWS_ACCESS_KEY_ID && !process.env.AWS_PROFILE) {
         console.warn(
           '[SETTINGS] Bedrock detected (CLAUDE_CODE_USE_BEDROCK) but no AWS credentials found. ' +
           'Set AWS_PROFILE or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, and AWS_REGION.'
@@ -334,7 +350,10 @@ export class SettingsDefaultsManager {
           console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error);
         }
         // Still apply env var overrides even when file doesn't exist
-        return this.applyEnvOverrides(defaults);
+        const final = this.applyEnvOverrides(defaults);
+        final.CLAUDE_MEM_MODEL = this.resolveModelForCloudProvider(final.CLAUDE_MEM_MODEL);
+        this.validateCloudProviderAuth(final);
+        return final;
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
