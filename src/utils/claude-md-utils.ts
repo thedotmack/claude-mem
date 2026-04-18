@@ -95,6 +95,33 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
 }
 
 /**
+ * Maximum size for individual observation payloads before storage (Bug #1935).
+ */
+export const MAX_OBSERVATION_PAYLOAD_BYTES = 10 * 1024; // 10KB
+
+/**
+ * Truncate an observation payload string to the configured max size.
+ * Appends a truncation marker if content was clipped.
+ */
+export function truncateObservationPayload(payload: string): string {
+  if (payload.length <= MAX_OBSERVATION_PAYLOAD_BYTES) return payload;
+  return payload.slice(0, MAX_OBSERVATION_PAYLOAD_BYTES) + '\n[... truncated at 10KB]';
+}
+
+/**
+ * Sanitize content injected into tagged sections by escaping XML-like tags
+ * that could be confused with system tags (e.g. <claude-mem-context>).
+ * This prevents injection of fake system delimiters inside user content (Bug #1935).
+ */
+function sanitizeInjectedContent(content: string): string {
+  // Escape any tags that look like our system tags
+  return content
+    .replace(/<\/?claude-mem-context>/g, (match) => match.replace('<', '&lt;').replace('>', '&gt;'))
+    .replace(/<\/?system-reminder>/g, (match) => match.replace('<', '&lt;').replace('>', '&gt;'))
+    .replace(/<\/?private>/g, (match) => match.replace('<', '&lt;').replace('>', '&gt;'));
+}
+
+/**
  * Replace tagged content in existing file, preserving content outside tags.
  *
  * Handles three cases:
@@ -106,9 +133,12 @@ export function replaceTaggedContent(existingContent: string, newContent: string
   const startTag = '<claude-mem-context>';
   const endTag = '</claude-mem-context>';
 
+  // Sanitize injected content to prevent tag confusion (Bug #1935)
+  const sanitizedContent = sanitizeInjectedContent(newContent);
+
   // If no existing content, wrap new content in tags
   if (!existingContent) {
-    return `${startTag}\n${newContent}\n${endTag}`;
+    return `${startTag}\n${sanitizedContent}\n${endTag}`;
   }
 
   // If existing has tags, replace only tagged section
@@ -117,12 +147,12 @@ export function replaceTaggedContent(existingContent: string, newContent: string
 
   if (startIdx !== -1 && endIdx !== -1) {
     return existingContent.substring(0, startIdx) +
-      `${startTag}\n${newContent}\n${endTag}` +
+      `${startTag}\n${sanitizedContent}\n${endTag}` +
       existingContent.substring(endIdx + endTag.length);
   }
 
   // If no tags exist, append tagged content at end
-  return existingContent + `\n\n${startTag}\n${newContent}\n${endTag}`;
+  return existingContent + `\n\n${startTag}\n${sanitizedContent}\n${endTag}`;
 }
 
 /**

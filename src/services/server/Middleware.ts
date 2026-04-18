@@ -10,5 +10,8 @@
 export {
   createMiddleware,
   requireLocalhost,
-  summarizeRequestBody
+  requireAdminToken,
+  summarizeRequestBody,
+  rateLimiter,
+  getAdminToken
 } from '../worker/http/middleware.js';

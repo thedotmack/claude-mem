@@ -7,6 +7,7 @@ import { createHash } from 'crypto';
 import { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
 import { getProjectContext } from '../../../utils/project-name.js';
+import { truncateObservationPayload } from '../../../utils/claude-md-utils.js';
 import type { ObservationInput, StoreObservationResult } from './types.js';
 
 /** Deduplication window: observations with the same content hash within this window are skipped */
@@ -63,6 +64,14 @@ export function storeObservation(
 
   // Guard against empty project string (race condition where project isn't set yet)
   const resolvedProject = project || getProjectContext(process.cwd()).primary;
+
+  // Truncate large observation payloads before storage (Bug #1935)
+  if (observation.narrative) {
+    observation.narrative = truncateObservationPayload(observation.narrative);
+  }
+  if (observation.facts && observation.facts.length > 0) {
+    observation.facts = observation.facts.map(fact => truncateObservationPayload(fact));
+  }
 
   // Content-hash deduplication
   const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
