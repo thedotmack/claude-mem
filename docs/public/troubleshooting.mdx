@@ -32,8 +32,8 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 1. Check if worker is running on port 37777:
    ```bash
    lsof -i :37777
-   # or
-   npm run worker:status
+   # or (from any directory)
+   npx claude-mem status
    ```
 
 2. Verify worker is healthy:
@@ -43,19 +43,19 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 3. Check worker logs for errors:
    ```bash
-   npm run worker:logs
+   npx claude-mem logs
    ```
 
 4. Restart worker service:
    ```bash
-   npm run worker:restart
+   npx claude-mem restart
    ```
 
 5. Check for port conflicts:
    ```bash
    # If port 37777 is in use by another service
    export CLAUDE_MEM_WORKER_PORT=38000
-   npm run worker:restart
+   npx claude-mem restart
    ```
 
 ### Theme Toggle Not Persisting
@@ -101,7 +101,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 3. Verify worker is running:
    ```bash
-   npm run worker:status
+   npx claude-mem status
    ```
 
 4. Check for network/proxy issues blocking SSE
@@ -110,7 +110,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 5. Restart worker and refresh browser:
    ```bash
-   npm run worker:restart
+   npx claude-mem restart
    ```
 
 ### Chroma/Python Dependency Issues (v5.0.0+)
@@ -181,23 +181,23 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 1. Check worker status:
    ```bash
-   npm run worker:status
+   npx claude-mem status
    ```
 
 2. Try starting manually:
    ```bash
-   npm run worker:start
+   npx claude-mem start
    ```
 
 3. Check worker logs for errors:
    ```bash
-   npm run worker:logs
+   npx claude-mem logs
    ```
 
 4. Full reset:
    ```bash
-   npm run worker:stop
-   npm run worker:start
+   npx claude-mem stop
+   npx claude-mem start
    ```
 
 5. Verify Bun is installed:
@@ -225,7 +225,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 3. Or use a different port:
    ```bash
    export CLAUDE_MEM_WORKER_PORT=38000
-   npm run worker:restart
+   npx claude-mem restart
    ```
 
 4. Verify new port:
@@ -241,12 +241,12 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 1. Check error logs:
    ```bash
-   npm run worker:logs
+   npx claude-mem logs
    ```
 
 2. Check worker status:
    ```bash
-   npm run worker:status
+   npx claude-mem status
    ```
 
 3. Check database for corruption:
@@ -267,12 +267,12 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 1. Check worker is running:
    ```bash
-   npm run worker:status
+   npx claude-mem status
    ```
 
 2. Check worker logs:
    ```bash
-   npm run worker:logs
+   npx claude-mem logs
    ```
 
 3. Verify database has observations:
@@ -282,7 +282,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 4. Restart worker:
    ```bash
-   npm run worker:restart
+   npx claude-mem restart
    ```
 
 ### Manual Recovery for Stuck Observations
@@ -385,7 +385,7 @@ Messages progress through these states:
 2. Use the CLI tool for interactive sessions (provides feedback)
 3. Use the HTTP API for automation/scripting
 4. Start with a low session limit (5-10) to avoid overwhelming the worker
-5. Monitor worker logs during recovery: `npm run worker:logs`
+5. Monitor worker logs during recovery: `npx claude-mem logs`
 6. Check recently processed messages to confirm recovery worked
 
 #### Troubleshooting Recovery Issues
@@ -430,7 +430,7 @@ If recovery fails or messages remain stuck:
 
 5. **Check worker logs for SDK errors**:
    ```bash
-   npm run worker:logs | grep -i error
+   npx claude-mem logs | grep -i error
    ```
 
 #### Understanding the Queue Table
@@ -550,7 +550,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 2. Check worker is running (prevents timeout waiting for worker):
    ```bash
-   npm run worker:status
+   npx claude-mem status
    ```
 
 3. Check database size (large database = slow queries):
@@ -596,7 +596,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 1. Close all connections:
    ```bash
-   npm run worker:stop
+   npx claude-mem stop
    ```
 
 2. Check for stale locks:
@@ -611,7 +611,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 4. Restart worker:
    ```bash
-   npm run worker:start
+   npx claude-mem start
    ```
 
 ### Database Corruption
@@ -638,7 +638,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 4. Nuclear option - recreate database:
    ```bash
    rm ~/.claude-mem/claude-mem.db
-   npm run worker:start  # Will recreate schema
+   npx claude-mem start  # Will recreate schema
    ```
 
 ### FTS5 Search Not Working
@@ -846,12 +846,12 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 1. Check current usage:
    ```bash
-   npm run worker:status
+   npx claude-mem status
    ```
 
 2. Restart worker:
    ```bash
-   npm run worker:restart
+   npx claude-mem restart
    ```
 
 3. Clean up old data (see "Database Too Large" above)
@@ -928,8 +928,8 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 ```bash
 export DEBUG=claude-mem:*
-npm run worker:restart
-npm run worker:logs
+npx claude-mem restart
+npx claude-mem logs
 ```
 
 ### Check Correlation IDs
@@ -949,10 +949,10 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 ```bash
 # Check if worker is running
-npm run worker:status
+npx claude-mem status
 
 # View logs
-npm run worker:logs
+npx claude-mem logs
 
 # Check port file
 cat ~/.claude-mem/worker.port
@@ -988,7 +988,7 @@ SELECT created_at, tool_name FROM observations ORDER BY created_at DESC LIMIT 10
 
 **Cause**: Worker not running or port mismatch.
 
-**Solution**: Restart worker with `npm run worker:restart`.
+**Solution**: Restart worker with `npx claude-mem restart`.
 
 ### "Database is locked"
 
@@ -1020,7 +1020,7 @@ If none of these solutions work:
 
 1. **Check logs**:
    ```bash
-   npm run worker:logs
+   npx claude-mem logs
    ```
 
 2. **Create issue**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)

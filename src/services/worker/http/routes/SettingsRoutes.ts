@@ -9,7 +9,7 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
-import { getPackageRoot } from '../../../../shared/paths.js';
+import { getPackageRoot, MARKETPLACE_ROOT } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
 import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js';
@@ -186,6 +186,15 @@ export class SettingsRoutes extends BaseRouteHandler {
       return;
     }
 
+    // Check if marketplace directory exists before attempting git operations
+    if (!existsSync(MARKETPLACE_ROOT)) {
+      res.json({
+        success: false,
+        error: 'Marketplace directory not found. This is a cache-only installation. Use `npx claude-mem install` to update.'
+      });
+      return;
+    }
+
     // Validate branch name
     const allowedBranches = ['main', 'beta/7.0', 'feature/bun-executable'];
     if (!allowedBranches.includes(branch)) {
@@ -216,6 +225,15 @@ export class SettingsRoutes extends BaseRouteHandler {
    */
   private handleUpdateBranch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     logger.info('WORKER', 'Branch update requested');
+
+    // Check if marketplace directory exists before attempting git operations
+    if (!existsSync(MARKETPLACE_ROOT)) {
+      res.json({
+        success: false,
+        error: 'Marketplace directory not found. This is a cache-only installation. Use `npx claude-mem install` to update.'
+      });
+      return;
+    }
 
     const result = await pullUpdates();
 

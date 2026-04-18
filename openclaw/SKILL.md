@@ -80,7 +80,7 @@ If claude-mem is installed as a Claude Code plugin (at `~/.claude/plugins/market
 
 ```bash
 cd ~/.claude/plugins/marketplaces/thedotmack
-npm run worker:restart
+npx claude-mem restart
 ```
 
 Verify:
@@ -90,7 +90,7 @@ curl http://localhost:37777/api/health
 
 **Got `{"status":"ok"}`?** You're set. Skip to Step 3.
 
-**Still not working?** Check `npm run worker:status` for error details, or check that bun is installed and on your PATH.
+**Still not working?** Check `npx claude-mem status` for error details, or check that bun is installed and on your PATH.
 
 #### If there's no Claude Code installation
 
@@ -98,7 +98,7 @@ Run the worker from the cloned repo:
 
 ```bash
 cd /opt/claude-mem  # wherever you cloned it
-npm run worker:start
+npx claude-mem start
 ```
 
 Verify:
@@ -110,9 +110,9 @@ curl http://localhost:37777/api/health
 
 **Still not working?** Debug steps:
 - Check that bun is installed: `bun --version`
-- Check the worker status: `npm run worker:status`
+- Check the worker status: `npx claude-mem status`
 - Check if something else is using port 37777: `lsof -i :37777`
-- Check logs: `npm run worker:logs` (if available)
+- Check logs: `npx claude-mem logs` (if available)
 - Try running it directly to see errors: `bun plugin/scripts/worker-service.cjs start`
 
 ### Step 3: Add the Plugin to Your Gateway
@@ -418,8 +418,8 @@ A background service connects to the worker's SSE stream and forwards `new_obser
 | Problem | What to check |
 |---------|---------------|
 | Worker health check fails | Is bun installed? (`bun --version`). Is something else on port 37777? (`lsof -i :37777`). Try running directly: `bun plugin/scripts/worker-service.cjs start` |
-| Worker started from Claude Code install but not responding | Check `cd ~/.claude/plugins/marketplaces/thedotmack && npm run worker:status`. May need `npm run worker:restart`. |
-| Worker started from cloned repo but not responding | Check `cd /path/to/claude-mem && npm run worker:status`. Make sure you ran `npm install && npm run build` first. |
+| Worker started from Claude Code install but not responding | Check `cd ~/.claude/plugins/marketplaces/thedotmack && npx claude-mem status`. May need `npx claude-mem restart`. |
+| Worker started from cloned repo but not responding | Check `cd /path/to/claude-mem && npx claude-mem status`. Make sure you ran `npm install && npm run build` first. |
 | No context in agent system prompt | Check that `syncMemoryFile` is not set to `false`. Check that the agent's ID is not in `syncMemoryFileExclude`. Verify the worker is running and has observations. |
 | Observations not being recorded | Check gateway logs for `[claude-mem]` messages. The worker must be running and reachable on localhost:37777. |
 | Feed shows `disconnected` | Worker's `/stream` endpoint not reachable. Check `workerPort` matches the actual worker port. |

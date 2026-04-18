@@ -7,7 +7,8 @@
 
 import { execSync, spawnSync } from 'child_process';
 import { existsSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
 
@@ -102,19 +103,43 @@ function execNpm(args: string[], timeoutMs: number = NPM_INSTALL_TIMEOUT_MS): st
 }
 
 /**
+ * Detect if the plugin was installed via Claude Code's cache layout
+ * (e.g., ~/.claude/plugins/cache/thedotmack/claude-mem/<version>/) rather than git clone.
+ *
+ * NOTE: INSTALLED_PLUGIN_PATH is an alias for MARKETPLACE_ROOT which always
+ * resolves to ~/.claude/plugins/marketplaces/thedotmack — it never contains
+ * '/cache/'. We must check the actual runtime module path instead.
+ */
+function isCacheLayoutInstall(): boolean {
+  // Derive the actual path this module is running from at runtime
+  let runtimeDir: string;
+  if (typeof __dirname !== 'undefined') {
+    runtimeDir = __dirname;
+  } else {
+    runtimeDir = dirname(fileURLToPath(import.meta.url));
+  }
+
+  const normalizedRuntimePath = runtimeDir.replace(/\\/g, '/');
+  return normalizedRuntimePath.includes('/cache/thedotmack/claude-mem/');
+}
+
+/**
  * Get current branch information
  */
 export function getBranchInfo(): BranchInfo {
   // Check if git repo exists
   const gitDir = join(INSTALLED_PLUGIN_PATH, '.git');
   if (!existsSync(gitDir)) {
+    const isCacheLayout = isCacheLayoutInstall();
     return {
       branch: null,
       isBeta: false,
       isGitRepo: false,
       isDirty: false,
       canSwitch: false,
-      error: 'Installed plugin is not a git repository'
+      error: isCacheLayout
+        ? 'Plugin installed via cache layout. Use `npx claude-mem install` or Claude Code plugin UI to update.'
+        : 'Installed plugin is not a git repository'
     };
   }
 
@@ -262,7 +287,7 @@ export async function pullUpdates(): Promise<SwitchResult> {
   if (!info.isGitRepo || !info.branch) {
     return {
       success: false,
-      error: 'Cannot pull updates: not a git repository'
+      error: info.error || 'Cannot pull updates: not a git repository'
     };
   }
 
