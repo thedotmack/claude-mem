@@ -340,20 +340,20 @@ function installUv() {
 }
 
 /**
- * Add shell alias for claude-mem command
+ * Add shell alias for claude-mem command.
+ * Uses a version-agnostic path that resolves the latest installed version at runtime,
+ * so the alias survives plugin upgrades without needing to re-source shell config.
  */
 function installCLI() {
-  const WORKER_CLI = join(ROOT, 'scripts', 'worker-service.cjs');
   const bunPath = getBunPath() || 'bun';
-  const aliasLine = `alias claude-mem='${bunPath} "${WORKER_CLI}"'`;
-  const markerPath = join(ROOT, '.cli-installed');
-
-  // Skip if already installed
-  if (existsSync(markerPath)) return;
+  // Version-agnostic: resolve the latest installed version at runtime
+  const versionAgnosticScript = `$(ls -d ~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/worker-service.cjs 2>/dev/null | sort -V | tail -1 || echo "${join(ROOT, 'scripts', 'worker-service.cjs')}")`;
+  const aliasLine = `alias claude-mem='${bunPath} "${versionAgnosticScript}"'`;
 
   try {
     if (IS_WINDOWS) {
       // Windows: Add to PATH via PowerShell profile
+      const WORKER_CLI = join(ROOT, 'scripts', 'worker-service.cjs');
       const profilePath = join(process.env.USERPROFILE || homedir(), 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1');
       const profileDir = join(process.env.USERPROFILE || homedir(), 'Documents', 'PowerShell');
       const functionDef = `function claude-mem { & "${bunPath}" "${WORKER_CLI}" $args }\n`;
@@ -363,13 +363,18 @@ function installCLI() {
       }
 
       const existingContent = existsSync(profilePath) ? readFileSync(profilePath, 'utf-8') : '';
-      if (!existingContent.includes('function claude-mem')) {
+      if (existingContent.includes('function claude-mem')) {
+        // Update existing function definition
+        const updated = existingContent.replace(/function claude-mem \{[^\n]*\}\n?/, functionDef);
+        writeFileSync(profilePath, updated);
+        console.error(`✅ PowerShell function updated in profile`);
+      } else {
         writeFileSync(profilePath, existingContent + '\n' + functionDef);
         console.error(`✅ PowerShell function added to profile`);
-        console.error('   Restart your terminal to use: claude-mem <command>');
       }
+      console.error('   Restart your terminal to use: claude-mem <command>');
     } else {
-      // Unix: Add alias to shell configs
+      // Unix: Add or update alias in shell configs
       const shellConfigs = [
         join(homedir(), '.bashrc'),
         join(homedir(), '.zshrc')
@@ -378,7 +383,12 @@ function installCLI() {
       for (const config of shellConfigs) {
         if (existsSync(config)) {
           const content = readFileSync(config, 'utf-8');
-          if (!content.includes('alias claude-mem=')) {
+          if (content.includes('alias claude-mem=')) {
+            // Update existing alias to use version-agnostic path
+            const updated = content.replace(/alias claude-mem='[^']*'/g, aliasLine);
+            writeFileSync(config, updated);
+            console.error(`✅ Alias updated in ${config}`);
+          } else {
             writeFileSync(config, content + '\n' + aliasLine + '\n');
             console.error(`✅ Alias added to ${config}`);
           }
@@ -386,11 +396,9 @@ function installCLI() {
       }
       console.error('   Restart your terminal to use: claude-mem <command>');
     }
-
-    writeFileSync(markerPath, new Date().toISOString());
   } catch (error) {
     console.error(`⚠️  Could not add shell alias: ${error.message}`);
-    console.error(`   Use directly: ${bunPath} "${WORKER_CLI}" <command>`);
+    console.error(`   Use directly: ${bunPath} "${join(ROOT, 'scripts', 'worker-service.cjs')}" <command>`);
   }
 }
 

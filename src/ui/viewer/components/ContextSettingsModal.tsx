@@ -355,12 +355,35 @@ export function ContextSettingsModal({
                   tooltip="Claude model used for generating observations"
                 >
                   <select
-                    value={formState.CLAUDE_MEM_MODEL || 'haiku'}
+                    value={(() => {
+                      const model = formState.CLAUDE_MEM_MODEL || 'haiku';
+                      const knownModels = [
+                        'claude-haiku-4-5-20251001', 'haiku',
+                        'claude-sonnet-4-6', 'sonnet',
+                        'claude-opus-4-6', 'opus'
+                      ];
+                      return knownModels.includes(model) ? model : 'custom';
+                    })()}
                     onChange={(e) => updateSetting('CLAUDE_MEM_MODEL', e.target.value)}
                   >
-                    <option value="haiku">haiku (fastest)</option>
-                    <option value="sonnet">sonnet (balanced)</option>
-                    <option value="opus">opus (highest quality)</option>
+                    <option value="claude-haiku-4-5-20251001">claude-haiku-4-5 (fastest)</option>
+                    <option value="claude-sonnet-4-6">claude-sonnet-4-6 (balanced)</option>
+                    <option value="claude-opus-4-6">claude-opus-4-6 (highest quality)</option>
+                    <option value="haiku">haiku (legacy alias)</option>
+                    <option value="sonnet">sonnet (legacy alias)</option>
+                    <option value="opus">opus (legacy alias)</option>
+                    {(() => {
+                      const model = formState.CLAUDE_MEM_MODEL || '';
+                      const knownModels = [
+                        'claude-haiku-4-5-20251001', 'haiku',
+                        'claude-sonnet-4-6', 'sonnet',
+                        'claude-opus-4-6', 'opus'
+                      ];
+                      if (model && !knownModels.includes(model)) {
+                        return <option value="custom">custom: {model}</option>;
+                      }
+                      return null;
+                    })()}
                   </select>
                 </FormField>
               )}
