@@ -44,8 +44,10 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/observations/by-file', this.handleGetObservationsByFile.bind(this));
     app.post('/api/observations/batch', this.handleGetObservationsByIds.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
+    app.post('/api/sessions/batch', this.handleGetSessionSummariesByIds.bind(this));
     app.post('/api/sdk-sessions/batch', this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
+    app.post('/api/prompts/batch', this.handleGetPromptsByIds.bind(this));
 
     // Metadata endpoints
     app.get('/api/stats', this.handleGetStats.bind(this));
@@ -188,6 +190,40 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   /**
+   * Get session summaries by array of IDs
+   * POST /api/sessions/batch
+   * Body: { ids: number[], orderBy?: 'date_desc' | 'date_asc', limit?: number, project?: string }
+   */
+  private handleGetSessionSummariesByIds = this.wrapHandler((req: Request, res: Response): void => {
+    let { ids, orderBy, limit, project } = req.body;
+
+    // Coerce string-encoded arrays from MCP clients (e.g. "[1,2,3]" or "1,2,3")
+    if (typeof ids === 'string') {
+      try { ids = JSON.parse(ids); } catch { ids = ids.split(',').map(Number); }
+    }
+
+    if (!ids || !Array.isArray(ids)) {
+      this.badRequest(res, 'ids must be an array of numbers');
+      return;
+    }
+
+    if (ids.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    if (!ids.every((id: any) => typeof id === 'number' && Number.isInteger(id))) {
+      this.badRequest(res, 'All ids must be integers');
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const sessions = store.getSessionSummariesByIds(ids, { orderBy, limit, project });
+
+    res.json(sessions);
+  });
+
+  /**
    * Get SDK sessions by SDK session IDs
    * POST /api/sdk-sessions/batch
    * Body: { memorySessionIds: string[] }
@@ -227,6 +263,40 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     res.json(prompts[0]);
+  });
+
+  /**
+   * Get user prompts by array of IDs
+   * POST /api/prompts/batch
+   * Body: { ids: number[], orderBy?: 'date_desc' | 'date_asc', limit?: number, project?: string }
+   */
+  private handleGetPromptsByIds = this.wrapHandler((req: Request, res: Response): void => {
+    let { ids, orderBy, limit, project } = req.body;
+
+    // Coerce string-encoded arrays from MCP clients (e.g. "[1,2,3]" or "1,2,3")
+    if (typeof ids === 'string') {
+      try { ids = JSON.parse(ids); } catch { ids = ids.split(',').map(Number); }
+    }
+
+    if (!ids || !Array.isArray(ids)) {
+      this.badRequest(res, 'ids must be an array of numbers');
+      return;
+    }
+
+    if (ids.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    if (!ids.every((id: any) => typeof id === 'number' && Number.isInteger(id))) {
+      this.badRequest(res, 'All ids must be integers');
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const prompts = store.getUserPromptsByIds(ids, { orderBy, limit, project });
+
+    res.json(prompts);
   });
 
   /**

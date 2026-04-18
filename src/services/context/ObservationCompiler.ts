@@ -315,11 +315,12 @@ export function buildTimeline(
     ...summaries.map(summary => ({ type: 'summary' as const, data: summary }))
   ];
 
-  // Sort chronologically
+  // Sort newest-first so that when Claude Code truncates SessionStart output
+  // to 2KB, the user sees the most recent (and most relevant) data
   timeline.sort((a, b) => {
     const aEpoch = a.type === 'observation' ? a.data.created_at_epoch : a.data.displayEpoch;
     const bEpoch = b.type === 'observation' ? b.data.created_at_epoch : b.data.displayEpoch;
-    return aEpoch - bEpoch;
+    return bEpoch - aEpoch;
   });
 
   return timeline;

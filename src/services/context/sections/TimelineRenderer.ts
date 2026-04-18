@@ -30,11 +30,11 @@ export function groupTimelineByDay(timeline: TimelineItem[]): Map<string, Timeli
     itemsByDay.get(day)!.push(item);
   }
 
-  // Sort days chronologically
+  // Sort days newest-first so truncated output shows recent data
   const sortedEntries = Array.from(itemsByDay.entries()).sort((a, b) => {
     const aDate = new Date(a[0]).getTime();
     const bDate = new Date(b[0]).getTime();
-    return aDate - bDate;
+    return bDate - aDate;
   });
 
   return new Map(sortedEntries);

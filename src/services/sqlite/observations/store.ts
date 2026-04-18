@@ -81,8 +81,11 @@ export function storeObservation(
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
-  // Guard against empty project string (race condition where project isn't set yet)
-  const resolvedProject = project || getProjectContext(process.cwd()).primary;
+  // Guard against empty project string (race condition where project isn't set yet).
+  // Use 'unknown-project' instead of getProjectContext(process.cwd()) because the
+  // worker process's cwd is not the user's project directory, which would cause a
+  // project-key mismatch between writes and reads (#1918).
+  const resolvedProject = project || 'unknown-project';
 
   // Truncate large observation payloads before storage (Bug #1935)
   if (observation.narrative) {

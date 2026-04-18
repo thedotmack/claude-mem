@@ -225,14 +225,14 @@ async function ensureWorkerConnection(): Promise<boolean> {
     if (!started) {
       logger.error(
         'SYSTEM',
-        'Worker auto-start returned false — MCP tools that require the worker (search, timeline, get_observations) will fail until the worker is running. Check earlier log lines for the specific failure reason (Bun not found, missing worker bundle, port conflict, etc.).'
+        'Worker auto-start returned false — MCP tools that require the worker (search, timeline, get_observations, get_sessions, get_prompts) will fail until the worker is running. Check earlier log lines for the specific failure reason (Bun not found, missing worker bundle, port conflict, etc.).'
       );
     }
     return started;
   } catch (error) {
     logger.error(
       'SYSTEM',
-      'Worker auto-start threw — MCP tools that require the worker (search, timeline, get_observations) will fail until the worker is running.',
+      'Worker auto-start threw — MCP tools that require the worker (search, timeline, get_observations, get_sessions, get_prompts) will fail until the worker is running.',
       undefined,
       error as Error
     );
@@ -250,7 +250,10 @@ const tools = [
     description: `3-LAYER WORKFLOW (ALWAYS FOLLOW):
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
-3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
+3. Fetch full details ONLY for filtered IDs using the matching tool:
+   - Observation IDs (emoji-prefixed): get_observations([IDs])
+   - Session IDs (S-prefixed, e.g. S42): get_sessions([IDs])
+   - Prompt IDs (from prompt results): get_prompts([IDs])
 NEVER fetch full details without filtering first. 10x token savings.`,
     inputSchema: {
       type: 'object',
@@ -271,9 +274,11 @@ NEVER fetch full details without filtering first. 10x token savings.`,
    \`timeline(anchor=<ID>, depth_before=3, depth_after=3)\`
    Returns: Chronological context showing what was happening
 
-3. **Fetch** - Get full details ONLY for relevant IDs
-   \`get_observations(ids=[...])\`  # ALWAYS batch for 2+ items
-   Returns: Complete details (~500-1000 tokens/result)
+3. **Fetch** - Get full details ONLY for relevant IDs (use the right tool for each ID type)
+   - \`get_observations(ids=[...])\` for observation IDs (emoji-prefixed in timeline)
+   - \`get_sessions(ids=[...])\` for session IDs (S-prefixed, e.g. S42)
+   - \`get_prompts(ids=[...])\` for user prompt IDs
+   ALWAYS batch for 2+ items. Returns ~500-1000 tokens/result.
 
 **Why:** 10x token savings. Never fetch full details without filtering first.`
       }]
@@ -323,7 +328,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'get_observations',
-    description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project',
+    description: 'Fetch full observation details by IDs (numeric IDs from search results prefixed with observation emoji icons). Params: ids (array of observation IDs, required), orderBy, limit, project',
     inputSchema: {
       type: 'object',
       properties: {
@@ -338,6 +343,44 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       return await callWorkerAPIPost('/api/observations/batch', args);
+    }
+  },
+  {
+    name: 'get_sessions',
+    description: 'Fetch full session summary details by IDs (numeric IDs from timeline prefixed with "S", e.g. S42). Params: ids (array of session summary IDs, required), orderBy, limit, project',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'number' },
+          description: 'Array of session summary IDs to fetch (required)'
+        }
+      },
+      required: ['ids'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/sessions/batch', args);
+    }
+  },
+  {
+    name: 'get_prompts',
+    description: 'Fetch full user prompt details by IDs (numeric IDs from search results tagged as prompts). Params: ids (array of user_prompt IDs, required), orderBy, limit, project',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'number' },
+          description: 'Array of user prompt IDs to fetch (required)'
+        }
+      },
+      required: ['ids'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/prompts/batch', args);
     }
   },
   {

@@ -319,17 +319,25 @@ export function resolveGrammarPathWithFallback(language: string, projectRoot?: s
 
 // --- Query patterns (declarative symbol extraction) ---
 
-const QUERIES: Record<string, string> = {
-  jsts: `
+// Shared base for JS and TS: function, class, method, import, export
+const JSTS_BASE_QUERY = `
 (function_declaration name: (identifier) @name) @func
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
 (class_declaration name: (type_identifier) @name) @cls
 (method_definition name: (property_identifier) @name) @method
+(import_statement) @imp
+(export_statement) @exp
+`;
+
+const QUERIES: Record<string, string> = {
+  // JavaScript: only node types that exist in tree-sitter-javascript grammar
+  javascript: JSTS_BASE_QUERY,
+
+  // TypeScript: extends JS base with TS-only node types (interface, type alias, enum)
+  typescript: `${JSTS_BASE_QUERY}
 (interface_declaration name: (type_identifier) @name) @iface
 (type_alias_declaration name: (type_identifier) @name) @tdef
 (enum_declaration name: (identifier) @name) @enm
-(import_statement) @imp
-(export_statement) @exp
 `,
 
   python: `
@@ -490,9 +498,10 @@ const QUERIES: Record<string, string> = {
 function getQueryKey(language: string): string {
   switch (language) {
     case "javascript":
+      return "javascript";
     case "typescript":
     case "tsx":
-      return "jsts";
+      return "typescript";
     case "python": return "python";
     case "go": return "go";
     case "rust": return "rust";
