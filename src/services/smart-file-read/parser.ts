@@ -858,8 +858,57 @@ export function parseFile(content: string, filePath: string, projectRoot?: strin
 
   const grammarPath = resolveGrammarPathWithFallback(language, projectRoot);
   if (!grammarPath) {
+    // No tree-sitter grammar available — produce a basic fallback outline
+    // by scanning for lines that look like headers (e.g., Markdown-style #,
+    // ALL-CAPS lines, or lines ending with a colon that resemble section titles).
+    const fallbackSymbols: CodeSymbol[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      // Markdown-style headers
+      const headerMatch = trimmed.match(/^(#{1,6})\s+(.+)/);
+      if (headerMatch) {
+        fallbackSymbols.push({
+          name: headerMatch[2],
+          kind: "section",
+          signature: trimmed,
+          lineStart: i + 1,
+          lineEnd: i + 1,
+          exported: false,
+        });
+        continue;
+      }
+
+      // ALL-CAPS lines (likely section headers in plain text)
+      if (trimmed.length >= 3 && trimmed.length <= 80 && /^[A-Z][A-Z0-9 _\-]+$/.test(trimmed)) {
+        fallbackSymbols.push({
+          name: trimmed,
+          kind: "section",
+          signature: trimmed,
+          lineStart: i + 1,
+          lineEnd: i + 1,
+          exported: false,
+        });
+        continue;
+      }
+
+      // Lines ending with colon (section-title style)
+      if (trimmed.endsWith(":") && trimmed.length >= 3 && trimmed.length <= 80 && !trimmed.includes("  ")) {
+        fallbackSymbols.push({
+          name: trimmed.slice(0, -1),
+          kind: "section",
+          signature: trimmed,
+          lineStart: i + 1,
+          lineEnd: i + 1,
+          exported: false,
+        });
+      }
+    }
+
     return {
-      filePath, language, symbols: [], imports: [],
+      filePath, language, symbols: fallbackSymbols, imports: [],
       totalLines: lines.length, foldedTokenEstimate: 50,
     };
   }
@@ -916,13 +965,10 @@ export function parseFilesBatch(
   for (const [language, groupFiles] of languageGroups) {
     const grammarPath = resolveGrammarPathWithFallback(language, projectRoot);
     if (!grammarPath) {
-      // No grammar — return empty results for these files
+      // No tree-sitter grammar — use fallback parser for these files
       for (const file of groupFiles) {
-        const lines = file.content.split("\n");
-        results.set(file.relativePath, {
-          filePath: file.relativePath, language, symbols: [], imports: [],
-          totalLines: lines.length, foldedTokenEstimate: 50,
-        });
+        const fallbackResult = parseFile(file.content, file.relativePath, projectRoot);
+        results.set(file.relativePath, fallbackResult);
       }
       continue;
     }
