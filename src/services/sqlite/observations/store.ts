@@ -6,7 +6,6 @@
 import { createHash } from 'crypto';
 import { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
-import { getProjectContext } from '../../../utils/project-name.js';
 import type { ObservationInput, StoreObservationResult } from './types.js';
 
 /** Deduplication window: observations with the same content hash within this window are skipped */
@@ -61,8 +60,11 @@ export function storeObservation(
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
-  // Guard against empty project string (race condition where project isn't set yet)
-  const resolvedProject = project || getProjectContext(process.cwd()).primary;
+  // Guard against empty project string (race condition where project isn't set yet).
+  // Use 'unknown-project' instead of getProjectContext(process.cwd()) because the
+  // worker process's cwd is not the user's project directory, which would cause a
+  // project-key mismatch between writes and reads (#1918).
+  const resolvedProject = project || 'unknown-project';
 
   // Content-hash deduplication
   const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
