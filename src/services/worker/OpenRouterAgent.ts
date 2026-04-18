@@ -370,6 +370,15 @@ export class OpenRouterAgent {
       estimatedTokens
     });
 
+    // Validate API key before making the request to produce a clear error
+    // instead of a cryptic 401 with "Bearer " (empty token)
+    if (!apiKey) {
+      throw new Error(
+        'OpenRouter API key not configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in ~/.claude-mem/settings.json ' +
+        'or set OPENROUTER_API_KEY in ~/.claude-mem/.env'
+      );
+    }
+
     const response = await fetch(OPENROUTER_API_URL, {
       method: 'POST',
       headers: {

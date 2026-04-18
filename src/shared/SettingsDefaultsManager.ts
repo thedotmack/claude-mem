@@ -150,6 +150,110 @@ export class SettingsDefaultsManager {
   };
 
   /**
+   * Cloud provider model ID mappings.
+   * When CLAUDE_CODE_USE_BEDROCK or CLAUDE_CODE_USE_VERTEX are set,
+   * the default Anthropic model identifier must be translated to the
+   * provider-specific format.
+   */
+  private static readonly BEDROCK_MODEL_MAP: Record<string, string> = {
+    'claude-sonnet-4-6': 'anthropic.claude-sonnet-4-6-v1:0',
+    'claude-sonnet-4-5': 'anthropic.claude-sonnet-4-5-v1:0',
+    'claude-haiku-3-5': 'anthropic.claude-haiku-3-5-v1:0',
+  };
+
+  private static readonly VERTEX_MODEL_MAP: Record<string, string> = {
+    'claude-sonnet-4-6': 'claude-sonnet-4-6@20250514',
+    'claude-sonnet-4-5': 'claude-sonnet-4-5@20250514',
+    'claude-haiku-3-5': 'claude-haiku-3-5@20250514',
+  };
+
+  /**
+   * Detect active cloud provider from environment variables.
+   * Returns 'bedrock', 'vertex', or null for direct Anthropic API.
+   */
+  static detectCloudProvider(): 'bedrock' | 'vertex' | null {
+    if (process.env.CLAUDE_CODE_USE_BEDROCK === '1' || process.env.CLAUDE_CODE_USE_BEDROCK === 'true') {
+      return 'bedrock';
+    }
+    if (process.env.CLAUDE_CODE_USE_VERTEX === '1' || process.env.CLAUDE_CODE_USE_VERTEX === 'true') {
+      return 'vertex';
+    }
+    return null;
+  }
+
+  /**
+   * Map a model identifier to its cloud-provider-specific equivalent.
+   * If the user has explicitly set CLAUDE_MEM_MODEL via env or settings, that value
+   * is used as-is (the user knows their provider format).
+   * Otherwise, when a cloud provider is detected, the default model ID is translated.
+   * If no mapping exists, a warning is logged suggesting the user set CLAUDE_MEM_MODEL.
+   */
+  static resolveModelForCloudProvider(modelId: string): string {
+    const provider = this.detectCloudProvider();
+    if (!provider) return modelId;
+
+    // If the user explicitly set CLAUDE_MEM_MODEL, trust their value
+    if (process.env.CLAUDE_MEM_MODEL) return modelId;
+
+    const map = provider === 'bedrock' ? this.BEDROCK_MODEL_MAP : this.VERTEX_MODEL_MAP;
+    const mapped = map[modelId];
+
+    if (mapped) {
+      console.log(`[SETTINGS] Cloud provider "${provider}" detected — mapping model "${modelId}" → "${mapped}"`);
+      return mapped;
+    }
+
+    // Model not in our mapping table — warn and pass through
+    console.warn(
+      `[SETTINGS] Cloud provider "${provider}" detected but no mapping for model "${modelId}". ` +
+      `Set CLAUDE_MEM_MODEL to your provider-specific model ID (e.g. ${provider === 'bedrock' ? '"anthropic.claude-sonnet-4-6-v1:0"' : '"claude-sonnet-4-6@20250514"'}).`
+    );
+    return modelId;
+  }
+
+  /**
+   * Check cloud provider auth readiness at startup.
+   * When Vertex AI is detected, OAuth/ANTHROPIC_API_KEY validation should be skipped
+   * because Vertex uses Google Cloud credentials instead.
+   * Logs a warning if the expected credentials for the detected provider are missing.
+   */
+  static validateCloudProviderAuth(settings: SettingsDefaults): void {
+    const provider = this.detectCloudProvider();
+    if (!provider) return;
+
+    if (provider === 'vertex') {
+      // Vertex AI uses Google Cloud ADC — OAuth token and ANTHROPIC_API_KEY are not required
+      if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && !process.env.GOOGLE_CLOUD_PROJECT) {
+        console.warn(
+          '[SETTINGS] Vertex AI detected (CLAUDE_CODE_USE_VERTEX) but neither GOOGLE_APPLICATION_CREDENTIALS ' +
+          'nor GOOGLE_CLOUD_PROJECT is set. Vertex auth may fail. Run "gcloud auth application-default login" ' +
+          'or set GOOGLE_APPLICATION_CREDENTIALS to your service account key.'
+        );
+      }
+      // Override auth method: CLI OAuth is irrelevant for Vertex
+      if (settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD === 'cli') {
+        settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD = 'api';
+        console.log('[SETTINGS] Vertex AI detected — auth method overridden from "cli" to "api" (Google ADC used instead of Anthropic OAuth)');
+      }
+    }
+
+    if (provider === 'bedrock') {
+      // Bedrock uses AWS IAM — OAuth token and ANTHROPIC_API_KEY are not required
+      if (!process.env.AWS_ACCESS_KEY_ID && !process.env.AWS_PROFILE && !process.env.AWS_DEFAULT_REGION && !process.env.AWS_REGION) {
+        console.warn(
+          '[SETTINGS] Bedrock detected (CLAUDE_CODE_USE_BEDROCK) but no AWS credentials found. ' +
+          'Set AWS_PROFILE or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, and AWS_REGION.'
+        );
+      }
+      // Override auth method: CLI OAuth is irrelevant for Bedrock
+      if (settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD === 'cli') {
+        settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD = 'api';
+        console.log('[SETTINGS] Bedrock detected — auth method overridden from "cli" to "api" (AWS IAM used instead of Anthropic OAuth)');
+      }
+    }
+  }
+
+  /**
    * Get all defaults as an object
    */
   static getAllDefaults(): SettingsDefaults {
@@ -165,7 +269,12 @@ export class SettingsDefaultsManager {
    * respects environment variable overrides that were previously ignored.
    */
   static get(key: keyof SettingsDefaults): string {
-    return process.env[key] ?? this.DEFAULTS[key];
+    const value = process.env[key] ?? this.DEFAULTS[key];
+    // Resolve cloud-provider-specific model ID when reading the model setting
+    if (key === 'CLAUDE_MEM_MODEL') {
+      return this.resolveModelForCloudProvider(value);
+    }
+    return value;
   }
 
   /**
@@ -256,11 +365,19 @@ export class SettingsDefaultsManager {
       }
 
       // Apply environment variable overrides (highest priority)
-      return this.applyEnvOverrides(result);
+      const final = this.applyEnvOverrides(result);
+      // Resolve cloud-provider-specific model ID
+      final.CLAUDE_MEM_MODEL = this.resolveModelForCloudProvider(final.CLAUDE_MEM_MODEL);
+      // Validate cloud provider auth and adjust auth method if needed
+      this.validateCloudProviderAuth(final);
+      return final;
     } catch (error) {
       console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error);
       // Still apply env var overrides even on error
-      return this.applyEnvOverrides(this.getAllDefaults());
+      const final = this.applyEnvOverrides(this.getAllDefaults());
+      final.CLAUDE_MEM_MODEL = this.resolveModelForCloudProvider(final.CLAUDE_MEM_MODEL);
+      this.validateCloudProviderAuth(final);
+      return final;
     }
   }
 }
