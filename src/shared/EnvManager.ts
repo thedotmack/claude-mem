@@ -26,13 +26,15 @@ export const ENV_FILE_PATH = join(DATA_DIR, '.env');
 // All other env vars (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL, system vars, etc.)
 // are passed through to avoid breaking CLI authentication, proxies, and platform features.
 const BLOCKED_ENV_VARS = [
-  'ANTHROPIC_API_KEY',  // Issue #733: Prevent auto-discovery from project .env files
-  'CLAUDECODE',         // Prevent "cannot be launched inside another Claude Code session" error
+  'ANTHROPIC_API_KEY',    // Issue #733: Prevent auto-discovery from project .env files
+  'ANTHROPIC_AUTH_TOKEN', // Strip ambient values so managed credentials take precedence
+  'CLAUDECODE',           // Prevent "cannot be launched inside another Claude Code session" error
 ];
 
 // Credential keys that claude-mem manages
 export const MANAGED_CREDENTIAL_KEYS = [
   'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
   'GEMINI_API_KEY',
   'OPENROUTER_API_KEY',
 ];
@@ -40,6 +42,7 @@ export const MANAGED_CREDENTIAL_KEYS = [
 export interface ClaudeMemEnv {
   // Credentials (optional - empty means use CLI billing for Claude)
   ANTHROPIC_API_KEY?: string;
+  ANTHROPIC_AUTH_TOKEN?: string;
   ANTHROPIC_BASE_URL?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
@@ -116,6 +119,7 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
     // Only return managed credential keys
     const result: ClaudeMemEnv = {};
     if (parsed.ANTHROPIC_API_KEY) result.ANTHROPIC_API_KEY = parsed.ANTHROPIC_API_KEY;
+    if (parsed.ANTHROPIC_AUTH_TOKEN) result.ANTHROPIC_AUTH_TOKEN = parsed.ANTHROPIC_AUTH_TOKEN;
     if (parsed.ANTHROPIC_BASE_URL) result.ANTHROPIC_BASE_URL = parsed.ANTHROPIC_BASE_URL;
     if (parsed.GEMINI_API_KEY) result.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
     if (parsed.OPENROUTER_API_KEY) result.OPENROUTER_API_KEY = parsed.OPENROUTER_API_KEY;
@@ -154,6 +158,13 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
         updated.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
       } else {
         delete updated.ANTHROPIC_API_KEY;
+      }
+    }
+    if (env.ANTHROPIC_AUTH_TOKEN !== undefined) {
+      if (env.ANTHROPIC_AUTH_TOKEN) {
+        updated.ANTHROPIC_AUTH_TOKEN = env.ANTHROPIC_AUTH_TOKEN;
+      } else {
+        delete updated.ANTHROPIC_AUTH_TOKEN;
       }
     }
     if (env.ANTHROPIC_BASE_URL !== undefined) {
@@ -225,6 +236,10 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     // If not configured, CLI billing will be used (via ANTHROPIC_AUTH_TOKEN passthrough)
     if (credentials.ANTHROPIC_API_KEY) {
       isolatedEnv.ANTHROPIC_API_KEY = credentials.ANTHROPIC_API_KEY;
+    }
+    // Forward ANTHROPIC_AUTH_TOKEN if configured in claude-mem's .env
+    if (credentials.ANTHROPIC_AUTH_TOKEN) {
+      isolatedEnv.ANTHROPIC_AUTH_TOKEN = credentials.ANTHROPIC_AUTH_TOKEN;
     }
     // Override ANTHROPIC_BASE_URL from .env if configured
     // This ensures the SDK subprocess uses a stable API endpoint instead of
