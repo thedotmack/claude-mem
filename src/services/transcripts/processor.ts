@@ -1,4 +1,5 @@
 import path from 'path';
+import fs from 'fs';
 import os from 'os';
 import { sessionInitHandler } from '../../cli/handlers/session-init.js';
 import { observationHandler } from '../../cli/handlers/observation.js';
@@ -366,8 +367,9 @@ export class TranscriptEventProcessor {
       const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
 
       // Validate resolved path stays within project root or data directory (Bug #1934)
-      const resolvedAgentsPath = path.resolve(agentsPath);
-      const projectRoot = path.resolve(cwd);
+      // Use realpathSync to follow symlinks for safe path comparison
+      const resolvedAgentsPath = fs.realpathSync(path.resolve(agentsPath));
+      const projectRoot = fs.realpathSync(path.resolve(cwd));
       const dataDir = path.resolve(os.homedir(), '.claude-mem');
       if (!resolvedAgentsPath.startsWith(projectRoot + path.sep) &&
           resolvedAgentsPath !== projectRoot &&

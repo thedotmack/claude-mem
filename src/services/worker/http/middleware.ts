@@ -171,8 +171,7 @@ export function requireLocalhost(req: Request, res: Response, next: NextFunction
   const isLocalhost =
     clientIp === '127.0.0.1' ||
     clientIp === '::1' ||
-    clientIp === '::ffff:127.0.0.1' ||
-    clientIp === 'localhost';
+    clientIp === '::ffff:127.0.0.1';
 
   if (!isLocalhost) {
     logger.warn('SECURITY', 'API access denied - not localhost', {
@@ -192,8 +191,8 @@ export function requireLocalhost(req: Request, res: Response, next: NextFunction
 
 /**
  * Middleware to require admin bearer token for admin endpoints.
- * Admin routes must include `Authorization: Bearer <token>` header
- * OR come from verified localhost (Bug #1932).
+ * Admin routes must include `Authorization: Bearer <token>` header.
+ * Token is auto-generated on first access if not already on disk.
  */
 export function requireAdminToken(req: Request, res: Response, next: NextFunction): void {
   // First, verify localhost via socket (not req.ip)
@@ -201,8 +200,7 @@ export function requireAdminToken(req: Request, res: Response, next: NextFunctio
   const isLocalhost =
     clientIp === '127.0.0.1' ||
     clientIp === '::1' ||
-    clientIp === '::ffff:127.0.0.1' ||
-    clientIp === 'localhost';
+    clientIp === '::ffff:127.0.0.1';
 
   if (!isLocalhost) {
     res.status(403).json({
@@ -212,22 +210,21 @@ export function requireAdminToken(req: Request, res: Response, next: NextFunctio
     return;
   }
 
-  // Check bearer token if provided; if not provided, localhost is sufficient
+  // Always require a valid bearer token (auto-generated on first access)
+  const expectedToken = getAdminToken();
   const authHeader = req.headers.authorization;
-  if (authHeader) {
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-    const expectedToken = getAdminToken();
-    if (!token || token !== expectedToken) {
-      logger.warn('SECURITY', 'Admin endpoint: invalid bearer token', {
-        endpoint: req.path,
-        method: req.method
-      });
-      res.status(401).json({
-        error: 'Unauthorized',
-        message: 'Invalid admin token'
-      });
-      return;
-    }
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+
+  if (!token || token !== expectedToken) {
+    logger.warn('SECURITY', 'Admin endpoint: missing or invalid bearer token', {
+      endpoint: req.path,
+      method: req.method
+    });
+    res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Valid admin bearer token required'
+    });
+    return;
   }
 
   next();

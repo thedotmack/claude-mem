@@ -100,12 +100,26 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
 export const MAX_OBSERVATION_PAYLOAD_BYTES = 10 * 1024; // 10KB
 
 /**
- * Truncate an observation payload string to the configured max size.
+ * Truncate an observation payload string to the configured max byte size.
+ * Uses Buffer.byteLength for accurate multi-byte character handling (emoji, CJK, etc.).
  * Appends a truncation marker if content was clipped.
  */
 export function truncateObservationPayload(payload: string): string {
-  if (payload.length <= MAX_OBSERVATION_PAYLOAD_BYTES) return payload;
-  return payload.slice(0, MAX_OBSERVATION_PAYLOAD_BYTES) + '\n[... truncated at 10KB]';
+  if (Buffer.byteLength(payload, 'utf8') <= MAX_OBSERVATION_PAYLOAD_BYTES) return payload;
+
+  // Binary-search for the largest character index that fits within the byte budget.
+  // This avoids slicing in the middle of a multi-byte character.
+  let low = 0;
+  let high = payload.length;
+  while (low < high) {
+    const mid = (low + high + 1) >>> 1;
+    if (Buffer.byteLength(payload.slice(0, mid), 'utf8') <= MAX_OBSERVATION_PAYLOAD_BYTES) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return payload.slice(0, low) + '\n[... truncated at 10KB]';
 }
 
 /**

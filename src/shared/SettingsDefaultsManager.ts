@@ -21,7 +21,7 @@ function derivePerUserDefaultPort(): string {
   try {
     const info = userInfo();
     if (info.uid >= 0) {
-      return String(basePort + (info.uid % 1000));
+      return String(basePort + (info.uid % 10000));
     }
   } catch {
     // userInfo() can throw on some platforms — fall back to base port
