@@ -21,9 +21,12 @@ only after observing no 429s in the logs.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
+import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -45,6 +48,76 @@ HIDDEN_AGENT_FIELDS = (
     "environment_setup_commit",
     "version",
 )
+
+
+def extract_oauth_credentials() -> Path | None:
+    """
+    Extract Claude Code OAuth credentials (from a Max/Pro subscription) to a
+    temp file the container can bind-mount. Returns the temp file path, or
+    None if extraction failed / no creds present.
+
+    macOS: creds live in the Keychain under service "Claude Code-credentials".
+    Linux: creds live at ~/.claude/.credentials.json.
+
+    CAVEAT: Anthropic Max/Pro subscriptions have usage limits (per ~5h window)
+    and their ToS is framed around individual developer use. Running batch
+    evaluation across parallel containers may exhaust the quota quickly or
+    raise compliance concerns. This helper exists because the user explicitly
+    requested it; the caller is responsible for the policy call.
+
+    The token may age out mid-run; we mount read-only so refresh writes fail
+    silently inside the container (the underlying token in the host
+    Keychain/file is untouched).
+    """
+    temp = tempfile.NamedTemporaryFile(
+        prefix="claude-mem-creds-",
+        suffix=".json",
+        delete=False,
+    )
+    temp_path = Path(temp.name)
+    temp.close()
+    # Clean up on process exit, even on crash.
+    atexit.register(lambda: temp_path.unlink(missing_ok=True))
+
+    if platform.system() == "Darwin":
+        try:
+            completed = subprocess.run(
+                [
+                    "security",
+                    "find-generic-password",
+                    "-s",
+                    "Claude Code-credentials",
+                    "-w",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode == 0 and completed.stdout.strip():
+                temp_path.write_text(completed.stdout.strip(), encoding="utf-8")
+                temp_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+                return temp_path
+            print(
+                "WARN: Claude Code-credentials not found in macOS Keychain. "
+                "Run `claude login` on the host first, or fall back to ANTHROPIC_API_KEY.",
+                file=sys.stderr,
+            )
+            return None
+        except FileNotFoundError:
+            print(
+                "WARN: `security` command not available; cannot extract Keychain creds.",
+                file=sys.stderr,
+            )
+            return None
+
+    # Linux / other: read the on-disk credentials file if present.
+    creds_file = Path.home() / ".claude" / ".credentials.json"
+    if creds_file.exists():
+        temp_path.write_text(creds_file.read_text(encoding="utf-8"), encoding="utf-8")
+        temp_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        return temp_path
+
+    return None
 
 
 def parse_args() -> argparse.Namespace:
@@ -92,6 +165,17 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="claude-mem/swebench-agent:latest",
         help="Agent Docker image tag.",
+    )
+    parser.add_argument(
+        "--auth",
+        choices=["oauth", "api-key", "auto"],
+        default="auto",
+        help=(
+            "Auth mode. 'oauth' extracts Claude Max/Pro creds from host "
+            "Keychain (macOS) or ~/.claude/.credentials.json (Linux). "
+            "'api-key' uses ANTHROPIC_API_KEY env. 'auto' prefers oauth, "
+            "falls back to api-key."
+        ),
     )
     return parser.parse_args()
 
@@ -153,6 +237,7 @@ def run_one_instance(
     timeout: int,
     predictions_lock: threading.Lock,
     model_name_or_path: str,
+    oauth_creds_path: Path | None,
 ) -> tuple[str, str]:
     """
     Run the agent container for a single instance.
@@ -189,16 +274,26 @@ def run_one_instance(
         # CLAUDE_MEM_OUTPUT_DIR), plus ingest/fix logs to the same dir. The
         # 5th CLI arg to run-instance.sh is only used in standalone smoke-test
         # mode; here we point it at a throwaway path inside the container.
-        cmd = [
+        cmd: list[str] = [
             "docker",
             "run",
             "--rm",
             "-e",
-            "ANTHROPIC_API_KEY",
-            "-e",
             "CLAUDE_MEM_OUTPUT_DIR=/scratch",
             "-v",
             f"{scratch_dir}:/scratch",
+        ]
+        if oauth_creds_path is not None:
+            cmd += [
+                "-e",
+                "CLAUDE_MEM_CREDENTIALS_FILE=/auth/.credentials.json",
+                "-v",
+                f"{oauth_creds_path}:/auth/.credentials.json:ro",
+            ]
+        else:
+            # Pay-per-call path.
+            cmd += ["-e", "ANTHROPIC_API_KEY"]
+        cmd += [
             image,
             instance_id,
             repo,
@@ -309,12 +404,33 @@ def main() -> int:
     # Truncate any existing predictions file for this run so re-runs are clean.
     predictions_path.write_text("", encoding="utf-8")
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print(
-            "ERROR: ANTHROPIC_API_KEY is not set in the environment.",
-            file=sys.stderr,
-        )
-        return 1
+    # Resolve auth: OAuth (Max/Pro subscription) or API key.
+    oauth_creds_path: Path | None = None
+    if args.auth in ("oauth", "auto"):
+        oauth_creds_path = extract_oauth_credentials()
+        if oauth_creds_path is not None:
+            print(
+                f"Auth: OAuth credentials extracted to {oauth_creds_path} "
+                "(mounted read-only into each container). "
+                "NOTE: Max/Pro has per-window usage limits; batch runs may exhaust them.",
+                file=sys.stderr,
+            )
+        elif args.auth == "oauth":
+            print(
+                "ERROR: --auth=oauth requested but credentials extraction failed.",
+                file=sys.stderr,
+            )
+            return 1
+
+    if oauth_creds_path is None:
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            print(
+                "ERROR: no auth available. Either run `claude login` on host "
+                "(for OAuth) or set ANTHROPIC_API_KEY.",
+                file=sys.stderr,
+            )
+            return 1
+        print("Auth: ANTHROPIC_API_KEY (pay-per-call).", file=sys.stderr)
 
     print(f"Loading dataset princeton-nlp/SWE-bench_Verified (split=test)...", file=sys.stderr)
     dataset = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
@@ -358,6 +474,7 @@ def main() -> int:
                 timeout=args.timeout,
                 predictions_lock=predictions_lock,
                 model_name_or_path=model_name_or_path,
+                oauth_creds_path=oauth_creds_path,
             ): instance["instance_id"]
             for instance in instances
         }

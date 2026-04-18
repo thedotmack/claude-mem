@@ -22,8 +22,19 @@ BASE_COMMIT="$3"
 PROBLEM_STATEMENT_FILE="$4"
 OUT_PREDICTIONS_PATH="$5"
 
-if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-  echo "ERROR: ANTHROPIC_API_KEY is required but not set" >&2
+# Auth: either ANTHROPIC_API_KEY (pay-per-call) OR a pre-extracted OAuth
+# credentials file from a Claude Max/Pro subscription (flat-fee, but subject
+# to Anthropic's usage limits — batch-scale runs may exhaust the 5h window).
+# run-batch.py extracts OAuth creds from host Keychain/file and mounts them
+# at CLAUDE_MEM_CREDENTIALS_FILE; standalone smoke-test can do the same, or
+# set ANTHROPIC_API_KEY directly.
+if [[ -z "${ANTHROPIC_API_KEY:-}" && -z "${CLAUDE_MEM_CREDENTIALS_FILE:-}" ]]; then
+  echo "ERROR: one of ANTHROPIC_API_KEY or CLAUDE_MEM_CREDENTIALS_FILE is required" >&2
+  exit 1
+fi
+
+if [[ -n "${CLAUDE_MEM_CREDENTIALS_FILE:-}" && ! -f "$CLAUDE_MEM_CREDENTIALS_FILE" ]]; then
+  echo "ERROR: CLAUDE_MEM_CREDENTIALS_FILE set but file missing: $CLAUDE_MEM_CREDENTIALS_FILE" >&2
   exit 1
 fi
 
@@ -40,6 +51,14 @@ REPO_DIR="$SCRATCH/repo"
 MEM_DIR="$SCRATCH/.claude-mem"
 CLAUDE_DIR="$SCRATCH/.claude"
 mkdir -p "$MEM_DIR" "$CLAUDE_DIR"
+
+# If using OAuth, seed the isolated CLAUDE_DIR with the mounted credentials
+# file so Claude Code finds them at HOME=$SCRATCH → ~/.claude/.credentials.json.
+# chmod 600 to match what `claude login` writes (it checks permissions).
+if [[ -n "${CLAUDE_MEM_CREDENTIALS_FILE:-}" ]]; then
+  cp "$CLAUDE_MEM_CREDENTIALS_FILE" "$CLAUDE_DIR/.credentials.json"
+  chmod 600 "$CLAUDE_DIR/.credentials.json"
+fi
 
 # Directory where artifacts the batch orchestrator reads (model_patch.diff,
 # ingest.jsonl, fix.jsonl) are written. When run via `docker run -v
