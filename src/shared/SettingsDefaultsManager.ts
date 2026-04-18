@@ -76,6 +76,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_API_KEY: string;
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
+  // Observer Budget & Throttling (Issue #1938)
+  CLAUDE_MEM_OBSERVER_MAX_TOKENS_PER_DAY: string;  // Max tokens observer can consume per day (default: 100000)
+  CLAUDE_MEM_OBSERVER_THROTTLE_MS: string;          // Min milliseconds between observer runs (default: 5000)
 }
 
 export class SettingsDefaultsManager {
@@ -147,6 +150,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_API_KEY: '',
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
+    // Observer Budget & Throttling (Issue #1938)
+    CLAUDE_MEM_OBSERVER_MAX_TOKENS_PER_DAY: '100000',  // 100k tokens/day default cap
+    CLAUDE_MEM_OBSERVER_THROTTLE_MS: '5000',            // 5 seconds between observer runs
   };
 
   /**

@@ -24,6 +24,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
+import { ObserverBudgetTracker } from '../../observer/ObserverBudgetTracker.js';
 
 /**
  * Process agent response text (parse XML, save to database, sync to Chroma, broadcast SSE)
@@ -129,6 +130,11 @@ export async function processAgentResponse(
   // Track whether a summary record was stored so the status endpoint can expose this
   // to the Stop hook for silent-summary-loss detection (#1633)
   session.lastSummaryStored = result.summaryId !== null;
+
+  // Record token usage against the daily budget (Issue #1938)
+  if (discoveryTokens > 0) {
+    ObserverBudgetTracker.getInstance().recordTokensUsed(discoveryTokens);
+  }
 
   // CLAIM-CONFIRM: Now that storage succeeded, confirm all processing messages (delete from queue)
   // This is the critical step that prevents message loss on generator crash
