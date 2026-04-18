@@ -123,7 +123,6 @@ function extractLastMessageFromJsonl(
   stripSystemReminders: boolean
 ): string {
   const lines = content.split('\n');
-  let foundMatchingRole = false;
 
   for (let i = lines.length - 1; i >= 0; i--) {
     const trimmedLine = lines[i].trim();
@@ -133,14 +132,13 @@ function extractLastMessageFromJsonl(
     try {
       line = JSON.parse(trimmedLine);
     } catch {
-      // Skip unparseable lines
+      // Skip unparseable lines - log for debugging
+      logger.debug('PARSER', `Skipping unparseable JSONL line ${i}`, { lineLength: trimmedLine.length });
       continue;
     }
 
     const mappedRole = mapJsonlTypeToRole(line.type);
     if (mappedRole === role) {
-      foundMatchingRole = true;
-
       // Gemini JSONL: content is a top-level string field
       if (typeof line.content === 'string') {
         let text = line.content;
@@ -177,11 +175,6 @@ function extractLastMessageFromJsonl(
         return text;
       }
     }
-  }
-
-  // If we searched the whole transcript and didn't find any message of this role
-  if (!foundMatchingRole) {
-    return '';
   }
 
   return '';

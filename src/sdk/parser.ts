@@ -139,8 +139,11 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
     }
 
     // Raw text fallback: no XML tags at all — use full text as narrative (see #1908)
+    // Guard: only salvage raw text when the response truly has no XML-like tags.
+    // Malformed/truncated XML should not be stored as narrative.
     const stripped = text.trim();
-    if (stripped.length > 0) {
+    const hasXmlLikeTags = /<\/?[A-Za-z][^>]*>/.test(stripped);
+    if (stripped.length > 0 && !hasXmlLikeTags) {
       logger.warn('PARSER', 'Summary response contained no XML tags — salvaging raw text as narrative', { sessionId });
       return {
         request: null,

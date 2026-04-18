@@ -135,8 +135,15 @@ export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): strin
   })();
 
   // Include user_prompt for grounding the summary against the original request (#1910)
+  // Escape XML special characters to prevent prompt injection via user_prompt
+  const escapeXml = (value: string) =>
+    value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
   const userPromptSection = session.user_prompt
-    ? `<original_user_request>${session.user_prompt}</original_user_request>\n\n`
+    ? `<original_user_request>${escapeXml(session.user_prompt)}</original_user_request>\n\n`
     : '';
 
   return `--- MODE SWITCH: PROGRESS SUMMARY ---
