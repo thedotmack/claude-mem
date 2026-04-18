@@ -666,6 +666,10 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   const recentPromptInits = new Map<string, number>();
   // Track heartbeat/system sessions to exempt them from summarization
   const systemSessionIds = new Set<string>();
+  // Map session/channel keys to agent-specific project names for slash command scoping
+  const sessionProjectNames = new Map<string, string>();
+  // Last known agent-specific project name (fallback for slash commands)
+  let lastActiveProjectName = baseProjectName;
   const completionDelayMs = (() => {
     const val = Number((userConfig as Record<string, unknown>).completionDelayMs);
     return Number.isFinite(val) ? Math.max(0, val) : 5000;
@@ -852,9 +856,16 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     const projectName = getProjectName(ctx);
     const promptText = event.prompt || "agent run";
 
-    // Mark heartbeat/system sessions so they are exempt from summarization
+    // Mark heartbeat/system sessions so they are exempt from summarization.
+    // Check against the full EXCLUDED_LIFECYCLE_EVENT_TYPES set and content patterns
+    // to catch all routine lifecycle events (heartbeat, no_reply, lifecycle_event,
+    // user_re_engagement, session_start).
     const promptLower = promptText.toLowerCase().trim();
-    if (promptLower === "heartbeat" || promptLower === "no_reply" || promptLower === "lifecycle_event") {
+    if (
+      EXCLUDED_LIFECYCLE_EVENT_TYPES.has(promptLower) ||
+      EXCLUDED_LIFECYCLE_EVENT_TYPES.has(promptText.trim()) ||
+      EXCLUDED_LIFECYCLE_CONTENT_PATTERNS.some((pattern) => pattern.test(promptText.trim()))
+    ) {
       systemSessionIds.add(contentSessionId);
     }
 
@@ -876,6 +887,13 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     }
 
     await workerPost(workerPort, "/api/sessions/init", initPayload, api.logger);
+
+    // Track agent-specific project name for slash command scoping.
+    // Map the session key so slash commands issued by this agent use the correct project.
+    lastActiveProjectName = projectName;
+    if (ctx.sessionKey) {
+      sessionProjectNames.set(ctx.sessionKey, projectName);
+    }
 
     api.logger.info(`[claude-mem] Session initialized via before_agent_start: contentSessionId=${contentSessionId} project=${projectName}${systemSessionIds.has(contentSessionId) ? " (system_session)" : ""}`);
   });
@@ -939,10 +957,15 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     // Resolve workspaceDir with fallback chain.
     // Previously, observations were dropped when workspaceDir was unavailable.
     // Now we fall back to the user's home directory to avoid losing observations.
+    // When HOME is also unset, use a unique /tmp subdirectory based on the
+    // contentSessionId to prevent cross-agent observation mixing.
     let workspaceDir = ctx.workspaceDir;
 
     if (!workspaceDir) {
-      const homeDir = typeof process !== "undefined" && process.env?.HOME ? process.env.HOME : "/tmp";
+      const homeDir =
+        typeof process !== "undefined" && process.env?.HOME
+          ? process.env.HOME
+          : `/tmp/claude-mem-${contentSessionId}`;
       api.logger.warn(`[claude-mem] workspaceDir unavailable for session=${canonicalKey} tool=${toolName}, falling back to ${homeDir}`);
       workspaceDir = homeDir;
     }
@@ -1165,8 +1188,10 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       const limit = hasTrailingLimit ? parseLimit(maybeLimit, 10) : 10;
       const query = hasTrailingLimit ? pieces.slice(0, -1).join(" ") : raw;
 
-      // Scope search to the current agent's project for per-agent isolation
-      const agentProject = baseProjectName;
+      // Scope search to the current agent's project for per-agent isolation.
+      // Look up the agent-specific project name (e.g., "openclaw-<agentId>") from
+      // the channel→project mapping, falling back to the last active project.
+      const agentProject = sessionProjectNames.get(ctx.channel) || lastActiveProjectName;
       const projectParam = `&project=${encodeURIComponent(agentProject)}`;
 
       const data = await workerGetJson(
@@ -1256,8 +1281,10 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       }
 
       const query = parts.join(" ");
-      // Scope timeline to the current agent's project for per-agent isolation
-      const agentProject = baseProjectName;
+      // Scope timeline to the current agent's project for per-agent isolation.
+      // Look up the agent-specific project name (e.g., "openclaw-<agentId>") from
+      // the channel→project mapping, falling back to the last active project.
+      const agentProject = sessionProjectNames.get(ctx.channel) || lastActiveProjectName;
       const params = new URLSearchParams({
         query,
         mode: "auto",
