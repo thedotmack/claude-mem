@@ -10,6 +10,8 @@ import { MigrationRunner } from './migrations/runner.js';
 // SQLite configuration constants
 const SQLITE_MMAP_SIZE_BYTES = 256 * 1024 * 1024; // 256MB
 const SQLITE_CACHE_SIZE_PAGES = 10_000;
+const SQLITE_JOURNAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024; // 64MB - prevents unbounded WAL growth
+const WAL_CHECKPOINT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 export interface Migration {
   version: number;
@@ -144,6 +146,7 @@ function repairMalformedSchemaWithReopen(dbPath: string, db: Database): Database
  */
 export class ClaudeMemDatabase {
   public db: Database;
+  private walCheckpointInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(dbPath: string = DB_PATH) {
     // Ensure data directory exists (skip for in-memory databases)
@@ -166,16 +169,31 @@ export class ClaudeMemDatabase {
     this.db.run('PRAGMA temp_store = memory');
     this.db.run(`PRAGMA mmap_size = ${SQLITE_MMAP_SIZE_BYTES}`);
     this.db.run(`PRAGMA cache_size = ${SQLITE_CACHE_SIZE_PAGES}`);
+    this.db.run(`PRAGMA journal_size_limit = ${SQLITE_JOURNAL_SIZE_LIMIT_BYTES}`);
 
     // Run all migrations
     const migrationRunner = new MigrationRunner(this.db);
     migrationRunner.runAllMigrations();
+
+    // Schedule periodic WAL checkpoints to prevent unbounded WAL growth
+    this.walCheckpointInterval = setInterval(() => {
+      try {
+        this.db.run('PRAGMA wal_checkpoint(TRUNCATE)');
+        logger.debug('DB', 'WAL checkpoint (TRUNCATE) completed');
+      } catch (error) {
+        logger.warn('DB', 'WAL checkpoint failed (non-fatal)', {}, error as Error);
+      }
+    }, WAL_CHECKPOINT_INTERVAL_MS);
   }
 
   /**
-   * Close the database connection
+   * Close the database connection and stop background tasks
    */
   close(): void {
+    if (this.walCheckpointInterval) {
+      clearInterval(this.walCheckpointInterval);
+      this.walCheckpointInterval = null;
+    }
     this.db.close();
   }
 }

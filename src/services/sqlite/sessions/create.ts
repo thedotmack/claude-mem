@@ -26,7 +26,8 @@ function resolveCreateSessionArgs(
  * - Result: Same database ID returned for all prompts in conversation
  *
  * Pure get-or-create: never modifies memory_session_id.
- * Multi-terminal isolation is handled by ON UPDATE CASCADE at the schema level.
+ * Multi-terminal isolation is handled by ON UPDATE RESTRICT at the schema level
+ * (prevents cascading rewrites of historical child rows).
  */
 export function createSDKSession(
   db: Database,

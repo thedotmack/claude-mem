@@ -116,7 +116,7 @@ export class SessionStore {
         type TEXT NOT NULL,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE RESTRICT
       );
 
       CREATE INDEX IF NOT EXISTS idx_observations_sdk_session ON observations(memory_session_id);
@@ -138,7 +138,7 @@ export class SessionStore {
         notes TEXT,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE RESTRICT
       );
 
       CREATE INDEX IF NOT EXISTS idx_session_summaries_sdk_session ON session_summaries(memory_session_id);
@@ -716,7 +716,7 @@ export class SessionStore {
           discovery_tokens INTEGER DEFAULT 0,
           created_at TEXT NOT NULL,
           created_at_epoch INTEGER NOT NULL,
-          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE RESTRICT
         )
       `);
 
@@ -787,7 +787,7 @@ export class SessionStore {
           discovery_tokens INTEGER DEFAULT 0,
           created_at TEXT NOT NULL,
           created_at_epoch INTEGER NOT NULL,
-          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE RESTRICT
         )
       `);
 
@@ -1017,6 +1017,29 @@ export class SessionStore {
     }
 
     if (session.memory_session_id !== memorySessionId) {
+      // If the old memory_session_id has child rows (observations/summaries),
+      // don't update in-place — ON UPDATE RESTRICT would reject it, and we
+      // shouldn't rewrite historical attribution anyway. Only update when
+      // transitioning from NULL or when there are no children.
+      if (session.memory_session_id !== null) {
+        const childCount = this.db.prepare(`
+          SELECT
+            (SELECT COUNT(*) FROM observations WHERE memory_session_id = ?) +
+            (SELECT COUNT(*) FROM session_summaries WHERE memory_session_id = ?)
+          AS total
+        `).get(session.memory_session_id, session.memory_session_id) as { total: number };
+
+        if (childCount.total > 0) {
+          logger.warn('DB', 'Skipping memory_session_id update: old ID has child rows (historical attribution preserved)', {
+            sessionDbId,
+            oldId: session.memory_session_id,
+            newId: memorySessionId,
+            childCount: childCount.total
+          });
+          return;
+        }
+      }
+
       this.db.prepare(`
         UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
       `).run(memorySessionId, sessionDbId);
