@@ -13,8 +13,23 @@ import type { ObservationInput, StoreObservationResult } from './types.js';
 const DEDUP_WINDOW_MS = 30_000;
 
 /**
+ * Normalize content for dedup hashing: trim, collapse whitespace, lowercase.
+ * Ensures near-identical observations with minor whitespace/case differences
+ * produce the same hash and are properly deduped.
+ */
+function normalizeForDedup(value: string | null): string {
+  if (!value) return '';
+  return value
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+/**
  * Compute a short content hash for deduplication.
  * Uses (memory_session_id, title, narrative) as the semantic identity of an observation.
+ * Content is normalized (trimmed, whitespace-collapsed, lowercased) before hashing
+ * to prevent near-identical observations from bypassing dedup.
  */
 export function computeObservationContentHash(
   memorySessionId: string,
@@ -22,7 +37,11 @@ export function computeObservationContentHash(
   narrative: string | null
 ): string {
   return createHash('sha256')
-    .update([memorySessionId || '', title || '', narrative || ''].join('\x00'))
+    .update([
+      memorySessionId || '',
+      normalizeForDedup(title),
+      normalizeForDedup(narrative)
+    ].join('\x00'))
     .digest('hex')
     .slice(0, 16);
 }

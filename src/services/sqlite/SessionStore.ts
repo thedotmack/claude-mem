@@ -116,7 +116,7 @@ export class SessionStore {
         type TEXT NOT NULL,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE RESTRICT
       );
 
       CREATE INDEX IF NOT EXISTS idx_observations_sdk_session ON observations(memory_session_id);
@@ -138,7 +138,7 @@ export class SessionStore {
         notes TEXT,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE RESTRICT
       );
 
       CREATE INDEX IF NOT EXISTS idx_session_summaries_sdk_session ON session_summaries(memory_session_id);
@@ -716,7 +716,7 @@ export class SessionStore {
           discovery_tokens INTEGER DEFAULT 0,
           created_at TEXT NOT NULL,
           created_at_epoch INTEGER NOT NULL,
-          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE RESTRICT
         )
       `);
 
@@ -787,7 +787,7 @@ export class SessionStore {
           discovery_tokens INTEGER DEFAULT 0,
           created_at TEXT NOT NULL,
           created_at_epoch INTEGER NOT NULL,
-          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE RESTRICT
         )
       `);
 
@@ -1006,8 +1006,10 @@ export class SessionStore {
    *
    * @param sessionDbId - The database ID of the session
    * @param memorySessionId - The memory session ID to ensure is registered
+   * @returns true if the memory_session_id was updated (or already matched),
+   *          false if the update was skipped because the old ID has child rows.
    */
-  ensureMemorySessionIdRegistered(sessionDbId: number, memorySessionId: string): void {
+  ensureMemorySessionIdRegistered(sessionDbId: number, memorySessionId: string): boolean {
     const session = this.db.prepare(`
       SELECT id, memory_session_id FROM sdk_sessions WHERE id = ?
     `).get(sessionDbId) as { id: number; memory_session_id: string | null } | undefined;
@@ -1016,17 +1018,43 @@ export class SessionStore {
       throw new Error(`Session ${sessionDbId} not found in sdk_sessions`);
     }
 
-    if (session.memory_session_id !== memorySessionId) {
-      this.db.prepare(`
-        UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
-      `).run(memorySessionId, sessionDbId);
-
-      logger.info('DB', 'Registered memory_session_id before storage (FK fix)', {
-        sessionDbId,
-        oldId: session.memory_session_id,
-        newId: memorySessionId
-      });
+    if (session.memory_session_id === memorySessionId) {
+      return true; // Already matches
     }
+
+    // If the old memory_session_id has child rows (observations/summaries),
+    // don't update in-place — ON UPDATE RESTRICT would reject it, and we
+    // shouldn't rewrite historical attribution anyway. Only update when
+    // transitioning from NULL or when there are no children.
+    if (session.memory_session_id !== null) {
+      const childCount = this.db.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM observations WHERE memory_session_id = ?) +
+          (SELECT COUNT(*) FROM session_summaries WHERE memory_session_id = ?)
+        AS total
+      `).get(session.memory_session_id, session.memory_session_id) as { total: number };
+
+      if (childCount.total > 0) {
+        logger.warn('DB', 'Skipping memory_session_id update: old ID has child rows (historical attribution preserved)', {
+          sessionDbId,
+          oldId: session.memory_session_id,
+          newId: memorySessionId,
+          childCount: childCount.total
+        });
+        return false;
+      }
+    }
+
+    this.db.prepare(`
+      UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
+    `).run(memorySessionId, sessionDbId);
+
+    logger.info('DB', 'Registered memory_session_id before storage (FK fix)', {
+      sessionDbId,
+      oldId: session.memory_session_id,
+      newId: memorySessionId
+    });
+    return true;
   }
 
   /**

@@ -99,7 +99,22 @@ export async function processAgentResponse(
   // in case the DB was somehow not updated (race condition, crash, etc.).
   // In multi-terminal scenarios, createSDKSession() now resets memory_session_id to NULL
   // for each new generator, ensuring clean isolation.
-  sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId);
+  const memorySessionIdRegistered = sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId);
+  if (!memorySessionIdRegistered) {
+    // The DB still holds the old memory_session_id because child rows exist.
+    // Use the DB's current value so FK constraints are satisfied.
+    const currentSession = sessionStore.getSessionById(session.sessionDbId);
+    if (currentSession?.memory_session_id) {
+      logger.warn('DB', 'Using existing memory_session_id from DB for storage (child-row guard)', {
+        sessionDbId: session.sessionDbId,
+        requested: session.memorySessionId,
+        using: currentSession.memory_session_id
+      });
+      session.memorySessionId = currentSession.memory_session_id;
+    } else {
+      throw new Error(`Cannot store observations: memory_session_id update was skipped and no existing ID found for session ${session.sessionDbId}`);
+    }
+  }
 
   // Log pre-storage with session ID chain for verification
   logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {

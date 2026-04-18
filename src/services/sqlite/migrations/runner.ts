@@ -38,6 +38,7 @@ export class MigrationRunner {
     this.createObservationFeedbackTable();
     this.addSessionPlatformSourceColumn();
     this.ensureMergedIntoProjectColumns();
+    this.replaceOnUpdateCascadeWithRestrict();
   }
 
   /**
@@ -88,7 +89,7 @@ export class MigrationRunner {
         type TEXT NOT NULL,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE RESTRICT
       );
 
       CREATE INDEX IF NOT EXISTS idx_observations_sdk_session ON observations(memory_session_id);
@@ -110,7 +111,7 @@ export class MigrationRunner {
         notes TEXT,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE RESTRICT
       );
 
       CREATE INDEX IF NOT EXISTS idx_session_summaries_sdk_session ON session_summaries(memory_session_id);
@@ -639,11 +640,12 @@ export class MigrationRunner {
   }
 
   /**
-   * Add ON UPDATE CASCADE to FK constraints on observations and session_summaries (migration 21)
+   * Set ON UPDATE RESTRICT on FK constraints for observations and session_summaries (migration 21)
    *
-   * Both tables have FK(memory_session_id) -> sdk_sessions(memory_session_id) with ON DELETE CASCADE
-   * but missing ON UPDATE CASCADE. This causes FK constraint violations when code updates
-   * sdk_sessions.memory_session_id while child rows still reference the old value.
+   * Both tables have FK(memory_session_id) -> sdk_sessions(memory_session_id) with ON DELETE CASCADE.
+   * ON UPDATE RESTRICT prevents cascading session ID changes into historical child rows.
+   * When a session's memory_session_id needs to change, new rows should be inserted rather
+   * than updating the parent and cascading into all historical observations/summaries.
    *
    * SQLite doesn't support ALTER TABLE for FK changes, so we recreate both tables.
    */
@@ -687,7 +689,7 @@ export class MigrationRunner {
           discovery_tokens INTEGER DEFAULT 0,
           created_at TEXT NOT NULL,
           created_at_epoch INTEGER NOT NULL,
-          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE RESTRICT
         )
       `);
 
@@ -756,7 +758,7 @@ export class MigrationRunner {
           discovery_tokens INTEGER DEFAULT 0,
           created_at TEXT NOT NULL,
           created_at_epoch INTEGER NOT NULL,
-          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE RESTRICT
         )
       `);
 
@@ -951,5 +953,210 @@ export class MigrationRunner {
     this.db.run(
       'CREATE INDEX IF NOT EXISTS idx_summaries_merged_into ON session_summaries(merged_into_project)'
     );
+  }
+
+  /**
+   * Replace ON UPDATE CASCADE with ON UPDATE RESTRICT on FK constraints (migration 26)
+   *
+   * Migration 21 added ON UPDATE CASCADE, which causes historical observations and summaries
+   * to have their memory_session_id rewritten when a session's ID is updated (e.g. stale resume).
+   * ON UPDATE RESTRICT prevents this: historical child rows keep their original attribution.
+   *
+   * For existing databases that already ran migration 21 with CASCADE, this migration
+   * rebuilds both tables with RESTRICT instead.
+   */
+  private replaceOnUpdateCascadeWithRestrict(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(26) as SchemaVersion | undefined;
+    if (applied) return;
+
+    logger.debug('DB', 'Replacing ON UPDATE CASCADE with ON UPDATE RESTRICT on FK constraints');
+
+    // Check if the FK actually uses CASCADE before rebuilding.
+    // Fresh databases created with the new initializeSchema() already have RESTRICT,
+    // so the expensive table rebuild is unnecessary.
+    const obsFkInfo = this.db.query('PRAGMA foreign_key_list(observations)').all() as any[];
+    const obsHasCascadeOnUpdate = obsFkInfo.some((fk: any) => fk.on_update === 'CASCADE');
+    const sumFkInfo = this.db.query('PRAGMA foreign_key_list(session_summaries)').all() as any[];
+    const sumHasCascadeOnUpdate = sumFkInfo.some((fk: any) => fk.on_update === 'CASCADE');
+
+    if (!obsHasCascadeOnUpdate && !sumHasCascadeOnUpdate) {
+      // Already using RESTRICT (or no FK at all), skip rebuild
+      logger.debug('DB', 'FK constraints already use RESTRICT, skipping table rebuild');
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
+      return;
+    }
+
+    // Get current column lists to ensure we copy all columns including any added by later migrations.
+    // Filter to only columns that exist in the new schema to prevent INSERT failures when
+    // the source table has columns not defined in the target (e.g. from a future migration).
+    const obsSourceColumns = (this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[])
+      .map(c => c.name)
+      .filter(n => n !== undefined);
+    const sumSourceColumns = (this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[])
+      .map(c => c.name)
+      .filter(n => n !== undefined);
+
+    // Canonical column sets for the new tables
+    const obsNewSchemaColumns = new Set([
+      'id', 'memory_session_id', 'project', 'text', 'type', 'title', 'subtitle',
+      'facts', 'narrative', 'concepts', 'files_read', 'files_modified',
+      'prompt_number', 'discovery_tokens', 'content_hash',
+      'created_at', 'created_at_epoch', 'merged_into_project'
+    ]);
+    const sumNewSchemaColumns = new Set([
+      'id', 'memory_session_id', 'project', 'request', 'investigated', 'learned',
+      'completed', 'next_steps', 'files_read', 'files_edited', 'notes',
+      'prompt_number', 'discovery_tokens',
+      'created_at', 'created_at_epoch', 'merged_into_project'
+    ]);
+
+    const obsColumns = obsSourceColumns.filter(c => obsNewSchemaColumns.has(c));
+    const sumColumns = sumSourceColumns.filter(c => sumNewSchemaColumns.has(c));
+
+    this.db.run('PRAGMA foreign_keys = OFF');
+    this.db.run('BEGIN TRANSACTION');
+
+    try {
+      // ===================================
+      // 1. Recreate observations table with ON UPDATE RESTRICT
+      // ===================================
+      this.db.run('DROP TRIGGER IF EXISTS observations_ai');
+      this.db.run('DROP TRIGGER IF EXISTS observations_ad');
+      this.db.run('DROP TRIGGER IF EXISTS observations_au');
+      this.db.run('DROP TABLE IF EXISTS observations_new');
+
+      this.db.run(`
+        CREATE TABLE observations_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          memory_session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          text TEXT,
+          type TEXT NOT NULL,
+          title TEXT,
+          subtitle TEXT,
+          facts TEXT,
+          narrative TEXT,
+          concepts TEXT,
+          files_read TEXT,
+          files_modified TEXT,
+          prompt_number INTEGER,
+          discovery_tokens INTEGER DEFAULT 0,
+          content_hash TEXT,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          merged_into_project TEXT,
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE RESTRICT
+        )
+      `);
+
+      const obsColumnList = obsColumns.join(', ');
+      this.db.run(`INSERT INTO observations_new (${obsColumnList}) SELECT ${obsColumnList} FROM observations`);
+      this.db.run('DROP TABLE observations');
+      this.db.run('ALTER TABLE observations_new RENAME TO observations');
+
+      this.db.run(`
+        CREATE INDEX idx_observations_sdk_session ON observations(memory_session_id);
+        CREATE INDEX idx_observations_project ON observations(project);
+        CREATE INDEX idx_observations_type ON observations(type);
+        CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC);
+        CREATE INDEX IF NOT EXISTS idx_observations_content_hash ON observations(content_hash, created_at_epoch);
+        CREATE INDEX IF NOT EXISTS idx_observations_merged_into ON observations(merged_into_project);
+      `);
+
+      // Recreate FTS triggers if FTS table exists
+      const hasFTS = (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='observations_fts'").all() as { name: string }[]).length > 0;
+      if (hasFTS) {
+        this.db.run(`
+          CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
+            INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+            VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+          END;
+          CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
+            INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+            VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+          END;
+          CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
+            INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+            VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+            INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+            VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+          END;
+        `);
+      }
+
+      // ===================================
+      // 2. Recreate session_summaries table with ON UPDATE RESTRICT
+      // ===================================
+      this.db.run('DROP TRIGGER IF EXISTS session_summaries_ai');
+      this.db.run('DROP TRIGGER IF EXISTS session_summaries_ad');
+      this.db.run('DROP TRIGGER IF EXISTS session_summaries_au');
+      this.db.run('DROP TABLE IF EXISTS session_summaries_new');
+
+      this.db.run(`
+        CREATE TABLE session_summaries_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          memory_session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          request TEXT,
+          investigated TEXT,
+          learned TEXT,
+          completed TEXT,
+          next_steps TEXT,
+          files_read TEXT,
+          files_edited TEXT,
+          notes TEXT,
+          prompt_number INTEGER,
+          discovery_tokens INTEGER DEFAULT 0,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          merged_into_project TEXT,
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE RESTRICT
+        )
+      `);
+
+      const sumColumnList = sumColumns.join(', ');
+      this.db.run(`INSERT INTO session_summaries_new (${sumColumnList}) SELECT ${sumColumnList} FROM session_summaries`);
+
+      this.db.run('DROP TABLE session_summaries');
+      this.db.run('ALTER TABLE session_summaries_new RENAME TO session_summaries');
+
+      this.db.run(`
+        CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id);
+        CREATE INDEX idx_session_summaries_project ON session_summaries(project);
+        CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
+        CREATE INDEX IF NOT EXISTS idx_summaries_merged_into ON session_summaries(merged_into_project);
+      `);
+
+      // Recreate session_summaries FTS triggers if FTS table exists
+      const hasSummariesFTS = (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session_summaries_fts'").all() as { name: string }[]).length > 0;
+      if (hasSummariesFTS) {
+        this.db.run(`
+          CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
+            INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+            VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+          END;
+          CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
+            INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+            VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+          END;
+          CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
+            INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+            VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+            INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+            VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+          END;
+        `);
+      }
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
+      this.db.run('COMMIT');
+      this.db.run('PRAGMA foreign_keys = ON');
+
+      logger.debug('DB', 'Successfully replaced ON UPDATE CASCADE with ON UPDATE RESTRICT on FK constraints');
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      this.db.run('PRAGMA foreign_keys = ON');
+      throw error;
+    }
   }
 }
