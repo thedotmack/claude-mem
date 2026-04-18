@@ -971,13 +971,47 @@ export class MigrationRunner {
 
     logger.debug('DB', 'Replacing ON UPDATE CASCADE with ON UPDATE RESTRICT on FK constraints');
 
-    // Get current column lists to ensure we copy all columns including any added by later migrations
-    const obsColumns = (this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[])
+    // Check if the FK actually uses CASCADE before rebuilding.
+    // Fresh databases created with the new initializeSchema() already have RESTRICT,
+    // so the expensive table rebuild is unnecessary.
+    const obsFkInfo = this.db.query('PRAGMA foreign_key_list(observations)').all() as any[];
+    const obsHasCascadeOnUpdate = obsFkInfo.some((fk: any) => fk.on_update === 'CASCADE');
+    const sumFkInfo = this.db.query('PRAGMA foreign_key_list(session_summaries)').all() as any[];
+    const sumHasCascadeOnUpdate = sumFkInfo.some((fk: any) => fk.on_update === 'CASCADE');
+
+    if (!obsHasCascadeOnUpdate && !sumHasCascadeOnUpdate) {
+      // Already using RESTRICT (or no FK at all), skip rebuild
+      logger.debug('DB', 'FK constraints already use RESTRICT, skipping table rebuild');
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
+      return;
+    }
+
+    // Get current column lists to ensure we copy all columns including any added by later migrations.
+    // Filter to only columns that exist in the new schema to prevent INSERT failures when
+    // the source table has columns not defined in the target (e.g. from a future migration).
+    const obsSourceColumns = (this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[])
       .map(c => c.name)
       .filter(n => n !== undefined);
-    const sumColumns = (this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[])
+    const sumSourceColumns = (this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[])
       .map(c => c.name)
       .filter(n => n !== undefined);
+
+    // Canonical column sets for the new tables
+    const obsNewSchemaColumns = new Set([
+      'id', 'memory_session_id', 'project', 'text', 'type', 'title', 'subtitle',
+      'facts', 'narrative', 'concepts', 'files_read', 'files_modified',
+      'prompt_number', 'discovery_tokens', 'content_hash',
+      'created_at', 'created_at_epoch', 'merged_into_project'
+    ]);
+    const sumNewSchemaColumns = new Set([
+      'id', 'memory_session_id', 'project', 'request', 'investigated', 'learned',
+      'completed', 'next_steps', 'files_read', 'files_edited', 'notes',
+      'prompt_number', 'discovery_tokens',
+      'created_at', 'created_at_epoch', 'merged_into_project'
+    ]);
+
+    const obsColumns = obsSourceColumns.filter(c => obsNewSchemaColumns.has(c));
+    const sumColumns = sumSourceColumns.filter(c => sumNewSchemaColumns.has(c));
 
     this.db.run('PRAGMA foreign_keys = OFF');
     this.db.run('BEGIN TRANSACTION');

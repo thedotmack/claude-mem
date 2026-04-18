@@ -174,6 +174,7 @@ export class WorkerService {
 
   // Failed pending messages purge interval (Issue #1957)
   private failedMessagesPurgeInterval: ReturnType<typeof setInterval> | null = null;
+  private failedMessagesPurgeInFlight = false;
 
   // AI interaction tracking for health endpoint
   private lastAiInteraction: {
@@ -542,16 +543,20 @@ export class WorkerService {
       }, 2 * 60 * 1000);
 
       // Purge failed pending messages every 30 minutes (Issue #1957)
+      const { PendingMessageStore: PurgeMessageStore } = await import('./sqlite/PendingMessageStore.js');
+      const purgeStore = new PurgeMessageStore(this.dbManager.getSessionStore().db, 3);
       this.failedMessagesPurgeInterval = setInterval(async () => {
+        if (this.failedMessagesPurgeInFlight || this.isShuttingDown) return;
+        this.failedMessagesPurgeInFlight = true;
         try {
-          const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
-          const purgeStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
           const purged = purgeStore.clearFailed();
           if (purged > 0) {
             logger.info('SYSTEM', `Purged ${purged} failed pending messages`);
           }
         } catch (e) {
           logger.error('SYSTEM', 'Failed message purge error', { error: e instanceof Error ? e.message : String(e) });
+        } finally {
+          this.failedMessagesPurgeInFlight = false;
         }
       }, 30 * 60 * 1000);
 
