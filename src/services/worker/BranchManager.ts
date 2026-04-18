@@ -7,7 +7,8 @@
 
 import { execSync, spawnSync } from 'child_process';
 import { existsSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
 
@@ -103,11 +104,23 @@ function execNpm(args: string[], timeoutMs: number = NPM_INSTALL_TIMEOUT_MS): st
 
 /**
  * Detect if the plugin was installed via Claude Code's cache layout
- * (e.g., ~/.claude/cache/thedotmack/claude-mem/) rather than git clone
+ * (e.g., ~/.claude/plugins/cache/thedotmack/claude-mem/<version>/) rather than git clone.
+ *
+ * NOTE: INSTALLED_PLUGIN_PATH is an alias for MARKETPLACE_ROOT which always
+ * resolves to ~/.claude/plugins/marketplaces/thedotmack — it never contains
+ * '/cache/'. We must check the actual runtime module path instead.
  */
 function isCacheLayoutInstall(): boolean {
-  const normalizedPath = INSTALLED_PLUGIN_PATH.replace(/\\/g, '/');
-  return normalizedPath.includes('/cache/thedotmack/claude-mem');
+  // Derive the actual path this module is running from at runtime
+  let runtimeDir: string;
+  if (typeof __dirname !== 'undefined') {
+    runtimeDir = __dirname;
+  } else {
+    runtimeDir = dirname(fileURLToPath(import.meta.url));
+  }
+
+  const normalizedRuntimePath = runtimeDir.replace(/\\/g, '/');
+  return normalizedRuntimePath.includes('/cache/thedotmack/claude-mem/');
 }
 
 /**
