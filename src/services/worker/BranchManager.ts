@@ -102,19 +102,31 @@ function execNpm(args: string[], timeoutMs: number = NPM_INSTALL_TIMEOUT_MS): st
 }
 
 /**
+ * Detect if the plugin was installed via Claude Code's cache layout
+ * (e.g., ~/.claude/cache/thedotmack/claude-mem/) rather than git clone
+ */
+function isCacheLayoutInstall(): boolean {
+  const normalizedPath = INSTALLED_PLUGIN_PATH.replace(/\\/g, '/');
+  return normalizedPath.includes('/cache/thedotmack/claude-mem');
+}
+
+/**
  * Get current branch information
  */
 export function getBranchInfo(): BranchInfo {
   // Check if git repo exists
   const gitDir = join(INSTALLED_PLUGIN_PATH, '.git');
   if (!existsSync(gitDir)) {
+    const isCacheLayout = isCacheLayoutInstall();
     return {
       branch: null,
       isBeta: false,
       isGitRepo: false,
       isDirty: false,
       canSwitch: false,
-      error: 'Installed plugin is not a git repository'
+      error: isCacheLayout
+        ? 'Plugin installed via cache layout. Use `npx claude-mem install` or Claude Code plugin UI to update.'
+        : 'Installed plugin is not a git repository'
     };
   }
 
@@ -262,7 +274,7 @@ export async function pullUpdates(): Promise<SwitchResult> {
   if (!info.isGitRepo || !info.branch) {
     return {
       success: false,
-      error: 'Cannot pull updates: not a git repository'
+      error: info.error || 'Cannot pull updates: not a git repository'
     };
   }
 
