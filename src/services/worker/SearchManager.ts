@@ -117,7 +117,202 @@ export class SearchManager {
       normalized.isFolder = false;
     }
 
+    // Bug #1911: Default project filter to current project when not provided.
+    // Without this, search/timeline return cross-project results.
+    if (!normalized.project) {
+      normalized.project = getProjectContext(process.cwd()).primary;
+    }
+
+    // Bug #1916: Remap singular `concept` to plural `concepts`.
+    // HTTP handler sends `concept` (singular) but findByConcept() destructures
+    // `concepts` (plural), causing malformed SQL when the field is missing.
+    if (normalized.concept && !normalized.concepts) {
+      normalized.concepts = [normalized.concept];
+      delete normalized.concept;
+    }
+
     return normalized;
+  }
+
+  /**
+   * Bug #1913: FTS5 fallback when ChromaDB is disabled/unavailable.
+   * Queries the FTS5 virtual tables directly for text search.
+   * Returns null if FTS5 tables don't exist on this platform.
+   */
+  private searchFTS5Fallback(
+    query: string,
+    options: {
+      searchObservations: boolean;
+      searchSessions: boolean;
+      searchPrompts: boolean;
+      limit: number;
+      project?: string;
+    }
+  ): { observations: ObservationSearchResult[]; sessions: SessionSummarySearchResult[]; prompts: UserPromptSearchResult[] } | null {
+    try {
+      // Check if FTS5 tables exist (SessionStore.db is public)
+      const db = this.sessionStore.db;
+      if (!db) return null;
+
+      const hasFTS = (db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='observations_fts'"
+      ).all() as { name: string }[]).length > 0;
+
+      if (!hasFTS) {
+        logger.debug('SEARCH', 'FTS5 tables not available for fallback', {});
+        return null;
+      }
+
+      // Sanitize query for FTS5 MATCH (escape special chars, wrap terms in quotes)
+      const sanitizedQuery = query
+        .replace(/['"]/g, '')
+        .split(/\s+/)
+        .filter(Boolean)
+        .map(term => `"${term}"`)
+        .join(' OR ');
+
+      if (!sanitizedQuery) return null;
+
+      let observations: ObservationSearchResult[] = [];
+      let sessions: SessionSummarySearchResult[] = [];
+      let prompts: UserPromptSearchResult[] = [];
+
+      if (options.searchObservations) {
+        const projectClause = options.project ? 'AND o.project = ?' : '';
+        const params: any[] = [sanitizedQuery];
+        if (options.project) params.push(options.project);
+        params.push(options.limit);
+
+        observations = db.prepare(`
+          SELECT o.*, rank
+          FROM observations_fts fts
+          JOIN observations o ON o.id = fts.rowid
+          WHERE observations_fts MATCH ?
+          ${projectClause}
+          ORDER BY rank
+          LIMIT ?
+        `).all(...params) as ObservationSearchResult[];
+      }
+
+      if (options.searchSessions) {
+        const hasSessionFTS = (db.prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='session_summaries_fts'"
+        ).all() as { name: string }[]).length > 0;
+
+        if (hasSessionFTS) {
+          const projectClause = options.project ? 'AND s.project = ?' : '';
+          const params: any[] = [sanitizedQuery];
+          if (options.project) params.push(options.project);
+          params.push(options.limit);
+
+          sessions = db.prepare(`
+            SELECT s.*, rank
+            FROM session_summaries_fts fts
+            JOIN session_summaries s ON s.id = fts.rowid
+            WHERE session_summaries_fts MATCH ?
+            ${projectClause}
+            ORDER BY rank
+            LIMIT ?
+          `).all(...params) as SessionSummarySearchResult[];
+        }
+      }
+
+      if (options.searchPrompts) {
+        const hasPromptFTS = (db.prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='user_prompts_fts'"
+        ).all() as { name: string }[]).length > 0;
+
+        if (hasPromptFTS) {
+          const projectClause = options.project ? 'AND ss.project = ?' : '';
+          const params: any[] = [sanitizedQuery];
+          if (options.project) params.push(options.project);
+          params.push(options.limit);
+
+          prompts = db.prepare(`
+            SELECT up.*, rank
+            FROM user_prompts_fts fts
+            JOIN user_prompts up ON up.id = fts.rowid
+            JOIN sdk_sessions ss ON up.content_session_id = ss.content_session_id
+            WHERE user_prompts_fts MATCH ?
+            ${projectClause}
+            ORDER BY rank
+            LIMIT ?
+          `).all(...params) as UserPromptSearchResult[];
+        }
+      }
+
+      logger.debug('SEARCH', 'FTS5 fallback results', {
+        observations: observations.length,
+        sessions: sessions.length,
+        prompts: prompts.length
+      });
+
+      return { observations, sessions, prompts };
+    } catch (error) {
+      logger.warn('SEARCH', 'FTS5 fallback failed', {}, error as Error);
+      return null;
+    }
+  }
+
+  /**
+   * Bug #1915: Deduplicate search results by content hash and apply
+   * per-project/session diversity cap to prevent result monopolization.
+   */
+  private deduplicateResults<T extends { id: number; content_hash?: string; project?: string; memory_session_id?: string }>(
+    results: T[],
+    options: { maxPerProjectSession?: number; skipDiversityCap?: boolean } = {}
+  ): T[] {
+    const { maxPerProjectSession = 5, skipDiversityCap = false } = options;
+
+    // Step 1: Deduplicate by content_hash, keeping first occurrence (highest-scored)
+    const seenHashes = new Set<string>();
+    const deduped: T[] = [];
+
+    for (const result of results) {
+      if (result.content_hash) {
+        if (seenHashes.has(result.content_hash)) {
+          continue; // Skip duplicate content
+        }
+        seenHashes.add(result.content_hash);
+      }
+      deduped.push(result);
+    }
+
+    // Step 2: Apply per-project+session diversity cap only for text queries.
+    // Filter-only searches (no text query) should return all matching results
+    // without artificial truncation per project/session.
+    if (skipDiversityCap) {
+      if (deduped.length !== results.length) {
+        logger.debug('SEARCH', 'Deduplication applied (hash only, diversity cap skipped)', {
+          original: results.length,
+          afterHashDedup: deduped.length
+        });
+      }
+      return deduped;
+    }
+
+    const projectSessionCounts = new Map<string, number>();
+    const diversified: T[] = [];
+
+    for (const result of deduped) {
+      const key = `${result.project || 'unknown'}::${result.memory_session_id || 'unknown'}`;
+      const count = projectSessionCounts.get(key) || 0;
+      if (count >= maxPerProjectSession) {
+        continue; // Skip - too many results from same project+session
+      }
+      projectSessionCounts.set(key, count + 1);
+      diversified.push(result);
+    }
+
+    if (deduped.length !== results.length || diversified.length !== deduped.length) {
+      logger.debug('SEARCH', 'Deduplication applied', {
+        original: results.length,
+        afterHashDedup: deduped.length,
+        afterDiversityCap: diversified.length
+      });
+    }
+
+    return diversified;
   }
 
   /**
@@ -260,15 +455,40 @@ export class SearchManager {
         logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
       }
     }
-    // ChromaDB not initialized - mark as failed to show proper error message
+    // Bug #1913: ChromaDB not initialized - fall back to FTS5 MATCH query
+    // instead of returning empty results
     else if (query) {
-      chromaFailed = true;
-      logger.debug('SEARCH', 'ChromaDB not initialized - semantic search unavailable', {});
-      logger.debug('SEARCH', 'Install UVX/Python to enable vector search', { url: 'https://docs.astral.sh/uv/getting-started/installation/' });
-      observations = [];
-      sessions = [];
-      prompts = [];
+      logger.debug('SEARCH', 'ChromaDB not initialized - falling back to FTS5 text search', {});
+
+      const fts5Results = this.searchFTS5Fallback(query, {
+        searchObservations,
+        searchSessions,
+        searchPrompts,
+        limit: options.limit || 20,
+        project: options.project
+      });
+
+      if (fts5Results) {
+        observations = fts5Results.observations;
+        sessions = fts5Results.sessions;
+        prompts = fts5Results.prompts;
+      } else {
+        // FTS5 also unavailable
+        chromaFailed = true;
+        logger.debug('SEARCH', 'FTS5 also unavailable - no text search backend', {});
+        observations = [];
+        sessions = [];
+        prompts = [];
+      }
     }
+
+    // Bug #1915: Deduplicate results by content hash and apply diversity cap.
+    // Only apply diversity cap for text queries - filter-only searches should
+    // return all matching results without per-project/session truncation.
+    const skipDiversityCap = !query;
+    observations = this.deduplicateResults(observations, { skipDiversityCap });
+    sessions = this.deduplicateResults(sessions, { skipDiversityCap });
+    prompts = this.deduplicateResults(prompts, { skipDiversityCap });
 
     const totalResults = observations.length + sessions.length + prompts.length;
 
@@ -905,8 +1125,19 @@ export class SearchManager {
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search (Chroma + SQLite)', {});
 
+      // Bug #1912: Build Chroma where filter including project scope
+      let whereFilter: Record<string, any> = { doc_type: 'observation' };
+      if (options.project) {
+        whereFilter = {
+          $and: [
+            { doc_type: 'observation' },
+            { $or: [{ project: options.project }, { merged_into_project: options.project }] }
+          ]
+        };
+      }
+
       // Step 1: Chroma semantic search (top 100)
-      const chromaResults = await this.queryChroma(query, 100);
+      const chromaResults = await this.queryChroma(query, 100, whereFilter);
       logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
@@ -919,10 +1150,10 @@ export class SearchManager {
 
         logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
 
-        // Step 3: Hydrate from SQLite in temporal order
+        // Step 3: Hydrate from SQLite in temporal order (with project filter)
         if (recentIds.length > 0) {
           const limit = options.limit || 20;
-          results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit });
+          results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
           logger.debug('SEARCH', 'Hydrated observations from SQLite', { count: results.length });
         }
       }
@@ -962,8 +1193,19 @@ export class SearchManager {
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search for sessions', {});
 
+      // Bug #1912: Build Chroma where filter including project scope
+      let whereFilter: Record<string, any> = { doc_type: 'session_summary' };
+      if (options.project) {
+        whereFilter = {
+          $and: [
+            { doc_type: 'session_summary' },
+            { $or: [{ project: options.project }, { merged_into_project: options.project }] }
+          ]
+        };
+      }
+
       // Step 1: Chroma semantic search (top 100)
-      const chromaResults = await this.queryChroma(query, 100, { doc_type: 'session_summary' });
+      const chromaResults = await this.queryChroma(query, 100, whereFilter);
       logger.debug('SEARCH', 'Chroma returned semantic matches for sessions', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
@@ -976,10 +1218,10 @@ export class SearchManager {
 
         logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
 
-        // Step 3: Hydrate from SQLite in temporal order
+        // Step 3: Hydrate from SQLite in temporal order (with project filter)
         if (recentIds.length > 0) {
           const limit = options.limit || 20;
-          results = this.sessionStore.getSessionSummariesByIds(recentIds, { orderBy: 'date_desc', limit });
+          results = this.sessionStore.getSessionSummariesByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
           logger.debug('SEARCH', 'Hydrated sessions from SQLite', { count: results.length });
         }
       }
@@ -1019,8 +1261,19 @@ export class SearchManager {
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search for user prompts', {});
 
+      // Bug #1912: Build Chroma where filter including project scope
+      let whereFilter: Record<string, any> = { doc_type: 'user_prompt' };
+      if (options.project) {
+        whereFilter = {
+          $and: [
+            { doc_type: 'user_prompt' },
+            { $or: [{ project: options.project }, { merged_into_project: options.project }] }
+          ]
+        };
+      }
+
       // Step 1: Chroma semantic search (top 100)
-      const chromaResults = await this.queryChroma(query, 100, { doc_type: 'user_prompt' });
+      const chromaResults = await this.queryChroma(query, 100, whereFilter);
       logger.debug('SEARCH', 'Chroma returned semantic matches for prompts', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
@@ -1033,10 +1286,10 @@ export class SearchManager {
 
         logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
 
-        // Step 3: Hydrate from SQLite in temporal order
+        // Step 3: Hydrate from SQLite in temporal order (with project filter)
         if (recentIds.length > 0) {
           const limit = options.limit || 20;
-          results = this.sessionStore.getUserPromptsByIds(recentIds, { orderBy: 'date_desc', limit });
+          results = this.sessionStore.getUserPromptsByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
           logger.debug('SEARCH', 'Hydrated user prompts from SQLite', { count: results.length });
         }
       }

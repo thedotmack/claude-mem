@@ -378,6 +378,54 @@ export class ChromaSync {
   }
 
   /**
+   * Bug #1914: Sync a raw observation database row to Chroma.
+   * Used by the import handler where we have database rows, not ParsedObservation objects.
+   * The row format matches SELECT * FROM observations.
+   */
+  async syncObservationRow(row: {
+    id: number;
+    memory_session_id: string;
+    project: string;
+    merged_into_project?: string | null;
+    text: string | null;
+    type: string;
+    title: string | null;
+    subtitle: string | null;
+    facts: string | null;
+    narrative: string | null;
+    concepts: string | null;
+    files_read: string | null;
+    files_modified: string | null;
+    prompt_number: number;
+    discovery_tokens: number;
+    created_at: string;
+    created_at_epoch: number;
+  }): Promise<void> {
+    const stored: StoredObservation = {
+      id: row.id,
+      memory_session_id: row.memory_session_id,
+      project: row.project,
+      merged_into_project: row.merged_into_project ?? null,
+      text: row.text,
+      type: row.type,
+      title: row.title,
+      subtitle: row.subtitle,
+      facts: row.facts,
+      narrative: row.narrative,
+      concepts: row.concepts,
+      files_read: row.files_read,
+      files_modified: row.files_modified,
+      prompt_number: row.prompt_number,
+      discovery_tokens: row.discovery_tokens,
+      created_at: row.created_at,
+      created_at_epoch: row.created_at_epoch
+    };
+
+    const documents = this.formatObservationDocs(stored);
+    await this.addDocuments(documents);
+  }
+
+  /**
    * Sync a single summary to Chroma
    * Blocks until sync completes, throws on error
    */

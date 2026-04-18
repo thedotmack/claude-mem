@@ -382,11 +382,13 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     // Import observations (depends on sessions)
+    const importedObservationRows: Array<typeof observations[number] & { id: number }> = [];
     if (Array.isArray(observations)) {
       for (const obs of observations) {
         const result = store.importObservation(obs);
         if (result.imported) {
           stats.observationsImported++;
+          importedObservationRows.push({ ...obs, id: result.id });
         } else {
           stats.observationsSkipped++;
         }
@@ -397,6 +399,25 @@ export class DataRoutes extends BaseRouteHandler {
       // those triggers may not have fired correctly for all import paths.
       if (stats.observationsImported > 0) {
         store.rebuildObservationsFTSIndex();
+      }
+
+      // Bug #1914: Also sync imported observations to ChromaDB so they
+      // appear in MCP search() results (vector/semantic search).
+      const chromaSync = this.dbManager.getChromaSync();
+      if (chromaSync && importedObservationRows.length > 0) {
+        // Fire-and-forget: don't block the import response on Chroma sync
+        (async () => {
+          for (const obs of importedObservationRows) {
+            try {
+              await chromaSync.syncObservationRow(obs);
+            } catch (syncError) {
+              logger.warn('DATA', 'Failed to sync imported observation to ChromaDB', { id: obs.id }, syncError as Error);
+            }
+          }
+          logger.info('DATA', 'Synced imported observations to ChromaDB', { count: importedObservationRows.length });
+        })().catch(err => {
+          logger.warn('DATA', 'ChromaDB import sync batch failed', {}, err as Error);
+        });
       }
     }
 
