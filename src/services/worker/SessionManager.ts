@@ -256,6 +256,15 @@ export class SessionManager {
   }
 
   /**
+   * Iterate over all active sessions (for periodic maintenance tasks)
+   */
+  forEachActiveSession(callback: (session: ActiveSession) => void): void {
+    for (const session of this.sessions.values()) {
+      callback(session);
+    }
+  }
+
+  /**
    * Queue an observation for processing (zero-latency notification)
    * Auto-initializes session if not in memory but exists in database
    *

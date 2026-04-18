@@ -533,6 +533,13 @@ export class WorkerService {
           if (reaped > 0) {
             logger.info('SYSTEM', `Reaped ${reaped} stale sessions`);
           }
+
+          // Apply restart decay: if a session has been processing successfully
+          // for 5+ minutes since its last restart, clear the restart history
+          const { applyRestartDecay } = await import('./worker/RestartGuard.js');
+          this.sessionManager.forEachActiveSession((session) => {
+            applyRestartDecay(session);
+          });
         } catch (e) {
           logger.error('SYSTEM', 'Stale session reaper error', { error: e instanceof Error ? e.message : String(e) });
         }
@@ -1000,6 +1007,9 @@ export class WorkerService {
       clearInterval(this.staleSessionReaperInterval);
       this.staleSessionReaperInterval = null;
     }
+
+    // Stop SSE broadcaster cleanup interval to prevent timer leak
+    this.sseBroadcaster.dispose();
 
     await performGracefulShutdown({
       server: this.server.getHttpServer(),
