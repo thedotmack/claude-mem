@@ -6,6 +6,7 @@ import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
 import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
 import { TranscriptEventProcessor } from './processor.js';
+import { startPeriodicJsonlCleanup } from './cleanup.js';
 
 interface TailState {
   offset: number;
@@ -84,6 +85,7 @@ export class TranscriptWatcher {
   private tailers = new Map<string, FileTailer>();
   private state: TranscriptWatchState;
   private rescanTimers: Array<NodeJS.Timeout> = [];
+  private stopJsonlCleanup: (() => void) | null = null;
 
   constructor(private config: TranscriptWatchConfig, private statePath: string) {
     this.state = loadWatchState(statePath);
@@ -93,9 +95,21 @@ export class TranscriptWatcher {
     for (const watch of this.config.watches) {
       await this.setupWatch(watch);
     }
+
+    // Start periodic JSONL cleanup (Issue #1937)
+    // Runs immediately then every hour: deletes processed files older than 7 days,
+    // and enforces a 1GB total size cap on JSONL files.
+    this.stopJsonlCleanup = startPeriodicJsonlCleanup(this.state, this.statePath);
+    logger.info('TRANSCRIPT', 'Started periodic JSONL cleanup (hourly, 7-day retention, 1GB cap)');
   }
 
   stop(): void {
+    // Stop JSONL cleanup timer
+    if (this.stopJsonlCleanup) {
+      this.stopJsonlCleanup();
+      this.stopJsonlCleanup = null;
+    }
+
     for (const tailer of this.tailers.values()) {
       tailer.close();
     }

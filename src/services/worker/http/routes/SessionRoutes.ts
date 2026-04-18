@@ -24,6 +24,7 @@ import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProcessBySession, ensureProcessExit } from '../../ProcessRegistry.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
+import { ObserverBudgetTracker } from '../../../observer/ObserverBudgetTracker.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -455,6 +456,13 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
+    // Budget & throttle gate (Issue #1938)
+    const budgetTracker = ObserverBudgetTracker.getInstance();
+    if (!budgetTracker.canProcessObservation()) {
+      res.json({ status: 'skipped', reason: 'budget_or_throttle' });
+      return;
+    }
+
     const { tool_name, tool_input, tool_response, prompt_number, cwd } = req.body;
 
     this.sessionManager.queueObservation(sessionDbId, {
@@ -464,6 +472,8 @@ export class SessionRoutes extends BaseRouteHandler {
       prompt_number,
       cwd
     });
+
+    budgetTracker.markObservationProcessed();
 
     // CRITICAL: Ensure SDK agent is running to consume the queue
     this.ensureGeneratorRunning(sessionDbId, 'observation');
@@ -561,6 +571,13 @@ export class SessionRoutes extends BaseRouteHandler {
       return this.badRequest(res, 'Missing contentSessionId');
     }
 
+    // Budget & throttle gate (Issue #1938)
+    const budgetTracker = ObserverBudgetTracker.getInstance();
+    if (!budgetTracker.canProcessObservation()) {
+      res.json({ status: 'skipped', reason: 'budget_or_throttle' });
+      return;
+    }
+
     // Load skip tools from settings
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const skipTools = new Set(settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim()).filter(Boolean));
@@ -630,6 +647,8 @@ export class SessionRoutes extends BaseRouteHandler {
           return '';
         })()
       });
+
+      budgetTracker.markObservationProcessed();
 
       // Ensure SDK agent is running
       this.ensureGeneratorRunning(sessionDbId, 'observation');
