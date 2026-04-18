@@ -13,6 +13,8 @@
  * - claude_mem_search: Search memory database from within OpenCode
  */
 
+import { z } from "zod";
+
 // ============================================================================
 // Minimal type declarations for OpenCode Plugin SDK
 // These match the runtime API provided by @opencode-ai/plugin
@@ -318,10 +320,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         description:
           "Search claude-mem memory database for past observations, sessions, and context",
         args: {
-          query: {
-            type: "string",
-            description: "Search query for memory observations",
-          },
+          query: z.string().describe("Search query for memory observations"),
         },
         async execute(
           args: Record<string, unknown>,

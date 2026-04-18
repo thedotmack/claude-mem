@@ -808,6 +808,32 @@ install_plugin() {
     " 2>/dev/null) || true
   fi
 
+  # Pre-populate plugins.allow BEFORE install — OpenClaw's config validator
+  # rejects `plugins install` if the plugin isn't already in the allow list.
+  # This solves the chicken-and-egg: allow first, then install.
+  if [[ -f "$oc_config" ]]; then
+    INSTALLER_CONFIG_FILE="$oc_config" node -e "
+      const fs = require('fs');
+      const configPath = process.env.INSTALLER_CONFIG_FILE;
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (!config.plugins) config.plugins = {};
+      if (!Array.isArray(config.plugins.allow)) config.plugins.allow = [];
+      if (!config.plugins.allow.includes('claude-mem')) {
+        config.plugins.allow.push('claude-mem');
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        console.log('Pre-populated plugins.allow with claude-mem');
+      }
+    " 2>&1 || warn "Could not pre-populate plugins.allow"
+  else
+    # Config doesn't exist yet — create a minimal one with plugins.allow
+    mkdir -p "${HOME}/.openclaw"
+    INSTALLER_CONFIG_FILE="$oc_config" node -e "
+      const config = { plugins: { allow: ['claude-mem'] } };
+      require('fs').writeFileSync(process.env.INSTALLER_CONFIG_FILE, JSON.stringify(config, null, 2));
+      console.log('Created minimal config with plugins.allow');
+    " 2>&1 || warn "Could not create minimal config"
+  fi
+
   # Install the plugin using OpenClaw's CLI
   info "Installing claude-mem plugin into OpenClaw..."
   if ! run_openclaw plugins install "$installable_dir" 2>&1; then
