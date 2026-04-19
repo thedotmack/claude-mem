@@ -2659,6 +2659,8 @@ export class SessionStore {
     discovery_tokens: number;
     created_at: string;
     created_at_epoch: number;
+    agent_type?: string | null;
+    agent_id?: string | null;
   }): { imported: boolean; id: number } {
     // Check if observation already exists
     const existing = this.db.prepare(`
@@ -2674,8 +2676,9 @@ export class SessionStore {
       INSERT INTO observations (
         memory_session_id, project, text, type, title, subtitle,
         facts, narrative, concepts, files_read, files_modified,
-        prompt_number, discovery_tokens, created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        prompt_number, discovery_tokens, agent_type, agent_id,
+        created_at, created_at_epoch
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -2692,6 +2695,8 @@ export class SessionStore {
       obs.files_modified,
       obs.prompt_number,
       obs.discovery_tokens || 0,
+      obs.agent_type ?? null,
+      obs.agent_id ?? null,
       obs.created_at,
       obs.created_at_epoch
     );

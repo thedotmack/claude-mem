@@ -127,22 +127,27 @@ export async function processAgentResponse(
   }));
 
   // ATOMIC TRANSACTION: Store observations + summary ONCE
-  // Messages are already deleted from queue on claim, so no completion tracking needed
-  const result = sessionStore.storeObservations(
-    session.memorySessionId,
-    session.project,
-    labeledObservations,
-    summaryForStore,
-    session.lastPromptNumber,
-    discoveryTokens,
-    originalTimestamp ?? undefined,
-    modelId
-  );
-
-  // Clear the subagent tracker — the batch we just stored consumed it.
-  // Next batch will refresh from newly-claimed messages.
-  session.pendingAgentId = null;
-  session.pendingAgentType = null;
+  // Messages are already deleted from queue on claim, so no completion tracking needed.
+  // Wrap in try/finally so the subagent tracker clears even if storage throws —
+  // otherwise stale identity could leak into the next batch and mislabel rows.
+  // Expected invariant: all observations in a batch share the same agent context,
+  // because ResponseProcessor runs after a single agent-response cycle.
+  let result: ReturnType<typeof sessionStore.storeObservations>;
+  try {
+    result = sessionStore.storeObservations(
+      session.memorySessionId,
+      session.project,
+      labeledObservations,
+      summaryForStore,
+      session.lastPromptNumber,
+      discoveryTokens,
+      originalTimestamp ?? undefined,
+      modelId
+    );
+  } finally {
+    session.pendingAgentId = null;
+    session.pendingAgentType = null;
+  }
 
   // Log storage result with IDs for end-to-end traceability
   logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {

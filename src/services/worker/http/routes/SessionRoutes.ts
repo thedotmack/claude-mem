@@ -655,7 +655,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * Checks privacy, queues summarize request for SDK agent
    */
   private handleSummarizeByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, last_assistant_message, agentId, agentType } = req.body;
+    const { contentSessionId, last_assistant_message, agentId } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
 
     if (!contentSessionId) {
@@ -663,8 +663,9 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Belt-and-suspenders: reject summarize requests from subagent context.
-    // The hook layer also short-circuits, but this guards against callers that bypass it.
-    if (agentId || agentType) {
+    // Gate on agentId only — agentType alone indicates a main session started with
+    // --agent, which still owns its summary. Mirrors the hook-side guard in summarize.ts.
+    if (agentId) {
       res.json({ status: 'skipped', reason: 'subagent_context' });
       return;
     }
