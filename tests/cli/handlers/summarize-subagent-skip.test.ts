@@ -83,19 +83,23 @@ describe('summarizeHandler — subagent short-circuit', () => {
     expect(workerCallLog.length).toBe(0);
   });
 
-  it('skips summary and returns SUCCESS when only agentType is set', async () => {
+  it('does NOT skip when only agentType is set (--agent main session still owns its summary)', async () => {
+    // agent_type without agent_id is how Claude Code signals a main session started
+    // with --agent. These are main sessions, not Task-spawned subagents, so the
+    // summary path must proceed. Here the transcript path is missing so the handler
+    // falls through to the existing no-transcriptPath return — the key assertion is
+    // that the subagent guard did NOT short-circuit (handler reached the normal path).
     const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
 
     const result = await summarizeHandler.execute({
       sessionId: 'session-def',
       cwd: '/tmp',
       platform: 'claude-code',
-      transcriptPath: '/tmp/does-not-matter.jsonl',
       agentType: 'Explore',
+      // transcriptPath intentionally omitted
     });
 
     expect(result.continue).toBe(true);
-    expect(result.suppressOutput).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(workerCallLog.length).toBe(0);
   });

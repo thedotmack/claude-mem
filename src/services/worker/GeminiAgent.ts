@@ -203,10 +203,10 @@ export class GeminiAgent {
 
         // Capture subagent identity from the claimed message so ResponseProcessor
         // can label observation rows with the originating Claude Code subagent.
-        if (message.agentId || message.agentType) {
-          session.pendingAgentId = message.agentId ?? null;
-          session.pendingAgentType = message.agentType ?? null;
-        }
+        // Always overwrite (even with null) so a main-session message after a subagent
+        // message clears the stale identity; otherwise mixed batches could mislabel.
+        session.pendingAgentId = message.agentId ?? null;
+        session.pendingAgentType = message.agentType ?? null;
 
         // Capture cwd from each message for worktree support
         if (message.cwd) {

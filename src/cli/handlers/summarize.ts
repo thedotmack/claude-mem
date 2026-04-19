@@ -34,8 +34,10 @@ export const summarizeHandler: EventHandler = {
     }
 
     // Skip summaries in subagent context — subagents do not own the session summary.
-    // Main Stop hook owns it; SubagentStop (if ever registered) must no-op.
-    if (input.agentId || input.agentType) {
+    // Gate on agentId only: that field is present exclusively for Task-spawned subagents.
+    // agentType alone (no agentId) indicates `--agent`-started main sessions, which still
+    // own their summary.
+    if (input.agentId) {
       logger.debug('HOOK', 'Skipping summary: subagent context detected', {
         sessionId: input.sessionId,
         agentId: input.agentId,
@@ -87,9 +89,7 @@ export const summarizeHandler: EventHandler = {
       body: JSON.stringify({
         contentSessionId: sessionId,
         last_assistant_message: lastAssistantMessage,
-        platformSource,
-        ...(input.agentId ? { agentId: input.agentId } : {}),
-        ...(input.agentType ? { agentType: input.agentType } : {}),
+        platformSource
       }),
       timeoutMs: SUMMARIZE_TIMEOUT_MS
     });

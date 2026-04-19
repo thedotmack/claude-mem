@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { Migration } from './Database.js';
+import { logger } from '../../utils/logger.js';
 
 // Re-export MigrationRunner for SessionStore migration extraction
 export { MigrationRunner } from './migrations/runner.js';
@@ -593,6 +594,7 @@ export const migration010: Migration = {
       db.run('ALTER TABLE observations ADD COLUMN agent_id TEXT');
     }
     db.run('CREATE INDEX IF NOT EXISTS idx_observations_agent_type ON observations(agent_type)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_observations_agent_id ON observations(agent_id)');
 
     // Also thread the same fields through the pending_messages queue so the label
     // survives worker restarts between enqueue and SDK-agent processing.
@@ -608,7 +610,7 @@ export const migration010: Migration = {
       }
     }
 
-    console.log('[migration010] Added agent_type, agent_id columns to observations and pending_messages');
+    logger.debug('DB', '[migration010] Added agent_type, agent_id columns to observations and pending_messages');
   },
   down: (_db: Database) => {
     // SQLite DROP COLUMN not fully supported; no-op

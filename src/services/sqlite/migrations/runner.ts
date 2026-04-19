@@ -980,6 +980,7 @@ export class MigrationRunner {
       logger.debug('DB', 'Added agent_id column to observations table');
     }
     this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_agent_type ON observations(agent_type)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_agent_id ON observations(agent_id)');
 
     const pendingCols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
     if (pendingCols.length > 0) {
