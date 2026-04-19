@@ -72,8 +72,10 @@ export async function processAgentResponse(
   // Detect whether the most recent prompt was a summary request.
   // If so, enable observation-to-summary coercion to prevent the infinite
   // retry loop described in #1633.
-  const userMessages = session.conversationHistory.filter(m => m.role === 'user');
-  const lastUserMessage = userMessages.length > 0 ? userMessages[userMessages.length - 1] : null;
+  const lastMessage = session.conversationHistory.at(-1);
+  const lastUserMessage = lastMessage?.role === 'user'
+    ? lastMessage
+    : session.conversationHistory.findLast(m => m.role === 'user') ?? null;
   const summaryExpected = lastUserMessage?.content?.includes(SUMMARY_MODE_MARKER) ?? false;
 
   const summary = parseSummary(text, session.sessionDbId, summaryExpected);
@@ -150,7 +152,7 @@ export async function processAgentResponse(
       session.consecutiveSummaryFailures = 0;
     } else {
       // Summary was expected but none was stored — count as failure
-      session.consecutiveSummaryFailures = (session.consecutiveSummaryFailures || 0) + 1;
+      session.consecutiveSummaryFailures += 1;
       if (session.consecutiveSummaryFailures >= MAX_CONSECUTIVE_SUMMARY_FAILURES) {
         logger.error('SESSION', `Circuit breaker: ${session.consecutiveSummaryFailures} consecutive summary failures — further summarize requests will be skipped (#1633)`, {
           sessionId: session.sessionDbId,

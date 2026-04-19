@@ -316,8 +316,9 @@ export class SessionManager {
 
     // Circuit breaker: skip summarize if too many consecutive failures (#1633).
     // This prevents the infinite loop where each failed summary spawns a new session
-    // with an ever-growing prompt.
-    if ((session.consecutiveSummaryFailures || 0) >= MAX_CONSECUTIVE_SUMMARY_FAILURES) {
+    // with an ever-growing prompt. Counter is in-memory per ActiveSession — it resets
+    // on worker restart, which is acceptable because session state is already ephemeral.
+    if (session.consecutiveSummaryFailures >= MAX_CONSECUTIVE_SUMMARY_FAILURES) {
       logger.warn('SESSION', `Circuit breaker OPEN: skipping summarize after ${session.consecutiveSummaryFailures} consecutive failures (#1633)`, {
         sessionId: sessionDbId,
         contentSessionId: session.contentSessionId
