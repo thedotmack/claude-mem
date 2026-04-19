@@ -573,6 +573,49 @@ export const migration009: Migration = {
 };
 
 /**
+ * Migration 010: Label observations (and their queue rows) with the subagent identity.
+ *
+ * Claude Code hooks that fire inside a subagent carry agent_id and agent_type on the
+ * stdin payload. These flow hook → worker → pending_messages → SDK storage so that
+ * observation rows can be attributed to the originating subagent. Main-session rows
+ * keep NULL for both columns.
+ */
+export const migration010: Migration = {
+  version: 27,
+  up: (db: Database) => {
+    const obsColumns = db.prepare('PRAGMA table_info(observations)').all() as any[];
+    const obsHasAgentType = obsColumns.some((c: any) => c.name === 'agent_type');
+    const obsHasAgentId = obsColumns.some((c: any) => c.name === 'agent_id');
+    if (!obsHasAgentType) {
+      db.run('ALTER TABLE observations ADD COLUMN agent_type TEXT');
+    }
+    if (!obsHasAgentId) {
+      db.run('ALTER TABLE observations ADD COLUMN agent_id TEXT');
+    }
+    db.run('CREATE INDEX IF NOT EXISTS idx_observations_agent_type ON observations(agent_type)');
+
+    // Also thread the same fields through the pending_messages queue so the label
+    // survives worker restarts between enqueue and SDK-agent processing.
+    const pendingColumns = db.prepare('PRAGMA table_info(pending_messages)').all() as any[];
+    if (pendingColumns.length > 0) {
+      const pendingHasAgentType = pendingColumns.some((c: any) => c.name === 'agent_type');
+      const pendingHasAgentId = pendingColumns.some((c: any) => c.name === 'agent_id');
+      if (!pendingHasAgentType) {
+        db.run('ALTER TABLE pending_messages ADD COLUMN agent_type TEXT');
+      }
+      if (!pendingHasAgentId) {
+        db.run('ALTER TABLE pending_messages ADD COLUMN agent_id TEXT');
+      }
+    }
+
+    console.log('[migration010] Added agent_type, agent_id columns to observations and pending_messages');
+  },
+  down: (_db: Database) => {
+    // SQLite DROP COLUMN not fully supported; no-op
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
@@ -584,5 +627,6 @@ export const migrations: Migration[] = [
   migration006,
   migration007,
   migration008,
-  migration009
+  migration009,
+  migration010
 ];

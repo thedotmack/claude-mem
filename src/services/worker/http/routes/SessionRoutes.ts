@@ -553,7 +553,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
+    const { contentSessionId, tool_name, tool_input, tool_response, cwd, agentId, agentType } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
     const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : '';
 
@@ -628,7 +628,9 @@ export class SessionRoutes extends BaseRouteHandler {
             tool_name
           });
           return '';
-        })()
+        })(),
+        agentId: typeof agentId === 'string' ? agentId : undefined,
+        agentType: typeof agentType === 'string' ? agentType : undefined,
       });
 
       // Ensure SDK agent is running
@@ -653,11 +655,18 @@ export class SessionRoutes extends BaseRouteHandler {
    * Checks privacy, queues summarize request for SDK agent
    */
   private handleSummarizeByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, last_assistant_message } = req.body;
+    const { contentSessionId, last_assistant_message, agentId, agentType } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');
+    }
+
+    // Belt-and-suspenders: reject summarize requests from subagent context.
+    // The hook layer also short-circuits, but this guards against callers that bypass it.
+    if (agentId || agentType) {
+      res.json({ status: 'skipped', reason: 'subagent_context' });
+      return;
     }
 
     const store = this.dbManager.getSessionStore();

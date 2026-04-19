@@ -374,6 +374,14 @@ export class SDKAgent {
       // The message is now in 'processing' status in DB until ResponseProcessor calls confirmProcessed()
       session.processingMessageIds.push(message._persistentId);
 
+      // Capture subagent identity from the claimed message so ResponseProcessor
+      // can label observation rows with the originating Claude Code subagent.
+      // NULL / undefined means the message came from the main session.
+      if (message.agentId || message.agentType) {
+        session.pendingAgentId = message.agentId ?? null;
+        session.pendingAgentType = message.agentType ?? null;
+      }
+
       // Capture cwd from each message for worktree support
       if (message.cwd) {
         cwdTracker.lastCwd = message.cwd;

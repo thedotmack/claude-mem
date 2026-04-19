@@ -33,6 +33,17 @@ export const summarizeHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
+    // Skip summaries in subagent context — subagents do not own the session summary.
+    // Main Stop hook owns it; SubagentStop (if ever registered) must no-op.
+    if (input.agentId || input.agentType) {
+      logger.debug('HOOK', 'Skipping summary: subagent context detected', {
+        sessionId: input.sessionId,
+        agentId: input.agentId,
+        agentType: input.agentType
+      });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     const { sessionId, transcriptPath } = input;
 
     // Validate required fields before processing
@@ -76,7 +87,9 @@ export const summarizeHandler: EventHandler = {
       body: JSON.stringify({
         contentSessionId: sessionId,
         last_assistant_message: lastAssistantMessage,
-        platformSource
+        platformSource,
+        ...(input.agentId ? { agentId: input.agentId } : {}),
+        ...(input.agentType ? { agentType: input.agentType } : {}),
       }),
       timeoutMs: SUMMARIZE_TIMEOUT_MS
     });

@@ -38,6 +38,7 @@ export class MigrationRunner {
     this.createObservationFeedbackTable();
     this.addSessionPlatformSourceColumn();
     this.ensureMergedIntoProjectColumns();
+    this.addObservationSubagentColumns();
   }
 
   /**
@@ -951,5 +952,51 @@ export class MigrationRunner {
     this.db.run(
       'CREATE INDEX IF NOT EXISTS idx_summaries_merged_into ON session_summaries(merged_into_project)'
     );
+  }
+
+  /**
+   * Add agent_type and agent_id columns to observations and pending_messages (migration 27).
+   *
+   * Labels observation rows with the originating Claude Code subagent identity so
+   * downstream queries can distinguish main-session work from subagent work.
+   * Main-session rows keep NULL for both columns.
+   *
+   * Also threads the same columns through pending_messages so the label survives
+   * between enqueue (hook) and SDK-agent processing (which re-inserts into observations).
+   */
+  private addObservationSubagentColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(27) as SchemaVersion | undefined;
+
+    const obsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const obsHasAgentType = obsCols.some(c => c.name === 'agent_type');
+    const obsHasAgentId = obsCols.some(c => c.name === 'agent_id');
+
+    if (!obsHasAgentType) {
+      this.db.run('ALTER TABLE observations ADD COLUMN agent_type TEXT');
+      logger.debug('DB', 'Added agent_type column to observations table');
+    }
+    if (!obsHasAgentId) {
+      this.db.run('ALTER TABLE observations ADD COLUMN agent_id TEXT');
+      logger.debug('DB', 'Added agent_id column to observations table');
+    }
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_agent_type ON observations(agent_type)');
+
+    const pendingCols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    if (pendingCols.length > 0) {
+      const pendingHasAgentType = pendingCols.some(c => c.name === 'agent_type');
+      const pendingHasAgentId = pendingCols.some(c => c.name === 'agent_id');
+      if (!pendingHasAgentType) {
+        this.db.run('ALTER TABLE pending_messages ADD COLUMN agent_type TEXT');
+        logger.debug('DB', 'Added agent_type column to pending_messages table');
+      }
+      if (!pendingHasAgentId) {
+        this.db.run('ALTER TABLE pending_messages ADD COLUMN agent_id TEXT');
+        logger.debug('DB', 'Added agent_id column to pending_messages table');
+      }
+    }
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(27, new Date().toISOString());
+    }
   }
 }

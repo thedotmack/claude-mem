@@ -13,6 +13,8 @@ export const claudeCodeAdapter: PlatformAdapter = {
       toolInput: r.tool_input,
       toolResponse: r.tool_response,
       transcriptPath: r.transcript_path,
+      agentId: typeof r.agent_id === 'string' ? r.agent_id : undefined,
+      agentType: typeof r.agent_type === 'string' ? r.agent_type : undefined,
     };
   },
   formatOutput(result) {
