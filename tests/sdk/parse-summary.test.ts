@@ -114,6 +114,26 @@ describe('parseSummary', () => {
     expect(result?.request).toBe('summary request');
   });
 
+  it('falls back to observation coercion when <summary> matches but has empty sub-tags (#1633)', () => {
+    // LLM wraps an empty summary around real observation content — without the
+    // fallback, the empty-subtag guard (#1360) rejects the summary and we lose
+    // the observation content, resurrecting the retry loop.
+    const text = `<summary></summary>
+      <observation>
+        <title>the real work</title>
+        <narrative>what actually happened</narrative>
+      </observation>`;
+    const result = parseSummary(text, undefined, true);
+    expect(result).not.toBeNull();
+    expect(result?.request).toBe('the real work');
+    expect(result?.investigated).toBe('what actually happened');
+  });
+
+  it('empty <summary> with no observation content still returns null (coercion disabled)', () => {
+    const text = '<summary></summary>';
+    expect(parseSummary(text, undefined, true)).toBeNull();
+  });
+
   it('skips empty leading observation blocks and coerces from the first populated one (#1633)', () => {
     const text = `<observation><type>discovery</type></observation>
       <observation>

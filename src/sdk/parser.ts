@@ -188,6 +188,17 @@ export function parseSummary(text: string, sessionId?: number, coerceFromObserva
   // This is NOT the same as missing some fields (which we intentionally allow above).
   // Fix for #1360.
   if (!request && !investigated && !learned && !completed && !next_steps) {
+    // If the response also contains <observation> tags with real content, fall
+    // back to coercion rather than discarding the response entirely — this covers
+    // the case where the LLM wraps empty <summary></summary> around observation
+    // content, which would otherwise resurrect the #1633 retry loop.
+    if (coerceFromObservation && /<observation>/.test(text)) {
+      const coerced = coerceObservationToSummary(text, sessionId);
+      if (coerced) {
+        logger.warn('PARSER', 'Empty <summary> match rejected — coerced from <observation> fallback (#1633)', { sessionId });
+        return coerced;
+      }
+    }
     logger.warn('PARSER', 'Summary match has no sub-tags — skipping false positive', { sessionId });
     return null;
   }
