@@ -16,6 +16,7 @@ import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
 import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
 import { getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
 import { getSupervisor } from '../../supervisor/index.js';
+import { MAX_CONSECUTIVE_SUMMARY_FAILURES } from '../../sdk/prompts.js';
 
 /** Idle threshold before a stuck generator (zombie subprocess) is force-killed. */
 export const MAX_GENERATOR_IDLE_MS = 5 * 60 * 1000; // 5 minutes
@@ -219,7 +220,8 @@ export class SessionManager {
       currentProvider: null,  // Will be set when generator starts
       consecutiveRestarts: 0,  // Track consecutive restart attempts to prevent infinite loops
       processingMessageIds: [],  // CLAIM-CONFIRM: Track message IDs for confirmProcessed()
-      lastGeneratorActivity: Date.now()  // Initialize for stale detection (Issue #1099)
+      lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
+      consecutiveSummaryFailures: 0  // Circuit breaker for summary retry loop (#1633)
     };
 
     logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
@@ -310,6 +312,18 @@ export class SessionManager {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
+    }
+
+    // Circuit breaker: skip summarize if too many consecutive failures (#1633).
+    // This prevents the infinite loop where each failed summary spawns a new session
+    // with an ever-growing prompt. Counter is in-memory per ActiveSession — it resets
+    // on worker restart, which is acceptable because session state is already ephemeral.
+    if (session.consecutiveSummaryFailures >= MAX_CONSECUTIVE_SUMMARY_FAILURES) {
+      logger.warn('SESSION', `Circuit breaker OPEN: skipping summarize after ${session.consecutiveSummaryFailures} consecutive failures (#1633)`, {
+        sessionId: sessionDbId,
+        contentSessionId: session.contentSessionId
+      });
+      return;
     }
 
     // CRITICAL: Persist to database FIRST

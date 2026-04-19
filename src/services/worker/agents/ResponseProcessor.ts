@@ -13,6 +13,7 @@
 
 import { logger } from '../../../utils/logger.js';
 import { parseObservations, parseSummary, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
+import { SUMMARY_MODE_MARKER, MAX_CONSECUTIVE_SUMMARY_FAILURES } from '../../../sdk/prompts.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
@@ -67,7 +68,17 @@ export async function processAgentResponse(
 
   // Parse observations and summary
   const observations = parseObservations(text, session.contentSessionId);
-  const summary = parseSummary(text, session.sessionDbId);
+
+  // Detect whether the most recent prompt was a summary request.
+  // If so, enable observation-to-summary coercion to prevent the infinite
+  // retry loop described in #1633.
+  const lastMessage = session.conversationHistory.at(-1);
+  const lastUserMessage = lastMessage?.role === 'user'
+    ? lastMessage
+    : session.conversationHistory.findLast(m => m.role === 'user') ?? null;
+  const summaryExpected = lastUserMessage?.content?.includes(SUMMARY_MODE_MARKER) ?? false;
+
+  const summary = parseSummary(text, session.sessionDbId, summaryExpected);
 
   if (
     text.trim() &&
@@ -129,6 +140,32 @@ export async function processAgentResponse(
   // Track whether a summary record was stored so the status endpoint can expose this
   // to the Stop hook for silent-summary-loss detection (#1633)
   session.lastSummaryStored = result.summaryId !== null;
+
+  // Circuit breaker: track consecutive summary failures (#1633).
+  // Only evaluate when a summary was actually expected (summarize message was sent).
+  // Without this guard, the counter would increment on every normal observation
+  // response, tripping the breaker after 3 observations and permanently blocking
+  // summarization — reproducing the data-loss scenario this fix is meant to prevent.
+  if (summaryExpected) {
+    const skippedIntentionally = /<skip_summary\b/.test(text);
+    if (summaryForStore !== null) {
+      // Summary was present in the response — reset the failure counter
+      session.consecutiveSummaryFailures = 0;
+    } else if (skippedIntentionally) {
+      // Explicit <skip_summary/> is a valid protocol response — neither success
+      // nor failure. Leave the counter unchanged so we don't mask a bad run that
+      // happens to end on a skip, but also don't punish intentional skips.
+    } else {
+      // Summary was expected but none was stored — count as failure
+      session.consecutiveSummaryFailures += 1;
+      if (session.consecutiveSummaryFailures >= MAX_CONSECUTIVE_SUMMARY_FAILURES) {
+        logger.error('SESSION', `Circuit breaker: ${session.consecutiveSummaryFailures} consecutive summary failures — further summarize requests will be skipped (#1633)`, {
+          sessionId: session.sessionDbId,
+          contentSessionId: session.contentSessionId
+        });
+      }
+    }
+  }
 
   // CLAIM-CONFIRM: Now that storage succeeded, confirm all processing messages (delete from queue)
   // This is the critical step that prevents message loss on generator crash
