@@ -13,6 +13,7 @@
 
 import { logger } from '../../../utils/logger.js';
 import { parseObservations, parseSummary, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
+import { SUMMARY_MODE_MARKER, MAX_CONSECUTIVE_SUMMARY_FAILURES } from '../../../sdk/prompts.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
@@ -73,7 +74,7 @@ export async function processAgentResponse(
   // retry loop described in #1633.
   const userMessages = session.conversationHistory.filter(m => m.role === 'user');
   const lastUserMessage = userMessages.length > 0 ? userMessages[userMessages.length - 1] : null;
-  const summaryExpected = lastUserMessage?.content?.includes('MODE SWITCH: PROGRESS SUMMARY') ?? false;
+  const summaryExpected = lastUserMessage?.content?.includes(SUMMARY_MODE_MARKER) ?? false;
 
   const summary = parseSummary(text, session.sessionDbId, summaryExpected);
 
@@ -147,7 +148,7 @@ export async function processAgentResponse(
   } else if (result.summaryId === null && /<observation>|<summary>/.test(text)) {
     // A response was produced but no summary was stored — count as failure
     session.consecutiveSummaryFailures = (session.consecutiveSummaryFailures || 0) + 1;
-    if (session.consecutiveSummaryFailures >= 3) {
+    if (session.consecutiveSummaryFailures >= MAX_CONSECUTIVE_SUMMARY_FAILURES) {
       logger.error('SESSION', `Circuit breaker: ${session.consecutiveSummaryFailures} consecutive summary failures — further summarize requests will be skipped (#1633)`, {
         sessionId: session.sessionDbId,
         contentSessionId: session.contentSessionId

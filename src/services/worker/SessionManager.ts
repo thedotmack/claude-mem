@@ -16,6 +16,7 @@ import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
 import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
 import { getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
 import { getSupervisor } from '../../supervisor/index.js';
+import { MAX_CONSECUTIVE_SUMMARY_FAILURES } from '../../sdk/prompts.js';
 
 /** Idle threshold before a stuck generator (zombie subprocess) is force-killed. */
 export const MAX_GENERATOR_IDLE_MS = 5 * 60 * 1000; // 5 minutes
@@ -316,7 +317,6 @@ export class SessionManager {
     // Circuit breaker: skip summarize if too many consecutive failures (#1633).
     // This prevents the infinite loop where each failed summary spawns a new session
     // with an ever-growing prompt.
-    const MAX_CONSECUTIVE_SUMMARY_FAILURES = 3;
     if ((session.consecutiveSummaryFailures || 0) >= MAX_CONSECUTIVE_SUMMARY_FAILURES) {
       logger.warn('SESSION', `Circuit breaker OPEN: skipping summarize after ${session.consecutiveSummaryFailures} consecutive failures (#1633)`, {
         sessionId: sessionDbId,

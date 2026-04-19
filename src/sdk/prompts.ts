@@ -6,6 +6,20 @@
 import { logger } from '../utils/logger.js';
 import type { ModeConfig } from '../services/domain/types.js';
 
+/**
+ * Marker string embedded in summary prompts — used by ResponseProcessor to detect
+ * whether the most recent user message was a summary request (enables observation→summary
+ * coercion for #1633). Keep in sync with buildSummaryPrompt below.
+ */
+export const SUMMARY_MODE_MARKER = 'MODE SWITCH: PROGRESS SUMMARY';
+
+/**
+ * Maximum consecutive summary failures before the circuit breaker opens.
+ * After this many failures, SessionManager.queueSummarize will skip further
+ * summarize requests to prevent the infinite retry loop (#1633).
+ */
+export const MAX_CONSECUTIVE_SUMMARY_FAILURES = 3;
+
 export interface Observation {
   id: number;
   tool_name: string;
@@ -134,7 +148,7 @@ export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): strin
     return '';
   })();
 
-  return `--- MODE SWITCH: PROGRESS SUMMARY ---
+  return `--- ${SUMMARY_MODE_MARKER} ---
 ⚠️ CRITICAL TAG REQUIREMENT — READ CAREFULLY:
 • You MUST wrap your ENTIRE response in <summary>...</summary> tags.
 • Do NOT use <observation> tags. <observation> output will be DISCARDED and cause a system error.
