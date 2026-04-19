@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.2.1] - 2026-04-19
+
+## What's Fixed
+
+### Break infinite summary-retry loop (#1633)
+
+When the summary agent returned `<observation>` tags instead of `<summary>` tags, the parser rejected the response, no summary was stored, the session completed without a summary, and a new session was spawned with ~5–6 KB of extra prompt context — repeating indefinitely.
+
+**Three layers of defense (PR #2072):**
+
+- **Parser coercion** — when a summary is expected, observation fields are mapped to summary fields (title → request/completed, narrative → investigated, facts → learned) instead of discarding the response.
+- **Stronger prompt** — summary prompts now include an explicit tag-requirement block and a closing reminder so the LLM is much less likely to emit observation tags in the first place.
+- **Circuit breaker** — per-session counter caps consecutive summary failures at 3; further summarize requests are skipped until a success resets it. Explicit `<skip_summary/>` responses are treated as neutral, not failures.
+
+**Edge cases handled:**
+
+- Empty leading `<observation>` blocks fall through to the first populated one.
+- Empty `<summary></summary>` wrappers fall back to observation coercion.
+- Multiple observation blocks are iterated via a global regex.
+
+Full details: #2072
+
 ## [12.2.0] - 2026-04-18
 
 ## Highlights
