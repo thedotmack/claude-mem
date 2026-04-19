@@ -16,6 +16,7 @@ set -euo pipefail
 #   evals/swebench/runs/smoke/predictions.jsonl
 
 INSTANCE_ID="${1:-sympy__sympy-24152}"
+DATASET="${DATASET:-princeton-nlp/SWE-bench_Lite}"
 IMAGE="${IMAGE:-claude-mem/swebench-agent:latest}"
 TIMEOUT="${TIMEOUT:-1800}"
 
@@ -43,11 +44,12 @@ chmod 600 "$CREDS_FILE"
 # --- Fetch instance data from HuggingFace via a small Python helper ---
 INSTANCE_JSON="$(mktemp)"
 trap 'rm -f "$CREDS_FILE" "$INSTANCE_JSON"' EXIT
-python3 - "$INSTANCE_ID" > "$INSTANCE_JSON" <<'PY'
+python3 - "$INSTANCE_ID" "$DATASET" > "$INSTANCE_JSON" <<'PY'
 import json, sys
 from datasets import load_dataset
 target = sys.argv[1]
-ds = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
+dataset = sys.argv[2]
+ds = load_dataset(dataset, split="test")
 for row in ds:
     if row["instance_id"] == target:
         print(json.dumps({

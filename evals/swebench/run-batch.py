@@ -167,6 +167,12 @@ def parse_args() -> argparse.Namespace:
         help="Agent Docker image tag.",
     )
     parser.add_argument(
+        "--dataset",
+        type=str,
+        default="princeton-nlp/SWE-bench_Verified",
+        help="HuggingFace dataset name (e.g. princeton-nlp/SWE-bench_Lite, default Verified).",
+    )
+    parser.add_argument(
         "--auth",
         choices=["oauth", "api-key", "auto"],
         default="auto",
@@ -432,8 +438,8 @@ def main() -> int:
             return 1
         print("Auth: ANTHROPIC_API_KEY (pay-per-call).", file=sys.stderr)
 
-    print(f"Loading dataset princeton-nlp/SWE-bench_Verified (split=test)...", file=sys.stderr)
-    dataset = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
+    print(f"Loading dataset {args.dataset} (split=test)...", file=sys.stderr)
+    dataset = load_dataset(args.dataset, split="test")
 
     instances = select_instances(dataset, args.instance_ids, args.limit)
     total = len(instances)
