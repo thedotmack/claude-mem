@@ -67,7 +67,15 @@ export async function processAgentResponse(
 
   // Parse observations and summary
   const observations = parseObservations(text, session.contentSessionId);
-  const summary = parseSummary(text, session.sessionDbId);
+
+  // Detect whether the most recent prompt was a summary request.
+  // If so, enable observation-to-summary coercion to prevent the infinite
+  // retry loop described in #1633.
+  const userMessages = session.conversationHistory.filter(m => m.role === 'user');
+  const lastUserMessage = userMessages.length > 0 ? userMessages[userMessages.length - 1] : null;
+  const summaryExpected = lastUserMessage?.content?.includes('MODE SWITCH: PROGRESS SUMMARY') ?? false;
+
+  const summary = parseSummary(text, session.sessionDbId, summaryExpected);
 
   if (
     text.trim() &&
@@ -129,6 +137,23 @@ export async function processAgentResponse(
   // Track whether a summary record was stored so the status endpoint can expose this
   // to the Stop hook for silent-summary-loss detection (#1633)
   session.lastSummaryStored = result.summaryId !== null;
+
+  // Circuit breaker: track consecutive summary failures (#1633).
+  // When a summarize request was in the queue but no summary was stored,
+  // increment the failure counter. Reset on success.
+  if (summaryForStore !== null) {
+    // Summary was present in the response — reset the failure counter
+    session.consecutiveSummaryFailures = 0;
+  } else if (result.summaryId === null && /<observation>|<summary>/.test(text)) {
+    // A response was produced but no summary was stored — count as failure
+    session.consecutiveSummaryFailures = (session.consecutiveSummaryFailures || 0) + 1;
+    if (session.consecutiveSummaryFailures >= 3) {
+      logger.error('SESSION', `Circuit breaker: ${session.consecutiveSummaryFailures} consecutive summary failures — further summarize requests will be skipped (#1633)`, {
+        sessionId: session.sessionDbId,
+        contentSessionId: session.contentSessionId
+      });
+    }
+  }
 
   // CLAIM-CONFIRM: Now that storage succeeded, confirm all processing messages (delete from queue)
   // This is the critical step that prevents message loss on generator crash

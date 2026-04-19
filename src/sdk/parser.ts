@@ -113,8 +113,13 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
 /**
  * Parse summary XML block from SDK response
  * Returns null if no valid summary found or if summary was skipped
+ *
+ * @param coerceFromObservation - When true, attempts to convert <observation> tags
+ *   into summary fields if no <summary> tags are found. Only set this when the
+ *   response was expected to be a summary (i.e., a summarize message was sent).
+ *   Prevents the infinite retry loop described in #1633.
  */
-export function parseSummary(text: string, sessionId?: number): ParsedSummary | null {
+export function parseSummary(text: string, sessionId?: number, coerceFromObservation: boolean = false): ParsedSummary | null {
   // Check for skip_summary first
   const skipRegex = /<skip_summary\s+reason="([^"]+)"\s*\/>/;
   const skipMatch = skipRegex.exec(text);
@@ -132,10 +137,22 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
   const summaryMatch = summaryRegex.exec(text);
 
   if (!summaryMatch) {
-    // Log when the response contains <observation> instead of <summary>
-    // to help diagnose prompt conditioning issues (see #1312)
+    // When the LLM returns <observation> tags instead of <summary> tags,
+    // coerce the observation content into summary fields rather than discarding it.
+    // This breaks the infinite retry loop described in #1633: without coercion,
+    // the summary is silently dropped, the session completes without a summary,
+    // a new session is spawned with an ever-growing prompt, and the cycle repeats.
+    // Only coerce when explicitly requested (i.e., when a summarize message was sent).
     if (/<observation>/.test(text)) {
-      logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — prompt conditioning may need strengthening', { sessionId });
+      if (coerceFromObservation) {
+        const coerced = coerceObservationToSummary(text, sessionId);
+        if (coerced) {
+          return coerced;
+        }
+        logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — coercion failed, no usable content', { sessionId });
+      } else {
+        logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — prompt conditioning may need strengthening', { sessionId });
+      }
     }
     return null;
   }
@@ -183,6 +200,45 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
     next_steps,
     notes
   };
+}
+
+/**
+ * Coerce <observation> response into a ParsedSummary when <summary> tags are missing.
+ * Maps observation fields to the closest summary equivalents so that a usable
+ * summary is stored instead of nothing — breaking the retry loop (#1633).
+ */
+function coerceObservationToSummary(text: string, sessionId?: number): ParsedSummary | null {
+  const obsRegex = /<observation>([\s\S]*?)<\/observation>/;
+  const obsMatch = obsRegex.exec(text);
+  if (!obsMatch) return null;
+
+  const obsContent = obsMatch[1];
+
+  const title = extractField(obsContent, 'title');
+  const subtitle = extractField(obsContent, 'subtitle');
+  const narrative = extractField(obsContent, 'narrative');
+  const facts = extractArrayElements(obsContent, 'facts', 'fact');
+
+  // Require at least some content to coerce — don't create an empty summary
+  if (!title && !narrative && facts.length === 0) {
+    return null;
+  }
+
+  // Map observation fields → summary fields (best-effort)
+  const request = title || subtitle || null;
+  const investigated = narrative || null;
+  const learned = facts.length > 0 ? facts.join('; ') : null;
+  const completed = title ? `${title}${subtitle ? ' — ' + subtitle : ''}` : null;
+  const next_steps = null; // No direct observation equivalent
+
+  logger.warn('PARSER', 'Coerced <observation> response into <summary> to prevent retry loop (#1633)', {
+    sessionId,
+    hasTitle: !!title,
+    hasNarrative: !!narrative,
+    factCount: facts.length,
+  });
+
+  return { request, investigated, learned, completed, next_steps, notes: null };
 }
 
 /**

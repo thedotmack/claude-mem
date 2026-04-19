@@ -8,8 +8,12 @@ import { describe, it, expect } from 'bun:test';
 import { parseSummary } from '../../src/sdk/parser.js';
 
 describe('parseSummary', () => {
-  it('returns null when no <summary> tag present', () => {
+  it('returns null when no <summary> tag present and coercion disabled', () => {
     expect(parseSummary('<observation><title>foo</title></observation>')).toBeNull();
+  });
+
+  it('returns null when no <summary> or <observation> tags present', () => {
+    expect(parseSummary('Some plain text response without any XML tags')).toBeNull();
   });
 
   it('returns null when <summary> has no sub-tags (false positive — fix for #1360)', () => {
@@ -49,5 +53,64 @@ describe('parseSummary', () => {
 
   it('returns null when skip_summary tag is present', () => {
     expect(parseSummary('<skip_summary reason="no work done"/>')).toBeNull();
+  });
+
+  // Observation-to-summary coercion tests (#1633)
+  it('coerces <observation> with content into a summary when coerceFromObservation=true (#1633)', () => {
+    const result = parseSummary('<observation><title>foo</title></observation>', undefined, true);
+    expect(result).not.toBeNull();
+    expect(result?.request).toBe('foo');
+    expect(result?.completed).toBe('foo');
+  });
+
+  it('coerces observation with narrative into summary with investigated field (#1633)', () => {
+    const text = `<observation>
+      <type>refactor</type>
+      <title>UObjectArray refactored</title>
+      <narrative>Removed local XXXX and migrated to new pattern</narrative>
+    </observation>`;
+    const result = parseSummary(text, undefined, true);
+    expect(result).not.toBeNull();
+    expect(result?.request).toBe('UObjectArray refactored');
+    expect(result?.investigated).toBe('Removed local XXXX and migrated to new pattern');
+  });
+
+  it('coerces observation with facts into summary with learned field (#1633)', () => {
+    const text = `<observation>
+      <type>discovery</type>
+      <title>JWT token handling</title>
+      <facts>
+        <fact>Tokens expire after 1 hour</fact>
+        <fact>Refresh flow uses rotating keys</fact>
+      </facts>
+    </observation>`;
+    const result = parseSummary(text, undefined, true);
+    expect(result).not.toBeNull();
+    expect(result?.request).toBe('JWT token handling');
+    expect(result?.learned).toBe('Tokens expire after 1 hour; Refresh flow uses rotating keys');
+  });
+
+  it('coerces observation with subtitle into completed field (#1633)', () => {
+    const text = `<observation>
+      <type>config</type>
+      <title>Database migration</title>
+      <subtitle>Added new index for performance</subtitle>
+    </observation>`;
+    const result = parseSummary(text, undefined, true);
+    expect(result).not.toBeNull();
+    expect(result?.completed).toBe('Database migration — Added new index for performance');
+  });
+
+  it('returns null for empty observation even with coercion enabled (#1633)', () => {
+    const text = `<observation><type>config</type></observation>`;
+    expect(parseSummary(text, undefined, true)).toBeNull();
+  });
+
+  it('prefers <summary> tags over observation coercion when both present (#1633)', () => {
+    const text = `<observation><title>obs title</title></observation>
+    <summary><request>summary request</request></summary>`;
+    const result = parseSummary(text, undefined, true);
+    expect(result).not.toBeNull();
+    expect(result?.request).toBe('summary request');
   });
 });

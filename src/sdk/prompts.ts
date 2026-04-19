@@ -135,8 +135,10 @@ export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): strin
   })();
 
   return `--- MODE SWITCH: PROGRESS SUMMARY ---
-Do NOT output <observation> tags. This is a summary request, not an observation request.
-Your response MUST use <summary> tags ONLY. Any <observation> output will be discarded.
+⚠️ CRITICAL TAG REQUIREMENT — READ CAREFULLY:
+• You MUST wrap your ENTIRE response in <summary>...</summary> tags.
+• Do NOT use <observation> tags. <observation> output will be DISCARDED and cause a system error.
+• The ONLY accepted root tag is <summary>. Any other root tag is a protocol violation.
 
 ${mode.prompts.header_summary_checkpoint}
 ${mode.prompts.summary_instruction}
@@ -154,6 +156,7 @@ ${mode.prompts.summary_format_instruction}
   <notes>${mode.prompts.xml_summary_notes_placeholder}</notes>
 </summary>
 
+REMINDER: Your response MUST use <summary> as the root tag, NOT <observation>.
 ${mode.prompts.summary_footer}`;
 }
 

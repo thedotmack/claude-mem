@@ -46,6 +46,9 @@ export interface ActiveSession {
   // Track whether the most recent storage operation persisted a summary record.
   // Used by the status endpoint so the Stop hook can detect silent summary loss (#1633).
   lastSummaryStored?: boolean;
+  // Circuit breaker: track consecutive summary failures to prevent infinite retry loops (#1633).
+  // When this reaches MAX_CONSECUTIVE_SUMMARY_FAILURES, further summarize requests are skipped.
+  consecutiveSummaryFailures: number;
 }
 
 export interface PendingMessage {
