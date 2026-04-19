@@ -79,4 +79,42 @@ describe('claudeCodeAdapter.normalizeInput — subagent fields', () => {
     expect(normalizedUndef.agentId).toBeUndefined();
     expect(normalizedUndef.agentType).toBeUndefined();
   });
+
+  it('drops agent fields that exceed the 128-char safety cap', () => {
+    const oversized = 'a'.repeat(129);
+    const normalized = claudeCodeAdapter.normalizeInput({
+      session_id: 's1',
+      cwd: '/tmp',
+      agent_id: oversized,
+      agent_type: oversized,
+    });
+
+    expect(normalized.agentId).toBeUndefined();
+    expect(normalized.agentType).toBeUndefined();
+  });
+
+  it('keeps agent fields exactly at the 128-char boundary', () => {
+    const atLimit = 'a'.repeat(128);
+    const normalized = claudeCodeAdapter.normalizeInput({
+      session_id: 's1',
+      cwd: '/tmp',
+      agent_id: atLimit,
+      agent_type: atLimit,
+    });
+
+    expect(normalized.agentId).toBe(atLimit);
+    expect(normalized.agentType).toBe(atLimit);
+  });
+
+  it('drops empty-string agent fields (treat as absent)', () => {
+    const normalized = claudeCodeAdapter.normalizeInput({
+      session_id: 's1',
+      cwd: '/tmp',
+      agent_id: '',
+      agent_type: '',
+    });
+
+    expect(normalized.agentId).toBeUndefined();
+    expect(normalized.agentType).toBeUndefined();
+  });
 });

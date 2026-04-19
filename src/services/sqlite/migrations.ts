@@ -584,14 +584,18 @@ export const migration009: Migration = {
 export const migration010: Migration = {
   version: 27,
   up: (db: Database) => {
+    const added: string[] = [];
+
     const obsColumns = db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
     const obsHasAgentType = obsColumns.some(c => c.name === 'agent_type');
     const obsHasAgentId = obsColumns.some(c => c.name === 'agent_id');
     if (!obsHasAgentType) {
       db.run('ALTER TABLE observations ADD COLUMN agent_type TEXT');
+      added.push('observations.agent_type');
     }
     if (!obsHasAgentId) {
       db.run('ALTER TABLE observations ADD COLUMN agent_id TEXT');
+      added.push('observations.agent_id');
     }
     db.run('CREATE INDEX IF NOT EXISTS idx_observations_agent_type ON observations(agent_type)');
     db.run('CREATE INDEX IF NOT EXISTS idx_observations_agent_id ON observations(agent_id)');
@@ -604,13 +608,20 @@ export const migration010: Migration = {
       const pendingHasAgentId = pendingColumns.some(c => c.name === 'agent_id');
       if (!pendingHasAgentType) {
         db.run('ALTER TABLE pending_messages ADD COLUMN agent_type TEXT');
+        added.push('pending_messages.agent_type');
       }
       if (!pendingHasAgentId) {
         db.run('ALTER TABLE pending_messages ADD COLUMN agent_id TEXT');
+        added.push('pending_messages.agent_id');
       }
     }
 
-    logger.debug('DB', '[migration010] Added agent_type, agent_id columns to observations and pending_messages');
+    logger.debug(
+      'DB',
+      added.length > 0
+        ? `[migration010] Added columns: ${added.join(', ')}`
+        : '[migration010] Subagent identity columns already present; ensured indexes'
+    );
   },
   down: (_db: Database) => {
     // SQLite DROP COLUMN not fully supported; no-op
