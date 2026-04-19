@@ -137,22 +137,23 @@ export function parseSummary(text: string, sessionId?: number, coerceFromObserva
   const summaryMatch = summaryRegex.exec(text);
 
   if (!summaryMatch) {
-    // When the LLM returns <observation> tags instead of <summary> tags,
-    // coerce the observation content into summary fields rather than discarding it.
-    // This breaks the infinite retry loop described in #1633: without coercion,
-    // the summary is silently dropped, the session completes without a summary,
-    // a new session is spawned with an ever-growing prompt, and the cycle repeats.
-    // Only coerce when explicitly requested (i.e., when a summarize message was sent).
-    if (/<observation>/.test(text)) {
-      if (coerceFromObservation) {
-        const coerced = coerceObservationToSummary(text, sessionId);
-        if (coerced) {
-          return coerced;
-        }
-        logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — coercion failed, no usable content', { sessionId });
-      } else {
-        logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — prompt conditioning may need strengthening', { sessionId });
+    // When the LLM returns <observation> tags instead of <summary> tags on a
+    // summary turn, coerce the observation content into summary fields rather
+    // than discarding it. This breaks the infinite retry loop described in
+    // #1633: without coercion, the summary is silently dropped, the session
+    // completes without a summary, a new session is spawned with an ever-growing
+    // prompt, and the cycle repeats.
+    //
+    // parseSummary is called on every response (see ResponseProcessor), not just
+    // summary turns — so the absence of <summary> in an observation response is
+    // expected, not a prompt-conditioning failure. Only act when the caller
+    // actually expected a summary (coerceFromObservation=true).
+    if (coerceFromObservation && /<observation>/.test(text)) {
+      const coerced = coerceObservationToSummary(text, sessionId);
+      if (coerced) {
+        return coerced;
       }
+      logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — coercion failed, no usable content', { sessionId });
     }
     return null;
   }
