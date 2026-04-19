@@ -34,7 +34,11 @@ src/ui/viewer.html
 .claude-octopus/
 .claude/session-intent.md
 .claude/session-plan.md
+.claude/scheduled_tasks.lock
 .octo/
+
+# Installer marker — dropped by the claude-mem CLI at install time
+plugin/.cli-installed
 
 # Local contribution analysis (not part of upstream)
 CONTRIB_NOTES.md
