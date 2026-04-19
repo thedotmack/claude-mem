@@ -31,6 +31,7 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 
 // Import after mocks
 import { processAgentResponse } from '../../../src/services/worker/agents/ResponseProcessor.js';
+import { SUMMARY_MODE_MARKER } from '../../../src/sdk/prompts.js';
 import type { WorkerRef, StorageResult } from '../../../src/services/worker/agents/types.js';
 import type { ActiveSession } from '../../../src/services/worker-types.js';
 import type { DatabaseManager } from '../../../src/services/worker/DatabaseManager.js';
@@ -729,7 +730,7 @@ describe('ResponseProcessor', () => {
   });
 
   describe('circuit breaker: consecutiveSummaryFailures counter (#1633)', () => {
-    const SUMMARY_PROMPT = '--- MODE SWITCH: PROGRESS SUMMARY ---\nDo the summary now.';
+    const SUMMARY_PROMPT = `--- ${SUMMARY_MODE_MARKER} ---\nDo the summary now.`;
 
     it('does NOT increment the counter on normal observation responses (P1 regression guard)', async () => {
       // Session where the last user message is an OBSERVATION request, not a summary request.
