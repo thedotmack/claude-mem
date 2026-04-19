@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.2.3] - 2026-04-19
+
+## Fixed
+
+- **Parser: stop warning on normal observation responses (#2074).** Eliminated the `PARSER Summary response contained <observation> tags instead of <summary> — prompt conditioning may need strengthening` warning that fired on every normal observation turn. The warning was inherited from #1345 when `parseSummary` was only called after summary prompts; after #1633's refactor it runs on every response, so the observation-only fallthrough always tripped. Gated the entire observation-on-summary path on `coerceFromObservation` so only genuine summary-turn coercion failures log.
+
+**Full diff:** https://github.com/thedotmack/claude-mem/compare/v12.2.2...v12.2.3
+
 ## [12.2.2] - 2026-04-19
 
 ## Subagent summary disable + labeling
