@@ -83,8 +83,8 @@ export class PendingMessageStore {
       message.last_assistant_message || null,
       message.prompt_number || null,
       now,
-      message.agentType || null,
-      message.agentId || null
+      message.agentType ?? null,
+      message.agentId ?? null
     );
 
     return result.lastInsertRowid as number;
@@ -503,8 +503,8 @@ export class PendingMessageStore {
       prompt_number: persistent.prompt_number || undefined,
       cwd: persistent.cwd || undefined,
       last_assistant_message: persistent.last_assistant_message || undefined,
-      agentId: persistent.agent_id || undefined,
-      agentType: persistent.agent_type || undefined
+      agentId: persistent.agent_id ?? undefined,
+      agentType: persistent.agent_type ?? undefined
     };
   }
 }

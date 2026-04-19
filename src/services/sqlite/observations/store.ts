@@ -15,6 +15,8 @@ const DEDUP_WINDOW_MS = 30_000;
 /**
  * Compute a short content hash for deduplication.
  * Uses (memory_session_id, title, narrative) as the semantic identity of an observation.
+ * Subagent fields (agent_type, agent_id) are intentionally excluded so the same work
+ * described once by a subagent and once by its parent deduplicates across contexts.
  */
 export function computeObservationContentHash(
   memorySessionId: string,

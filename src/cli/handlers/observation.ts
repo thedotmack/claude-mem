@@ -58,8 +58,8 @@ export const observationHandler: EventHandler = {
           tool_input: toolInput,
           tool_response: toolResponse,
           cwd,
-          ...(input.agentId ? { agentId: input.agentId } : {}),
-          ...(input.agentType ? { agentType: input.agentType } : {}),
+          agentId: input.agentId,
+          agentType: input.agentType
         })
       });
 

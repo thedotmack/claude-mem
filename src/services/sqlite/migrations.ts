@@ -584,9 +584,9 @@ export const migration009: Migration = {
 export const migration010: Migration = {
   version: 27,
   up: (db: Database) => {
-    const obsColumns = db.prepare('PRAGMA table_info(observations)').all() as any[];
-    const obsHasAgentType = obsColumns.some((c: any) => c.name === 'agent_type');
-    const obsHasAgentId = obsColumns.some((c: any) => c.name === 'agent_id');
+    const obsColumns = db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
+    const obsHasAgentType = obsColumns.some(c => c.name === 'agent_type');
+    const obsHasAgentId = obsColumns.some(c => c.name === 'agent_id');
     if (!obsHasAgentType) {
       db.run('ALTER TABLE observations ADD COLUMN agent_type TEXT');
     }
@@ -598,10 +598,10 @@ export const migration010: Migration = {
 
     // Also thread the same fields through the pending_messages queue so the label
     // survives worker restarts between enqueue and SDK-agent processing.
-    const pendingColumns = db.prepare('PRAGMA table_info(pending_messages)').all() as any[];
+    const pendingColumns = db.prepare('PRAGMA table_info(pending_messages)').all() as Array<{ name: string }>;
     if (pendingColumns.length > 0) {
-      const pendingHasAgentType = pendingColumns.some((c: any) => c.name === 'agent_type');
-      const pendingHasAgentId = pendingColumns.some((c: any) => c.name === 'agent_id');
+      const pendingHasAgentType = pendingColumns.some(c => c.name === 'agent_type');
+      const pendingHasAgentId = pendingColumns.some(c => c.name === 'agent_id');
       if (!pendingHasAgentType) {
         db.run('ALTER TABLE pending_messages ADD COLUMN agent_type TEXT');
       }
