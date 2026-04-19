@@ -781,6 +781,25 @@ describe('ResponseProcessor', () => {
       expect(session.consecutiveSummaryFailures).toBe(1);
     });
 
+    it('does NOT increment the counter on intentional <skip_summary/> responses', async () => {
+      mockStoreObservations.mockImplementation(() => ({
+        observationIds: [],
+        summaryId: null,
+        createdAtEpoch: 1700000000000,
+      } as StorageResult));
+
+      const session = createMockSession({
+        consecutiveSummaryFailures: 1,
+        conversationHistory: [{ role: 'user', content: SUMMARY_PROMPT }],
+      });
+      const skipResponse = '<skip_summary reason="no meaningful work this session"/>';
+
+      await processAgentResponse(skipResponse, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+
+      // Skip is neutral — counter stays where it was, no spurious increment
+      expect(session.consecutiveSummaryFailures).toBe(1);
+    });
+
     it('resets the counter to 0 when a summary is successfully stored', async () => {
       mockStoreObservations.mockImplementation(() => ({
         observationIds: [],

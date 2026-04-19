@@ -147,9 +147,14 @@ export async function processAgentResponse(
   // response, tripping the breaker after 3 observations and permanently blocking
   // summarization — reproducing the data-loss scenario this fix is meant to prevent.
   if (summaryExpected) {
+    const skippedIntentionally = /<skip_summary\b/.test(text);
     if (summaryForStore !== null) {
       // Summary was present in the response — reset the failure counter
       session.consecutiveSummaryFailures = 0;
+    } else if (skippedIntentionally) {
+      // Explicit <skip_summary/> is a valid protocol response — neither success
+      // nor failure. Leave the counter unchanged so we don't mask a bad run that
+      // happens to end on a skip, but also don't punish intentional skips.
     } else {
       // Summary was expected but none was stored — count as failure
       session.consecutiveSummaryFailures += 1;

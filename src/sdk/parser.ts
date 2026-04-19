@@ -208,37 +208,42 @@ export function parseSummary(text: string, sessionId?: number, coerceFromObserva
  * summary is stored instead of nothing — breaking the retry loop (#1633).
  */
 function coerceObservationToSummary(text: string, sessionId?: number): ParsedSummary | null {
-  const obsRegex = /<observation>([\s\S]*?)<\/observation>/;
-  const obsMatch = obsRegex.exec(text);
-  if (!obsMatch) return null;
+  // Iterate all <observation> blocks — if the LLM emits multiple and the first is
+  // empty, we still want to salvage the first one that has usable content.
+  const obsRegex = /<observation>([\s\S]*?)<\/observation>/g;
+  let obsMatch: RegExpExecArray | null;
+  let blockIndex = 0;
 
-  const obsContent = obsMatch[1];
+  while ((obsMatch = obsRegex.exec(text)) !== null) {
+    const obsContent = obsMatch[1];
+    const title = extractField(obsContent, 'title');
+    const subtitle = extractField(obsContent, 'subtitle');
+    const narrative = extractField(obsContent, 'narrative');
+    const facts = extractArrayElements(obsContent, 'facts', 'fact');
 
-  const title = extractField(obsContent, 'title');
-  const subtitle = extractField(obsContent, 'subtitle');
-  const narrative = extractField(obsContent, 'narrative');
-  const facts = extractArrayElements(obsContent, 'facts', 'fact');
+    if (title || narrative || facts.length > 0) {
+      // Map observation fields → summary fields (best-effort)
+      const request = title || subtitle || null;
+      const investigated = narrative || null;
+      const learned = facts.length > 0 ? facts.join('; ') : null;
+      const completed = title ? `${title}${subtitle ? ' — ' + subtitle : ''}` : null;
+      const next_steps = null; // No direct observation equivalent
 
-  // Require at least some content to coerce — don't create an empty summary
-  if (!title && !narrative && facts.length === 0) {
-    return null;
+      logger.warn('PARSER', 'Coerced <observation> response into <summary> to prevent retry loop (#1633)', {
+        sessionId,
+        blockIndex,
+        hasTitle: !!title,
+        hasNarrative: !!narrative,
+        factCount: facts.length,
+      });
+
+      return { request, investigated, learned, completed, next_steps, notes: null };
+    }
+
+    blockIndex++;
   }
 
-  // Map observation fields → summary fields (best-effort)
-  const request = title || subtitle || null;
-  const investigated = narrative || null;
-  const learned = facts.length > 0 ? facts.join('; ') : null;
-  const completed = title ? `${title}${subtitle ? ' — ' + subtitle : ''}` : null;
-  const next_steps = null; // No direct observation equivalent
-
-  logger.warn('PARSER', 'Coerced <observation> response into <summary> to prevent retry loop (#1633)', {
-    sessionId,
-    hasTitle: !!title,
-    hasNarrative: !!narrative,
-    factCount: facts.length,
-  });
-
-  return { request, investigated, learned, completed, next_steps, notes: null };
+  return null;
 }
 
 /**

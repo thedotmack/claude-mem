@@ -113,4 +113,17 @@ describe('parseSummary', () => {
     expect(result).not.toBeNull();
     expect(result?.request).toBe('summary request');
   });
+
+  it('skips empty leading observation blocks and coerces from the first populated one (#1633)', () => {
+    const text = `<observation><type>discovery</type></observation>
+      <observation>
+        <type>bugfix</type>
+        <title>second block has content</title>
+        <narrative>fixed the crash</narrative>
+      </observation>`;
+    const result = parseSummary(text, undefined, true);
+    expect(result).not.toBeNull();
+    expect(result?.request).toBe('second block has content');
+    expect(result?.investigated).toBe('fixed the crash');
+  });
 });
