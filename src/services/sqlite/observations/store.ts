@@ -15,6 +15,8 @@ const DEDUP_WINDOW_MS = 30_000;
 /**
  * Compute a short content hash for deduplication.
  * Uses (memory_session_id, title, narrative) as the semantic identity of an observation.
+ * Subagent fields (agent_type, agent_id) are intentionally excluded so the same work
+ * described once by a subagent and once by its parent deduplicates across contexts.
  */
 export function computeObservationContentHash(
   memorySessionId: string,
@@ -75,8 +77,8 @@ export function storeObservation(
   const stmt = db.prepare(`
     INSERT INTO observations
     (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-     files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const result = stmt.run(
@@ -92,6 +94,8 @@ export function storeObservation(
     JSON.stringify(observation.files_modified),
     promptNumber || null,
     discoveryTokens,
+    observation.agent_type ?? null,
+    observation.agent_id ?? null,
     contentHash,
     timestampIso,
     timestampEpoch

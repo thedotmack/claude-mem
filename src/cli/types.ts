@@ -12,6 +12,10 @@ export interface NormalizedHookInput {
   edits?: unknown[];   // afterFileEdit
   // Platform-specific metadata (source, reason, trigger, mcp_context, etc.)
   metadata?: Record<string, unknown>;
+  // Claude Code subagent identity — present only when hook fires inside a subagent.
+  // Main session has both undefined. Discriminator for subagent context.
+  agentId?: string;      // Claude Code subagent agent_id (undefined in main session)
+  agentType?: string;    // Claude Code subagent agent_type (undefined in main session)
 }
 
 export interface HookResult {

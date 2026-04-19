@@ -2,6 +2,13 @@ import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.
 
 // Maps Claude Code stdin format (session_id, cwd, tool_name, etc.)
 // SessionStart hooks receive no stdin, so we must handle undefined input gracefully
+
+// Defensive cap: Claude Code's agent identifiers are short (e.g., "agent-abc123", "Explore").
+// Ignore anything longer than 128 chars so a malformed payload cannot balloon DB rows.
+const MAX_AGENT_FIELD_LEN = 128;
+const pickAgentField = (v: unknown): string | undefined =>
+  typeof v === 'string' && v.length > 0 && v.length <= MAX_AGENT_FIELD_LEN ? v : undefined;
+
 export const claudeCodeAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
@@ -13,6 +20,8 @@ export const claudeCodeAdapter: PlatformAdapter = {
       toolInput: r.tool_input,
       toolResponse: r.tool_response,
       transcriptPath: r.transcript_path,
+      agentId: pickAgentField(r.agent_id),
+      agentType: pickAgentField(r.agent_type),
     };
   },
   formatOutput(result) {

@@ -221,7 +221,9 @@ export class SessionManager {
       consecutiveRestarts: 0,  // Track consecutive restart attempts to prevent infinite loops
       processingMessageIds: [],  // CLAIM-CONFIRM: Track message IDs for confirmProcessed()
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
-      consecutiveSummaryFailures: 0  // Circuit breaker for summary retry loop (#1633)
+      consecutiveSummaryFailures: 0,  // Circuit breaker for summary retry loop (#1633)
+      pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
+      pendingAgentType: null  // (null for main-session messages)
     };
 
     logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
@@ -277,7 +279,9 @@ export class SessionManager {
       tool_input: data.tool_input,
       tool_response: data.tool_response,
       prompt_number: data.prompt_number,
-      cwd: data.cwd
+      cwd: data.cwd,
+      agentId: data.agentId,
+      agentType: data.agentType
     };
 
     try {
