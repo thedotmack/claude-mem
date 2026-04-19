@@ -140,19 +140,23 @@ export async function processAgentResponse(
   session.lastSummaryStored = result.summaryId !== null;
 
   // Circuit breaker: track consecutive summary failures (#1633).
-  // When a summarize request was in the queue but no summary was stored,
-  // increment the failure counter. Reset on success.
-  if (summaryForStore !== null) {
-    // Summary was present in the response — reset the failure counter
-    session.consecutiveSummaryFailures = 0;
-  } else if (result.summaryId === null && /<observation>|<summary>/.test(text)) {
-    // A response was produced but no summary was stored — count as failure
-    session.consecutiveSummaryFailures = (session.consecutiveSummaryFailures || 0) + 1;
-    if (session.consecutiveSummaryFailures >= MAX_CONSECUTIVE_SUMMARY_FAILURES) {
-      logger.error('SESSION', `Circuit breaker: ${session.consecutiveSummaryFailures} consecutive summary failures — further summarize requests will be skipped (#1633)`, {
-        sessionId: session.sessionDbId,
-        contentSessionId: session.contentSessionId
-      });
+  // Only evaluate when a summary was actually expected (summarize message was sent).
+  // Without this guard, the counter would increment on every normal observation
+  // response, tripping the breaker after 3 observations and permanently blocking
+  // summarization — reproducing the data-loss scenario this fix is meant to prevent.
+  if (summaryExpected) {
+    if (summaryForStore !== null) {
+      // Summary was present in the response — reset the failure counter
+      session.consecutiveSummaryFailures = 0;
+    } else {
+      // Summary was expected but none was stored — count as failure
+      session.consecutiveSummaryFailures = (session.consecutiveSummaryFailures || 0) + 1;
+      if (session.consecutiveSummaryFailures >= MAX_CONSECUTIVE_SUMMARY_FAILURES) {
+        logger.error('SESSION', `Circuit breaker: ${session.consecutiveSummaryFailures} consecutive summary failures — further summarize requests will be skipped (#1633)`, {
+          sessionId: session.sessionDbId,
+          contentSessionId: session.contentSessionId
+        });
+      }
     }
   }
 
