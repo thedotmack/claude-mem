@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.2.2] - 2026-04-19
+
+## Subagent summary disable + labeling
+
+Claude Code subagents (the Task tool and built-in agents like Explore/Plan/Bash) no longer trigger a session summary on Stop, and every observation row now carries the originating subagent's identity.
+
+### Features
+
+- **Subagent Stop hooks skip summarization.** When a hook fires inside a subagent (identified by `agent_id` on stdin), the handler short-circuits before bootstrapping the worker. Only the main assistant owns the session summary. Sessions started with `--agent` (which set `agent_type` but not `agent_id`) still own their summary.
+- **Observations are labeled by subagent.** The `observations` table gains two new nullable columns — `agent_type` and `agent_id` — populated end-to-end from the hook stdin through the pending queue into storage. Main-session rows remain `NULL`. Labels survive worker restarts via matching columns on `pending_messages`.
+
+### Safety
+
+- Defense-in-depth guard on the worker `/api/sessions/summarize` route so direct API callers can't bypass the hook-layer short-circuit.
+- `pickAgentField` type guard at the adapter edge validates the hook input: must be a non-empty string ≤128 characters, otherwise dropped.
+- Content-hash dedup intentionally excludes `agent_type`/`agent_id` so the same semantic observation from a subagent and its parent merges to a single row.
+
+### Schema
+
+- Migration 010 (version 27) adds the two columns to `observations` and `pending_messages`, plus indexes on `observations.agent_type` and `observations.agent_id`. Idempotent, state-aware logging.
+
+### Tests
+
+- 17 new unit tests: adapter extraction (length cap boundary, empty-string rejection, type guards), handler short-circuit behavior, DB-level labeling and dedup invariants.
+
+PR: #2073
+
 ## [12.2.1] - 2026-04-19
 
 ## What's Fixed
