@@ -26,23 +26,24 @@ const MAX_WAIT_FOR_SUMMARY_MS = 110_000; // 110s — fits within Stop hook's 120
 
 export const summarizeHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
-    // Ensure worker is running before any other logic
-    const workerReady = await ensureWorkerRunning();
-    if (!workerReady) {
-      // Worker not available - skip summary gracefully
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-    }
-
     // Skip summaries in subagent context — subagents do not own the session summary.
     // Gate on agentId only: that field is present exclusively for Task-spawned subagents.
     // agentType alone (no agentId) indicates `--agent`-started main sessions, which still
-    // own their summary.
+    // own their summary. Do this BEFORE ensureWorkerRunning() so a subagent Stop hook
+    // does not bootstrap the worker.
     if (input.agentId) {
       logger.debug('HOOK', 'Skipping summary: subagent context detected', {
         sessionId: input.sessionId,
         agentId: input.agentId,
         agentType: input.agentType
       });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    // Ensure worker is running before any other logic
+    const workerReady = await ensureWorkerRunning();
+    if (!workerReady) {
+      // Worker not available - skip summary gracefully
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
