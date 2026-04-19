@@ -16,6 +16,9 @@ export interface ObservationInput {
   concepts: string[];
   files_read: string[];
   files_modified: string[];
+  // Claude Code subagent identity — NULL for main-session rows.
+  agent_type?: string | null;
+  agent_id?: string | null;
 }
 
 /**

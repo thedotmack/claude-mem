@@ -31,6 +31,7 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 
 // Import after mocks
 import { processAgentResponse } from '../../../src/services/worker/agents/ResponseProcessor.js';
+import { SUMMARY_MODE_MARKER } from '../../../src/sdk/prompts.js';
 import type { WorkerRef, StorageResult } from '../../../src/services/worker/agents/types.js';
 import type { ActiveSession } from '../../../src/services/worker-types.js';
 import type { DatabaseManager } from '../../../src/services/worker/DatabaseManager.js';
@@ -130,8 +131,9 @@ describe('ResponseProcessor', () => {
       conversationHistory: [],
       currentProvider: 'claude',
       processingMessageIds: [],  // CLAIM-CONFIRM pattern: track message IDs being processed
+      consecutiveSummaryFailures: 0,
       ...overrides,
-    };
+    } as ActiveSession;
   }
 
   describe('parsing observations from XML response', () => {
@@ -724,6 +726,105 @@ describe('ResponseProcessor', () => {
       await processAgentResponse(responseText, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
 
       expect(session.lastSummaryStored).toBe(false);
+    });
+  });
+
+  describe('circuit breaker: consecutiveSummaryFailures counter (#1633)', () => {
+    const SUMMARY_PROMPT = `--- ${SUMMARY_MODE_MARKER} ---\nDo the summary now.`;
+
+    it('does NOT increment the counter on normal observation responses (P1 regression guard)', async () => {
+      // Session where the last user message is an OBSERVATION request, not a summary request.
+      // The counter must stay at 0 even though the response has <observation> tags and no summary.
+      mockStoreObservations.mockImplementation(() => ({
+        observationIds: [1],
+        summaryId: null,
+        createdAtEpoch: 1700000000000,
+      } as StorageResult));
+
+      const session = createMockSession({
+        conversationHistory: [{ role: 'user', content: 'record a new observation' }],
+      });
+      const obsResponse = `
+        <observation>
+          <type>discovery</type>
+          <title>found a thing</title>
+          <narrative>it happened</narrative>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+      `;
+
+      // Drive multiple observation responses — counter must never increment.
+      for (let i = 0; i < 5; i++) {
+        await processAgentResponse(obsResponse, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+      }
+
+      expect(session.consecutiveSummaryFailures).toBe(0);
+    });
+
+    it('increments the counter when a summary was expected but none was stored', async () => {
+      mockStoreObservations.mockImplementation(() => ({
+        observationIds: [],
+        summaryId: null,
+        createdAtEpoch: 1700000000000,
+      } as StorageResult));
+
+      const session = createMockSession({
+        conversationHistory: [{ role: 'user', content: SUMMARY_PROMPT }],
+      });
+      // LLM returned nothing structured — no summary stored
+      const badResponse = 'I cannot comply with that request.';
+
+      await processAgentResponse(badResponse, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+
+      expect(session.consecutiveSummaryFailures).toBe(1);
+    });
+
+    it('does NOT increment the counter on intentional <skip_summary/> responses', async () => {
+      mockStoreObservations.mockImplementation(() => ({
+        observationIds: [],
+        summaryId: null,
+        createdAtEpoch: 1700000000000,
+      } as StorageResult));
+
+      const session = createMockSession({
+        consecutiveSummaryFailures: 1,
+        conversationHistory: [{ role: 'user', content: SUMMARY_PROMPT }],
+      });
+      const skipResponse = '<skip_summary reason="no meaningful work this session"/>';
+
+      await processAgentResponse(skipResponse, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+
+      // Skip is neutral — counter stays where it was, no spurious increment
+      expect(session.consecutiveSummaryFailures).toBe(1);
+    });
+
+    it('resets the counter to 0 when a summary is successfully stored', async () => {
+      mockStoreObservations.mockImplementation(() => ({
+        observationIds: [],
+        summaryId: 42,
+        createdAtEpoch: 1700000000000,
+      } as StorageResult));
+
+      const session = createMockSession({
+        consecutiveSummaryFailures: 2,
+        conversationHistory: [{ role: 'user', content: SUMMARY_PROMPT }],
+      });
+      const goodResponse = `
+        <summary>
+          <request>wrap it up</request>
+          <investigated>the thing</investigated>
+          <learned>the answer</learned>
+          <completed>the work</completed>
+          <next_steps>none</next_steps>
+        </summary>
+      `;
+
+      await processAgentResponse(goodResponse, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+
+      expect(session.consecutiveSummaryFailures).toBe(0);
     });
   });
 });

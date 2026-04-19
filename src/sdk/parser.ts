@@ -113,8 +113,13 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
 /**
  * Parse summary XML block from SDK response
  * Returns null if no valid summary found or if summary was skipped
+ *
+ * @param coerceFromObservation - When true, attempts to convert <observation> tags
+ *   into summary fields if no <summary> tags are found. Only set this when the
+ *   response was expected to be a summary (i.e., a summarize message was sent).
+ *   Prevents the infinite retry loop described in #1633.
  */
-export function parseSummary(text: string, sessionId?: number): ParsedSummary | null {
+export function parseSummary(text: string, sessionId?: number, coerceFromObservation: boolean = false): ParsedSummary | null {
   // Check for skip_summary first
   const skipRegex = /<skip_summary\s+reason="([^"]+)"\s*\/>/;
   const skipMatch = skipRegex.exec(text);
@@ -132,10 +137,23 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
   const summaryMatch = summaryRegex.exec(text);
 
   if (!summaryMatch) {
-    // Log when the response contains <observation> instead of <summary>
-    // to help diagnose prompt conditioning issues (see #1312)
-    if (/<observation>/.test(text)) {
-      logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — prompt conditioning may need strengthening', { sessionId });
+    // When the LLM returns <observation> tags instead of <summary> tags on a
+    // summary turn, coerce the observation content into summary fields rather
+    // than discarding it. This breaks the infinite retry loop described in
+    // #1633: without coercion, the summary is silently dropped, the session
+    // completes without a summary, a new session is spawned with an ever-growing
+    // prompt, and the cycle repeats.
+    //
+    // parseSummary is called on every response (see ResponseProcessor), not just
+    // summary turns — so the absence of <summary> in an observation response is
+    // expected, not a prompt-conditioning failure. Only act when the caller
+    // actually expected a summary (coerceFromObservation=true).
+    if (coerceFromObservation && /<observation>/.test(text)) {
+      const coerced = coerceObservationToSummary(text, sessionId);
+      if (coerced) {
+        return coerced;
+      }
+      logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — coercion failed, no usable content', { sessionId });
     }
     return null;
   }
@@ -171,6 +189,17 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
   // This is NOT the same as missing some fields (which we intentionally allow above).
   // Fix for #1360.
   if (!request && !investigated && !learned && !completed && !next_steps) {
+    // If the response also contains <observation> tags with real content, fall
+    // back to coercion rather than discarding the response entirely — this covers
+    // the case where the LLM wraps empty <summary></summary> around observation
+    // content, which would otherwise resurrect the #1633 retry loop.
+    if (coerceFromObservation && /<observation>/.test(text)) {
+      const coerced = coerceObservationToSummary(text, sessionId);
+      if (coerced) {
+        logger.warn('PARSER', 'Empty <summary> match rejected — coerced from <observation> fallback (#1633)', { sessionId });
+        return coerced;
+      }
+    }
     logger.warn('PARSER', 'Summary match has no sub-tags — skipping false positive', { sessionId });
     return null;
   }
@@ -183,6 +212,50 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
     next_steps,
     notes
   };
+}
+
+/**
+ * Coerce <observation> response into a ParsedSummary when <summary> tags are missing.
+ * Maps observation fields to the closest summary equivalents so that a usable
+ * summary is stored instead of nothing — breaking the retry loop (#1633).
+ */
+function coerceObservationToSummary(text: string, sessionId?: number): ParsedSummary | null {
+  // Iterate all <observation> blocks — if the LLM emits multiple and the first is
+  // empty, we still want to salvage the first one that has usable content.
+  const obsRegex = /<observation>([\s\S]*?)<\/observation>/g;
+  let obsMatch: RegExpExecArray | null;
+  let blockIndex = 0;
+
+  while ((obsMatch = obsRegex.exec(text)) !== null) {
+    const obsContent = obsMatch[1];
+    const title = extractField(obsContent, 'title');
+    const subtitle = extractField(obsContent, 'subtitle');
+    const narrative = extractField(obsContent, 'narrative');
+    const facts = extractArrayElements(obsContent, 'facts', 'fact');
+
+    if (title || narrative || facts.length > 0) {
+      // Map observation fields → summary fields (best-effort)
+      const request = title || subtitle || null;
+      const investigated = narrative || null;
+      const learned = facts.length > 0 ? facts.join('; ') : null;
+      const completed = title ? `${title}${subtitle ? ' — ' + subtitle : ''}` : null;
+      const next_steps = null; // No direct observation equivalent
+
+      logger.warn('PARSER', 'Coerced <observation> response into <summary> to prevent retry loop (#1633)', {
+        sessionId,
+        blockIndex,
+        hasTitle: !!title,
+        hasNarrative: !!narrative,
+        factCount: facts.length,
+      });
+
+      return { request, investigated, learned, completed, next_steps, notes: null };
+    }
+
+    blockIndex++;
+  }
+
+  return null;
 }
 
 /**
