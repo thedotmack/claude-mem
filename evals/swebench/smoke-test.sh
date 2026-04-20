@@ -30,12 +30,20 @@ mkdir -p "$RUN_DIR" "$(dirname "$PREDICTIONS")"
 CREDS_FILE="$(mktemp -t claude-mem-creds.XXXXXX.json)"
 trap 'rm -f "$CREDS_FILE"' EXIT
 
+# Try macOS Keychain first (primary on Darwin), then fall through to the
+# on-disk credentials file — matches docker/claude-mem/run.sh behavior.
+creds_obtained=0
 if [[ "$(uname)" == "Darwin" ]]; then
-  security find-generic-password -s 'Claude Code-credentials' -w > "$CREDS_FILE" 2>/dev/null \
-    || { echo "ERROR: run \`claude login\` on host first" >&2; exit 1; }
-elif [[ -f "$HOME/.claude/.credentials.json" ]]; then
+  if security find-generic-password -s 'Claude Code-credentials' -w > "$CREDS_FILE" 2>/dev/null \
+     && [[ -s "$CREDS_FILE" ]]; then
+    creds_obtained=1
+  fi
+fi
+if [[ "$creds_obtained" -eq 0 && -f "$HOME/.claude/.credentials.json" ]]; then
   cp "$HOME/.claude/.credentials.json" "$CREDS_FILE"
-else
+  creds_obtained=1
+fi
+if [[ "$creds_obtained" -eq 0 ]]; then
   echo "ERROR: no Claude OAuth creds found (macOS Keychain or ~/.claude/.credentials.json)" >&2
   exit 1
 fi
@@ -68,13 +76,15 @@ SCRATCH="$(mktemp -d -t claude-mem-smoke.XXXXXX)"
 trap 'rm -f "$CREDS_FILE" "$INSTANCE_JSON"; rm -rf "$SCRATCH"' EXIT
 
 # Parse the instance JSON once: print repo + base_commit to stdout, write the
-# problem statement directly to $SCRATCH/problem.txt. Avoids three separate
-# python3 invocations and any shell-quote injection on $INSTANCE_JSON.
+# problem statement directly to $SCRATCH/problem.txt. INSTANCE_JSON is passed
+# as argv so stdin is free for the `python3 -` heredoc script body (previously
+# both were competing for stdin, which made json.load see the heredoc's EOF).
 read -r REPO BASE_COMMIT < <(
-  python3 - "$SCRATCH" < "$INSTANCE_JSON" <<'PY'
+  python3 - "$SCRATCH" "$INSTANCE_JSON" <<'PY'
 import json, os, sys
-d = json.load(sys.stdin)
-scratch = sys.argv[1]
+scratch, instance_json = sys.argv[1], sys.argv[2]
+with open(instance_json) as f:
+    d = json.load(f)
 open(os.path.join(scratch, "problem.txt"), "w").write(d["problem_statement"])
 print(d["repo"], d["base_commit"])
 PY

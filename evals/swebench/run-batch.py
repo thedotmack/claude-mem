@@ -79,6 +79,9 @@ def extract_oauth_credentials() -> Path | None:
     # Clean up on process exit, even on crash.
     atexit.register(lambda: temp_path.unlink(missing_ok=True))
 
+    # macOS: try Keychain first (primary storage on Darwin). On miss, fall
+    # through to the on-disk credentials file — some macOS setups (older CLI,
+    # migrated machines) only have the file form.
     if platform.system() == "Darwin":
         try:
             completed = subprocess.run(
@@ -97,26 +100,28 @@ def extract_oauth_credentials() -> Path | None:
                 temp_path.write_text(completed.stdout.strip(), encoding="utf-8")
                 temp_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
                 return temp_path
-            print(
-                "WARN: Claude Code-credentials not found in macOS Keychain. "
-                "Run `claude login` on the host first, or fall back to ANTHROPIC_API_KEY.",
-                file=sys.stderr,
-            )
-            return None
+            # else fall through to the on-disk credentials check below
         except FileNotFoundError:
             print(
-                "WARN: `security` command not available; cannot extract Keychain creds.",
+                "WARN: `security` command not available; trying on-disk creds.",
                 file=sys.stderr,
             )
-            return None
+            # fall through to the on-disk credentials check below
 
-    # Linux / other: read the on-disk credentials file if present.
+    # Both platforms (and macOS fallback): read the on-disk credentials file.
     creds_file = Path.home() / ".claude" / ".credentials.json"
     if creds_file.exists():
         temp_path.write_text(creds_file.read_text(encoding="utf-8"), encoding="utf-8")
         temp_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
         return temp_path
 
+    if platform.system() == "Darwin":
+        print(
+            "WARN: Claude Code-credentials not found in macOS Keychain and "
+            "~/.claude/.credentials.json missing. Run `claude login` on the "
+            "host first, or fall back to ANTHROPIC_API_KEY.",
+            file=sys.stderr,
+        )
     return None
 
 
