@@ -345,7 +345,7 @@ export class OpenRouterAgent {
       return;
     }
 
-    logger.failure('SDK', 'OpenRouter agent error', { sessionDbId: session.sessionDbId }, error as Error);
+    logger.failure('SDK', 'OpenRouter agent error', { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
     throw error;
   }
 

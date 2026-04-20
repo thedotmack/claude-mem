@@ -154,11 +154,7 @@ class Logger {
       try {
         input = JSON.parse(toolInput);
       } catch (_parseError: unknown) {
-        // [ANTI-PATTERN IGNORED]: Logger cannot log its own failures, using stderr/console as last resort
-        // Input is a raw string (e.g., Bash command), use as-is
-        if (_parseError instanceof Error) {
-          console.error('[logger] JSON parse failed for tool input:', _parseError);
-        }
+        // Input is a raw string (e.g., Bash command), use as-is — JSON.parse failure is expected here
         input = toolInput;
       }
     }

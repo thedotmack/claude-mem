@@ -421,7 +421,7 @@ export class MigrationRunner {
     try {
       this.createUserPromptsFTS();
     } catch (ftsError) {
-      logger.warn('DB', 'FTS5 not available — user_prompts_fts skipped (search uses ChromaDB)', {}, ftsError instanceof Error ? ftsError : undefined);
+      logger.warn('DB', 'FTS5 not available — user_prompts_fts skipped (search uses ChromaDB)', {}, ftsError instanceof Error ? ftsError : new Error(String(ftsError)));
     }
 
     // Commit transaction

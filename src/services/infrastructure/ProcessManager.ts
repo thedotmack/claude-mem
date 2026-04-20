@@ -326,11 +326,9 @@ export async function waitForProcessesExit(pids: number[], timeoutMs: number): P
       try {
         process.kill(pid, 0);
         return true;
-      } catch (error: unknown) {
+      } catch {
         // process.kill(pid, 0) throws when PID doesn't exist — expected during cleanup
-        if (error instanceof Error) {
-          logger.debug('SYSTEM', `Process ${pid} no longer exists`, { pid, error: error.message });
-        }
+        // [ANTI-PATTERN IGNORED]: Tight loop checking 100s of PIDs every 100ms during cleanup
         return false;
       }
     });
