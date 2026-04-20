@@ -50,7 +50,8 @@ export function createMiddleware(
   const RATE_LIMIT_MAX_REQUESTS = 300;
 
   const rateLimiter: RequestHandler = (req, res, next) => {
-    const clientIp = req.socket.remoteAddress ?? req.ip ?? 'unknown';
+    // Normalise IPv4-mapped IPv6 so 127.0.0.1 and ::ffff:127.0.0.1 share a bucket.
+    const clientIp = (req.socket.remoteAddress ?? req.ip ?? 'unknown').replace(/^::ffff:/, '');
     const now = Date.now();
     let entry = requestCounts.get(clientIp);
 
