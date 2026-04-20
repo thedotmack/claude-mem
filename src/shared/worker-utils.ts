@@ -4,6 +4,7 @@ import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT } from "./paths.js";
+import { getAuthToken } from "./auth-token.js";
 
 // Named constants for health checks
 // Allow env var override for users on slow systems (e.g., CLAUDE_MEM_HEALTH_TIMEOUT_MS=10000)
@@ -112,9 +113,12 @@ export function workerHttpRequest(
 
   const url = buildWorkerUrl(apiPath);
   const init: RequestInit = { method };
-  if (options.headers) {
-    init.headers = options.headers;
-  }
+  // Inject bearer token for worker API auth (#1932/#1933)
+  const authHeaders: Record<string, string> = {
+    'Authorization': `Bearer ${getAuthToken()}`,
+    ...options.headers
+  };
+  init.headers = authHeaders;
   if (options.body) {
     init.body = options.body;
   }

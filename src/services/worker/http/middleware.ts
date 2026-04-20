@@ -9,6 +9,7 @@ import express, { Request, Response, NextFunction, RequestHandler } from 'expres
 import cors from 'cors';
 import path from 'path';
 import { getPackageRoot } from '../../../shared/paths.js';
+import { getAuthToken } from '../../../shared/auth-token.js';
 import { logger } from '../../../utils/logger.js';
 
 /**
@@ -21,8 +22,8 @@ export function createMiddleware(
 ): RequestHandler[] {
   const middlewares: RequestHandler[] = [];
 
-  // JSON parsing with 50mb limit
-  middlewares.push(express.json({ limit: '50mb' }));
+  // JSON parsing with 5mb limit (#1935)
+  middlewares.push(express.json({ limit: '5mb' }));
 
   // CORS - restrict to localhost origins only
   middlewares.push(cors({
@@ -41,6 +42,32 @@ export function createMiddleware(
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     credentials: false
   }));
+
+  // Simple in-memory rate limiter (#1935)
+  const requestCounts = new Map<string, { count: number; resetAt: number }>();
+  const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+  const RATE_LIMIT_MAX_REQUESTS = 300; // 300 requests per minute per IP
+
+  const rateLimiter: RequestHandler = (req, res, next) => {
+    const clientIp = req.ip || 'unknown';
+    const now = Date.now();
+    let entry = requestCounts.get(clientIp);
+
+    if (!entry || now >= entry.resetAt) {
+      entry = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+      requestCounts.set(clientIp, entry);
+    }
+
+    entry.count++;
+    if (entry.count > RATE_LIMIT_MAX_REQUESTS) {
+      res.status(429).json({ error: 'Rate limit exceeded' });
+      return;
+    }
+
+    next();
+  };
+
+  middlewares.push(rateLimiter);
 
   // HTTP request/response logging
   middlewares.push((req: Request, res: Response, next: NextFunction) => {
@@ -100,6 +127,27 @@ export function requireLocalhost(req: Request, res: Response, next: NextFunction
       error: 'Forbidden',
       message: 'Admin endpoints are only accessible from localhost'
     });
+    return;
+  }
+
+  next();
+}
+
+/**
+ * Bearer token auth middleware (#1932/#1933).
+ * Requires Authorization: Bearer <token> on all API requests.
+ * Token is auto-generated and stored in DATA_DIR/worker-auth-token.
+ */
+export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'Missing or invalid Authorization header' });
+    return;
+  }
+
+  const token = authHeader.slice('Bearer '.length);
+  if (token !== getAuthToken()) {
+    res.status(401).json({ error: 'Invalid bearer token' });
     return;
   }
 

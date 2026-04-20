@@ -3,6 +3,7 @@ import { Settings } from '../types';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
+import { authFetch } from '../utils/api';
 
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -11,7 +12,7 @@ export function useSettings() {
 
   useEffect(() => {
     // Load initial settings
-    fetch(API_ENDPOINTS.SETTINGS)
+    authFetch(API_ENDPOINTS.SETTINGS)
       .then(res => res.json())
       .then(data => {
         // Use ?? (nullish coalescing) instead of || so that falsy values
@@ -60,7 +61,7 @@ export function useSettings() {
     setIsSaving(true);
     setSaveStatus('Saving...');
 
-    const response = await fetch(API_ENDPOINTS.SETTINGS, {
+    const response = await authFetch(API_ENDPOINTS.SETTINGS, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newSettings)
