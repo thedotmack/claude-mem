@@ -254,10 +254,10 @@ export async function adoptMergedWorktrees(opts: {
         worktreeProject,
         parentProject
       ) as Array<{ id: number }>;
-      for (const r of rows) adoptedSqliteIds.push(r.id);
 
       const obsChanges = updateObs.run(parentProject, worktreeProject).changes;
       const sumChanges = updateSum.run(parentProject, worktreeProject).changes;
+      for (const r of rows) adoptedSqliteIds.push(r.id);
       result.adoptedObservations += obsChanges;
       result.adoptedSummaries += sumChanges;
     };

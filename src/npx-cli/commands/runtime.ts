@@ -179,7 +179,14 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const data = await response.json();
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(pc.red(`Search failed: invalid JSON response (${message})`));
+    process.exit(1);
+  }
 
   if (typeof data === 'object' && data !== null) {
     console.log(JSON.stringify(data, null, 2));

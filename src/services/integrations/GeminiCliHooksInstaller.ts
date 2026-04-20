@@ -291,18 +291,18 @@ export async function installGeminiCliHooks(): Promise<number> {
   console.log(`  Using Bun runtime: ${bunPath}`);
   console.log(`  Worker service: ${workerServicePath}`);
 
-  // Build hook commands for all mapped events
-  const hooksConfig: GeminiHooksConfig = {};
-  for (const geminiEvent of Object.keys(GEMINI_EVENT_TO_INTERNAL_EVENT)) {
-    const command = buildHookCommand(bunPath, workerServicePath, geminiEvent);
-    hooksConfig[geminiEvent] = [createHookGroup(command)];
-  }
-
-  // Read existing settings and merge
-  const existingSettings = readGeminiSettings();
-  const mergedSettings = mergeHooksIntoSettings(existingSettings, hooksConfig);
-
   try {
+    // Build hook commands for all mapped events
+    const hooksConfig: GeminiHooksConfig = {};
+    for (const geminiEvent of Object.keys(GEMINI_EVENT_TO_INTERNAL_EVENT)) {
+      const command = buildHookCommand(bunPath, workerServicePath, geminiEvent);
+      hooksConfig[geminiEvent] = [createHookGroup(command)];
+    }
+
+    // Read existing settings and merge
+    const existingSettings = readGeminiSettings();
+    const mergedSettings = mergeHooksIntoSettings(existingSettings, hooksConfig);
+
     writeGeminiHooksAndSetupContext(mergedSettings);
     return 0;
   } catch (error) {
@@ -358,37 +358,37 @@ export function uninstallGeminiCliHooks(): number {
     return 0;
   }
 
-  const settings = readGeminiSettings();
-  if (!settings.hooks) {
-    console.log('  No hooks found in Gemini CLI settings — nothing to uninstall.');
-    return 0;
-  }
-
-  let removedCount = 0;
-
-  // Remove claude-mem hooks from within each group, preserving other hooks
-  for (const [eventName, groups] of Object.entries(settings.hooks)) {
-    const filteredGroups = groups
-      .map(group => {
-        const remainingHooks = group.hooks.filter(hook => hook.name !== HOOK_NAME);
-        removedCount += group.hooks.length - remainingHooks.length;
-        return { ...group, hooks: remainingHooks };
-      })
-      .filter(group => group.hooks.length > 0);
-
-    if (filteredGroups.length > 0) {
-      settings.hooks[eventName] = filteredGroups;
-    } else {
-      delete settings.hooks[eventName];
-    }
-  }
-
-  // Clean up empty hooks object
-  if (Object.keys(settings.hooks).length === 0) {
-    delete settings.hooks;
-  }
-
   try {
+    const settings = readGeminiSettings();
+    if (!settings.hooks) {
+      console.log('  No hooks found in Gemini CLI settings — nothing to uninstall.');
+      return 0;
+    }
+
+    let removedCount = 0;
+
+    // Remove claude-mem hooks from within each group, preserving other hooks
+    for (const [eventName, groups] of Object.entries(settings.hooks)) {
+      const filteredGroups = groups
+        .map(group => {
+          const remainingHooks = group.hooks.filter(hook => hook.name !== HOOK_NAME);
+          removedCount += group.hooks.length - remainingHooks.length;
+          return { ...group, hooks: remainingHooks };
+        })
+        .filter(group => group.hooks.length > 0);
+
+      if (filteredGroups.length > 0) {
+        settings.hooks[eventName] = filteredGroups;
+      } else {
+        delete settings.hooks[eventName];
+      }
+    }
+
+    // Clean up empty hooks object
+    if (Object.keys(settings.hooks).length === 0) {
+      delete settings.hooks;
+    }
+
     writeSettingsAndCleanupGeminiContext(settings, removedCount);
     return 0;
   } catch (error) {

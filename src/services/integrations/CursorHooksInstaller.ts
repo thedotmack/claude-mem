@@ -316,9 +316,6 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
 
   const workspaceRoot = process.cwd();
 
-  // Create target directory
-  mkdirSync(targetDir, { recursive: true });
-
   // Generate hooks.json with unified CLI commands
   const hooksJsonPath = path.join(targetDir, 'hooks.json');
 
@@ -360,6 +357,8 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
   };
 
   try {
+    // Create target directory inside try to catch EACCES/EPERM
+    mkdirSync(targetDir, { recursive: true });
     await writeHooksJsonAndSetupProject(hooksJsonPath, hooksJson, workerServicePath, target, targetDir, workspaceRoot);
     return 0;
   } catch (error) {

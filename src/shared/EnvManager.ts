@@ -131,18 +131,25 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
  * Save credentials to ~/.claude-mem/.env
  */
 export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
-  // Ensure directory exists with restricted permissions (owner only)
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-  }
-  // Fix permissions on pre-existing directories (mode: is only applied on creation)
-  // Note: On Windows, chmod has no effect — permissions are controlled via ACLs.
-  chmodSync(DATA_DIR, 0o700);
+  let existing: Record<string, string> = {};
+  try {
+    // Ensure directory exists with restricted permissions (owner only)
+    if (!existsSync(DATA_DIR)) {
+      mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+    }
+    // Fix permissions on pre-existing directories (mode: is only applied on creation)
+    // Note: On Windows, chmod has no effect — permissions are controlled via ACLs.
+    chmodSync(DATA_DIR, 0o700);
 
-  // Load existing to preserve any extra keys
-  const existing = existsSync(ENV_FILE_PATH)
-    ? parseEnvFile(readFileSync(ENV_FILE_PATH, 'utf-8'))
-    : {};
+    // Load existing to preserve any extra keys
+    existing = existsSync(ENV_FILE_PATH)
+      ? parseEnvFile(readFileSync(ENV_FILE_PATH, 'utf-8'))
+      : {};
+  } catch (error) {
+    const normalizedError = error instanceof Error ? error : new Error(String(error));
+    logger.error('ENV', 'Failed to set up env directory or read existing env', {}, normalizedError);
+    throw normalizedError;
+  }
 
   // Update with new values
   const updated: Record<string, string> = { ...existing };

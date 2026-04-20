@@ -809,7 +809,7 @@ export class ChromaSync {
     // chroma_query_documents returns nested arrays (one per query text)
     // We always pass a single query text, so we access [0]
     const ids: number[] = [];
-    const seen = new Set<number>();
+    const seen = new Set<string>();
     const docIds = results?.ids?.[0] || [];
     const rawMetadatas = results?.metadatas?.[0] || [];
     const rawDistances = results?.distances?.[0] || [];
@@ -828,16 +828,22 @@ export class ChromaSync {
       const promptMatch = docId.match(/prompt_(\d+)/);
 
       let sqliteId: number | null = null;
+      let entityType: string | null = null;
       if (obsMatch) {
         sqliteId = parseInt(obsMatch[1], 10);
+        entityType = 'observation';
       } else if (summaryMatch) {
         sqliteId = parseInt(summaryMatch[1], 10);
+        entityType = 'session_summary';
       } else if (promptMatch) {
         sqliteId = parseInt(promptMatch[1], 10);
+        entityType = 'user_prompt';
       }
 
-      if (sqliteId !== null && !seen.has(sqliteId)) {
-        seen.add(sqliteId);
+      if (sqliteId !== null && entityType) {
+        const dedupeKey = `${entityType}:${sqliteId}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
         ids.push(sqliteId);
         metadatas.push(rawMetadatas[i] ?? null);
         distances.push(rawDistances[i] ?? 0);

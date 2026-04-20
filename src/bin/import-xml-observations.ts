@@ -78,6 +78,9 @@ function buildTimestampMap(): TimestampMapping {
       if (timestamp && sessionId) {
         // Round timestamp to second for matching with XML timestamps
         const roundedTimestamp = new Date(timestamp);
+        if (Number.isNaN(roundedTimestamp.getTime())) {
+          continue;
+        }
         roundedTimestamp.setMilliseconds(0);
         const key = roundedTimestamp.toISOString();
 

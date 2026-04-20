@@ -147,12 +147,9 @@ function readOpenClawConfig(): Record<string, any> {
   try {
     return JSON.parse(readFileSync(configFilePath, 'utf-8'));
   } catch (error) {
-    if (error instanceof Error) {
-      logger.error('WORKER', 'Failed to parse openclaw.json, using empty config', { path: configFilePath }, error);
-    } else {
-      logger.error('WORKER', 'Failed to parse openclaw.json, using empty config', { path: configFilePath }, new Error(String(error)));
-    }
-    return {};
+    const normalizedError = error instanceof Error ? error : new Error(String(error));
+    logger.error('WORKER', 'Failed to parse openclaw.json', { path: configFilePath }, normalizedError);
+    throw normalizedError;
   }
 }
 
@@ -255,9 +252,6 @@ export function installOpenClawPlugin(): number {
   const extensionDirectory = getOpenClawClaudeMemExtensionDirectory();
   const destinationDistDirectory = path.join(extensionDirectory, 'dist');
 
-  // Create the extension directory structure
-  mkdirSync(destinationDistDirectory, { recursive: true });
-
   // Locate optional assets before entering the try block
   const manifestPath = findPluginManifestPath();
   const skillsDirectory = findPluginSkillsDirectory();
@@ -271,6 +265,8 @@ export function installOpenClawPlugin(): number {
   };
 
   try {
+    // Create the extension directory structure inside try to catch EACCES/ENOSPC
+    mkdirSync(destinationDistDirectory, { recursive: true });
     copyPluginFilesAndRegister(preBuiltDistDirectory, destinationDistDirectory, extensionDirectory, manifestPath, skillsDirectory, extensionPackageJson);
     return 0;
   } catch (error) {

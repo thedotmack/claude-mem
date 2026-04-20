@@ -288,9 +288,9 @@ export async function installGooseMcpIntegration(): Promise<number> {
 
   const configPath = getGooseConfigPath();
   const configDirectory = path.dirname(configPath);
-  mkdirSync(configDirectory, { recursive: true });
 
   try {
+    mkdirSync(configDirectory, { recursive: true });
     mergeGooseYamlConfig(configPath, mcpServerPath);
     return 0;
   } catch (error) {
@@ -308,9 +308,10 @@ function mergeGooseYamlConfig(configPath: string, mcpServerPath: string): void {
       const claudeMemPattern = /( {2}claude-mem:\n(?:.*\n)*?(?= {2}\S|\n\n|^\S|$))/m;
       const newEntry = buildGooseClaudeMemEntryYaml(mcpServerPath) + '\n';
 
-      if (claudeMemPattern.test(yamlContent)) {
-        yamlContent = yamlContent.replace(claudeMemPattern, newEntry);
+      if (!claudeMemPattern.test(yamlContent)) {
+        throw new Error('Found mcpServers/claude-mem markers but could not locate a replaceable claude-mem block');
       }
+      yamlContent = yamlContent.replace(claudeMemPattern, newEntry);
       writeFileSync(configPath, yamlContent);
       console.log(`  Updated existing claude-mem entry in: ${configPath}`);
     } else if (yamlContent.includes('mcpServers:')) {

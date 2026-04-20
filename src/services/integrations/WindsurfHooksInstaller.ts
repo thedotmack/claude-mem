@@ -441,11 +441,13 @@ export function uninstallWindsurfHooks(): number {
 }
 
 function removeClaudeMemHookEntries(): void {
-  const config: WindsurfHooksJson = JSON.parse(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
+  const parsed = JSON.parse(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8')) as Partial<WindsurfHooksJson>;
+  const config: WindsurfHooksJson = { hooks: parsed.hooks ?? {} };
 
   for (const eventName of WINDSURF_HOOK_EVENTS) {
-    if (config.hooks[eventName]) {
-      config.hooks[eventName] = config.hooks[eventName].filter(
+    const eventHooks = config.hooks[eventName] ?? [];
+    if (eventHooks.length > 0) {
+      config.hooks[eventName] = eventHooks.filter(
         (hook) => !hook.command.includes('worker-service') || !hook.command.includes('windsurf'),
       );
       if (config.hooks[eventName].length === 0) {
@@ -487,21 +489,18 @@ export function checkWindsurfHooksStatus(): number {
     console.log(`User-level: Installed`);
     console.log(`   Config: ${WINDSURF_HOOKS_JSON_PATH}`);
 
-    let parsedConfig: WindsurfHooksJson | null = null;
+    let parsedConfig: Partial<WindsurfHooksJson> | null = null;
     try {
       parsedConfig = JSON.parse(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
     } catch (error) {
-      if (error instanceof Error) {
-        logger.error('WORKER', 'Unable to parse hooks.json', { path: WINDSURF_HOOKS_JSON_PATH }, error);
-      } else {
-        logger.error('WORKER', 'Unable to parse hooks.json', { path: WINDSURF_HOOKS_JSON_PATH }, new Error(String(error)));
-      }
+      const normalizedError = error instanceof Error ? error : new Error(String(error));
+      logger.error('WORKER', 'Unable to parse hooks.json', { path: WINDSURF_HOOKS_JSON_PATH }, normalizedError);
       console.log(`   Mode: Unable to parse hooks.json`);
     }
 
     if (parsedConfig) {
       const registeredEvents = WINDSURF_HOOK_EVENTS.filter(
-        (event) => parsedConfig!.hooks[event]?.some(
+        (event) => (parsedConfig?.hooks?.[event] ?? []).some(
           (hook) => hook.command.includes('worker-service') && hook.command.includes('windsurf')
         )
       );
