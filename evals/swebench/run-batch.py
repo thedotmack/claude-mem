@@ -281,6 +281,10 @@ def run_one_instance(
     status: str = "failed"
     model_patch: str = ""
 
+    # Uniquely named so the TimeoutExpired handler can kill it without racing
+    # other instances on the host.
+    container_name = f"swebench-agent-{instance_id}-{os.getpid()}-{threading.get_ident()}"
+
     try:
         # The orchestrator owns JSONL writes under `predictions_lock` to avoid
         # racy concurrent appends across containers — so we DO NOT mount the
@@ -293,6 +297,8 @@ def run_one_instance(
             "docker",
             "run",
             "--rm",
+            "--name",
+            container_name,
             "-e",
             "CLAUDE_MEM_OUTPUT_DIR=/scratch",
             "-v",
@@ -354,8 +360,17 @@ def run_one_instance(
 
         except subprocess.TimeoutExpired as exc:
             status = "timed_out"
+            # subprocess.run killed the docker CLI, but the container may
+            # still be running. Force-remove it by name so we don't leak
+            # containers across the batch.
+            subprocess.run(
+                ["docker", "rm", "-f", container_name],
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
             stderr_log_path.write_text(
-                f"TIMEOUT after {timeout}s\n"
+                f"TIMEOUT after {timeout}s (forced docker rm -f {container_name})\n"
                 f"=== STDOUT (partial) ===\n{exc.stdout or ''}\n"
                 f"=== STDERR (partial) ===\n{exc.stderr or ''}\n",
                 encoding="utf-8",

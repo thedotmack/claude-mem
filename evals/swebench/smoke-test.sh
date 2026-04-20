@@ -64,15 +64,21 @@ else:
     sys.exit(1)
 PY
 
-# Read JSON fields from stdin so $INSTANCE_JSON paths with spaces/special chars
-# don't break shell interpolation inside `python3 -c`.
-REPO=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["repo"])' < "$INSTANCE_JSON")
-BASE_COMMIT=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["base_commit"])' < "$INSTANCE_JSON")
-
 SCRATCH="$(mktemp -d -t claude-mem-smoke.XXXXXX)"
 trap 'rm -f "$CREDS_FILE" "$INSTANCE_JSON"; rm -rf "$SCRATCH"' EXIT
 
-python3 -c 'import json,sys,os; open(os.path.join(sys.argv[1],"problem.txt"),"w").write(json.load(sys.stdin)["problem_statement"])' "$SCRATCH" < "$INSTANCE_JSON"
+# Parse the instance JSON once: print repo + base_commit to stdout, write the
+# problem statement directly to $SCRATCH/problem.txt. Avoids three separate
+# python3 invocations and any shell-quote injection on $INSTANCE_JSON.
+read -r REPO BASE_COMMIT < <(
+  python3 - "$SCRATCH" < "$INSTANCE_JSON" <<'PY'
+import json, os, sys
+d = json.load(sys.stdin)
+scratch = sys.argv[1]
+open(os.path.join(scratch, "problem.txt"), "w").write(d["problem_statement"])
+print(d["repo"], d["base_commit"])
+PY
+)
 
 echo "=== Running $INSTANCE_ID ($REPO @ $BASE_COMMIT) ===" >&2
 echo "Scratch: $SCRATCH" >&2

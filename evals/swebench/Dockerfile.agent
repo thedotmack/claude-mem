@@ -35,8 +35,12 @@ ENV PATH="/usr/local/bun/bin:${PATH}"
 # uv (provides Python for Chroma per CLAUDE.md). Installed to a system
 # location, same reason.
 ENV UV_INSTALL_DIR="/usr/local/bin"
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
- && chmod a+rX /usr/local/bin/uv /usr/local/bin/uvx 2>/dev/null || true
+# Group the chmod so the trailing `|| true` only absorbs chmod failures; without
+# this grouping, bash precedence (`&&` binds tighter than `||`) would silently
+# mask a failed `curl|sh` install step.
+RUN set -eux \
+ && curl -LsSf https://astral.sh/uv/install.sh | sh \
+ && { chmod a+rX /usr/local/bin/uv /usr/local/bin/uvx 2>/dev/null || true; }
 
 # Claude Code CLI — PINNED to the version whose flag surface was verified in
 # the plan (Phase 0). Do NOT bump without re-verifying flags.

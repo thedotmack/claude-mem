@@ -94,8 +94,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Clone the repo at BASE_COMMIT.
-git clone "https://github.com/${REPO_SLUG}.git" "$REPO_DIR"
+# Shallow clone + fetch the exact commit. Saves minutes on large repos
+# (sympy/django/scikit-learn) vs. a full-history clone. Fallback to a full
+# clone if the server rejects the by-commit fetch (GitHub supports
+# uploadpack.allowReachableSHA1InWant by default on public repos, but mirrors
+# may not).
+if ! { git clone --depth 1 --no-single-branch "https://github.com/${REPO_SLUG}.git" "$REPO_DIR" \
+    && git -C "$REPO_DIR" fetch --depth 1 origin "$BASE_COMMIT"; }; then
+  echo "WARN: shallow fetch failed; falling back to full clone" >&2
+  rm -rf "$REPO_DIR"
+  git clone "https://github.com/${REPO_SLUG}.git" "$REPO_DIR"
+fi
 git -C "$REPO_DIR" reset --hard "$BASE_COMMIT"
 
 # ---------- Turn 1: Ingest (populate memory via PostToolUse hook) ----------

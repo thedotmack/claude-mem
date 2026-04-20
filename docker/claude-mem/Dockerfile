@@ -30,7 +30,6 @@ RUN apt-get update \
       ca-certificates \
       unzip \
       jq \
-      sudo \
       less \
       procps \
       uuid-runtime \
@@ -49,8 +48,12 @@ ENV PATH="/usr/local/bun/bin:${PATH}"
 # Versioned installer URL per https://docs.astral.sh/uv/getting-started/installation/.
 ARG UV_VERSION=0.11.7
 ENV UV_INSTALL_DIR="/usr/local/bin"
-RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh \
- && chmod a+rX /usr/local/bin/uv /usr/local/bin/uvx 2>/dev/null || true
+# `&&` binds tighter than `||` in bash, so the previous form let `curl|sh` fail
+# silently via the trailing `|| true`. Group the chmod so tolerated failure is
+# scoped to perms-fixing only.
+RUN set -eux \
+ && curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh \
+ && { chmod a+rX /usr/local/bin/uv /usr/local/bin/uvx 2>/dev/null || true; }
 
 # Match the upstream devcontainer's npm-global prefix so `npm install -g`
 # targets a dir the `node` user owns.
