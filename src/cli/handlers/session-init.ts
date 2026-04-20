@@ -44,7 +44,8 @@ export const sessionInitHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    const { sessionId, cwd, prompt: rawPrompt } = input;
+    const { sessionId, prompt: rawPrompt } = input;
+    const cwd = input.cwd ?? process.cwd();  // Match context.ts fallback (#1918)
 
     // Guard: Codex CLI and other platforms may not provide a session_id (#744)
     if (!sessionId) {

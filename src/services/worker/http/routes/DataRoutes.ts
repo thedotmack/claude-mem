@@ -382,11 +382,13 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     // Import observations (depends on sessions)
+    const importedObservations: Array<{ id: number; obs: typeof observations[0] }> = [];
     if (Array.isArray(observations)) {
       for (const obs of observations) {
         const result = store.importObservation(obs);
         if (result.imported) {
           stats.observationsImported++;
+          importedObservations.push({ id: result.id, obs });
         } else {
           stats.observationsSkipped++;
         }
@@ -397,6 +399,41 @@ export class DataRoutes extends BaseRouteHandler {
       // those triggers may not have fired correctly for all import paths.
       if (stats.observationsImported > 0) {
         store.rebuildObservationsFTSIndex();
+      }
+
+      // Sync imported observations to ChromaDB for vector search.
+      // Fire-and-forget: Chroma sync failure should not block the import response.
+      const chromaSync = this.dbManager.getChromaSync();
+      if (chromaSync && importedObservations.length > 0) {
+        for (const { id, obs } of importedObservations) {
+          const safeParseJson = (val: string | null): string[] => {
+            if (!val) return [];
+            try { return JSON.parse(val); } catch { return []; }
+          };
+
+          const parsedObs = {
+            type: obs.type || 'discovery',
+            title: obs.title || null,
+            subtitle: obs.subtitle || null,
+            facts: safeParseJson(obs.facts),
+            narrative: obs.narrative || null,
+            concepts: safeParseJson(obs.concepts),
+            files_read: safeParseJson(obs.files_read),
+            files_modified: safeParseJson(obs.files_modified),
+          };
+
+          chromaSync.syncObservation(
+            id,
+            obs.memory_session_id,
+            obs.project,
+            parsedObs,
+            obs.prompt_number || 0,
+            obs.created_at_epoch,
+            obs.discovery_tokens || 0
+          ).catch(err => {
+            logger.error('CHROMA', 'Import ChromaDB sync failed', { id }, err as Error);
+          });
+        }
       }
     }
 
