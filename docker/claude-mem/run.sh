@@ -26,16 +26,24 @@ if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
   CREDS_FILE="$(mktemp -t claude-mem-creds.XXXXXX.json)"
   trap 'rm -f "$CREDS_FILE"' EXIT
 
+  # Try macOS Keychain first (primary storage on Darwin), then fall back to
+  # the on-disk credentials file — some macOS setups (older CLI versions,
+  # users who migrated machines) still have the file-only form.
+  creds_obtained=0
   if [[ "$(uname)" == "Darwin" ]]; then
-    if ! security find-generic-password -s 'Claude Code-credentials' -w > "$CREDS_FILE" 2>/dev/null; then
-      echo "ERROR: no ANTHROPIC_API_KEY set and 'Claude Code-credentials' not in macOS Keychain." >&2
-      echo "       Run \`claude login\` on the host first, or set ANTHROPIC_API_KEY." >&2
-      exit 1
+    if security find-generic-password -s 'Claude Code-credentials' -w > "$CREDS_FILE" 2>/dev/null \
+       && [[ -s "$CREDS_FILE" ]]; then
+      creds_obtained=1
     fi
-  elif [[ -f "$HOME/.claude/.credentials.json" ]]; then
+  fi
+  if [[ "$creds_obtained" -eq 0 && -f "$HOME/.claude/.credentials.json" ]]; then
     cp "$HOME/.claude/.credentials.json" "$CREDS_FILE"
-  else
-    echo "ERROR: no ANTHROPIC_API_KEY and no ~/.claude/.credentials.json." >&2
+    creds_obtained=1
+  fi
+  if [[ "$creds_obtained" -eq 0 ]]; then
+    echo "ERROR: no ANTHROPIC_API_KEY set and no Claude OAuth credentials found." >&2
+    echo "       Tried: macOS Keychain ('Claude Code-credentials') and ~/.claude/.credentials.json." >&2
+    echo "       Run \`claude login\` on the host first, or set ANTHROPIC_API_KEY." >&2
     exit 1
   fi
   chmod 600 "$CREDS_FILE"
@@ -51,7 +59,10 @@ fi
 TTY_ARGS=()
 [[ -t 0 && -t 1 ]] && TTY_ARGS=(-it)
 
-exec docker run --rm "${TTY_ARGS[@]}" \
+# NOT `exec` — we want the EXIT trap above to run and remove $CREDS_FILE
+# after the container exits. Running docker as a child keeps the shell
+# alive long enough for the trap to fire.
+docker run --rm "${TTY_ARGS[@]}" \
   "${CREDS_MOUNT_ARGS[@]}" \
   -v "$HOST_MEM_DIR:/home/node/.claude-mem" \
   "$TAG" \

@@ -84,13 +84,40 @@ echo "=== Running $INSTANCE_ID ($REPO @ $BASE_COMMIT) ===" >&2
 echo "Scratch: $SCRATCH" >&2
 echo "Logs will land in: $RUN_DIR" >&2
 
-docker run --rm \
+# Pick a wall-clock timeout binary. Linux ships `timeout`; macOS needs
+# `gtimeout` from coreutils (brew install coreutils). If neither is available,
+# warn and run without a cap — the smoke test is manual anyway.
+TIMEOUT_CMD=()
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_CMD=(timeout "$TIMEOUT")
+elif command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_CMD=(gtimeout "$TIMEOUT")
+else
+  echo "WARN: no \`timeout\`/\`gtimeout\` on PATH; container runs uncapped" >&2
+fi
+
+# Name the container so we can force-remove it if the wall-clock timeout
+# fires (SIGTERM from timeout leaves the container state open briefly).
+CONTAINER_NAME="claude-mem-smoke-$INSTANCE_ID-$$"
+
+set +e
+"${TIMEOUT_CMD[@]}" docker run --rm \
+  --name "$CONTAINER_NAME" \
   -e CLAUDE_MEM_OUTPUT_DIR=/scratch \
   -e CLAUDE_MEM_CREDENTIALS_FILE=/auth/.credentials.json \
   -v "$SCRATCH:/scratch" \
   -v "$CREDS_FILE:/auth/.credentials.json:ro" \
   "$IMAGE" \
   "$INSTANCE_ID" "$REPO" "$BASE_COMMIT" /scratch/problem.txt /scratch/ignored-predictions.jsonl
+DOCKER_EXIT=$?
+set -e
+
+if [[ "$DOCKER_EXIT" -eq 124 ]]; then
+  # `timeout` signals TERM and returns 124 on timeout. Force-remove the
+  # container in case docker hasn't reaped it yet.
+  echo "ERROR: docker run exceeded ${TIMEOUT}s wall-clock; removing container" >&2
+  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+fi
 
 # Copy artifacts from scratch → RUN_DIR
 for f in ingest.jsonl fix.jsonl model_patch.diff; do
