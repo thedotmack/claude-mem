@@ -829,7 +829,8 @@ Please see the 3.x to 4.x migration guide for details on how to update your app.
       WHERE status = 'failed'
     `).run().changes}clearFailedOlderThan(e){let r=Date.now()-e;return this.db.prepare(`
       DELETE FROM pending_messages
-      WHERE status = 'failed' AND created_at_epoch < ?
+      WHERE status = 'failed'
+        AND COALESCE(completed_at_epoch, started_processing_at_epoch, created_at_epoch) < ?
     `).run(r).changes}clearAll(){return this.db.prepare(`
       DELETE FROM pending_messages
       WHERE status IN ('pending', 'processing', 'failed')
@@ -1214,7 +1215,7 @@ Examples:
   claude-mem gemini-cli uninstall   # Remove hooks
 
 For more info: https://docs.claude-mem.ai/usage/gemini-provider
-      `),0}}Eg();var h6=require("bun:sqlite");gt();Y();P$();var qv=class t{db;static MISSING_SEARCH_INPUT_MESSAGE="Either query or filters required for search";constructor(e){e||(or(Zt),e=Xd),this.db=new h6.Database(e),this.db.run("PRAGMA journal_mode = WAL"),this._fts5Available=this.isFts5Available(),this.ensureFTSTables()}_fts5Available;ensureFTSTables(){if(!this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all().some(n=>n.name==="observations_fts"||n.name==="session_summaries_fts")){if(!this.isFts5Available()){h.warn("DB","FTS5 not available on this platform \u2014 skipping FTS table creation (search uses ChromaDB)");return}h.info("DB","Creating FTS5 tables");try{this.createFTSTablesAndTriggers(),h.info("DB","FTS5 tables created successfully")}catch(n){h.warn("DB","FTS5 table creation failed \u2014 search will use ChromaDB and LIKE queries",{},n instanceof Error?n:void 0)}}}isFts5Available(){try{return this.db.run("CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)"),this.db.run("DROP TABLE _fts5_probe"),!0}catch{return!1}}createFTSTablesAndTriggers(){this.db.run(`
+      `),0}}Eg();var h6=require("bun:sqlite");gt();Y();P$();var qv=class t{db;static MISSING_SEARCH_INPUT_MESSAGE="Either query or filters required for search";constructor(e){e||(or(Zt),e=Xd),this.db=new h6.Database(e),this.db.run("PRAGMA journal_mode = WAL"),this._fts5Available=this.isFts5Available(),this.ensureFTSTables()}_fts5Available;ensureFTSTables(){if(!this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all().some(n=>n.name==="observations_fts"||n.name==="session_summaries_fts")){if(!this.isFts5Available()){h.warn("DB","FTS5 not available on this platform \u2014 skipping FTS table creation (search uses ChromaDB)");return}h.info("DB","Creating FTS5 tables");try{this.createFTSTablesAndTriggers(),h.info("DB","FTS5 tables created successfully")}catch(n){this._fts5Available=!1,h.warn("DB","FTS5 table creation failed \u2014 search will use ChromaDB and LIKE queries",{},n instanceof Error?n:void 0)}}}isFts5Available(){try{return this.db.run("CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)"),this.db.run("DROP TABLE _fts5_probe"),!0}catch{return!1}}createFTSTablesAndTriggers(){this.db.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
         title,
         subtitle,
@@ -1295,7 +1296,7 @@ For more info: https://docs.claude-mem.ai/usage/gemini-provider
         ${c?"AND "+c:""}
         ${u}
         LIMIT ? OFFSET ?
-      `;n.unshift(e),n.push(i,s);try{return this.db.prepare(l).all(...n)}catch(d){return h.warn("DB","FTS5 observation search failed, returning empty",{},d instanceof Error?d:void 0),[]}}return h.warn("DB","Text search unavailable: ChromaDB disabled and FTS5 not available"),[]}searchSessions(e,r={}){let n=[],{limit:i=50,offset:s=0,orderBy:o="relevance",...a}=r;if(!e){let c={...a};delete c.type;let u=this.buildFilterClause(c,n,"s");if(!u)throw new wn(t.MISSING_SEARCH_INPUT_MESSAGE,400,"INVALID_SEARCH_REQUEST");let d=`
+      `,d='"'+e.replace(/"/g,'""')+'"';n.unshift(d),n.push(i,s);try{return this.db.prepare(l).all(...n)}catch(p){return h.warn("DB","FTS5 observation search failed, returning empty",{},p instanceof Error?p:void 0),[]}}return h.warn("DB","Text search unavailable: ChromaDB disabled and FTS5 not available"),[]}searchSessions(e,r={}){let n=[],{limit:i=50,offset:s=0,orderBy:o="relevance",...a}=r;if(!e){let c={...a};delete c.type;let u=this.buildFilterClause(c,n,"s");if(!u)throw new wn(t.MISSING_SEARCH_INPUT_MESSAGE,400,"INVALID_SEARCH_REQUEST");let d=`
         SELECT s.*, s.discovery_tokens
         FROM session_summaries s
         WHERE ${u}
@@ -1309,7 +1310,7 @@ For more info: https://docs.claude-mem.ai/usage/gemini-provider
         ${u?"AND "+u:""}
         ${l}
         LIMIT ? OFFSET ?
-      `;n.unshift(e),n.push(i,s);try{return this.db.prepare(d).all(...n)}catch(p){return h.warn("DB","FTS5 session search failed, returning empty",{},p instanceof Error?p:void 0),[]}}return h.warn("DB","Text search unavailable: ChromaDB disabled and FTS5 not available"),[]}findByConcept(e,r={}){let n=[],{limit:i=50,offset:s=0,orderBy:o="date_desc",...a}=r,c={...a,concepts:e},u=this.buildFilterClause(c,n,"o"),l=this.buildOrderClause(o,!1),d=`
+      `,p='"'+e.replace(/"/g,'""')+'"';n.unshift(p),n.push(i,s);try{return this.db.prepare(d).all(...n)}catch(m){return h.warn("DB","FTS5 session search failed, returning empty",{},m instanceof Error?m:void 0),[]}}return h.warn("DB","Text search unavailable: ChromaDB disabled and FTS5 not available"),[]}findByConcept(e,r={}){let n=[],{limit:i=50,offset:s=0,orderBy:o="date_desc",...a}=r,c={...a,concepts:e},u=this.buildFilterClause(c,n,"o"),l=this.buildOrderClause(o,!1),d=`
       SELECT o.*, o.discovery_tokens
       FROM observations o
       WHERE ${u}
@@ -1336,21 +1337,21 @@ For more info: https://docs.claude-mem.ai/usage/gemini-provider
       WHERE ${u}
       ${l}
       LIMIT ? OFFSET ?
-    `;return n.push(i,s),this.db.prepare(d).all(...n)}searchUserPrompts(e,r={}){let n=[],{limit:i=20,offset:s=0,orderBy:o="relevance",...a}=r,c=[];if(a.project&&(c.push("s.project = ?"),n.push(a.project)),a.dateRange){let{start:p,end:m}=a.dateRange;if(p){let f=typeof p=="number"?p:new Date(p).getTime();c.push("up.created_at_epoch >= ?"),n.push(f)}if(m){let f=typeof m=="number"?m:new Date(m).getTime();c.push("up.created_at_epoch <= ?"),n.push(f)}}if(!e){if(c.length===0)throw new wn(t.MISSING_SEARCH_INPUT_MESSAGE,400,"INVALID_SEARCH_REQUEST");let f=`
+    `;return n.push(i,s),this.db.prepare(d).all(...n)}searchUserPrompts(e,r={}){let n=[],{limit:i=20,offset:s=0,orderBy:o="relevance",...a}=r,c=[];if(a.project&&(c.push("s.project = ?"),n.push(a.project)),a.dateRange){let{start:m,end:f}=a.dateRange;if(m){let g=typeof m=="number"?m:new Date(m).getTime();c.push("up.created_at_epoch >= ?"),n.push(g)}if(f){let g=typeof f=="number"?f:new Date(f).getTime();c.push("up.created_at_epoch <= ?"),n.push(g)}}if(!e){if(c.length===0)throw new wn(t.MISSING_SEARCH_INPUT_MESSAGE,400,"INVALID_SEARCH_REQUEST");let g=`
         SELECT up.*
         FROM user_prompts up
         JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
         ${`WHERE ${c.join(" AND ")}`}
         ${o==="date_asc"?"ORDER BY up.created_at_epoch ASC":"ORDER BY up.created_at_epoch DESC"}
         LIMIT ? OFFSET ?
-      `;return n.push(i,s),this.db.prepare(f).all(...n)}c.push("up.prompt_text LIKE ?"),n.push(`%${e}%`);let d=`
+      `;return n.push(i,s),this.db.prepare(g).all(...n)}let u=e.replace(/[\\%_]/g,"\\$&");c.push("up.prompt_text LIKE ? ESCAPE '\\'"),n.push(`%${u}%`);let p=`
       SELECT up.*
       FROM user_prompts up
       JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
       ${`WHERE ${c.join(" AND ")}`}
       ${o==="date_asc"?"ORDER BY up.created_at_epoch ASC":"ORDER BY up.created_at_epoch DESC"}
       LIMIT ? OFFSET ?
-    `;return n.push(i,s),this.db.prepare(d).all(...n)}getUserPromptsBySession(e){return this.db.prepare(`
+    `;return n.push(i,s),this.db.prepare(p).all(...n)}getUserPromptsBySession(e){return this.db.prepare(`
       SELECT
         id,
         content_session_id,

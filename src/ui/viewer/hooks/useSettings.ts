@@ -13,7 +13,12 @@ export function useSettings() {
   useEffect(() => {
     // Load initial settings
     authFetch(API_ENDPOINTS.SETTINGS)
-      .then(res => res.json())
+      .then(async res => {
+        if (!res.ok) {
+          throw new Error(`Failed to load settings (${res.status})`);
+        }
+        return res.json();
+      })
       .then(data => {
         // Use ?? (nullish coalescing) instead of || so that falsy values
         // like '0', 'false', and '' from the backend are preserved.

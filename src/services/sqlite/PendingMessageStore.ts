@@ -485,9 +485,12 @@ export class PendingMessageStore {
    */
   clearFailedOlderThan(thresholdMs: number): number {
     const cutoff = Date.now() - thresholdMs;
+    // Use COALESCE to prefer the most recent timestamp: when the message actually
+    // failed (completed_at_epoch) rather than when it was first created.
     const stmt = this.db.prepare(`
       DELETE FROM pending_messages
-      WHERE status = 'failed' AND created_at_epoch < ?
+      WHERE status = 'failed'
+        AND COALESCE(completed_at_epoch, started_processing_at_epoch, created_at_epoch) < ?
     `);
     const result = stmt.run(cutoff);
     return result.changes;

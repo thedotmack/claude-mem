@@ -36,7 +36,7 @@ export class SessionSearch {
     // Cache FTS5 availability once at construction (avoids DDL probe on every query)
     this._fts5Available = this.isFts5Available();
 
-    // Ensure FTS tables exist
+    // Ensure FTS tables exist — may downgrade _fts5Available if creation fails
     this.ensureFTSTables();
   }
 
@@ -84,6 +84,7 @@ export class SessionSearch {
       logger.info('DB', 'FTS5 tables created successfully');
     } catch (error) {
       // FTS5 creation failed at runtime despite probe succeeding — degrade gracefully
+      this._fts5Available = false;
       logger.warn('DB', 'FTS5 table creation failed — search will use ChromaDB and LIKE queries', {}, error instanceof Error ? error : undefined);
     }
   }
@@ -327,7 +328,9 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
-      params.unshift(query);
+      // Escape FTS5 special characters: wrap in quotes to treat as literal phrase
+      const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
+      params.unshift(escapedQuery);
       params.push(limit, offset);
 
       try {
@@ -397,7 +400,9 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
-      params.unshift(query);
+      // Escape FTS5 special characters: wrap in quotes to treat as literal phrase
+      const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
+      params.unshift(escapedQuery);
       params.push(limit, offset);
 
       try {
@@ -647,8 +652,10 @@ export class SessionSearch {
     }
 
     // LIKE fallback for user prompts text search (no FTS table for this entity)
-    baseConditions.push('up.prompt_text LIKE ?');
-    params.push(`%${query}%`);
+    // Escape LIKE metacharacters so %, _, and \ in user input are treated as literals
+    const escapedQuery = query.replace(/[\\%_]/g, '\\$&');
+    baseConditions.push("up.prompt_text LIKE ? ESCAPE '\\'");
+    params.push(`%${escapedQuery}%`);
 
     const whereClause = `WHERE ${baseConditions.join(' AND ')}`;
     const orderClause = orderBy === 'date_asc'
