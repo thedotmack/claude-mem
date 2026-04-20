@@ -336,8 +336,9 @@ export class SessionSearch {
       try {
         return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
       } catch (error) {
-        logger.warn('DB', 'FTS5 observation search failed, returning empty', {}, error instanceof Error ? error : undefined);
-        return [];
+        // Re-throw so callers can distinguish FTS failure from "no results"
+        logger.warn('DB', 'FTS5 observation search failed', {}, error instanceof Error ? error : undefined);
+        throw error;
       }
     }
 
@@ -408,8 +409,9 @@ export class SessionSearch {
       try {
         return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
       } catch (error) {
-        logger.warn('DB', 'FTS5 session search failed, returning empty', {}, error instanceof Error ? error : undefined);
-        return [];
+        // Re-throw so callers can distinguish FTS failure from "no results"
+        logger.warn('DB', 'FTS5 session search failed', {}, error instanceof Error ? error : undefined);
+        throw error;
       }
     }
 

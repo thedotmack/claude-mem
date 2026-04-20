@@ -298,14 +298,20 @@ export class SearchManager {
     // ChromaDB not initialized - fall back to FTS5 keyword search (#1913, #2048)
     else if (query) {
       logger.debug('SEARCH', 'ChromaDB not initialized — falling back to FTS5 keyword search', {});
-      if (searchObservations) {
-        observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
-      }
-      if (searchSessions) {
-        sessions = this.sessionSearch.searchSessions(query, options);
-      }
-      if (searchPrompts) {
-        prompts = this.sessionSearch.searchUserPrompts(query, options);
+      try {
+        if (searchObservations) {
+          observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
+        }
+        if (searchSessions) {
+          sessions = this.sessionSearch.searchSessions(query, options);
+        }
+        if (searchPrompts) {
+          prompts = this.sessionSearch.searchUserPrompts(query, options);
+        }
+      } catch (ftsError) {
+        const errorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
+        logger.error('WORKER', 'FTS5 fallback search failed', {}, errorObject);
+        chromaFailed = true;
       }
     }
 
@@ -490,9 +496,13 @@ export class SearchManager {
 
       // FTS fallback when Chroma is unavailable or returned no results
       if (results.length === 0) {
-        const ftsResults = this.sessionSearch.searchObservations(query, { project, limit: 1 });
-        if (ftsResults.length > 0) {
-          results = ftsResults;
+        try {
+          const ftsResults = this.sessionSearch.searchObservations(query, { project, limit: 1 });
+          if (ftsResults.length > 0) {
+            results = ftsResults;
+          }
+        } catch (ftsError) {
+          logger.warn('SEARCH', 'FTS fallback failed for timeline', {}, ftsError instanceof Error ? ftsError : undefined);
         }
       }
 
@@ -989,9 +999,13 @@ export class SearchManager {
 
     // FTS fallback when Chroma is unavailable or returned no results
     if (results.length === 0) {
-      const ftsResults = this.sessionSearch.searchObservations(query, options);
-      if (ftsResults.length > 0) {
-        results = ftsResults;
+      try {
+        const ftsResults = this.sessionSearch.searchObservations(query, options);
+        if (ftsResults.length > 0) {
+          results = ftsResults;
+        }
+      } catch (ftsError) {
+        logger.warn('SEARCH', 'FTS fallback failed for observations', {}, ftsError instanceof Error ? ftsError : undefined);
       }
     }
 
@@ -1071,9 +1085,13 @@ export class SearchManager {
 
     // FTS fallback when Chroma is unavailable or returned no results
     if (results.length === 0) {
-      const ftsResults = this.sessionSearch.searchSessions(query, options);
-      if (ftsResults.length > 0) {
-        results = ftsResults;
+      try {
+        const ftsResults = this.sessionSearch.searchSessions(query, options);
+        if (ftsResults.length > 0) {
+          results = ftsResults;
+        }
+      } catch (ftsError) {
+        logger.warn('SEARCH', 'FTS fallback failed for sessions', {}, ftsError instanceof Error ? ftsError : undefined);
       }
     }
 
@@ -1153,9 +1171,13 @@ export class SearchManager {
 
     // FTS fallback when Chroma is unavailable or returned no results
     if (results.length === 0 && query) {
-      const ftsResults = this.sessionSearch.searchUserPrompts(query, options);
-      if (ftsResults.length > 0) {
-        results = ftsResults;
+      try {
+        const ftsResults = this.sessionSearch.searchUserPrompts(query, options);
+        if (ftsResults.length > 0) {
+          results = ftsResults;
+        }
+      } catch (ftsError) {
+        logger.warn('SEARCH', 'FTS fallback failed for user prompts', {}, ftsError instanceof Error ? ftsError : undefined);
       }
     }
 
@@ -1837,9 +1859,13 @@ export class SearchManager {
 
     // FTS fallback when Chroma is unavailable or returned no results
     if (results.length === 0) {
-      const ftsResults = this.sessionSearch.searchObservations(query, { project, limit: mode === 'auto' ? 1 : limit });
-      if (ftsResults.length > 0) {
-        results = ftsResults;
+      try {
+        const ftsResults = this.sessionSearch.searchObservations(query, { project, limit: mode === 'auto' ? 1 : limit });
+        if (ftsResults.length > 0) {
+          results = ftsResults;
+        }
+      } catch (ftsError) {
+        logger.warn('SEARCH', 'FTS fallback failed for timeline by query', {}, ftsError instanceof Error ? ftsError : undefined);
       }
     }
 
