@@ -56,7 +56,7 @@ else
 fi
 
 # Pick -it only when a TTY is attached (keeps non-interactive callers working).
-# Initialize with a no-op flag so the array is never empty (nounset-safe).
+# Initialize empty; expansion below safely omits args when the array is unset/empty.
 TTY_ARGS=()
 [[ -t 0 && -t 1 ]] && TTY_ARGS=(-it)
 

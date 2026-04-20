@@ -24,6 +24,7 @@ import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProcessBySession, ensureProcessExit } from '../../ProcessRegistry.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
+import { RestartGuard } from '../../RestartGuard.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -279,9 +280,10 @@ export class SessionRoutes extends BaseRouteHandler {
 
         if (wasAborted) {
           logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId });
-        } else {
-          logger.error('SESSION', `Generator exited unexpectedly`, { sessionId: sessionDbId });
         }
+        // Don't log "exited unexpectedly" here — a non-abort exit is normal when
+        // the SDK subprocess completes its work. The crash-recovery block below
+        // checks pendingCount to distinguish real crashes from clean exits (#1876).
 
         session.generatorPromise = null;
         session.currentProvider = null;
@@ -290,7 +292,6 @@ export class SessionRoutes extends BaseRouteHandler {
         // Crash recovery: If not aborted and still has work, restart (with limit)
         if (!wasAborted) {
           const pendingStore = this.sessionManager.getPendingMessageStore();
-          const MAX_CONSECUTIVE_RESTARTS = 3;
 
           let pendingCount: number;
           try {
@@ -309,14 +310,18 @@ export class SessionRoutes extends BaseRouteHandler {
               return;
             }
 
-            session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1;
+            // Windowed restart guard: only blocks tight-loop restarts, not spread-out ones (#2053)
+            if (!session.restartGuard) session.restartGuard = new RestartGuard();
+            const restartAllowed = session.restartGuard.recordRestart();
+            session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1; // Keep for logging
 
-            if (session.consecutiveRestarts > MAX_CONSECUTIVE_RESTARTS) {
-              logger.error('SESSION', `CRITICAL: Generator restart limit exceeded - stopping to prevent runaway costs`, {
+            if (!restartAllowed) {
+              logger.error('SESSION', `CRITICAL: Restart guard tripped — too many restarts in window, stopping to prevent runaway costs`, {
                 sessionId: sessionDbId,
                 pendingCount,
-                consecutiveRestarts: session.consecutiveRestarts,
-                maxRestarts: MAX_CONSECUTIVE_RESTARTS,
+                restartsInWindow: session.restartGuard.restartsInWindow,
+                windowMs: session.restartGuard.windowMs,
+                maxRestarts: session.restartGuard.maxRestarts,
                 action: 'Generator will NOT restart. Check logs for root cause. Messages remain in pending state.'
               });
               // Don't restart - abort to prevent further API calls
@@ -328,7 +333,8 @@ export class SessionRoutes extends BaseRouteHandler {
               sessionId: sessionDbId,
               pendingCount,
               consecutiveRestarts: session.consecutiveRestarts,
-              maxRestarts: MAX_CONSECUTIVE_RESTARTS
+              restartsInWindow: session.restartGuard!.restartsInWindow,
+              maxRestarts: session.restartGuard!.maxRestarts
             });
 
             // Abort OLD controller before replacing to prevent child process leaks

@@ -207,6 +207,8 @@ export async function processAgentResponse(
   }
   if (session.processingMessageIds.length > 0) {
     logger.debug('QUEUE', `CONFIRMED_BATCH | sessionDbId=${session.sessionDbId} | count=${session.processingMessageIds.length} | ids=[${session.processingMessageIds.join(',')}]`);
+    // Record successful processing so restart guard decay is anchored to real successes
+    session.restartGuard?.recordSuccess();
   }
   // Clear the tracking array after confirmation
   session.processingMessageIds = [];

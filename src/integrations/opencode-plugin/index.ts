@@ -101,6 +101,8 @@ const MAX_TOOL_RESPONSE_LENGTH = 1000;
 // Worker HTTP Client
 // ============================================================================
 
+const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
+
 async function workerPost(
   path: string,
   body: Record<string, unknown>,
@@ -109,7 +111,7 @@ async function workerPost(
   try {
     response = await fetch(`${WORKER_BASE_URL}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: JSON_HEADERS,
       body: JSON.stringify(body),
     });
   } catch (error: unknown) {
@@ -134,7 +136,7 @@ function workerPostFireAndForget(
 ): void {
   fetch(`${WORKER_BASE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: JSON_HEADERS,
     body: JSON.stringify(body),
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -146,7 +148,7 @@ function workerPostFireAndForget(
 
 async function workerGetText(path: string): Promise<string | null> {
   try {
-    const response = await fetch(`${WORKER_BASE_URL}${path}`);
+    const response = await fetch(`${WORKER_BASE_URL}${path}`, { headers: JSON_HEADERS });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
       return null;

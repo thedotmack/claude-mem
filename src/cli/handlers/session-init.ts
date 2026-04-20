@@ -44,7 +44,8 @@ export const sessionInitHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    const { sessionId, cwd, prompt: rawPrompt } = input;
+    const { sessionId, prompt: rawPrompt } = input;
+    const cwd = input.cwd ?? process.cwd();  // Match context.ts fallback (#1918)
 
     // Guard: Codex CLI and other platforms may not provide a session_id (#744)
     if (!sessionId) {
@@ -69,16 +70,23 @@ export const sessionInitHandler: EventHandler = {
     logger.debug('HOOK', 'session-init: Calling /api/sessions/init', { contentSessionId: sessionId, project });
 
     // Initialize session via HTTP - handles DB operations and privacy checks
-    const initResponse = await workerHttpRequest('/api/sessions/init', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contentSessionId: sessionId,
-        project,
-        prompt,
-        platformSource
-      })
-    });
+    let initResponse: Response;
+    try {
+      initResponse = await workerHttpRequest('/api/sessions/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contentSessionId: sessionId,
+          project,
+          prompt,
+          platformSource
+        })
+      });
+    } catch (err) {
+      // Worker unreachable — on Linux/WSL, hook may fire before worker is healthy (#1907)
+      logger.warn('HOOK', `session-init: worker request failed: ${err instanceof Error ? err.message : err}`);
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
 
     if (!initResponse.ok) {
       // Log but don't throw - a worker 500 should not block the user's prompt
