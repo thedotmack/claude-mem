@@ -56,6 +56,12 @@ export function createMiddleware(
     let entry = requestCounts.get(clientIp);
 
     if (!entry || now >= entry.resetAt) {
+      // Safety valve in case the worker is ever bound non-localhost.
+      if (requestCounts.size > 1000) {
+        for (const [ip, e] of requestCounts) {
+          if (now >= e.resetAt) requestCounts.delete(ip);
+        }
+      }
       entry = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
       requestCounts.set(clientIp, entry);
     }
