@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.3.0] - 2026-04-20
+
+## New features
+
+### Basic claude-mem Docker container (`docker/claude-mem/`)
+A ready-to-run container for ad-hoc claude-mem testing with zero local setup beyond Docker.
+
+- `FROM node:20`; layers pinned Bun (1.3.12) + uv (0.11.7) + the built plugin
+- Non-root `node` user so `--permission-mode bypassPermissions` works headlessly
+- `build.sh`, `run.sh` (auto-extracts OAuth from macOS Keychain or `~/.claude/.credentials.json`, falls back to `ANTHROPIC_API_KEY`), `entrypoint.sh`
+- Persistent `.claude-mem/` mount so the observations DB survives container exit
+
+Validated end-to-end: `PostToolUse` hook → queue → worker SDK call under subscription OAuth → `<observation>` XML → `observations` table → Chroma sync.
+
+### SWE-bench evaluation harness (`evals/swebench/`)
+Two-container split (our agent image + the upstream SWE-bench harness) for measuring claude-mem's effect on resolve rate.
+
+- `Dockerfile.agent` → `claude-mem/swebench-agent:latest` (same non-root, version-pinned approach)
+- `run-instance.sh` — two-turn ingest/fix protocol per instance; shallow clone at `base_commit` with full-clone fallback
+- `run-batch.py` — parallel orchestrator with OAuth extraction, per-container naming, timeout enforcement + force-cleanup, `--overwrite` guard against silent truncation of partial results
+- `eval.sh` — wraps `python -m swebench.harness.run_evaluation`
+- `summarize.py` — aggregates per-instance reports
+- `smoke-test.sh` — one-instance smoke test
+
+### Fixes / hardening (from PR review)
+- `chmod 600` on extracted OAuth creds files
+- Grouped `{ chmod || true; }` so bash precedence can't mask failed `curl|sh` installs
+- macOS creds: Keychain-first with file fallback for migrated / older setups
+- `smoke-test.sh` `TIMEOUT` now actually enforced via `timeout`/`gtimeout` plus `docker rm -f` on exit 124
+- Container naming + force-cleanup in `run-batch.py` timeout handler prevents orphan containers
+- Fixed stdin-redirection collision in the consolidated `smoke-test.sh` JSON parser
+- Drop `exec` in `run.sh` so the EXIT trap fires and cleans the temp creds file
+
+**PR:** https://github.com/thedotmack/claude-mem/pull/2076
+
 ## [12.2.3] - 2026-04-19
 
 ## Fixed
