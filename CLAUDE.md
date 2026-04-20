@@ -67,6 +67,55 @@ See `private/context/claude-code/exit-codes.md` for full hook behavior matrix.
 - **uv** (all platforms - auto-installed if missing, provides Python for Chroma)
 - Node.js
 
+## Development Environment
+
+**Dev happens in git worktrees + Docker containers.** Never run worker code directly against your host's `~/.claude-mem` — it collides with the host's own claude-mem worker on port 37777 and corrupts shared SQLite state.
+
+**Worktree setup**: each branch lives in its own worktree under `~/conductor/workspaces/claude-mem/<worktree-name>/` so multiple branches can be worked on concurrently without rebasing.
+
+**Docker setup** (`docker/claude-mem/`):
+
+```bash
+docker/claude-mem/build.sh         # builds claude-mem:basic (runs npm run build first, bakes plugin/)
+docker/claude-mem/dev.sh           # interactive dev container, one session
+```
+
+**Persistent detached dev container** — preferred when an AI agent is driving development and needs to `docker exec` commands repeatedly:
+
+```bash
+# Boots worker in background, survives until `docker rm -f claude-mem-dev`.
+# Uses OAuth from macOS Keychain (fallback: ~/.claude/.credentials.json).
+CREDS_FILE=$(mktemp -t claude-mem-creds.XXXXXX.json)
+security find-generic-password -s 'Claude Code-credentials' -w > "$CREDS_FILE" \
+  || cp "$HOME/.claude/.credentials.json" "$CREDS_FILE"
+chmod 600 "$CREDS_FILE"
+mkdir -p .docker-claude-mem-data
+docker run -d --name claude-mem-dev \
+  -p 37778:37777 \
+  -e CLAUDE_MEM_WORKER_HOST=0.0.0.0 \
+  -e CLAUDE_MEM_CREDENTIALS_FILE=/auth/.credentials.json \
+  -v "$CREDS_FILE:/auth/.credentials.json:ro" \
+  -v "$(pwd)/plugin:/opt/claude-mem" \
+  -v "$(pwd)/.docker-claude-mem-data:/home/node/.claude-mem" \
+  claude-mem:basic \
+  bash -c 'mkdir -p $HOME/.claude-mem/logs && exec bun /opt/claude-mem/scripts/worker-service.cjs 2>&1 | tee -a $HOME/.claude-mem/logs/worker.log'
+```
+
+**Iteration loop**:
+
+1. Edit `src/` on the host (worktree).
+2. `npm run build` on the host — regenerates `plugin/`, which is bind-mounted into the container.
+3. Restart the worker inside: `docker exec claude-mem-dev bash -c 'pkill -f worker-service.cjs; exec bun /opt/claude-mem/scripts/worker-service.cjs >> ~/.claude-mem/logs/worker.log 2>&1 &'`
+4. Hit `http://localhost:37778/` for the viewer, `http://localhost:37778/health` to verify.
+
+**Key boundaries** (why the setup is what it is):
+
+- **Port 37778, not 37777** — avoids colliding with the host's own claude-mem worker.
+- **`CLAUDE_MEM_WORKER_HOST=0.0.0.0`** required — the default `127.0.0.1` bind makes Docker Desktop port forwarding reset the connection.
+- **Bind-mount `plugin/` over `/opt/claude-mem`** — host `npm run build` propagates without an image rebuild. The image only needs rebuilding when Docker-level deps change (Bun/uv/Node/Claude CLI versions).
+- **Persistent state** at `.docker-claude-mem-data/` in repo root (gitignored) — SQLite + Chroma survive across container restarts so test data carries over.
+- **Git operations stay on host** — commits, diffs, and branch switches happen in the worktree.
+
 ## Documentation
 
 **Public Docs**: https://docs.claude-mem.ai (Mintlify)
