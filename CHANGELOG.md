@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## 
+✅ CHANGELOG.md generated successfully!
+   237 new release(s) prepended
+e resolves error handling anti-patterns across the entire codebase (91 files), improving resilience and correctness.
+
+### Bug Fixes
+
+- **OpenRouterAgent**: Restored assistant replies to `conversationHistory` — multi-turn context was lost after method extraction (#2078)
+- **ChromaSync**: Fixed cross-type dedup collision where `observation#N`, `session_summary#N`, and `user_prompt#N` could silently drop results
+- **Timeline queries**: Fixed logger calls wrapping Error inside an object instead of passing directly
+- **FTS migrations**: Preserved non-Error failure details instead of silently dropping them
+
+### Error Handling Improvements
+
+- Replaced 301 error handling anti-patterns across 91 files:
+  - Narrowed overly broad try-catch blocks into focused error boundaries
+  - Replaced unsafe `error as Error` casts with `instanceof` checks
+  - Added structured error logging where catches were previously empty
+  - Extracted large try blocks into dedicated helper methods
+- **Installer resilience**: Moved filesystem operations (`mkdirSync`) inside try/catch in Cursor, Gemini CLI, Goose MCP, and OpenClaw installers to maintain numeric return-code contracts
+- **GeminiCliHooksInstaller**: Install/uninstall paths now catch `readGeminiSettings()` failures instead of throwing past the `0/1` return contract
+- **OpenClawInstaller**: Malformed `openclaw.json` now throws instead of silently returning `{}` and potentially wiping user config
+- **WindsurfHooksInstaller**: Added null-safe parsing of `hooks.json` with optional chaining
+- **McpIntegrations**: Goose YAML updater now throws when claude-mem markers exist but regex replacement fails
+- **EnvManager**: Directory setup and existing-file reads are now wrapped in structured error logging
+- **WorktreeAdoption**: `adoptedSqliteIds` mutation delayed until SQL update succeeds
+- **Import script**: Guard against malformed timestamps before `toISOString()`
+- **Runtime CLI**: Guard `response.json()` parsing with controlled error output
+
+### Documentation
+
+- Added README for Docker claude-mem harness
+
 ## [12.3.0] - 2026-04-20
 
 ## New features
