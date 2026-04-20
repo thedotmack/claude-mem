@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.3.7] - 2026-04-20
+
+## What's Changed
+
+**Refactor: remove bearer auth and platform_source context filter** (#2081)
+
+- Drop bearer-token auth from the worker API. Worker binds localhost-only and CORS restricts origins to localhost — the token added friction for every internal client (hooks, CLI, viewer, sync script) with no real security benefit for single-user local deployments.
+- Drop the unused `platform_source` query-time filter from the `/api/context/inject` pipeline (ContextBuilder, ObservationCompiler, SearchRoutes, context handler, transcripts processor). The DB column stays — only the WHERE-clause filter and its plumbing are removed.
+- Replace the removed auth with a simple in-memory rate limiter (300 req/min) as a lightweight compensating control. Limiter normalises IPv4-mapped IPv6, emits `Retry-After` on 429, and has a size-guarded prune that never runs on localhost.
+
+## Cleanup
+
+- Deleted `src/shared/auth-token.ts` and all its dependents (`worker-utils.ts` Authorization header, `ViewerRoutes.ts` token injection, CORS `allowedHeaders: ['Authorization']`, `sync-marketplace.cjs` admin restart header).
+- Stopped tracking `.docker-blowout-data/claude-mem.db` and added the directory to `.gitignore`.
+
+## Full Changelog
+https://github.com/thedotmack/claude-mem/compare/v12.3.6...v12.3.7
+
 ## [12.3.6] - 2026-04-20
 
 ## Viewer fix: drop the rate limiter
