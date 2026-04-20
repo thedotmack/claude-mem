@@ -1,8 +1,10 @@
+import path from 'path';
 import { sessionInitHandler } from '../../cli/handlers/session-init.js';
 import { observationHandler } from '../../cli/handlers/observation.js';
 import { fileEditHandler } from '../../cli/handlers/file-edit.js';
 import { sessionCompleteHandler } from '../../cli/handlers/session-complete.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
+import { DATA_DIR } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { writeAgentsMd } from '../../utils/agents-md-utils.js';
@@ -356,6 +358,19 @@ export class TranscriptEventProcessor {
 
     const contextUrl = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}&platformSource=${encodeURIComponent(session.platformSource)}`;
     const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
+
+    // Validate resolved path stays within allowed directories (#1934)
+    const resolvedAgentsPath = path.resolve(agentsPath);
+    const allowedRoots = [path.resolve(cwd), path.resolve(DATA_DIR)];
+    const isPathSafe = allowedRoots.some(root => resolvedAgentsPath.startsWith(root + path.sep) || resolvedAgentsPath === root);
+    if (!isPathSafe) {
+      logger.warn('SECURITY', 'Rejected path traversal attempt in watch.context.path', {
+        original: watch.context.path,
+        resolved: resolvedAgentsPath,
+        allowedRoots
+      });
+      return;
+    }
 
     let response: Awaited<ReturnType<typeof workerHttpRequest>>;
     try {

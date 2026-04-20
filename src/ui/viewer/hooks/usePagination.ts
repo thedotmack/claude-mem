@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react';
 import { Observation, Summary, UserPrompt } from '../types';
 import { UI } from '../constants/ui';
 import { API_ENDPOINTS } from '../constants/api';
+import { authFetch } from '../utils/api';
 
 interface PaginationState {
   isLoading: boolean;
@@ -68,7 +69,7 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
       params.append('platformSource', currentSource);
     }
 
-    const response = await fetch(`${endpoint}?${params}`);
+    const response = await authFetch(`${endpoint}?${params}`);
 
     if (!response.ok) {
       throw new Error(`Failed to load ${dataType}: ${response.statusText}`);

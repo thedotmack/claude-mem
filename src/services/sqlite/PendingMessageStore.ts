@@ -478,6 +478,25 @@ export class PendingMessageStore {
   }
 
   /**
+   * Clear failed messages older than the given threshold.
+   * Preserves recent failures for inspection and manual retry.
+   * @param thresholdMs - Only delete failures older than this many milliseconds
+   * @returns Number of messages deleted
+   */
+  clearFailedOlderThan(thresholdMs: number): number {
+    const cutoff = Date.now() - thresholdMs;
+    // Use COALESCE to prefer the most recent failure timestamp over creation time.
+    // failed_at_epoch is set by session-level failures, completed_at_epoch by markFailed().
+    const stmt = this.db.prepare(`
+      DELETE FROM pending_messages
+      WHERE status = 'failed'
+        AND COALESCE(failed_at_epoch, completed_at_epoch, started_processing_at_epoch, created_at_epoch) < ?
+    `);
+    const result = stmt.run(cutoff);
+    return result.changes;
+  }
+
+  /**
    * Clear all pending, processing, and failed messages from the queue
    * Keeps only processed messages (for history)
    * @returns Number of messages deleted
