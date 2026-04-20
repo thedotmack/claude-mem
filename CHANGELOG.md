@@ -4,10 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## 
-✅ CHANGELOG.md generated successfully!
-   237 new release(s) prepended
-e resolves error handling anti-patterns across the entire codebase (91 files), improving resilience and correctness.
+## [12.3.2] - 2026-04-20
+
+## Bug Fixes
+
+- **Search**: Fix `concept`/`concepts` parameter mismatch in `/api/search/by-concept` (#1916)
+- **Search**: Add FTS5 keyword fallback when ChromaDB is unavailable (#1913, #2048)
+- **Database**: Add periodic `clearFailed()` to purge stale pending messages (#1957)
+- **Database**: Add WAL checkpoint schedule and `journal_size_limit` to prevent unbounded growth (#1956)
+- **Worker**: Mark messages as failed (with retry) instead of confirming on non-XML responses (#1874)
+- **Worker**: Include `activeSessions` in `/health` endpoint for queue liveness monitoring (#1867)
+- **Docker**: Fix nounset-safe `TTY_ARGS` expansion in `run.sh`
+- **Search**: Cache `isFts5Available()` at construction time (Greptile review)
+
+## Closed Issues
+
+#1908, #1953, #1916, #1913, #2048, #1957, #1956, #1874, #1867
+
+## [12.3.1] - 2026-04-20
+
+## Error Handling & Code Quality
+
+This patch release resolves error handling anti-patterns across the entire codebase (91 files), improving resilience and correctness.
 
 ### Bug Fixes
 
