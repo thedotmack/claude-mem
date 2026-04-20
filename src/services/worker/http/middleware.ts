@@ -38,7 +38,7 @@ export function createMiddleware(
       }
     },
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'X-Requested-With'],
     credentials: false
   }));
 
@@ -48,7 +48,7 @@ export function createMiddleware(
   const RATE_LIMIT_MAX_REQUESTS = 300; // 300 requests per minute per IP
 
   const rateLimiter: RequestHandler = (req, res, next) => {
-    const clientIp = req.ip || 'unknown';
+    const clientIp = req.socket.remoteAddress ?? req.ip ?? 'unknown';
     const now = Date.now();
     let entry = requestCounts.get(clientIp);
 
@@ -66,6 +66,7 @@ export function createMiddleware(
 
     entry.count++;
     if (entry.count > RATE_LIMIT_MAX_REQUESTS) {
+      res.set('Retry-After', String(Math.ceil((entry.resetAt - now) / 1000)));
       res.status(429).json({ error: 'Rate limit exceeded' });
       return;
     }

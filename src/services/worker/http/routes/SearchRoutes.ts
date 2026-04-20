@@ -168,7 +168,6 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleContextPreview = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const projectName = req.query.project as string;
-    const platformSource = req.query.platformSource as string | undefined;
 
     if (!projectName) {
       this.badRequest(res, 'Project parameter is required');
@@ -186,8 +185,7 @@ export class SearchRoutes extends BaseRouteHandler {
       {
         session_id: 'preview-' + Date.now(),
         cwd: cwd,
-        projects: [projectName],
-        platform_source: platformSource
+        projects: [projectName]
       },
       true  // forHuman=true for ANSI terminal output
     );
