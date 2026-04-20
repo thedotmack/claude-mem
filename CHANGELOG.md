@@ -4,6 +4,48 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## 
+✅ CHANGELOG.md generated successfully!
+   239 new release(s) prepended
+oks, security, and search
+
+### Security Hardening
+- Bearer token authentication for all worker API endpoints with auto-generated tokens
+- Path traversal protection on context write paths
+- Per-user worker port derivation (37700 + uid%100) to prevent cross-user data leakage
+- Rate limiting (300 req/min/IP) and reduced JSON body limit (50MB → 5MB)
+- Caller headers can no longer override the bearer auth token
+
+### Worker Stability
+- Time-windowed RestartGuard replaces flat counter — prevents stranding pending messages on long sessions
+- Idle session eviction prevents pool slot deadlock when all slots are full
+- MCP loopback self-check uses process.execPath instead of bare 'node'
+- Age-scoped failed message purge (1h retention) instead of clearing all
+- RestartGuard decay anchored to real successes, not object creation time
+
+### Search & Chroma
+- FTS5 keyword fallback when ChromaDB is unavailable for all search handlers
+- doc_type:'observation' filter on Chroma queries feeding observation hydration
+- Project filtering passed to Chroma queries and SQLite hydration in all endpoints
+- Bounded post-import Chroma sync with concurrency limit of 8
+- FTS5 MATCH input escaped as quoted literal phrases to prevent syntax errors
+- LIKE metacharacters escaped in prompt text search
+- date_desc ordering respected in FTS session search
+
+### Hooks Reliability
+- Summarize hook wrapped in try/catch to prevent exit code 2 on network failures
+- Session-init gated on health check success — no longer runs when worker unreachable
+- Health-check wait loop added to UserPromptSubmit for Linux/WSL startup race
+
+### Database & Performance
+- Periodic WAL checkpoint and journal_size_limit to prevent unbounded WAL growth
+- FTS5 availability cached at construction time (no DDL probe per query)
+- _fts5Available downgraded when FTS table creation fails
+
+### Viewer UI
+- response.ok check added to settings save and initial load flows
+- Auth failure handling in saveSettings
+
 ## [12.3.2] - 2026-04-20
 
 ## Bug Fixes
