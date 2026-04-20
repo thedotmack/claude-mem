@@ -1,0 +1,9 @@
+# Keep the build context small for evals/swebench/Dockerfile.agent.
+# The Dockerfile needs `plugin/` and `evals/swebench/` — do NOT exclude them.
+node_modules/
+.git/
+logs/
+evals/swebench/runs/
+.docker-claude-mem-data/
+.venv
+.venv-*

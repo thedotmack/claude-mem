@@ -38,3 +38,6 @@ src/ui/viewer.html
 
 # Local contribution analysis (not part of upstream)
 CONTRIB_NOTES.md
+
+# Docker dev harness — persistent SQLite + Chroma state
+.docker-claude-mem-data/
