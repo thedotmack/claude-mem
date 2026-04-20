@@ -1211,7 +1211,7 @@ Examples:
   claude-mem gemini-cli uninstall   # Remove hooks
 
 For more info: https://docs.claude-mem.ai/usage/gemini-provider
-      `),0}}yg();var o6=require("bun:sqlite");It();Y();k$();var Dv=class t{db;static MISSING_SEARCH_INPUT_MESSAGE="Either query or filters required for search";constructor(e){e||(sr(hr),e=Kd),this.db=new o6.Database(e),this.db.run("PRAGMA journal_mode = WAL"),this.ensureFTSTables()}ensureFTSTables(){if(!this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all().some(n=>n.name==="observations_fts"||n.name==="session_summaries_fts")){if(!this.isFts5Available()){h.warn("DB","FTS5 not available on this platform \u2014 skipping FTS table creation (search uses ChromaDB)");return}h.info("DB","Creating FTS5 tables");try{this.createFTSTablesAndTriggers(),h.info("DB","FTS5 tables created successfully")}catch(n){h.warn("DB","FTS5 table creation failed \u2014 search will use ChromaDB and LIKE queries",{},n instanceof Error?n:void 0)}}}isFts5Available(){try{return this.db.run("CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)"),this.db.run("DROP TABLE _fts5_probe"),!0}catch{return!1}}createFTSTablesAndTriggers(){this.db.run(`
+      `),0}}yg();var o6=require("bun:sqlite");It();Y();k$();var Dv=class t{db;static MISSING_SEARCH_INPUT_MESSAGE="Either query or filters required for search";constructor(e){e||(sr(hr),e=Kd),this.db=new o6.Database(e),this.db.run("PRAGMA journal_mode = WAL"),this._fts5Available=this.isFts5Available(),this.ensureFTSTables()}_fts5Available;ensureFTSTables(){if(!this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all().some(n=>n.name==="observations_fts"||n.name==="session_summaries_fts")){if(!this.isFts5Available()){h.warn("DB","FTS5 not available on this platform \u2014 skipping FTS table creation (search uses ChromaDB)");return}h.info("DB","Creating FTS5 tables");try{this.createFTSTablesAndTriggers(),h.info("DB","FTS5 tables created successfully")}catch(n){h.warn("DB","FTS5 table creation failed \u2014 search will use ChromaDB and LIKE queries",{},n instanceof Error?n:void 0)}}}isFts5Available(){try{return this.db.run("CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)"),this.db.run("DROP TABLE _fts5_probe"),!0}catch{return!1}}createFTSTablesAndTriggers(){this.db.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
         title,
         subtitle,
@@ -1284,7 +1284,7 @@ For more info: https://docs.claude-mem.ai/usage/gemini-provider
         WHERE ${c}
         ${u}
         LIMIT ? OFFSET ?
-      `;return n.push(i,s),this.db.prepare(l).all(...n)}if(this.isFts5Available()){let c=this.buildFilterClause(a,n,"o"),u=this.buildOrderClause(o,!0,"observations_fts"),l=`
+      `;return n.push(i,s),this.db.prepare(l).all(...n)}if(this._fts5Available){let c=this.buildFilterClause(a,n,"o"),u=this.buildOrderClause(o,!0,"observations_fts"),l=`
         SELECT o.*, o.discovery_tokens
         FROM observations o
         JOIN observations_fts ON observations_fts.rowid = o.id
@@ -1298,7 +1298,7 @@ For more info: https://docs.claude-mem.ai/usage/gemini-provider
         WHERE ${u}
         ${o==="date_asc"?"ORDER BY s.created_at_epoch ASC":"ORDER BY s.created_at_epoch DESC"}
         LIMIT ? OFFSET ?
-      `;return n.push(i,s),this.db.prepare(d).all(...n)}if(this.isFts5Available()){let c={...a};delete c.type;let u=this.buildFilterClause(c,n,"s"),l=o==="date_asc"?"ORDER BY s.created_at_epoch ASC":"ORDER BY session_summaries_fts.rank ASC",d=`
+      `;return n.push(i,s),this.db.prepare(d).all(...n)}if(this._fts5Available){let c={...a};delete c.type;let u=this.buildFilterClause(c,n,"s"),l=o==="date_asc"?"ORDER BY s.created_at_epoch ASC":"ORDER BY session_summaries_fts.rank ASC",d=`
         SELECT s.*, s.discovery_tokens
         FROM session_summaries s
         JOIN session_summaries_fts ON session_summaries_fts.rowid = s.id

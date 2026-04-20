@@ -33,9 +33,14 @@ export class SessionSearch {
     this.db = new Database(dbPath);
     this.db.run('PRAGMA journal_mode = WAL');
 
+    // Cache FTS5 availability once at construction (avoids DDL probe on every query)
+    this._fts5Available = this.isFts5Available();
+
     // Ensure FTS tables exist
     this.ensureFTSTables();
   }
+
+  private _fts5Available: boolean;
 
   /**
    * Ensure FTS5 tables exist (backward compatibility only - no longer used for search)
@@ -308,7 +313,7 @@ export class SessionSearch {
     }
 
     // FTS5 keyword fallback when ChromaDB is unavailable (#1913, #2048)
-    if (this.isFts5Available()) {
+    if (this._fts5Available) {
       const filterClause = this.buildFilterClause(filters, params, 'o');
       const orderClause = this.buildOrderClause(orderBy, true, 'observations_fts');
 
@@ -371,7 +376,7 @@ export class SessionSearch {
     }
 
     // FTS5 keyword fallback when ChromaDB is unavailable (#1913, #2048)
-    if (this.isFts5Available()) {
+    if (this._fts5Available) {
       const filterOptions = { ...filters };
       delete filterOptions.type;
       const filterClause = this.buildFilterClause(filterOptions, params, 's');
