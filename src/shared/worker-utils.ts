@@ -114,9 +114,10 @@ export function workerHttpRequest(
   const url = buildWorkerUrl(apiPath);
   const init: RequestInit = { method };
   // Inject bearer token for worker API auth (#1932/#1933)
+  // Merge caller headers first, then set Authorization last to prevent override
   const authHeaders: Record<string, string> = {
-    'Authorization': `Bearer ${getAuthToken()}`,
-    ...options.headers
+    ...options.headers,
+    'Authorization': `Bearer ${getAuthToken()}`
   };
   init.headers = authHeaders;
   if (options.body) {

@@ -61,20 +61,30 @@ export function useSettings() {
     setIsSaving(true);
     setSaveStatus('Saving...');
 
-    const response = await authFetch(API_ENDPOINTS.SETTINGS, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newSettings)
-    });
+    try {
+      const response = await authFetch(API_ENDPOINTS.SETTINGS, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newSettings)
+      });
 
-    const result = await response.json();
+      if (!response.ok) {
+        setSaveStatus(`✗ Error: ${response.status === 401 ? 'Unauthorized' : response.statusText}`);
+        setIsSaving(false);
+        return;
+      }
 
-    if (result.success) {
-      setSettings(newSettings);
-      setSaveStatus('✓ Saved');
-      setTimeout(() => setSaveStatus(''), TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
-    } else {
-      setSaveStatus(`✗ Error: ${result.error}`);
+      const result = await response.json();
+
+      if (result.success) {
+        setSettings(newSettings);
+        setSaveStatus('✓ Saved');
+        setTimeout(() => setSaveStatus(''), TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
+      } else {
+        setSaveStatus(`✗ Error: ${result.error}`);
+      }
+    } catch (error) {
+      setSaveStatus(`✗ Error: ${error instanceof Error ? error.message : 'Network error'}`);
     }
 
     setIsSaving(false);

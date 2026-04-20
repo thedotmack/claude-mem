@@ -11,7 +11,7 @@ const DECAY_AFTER_SUCCESS_MS = 5 * 60_000; // Clear history after 5min of uninte
 
 export class RestartGuard {
   private restartTimestamps: number[] = [];
-  private lastSuccessfulProcessing: number = Date.now();
+  private lastSuccessfulProcessing: number | null = null;
 
   /**
    * Record a restart and check if the guard should trip.
@@ -20,9 +20,11 @@ export class RestartGuard {
   recordRestart(): boolean {
     const now = Date.now();
 
-    // Decay: if enough time has passed since last success, clear history
-    if (now - this.lastSuccessfulProcessing >= DECAY_AFTER_SUCCESS_MS) {
+    // Decay: clear history only after real success + 5min of uninterrupted success
+    if (this.lastSuccessfulProcessing !== null
+        && now - this.lastSuccessfulProcessing >= DECAY_AFTER_SUCCESS_MS) {
       this.restartTimestamps = [];
+      this.lastSuccessfulProcessing = null;
     }
 
     // Prune old timestamps outside the window

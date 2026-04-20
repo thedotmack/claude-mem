@@ -559,12 +559,14 @@ export class WorkerService {
           }
         }
 
-        // Purge failed pending messages to prevent unbounded queue growth (#1957)
+        // Purge stale failed pending messages to prevent unbounded queue growth (#1957)
+        // Only remove failures older than 1 hour to preserve recent failures for inspection/retry
         try {
           const pendingStore = this.sessionManager.getPendingMessageStore();
-          const purged = pendingStore.clearFailed();
+          const FAILED_MESSAGE_RETENTION_MS = 60 * 60 * 1000; // 1 hour
+          const purged = pendingStore.clearFailedOlderThan(FAILED_MESSAGE_RETENTION_MS);
           if (purged > 0) {
-            logger.info('SYSTEM', `Purged ${purged} failed pending messages`);
+            logger.info('SYSTEM', `Purged ${purged} stale failed pending messages (older than 1h)`);
           }
         } catch (e) {
           if (e instanceof Error) {
@@ -849,6 +851,7 @@ export class WorkerService {
         } else {
           // Successful completion with no pending work — clean up session
           // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
+          session.restartGuard?.recordSuccess();
           session.consecutiveRestarts = 0;
           this.sessionManager.removeSessionImmediate(session.sessionDbId);
         }

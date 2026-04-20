@@ -403,14 +403,16 @@ export class DataRoutes extends BaseRouteHandler {
 
       // Sync imported observations to ChromaDB for vector search.
       // Fire-and-forget: Chroma sync failure should not block the import response.
+      // Bounded concurrency to prevent overwhelming Chroma on large imports.
       const chromaSync = this.dbManager.getChromaSync();
       if (chromaSync && importedObservations.length > 0) {
-        for (const { id, obs } of importedObservations) {
-          const safeParseJson = (val: string | null): string[] => {
-            if (!val) return [];
-            try { return JSON.parse(val); } catch { return []; }
-          };
+        const CHROMA_SYNC_CONCURRENCY = 8;
+        const safeParseJson = (val: string | null): string[] => {
+          if (!val) return [];
+          try { return JSON.parse(val); } catch { return []; }
+        };
 
+        const syncOne = async ({ id, obs }: { id: number; obs: any }) => {
           const parsedObs = {
             type: obs.type || 'discovery',
             title: obs.title || null,
@@ -422,7 +424,7 @@ export class DataRoutes extends BaseRouteHandler {
             files_modified: safeParseJson(obs.files_modified),
           };
 
-          chromaSync.syncObservation(
+          await chromaSync.syncObservation(
             id,
             obs.memory_session_id,
             obs.project,
@@ -433,7 +435,17 @@ export class DataRoutes extends BaseRouteHandler {
           ).catch(err => {
             logger.error('CHROMA', 'Import ChromaDB sync failed', { id }, err as Error);
           });
-        }
+        };
+
+        // Fire-and-forget: process in batches but don't block the response
+        (async () => {
+          for (let i = 0; i < importedObservations.length; i += CHROMA_SYNC_CONCURRENCY) {
+            const batch = importedObservations.slice(i, i + CHROMA_SYNC_CONCURRENCY);
+            await Promise.all(batch.map(syncOne));
+          }
+        })().catch(err => {
+          logger.error('CHROMA', 'Import ChromaDB batch sync failed', {}, err as Error);
+        });
       }
     }
 

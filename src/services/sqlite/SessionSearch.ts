@@ -383,7 +383,9 @@ export class SessionSearch {
 
       const orderClause = orderBy === 'date_asc'
         ? 'ORDER BY s.created_at_epoch ASC'
-        : 'ORDER BY session_summaries_fts.rank ASC';
+        : orderBy === 'date_desc'
+          ? 'ORDER BY s.created_at_epoch DESC'
+          : 'ORDER BY session_summaries_fts.rank ASC';
 
       const sql = `
         SELECT s.*, s.discovery_tokens

@@ -58,6 +58,13 @@ export function createMiddleware(
       requestCounts.set(clientIp, entry);
     }
 
+    // Lazy cleanup: remove expired entries when map grows large
+    if (requestCounts.size > 100) {
+      for (const [ip, e] of requestCounts) {
+        if (now >= e.resetAt) requestCounts.delete(ip);
+      }
+    }
+
     entry.count++;
     if (entry.count > RATE_LIMIT_MAX_REQUESTS) {
       res.status(429).json({ error: 'Rate limit exceeded' });
