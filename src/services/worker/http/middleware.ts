@@ -9,7 +9,6 @@ import express, { Request, Response, NextFunction, RequestHandler } from 'expres
 import cors from 'cors';
 import path from 'path';
 import { getPackageRoot } from '../../../shared/paths.js';
-import { getAuthToken } from '../../../shared/auth-token.js';
 import { logger } from '../../../utils/logger.js';
 
 /**
@@ -134,27 +133,6 @@ export function requireLocalhost(req: Request, res: Response, next: NextFunction
       error: 'Forbidden',
       message: 'Admin endpoints are only accessible from localhost'
     });
-    return;
-  }
-
-  next();
-}
-
-/**
- * Bearer token auth middleware (#1932/#1933).
- * Requires Authorization: Bearer <token> on all API requests.
- * Token is auto-generated and stored in DATA_DIR/worker-auth-token.
- */
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Missing or invalid Authorization header' });
-    return;
-  }
-
-  const token = authHeader.slice('Bearer '.length);
-  if (token !== getAuthToken()) {
-    res.status(401).json({ error: 'Invalid bearer token' });
     return;
   }
 
