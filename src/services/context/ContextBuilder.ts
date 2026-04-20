@@ -134,7 +134,6 @@ export async function generateContext(
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
   const context = getProjectContext(cwd);
-  const platformSource = input?.platform_source;
 
   // Single source of truth: explicit projects override cwd-derived context.
   // `project` (used for header + single-project query) is always the last entry
@@ -158,11 +157,11 @@ export async function generateContext(
   try {
     // Query data for all projects (supports worktree: parent + worktree combined)
     const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config, platformSource)
-      : queryObservations(db, project, config, platformSource);
+      ? queryObservationsMulti(db, projects, config)
+      : queryObservations(db, project, config);
     const summaries = projects.length > 1
-      ? querySummariesMulti(db, projects, config, platformSource)
-      : querySummaries(db, project, config, platformSource);
+      ? querySummariesMulti(db, projects, config)
+      : querySummaries(db, project, config);
 
     // Handle empty state
     if (observations.length === 0 && summaries.length === 0) {

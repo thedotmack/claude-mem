@@ -356,7 +356,7 @@ export class TranscriptEventProcessor {
     const context = getProjectContext(cwd);
     const projectsParam = context.allProjects.join(',');
 
-    const contextUrl = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}&platformSource=${encodeURIComponent(session.platformSource)}`;
+    const contextUrl = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
     const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
 
     // Validate resolved path stays within allowed directories (#1934)
