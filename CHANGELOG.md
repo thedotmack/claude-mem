@@ -4,10 +4,44 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## 
-✅ CHANGELOG.md generated successfully!
-   240 new release(s) prepended
-, PR #2080) broke SessionStart context injection — new sessions received no memory context from claude-mem. This release reverts to the v12.3.2 tree state while the regression is investigated.
+## [12.3.5] - 2026-04-20
+
+## Restored v12.3.3 fixes minus bearer auth
+
+v12.3.3 shipped 25 bug fixes under "Issue Blowout 2026" but also introduced bearer-token auth that broke SessionStart context injection for everyone. v12.3.4 rolled everything back to v12.3.2 to unblock users.
+
+**v12.3.5 restores all 25 fixes**, with the bearer-auth mechanism surgically removed.
+
+### Kept hardening from v12.3.3
+- 5 MB JSON body limit
+- In-memory rate limiter (300 req/min/IP)
+- Path traversal protection on `watch.context.path`
+- `RestartGuard` (time-windowed restart counter)
+- Idle session eviction on pool slot allocation
+- WAL checkpoint + `journal_size_limit`
+- Periodic `clearFailed()` for pending_messages
+- FTS5 keyword-search fallback when ChromaDB is unavailable
+- `ResponseProcessor` marks non-XML responses as failed (with retry) instead of confirming
+- `/health` reports `activeSessions`
+- Summarize hook wraps `workerHttpRequest` in try/catch (no more blocking exit code 2)
+- UserPromptSubmit session-init waits for worker health on Linux/WSL
+- MCP loopback self-check uses `process.execPath` instead of bare `node`
+- Nounset-safe `TTY_ARGS` in `docker/claude-mem/run.sh`
+
+### Removed from v12.3.3
+- `src/shared/auth-token.ts` (deleted)
+- `requireAuth` middleware and its wiring in `Server.ts`/`Middleware.ts`
+- `Authorization: Bearer` injection in `worker-utils.ts` (hook client), `ViewerRoutes.ts` (browser token injection), viewer `authFetch`, and the OpenCode plugin
+
+### Upgrade notes
+- `~/.claude-mem/worker-auth-token` from a previous 12.3.3 install is harmless and can be deleted.
+- If your Claude Code session kept the 12.3.3 daemon alive, restart Claude Code once so the fresh 12.3.5 daemon takes over.
+
+## [12.3.4] - 2026-04-20
+
+## Rollback of v12.3.3
+
+v12.3.3 (Issue Blowout 2026, PR #2080) broke SessionStart context injection — new sessions received no memory context from claude-mem. This release reverts to the v12.3.2 tree state while the regression is investigated.
 
 ### Reverted
 - #2080 — Issue Blowout 2026 (25 bugs across worker, hooks, security, and search)
