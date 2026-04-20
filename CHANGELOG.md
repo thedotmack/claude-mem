@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.3.6] - 2026-04-20
+
+## Viewer fix: drop the rate limiter
+
+v12.3.5 kept the 300 req/min rate limiter from v12.3.3's "security hardening" bundle. That tripped the live viewer within seconds (it polls logs and stats) and served it "Rate limit exceeded" errors.
+
+**Fix**: remove the rate limiter entirely. The worker is localhost-only (enforced via CORS), so there's no abuse surface to protect. Rate-limiting a single-user local process is security theater.
+
+### Still kept from v12.3.3 hardening
+- 5 MB JSON body limit
+- Path traversal protection
+- Localhost-only CORS
+- Everything else from v12.3.5
+
+No upgrade action required.
+
 ## [12.3.5] - 2026-04-20
 
 ## Restored v12.3.3 fixes minus bearer auth
