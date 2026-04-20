@@ -98,39 +98,10 @@ const WORKER_BASE_URL = "http://127.0.0.1:37777";
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
 // ============================================================================
-// Auth Token (reads from DATA_DIR/worker-auth-token)
-// ============================================================================
-
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
-
-let cachedAuthToken: string | null = null;
-
-function getAuthToken(): string | null {
-  if (cachedAuthToken) return cachedAuthToken;
-  const tokenPath = join(
-    process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), ".claude-mem"),
-    "worker-auth-token",
-  );
-  if (!existsSync(tokenPath)) return null;
-  const token = readFileSync(tokenPath, "utf-8").trim();
-  if (token.length >= 32) {
-    cachedAuthToken = token;
-    return token;
-  }
-  return null;
-}
-
-function getAuthHeaders(): Record<string, string> {
-  const token = getAuthToken();
-  if (!token) return { "Content-Type": "application/json" };
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-// ============================================================================
 // Worker HTTP Client
 // ============================================================================
+
+const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
 async function workerPost(
   path: string,
@@ -140,7 +111,7 @@ async function workerPost(
   try {
     response = await fetch(`${WORKER_BASE_URL}${path}`, {
       method: "POST",
-      headers: getAuthHeaders(),
+      headers: JSON_HEADERS,
       body: JSON.stringify(body),
     });
   } catch (error: unknown) {
@@ -165,7 +136,7 @@ function workerPostFireAndForget(
 ): void {
   fetch(`${WORKER_BASE_URL}${path}`, {
     method: "POST",
-    headers: getAuthHeaders(),
+    headers: JSON_HEADERS,
     body: JSON.stringify(body),
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -177,7 +148,7 @@ function workerPostFireAndForget(
 
 async function workerGetText(path: string): Promise<string | null> {
   try {
-    const response = await fetch(`${WORKER_BASE_URL}${path}`, { headers: getAuthHeaders() });
+    const response = await fetch(`${WORKER_BASE_URL}${path}`, { headers: JSON_HEADERS });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
       return null;

@@ -4,6 +4,108 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.3.6] - 2026-04-20
+
+## Viewer fix: drop the rate limiter
+
+v12.3.5 kept the 300 req/min rate limiter from v12.3.3's "security hardening" bundle. That tripped the live viewer within seconds (it polls logs and stats) and served it "Rate limit exceeded" errors.
+
+**Fix**: remove the rate limiter entirely. The worker is localhost-only (enforced via CORS), so there's no abuse surface to protect. Rate-limiting a single-user local process is security theater.
+
+### Still kept from v12.3.3 hardening
+- 5 MB JSON body limit
+- Path traversal protection
+- Localhost-only CORS
+- Everything else from v12.3.5
+
+No upgrade action required.
+
+## [12.3.5] - 2026-04-20
+
+## Restored v12.3.3 fixes minus bearer auth
+
+v12.3.3 shipped 25 bug fixes under "Issue Blowout 2026" but also introduced bearer-token auth that broke SessionStart context injection for everyone. v12.3.4 rolled everything back to v12.3.2 to unblock users.
+
+**v12.3.5 restores all 25 fixes**, with the bearer-auth mechanism surgically removed.
+
+### Kept hardening from v12.3.3
+- 5 MB JSON body limit
+- In-memory rate limiter (300 req/min/IP)
+- Path traversal protection on `watch.context.path`
+- `RestartGuard` (time-windowed restart counter)
+- Idle session eviction on pool slot allocation
+- WAL checkpoint + `journal_size_limit`
+- Periodic `clearFailed()` for pending_messages
+- FTS5 keyword-search fallback when ChromaDB is unavailable
+- `ResponseProcessor` marks non-XML responses as failed (with retry) instead of confirming
+- `/health` reports `activeSessions`
+- Summarize hook wraps `workerHttpRequest` in try/catch (no more blocking exit code 2)
+- UserPromptSubmit session-init waits for worker health on Linux/WSL
+- MCP loopback self-check uses `process.execPath` instead of bare `node`
+- Nounset-safe `TTY_ARGS` in `docker/claude-mem/run.sh`
+
+### Removed from v12.3.3
+- `src/shared/auth-token.ts` (deleted)
+- `requireAuth` middleware and its wiring in `Server.ts`/`Middleware.ts`
+- `Authorization: Bearer` injection in `worker-utils.ts` (hook client), `ViewerRoutes.ts` (browser token injection), viewer `authFetch`, and the OpenCode plugin
+
+### Upgrade notes
+- `~/.claude-mem/worker-auth-token` from a previous 12.3.3 install is harmless and can be deleted.
+- If your Claude Code session kept the 12.3.3 daemon alive, restart Claude Code once so the fresh 12.3.5 daemon takes over.
+
+## [12.3.4] - 2026-04-20
+
+## Rollback of v12.3.3
+
+v12.3.3 (Issue Blowout 2026, PR #2080) broke SessionStart context injection — new sessions received no memory context from claude-mem. This release reverts to the v12.3.2 tree state while the regression is investigated.
+
+### Reverted
+- #2080 — Issue Blowout 2026 (25 bugs across worker, hooks, security, and search)
+
+### Notes
+No functional changes from v12.3.2. A follow-up release will re-land the v12.3.3 fixes individually once the context regression is identified and resolved.
+
+## [12.3.3] - 2026-04-20
+
+## Issue Blowout 2026 — 25 bugs across worker, hooks, security, and search
+
+### Security Hardening
+- Bearer token authentication for all worker API endpoints with auto-generated tokens
+- Path traversal protection on context write paths
+- Per-user worker port derivation (37700 + uid%100) to prevent cross-user data leakage
+- Rate limiting (300 req/min/IP) and reduced JSON body limit (50MB → 5MB)
+- Caller headers can no longer override the bearer auth token
+
+### Worker Stability
+- Time-windowed RestartGuard replaces flat counter — prevents stranding pending messages on long sessions
+- Idle session eviction prevents pool slot deadlock when all slots are full
+- MCP loopback self-check uses process.execPath instead of bare 'node'
+- Age-scoped failed message purge (1h retention) instead of clearing all
+- RestartGuard decay anchored to real successes, not object creation time
+
+### Search & Chroma
+- FTS5 keyword fallback when ChromaDB is unavailable for all search handlers
+- doc_type:'observation' filter on Chroma queries feeding observation hydration
+- Project filtering passed to Chroma queries and SQLite hydration in all endpoints
+- Bounded post-import Chroma sync with concurrency limit of 8
+- FTS5 MATCH input escaped as quoted literal phrases to prevent syntax errors
+- LIKE metacharacters escaped in prompt text search
+- date_desc ordering respected in FTS session search
+
+### Hooks Reliability
+- Summarize hook wrapped in try/catch to prevent exit code 2 on network failures
+- Session-init gated on health check success — no longer runs when worker unreachable
+- Health-check wait loop added to UserPromptSubmit for Linux/WSL startup race
+
+### Database & Performance
+- Periodic WAL checkpoint and journal_size_limit to prevent unbounded WAL growth
+- FTS5 availability cached at construction time (no DDL probe per query)
+- _fts5Available downgraded when FTS table creation fails
+
+### Viewer UI
+- response.ok check added to settings save and initial load flows
+- Auth failure handling in saveSettings
+
 ## [12.3.2] - 2026-04-20
 
 ## Bug Fixes
