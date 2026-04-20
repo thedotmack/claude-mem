@@ -43,7 +43,8 @@ class FileTailer {
     let size = 0;
     try {
       size = statSync(this.filePath).size;
-    } catch {
+    } catch (error: unknown) {
+      logger.debug('WORKER', 'Failed to stat transcript file', { file: this.filePath }, error instanceof Error ? error : undefined);
       return;
     }
 
@@ -152,7 +153,8 @@ export class TranscriptWatcher {
           return globSync(pattern, { nodir: true, absolute: true });
         }
         return [inputPath];
-      } catch {
+      } catch (error: unknown) {
+        logger.debug('WORKER', 'Failed to stat watch path', { path: inputPath }, error instanceof Error ? error : undefined);
         return [];
       }
     }
@@ -180,7 +182,8 @@ export class TranscriptWatcher {
     if (offset === 0 && watch.startAtEnd && initialDiscovery) {
       try {
         offset = statSync(filePath).size;
-      } catch {
+      } catch (error: unknown) {
+        logger.debug('WORKER', 'Failed to stat file for startAtEnd offset', { file: filePath }, error instanceof Error ? error : undefined);
         offset = 0;
       }
     }
@@ -216,11 +219,19 @@ export class TranscriptWatcher {
     try {
       const entry = JSON.parse(line);
       await this.processor.processEntry(entry, watch, schema, sessionIdOverride ?? undefined);
-    } catch (error) {
-      logger.debug('TRANSCRIPT', 'Failed to parse transcript line', {
-        watch: watch.name,
-        file: basename(filePath)
-      }, error as Error);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        logger.debug('TRANSCRIPT', 'Failed to parse transcript line', {
+          watch: watch.name,
+          file: basename(filePath)
+        }, error);
+      } else {
+        logger.warn('TRANSCRIPT', 'Failed to parse transcript line (non-Error thrown)', {
+          watch: watch.name,
+          file: basename(filePath),
+          error: String(error)
+        });
+      }
     }
   }
 

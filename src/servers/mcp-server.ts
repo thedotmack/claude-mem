@@ -108,17 +108,18 @@ async function callWorkerAPI(
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint, params });
 
-  try {
-    const searchParams = new URLSearchParams();
+  const searchParams = new URLSearchParams();
 
-    // Convert params to query string
-    for (const [key, value] of Object.entries(params)) {
-      if (value !== undefined && value !== null) {
-        searchParams.append(key, String(value));
-      }
+  // Convert params to query string
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) {
+      searchParams.append(key, String(value));
     }
+  }
 
-    const apiPath = `${endpoint}?${searchParams}`;
+  const apiPath = `${endpoint}?${searchParams}`;
+
+  try {
     const response = await workerHttpRequest(apiPath);
 
     if (!response.ok) {
@@ -132,8 +133,8 @@ async function callWorkerAPI(
 
     // Worker returns { content: [...] } format directly
     return data;
-  } catch (error) {
-    logger.error('SYSTEM', '← Worker API error', { endpoint }, error as Error);
+  } catch (error: unknown) {
+    logger.error('SYSTEM', '← Worker API error', { endpoint }, error instanceof Error ? error : new Error(String(error)));
     return {
       content: [{
         type: 'text' as const,
@@ -142,6 +143,33 @@ async function callWorkerAPI(
       isError: true
     };
   }
+}
+
+async function executeWorkerPostRequest(
+  endpoint: string,
+  body: Record<string, any>
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const response = await workerHttpRequest(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Worker API error (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json();
+
+  logger.debug('HTTP', 'Worker API success (POST)', undefined, { endpoint });
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify(data, null, 2)
+    }]
+  };
 }
 
 /**
@@ -154,30 +182,9 @@ async function callWorkerAPIPost(
   logger.debug('HTTP', 'Worker API request (POST)', undefined, { endpoint });
 
   try {
-    const response = await workerHttpRequest(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
-    }
-
-    const data = await response.json();
-
-    logger.debug('HTTP', 'Worker API success (POST)', undefined, { endpoint });
-
-    // Wrap raw data in MCP format
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify(data, null, 2)
-      }]
-    };
-  } catch (error) {
-    logger.error('HTTP', 'Worker API error (POST)', { endpoint }, error as Error);
+    return await executeWorkerPostRequest(endpoint, body);
+  } catch (error: unknown) {
+    logger.error('HTTP', 'Worker API error (POST)', { endpoint }, error instanceof Error ? error : new Error(String(error)));
     return {
       content: [{
         type: 'text' as const,
@@ -195,9 +202,9 @@ async function verifyWorkerConnection(): Promise<boolean> {
   try {
     const response = await workerHttpRequest('/api/health');
     return response.ok;
-  } catch (error) {
+  } catch (error: unknown) {
     // Expected during worker startup or if worker is down
-    logger.debug('SYSTEM', 'Worker health check failed', {}, error as Error);
+    logger.debug('SYSTEM', 'Worker health check failed', {}, error instanceof Error ? error : new Error(String(error)));
     return false;
   }
 }
@@ -229,12 +236,12 @@ async function ensureWorkerConnection(): Promise<boolean> {
       );
     }
     return started;
-  } catch (error) {
+  } catch (error: unknown) {
     logger.error(
       'SYSTEM',
       'Worker auto-start threw — MCP tools that require the worker (search, timeline, get_observations) will fail until the worker is running.',
       undefined,
-      error as Error
+      error instanceof Error ? error : new Error(String(error))
     );
     return false;
   }
@@ -593,8 +600,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     return await tool.handler(request.params.arguments || {});
-  } catch (error) {
-    logger.error('SYSTEM', 'Tool execution failed', { tool: request.params.name }, error as Error);
+  } catch (error: unknown) {
+    logger.error('SYSTEM', 'Tool execution failed', { tool: request.params.name }, error instanceof Error ? error : new Error(String(error)));
     return {
       content: [{
         type: 'text' as const,

@@ -164,27 +164,62 @@ export async function syncContextToAgentsMd(
   project: string,
 ): Promise<void> {
   try {
-    const response = await fetch(
-      `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`,
-    );
-
-    if (!response.ok) return;
-
-    const contextText = await response.text();
-    if (contextText && contextText.trim()) {
-      const injectResult = injectContextIntoAgentsMd(contextText);
-      if (injectResult !== 0) {
-        logger.warn('OPENCODE', 'Failed to inject context into AGENTS.md during sync');
-      }
-    }
-  } catch {
+    await fetchAndInjectOpenCodeContext(port, project);
+  } catch (error) {
     // Worker not available — non-critical
+    if (error instanceof Error) {
+      logger.debug('WORKER', 'Worker not available during context sync', {}, error);
+    } else {
+      logger.debug('WORKER', 'Worker not available during context sync', {}, new Error(String(error)));
+    }
+  }
+}
+
+async function fetchRealContextFromWorker(): Promise<string | null> {
+  const workerPort = getWorkerPort();
+  const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/readiness`);
+  if (!healthResponse.ok) return null;
+
+  const contextResponse = await fetch(
+    `http://127.0.0.1:${workerPort}/api/context/inject?project=opencode`,
+  );
+  if (!contextResponse.ok) return null;
+
+  const realContext = await contextResponse.text();
+  return realContext && realContext.trim() ? realContext : null;
+}
+
+async function fetchAndInjectOpenCodeContext(port: number, project: string): Promise<void> {
+  const response = await fetch(
+    `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`,
+  );
+  if (!response.ok) return;
+
+  const contextText = await response.text();
+  if (contextText && contextText.trim()) {
+    const injectResult = injectContextIntoAgentsMd(contextText);
+    if (injectResult !== 0) {
+      logger.warn('OPENCODE', 'Failed to inject context into AGENTS.md during sync');
+    }
   }
 }
 
 // ============================================================================
 // Uninstallation
 // ============================================================================
+
+function writeOrRemoveCleanedAgentsMd(agentsMdPath: string, trimmedContent: string): void {
+  if (
+    trimmedContent.length === 0 ||
+    trimmedContent === '# Claude-Mem Memory Context'
+  ) {
+    unlinkSync(agentsMdPath);
+    console.log(`  Removed empty AGENTS.md`);
+  } else {
+    writeFileSync(agentsMdPath, trimmedContent + '\n', 'utf-8');
+    console.log(`  Cleaned context from AGENTS.md`);
+  }
+}
 
 /**
  * Remove the claude-mem plugin from OpenCode.
@@ -211,34 +246,33 @@ export function uninstallOpenCodePlugin(): number {
   // Remove context section from AGENTS.md
   const agentsMdPath = getOpenCodeAgentsMdPath();
   if (existsSync(agentsMdPath)) {
+    let content: string;
     try {
-      let content = readFileSync(agentsMdPath, 'utf-8');
-      const tagStartIndex = content.indexOf(CONTEXT_TAG_OPEN);
-      const tagEndIndex = content.indexOf(CONTEXT_TAG_CLOSE);
-
-      if (tagStartIndex !== -1 && tagEndIndex !== -1) {
-        content =
-          content.slice(0, tagStartIndex).trimEnd() +
-          '\n' +
-          content.slice(tagEndIndex + CONTEXT_TAG_CLOSE.length).trimStart();
-
-        // If the file is now essentially empty or only has our header, remove it
-        const trimmedContent = content.trim();
-        if (
-          trimmedContent.length === 0 ||
-          trimmedContent === '# Claude-Mem Memory Context'
-        ) {
-          unlinkSync(agentsMdPath);
-          console.log(`  Removed empty AGENTS.md`);
-        } else {
-          writeFileSync(agentsMdPath, trimmedContent + '\n', 'utf-8');
-          console.log(`  Cleaned context from AGENTS.md`);
-        }
-      }
+      content = readFileSync(agentsMdPath, 'utf-8');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`  Failed to clean AGENTS.md: ${message}`);
+      console.error(`  Failed to read AGENTS.md: ${message}`);
       hasErrors = true;
+      content = '';
+    }
+
+    const tagStartIndex = content.indexOf(CONTEXT_TAG_OPEN);
+    const tagEndIndex = content.indexOf(CONTEXT_TAG_CLOSE);
+
+    if (tagStartIndex !== -1 && tagEndIndex !== -1) {
+      content =
+        content.slice(0, tagStartIndex).trimEnd() +
+        '\n' +
+        content.slice(tagEndIndex + CONTEXT_TAG_CLOSE.length).trimStart();
+
+      const trimmedContent = content.trim();
+      try {
+        writeOrRemoveCleanedAgentsMd(agentsMdPath, trimmedContent);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`  Failed to clean AGENTS.md: ${message}`);
+        hasErrors = true;
+      }
     }
   }
 
@@ -309,48 +343,29 @@ export async function installOpenCodeIntegration(): Promise<number> {
 Use claude-mem search tools for manual memory queries.`;
 
   // Try to fetch real context from worker first
+  let contextToInject = placeholderContext;
+  let contextSource = 'placeholder';
   try {
-    const workerPort = getWorkerPort();
-    const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/readiness`);
-    if (healthResponse.ok) {
-      const contextResponse = await fetch(
-        `http://127.0.0.1:${workerPort}/api/context/inject?project=opencode`,
-      );
-      if (contextResponse.ok) {
-        const realContext = await contextResponse.text();
-        if (realContext && realContext.trim()) {
-          const injectResult = injectContextIntoAgentsMd(realContext);
-          if (injectResult !== 0) {
-            logger.warn('OPENCODE', 'Failed to inject real context into AGENTS.md during install');
-          } else {
-            console.log('  Context injected from existing memory');
-          }
-        } else {
-          const injectResult = injectContextIntoAgentsMd(placeholderContext);
-          if (injectResult !== 0) {
-            logger.warn('OPENCODE', 'Failed to inject placeholder context into AGENTS.md during install');
-          } else {
-            console.log('  Placeholder context created (will populate after first session)');
-          }
-        }
-      } else {
-        const injectResult = injectContextIntoAgentsMd(placeholderContext);
-        if (injectResult !== 0) {
-          logger.warn('OPENCODE', 'Failed to inject placeholder context into AGENTS.md during install');
-        }
-      }
-    } else {
-      const injectResult = injectContextIntoAgentsMd(placeholderContext);
-      if (injectResult !== 0) {
-        logger.warn('OPENCODE', 'Failed to inject placeholder context into AGENTS.md during install');
-      } else {
-        console.log('  Placeholder context created (worker not running)');
-      }
+    const realContext = await fetchRealContextFromWorker();
+    if (realContext) {
+      contextToInject = realContext;
+      contextSource = 'existing memory';
     }
-  } catch {
-    const injectResult = injectContextIntoAgentsMd(placeholderContext);
-    if (injectResult !== 0) {
-      logger.warn('OPENCODE', 'Failed to inject placeholder context into AGENTS.md during install');
+  } catch (error) {
+    // Worker not available — use placeholder
+    if (error instanceof Error) {
+      logger.debug('WORKER', 'Worker not available during OpenCode install', {}, error);
+    } else {
+      logger.debug('WORKER', 'Worker not available during OpenCode install', {}, new Error(String(error)));
+    }
+  }
+
+  const injectResult = injectContextIntoAgentsMd(contextToInject);
+  if (injectResult !== 0) {
+    logger.warn('OPENCODE', `Failed to inject ${contextSource} context into AGENTS.md during install`);
+  } else {
+    if (contextSource === 'existing memory') {
+      console.log('  Context injected from existing memory');
     } else {
       console.log('  Placeholder context created (worker not running)');
     }

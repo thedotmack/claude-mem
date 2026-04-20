@@ -22,6 +22,7 @@ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { estimateTokens } from '../../shared/timeline-formatting.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
+import type { ModeConfig } from '../domain/types.js';
 import {
   processAgentResponse,
   shouldFallbackToClaude,
@@ -135,228 +136,246 @@ export class GeminiAgent {
    * Uses multi-turn conversation to maintain context across messages
    */
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
+    // --- Configuration & validation (no try needed - throws clear errors) ---
+    const { apiKey, model, rateLimitingEnabled } = this.getGeminiConfig();
+
+    if (!apiKey) {
+      throw new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
+    }
+
+    // Generate synthetic memorySessionId (Gemini is stateless, doesn't return session IDs)
+    if (!session.memorySessionId) {
+      const syntheticMemorySessionId = `gemini-${session.contentSessionId}-${Date.now()}`;
+      session.memorySessionId = syntheticMemorySessionId;
+      this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticMemorySessionId);
+      logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=Gemini`);
+    }
+
+    // Load active mode and build initial prompt
+    const mode = ModeManager.getInstance().getActiveMode();
+    const initPrompt = session.lastPromptNumber === 1
+      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
+      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+
+    // --- Init query: API call + response processing ---
+    session.conversationHistory.push({ role: 'user', content: initPrompt });
+    let initResponse: { content: string; tokensUsed?: number };
     try {
-      // Get Gemini configuration
-      const { apiKey, model, rateLimitingEnabled } = this.getGeminiConfig();
-
-      if (!apiKey) {
-        throw new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
-      }
-
-      // Generate synthetic memorySessionId (Gemini is stateless, doesn't return session IDs)
-      if (!session.memorySessionId) {
-        const syntheticMemorySessionId = `gemini-${session.contentSessionId}-${Date.now()}`;
-        session.memorySessionId = syntheticMemorySessionId;
-        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticMemorySessionId);
-        logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=Gemini`);
-      }
-
-      // Load active mode
-      const mode = ModeManager.getInstance().getActiveMode();
-
-      // Build initial prompt
-      const initPrompt = session.lastPromptNumber === 1
-        ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
-        : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
-
-      // Add to conversation history and query Gemini with full context
-      session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
-
-      if (initResponse.content) {
-        // Add response to conversation history
-        session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
-
-        // Track token usage
-        const tokensUsed = initResponse.tokensUsed || 0;
-        session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  // Rough estimate
-        session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-
-        // Process response using shared ResponseProcessor (no original timestamp for init - not from queue)
-        await processAgentResponse(
-          initResponse.content,
-          session,
-          this.dbManager,
-          this.sessionManager,
-          worker,
-          tokensUsed,
-          null,
-          'Gemini',
-          undefined,
-          model
-        );
+      initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        logger.error('SDK', 'Gemini init query failed', { sessionId: session.sessionDbId, model }, error);
       } else {
-        logger.error('SDK', 'Empty Gemini init response - session may lack context', {
-          sessionId: session.sessionDbId,
-          model
-        });
+        logger.error('SDK', 'Gemini init query failed with non-Error', { sessionId: session.sessionDbId, model }, new Error(String(error)));
       }
+      return this.handleGeminiError(error, session, worker);
+    }
 
-      // Process pending messages
-      // Track cwd from messages for CLAUDE.md generation
-      let lastCwd: string | undefined;
+    if (initResponse.content) {
+      session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
+      const tokensUsed = initResponse.tokensUsed || 0;
+      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  // Rough estimate
+      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      await processAgentResponse(initResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, null, 'Gemini', undefined, model);
+    } else {
+      logger.error('SDK', 'Empty Gemini init response - session may lack context', { sessionId: session.sessionDbId, model });
+    }
 
-      for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-        // CLAIM-CONFIRM: Track message ID for confirmProcessed() after successful storage
-        // The message is now in 'processing' status in DB until ResponseProcessor calls confirmProcessed()
-        session.processingMessageIds.push(message._persistentId);
-
-        // Capture subagent identity from the claimed message so ResponseProcessor
-        // can label observation rows with the originating Claude Code subagent.
-        // Always overwrite (even with null) so a main-session message after a subagent
-        // message clears the stale identity; otherwise mixed batches could mislabel.
-        session.pendingAgentId = message.agentId ?? null;
-        session.pendingAgentType = message.agentType ?? null;
-
-        // Capture cwd from each message for worktree support
-        if (message.cwd) {
-          lastCwd = message.cwd;
-        }
-        // Capture earliest timestamp BEFORE processing (will be cleared after)
-        // This ensures backlog messages get their original timestamps, not current time
-        const originalTimestamp = session.earliestPendingTimestamp;
-
-        if (message.type === 'observation') {
-          // Update last prompt number
-          if (message.prompt_number !== undefined) {
-            session.lastPromptNumber = message.prompt_number;
-          }
-
-          // CRITICAL: Check memorySessionId BEFORE making expensive LLM call
-          // This prevents wasting tokens when we won't be able to store the result anyway
-          if (!session.memorySessionId) {
-            throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
-          }
-
-          // Build observation prompt
-          const obsPrompt = buildObservationPrompt({
-            id: 0,
-            tool_name: message.tool_name!,
-            tool_input: JSON.stringify(message.tool_input),
-            tool_output: JSON.stringify(message.tool_response),
-            created_at_epoch: originalTimestamp ?? Date.now(),
-            cwd: message.cwd
-          });
-
-          // Add to conversation history and query Gemini with full context
-          session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
-
-          let tokensUsed = 0;
-          if (obsResponse.content) {
-            // Add response to conversation history
-            session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
-
-            tokensUsed = obsResponse.tokensUsed || 0;
-            session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-            session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-          }
-
-          // Process response using shared ResponseProcessor
-          if (obsResponse.content) {
-            await processAgentResponse(
-              obsResponse.content,
-              session,
-              this.dbManager,
-              this.sessionManager,
-              worker,
-              tokensUsed,
-              originalTimestamp,
-              'Gemini',
-              lastCwd,
-              model
-            );
-          } else {
-            logger.warn('SDK', 'Empty Gemini observation response, skipping processing to preserve message', {
-              sessionId: session.sessionDbId,
-              messageId: session.processingMessageIds[session.processingMessageIds.length - 1]
-            });
-            // Don't confirm - leave message for stale recovery
-          }
-
-        } else if (message.type === 'summarize') {
-          // CRITICAL: Check memorySessionId BEFORE making expensive LLM call
-          if (!session.memorySessionId) {
-            throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
-          }
-
-          // Build summary prompt
-          const summaryPrompt = buildSummaryPrompt({
-            id: session.sessionDbId,
-            memory_session_id: session.memorySessionId,
-            project: session.project,
-            user_prompt: session.userPrompt,
-            last_assistant_message: message.last_assistant_message || ''
-          }, mode);
-
-          // Add to conversation history and query Gemini with full context
-          session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
-
-          let tokensUsed = 0;
-          if (summaryResponse.content) {
-            // Add response to conversation history
-            session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
-
-            tokensUsed = summaryResponse.tokensUsed || 0;
-            session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-            session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-          }
-
-          // Process response using shared ResponseProcessor
-          if (summaryResponse.content) {
-            await processAgentResponse(
-              summaryResponse.content,
-              session,
-              this.dbManager,
-              this.sessionManager,
-              worker,
-              tokensUsed,
-              originalTimestamp,
-              'Gemini',
-              lastCwd,
-              model
-            );
-          } else {
-            logger.warn('SDK', 'Empty Gemini summary response, skipping processing to preserve message', {
-              sessionId: session.sessionDbId,
-              messageId: session.processingMessageIds[session.processingMessageIds.length - 1]
-            });
-            // Don't confirm - leave message for stale recovery
-          }
-        }
+    // --- Message processing loop: iterate pending messages ---
+    try {
+      await this.processMessageLoop(session, worker, apiKey, model, rateLimitingEnabled, mode);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        logger.error('SDK', 'Gemini message loop failed', { sessionId: session.sessionDbId, model }, error);
+      } else {
+        logger.error('SDK', 'Gemini message loop failed with non-Error', { sessionId: session.sessionDbId, model }, new Error(String(error)));
       }
+      return this.handleGeminiError(error, session, worker);
+    }
 
-      // Mark session complete
-      const sessionDuration = Date.now() - session.startTime;
-      logger.success('SDK', 'Gemini agent completed', {
+    // Mark session complete
+    const sessionDuration = Date.now() - session.startTime;
+    logger.success('SDK', 'Gemini agent completed', {
+      sessionId: session.sessionDbId,
+      duration: `${(sessionDuration / 1000).toFixed(1)}s`,
+      historyLength: session.conversationHistory.length
+    });
+  }
+
+  /**
+   * Process pending messages from the session queue.
+   * Extracted from startSession to keep try blocks focused.
+   */
+  private async processMessageLoop(
+    session: ActiveSession,
+    worker: WorkerRef | undefined,
+    apiKey: string,
+    model: GeminiModel,
+    rateLimitingEnabled: boolean,
+    mode: ModeConfig
+  ): Promise<void> {
+    // Track cwd from messages for CLAUDE.md generation
+    let lastCwd: string | undefined;
+
+    for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+      // CLAIM-CONFIRM: Track message ID for confirmProcessed() after successful storage
+      // The message is now in 'processing' status in DB until ResponseProcessor calls confirmProcessed()
+      session.processingMessageIds.push(message._persistentId);
+
+      // Capture subagent identity from the claimed message so ResponseProcessor
+      // can label observation rows with the originating Claude Code subagent.
+      // Always overwrite (even with null) so a main-session message after a subagent
+      // message clears the stale identity; otherwise mixed batches could mislabel.
+      session.pendingAgentId = message.agentId ?? null;
+      session.pendingAgentType = message.agentType ?? null;
+
+      // Capture cwd from each message for worktree support
+      if (message.cwd) {
+        lastCwd = message.cwd;
+      }
+      // Capture earliest timestamp BEFORE processing (will be cleared after)
+      // This ensures backlog messages get their original timestamps, not current time
+      const originalTimestamp = session.earliestPendingTimestamp;
+
+      if (message.type === 'observation') {
+        await this.processObservationMessage(session, message, worker, apiKey, model, rateLimitingEnabled, originalTimestamp, lastCwd);
+      } else if (message.type === 'summarize') {
+        await this.processSummaryMessage(session, message, worker, apiKey, model, rateLimitingEnabled, mode, originalTimestamp, lastCwd);
+      }
+    }
+  }
+
+  /**
+   * Process a single observation message via Gemini API.
+   */
+  private async processObservationMessage(
+    session: ActiveSession,
+    message: { type: string; prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string },
+    worker: WorkerRef | undefined,
+    apiKey: string,
+    model: GeminiModel,
+    rateLimitingEnabled: boolean,
+    originalTimestamp: number | null,
+    lastCwd: string | undefined
+  ): Promise<void> {
+    // Update last prompt number
+    if (message.prompt_number !== undefined) {
+      session.lastPromptNumber = message.prompt_number;
+    }
+
+    // CRITICAL: Check memorySessionId BEFORE making expensive LLM call
+    // This prevents wasting tokens when we won't be able to store the result anyway
+    if (!session.memorySessionId) {
+      throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
+    }
+
+    // Build observation prompt
+    const obsPrompt = buildObservationPrompt({
+      id: 0,
+      tool_name: message.tool_name!,
+      tool_input: JSON.stringify(message.tool_input),
+      tool_output: JSON.stringify(message.tool_response),
+      created_at_epoch: originalTimestamp ?? Date.now(),
+      cwd: message.cwd
+    });
+
+    session.conversationHistory.push({ role: 'user', content: obsPrompt });
+    const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+
+    let tokensUsed = 0;
+    if (obsResponse.content) {
+      session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
+      tokensUsed = obsResponse.tokensUsed || 0;
+      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
+      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+    }
+
+    if (obsResponse.content) {
+      await processAgentResponse(obsResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, originalTimestamp, 'Gemini', lastCwd, model);
+    } else {
+      logger.warn('SDK', 'Empty Gemini observation response, skipping processing to preserve message', {
         sessionId: session.sessionDbId,
-        duration: `${(sessionDuration / 1000).toFixed(1)}s`,
+        messageId: session.processingMessageIds[session.processingMessageIds.length - 1]
+      });
+      // Don't confirm - leave message for stale recovery
+    }
+  }
+
+  /**
+   * Process a single summary message via Gemini API.
+   */
+  private async processSummaryMessage(
+    session: ActiveSession,
+    message: { type: string; last_assistant_message?: string },
+    worker: WorkerRef | undefined,
+    apiKey: string,
+    model: GeminiModel,
+    rateLimitingEnabled: boolean,
+    mode: ModeConfig,
+    originalTimestamp: number | null,
+    lastCwd: string | undefined
+  ): Promise<void> {
+    // CRITICAL: Check memorySessionId BEFORE making expensive LLM call
+    if (!session.memorySessionId) {
+      throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
+    }
+
+    // Build summary prompt
+    const summaryPrompt = buildSummaryPrompt({
+      id: session.sessionDbId,
+      memory_session_id: session.memorySessionId,
+      project: session.project,
+      user_prompt: session.userPrompt,
+      last_assistant_message: message.last_assistant_message || ''
+    }, mode);
+
+    session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+    const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+
+    let tokensUsed = 0;
+    if (summaryResponse.content) {
+      session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
+      tokensUsed = summaryResponse.tokensUsed || 0;
+      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
+      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+    }
+
+    if (summaryResponse.content) {
+      await processAgentResponse(summaryResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, originalTimestamp, 'Gemini', lastCwd, model);
+    } else {
+      logger.warn('SDK', 'Empty Gemini summary response, skipping processing to preserve message', {
+        sessionId: session.sessionDbId,
+        messageId: session.processingMessageIds[session.processingMessageIds.length - 1]
+      });
+      // Don't confirm - leave message for stale recovery
+    }
+  }
+
+  /**
+   * Handle errors from Gemini API calls with abort detection and Claude fallback.
+   * Shared by init query and message processing try blocks.
+   */
+  private handleGeminiError(error: unknown, session: ActiveSession, worker?: WorkerRef): Promise<void> | never {
+    if (isAbortError(error)) {
+      logger.warn('SDK', 'Gemini agent aborted', { sessionId: session.sessionDbId });
+      throw error;
+    }
+
+    // Check if we should fall back to Claude
+    if (shouldFallbackToClaude(error) && this.fallbackAgent) {
+      logger.warn('SDK', 'Gemini API failed, falling back to Claude SDK', {
+        sessionDbId: session.sessionDbId,
+        error: error instanceof Error ? error.message : String(error),
         historyLength: session.conversationHistory.length
       });
 
-    } catch (error: unknown) {
-      if (isAbortError(error)) {
-        logger.warn('SDK', 'Gemini agent aborted', { sessionId: session.sessionDbId });
-        throw error;
-      }
-
-      // Check if we should fall back to Claude
-      if (shouldFallbackToClaude(error) && this.fallbackAgent) {
-        logger.warn('SDK', 'Gemini API failed, falling back to Claude SDK', {
-          sessionDbId: session.sessionDbId,
-          error: error instanceof Error ? error.message : String(error),
-          historyLength: session.conversationHistory.length
-        });
-
-        // Fall back to Claude - it will use the same session with shared conversationHistory
-        // Note: With claim-and-delete queue pattern, messages are already deleted on claim
-        return this.fallbackAgent.startSession(session, worker);
-      }
-
-      logger.failure('SDK', 'Gemini agent error', { sessionDbId: session.sessionDbId }, error as Error);
-      throw error;
+      // Fall back to Claude - it will use the same session with shared conversationHistory
+      // Note: With claim-and-delete queue pattern, messages are already deleted on claim
+      return this.fallbackAgent.startSession(session, worker);
     }
+
+    logger.failure('SDK', 'Gemini agent error', { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
+    throw error;
   }
 
   /**

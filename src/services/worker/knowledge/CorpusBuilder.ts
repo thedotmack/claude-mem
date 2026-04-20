@@ -23,7 +23,12 @@ function safeParseJsonArray(value: unknown): string[] {
   try {
     const parsed = JSON.parse(value);
     return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
-  } catch {
+  } catch (error) {
+    if (error instanceof Error) {
+      logger.warn('WORKER', 'Failed to parse JSON array field', {}, error);
+    } else {
+      logger.warn('WORKER', 'Failed to parse JSON array field (non-Error thrown)', { thrownValue: String(error) });
+    }
     return [];
   }
 }

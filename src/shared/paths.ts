@@ -146,10 +146,10 @@ export function getCurrentProjectName(): string {
       windowsHide: true
     }).trim();
     return basename(dirname(gitRoot)) + '/' + basename(gitRoot);
-  } catch (error) {
+  } catch (error: unknown) {
     logger.debug('SYSTEM', 'Git root detection failed, using cwd basename', {
       cwd: process.cwd()
-    }, error as Error);
+    }, error instanceof Error ? error : new Error(String(error)));
     const cwd = process.cwd();
     return basename(dirname(cwd)) + '/' + basename(cwd);
   }

@@ -10,8 +10,8 @@ export function useStats() {
       const response = await fetch(API_ENDPOINTS.STATS);
       const data = await response.json();
       setStats(data);
-    } catch (error) {
-      console.error('Failed to load stats:', error);
+    } catch (error: unknown) {
+      console.error('Failed to load stats:', error instanceof Error ? error.message : String(error));
     }
   }, []);
 

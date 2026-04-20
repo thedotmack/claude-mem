@@ -53,7 +53,12 @@ function shouldSkipSpawnOnWindows(): boolean {
   try {
     const modifiedTimeMs = statSync(lockPath).mtimeMs;
     return Date.now() - modifiedTimeMs < WINDOWS_SPAWN_COOLDOWN_MS;
-  } catch {
+  } catch (error) {
+    if (error instanceof Error) {
+      logger.debug('SYSTEM', 'Could not stat worker spawn lock file', {}, error);
+    } else {
+      logger.debug('SYSTEM', 'Could not stat worker spawn lock file', { error: String(error) });
+    }
     return false;
   }
 }

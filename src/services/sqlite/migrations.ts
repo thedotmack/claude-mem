@@ -378,8 +378,8 @@ export const migration006: Migration = {
     try {
       db.run('CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)');
       db.run('DROP TABLE _fts5_probe');
-    } catch {
-      console.log('⚠️  FTS5 not available on this platform — skipping FTS migration (search uses ChromaDB)');
+    } catch (error) {
+      logger.warn('DB', 'FTS5 not available on this platform — skipping FTS migration (search uses ChromaDB)', {}, error instanceof Error ? error : undefined);
       return;
     }
 

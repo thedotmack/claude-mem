@@ -46,7 +46,11 @@ export class CorpusStore {
       const raw = fs.readFileSync(filePath, 'utf-8');
       return JSON.parse(raw) as CorpusFile;
     } catch (error) {
-      logger.error('WORKER', `Failed to read corpus file: ${filePath}`, { error });
+      if (error instanceof Error) {
+        logger.error('WORKER', `Failed to read corpus file: ${filePath}`, {}, error);
+      } else {
+        logger.error('WORKER', `Failed to read corpus file: ${filePath} (non-Error thrown)`, { thrownValue: String(error) });
+      }
       return null;
     }
   }
@@ -73,7 +77,11 @@ export class CorpusStore {
           session_id: corpus.session_id,
         });
       } catch (error) {
-        logger.error('WORKER', `Failed to parse corpus file: ${file}`, { error });
+        if (error instanceof Error) {
+          logger.error('WORKER', `Failed to parse corpus file: ${file}`, {}, error);
+        } else {
+          logger.error('WORKER', `Failed to parse corpus file: ${file} (non-Error thrown)`, { thrownValue: String(error) });
+        }
       }
     }
 

@@ -154,34 +154,44 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
   const workerPort = process.env.CLAUDE_MEM_WORKER_PORT || '37777';
   const searchUrl = `http://127.0.0.1:${workerPort}/api/search?query=${encodeURIComponent(query)}`;
 
+  let response: Response;
   try {
-    const response = await fetch(searchUrl);
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        console.error(pc.red('Search endpoint not found. Is the worker running?'));
-        console.error(`Try: ${pc.bold('npx claude-mem start')}`);
-        process.exit(1);
-      }
-      console.error(pc.red(`Search failed: HTTP ${response.status}`));
-      process.exit(1);
-    }
-
-    const data = await response.json();
-
-    if (typeof data === 'object' && data !== null) {
-      console.log(JSON.stringify(data, null, 2));
-    } else {
-      console.log(data);
-    }
-  } catch (error: any) {
-    if (error?.cause?.code === 'ECONNREFUSED' || error?.message?.includes('ECONNREFUSED')) {
+    response = await fetch(searchUrl);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    const cause = error instanceof Error ? (error as any).cause : undefined;
+    if (cause?.code === 'ECONNREFUSED' || message.includes('ECONNREFUSED')) {
       console.error(pc.red('Worker is not running.'));
       console.error(`Start it with: ${pc.bold('npx claude-mem start')}`);
       process.exit(1);
     }
-    console.error(pc.red(`Search failed: ${error.message}`));
+    console.error(pc.red(`Search failed: ${message}`));
     process.exit(1);
+  }
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      console.error(pc.red('Search endpoint not found. Is the worker running?'));
+      console.error(`Try: ${pc.bold('npx claude-mem start')}`);
+      process.exit(1);
+    }
+    console.error(pc.red(`Search failed: HTTP ${response.status}`));
+    process.exit(1);
+  }
+
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(pc.red(`Search failed: invalid JSON response (${message})`));
+    process.exit(1);
+  }
+
+  if (typeof data === 'object' && data !== null) {
+    console.log(JSON.stringify(data, null, 2));
+  } else {
+    console.log(data);
   }
 }
 

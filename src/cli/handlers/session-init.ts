@@ -14,6 +14,27 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 
+async function fetchSemanticContext(
+  prompt: string,
+  project: string,
+  limit: string,
+  sessionDbId: number
+): Promise<string> {
+  const semanticRes = await workerHttpRequest('/api/context/semantic', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q: prompt, project, limit })
+  });
+  if (semanticRes.ok) {
+    const data = await semanticRes.json() as { context: string; count: number };
+    if (data.context) {
+      logger.debug('HOOK', `Semantic injection: ${data.count} observations for prompt`, { sessionId: sessionDbId, count: data.count });
+      return data.context;
+    }
+  }
+  return '';
+}
+
 export const sessionInitHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     // Ensure worker is running before any other logic
@@ -131,22 +152,9 @@ export const sessionInitHandler: EventHandler = {
     let additionalContext = '';
 
     if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
+      const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
       try {
-        const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
-        const semanticRes = await workerHttpRequest('/api/context/semantic', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ q: prompt, project, limit })
-        });
-        if (semanticRes.ok) {
-          const data = await semanticRes.json() as { context: string; count: number };
-          if (data.context) {
-            additionalContext = data.context;
-            logger.debug('HOOK', `Semantic injection: ${data.count} observations for prompt`, {
-              sessionId: sessionDbId, count: data.count
-            });
-          }
-        }
+        additionalContext = await fetchSemanticContext(prompt, project, limit, sessionDbId);
       } catch (e) {
         // Graceful degradation — semantic injection is optional
         logger.debug('HOOK', 'Semantic injection unavailable', {

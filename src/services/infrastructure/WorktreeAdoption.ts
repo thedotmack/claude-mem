@@ -248,22 +248,24 @@ export async function adoptMergedWorktrees(opts: {
       'UPDATE session_summaries SET merged_into_project = ? WHERE project = ? AND merged_into_project IS NULL'
     );
 
+    const adoptWorktreeInTransaction = (wt: WorktreeEntry) => {
+      const worktreeProject = getProjectContext(wt.path).primary;
+      const rows = selectObsForPatch.all(
+        worktreeProject,
+        parentProject
+      ) as Array<{ id: number }>;
+
+      const obsChanges = updateObs.run(parentProject, worktreeProject).changes;
+      const sumChanges = updateSum.run(parentProject, worktreeProject).changes;
+      for (const r of rows) adoptedSqliteIds.push(r.id);
+      result.adoptedObservations += obsChanges;
+      result.adoptedSummaries += sumChanges;
+    };
+
     const tx = db.transaction(() => {
       for (const wt of targets) {
         try {
-          const worktreeProject = getProjectContext(wt.path).primary;
-          const rows = selectObsForPatch.all(
-            worktreeProject,
-            parentProject
-          ) as Array<{ id: number }>;
-          for (const r of rows) adoptedSqliteIds.push(r.id);
-
-          // updateObs/updateSum only touch WHERE merged_into_project IS NULL,
-          // so .changes reflects only newly-adopted rows (not the re-patched ones).
-          const obsChanges = updateObs.run(parentProject, worktreeProject).changes;
-          const sumChanges = updateSum.run(parentProject, worktreeProject).changes;
-          result.adoptedObservations += obsChanges;
-          result.adoptedSummaries += sumChanges;
+          adoptWorktreeInTransaction(wt);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           logger.warn('SYSTEM', 'Worktree adoption skipped branch', {
@@ -285,7 +287,11 @@ export async function adoptMergedWorktrees(opts: {
     } catch (err) {
       if (err instanceof DryRunRollback) {
         // Rolled back as intended for dry-run — counts are still useful.
+      } else if (err instanceof Error) {
+        logger.error('SYSTEM', 'Worktree adoption transaction failed', {}, err);
+        throw err;
       } else {
+        logger.error('SYSTEM', 'Worktree adoption transaction failed with non-Error', { error: String(err) });
         throw err;
       }
     }
@@ -299,12 +305,20 @@ export async function adoptMergedWorktrees(opts: {
       await chromaSync.updateMergedIntoProject(adoptedSqliteIds, parentProject);
       result.chromaUpdates = adoptedSqliteIds.length;
     } catch (err) {
-      logger.error(
-        'CHROMA_SYNC',
-        'Worktree adoption Chroma patch failed (SQL already committed)',
-        { parentProject, sqliteIdCount: adoptedSqliteIds.length },
-        err as Error
-      );
+      if (err instanceof Error) {
+        logger.error(
+          'SYSTEM',
+          'Worktree adoption Chroma patch failed (SQL already committed)',
+          { parentProject, sqliteIdCount: adoptedSqliteIds.length },
+          err
+        );
+      } else {
+        logger.error(
+          'SYSTEM',
+          'Worktree adoption Chroma patch failed (SQL already committed)',
+          { parentProject, sqliteIdCount: adoptedSqliteIds.length, error: String(err) }
+        );
+      }
       result.chromaFailed = adoptedSqliteIds.length;
     } finally {
       await chromaSync.close();

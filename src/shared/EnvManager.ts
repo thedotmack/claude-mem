@@ -121,8 +121,8 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
     if (parsed.OPENROUTER_API_KEY) result.OPENROUTER_API_KEY = parsed.OPENROUTER_API_KEY;
 
     return result;
-  } catch (error) {
-    logger.warn('ENV', 'Failed to load .env file', { path: ENV_FILE_PATH }, error as Error);
+  } catch (error: unknown) {
+    logger.warn('ENV', 'Failed to load .env file', { path: ENV_FILE_PATH }, error instanceof Error ? error : new Error(String(error)));
     return {};
   }
 }
@@ -131,6 +131,7 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
  * Save credentials to ~/.claude-mem/.env
  */
 export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
+  let existing: Record<string, string> = {};
   try {
     // Ensure directory exists with restricted permissions (owner only)
     if (!existsSync(DATA_DIR)) {
@@ -141,50 +142,56 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
     chmodSync(DATA_DIR, 0o700);
 
     // Load existing to preserve any extra keys
-    const existing = existsSync(ENV_FILE_PATH)
+    existing = existsSync(ENV_FILE_PATH)
       ? parseEnvFile(readFileSync(ENV_FILE_PATH, 'utf-8'))
       : {};
+  } catch (error) {
+    const normalizedError = error instanceof Error ? error : new Error(String(error));
+    logger.error('ENV', 'Failed to set up env directory or read existing env', {}, normalizedError);
+    throw normalizedError;
+  }
 
-    // Update with new values
-    const updated: Record<string, string> = { ...existing };
+  // Update with new values
+  const updated: Record<string, string> = { ...existing };
 
-    // Only update managed keys
-    if (env.ANTHROPIC_API_KEY !== undefined) {
-      if (env.ANTHROPIC_API_KEY) {
-        updated.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
-      } else {
-        delete updated.ANTHROPIC_API_KEY;
-      }
+  // Only update managed keys
+  if (env.ANTHROPIC_API_KEY !== undefined) {
+    if (env.ANTHROPIC_API_KEY) {
+      updated.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
+    } else {
+      delete updated.ANTHROPIC_API_KEY;
     }
-    if (env.ANTHROPIC_BASE_URL !== undefined) {
-      if (env.ANTHROPIC_BASE_URL) {
-        updated.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL;
-      } else {
-        delete updated.ANTHROPIC_BASE_URL;
-      }
+  }
+  if (env.ANTHROPIC_BASE_URL !== undefined) {
+    if (env.ANTHROPIC_BASE_URL) {
+      updated.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL;
+    } else {
+      delete updated.ANTHROPIC_BASE_URL;
     }
-    if (env.GEMINI_API_KEY !== undefined) {
-      if (env.GEMINI_API_KEY) {
-        updated.GEMINI_API_KEY = env.GEMINI_API_KEY;
-      } else {
-        delete updated.GEMINI_API_KEY;
-      }
+  }
+  if (env.GEMINI_API_KEY !== undefined) {
+    if (env.GEMINI_API_KEY) {
+      updated.GEMINI_API_KEY = env.GEMINI_API_KEY;
+    } else {
+      delete updated.GEMINI_API_KEY;
     }
-    if (env.OPENROUTER_API_KEY !== undefined) {
-      if (env.OPENROUTER_API_KEY) {
-        updated.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
-      } else {
-        delete updated.OPENROUTER_API_KEY;
-      }
+  }
+  if (env.OPENROUTER_API_KEY !== undefined) {
+    if (env.OPENROUTER_API_KEY) {
+      updated.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
+    } else {
+      delete updated.OPENROUTER_API_KEY;
     }
+  }
 
+  try {
     writeFileSync(ENV_FILE_PATH, serializeEnvFile(updated), { encoding: 'utf-8', mode: 0o600 });
     // Explicitly set permissions in case the file already existed before this fix.
     // writeFileSync's mode option only applies on file creation (O_CREAT), not on overwrites.
     // Note: On Windows, chmod has no effect — permissions are controlled via ACLs.
     chmodSync(ENV_FILE_PATH, 0o600);
-  } catch (error) {
-    logger.error('ENV', 'Failed to save .env file', { path: ENV_FILE_PATH }, error as Error);
+  } catch (error: unknown) {
+    logger.error('ENV', 'Failed to save .env file', { path: ENV_FILE_PATH }, error instanceof Error ? error : new Error(String(error)));
     throw error;
   }
 }

@@ -67,6 +67,23 @@ export class SearchManager {
     return await this.chromaSync.queryChroma(query, limit, whereFilter);
   }
 
+  private async searchChromaForTimeline(query: string, ninetyDaysAgo: number): Promise<ObservationSearchResult[]> {
+    const chromaResults = await this.queryChroma(query, 100);
+    logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults?.ids?.length ?? 0 });
+
+    if (chromaResults?.ids && chromaResults.ids.length > 0) {
+      const recentIds = chromaResults.ids.filter((_id, idx) => {
+        const meta = chromaResults.metadatas[idx];
+        return meta && meta.created_at_epoch > ninetyDaysAgo;
+      });
+
+      if (recentIds.length > 0) {
+        return this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: 1 });
+      }
+    }
+    return [];
+  }
+
   /**
    * Helper to normalize query parameters from URL-friendly format
    * Converts comma-separated strings to arrays and flattens date params
@@ -439,24 +456,13 @@ export class SearchManager {
       let results: ObservationSearchResult[] = [];
 
       if (this.chromaSync) {
+        logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
+        const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
         try {
-          logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
-          const chromaResults = await this.queryChroma(query, 100);
-          logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults?.ids?.length ?? 0 });
-
-          if (chromaResults?.ids && chromaResults.ids.length > 0) {
-            const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-            const recentIds = chromaResults.ids.filter((_id, idx) => {
-              const meta = chromaResults.metadatas[idx];
-              return meta && meta.created_at_epoch > ninetyDaysAgo;
-            });
-
-            if (recentIds.length > 0) {
-              results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: 1 });
-            }
-          }
+          results = await this.searchChromaForTimeline(query, ninetyDaysAgo);
         } catch (chromaError) {
-          logger.error('SEARCH', 'Chroma search failed for timeline, continuing without semantic results', {}, chromaError as Error);
+          const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
+          logger.error('WORKER', 'Chroma search failed for timeline, continuing without semantic results', {}, errorObject);
         }
       }
 
@@ -689,25 +695,29 @@ export class SearchManager {
 
     // Search for decision-type observations
     if (this.chromaSync) {
-      try {
-        if (query) {
-          // Semantic search filtered to decision type
-          logger.debug('SEARCH', 'Using Chroma semantic search with type=decision filter', {});
+      if (query) {
+        // Semantic search filtered to decision type
+        logger.debug('SEARCH', 'Using Chroma semantic search with type=decision filter', {});
+        try {
           const chromaResults = await this.queryChroma(query, Math.min((filters.limit || 20) * 2, 100), { type: 'decision' });
           const obsIds = chromaResults.ids;
 
           if (obsIds.length > 0) {
             results = this.sessionStore.getObservationsByIds(obsIds, { ...filters, type: 'decision' });
-            // Preserve Chroma ranking order
             results.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
           }
-        } else {
-          // No query: get all decisions, rank by "decision" keyword
-          logger.debug('SEARCH', 'Using metadata-first + semantic ranking for decisions', {});
-          const metadataResults = this.sessionSearch.findByType('decision', filters);
+        } catch (chromaError) {
+          const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
+          logger.error('WORKER', 'Chroma search failed for decisions, falling back to metadata search', {}, errorObject);
+        }
+      } else {
+        // No query: get all decisions, rank by "decision" keyword
+        logger.debug('SEARCH', 'Using metadata-first + semantic ranking for decisions', {});
+        const metadataResults = this.sessionSearch.findByType('decision', filters);
 
-          if (metadataResults.length > 0) {
-            const ids = metadataResults.map(obs => obs.id);
+        if (metadataResults.length > 0) {
+          const ids = metadataResults.map(obs => obs.id);
+          try {
             const chromaResults = await this.queryChroma('decision', Math.min(ids.length, 100));
 
             const rankedIds: number[] = [];
@@ -721,10 +731,11 @@ export class SearchManager {
               results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
               results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
             }
+          } catch (chromaError) {
+            const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
+            logger.error('WORKER', 'Chroma semantic ranking failed for decisions, falling back to metadata search', {}, errorObject);
           }
         }
-      } catch (chromaError) {
-        logger.error('SEARCH', 'Chroma search failed for decisions, falling back to metadata search', {}, chromaError as Error);
       }
     }
 
@@ -763,20 +774,20 @@ export class SearchManager {
 
     // Search for change-type observations and change-related concepts
     if (this.chromaSync) {
-      try {
-        logger.debug('SEARCH', 'Using hybrid search for change-related observations', {});
+      logger.debug('SEARCH', 'Using hybrid search for change-related observations', {});
 
-        // Get all observations with type="change" or concepts containing change
-        const typeResults = this.sessionSearch.findByType('change', filters);
-        const conceptChangeResults = this.sessionSearch.findByConcept('change', filters);
-        const conceptWhatChangedResults = this.sessionSearch.findByConcept('what-changed', filters);
+      // Get all observations with type="change" or concepts containing change
+      const typeResults = this.sessionSearch.findByType('change', filters);
+      const conceptChangeResults = this.sessionSearch.findByConcept('change', filters);
+      const conceptWhatChangedResults = this.sessionSearch.findByConcept('what-changed', filters);
 
-        // Combine and deduplicate
-        const allIds = new Set<number>();
-        [...typeResults, ...conceptChangeResults, ...conceptWhatChangedResults].forEach(obs => allIds.add(obs.id));
+      // Combine and deduplicate
+      const allIds = new Set<number>();
+      [...typeResults, ...conceptChangeResults, ...conceptWhatChangedResults].forEach(obs => allIds.add(obs.id));
 
-        if (allIds.size > 0) {
-          const idsArray = Array.from(allIds);
+      if (allIds.size > 0) {
+        const idsArray = Array.from(allIds);
+        try {
           const chromaResults = await this.queryChroma('what changed', Math.min(idsArray.length, 100));
 
           const rankedIds: number[] = [];
@@ -790,9 +801,10 @@ export class SearchManager {
             results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
             results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
           }
+        } catch (chromaError) {
+          const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
+          logger.error('WORKER', 'Chroma search failed for changes, falling back to metadata search', {}, errorObject);
         }
-      } catch (chromaError) {
-        logger.error('SEARCH', 'Chroma search failed for changes, falling back to metadata search', {}, chromaError as Error);
       }
     }
 
@@ -1373,7 +1385,8 @@ export class SearchManager {
                 lines.push(`**Files Read:** ${filesRead.join(', ')}`);
               }
             } catch (error) {
-              logger.debug('WORKER', 'files_read is plain string, using as-is', {}, error as Error);
+              const errorObject = error instanceof Error ? error : new Error(String(error));
+              logger.debug('WORKER', 'files_read is plain string, using as-is', {}, errorObject);
               if (summary.files_read.trim()) {
                 lines.push(`**Files Read:** ${summary.files_read}`);
               }
@@ -1388,7 +1401,8 @@ export class SearchManager {
                 lines.push(`**Files Edited:** ${filesEdited.join(', ')}`);
               }
             } catch (error) {
-              logger.debug('WORKER', 'files_edited is plain string, using as-is', {}, error as Error);
+              const errorObject = error instanceof Error ? error : new Error(String(error));
+              logger.debug('WORKER', 'files_edited is plain string, using as-is', {}, errorObject);
               if (summary.files_edited.trim()) {
                 lines.push(`**Files Edited:** ${summary.files_edited}`);
               }

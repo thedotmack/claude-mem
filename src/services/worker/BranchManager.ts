@@ -118,35 +118,36 @@ export function getBranchInfo(): BranchInfo {
     };
   }
 
+  // Get current branch
+  let branch: string;
+  let status: string;
   try {
-    // Get current branch
-    const branch = execGit(['rev-parse', '--abbrev-ref', 'HEAD']);
-
-    // Check if dirty (has uncommitted changes)
-    const status = execGit(['status', '--porcelain']);
-    const isDirty = status.length > 0;
-
-    // Determine if on beta branch
-    const isBeta = branch.startsWith('beta');
-
-    return {
-      branch,
-      isBeta,
-      isGitRepo: true,
-      isDirty,
-      canSwitch: true // We can always switch (will discard local changes)
-    };
+    branch = execGit(['rev-parse', '--abbrev-ref', 'HEAD']);
+    status = execGit(['status', '--porcelain']);
   } catch (error) {
-    logger.error('BRANCH', 'Failed to get branch info', {}, error as Error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error('WORKER', 'Failed to get branch info', {}, error instanceof Error ? error : new Error(errorMessage));
     return {
       branch: null,
       isBeta: false,
       isGitRepo: true,
       isDirty: false,
       canSwitch: false,
-      error: (error as Error).message
+      error: errorMessage
     };
   }
+
+  // Determine branch state from git results
+  const isDirty = status.length > 0;
+  const isBeta = branch.startsWith('beta');
+
+  return {
+    branch,
+    isBeta,
+    isGitRepo: true,
+    isDirty,
+    canSwitch: true // We can always switch (will discard local changes)
+  };
 }
 
 /**
@@ -243,7 +244,8 @@ export async function switchBranch(targetBranch: string): Promise<SwitchResult> 
       }
     } catch (recoveryError) {
       // [POSSIBLY RELEVANT]: Recovery checkout failed, user needs manual intervention - already logging main error above
-      logger.error('BRANCH', 'Recovery checkout also failed', { originalBranch: info.branch }, recoveryError as Error);
+      const recoveryErrorMessage = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+      logger.error('WORKER', 'Recovery checkout also failed', { originalBranch: info.branch }, recoveryError instanceof Error ? recoveryError : new Error(recoveryErrorMessage));
     }
 
     return {
@@ -266,17 +268,20 @@ export async function pullUpdates(): Promise<SwitchResult> {
     };
   }
 
+  // SECURITY: Validate branch name before use
+  if (!isValidBranchName(info.branch)) {
+    return {
+      success: false,
+      error: `Invalid current branch name: ${info.branch}`
+    };
+  }
+
+  logger.info('BRANCH', 'Pulling updates', { branch: info.branch });
+
+  // Prepare install marker path
+  const installMarker = join(INSTALLED_PLUGIN_PATH, '.install-version');
+
   try {
-    // SECURITY: Validate branch name before use
-    if (!isValidBranchName(info.branch)) {
-      return {
-        success: false,
-        error: `Invalid current branch name: ${info.branch}`
-      };
-    }
-
-    logger.info('BRANCH', 'Pulling updates', { branch: info.branch });
-
     // Discard local changes first
     execGit(['checkout', '--', '.']);
 
@@ -285,26 +290,26 @@ export async function pullUpdates(): Promise<SwitchResult> {
     execGit(['pull', 'origin', info.branch]);
 
     // Clear install marker and reinstall
-    const installMarker = join(INSTALLED_PLUGIN_PATH, '.install-version');
     if (existsSync(installMarker)) {
       unlinkSync(installMarker);
     }
     execNpm(['install'], NPM_INSTALL_TIMEOUT_MS);
-
-    logger.success('BRANCH', 'Updates pulled', { branch: info.branch });
-
-    return {
-      success: true,
-      branch: info.branch,
-      message: `Updated ${info.branch}. Worker will restart automatically.`
-    };
   } catch (error) {
-    logger.error('BRANCH', 'Pull failed', {}, error as Error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error('WORKER', 'Pull failed', {}, error instanceof Error ? error : new Error(errorMessage));
     return {
       success: false,
-      error: `Pull failed: ${(error as Error).message}`
+      error: `Pull failed: ${errorMessage}`
     };
   }
+
+  logger.success('BRANCH', 'Updates pulled', { branch: info.branch });
+
+  return {
+    success: true,
+    branch: info.branch,
+    message: `Updated ${info.branch}. Worker will restart automatically.`
+  };
 }
 
 /**

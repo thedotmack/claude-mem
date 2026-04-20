@@ -75,92 +75,11 @@ export class SessionSearch {
     logger.info('DB', 'Creating FTS5 tables');
 
     try {
-      // Create observations_fts virtual table
-      this.db.run(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
-          title,
-          subtitle,
-          narrative,
-          text,
-          facts,
-          concepts,
-          content='observations',
-          content_rowid='id'
-        );
-      `);
-
-      // Populate with existing data
-      this.db.run(`
-        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-        SELECT id, title, subtitle, narrative, text, facts, concepts
-        FROM observations;
-      `);
-
-      // Create triggers for observations
-      this.db.run(`
-        CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
-          INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-          VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
-          INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-          VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
-          INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-          VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-          INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-          VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-        END;
-      `);
-
-      // Create session_summaries_fts virtual table
-      this.db.run(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
-          request,
-          investigated,
-          learned,
-          completed,
-          next_steps,
-          notes,
-          content='session_summaries',
-          content_rowid='id'
-        );
-      `);
-
-      // Populate with existing data
-      this.db.run(`
-        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-        SELECT id, request, investigated, learned, completed, next_steps, notes
-        FROM session_summaries;
-      `);
-
-      // Create triggers for session_summaries
-      this.db.run(`
-        CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
-          INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-          VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
-          INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-          VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
-          INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-          VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
-          INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-          VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-        END;
-      `);
-
+      this.createFTSTablesAndTriggers();
       logger.info('DB', 'FTS5 tables created successfully');
     } catch (error) {
       // FTS5 creation failed at runtime despite probe succeeding — degrade gracefully
-      logger.warn('DB', 'FTS5 table creation failed — search will use ChromaDB and LIKE queries', {}, error as Error);
+      logger.warn('DB', 'FTS5 table creation failed — search will use ChromaDB and LIKE queries', {}, error instanceof Error ? error : undefined);
     }
   }
 
@@ -174,10 +93,98 @@ export class SessionSearch {
       this.db.run('DROP TABLE _fts5_probe');
       return true;
     } catch {
+      // [ANTI-PATTERN IGNORED]: FTS5 unavailability is an expected platform condition, not an error
       return false;
     }
   }
 
+  /**
+   * Create FTS5 virtual tables and sync triggers for observations and session_summaries.
+   * Extracted from ensureFTSTables to keep try block small.
+   */
+  private createFTSTablesAndTriggers(): void {
+    // Create observations_fts virtual table
+    this.db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
+        title,
+        subtitle,
+        narrative,
+        text,
+        facts,
+        concepts,
+        content='observations',
+        content_rowid='id'
+      );
+    `);
+
+    // Populate with existing data
+    this.db.run(`
+      INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+      SELECT id, title, subtitle, narrative, text, facts, concepts
+      FROM observations;
+    `);
+
+    // Create triggers for observations
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
+        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
+        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
+        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+      END;
+    `);
+
+    // Create session_summaries_fts virtual table
+    this.db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
+        request,
+        investigated,
+        learned,
+        completed,
+        next_steps,
+        notes,
+        content='session_summaries',
+        content_rowid='id'
+      );
+    `);
+
+    // Populate with existing data
+    this.db.run(`
+      INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+      SELECT id, request, investigated, learned, completed, next_steps, notes
+      FROM session_summaries;
+    `);
+
+    // Create triggers for session_summaries
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
+        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
+        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
+        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+      END;
+    `);
+  }
 
   /**
    * Build WHERE clause for structured filters
@@ -381,7 +388,9 @@ export class SessionSearch {
         if (Array.isArray(files)) {
           return files.some(f => isDirectChild(f, folderPath));
         }
-      } catch {}
+      } catch (error) {
+        logger.debug('DB', `Failed to parse files JSON for observation ${obs.id}`, undefined, error instanceof Error ? error : undefined);
+      }
       return false;
     };
 
@@ -399,7 +408,9 @@ export class SessionSearch {
         if (Array.isArray(files)) {
           return files.some(f => isDirectChild(f, folderPath));
         }
-      } catch {}
+      } catch (error) {
+        logger.debug('DB', `Failed to parse files JSON for session summary ${session.id}`, undefined, error instanceof Error ? error : undefined);
+      }
       return false;
     };
 
