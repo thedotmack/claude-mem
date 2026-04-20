@@ -17,6 +17,7 @@ import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
 import { getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { MAX_CONSECUTIVE_SUMMARY_FAILURES } from '../../sdk/prompts.js';
+import { RestartGuard } from './RestartGuard.js';
 
 /** Idle threshold before a stuck generator (zombie subprocess) is force-killed. */
 export const MAX_GENERATOR_IDLE_MS = 5 * 60 * 1000; // 5 minutes
@@ -224,7 +225,8 @@ export class SessionManager {
       earliestPendingTimestamp: null,
       conversationHistory: [],  // Initialize empty - will be populated by agents
       currentProvider: null,  // Will be set when generator starts
-      consecutiveRestarts: 0,  // Track consecutive restart attempts to prevent infinite loops
+      consecutiveRestarts: 0,  // DEPRECATED: use restartGuard. Kept for logging compat.
+      restartGuard: new RestartGuard(),
       processingMessageIds: [],  // CLAIM-CONFIRM: Track message IDs for confirmProcessed()
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
       consecutiveSummaryFailures: 0,  // Circuit breaker for summary retry loop (#1633)
@@ -463,6 +465,44 @@ export class SessionManager {
     if (this.onSessionDeletedCallback) {
       this.onSessionDeletedCallback();
     }
+  }
+
+  /**
+   * Evict the idlest session to free a pool slot (#1868).
+   * An "idle" session has an active generator but no pending work — it's sitting
+   * in the 3-min idle wait before subprocess cleanup. Evicting it triggers abort
+   * which kills the subprocess and frees the pool slot for a waiting new session.
+   * @returns true if a session was evicted, false if no idle sessions found
+   */
+  evictIdlestSession(): boolean {
+    let idlestSessionId: number | null = null;
+    let oldestActivity = Infinity;
+
+    for (const [sessionDbId, session] of this.sessions) {
+      if (!session.generatorPromise) continue; // No generator = no slot held
+      const pendingCount = this.getPendingStore().getPendingCount(sessionDbId);
+      if (pendingCount > 0) continue; // Has work to do, don't evict
+
+      // Pick the session with the oldest lastGeneratorActivity (idlest)
+      if (session.lastGeneratorActivity < oldestActivity) {
+        oldestActivity = session.lastGeneratorActivity;
+        idlestSessionId = sessionDbId;
+      }
+    }
+
+    if (idlestSessionId === null) return false;
+
+    const session = this.sessions.get(idlestSessionId);
+    if (!session) return false;
+
+    logger.info('SESSION', 'Evicting idle session to free pool slot for new request (#1868)', {
+      sessionDbId: idlestSessionId,
+      idleDurationMs: Date.now() - oldestActivity
+    });
+
+    session.idleTimedOut = true;
+    session.abortController.abort();
+    return true;
   }
 
   /**

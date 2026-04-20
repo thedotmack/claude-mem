@@ -28,6 +28,7 @@ import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 // ensure the worker daemon is up without importing this entire module — which
 // transitively pulls in the SQLite database layer via ChromaSync/DatabaseManager.
 import { ensureWorkerStarted as ensureWorkerStartedShared } from './worker-spawner.js';
+import { RestartGuard } from './worker/RestartGuard.js';
 
 // Re-export for backward compatibility — canonical implementation in shared/plugin-state.ts
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -482,7 +483,7 @@ export class WorkerService {
       // Best-effort loopback MCP self-check
       getSupervisor().assertCanSpawn('mcp server');
       const transport = new StdioClientTransport({
-        command: 'node',
+        command: process.execPath,  // Use resolved path, not bare 'node' which fails on non-interactive PATH (#1876)
         args: [mcpServerPath],
         env: sanitizeEnv(process.env)
       });
@@ -816,17 +817,19 @@ export class WorkerService {
           }
           // Fall through to pending-work restart below
         }
-        const MAX_PENDING_RESTARTS = 3;
-
         if (pendingCount > 0) {
-          // Track consecutive pending-work restarts to prevent infinite loops (e.g. FK errors)
-          session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1;
+          // Windowed restart guard: only blocks tight-loop restarts, not spread-out ones (#2053)
+          if (!session.restartGuard) session.restartGuard = new RestartGuard();
+          const restartAllowed = session.restartGuard.recordRestart();
+          session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1; // Keep for logging
 
-          if (session.consecutiveRestarts > MAX_PENDING_RESTARTS) {
-            logger.error('SYSTEM', 'Exceeded max pending-work restarts, stopping to prevent infinite loop', {
+          if (!restartAllowed) {
+            logger.error('SYSTEM', 'Restart guard tripped: too many restarts in window, stopping to prevent runaway costs', {
               sessionId: session.sessionDbId,
               pendingCount,
-              consecutiveRestarts: session.consecutiveRestarts
+              restartsInWindow: session.restartGuard.restartsInWindow,
+              windowMs: session.restartGuard.windowMs,
+              maxRestarts: session.restartGuard.maxRestarts
             });
             session.consecutiveRestarts = 0;
             this.terminateSession(session.sessionDbId, 'max_restarts_exceeded');
