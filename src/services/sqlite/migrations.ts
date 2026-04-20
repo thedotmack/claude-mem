@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { Migration } from './Database.js';
+import { logger } from '../../utils/logger.js';
 
 // Re-export MigrationRunner for SessionStore migration extraction
 export { MigrationRunner } from './migrations/runner.js';
@@ -377,8 +378,8 @@ export const migration006: Migration = {
     try {
       db.run('CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)');
       db.run('DROP TABLE _fts5_probe');
-    } catch {
-      console.log('⚠️  FTS5 not available on this platform — skipping FTS migration (search uses ChromaDB)');
+    } catch (error) {
+      logger.warn('DB', 'FTS5 not available on this platform — skipping FTS migration (search uses ChromaDB)', {}, error instanceof Error ? error : undefined);
       return;
     }
 
@@ -573,6 +574,61 @@ export const migration009: Migration = {
 };
 
 /**
+ * Migration 010: Label observations (and their queue rows) with the subagent identity.
+ *
+ * Claude Code hooks that fire inside a subagent carry agent_id and agent_type on the
+ * stdin payload. These flow hook → worker → pending_messages → SDK storage so that
+ * observation rows can be attributed to the originating subagent. Main-session rows
+ * keep NULL for both columns.
+ */
+export const migration010: Migration = {
+  version: 27,
+  up: (db: Database) => {
+    const added: string[] = [];
+
+    const obsColumns = db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
+    const obsHasAgentType = obsColumns.some(c => c.name === 'agent_type');
+    const obsHasAgentId = obsColumns.some(c => c.name === 'agent_id');
+    if (!obsHasAgentType) {
+      db.run('ALTER TABLE observations ADD COLUMN agent_type TEXT');
+      added.push('observations.agent_type');
+    }
+    if (!obsHasAgentId) {
+      db.run('ALTER TABLE observations ADD COLUMN agent_id TEXT');
+      added.push('observations.agent_id');
+    }
+    db.run('CREATE INDEX IF NOT EXISTS idx_observations_agent_type ON observations(agent_type)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_observations_agent_id ON observations(agent_id)');
+
+    // Also thread the same fields through the pending_messages queue so the label
+    // survives worker restarts between enqueue and SDK-agent processing.
+    const pendingColumns = db.prepare('PRAGMA table_info(pending_messages)').all() as Array<{ name: string }>;
+    if (pendingColumns.length > 0) {
+      const pendingHasAgentType = pendingColumns.some(c => c.name === 'agent_type');
+      const pendingHasAgentId = pendingColumns.some(c => c.name === 'agent_id');
+      if (!pendingHasAgentType) {
+        db.run('ALTER TABLE pending_messages ADD COLUMN agent_type TEXT');
+        added.push('pending_messages.agent_type');
+      }
+      if (!pendingHasAgentId) {
+        db.run('ALTER TABLE pending_messages ADD COLUMN agent_id TEXT');
+        added.push('pending_messages.agent_id');
+      }
+    }
+
+    logger.debug(
+      'DB',
+      added.length > 0
+        ? `[migration010] Added columns: ${added.join(', ')}`
+        : '[migration010] Subagent identity columns already present; ensured indexes'
+    );
+  },
+  down: (_db: Database) => {
+    // SQLite DROP COLUMN not fully supported; no-op
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
@@ -584,5 +640,6 @@ export const migrations: Migration[] = [
   migration006,
   migration007,
   migration008,
-  migration009
+  migration009,
+  migration010
 ];

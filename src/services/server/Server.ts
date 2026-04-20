@@ -208,31 +208,27 @@ export class Server {
         return res.status(400).json({ error: 'Invalid topic' });
       }
 
-      try {
-        let content: string;
+      if (operation && !ALLOWED_OPERATIONS.includes(operation)) {
+        return res.status(400).json({ error: 'Invalid operation' });
+      }
 
-        if (operation) {
-          // Validate operation
-          if (!ALLOWED_OPERATIONS.includes(operation)) {
-            return res.status(400).json({ error: 'Invalid operation' });
-          }
-          // Path boundary check
-          const OPERATIONS_BASE_DIR = path.resolve(__dirname, '../skills/mem-search/operations');
-          const operationPath = path.resolve(OPERATIONS_BASE_DIR, `${operation}.md`);
-          if (!operationPath.startsWith(OPERATIONS_BASE_DIR + path.sep)) {
-            return res.status(400).json({ error: 'Invalid request' });
-          }
-          content = await fs.promises.readFile(operationPath, 'utf-8');
-        } else {
-          const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
-          const fullContent = await fs.promises.readFile(skillPath, 'utf-8');
-          content = this.extractInstructionSection(fullContent, topic);
+      if (operation) {
+        const OPERATIONS_BASE_DIR = path.resolve(__dirname, '../skills/mem-search/operations');
+        const operationPath = path.resolve(OPERATIONS_BASE_DIR, `${operation}.md`);
+        if (!operationPath.startsWith(OPERATIONS_BASE_DIR + path.sep)) {
+          return res.status(400).json({ error: 'Invalid request' });
         }
+      }
 
-        res.json({
-          content: [{ type: 'text', text: content }]
-        });
+      try {
+        const content = await this.loadInstructionContent(operation, topic);
+        res.json({ content: [{ type: 'text', text: content }] });
       } catch (error) {
+        if (error instanceof Error) {
+          logger.debug('HTTP', 'Instruction file not found', { topic, operation, message: error.message });
+        } else {
+          logger.debug('HTTP', 'Instruction file not found', { topic, operation, error: String(error) });
+        }
         res.status(404).json({ error: 'Instruction not found' });
       }
     });
@@ -332,6 +328,20 @@ export class Server {
         },
       });
     });
+  }
+
+  /**
+   * Load instruction content from disk for the /api/instructions endpoint.
+   * Caller must validate operation/topic before calling.
+   */
+  private async loadInstructionContent(operation: string | undefined, topic: string): Promise<string> {
+    if (operation) {
+      const operationPath = path.resolve(__dirname, '../skills/mem-search/operations', `${operation}.md`);
+      return fs.promises.readFile(operationPath, 'utf-8');
+    }
+    const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
+    const fullContent = await fs.promises.readFile(skillPath, 'utf-8');
+    return this.extractInstructionSection(fullContent, topic);
   }
 
   /**

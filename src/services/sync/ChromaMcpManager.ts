@@ -78,6 +78,11 @@ export class ChromaMcpManager {
       await this.connecting;
     } catch (error) {
       this.lastConnectionFailureTimestamp = Date.now();
+      if (error instanceof Error) {
+        logger.error('CHROMA_MCP', 'Connection attempt failed', {}, error);
+      } else {
+        logger.error('CHROMA_MCP', 'Connection attempt failed with non-Error value', { error: String(error) });
+      }
       throw error;
     } finally {
       this.connecting = null;
@@ -120,10 +125,16 @@ export class ChromaMcpManager {
       args: uvxSpawnArgs.join(' ')
     });
 
+    // Run chroma-mcp from the home directory so that pydantic-settings (used
+    // by chroma-mcp internally) does not pick up .env / .env.local files from
+    // the project directory. Those files often contain project-specific vars
+    // that pydantic rejects with "Extra inputs are not permitted", crashing the
+    // subprocess immediately. Fixes #1297.
     this.transport = new StdioClientTransport({
       command: uvxSpawnCommand,
       args: uvxSpawnArgs,
       env: spawnEnvironment,
+      cwd: os.homedir(),
       stderr: 'pipe'
     });
 
@@ -301,9 +312,15 @@ export class ChromaMcpManager {
     // Try JSON parse first; if it fails, return the raw text for non-error responses.
     try {
       return JSON.parse(firstTextContent.text);
-    } catch {
+    } catch (parseError: unknown) {
       // Plain text response (e.g. "Successfully created collection cm__foo")
       // Return null for void-like success messages, callers don't need the text
+      if (parseError instanceof Error) {
+        logger.debug('CHROMA_MCP', 'Non-JSON response from tool, returning null', {
+          toolName,
+          textPreview: firstTextContent.text.slice(0, 100)
+        });
+      }
       return null;
     }
   }
@@ -316,7 +333,10 @@ export class ChromaMcpManager {
     try {
       await this.callTool('chroma_list_collections', { limit: 1 });
       return true;
-    } catch {
+    } catch (error) {
+      logger.warn('CHROMA_MCP', 'Health check failed', {
+        error: error instanceof Error ? error.message : String(error)
+      });
       return false;
     }
   }
@@ -336,7 +356,11 @@ export class ChromaMcpManager {
     try {
       await this.client.close();
     } catch (error) {
-      logger.debug('CHROMA_MCP', 'Error during client close (subprocess may already be dead)', {}, error as Error);
+      if (error instanceof Error) {
+        logger.debug('CHROMA_MCP', 'Error during client close (subprocess may already be dead)', {}, error);
+      } else {
+        logger.debug('CHROMA_MCP', 'Error during client close (subprocess may already be dead)', { error: String(error) });
+      }
     }
 
     getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
@@ -388,7 +412,10 @@ export class ChromaMcpManager {
           'uvx --with certifi python -c "import certifi; print(certifi.where())"',
           { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 }
         ).trim();
-      } catch {
+      } catch (error) {
+        logger.debug('CHROMA_MCP', 'Failed to resolve certifi path via uvx', {
+          error: error instanceof Error ? error.message : String(error)
+        });
         return undefined;
       }
 
@@ -402,7 +429,10 @@ export class ChromaMcpManager {
           'security find-certificate -a -c "Zscaler" -p /Library/Keychains/System.keychain',
           { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000 }
         );
-      } catch {
+      } catch (error) {
+        logger.debug('CHROMA_MCP', 'No Zscaler certificate found in system keychain', {
+          error: error instanceof Error ? error.message : String(error)
+        });
         return undefined;
       }
 

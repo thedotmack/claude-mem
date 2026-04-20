@@ -16,10 +16,10 @@ export function parseJsonArray(json: string | null): string[] {
   try {
     const parsed = JSON.parse(json);
     return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
+  } catch (err: unknown) {
     logger.debug('PARSER', 'Failed to parse JSON array, using empty fallback', {
       preview: json?.substring(0, 50)
-    }, err as Error);
+    }, err instanceof Error ? err : new Error(String(err)));
     return [];
   }
 }

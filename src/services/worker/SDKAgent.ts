@@ -375,6 +375,13 @@ export class SDKAgent {
       session.processingMessageIds.push(message._persistentId);
       session.processingMessageMeta.push({ tool_name: message.tool_name, tool_input: message.tool_input });
 
+      // Capture subagent identity from the claimed message so ResponseProcessor
+      // can label observation rows with the originating Claude Code subagent.
+      // Always overwrite (even with null) so a main-session message after a subagent
+      // message clears the stale identity; otherwise mixed batches could mislabel.
+      session.pendingAgentId = message.agentId ?? null;
+      session.pendingAgentType = message.agentType ?? null;
+
       // Capture cwd from each message for worktree support
       if (message.cwd) {
         cwdTracker.lastCwd = message.cwd;
@@ -491,7 +498,11 @@ export class SDKAgent {
       if (claudePath) return claudePath;
     } catch (error) {
       // [ANTI-PATTERN IGNORED]: Fallback behavior - which/where failed, continue to throw clear error
-      logger.debug('SDK', 'Claude executable auto-detection failed', {}, error as Error);
+      if (error instanceof Error) {
+        logger.debug('SDK', 'Claude executable auto-detection failed', {}, error);
+      } else {
+        logger.debug('SDK', 'Claude executable auto-detection failed with non-Error', {}, new Error(String(error)));
+      }
     }
 
     throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json');

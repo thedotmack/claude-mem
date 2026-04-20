@@ -4,7 +4,7 @@ import { fileEditHandler } from '../../cli/handlers/file-edit.js';
 import { sessionCompleteHandler } from '../../cli/handlers/session-complete.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
-import { getProjectContext, getProjectName } from '../../utils/project-name.js';
+import { getProjectContext } from '../../utils/project-name.js';
 import { writeAgentsMd } from '../../utils/agents-md-utils.js';
 import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
 import { expandHomePath } from './config.js';
@@ -114,7 +114,7 @@ export class TranscriptEventProcessor {
     const resolved = resolveFieldSpec(fieldSpec, entry, ctx);
     if (typeof resolved === 'string' && resolved.trim()) return resolved;
     if (watch.project) return watch.project;
-    if (session.cwd) return getProjectName(session.cwd);
+    if (session.cwd) return getProjectContext(session.cwd).primary;
     return session.project;
   }
 
@@ -308,7 +308,8 @@ export class TranscriptEventProcessor {
     if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return value;
     try {
       return JSON.parse(trimmed);
-    } catch {
+    } catch (error: unknown) {
+      logger.debug('WORKER', 'Failed to parse JSON string', { length: trimmed.length }, error instanceof Error ? error : undefined);
       return value;
     }
   }
@@ -443,18 +444,19 @@ export class TranscriptEventProcessor {
     if (!workerReady) return;
 
     const lastAssistantMessage = session.lastAssistantMessage ?? '';
+    const requestBody = JSON.stringify({
+      contentSessionId: session.sessionId,
+      last_assistant_message: lastAssistantMessage,
+      platformSource: session.platformSource
+    });
 
     try {
       await workerHttpRequest('/api/sessions/summarize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contentSessionId: session.sessionId,
-          last_assistant_message: lastAssistantMessage,
-          platformSource: session.platformSource
-        })
+        body: requestBody
       });
-    } catch (error) {
+    } catch (error: unknown) {
       logger.warn('TRANSCRIPT', 'Summary request failed', {
         error: error instanceof Error ? error.message : String(error)
       });
@@ -474,22 +476,25 @@ export class TranscriptEventProcessor {
     const context = getProjectContext(cwd);
     const projectsParam = context.allProjects.join(',');
 
+    const contextUrl = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}&platformSource=${encodeURIComponent(session.platformSource)}`;
+    const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
+
+    let response: Awaited<ReturnType<typeof workerHttpRequest>>;
     try {
-      const response = await workerHttpRequest(
-        `/api/context/inject?projects=${encodeURIComponent(projectsParam)}&platformSource=${encodeURIComponent(session.platformSource)}`
-      );
-      if (!response.ok) return;
-
-      const content = (await response.text()).trim();
-      if (!content) return;
-
-      const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
-      writeAgentsMd(agentsPath, content);
-      logger.debug('TRANSCRIPT', 'Updated AGENTS.md context', { agentsPath, watch: watch.name });
-    } catch (error) {
-      logger.warn('TRANSCRIPT', 'Failed to update AGENTS.md context', {
+      response = await workerHttpRequest(contextUrl);
+    } catch (error: unknown) {
+      logger.warn('TRANSCRIPT', 'Failed to fetch AGENTS.md context', {
         error: error instanceof Error ? error.message : String(error)
       });
+      return;
     }
+
+    if (!response.ok) return;
+
+    const content = (await response.text()).trim();
+    if (!content) return;
+
+    writeAgentsMd(agentsPath, content);
+    logger.debug('TRANSCRIPT', 'Updated AGENTS.md context', { agentsPath, watch: watch.name });
   }
 }

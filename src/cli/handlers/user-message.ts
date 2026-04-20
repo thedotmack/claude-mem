@@ -10,6 +10,25 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { ensureWorkerRunning, getWorkerPort, workerHttpRequest } from '../../shared/worker-utils.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 
+async function fetchAndDisplayContext(project: string, colorsParam: string, port: number): Promise<void> {
+  const response = await workerHttpRequest(
+    `/api/context/inject?project=${encodeURIComponent(project)}${colorsParam}`
+  );
+
+  if (!response.ok) {
+    return;
+  }
+
+  const output = await response.text();
+  process.stderr.write(
+    "\n\n" + String.fromCodePoint(0x1F4DD) + " Claude-Mem Context Loaded\n\n" +
+    output +
+    "\n\n" + String.fromCodePoint(0x1F4A1) + " Wrap any message with <private> ... </private> to prevent storing sensitive information.\n" +
+    "\n" + String.fromCodePoint(0x1F4AC) + " Community https://discord.gg/J4wttp9vDu" +
+    `\n` + String.fromCodePoint(0x1F4FA) + ` Watch live in browser http://localhost:${port}/\n`
+  );
+}
+
 export const userMessageHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     // Ensure worker is running
@@ -21,36 +40,12 @@ export const userMessageHandler: EventHandler = {
 
     const port = getWorkerPort();
     const project = basename(input.cwd ?? process.cwd());
-
-    // Fetch formatted context directly from worker API
-    // Only request ANSI colors for platforms that render them (claude-code)
     const colorsParam = input.platform === 'claude-code' ? '&colors=true' : '';
+
     try {
-      const response = await workerHttpRequest(
-        `/api/context/inject?project=${encodeURIComponent(project)}${colorsParam}`
-      );
-
-      if (!response.ok) {
-        // Don't throw - context fetch failure should not block the user's prompt
-        return { exitCode: HOOK_EXIT_CODES.SUCCESS };
-      }
-
-      const output = await response.text();
-
-      // Write to stderr for user visibility
-      // Note: Using process.stderr.write instead of console.error to avoid
-      // Claude Code treating this as a hook error. The actual hook output
-      // goes to stdout via hook-command.ts JSON serialization.
-      process.stderr.write(
-        "\n\n" + String.fromCodePoint(0x1F4DD) + " Claude-Mem Context Loaded\n\n" +
-        output +
-        "\n\n" + String.fromCodePoint(0x1F4A1) + " Wrap any message with <private> ... </private> to prevent storing sensitive information.\n" +
-        "\n" + String.fromCodePoint(0x1F4AC) + " Community https://discord.gg/J4wttp9vDu" +
-        `\n` + String.fromCodePoint(0x1F4FA) + ` Watch live in browser http://localhost:${port}/\n`
-      );
-    } catch (error) {
+      await fetchAndDisplayContext(project, colorsParam, port);
+    } catch {
       // Worker unreachable — skip user message gracefully
-      // User message context error is non-critical — skip gracefully
     }
 
     return { exitCode: HOOK_EXIT_CODES.SUCCESS };

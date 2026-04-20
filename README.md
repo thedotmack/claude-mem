@@ -138,6 +138,11 @@ Or install for Gemini CLI (auto-detects `~/.gemini`):
 ```bash
 npx claude-mem install --ide gemini-cli
 ```
+Or install for OpenCode:
+
+```bash
+npx claude-mem install --ide opencode
+```
 
 Or install from the plugin marketplace inside Claude Code:
 
@@ -300,6 +305,45 @@ Settings are managed in `~/.claude-mem/settings.json` (auto-created with default
 
 See the **[Configuration Guide](https://docs.claude-mem.ai/configuration)** for all available settings and examples.
 
+### Mode & Language Configuration
+
+Claude-Mem supports multiple workflow modes and languages via the `CLAUDE_MEM_MODE` setting.
+
+This option controls both:
+- The workflow behavior (e.g. code, chill, investigation)
+- The language used in generated observations
+
+#### How to Configure
+
+Edit your settings file at `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_MODE": "code--zh"
+}
+```
+
+Modes are defined in `plugin/modes/`. To see all available modes locally:
+
+```bash
+ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
+```
+
+#### Available Modes
+
+| Mode | Description |
+|------------|-------------------------|
+| `code` | Default English mode |
+| `code--zh` | Simplified Chinese mode |
+| `code--ja` | Japanese mode |
+
+Language-specific modes follow the pattern `code--[lang]` where `[lang]` is the ISO 639-1 language code (e.g., `zh` for Chinese, `ja` for Japanese, `es` for Spanish).
+
+> Note: `code--zh` (Simplified Chinese) is already built-in — no additional installation or plugin update is required.
+
+#### After Changing Mode
+
+Restart Claude Code to apply the new mode configuration.
 ---
 
 ## Development

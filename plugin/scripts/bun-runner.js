@@ -47,12 +47,20 @@ function fixBrokenScriptPath(argPath) {
  * Find Bun executable - checks PATH first, then common install locations
  */
 function findBun() {
-  // Try PATH first
-  const pathCheck = spawnSync(IS_WINDOWS ? 'where' : 'which', ['bun'], {
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    shell: IS_WINDOWS
-  });
+  // Try PATH first.
+  // On Windows, pass a single command string to avoid Node 22+ DEP0190 deprecation warning
+  // (triggered when an args array is combined with shell:true, as the args are only
+  // concatenated, not escaped). Fixes #1503.
+  const pathCheck = IS_WINDOWS
+    ? spawnSync('where bun', {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: true
+      })
+    : spawnSync('which', ['bun'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
     // On Windows, prefer bun.cmd over bun (bun is a shell script, bun.cmd is the Windows batch file)

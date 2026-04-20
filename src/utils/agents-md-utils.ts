@@ -31,7 +31,7 @@ export function writeAgentsMd(agentsPath: string, context: string): void {
   try {
     writeFileSync(tempFile, finalContent);
     renameSync(tempFile, agentsPath);
-  } catch (error) {
-    logger.error('AGENTS_MD', 'Failed to write AGENTS.md', { agentsPath }, error as Error);
+  } catch (error: unknown) {
+    logger.error('AGENTS_MD', 'Failed to write AGENTS.md', { agentsPath }, error instanceof Error ? error : new Error(String(error)));
   }
 }

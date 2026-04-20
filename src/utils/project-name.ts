@@ -58,44 +58,49 @@ export function getProjectName(cwd: string | null | undefined): string {
  * Project context with worktree awareness
  */
 export interface ProjectContext {
-  /** The current project name (worktree or main repo) */
+  /** Canonical project name for writes/queries; `parent/worktree` when in a worktree */
   primary: string;
   /** Parent project name if in a worktree, null otherwise */
   parent: string | null;
   /** True if currently in a worktree */
   isWorktree: boolean;
-  /** All projects to query: [primary] for main repo, [parent, primary] for worktree */
+  /** Projects to query for reads. In a worktree: `[parent, composite]` so
+   *  main-repo context flows into every worktree while sibling worktrees stay
+   *  isolated. In the main repo: `[primary]`. Writes always use `.primary`. */
   allProjects: string[];
 }
 
 /**
  * Get project context with worktree detection.
  *
- * When in a worktree, returns both the worktree project name and parent project name
- * for unified timeline queries.
+ * Each worktree is its own bucket. When in a worktree, `primary` is the
+ * composite `parent/worktree` (e.g. `claude-mem/dar-es-salaam`) so worktrees
+ * are uniquely identified and grouped under their parent project without
+ * mixing observations across them. In the main repo, `primary` is just the
+ * project basename.
  *
  * @param cwd - Current working directory (absolute path)
  * @returns ProjectContext with worktree info
  */
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {
-  const primary = getProjectName(cwd);
+  const cwdProjectName = getProjectName(cwd);
 
   if (!cwd) {
-    return { primary, parent: null, isWorktree: false, allProjects: [primary] };
+    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
   }
 
   const expandedCwd = expandTilde(cwd);
   const worktreeInfo = detectWorktree(expandedCwd);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
-    // In a worktree: include parent first for chronological ordering
+    const composite = `${worktreeInfo.parentProjectName}/${cwdProjectName}`;
     return {
-      primary,
+      primary: composite,
       parent: worktreeInfo.parentProjectName,
       isWorktree: true,
-      allProjects: [worktreeInfo.parentProjectName, primary]
+      allProjects: [worktreeInfo.parentProjectName, composite]
     };
   }
 
-  return { primary, parent: null, isWorktree: false, allProjects: [primary] };
+  return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
 }

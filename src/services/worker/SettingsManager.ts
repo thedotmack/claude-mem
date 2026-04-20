@@ -43,7 +43,11 @@ export class SettingsManager {
 
       return settings;
     } catch (error) {
-      logger.debug('WORKER', 'Failed to load settings, using defaults', {}, error as Error);
+      if (error instanceof Error) {
+        logger.debug('WORKER', 'Failed to load settings, using defaults', {}, error);
+      } else {
+        logger.debug('WORKER', 'Failed to load settings, using defaults', { rawError: String(error) });
+      }
       return { ...this.defaultSettings };
     }
   }

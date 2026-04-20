@@ -144,7 +144,11 @@ export class ModeManager {
         });
         return mode;
       } catch (error) {
-        logger.warn('SYSTEM', `Mode file not found: ${modeId}, falling back to 'code'`);
+        if (error instanceof Error) {
+          logger.warn('WORKER', `Mode file not found: ${modeId}, falling back to 'code'`, { message: error.message });
+        } else {
+          logger.warn('WORKER', `Mode file not found: ${modeId}, falling back to 'code'`, { error: String(error) });
+        }
         // If we're already trying to load 'code', throw to prevent infinite recursion
         if (modeId === 'code') {
           throw new Error('Critical: code.json mode file missing');
@@ -161,7 +165,11 @@ export class ModeManager {
     try {
       parentMode = this.loadMode(parentId);
     } catch (error) {
-      logger.warn('SYSTEM', `Parent mode '${parentId}' not found for ${modeId}, falling back to 'code'`);
+      if (error instanceof Error) {
+        logger.warn('WORKER', `Parent mode '${parentId}' not found for ${modeId}, falling back to 'code'`, { message: error.message });
+      } else {
+        logger.warn('WORKER', `Parent mode '${parentId}' not found for ${modeId}, falling back to 'code'`, { error: String(error) });
+      }
       parentMode = this.loadMode('code');
     }
 
@@ -171,7 +179,11 @@ export class ModeManager {
       overrideConfig = this.loadModeFile(overrideId);
       logger.debug('SYSTEM', `Loaded override file: ${overrideId} for parent ${parentId}`);
     } catch (error) {
-      logger.warn('SYSTEM', `Override file '${overrideId}' not found, using parent mode '${parentId}' only`);
+      if (error instanceof Error) {
+        logger.warn('WORKER', `Override file '${overrideId}' not found, using parent mode '${parentId}' only`, { message: error.message });
+      } else {
+        logger.warn('WORKER', `Override file '${overrideId}' not found, using parent mode '${parentId}' only`, { error: String(error) });
+      }
       this.activeMode = parentMode;
       return parentMode;
     }

@@ -1,0 +1,74 @@
+# claude-mem SWE-bench agent image
+# Plan: .claude/plans/swebench-claude-mem-docker.md (Phase 1)
+#
+# Produces `claude-mem/swebench-agent:latest`: Claude Code CLI 2.1.114 +
+# locally-built claude-mem plugin, ready to run headlessly per SWE-bench
+# instance. Auth (ANTHROPIC_API_KEY) is passed at runtime, never baked in.
+
+FROM node:20-bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System dependencies:
+#   git, curl, ca-certificates, unzip — base tooling (Bun installer needs unzip)
+#   jq                                — JSONL assembly in run-instance.sh
+#   uuid-runtime                      — uuidgen for per-instance session IDs (Phase 2)
+#   sqlite3                           — verifies the claude-mem observations DB
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      git \
+      curl \
+      ca-certificates \
+      unzip \
+      jq \
+      uuid-runtime \
+      sqlite3 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Bun (claude-mem worker service runs under Bun). Installed to a system
+# location so the non-root runtime user can execute it.
+ENV BUN_INSTALL="/usr/local/bun"
+RUN curl -fsSL https://bun.sh/install | bash \
+ && chmod -R a+rX /usr/local/bun
+ENV PATH="/usr/local/bun/bin:${PATH}"
+
+# uv (provides Python for Chroma per CLAUDE.md). Installed to a system
+# location, same reason.
+ENV UV_INSTALL_DIR="/usr/local/bin"
+# Group the chmod so the trailing `|| true` only absorbs chmod failures; without
+# this grouping, bash precedence (`&&` binds tighter than `||`) would silently
+# mask a failed `curl|sh` install step.
+RUN set -eux \
+ && curl -LsSf https://astral.sh/uv/install.sh | sh \
+ && { chmod a+rX /usr/local/bin/uv /usr/local/bin/uvx 2>/dev/null || true; }
+
+# Claude Code CLI — PINNED to the version whose flag surface was verified in
+# the plan (Phase 0). Do NOT bump without re-verifying flags.
+RUN npm install -g @anthropic-ai/claude-code@2.1.114
+
+# Locally-built claude-mem plugin. The build-agent-image.sh wrapper runs
+# `npm run build` before `docker build`, so plugin/ is populated in the build
+# context. We do NOT install claude-mem from npm — we want the current
+# worktree under test.
+COPY plugin/ /opt/claude-mem/
+
+# Runner script — entrypoint for per-instance invocation (Phase 2 deliverable).
+COPY evals/swebench/run-instance.sh /evals/swebench/run-instance.sh
+RUN chmod +x /evals/swebench/run-instance.sh
+
+# Pre-create per-instance config dirs. run-instance.sh overrides HOME to a
+# scratch dir for isolation, but having these present keeps tools from
+# bailing if they probe the default locations before HOME is set.
+RUN mkdir -p /root/.claude /root/.claude-mem
+
+# Non-root user. Claude Code refuses `--dangerously-skip-permissions` /
+# `--permission-mode bypassPermissions` when euid==0 as a safety rail, so we
+# need an unprivileged user for headless batch runs. node:20 already ships a
+# `node` user at uid 1000 — reuse it.
+RUN mkdir -p /home/node/.claude /home/node/.claude-mem \
+ && chown -R node:node /home/node /opt/claude-mem
+
+USER node
+WORKDIR /home/node
+
+ENTRYPOINT ["/evals/swebench/run-instance.sh"]

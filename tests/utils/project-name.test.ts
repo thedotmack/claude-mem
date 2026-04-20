@@ -5,7 +5,7 @@
  * Source: src/utils/project-name.ts
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { homedir } from 'os';
 import { getProjectName, getProjectContext } from '../../src/utils/project-name.js';
 
@@ -95,5 +95,49 @@ describe('getProjectContext', () => {
     const ctx = getProjectContext(null);
     expect(ctx.primary).toBe('unknown-project');
     expect(ctx.parent).toBeNull();
+  });
+
+  describe('worktree isolation', () => {
+    let tmp: string;
+    let mainRepo: string;
+    let worktreeCheckout: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      tmp = mkdtempSync(join(tmpdir(), 'cm-wt-'));
+      mainRepo = join(tmp, 'main-repo');
+      const worktreeGitDir = join(mainRepo, '.git', 'worktrees', 'my-worktree');
+      worktreeCheckout = join(tmp, 'my-worktree');
+
+      mkdirSync(worktreeGitDir, { recursive: true });
+      mkdirSync(worktreeCheckout, { recursive: true });
+      writeFileSync(
+        join(worktreeCheckout, '.git'),
+        `gitdir: ${worktreeGitDir}\n`
+      );
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('uses parent/worktree composite as primary when in a worktree', () => {
+      const ctx = getProjectContext(worktreeCheckout);
+      expect(ctx.isWorktree).toBe(true);
+      expect(ctx.primary).toBe('main-repo/my-worktree');
+      expect(ctx.parent).toBe('main-repo');
+      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/my-worktree']);
+    });
+
+    it('write-path call sites resolve to composite name in worktrees', () => {
+      const project = getProjectContext(worktreeCheckout).primary;
+      expect(project).toBe('main-repo/my-worktree');
+      expect(project).not.toBe('main-repo');
+      expect(project).not.toBe('my-worktree');
+    });
   });
 });

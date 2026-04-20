@@ -13,6 +13,7 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { parseFilesBatch, formatFoldedView, loadUserGrammars, type FoldedFile } from "./parser.js";
+import { logger } from "../../utils/logger.js";
 
 const CODE_EXTENSIONS = new Set([
   ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
@@ -78,7 +79,8 @@ async function* walkDir(dir: string, rootDir: string, maxDepth: number = 20, ext
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
+  } catch (error) {
+    logger.debug('WORKER', `walkDir: failed to read directory ${dir}`, undefined, error instanceof Error ? error : undefined);
     return; // permission denied, etc.
   }
 
@@ -114,7 +116,8 @@ async function safeReadFile(filePath: string): Promise<string | null> {
     if (content.slice(0, 1000).includes("\0")) return null;
 
     return content;
-  } catch {
+  } catch (error) {
+    logger.debug('WORKER', `safeReadFile: failed to read ${filePath}`, undefined, error instanceof Error ? error : undefined);
     return null;
   }
 }

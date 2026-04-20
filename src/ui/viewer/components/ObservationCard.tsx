@@ -80,6 +80,11 @@ export function ObservationCard({ observation }: ObservationCardProps) {
             {observation.type}
           </span>
           <span className="card-project">{observation.project}</span>
+          {observation.merged_into_project && (
+            <span className="card-merged-badge" title={`Merged into ${observation.merged_into_project}`}>
+              merged → {observation.merged_into_project}
+            </span>
+          )}
         </div>
         <div className="view-mode-toggles">
           {hasFactsContent && (

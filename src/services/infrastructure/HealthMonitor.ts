@@ -53,7 +53,12 @@ export async function isPortInUse(port: number): Promise<boolean> {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/health`);
       return response.ok;
-    } catch {
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', {}, error);
+      } else {
+        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', { error: String(error) });
+      }
       return false;
     }
   }
@@ -92,7 +97,11 @@ async function pollEndpointUntilOk(
       if (result.ok) return true;
     } catch (error) {
       // [ANTI-PATTERN IGNORED]: Retry loop - expected failures during startup, will retry
-      logger.debug('SYSTEM', retryLogMessage, {}, error as Error);
+      if (error instanceof Error) {
+        logger.debug('SYSTEM', retryLogMessage, {}, error);
+      } else {
+        logger.debug('SYSTEM', retryLogMessage, { error: String(error) });
+      }
     }
     await new Promise(r => setTimeout(r, 500));
   }
@@ -166,10 +175,13 @@ export function getInstalledPluginVersion(): string {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     return packageJson.version;
   } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'EBUSY') {
-      logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
-      return 'unknown';
+    if (error instanceof Error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'EBUSY') {
+        logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
+        return 'unknown';
+      }
+      throw error;
     }
     throw error;
   }

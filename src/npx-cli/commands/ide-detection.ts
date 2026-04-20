@@ -38,7 +38,11 @@ function isCommandInPath(command: string): boolean {
     const whichCommand = IS_WINDOWS ? 'where' : 'which';
     execSync(`${whichCommand} ${command}`, { stdio: 'pipe' });
     return true;
-  } catch {
+  } catch (error: unknown) {
+    // Command not found in PATH — expected for non-installed IDEs
+    if (process.env.DEBUG) {
+      console.error(`[ide-detection] ${command} not in PATH:`, error instanceof Error ? error.message : String(error));
+    }
     return false;
   }
 }
@@ -53,7 +57,8 @@ function hasVscodeExtension(extensionNameFragment: string): boolean {
   try {
     const entries = readdirSync(extensionsDirectory);
     return entries.some((entry) => entry.toLowerCase().includes(extensionNameFragment.toLowerCase()));
-  } catch {
+  } catch (error: unknown) {
+    console.warn('[ide-detection] Failed to read VS Code extensions directory:', error instanceof Error ? error.message : String(error));
     return false;
   }
 }

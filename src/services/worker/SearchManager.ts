@@ -13,7 +13,6 @@
  * - TimelineBuilder: Timeline construction
  */
 
-import { basename } from 'path';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
@@ -22,6 +21,7 @@ import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { logger } from '../../utils/logger.js';
+import { getProjectContext } from '../../utils/project-name.js';
 import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
@@ -65,6 +65,23 @@ export class SearchManager {
       return { ids: [], distances: [], metadatas: [] };
     }
     return await this.chromaSync.queryChroma(query, limit, whereFilter);
+  }
+
+  private async searchChromaForTimeline(query: string, ninetyDaysAgo: number): Promise<ObservationSearchResult[]> {
+    const chromaResults = await this.queryChroma(query, 100);
+    logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults?.ids?.length ?? 0 });
+
+    if (chromaResults?.ids && chromaResults.ids.length > 0) {
+      const recentIds = chromaResults.ids.filter((_id, idx) => {
+        const meta = chromaResults.metadatas[idx];
+        return meta && meta.created_at_epoch > ninetyDaysAgo;
+      });
+
+      if (recentIds.length > 0) {
+        return this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: 1 });
+      }
+    }
+    return [];
   }
 
   /**
@@ -187,8 +204,16 @@ export class SearchManager {
       // Include project in the Chroma where clause to scope vector search.
       // Without this, larger projects dominate the top-N results and smaller
       // projects get crowded out before the post-hoc SQLite filter.
+      // Match both native-provenance rows (project) and adopted merged-worktree
+      // rows (merged_into_project) so a parent-project query surfaces its
+      // merged children's observations too.
       if (options.project) {
-        const projectFilter = { project: options.project };
+        const projectFilter = {
+          $or: [
+            { project: options.project },
+            { merged_into_project: options.project }
+          ]
+        };
         whereFilter = whereFilter
           ? { $and: [whereFilter, projectFilter] }
           : projectFilter;
@@ -412,7 +437,9 @@ export class SearchManager {
    * Tool handler: timeline
    */
   async timeline(args: any): Promise<any> {
-    const { anchor, query, depth_before = 10, depth_after = 10, project } = args;
+    const { anchor, query, depth_before, depth_after, project } = args;
+    const depthBefore = depth_before != null ? Number(depth_before) : 10;
+    const depthAfter = depth_after != null ? Number(depth_after) : 10;
     const cwd = process.cwd();
 
     // Validate: must provide either anchor or query, not both
@@ -446,24 +473,13 @@ export class SearchManager {
       let results: ObservationSearchResult[] = [];
 
       if (this.chromaSync) {
+        logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
+        const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
         try {
-          logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
-          const chromaResults = await this.queryChroma(query, 100);
-          logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults?.ids?.length ?? 0 });
-
-          if (chromaResults?.ids && chromaResults.ids.length > 0) {
-            const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-            const recentIds = chromaResults.ids.filter((_id, idx) => {
-              const meta = chromaResults.metadatas[idx];
-              return meta && meta.created_at_epoch > ninetyDaysAgo;
-            });
-
-            if (recentIds.length > 0) {
-              results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: 1 });
-            }
-          }
+          results = await this.searchChromaForTimeline(query, ninetyDaysAgo);
         } catch (chromaError) {
-          logger.error('SEARCH', 'Chroma search failed for timeline, continuing without semantic results', {}, chromaError as Error);
+          const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
+          logger.error('WORKER', 'Chroma search failed for timeline, continuing without semantic results', {}, errorObject);
         }
       }
 
@@ -481,7 +497,7 @@ export class SearchManager {
       anchorId = topResult.id;
       anchorEpoch = topResult.created_at_epoch;
       logger.debug('SEARCH', 'Query mode: Using observation as timeline anchor', { observationId: topResult.id });
-      timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depth_before, depth_after, project);
+      timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project);
     }
     // MODE 2: Anchor-based timeline
     else if (typeof anchor === 'number') {
@@ -498,7 +514,7 @@ export class SearchManager {
       }
       anchorId = anchor;
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depth_before, depth_after, project);
+      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depthBefore, depthAfter, project);
     } else if (typeof anchor === 'string') {
       // Session ID or ISO timestamp
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
@@ -516,7 +532,7 @@ export class SearchManager {
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       } else {
         // ISO timestamp
         const date = new Date(anchor);
@@ -531,7 +547,7 @@ export class SearchManager {
         }
         anchorEpoch = date.getTime();
         anchorId = anchor;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       }
     } else {
       return {
@@ -550,15 +566,15 @@ export class SearchManager {
       ...(timelineData.prompts || []).map((prompt: any) => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
     ];
     items.sort((a, b) => a.epoch - b.epoch);
-    const filteredItems = this.timelineService.filterByDepth(items, anchorId, anchorEpoch, depth_before, depth_after);
+    const filteredItems = this.timelineService.filterByDepth(items, anchorId, anchorEpoch, depthBefore, depthAfter);
 
     if (!filteredItems || filteredItems.length === 0) {
       return {
         content: [{
           type: 'text' as const,
           text: query
-            ? `Found observation matching "${query}", but no timeline context available (${depth_before} records before, ${depth_after} records after).`
-            : `No context found around anchor (${depth_before} records before, ${depth_after} records after)`
+            ? `Found observation matching "${query}", but no timeline context available (${depthBefore} records before, ${depthAfter} records after).`
+            : `No context found around anchor (${depthBefore} records before, ${depthAfter} records after)`
         }]
       };
     }
@@ -576,7 +592,7 @@ export class SearchManager {
       lines.push(`# Timeline around anchor: ${anchorId}`);
     }
 
-    lines.push(`**Window:** ${depth_before} records before -> ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
+    lines.push(`**Window:** ${depthBefore} records before -> ${depthAfter} records after | **Items:** ${filteredItems?.length ?? 0}`);
     lines.push('');
 
 
@@ -696,25 +712,29 @@ export class SearchManager {
 
     // Search for decision-type observations
     if (this.chromaSync) {
-      try {
-        if (query) {
-          // Semantic search filtered to decision type
-          logger.debug('SEARCH', 'Using Chroma semantic search with type=decision filter', {});
+      if (query) {
+        // Semantic search filtered to decision type
+        logger.debug('SEARCH', 'Using Chroma semantic search with type=decision filter', {});
+        try {
           const chromaResults = await this.queryChroma(query, Math.min((filters.limit || 20) * 2, 100), { type: 'decision' });
           const obsIds = chromaResults.ids;
 
           if (obsIds.length > 0) {
             results = this.sessionStore.getObservationsByIds(obsIds, { ...filters, type: 'decision' });
-            // Preserve Chroma ranking order
             results.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
           }
-        } else {
-          // No query: get all decisions, rank by "decision" keyword
-          logger.debug('SEARCH', 'Using metadata-first + semantic ranking for decisions', {});
-          const metadataResults = this.sessionSearch.findByType('decision', filters);
+        } catch (chromaError) {
+          const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
+          logger.error('WORKER', 'Chroma search failed for decisions, falling back to metadata search', {}, errorObject);
+        }
+      } else {
+        // No query: get all decisions, rank by "decision" keyword
+        logger.debug('SEARCH', 'Using metadata-first + semantic ranking for decisions', {});
+        const metadataResults = this.sessionSearch.findByType('decision', filters);
 
-          if (metadataResults.length > 0) {
-            const ids = metadataResults.map(obs => obs.id);
+        if (metadataResults.length > 0) {
+          const ids = metadataResults.map(obs => obs.id);
+          try {
             const chromaResults = await this.queryChroma('decision', Math.min(ids.length, 100));
 
             const rankedIds: number[] = [];
@@ -728,10 +748,11 @@ export class SearchManager {
               results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
               results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
             }
+          } catch (chromaError) {
+            const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
+            logger.error('WORKER', 'Chroma semantic ranking failed for decisions, falling back to metadata search', {}, errorObject);
           }
         }
-      } catch (chromaError) {
-        logger.error('SEARCH', 'Chroma search failed for decisions, falling back to metadata search', {}, chromaError as Error);
       }
     }
 
@@ -770,20 +791,20 @@ export class SearchManager {
 
     // Search for change-type observations and change-related concepts
     if (this.chromaSync) {
-      try {
-        logger.debug('SEARCH', 'Using hybrid search for change-related observations', {});
+      logger.debug('SEARCH', 'Using hybrid search for change-related observations', {});
 
-        // Get all observations with type="change" or concepts containing change
-        const typeResults = this.sessionSearch.findByType('change', filters);
-        const conceptChangeResults = this.sessionSearch.findByConcept('change', filters);
-        const conceptWhatChangedResults = this.sessionSearch.findByConcept('what-changed', filters);
+      // Get all observations with type="change" or concepts containing change
+      const typeResults = this.sessionSearch.findByType('change', filters);
+      const conceptChangeResults = this.sessionSearch.findByConcept('change', filters);
+      const conceptWhatChangedResults = this.sessionSearch.findByConcept('what-changed', filters);
 
-        // Combine and deduplicate
-        const allIds = new Set<number>();
-        [...typeResults, ...conceptChangeResults, ...conceptWhatChangedResults].forEach(obs => allIds.add(obs.id));
+      // Combine and deduplicate
+      const allIds = new Set<number>();
+      [...typeResults, ...conceptChangeResults, ...conceptWhatChangedResults].forEach(obs => allIds.add(obs.id));
 
-        if (allIds.size > 0) {
-          const idsArray = Array.from(allIds);
+      if (allIds.size > 0) {
+        const idsArray = Array.from(allIds);
+        try {
           const chromaResults = await this.queryChroma('what changed', Math.min(idsArray.length, 100));
 
           const rankedIds: number[] = [];
@@ -797,9 +818,10 @@ export class SearchManager {
             results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
             results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
           }
+        } catch (chromaError) {
+          const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
+          logger.error('WORKER', 'Chroma search failed for changes, falling back to metadata search', {}, errorObject);
         }
-      } catch (chromaError) {
-        logger.error('SEARCH', 'Chroma search failed for changes, falling back to metadata search', {}, chromaError as Error);
       }
     }
 
@@ -1334,7 +1356,7 @@ export class SearchManager {
    * Tool handler: get_recent_context
    */
   async getRecentContext(args: any): Promise<any> {
-    const project = args.project || basename(process.cwd());
+    const project = args.project || getProjectContext(process.cwd()).primary;
     const limit = args.limit || 3;
 
     const sessions = this.sessionStore.getRecentSessionsWithStatus(project, limit);
@@ -1380,7 +1402,8 @@ export class SearchManager {
                 lines.push(`**Files Read:** ${filesRead.join(', ')}`);
               }
             } catch (error) {
-              logger.debug('WORKER', 'files_read is plain string, using as-is', {}, error as Error);
+              const errorObject = error instanceof Error ? error : new Error(String(error));
+              logger.debug('WORKER', 'files_read is plain string, using as-is', {}, errorObject);
               if (summary.files_read.trim()) {
                 lines.push(`**Files Read:** ${summary.files_read}`);
               }
@@ -1395,7 +1418,8 @@ export class SearchManager {
                 lines.push(`**Files Edited:** ${filesEdited.join(', ')}`);
               }
             } catch (error) {
-              logger.debug('WORKER', 'files_edited is plain string, using as-is', {}, error as Error);
+              const errorObject = error instanceof Error ? error : new Error(String(error));
+              logger.debug('WORKER', 'files_edited is plain string, using as-is', {}, errorObject);
               if (summary.files_edited.trim()) {
                 lines.push(`**Files Edited:** ${summary.files_edited}`);
               }
@@ -1460,7 +1484,9 @@ export class SearchManager {
    * Tool handler: get_context_timeline
    */
   async getContextTimeline(args: any): Promise<any> {
-    const { anchor, depth_before = 10, depth_after = 10, project } = args;
+    const { anchor, depth_before, depth_after, project } = args;
+    const depthBefore = depth_before != null ? Number(depth_before) : 10;
+    const depthAfter = depth_after != null ? Number(depth_after) : 10;
     const cwd = process.cwd();
     let anchorEpoch: number;
     let anchorId: string | number = anchor;
@@ -1480,7 +1506,7 @@ export class SearchManager {
         };
       }
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depth_before, depth_after, project);
+      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depthBefore, depthAfter, project);
     } else if (typeof anchor === 'string') {
       // Session ID or ISO timestamp
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
@@ -1498,7 +1524,7 @@ export class SearchManager {
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       } else {
         // ISO timestamp
         const date = new Date(anchor);
@@ -1512,7 +1538,7 @@ export class SearchManager {
           };
         }
         anchorEpoch = date.getTime(); // Keep as milliseconds
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       }
     } else {
       return {
@@ -1531,14 +1557,14 @@ export class SearchManager {
       ...timelineData.prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
     ];
     items.sort((a, b) => a.epoch - b.epoch);
-    const filteredItems = this.timelineService.filterByDepth(items, anchorId, anchorEpoch, depth_before, depth_after);
+    const filteredItems = this.timelineService.filterByDepth(items, anchorId, anchorEpoch, depthBefore, depthAfter);
 
     if (!filteredItems || filteredItems.length === 0) {
       const anchorDate = new Date(anchorEpoch).toLocaleString();
       return {
         content: [{
           type: 'text' as const,
-          text: `No context found around ${anchorDate} (${depth_before} records before, ${depth_after} records after)`
+          text: `No context found around ${anchorDate} (${depthBefore} records before, ${depthAfter} records after)`
         }]
       };
     }
@@ -1548,7 +1574,7 @@ export class SearchManager {
 
     // Header
     lines.push(`# Timeline around anchor: ${anchorId}`);
-    lines.push(`**Window:** ${depth_before} records before -> ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
+    lines.push(`**Window:** ${depthBefore} records before -> ${depthAfter} records after | **Items:** ${filteredItems?.length ?? 0}`);
     lines.push('');
 
 
@@ -1672,7 +1698,9 @@ export class SearchManager {
    * Tool handler: get_timeline_by_query
    */
   async getTimelineByQuery(args: any): Promise<any> {
-    const { query, mode = 'auto', depth_before = 10, depth_after = 10, limit = 5, project } = args;
+    const { query, mode = 'auto', depth_before, depth_after, limit = 5, project } = args;
+    const depthBefore = depth_before != null ? Number(depth_before) : 10;
+    const depthAfter = depth_after != null ? Number(depth_after) : 10;
     const cwd = process.cwd();
 
     // Step 1: Search for observations
@@ -1753,8 +1781,8 @@ export class SearchManager {
       const timelineData = this.sessionStore.getTimelineAroundObservation(
         topResult.id,
         topResult.created_at_epoch,
-        depth_before,
-        depth_after,
+        depthBefore,
+        depthAfter,
         project
       );
 
@@ -1765,13 +1793,13 @@ export class SearchManager {
         ...(timelineData.prompts || []).map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
       ];
       items.sort((a, b) => a.epoch - b.epoch);
-      const filteredItems = this.timelineService.filterByDepth(items, topResult.id, 0, depth_before, depth_after);
+      const filteredItems = this.timelineService.filterByDepth(items, topResult.id, 0, depthBefore, depthAfter);
 
       if (!filteredItems || filteredItems.length === 0) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Found observation #${topResult.id} matching "${query}", but no timeline context available (${depth_before} records before, ${depth_after} records after).`
+            text: `Found observation #${topResult.id} matching "${query}", but no timeline context available (${depthBefore} records before, ${depthAfter} records after).`
           }]
         };
       }
@@ -1782,7 +1810,7 @@ export class SearchManager {
       // Header
       lines.push(`# Timeline for query: "${query}"`);
       lines.push(`**Anchor:** Observation #${topResult.id} - ${topResult.title || 'Untitled'}`);
-      lines.push(`**Window:** ${depth_before} records before -> ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
+      lines.push(`**Window:** ${depthBefore} records before -> ${depthAfter} records after | **Items:** ${filteredItems?.length ?? 0}`);
       lines.push('');
 
 

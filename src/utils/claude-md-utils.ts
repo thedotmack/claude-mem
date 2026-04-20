@@ -439,47 +439,50 @@ export async function updateFolderClaudeMdFiles(
 
   // Process each folder
   for (const folderPath of folderPaths) {
+    let response: Response;
     try {
       // Fetch timeline via existing API (uses socket or TCP automatically)
-      const response = await workerHttpRequest(
+      response = await workerHttpRequest(
         `/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
       );
-
-      if (!response.ok) {
-        logger.error('FOLDER_INDEX', 'Failed to fetch timeline', { folderPath, status: response.status });
-        continue;
-      }
-
-      const result = await response.json();
-      if (!result.content?.[0]?.text) {
-        logger.debug('FOLDER_INDEX', 'No content for folder', { folderPath });
-        continue;
-      }
-
-      const formatted = formatTimelineForClaudeMd(result.content[0].text);
-
-      // Fix for #794: Don't create new context files if there's no activity
-      // But update existing ones to show "No recent activity" if they already exist
-      const claudeMdPath = path.join(folderPath, targetFilename);
-      const hasNoActivity = formatted.includes('*No recent activity*');
-      const fileExists = existsSync(claudeMdPath);
-
-      if (hasNoActivity && !fileExists) {
-        logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
-        continue;
-      }
-
-      writeClaudeMdToFolder(folderPath, formatted, targetFilename);
-
-      logger.debug('FOLDER_INDEX', 'Updated context file', { folderPath, targetFilename });
-    } catch (error) {
+    } catch (error: unknown) {
       // Fire-and-forget: log warning but don't fail
-      const err = error as Error;
-      logger.error('FOLDER_INDEX', `Failed to update ${targetFilename}`, {
+      const message = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+      logger.error('FOLDER_INDEX', `Failed to fetch timeline for ${targetFilename}`, {
         folderPath,
-        errorMessage: err.message,
-        errorStack: err.stack
+        errorMessage: message,
+        errorStack: stack
       });
+      continue;
     }
+
+    if (!response.ok) {
+      logger.error('FOLDER_INDEX', 'Failed to fetch timeline', { folderPath, status: response.status });
+      continue;
+    }
+
+    const result = await response.json() as { content?: Array<{ text?: string }> };
+    if (!result.content?.[0]?.text) {
+      logger.debug('FOLDER_INDEX', 'No content for folder', { folderPath });
+      continue;
+    }
+
+    const formatted = formatTimelineForClaudeMd(result.content[0].text);
+
+    // Fix for #794: Don't create new context files if there's no activity
+    // But update existing ones to show "No recent activity" if they already exist
+    const claudeMdPath = path.join(folderPath, targetFilename);
+    const hasNoActivity = formatted.includes('*No recent activity*');
+    const fileExists = existsSync(claudeMdPath);
+
+    if (hasNoActivity && !fileExists) {
+      logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
+      continue;
+    }
+
+    writeClaudeMdToFolder(folderPath, formatted, targetFilename);
+
+    logger.debug('FOLDER_INDEX', 'Updated context file', { folderPath, targetFilename });
   }
 }

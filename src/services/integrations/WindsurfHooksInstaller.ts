@@ -86,9 +86,11 @@ export function readWindsurfRegistry(): WindsurfProjectRegistry {
     if (!existsSync(WINDSURF_REGISTRY_FILE)) return {};
     return JSON.parse(readFileSync(WINDSURF_REGISTRY_FILE, 'utf-8'));
   } catch (error) {
-    logger.error('WINDSURF', 'Failed to read registry, using empty', {
-      file: WINDSURF_REGISTRY_FILE,
-    }, error as Error);
+    if (error instanceof Error) {
+      logger.error('WORKER', 'Failed to read registry, using empty', { file: WINDSURF_REGISTRY_FILE }, error);
+    } else {
+      logger.error('WORKER', 'Failed to read registry, using empty', { file: WINDSURF_REGISTRY_FILE }, new Error(String(error)));
+    }
     return {};
   }
 }
@@ -151,7 +153,11 @@ export async function updateWindsurfContextForProject(projectName: string, works
     logger.debug('WINDSURF', 'Updated context file', { projectName, workspacePath });
   } catch (error) {
     // Background context update — failure is non-critical
-    logger.error('WINDSURF', 'Failed to update context file', { projectName, workspacePath }, error as Error);
+    if (error instanceof Error) {
+      logger.error('WORKER', 'Failed to update context file', { projectName, workspacePath }, error);
+    } else {
+      logger.error('WORKER', 'Failed to update context file', { projectName, workspacePath }, new Error(String(error)));
+    }
   }
 }
 
@@ -235,6 +241,11 @@ function mergeAndWriteHooksJson(
         existingConfig.hooks = {};
       }
     } catch (error) {
+      if (error instanceof Error) {
+        logger.error('WORKER', 'Corrupt hooks.json, refusing to overwrite', { path: WINDSURF_HOOKS_JSON_PATH }, error);
+      } else {
+        logger.error('WORKER', 'Corrupt hooks.json, refusing to overwrite', { path: WINDSURF_HOOKS_JSON_PATH }, new Error(String(error)));
+      }
       throw new Error(`Corrupt hooks.json at ${WINDSURF_HOOKS_JSON_PATH}, refusing to overwrite`);
     }
   }
@@ -286,19 +297,33 @@ export async function installWindsurfHooks(): Promise<number> {
   // IMPORTANT: Tilde expansion is NOT supported in working_directory — use absolute paths
   const workingDirectory = path.dirname(workerServicePath);
 
+  console.log(`  Using Bun runtime: ${bunPath}`);
+  console.log(`  Worker service: ${workerServicePath}`);
+
+  const workspaceRoot = process.cwd();
+
   try {
-    console.log(`  Using Bun runtime: ${bunPath}`);
-    console.log(`  Worker service: ${workerServicePath}`);
+    await writeWindsurfHooksAndSetupContext(bunPath, workerServicePath, workingDirectory, workspaceRoot);
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\nInstallation failed: ${message}`);
+    return 1;
+  }
+}
 
-    // Merge our hooks into the existing hooks.json
-    mergeAndWriteHooksJson(bunPath, workerServicePath, workingDirectory);
-    console.log(`  Created/merged hooks.json`);
+async function writeWindsurfHooksAndSetupContext(
+  bunPath: string,
+  workerServicePath: string,
+  workingDirectory: string,
+  workspaceRoot: string,
+): Promise<void> {
+  mergeAndWriteHooksJson(bunPath, workerServicePath, workingDirectory);
+  console.log(`  Created/merged hooks.json`);
 
-    // Set up initial context for the current workspace
-    const workspaceRoot = process.cwd();
-    await setupWindsurfProjectContext(workspaceRoot);
+  await setupWindsurfProjectContext(workspaceRoot);
 
-    console.log(`
+  console.log(`
 Installation complete!
 
 Hooks installed to: ${WINDSURF_HOOKS_JSON_PATH}
@@ -316,12 +341,6 @@ Next steps:
   2. Restart Windsurf to load the hooks
   3. Context is injected via .windsurf/rules/claude-mem-context.md (workspace-level)
 `);
-
-    return 0;
-  } catch (error) {
-    console.error(`\nInstallation failed: ${(error as Error).message}`);
-    return 1;
-  }
 }
 
 /**
@@ -335,23 +354,14 @@ async function setupWindsurfProjectContext(workspaceRoot: string): Promise<void>
   console.log(`  Generating initial context...`);
 
   try {
-    const healthResponse = await fetch(`http://127.0.0.1:${port}/api/readiness`);
-    if (healthResponse.ok) {
-      const contextResponse = await fetch(
-        `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
-      );
-      if (contextResponse.ok) {
-        const context = await contextResponse.text();
-        if (context && context.trim()) {
-          writeWindsurfContextFile(workspaceRoot, context);
-          contextGenerated = true;
-          console.log(`  Generated initial context from existing memory`);
-        }
-      }
-    }
+    contextGenerated = await fetchWindsurfContextFromWorker(port, projectName, workspaceRoot);
   } catch (error) {
     // Worker not running during install — non-critical
-    logger.debug('WINDSURF', 'Worker not running during install', {}, error as Error);
+    if (error instanceof Error) {
+      logger.debug('WORKER', 'Worker not running during install', {}, error);
+    } else {
+      logger.debug('WORKER', 'Worker not running during install', {}, new Error(String(error)));
+    }
   }
 
   if (!contextGenerated) {
@@ -374,65 +384,99 @@ Use claude-mem's MCP search tools for manual memory queries.
   console.log(`  Registered for auto-context updates`);
 }
 
+async function fetchWindsurfContextFromWorker(
+  port: number,
+  projectName: string,
+  workspaceRoot: string,
+): Promise<boolean> {
+  const healthResponse = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+  if (!healthResponse.ok) return false;
+
+  const contextResponse = await fetch(
+    `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`,
+  );
+  if (!contextResponse.ok) return false;
+
+  const context = await contextResponse.text();
+  if (context && context.trim()) {
+    writeWindsurfContextFile(workspaceRoot, context);
+    console.log(`  Generated initial context from existing memory`);
+    return true;
+  }
+  return false;
+}
+
 /**
  * Uninstall Windsurf hooks — removes claude-mem entries from hooks.json
  */
 export function uninstallWindsurfHooks(): number {
   console.log('\nUninstalling Claude-Mem Windsurf hooks...\n');
 
-  try {
-    // Remove our entries from hooks.json (preserve other integrations)
-    if (existsSync(WINDSURF_HOOKS_JSON_PATH)) {
-      try {
-        const config: WindsurfHooksJson = JSON.parse(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
-
-        for (const eventName of WINDSURF_HOOK_EVENTS) {
-          if (config.hooks[eventName]) {
-            config.hooks[eventName] = config.hooks[eventName].filter(
-              (hook) => !hook.command.includes('worker-service') || !hook.command.includes('windsurf')
-            );
-            // Remove empty arrays
-            if (config.hooks[eventName].length === 0) {
-              delete config.hooks[eventName];
-            }
-          }
-        }
-
-        // If no hooks remain, remove the file entirely
-        if (Object.keys(config.hooks).length === 0) {
-          unlinkSync(WINDSURF_HOOKS_JSON_PATH);
-          console.log(`  Removed hooks.json (no hooks remaining)`);
-        } else {
-          writeFileSync(WINDSURF_HOOKS_JSON_PATH, JSON.stringify(config, null, 2));
-          console.log(`  Removed claude-mem entries from hooks.json (other hooks preserved)`);
-        }
-      } catch (error) {
-        console.log(`  Warning: could not parse hooks.json — leaving file intact to preserve other hooks`);
+  // Remove our entries from hooks.json (preserve other integrations)
+  if (existsSync(WINDSURF_HOOKS_JSON_PATH)) {
+    try {
+      removeClaudeMemHookEntries();
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.error('WORKER', 'Could not parse hooks.json during uninstall', { path: WINDSURF_HOOKS_JSON_PATH }, error);
+      } else {
+        logger.error('WORKER', 'Could not parse hooks.json during uninstall', { path: WINDSURF_HOOKS_JSON_PATH }, new Error(String(error)));
       }
-    } else {
-      console.log(`  No hooks.json found`);
+      console.log(`  Warning: could not parse hooks.json — leaving file intact to preserve other hooks`);
     }
+  } else {
+    console.log(`  No hooks.json found`);
+  }
 
-    // Remove context file from the current workspace
-    const workspaceRoot = process.cwd();
-    const contextFile = path.join(workspaceRoot, '.windsurf', 'rules', 'claude-mem-context.md');
-    if (existsSync(contextFile)) {
-      unlinkSync(contextFile);
-      console.log(`  Removed context file`);
-    }
+  const workspaceRoot = process.cwd();
 
-    // Unregister project
-    unregisterWindsurfProject(workspaceRoot);
-    console.log(`  Unregistered from auto-context updates`);
-
-    console.log(`\nUninstallation complete!\n`);
-    console.log('Restart Windsurf to apply changes.');
-
+  try {
+    removeWindsurfContextAndUnregister(workspaceRoot);
     return 0;
   } catch (error) {
-    console.error(`\nUninstallation failed: ${(error as Error).message}`);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\nUninstallation failed: ${message}`);
     return 1;
   }
+}
+
+function removeClaudeMemHookEntries(): void {
+  const parsed = JSON.parse(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8')) as Partial<WindsurfHooksJson>;
+  const config: WindsurfHooksJson = { hooks: parsed.hooks ?? {} };
+
+  for (const eventName of WINDSURF_HOOK_EVENTS) {
+    const eventHooks = config.hooks[eventName] ?? [];
+    if (eventHooks.length > 0) {
+      config.hooks[eventName] = eventHooks.filter(
+        (hook) => !hook.command.includes('worker-service') || !hook.command.includes('windsurf'),
+      );
+      if (config.hooks[eventName].length === 0) {
+        delete config.hooks[eventName];
+      }
+    }
+  }
+
+  if (Object.keys(config.hooks).length === 0) {
+    unlinkSync(WINDSURF_HOOKS_JSON_PATH);
+    console.log(`  Removed hooks.json (no hooks remaining)`);
+  } else {
+    writeFileSync(WINDSURF_HOOKS_JSON_PATH, JSON.stringify(config, null, 2));
+    console.log(`  Removed claude-mem entries from hooks.json (other hooks preserved)`);
+  }
+}
+
+function removeWindsurfContextAndUnregister(workspaceRoot: string): void {
+  const contextFile = path.join(workspaceRoot, '.windsurf', 'rules', 'claude-mem-context.md');
+  if (existsSync(contextFile)) {
+    unlinkSync(contextFile);
+    console.log(`  Removed context file`);
+  }
+
+  unregisterWindsurfProject(workspaceRoot);
+  console.log(`  Unregistered from auto-context updates`);
+
+  console.log(`\nUninstallation complete!\n`);
+  console.log('Restart Windsurf to apply changes.');
 }
 
 /**
@@ -445,10 +489,18 @@ export function checkWindsurfHooksStatus(): number {
     console.log(`User-level: Installed`);
     console.log(`   Config: ${WINDSURF_HOOKS_JSON_PATH}`);
 
+    let parsedConfig: Partial<WindsurfHooksJson> | null = null;
     try {
-      const config: WindsurfHooksJson = JSON.parse(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
+      parsedConfig = JSON.parse(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
+    } catch (error) {
+      const normalizedError = error instanceof Error ? error : new Error(String(error));
+      logger.error('WORKER', 'Unable to parse hooks.json', { path: WINDSURF_HOOKS_JSON_PATH }, normalizedError);
+      console.log(`   Mode: Unable to parse hooks.json`);
+    }
+
+    if (parsedConfig) {
       const registeredEvents = WINDSURF_HOOK_EVENTS.filter(
-        (event) => config.hooks[event]?.some(
+        (event) => (parsedConfig?.hooks?.[event] ?? []).some(
           (hook) => hook.command.includes('worker-service') && hook.command.includes('windsurf')
         )
       );
@@ -456,8 +508,6 @@ export function checkWindsurfHooksStatus(): number {
       for (const event of registeredEvents) {
         console.log(`     - ${event}`);
       }
-    } catch {
-      console.log(`   Mode: Unable to parse hooks.json`);
     }
 
     // Check for context file in current workspace

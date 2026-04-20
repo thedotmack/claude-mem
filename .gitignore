@@ -34,10 +34,20 @@ src/ui/viewer.html
 .claude-octopus/
 .claude/session-intent.md
 .claude/session-plan.md
+.claude/scheduled_tasks.lock
 .octo/
+
+# Installer marker — dropped by the claude-mem CLI at install time
+plugin/.cli-installed
 
 # Local contribution analysis (not part of upstream)
 CONTRIB_NOTES.md
 
 # Docker dev harness — persistent SQLite + Chroma state
 .docker-claude-mem-data/
+
+# SWE-bench eval outputs
+evals/swebench/runs/
+claude-opus-4-7+claude-mem.*.json
+logs/run_evaluation/
+.venv-swebench/

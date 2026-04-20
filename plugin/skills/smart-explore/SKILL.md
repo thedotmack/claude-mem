@@ -143,3 +143,48 @@ Use smart_* tools for code exploration, Read for non-code files. Mix freely.
 | Explore agent | ~39,000-59,000 | Cross-file synthesis with narrative |
 
 **4-8x savings** on file understanding (outline + unfold vs Read). **11-18x savings** on codebase exploration vs Explore agent. The narrower the query, the wider the gap — a 27-line function costs 55x less to read via unfold than via an Explore agent, because the agent still reads the entire file.
+
+## Language Support
+
+Smart-explore uses **tree-sitter AST parsing** for structural analysis. Unsupported file types fall back to text-based search.
+
+### Bundled Languages
+
+| Language | Extensions |
+|----------|-----------|
+| JavaScript | `.js`, `.mjs`, `.cjs` |
+| TypeScript | `.ts` |
+| TSX / JSX | `.tsx`, `.jsx` |
+| Python | `.py`, `.pyw` |
+| Go | `.go` |
+| Rust | `.rs` |
+| Ruby | `.rb` |
+| Java | `.java` |
+| C | `.c`, `.h` |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh` |
+
+Files with unrecognized extensions are parsed as plain text — `smart_search` still works (grep-style), but `smart_outline` and `smart_unfold` will not extract structured symbols.
+
+### Custom Grammars (`.claude-mem.json`)
+
+You can register additional tree-sitter grammars for file types not in the bundled list. Create or update `.claude-mem.json` in your project root:
+
+```json
+{
+  "grammars": {
+    ".sol": "tree-sitter-solidity",
+    ".graphql": "tree-sitter-graphql"
+  }
+}
+```
+
+Each key is a file extension; each value is the npm package name of the tree-sitter grammar. The grammar must be installed locally (`npm install tree-sitter-solidity`). Once registered, `smart_outline` and `smart_unfold` will parse those extensions structurally instead of falling back to plain text.
+
+### Markdown Special Support
+
+Markdown files (`.md`, `.mdx`) receive special handling beyond the generic plain-text fallback:
+
+- **`smart_outline`** — extracts headings (`#`, `##`, `###`) as the symbol tree. Use it to navigate long documents without reading the full file.
+- **`smart_search`** — searches within code fences as well as prose, so queries for function names inside ` ```ts ``` ` blocks work as expected.
+- **`smart_unfold`** — expands heading sections rather than function bodies; each section up to the next same-level heading is returned as a chunk.
+- **Frontmatter** — YAML frontmatter (lines between leading `---` delimiters) is included in `smart_outline` output under a synthetic `frontmatter` symbol so metadata like `title:` and `description:` is visible without reading the whole file.

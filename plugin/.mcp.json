@@ -2,7 +2,8 @@
   "mcpServers": {
     "mcp-search": {
       "type": "stdio",
-      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.cjs"
+      "command": "bun",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.cjs"]
     }
   }
 }

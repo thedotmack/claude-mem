@@ -34,40 +34,38 @@ export class SessionQueueProcessor {
     let lastActivityTime = Date.now();
 
     while (!signal.aborted) {
+      // Claim phase: atomically claim next pending message (marks as 'processing')
+      // Self-heals any stale processing messages before claiming
+      let persistentMessage: PersistentPendingMessage | null = null;
       try {
-        // Atomically claim next pending message (marks as 'processing')
-        // Self-heals any stale processing messages before claiming
-        const persistentMessage = this.store.claimNextMessage(sessionDbId);
-
-        if (persistentMessage) {
-          // Reset activity time when we successfully yield a message
-          lastActivityTime = Date.now();
-          // Yield the message for processing (it's marked as 'processing' in DB)
-          yield this.toPendingMessageWithId(persistentMessage);
-        } else {
-          // Queue empty - wait for wake-up event or timeout
-          const receivedMessage = await this.waitForMessage(signal, IDLE_TIMEOUT_MS);
-
-          if (!receivedMessage && !signal.aborted) {
-            // Timeout occurred - check if we've been idle too long
-            const idleDuration = Date.now() - lastActivityTime;
-            if (idleDuration >= IDLE_TIMEOUT_MS) {
-              logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', {
-                sessionDbId,
-                idleDurationMs: idleDuration,
-                thresholdMs: IDLE_TIMEOUT_MS
-              });
-              onIdleTimeout?.();
-              return;
-            }
-            // Reset timer on spurious wakeup - queue is empty but duration check failed
-            lastActivityTime = Date.now();
-          }
-        }
+        persistentMessage = this.store.claimNextMessage(sessionDbId);
       } catch (error) {
         if (signal.aborted) return;
-        logger.error('SESSION', 'Error in queue processor loop', { sessionDbId }, error as Error);
-        // Small backoff to prevent tight loop on DB error
+        const normalizedError = error instanceof Error ? error : new Error(String(error));
+        logger.error('QUEUE', 'Failed to claim next message', { sessionDbId }, normalizedError);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+
+      if (persistentMessage) {
+        // Reset activity time when we successfully yield a message
+        lastActivityTime = Date.now();
+        // Yield the message for processing (it's marked as 'processing' in DB)
+        yield this.toPendingMessageWithId(persistentMessage);
+        continue;
+      }
+
+      // Wait phase: queue empty - wait for wake-up event or timeout
+      try {
+        const idleTimedOut = await this.handleWaitPhase(signal, lastActivityTime, sessionDbId, onIdleTimeout);
+        if (idleTimedOut) return;
+        // Reset timer on spurious wakeup if not timed out
+        lastActivityTime = Date.now();
+      } catch (error) {
+        if (signal.aborted) return;
+        const normalizedError = error instanceof Error ? error : new Error(String(error));
+        logger.error('QUEUE', 'Error waiting for message', { sessionDbId }, normalizedError);
+        // Small backoff to prevent tight loop on error
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
@@ -80,6 +78,33 @@ export class SessionQueueProcessor {
       _persistentId: msg.id,
       _originalTimestamp: msg.created_at_epoch
     };
+  }
+
+  /**
+   * Handle the wait phase: wait for a message or check idle timeout.
+   * @returns true if idle timeout was reached (caller should return/exit iterator)
+   */
+  private async handleWaitPhase(
+    signal: AbortSignal,
+    lastActivityTime: number,
+    sessionDbId: number,
+    onIdleTimeout?: () => void
+  ): Promise<boolean> {
+    const receivedMessage = await this.waitForMessage(signal, IDLE_TIMEOUT_MS);
+
+    if (!receivedMessage && !signal.aborted) {
+      const idleDuration = Date.now() - lastActivityTime;
+      if (idleDuration >= IDLE_TIMEOUT_MS) {
+        logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', {
+          sessionDbId,
+          idleDurationMs: idleDuration,
+          thresholdMs: IDLE_TIMEOUT_MS
+        });
+        onIdleTimeout?.();
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

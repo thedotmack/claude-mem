@@ -96,7 +96,11 @@ export class KnowledgeAgent {
       // exits with a non-zero code. If we already captured a session_id,
       // treat this as success — the session was created and primed.
       if (sessionId) {
-        logger.debug('WORKER', `SDK process exited after priming corpus "${corpus.name}" — session captured, continuing`, {}, error as Error);
+        if (error instanceof Error) {
+          logger.debug('WORKER', `SDK process exited after priming corpus "${corpus.name}" — session captured, continuing`, {}, error);
+        } else {
+          logger.debug('WORKER', `SDK process exited after priming corpus "${corpus.name}" — session captured, continuing (non-Error thrown)`, { thrownValue: String(error) });
+        }
       } else {
         throw error;
       }
@@ -132,6 +136,11 @@ export class KnowledgeAgent {
       return result;
     } catch (error) {
       if (!this.isSessionResumeError(error)) {
+        if (error instanceof Error) {
+          logger.error('WORKER', `Query failed for corpus "${corpus.name}"`, {}, error);
+        } else {
+          logger.error('WORKER', `Query failed for corpus "${corpus.name}" (non-Error thrown)`, { thrownValue: String(error) });
+        }
         throw error;
       }
       // Session expired or invalid — auto-reprime and retry
@@ -207,7 +216,11 @@ export class KnowledgeAgent {
       // Same as prime() — SDK may throw after all messages are yielded.
       // If we captured an answer, treat as success.
       if (answer) {
-        logger.debug('WORKER', `SDK process exited after query — answer captured, continuing`, {}, error as Error);
+        if (error instanceof Error) {
+          logger.debug('WORKER', `SDK process exited after query — answer captured, continuing`, {}, error);
+        } else {
+          logger.debug('WORKER', `SDK process exited after query — answer captured, continuing (non-Error thrown)`, { thrownValue: String(error) });
+        }
       } else {
         throw error;
       }
@@ -259,7 +272,11 @@ export class KnowledgeAgent {
 
       if (claudePath) return claudePath;
     } catch (error) {
-      logger.debug('WORKER', 'Claude executable auto-detection failed', {}, error as Error);
+      if (error instanceof Error) {
+        logger.debug('WORKER', 'Claude executable auto-detection failed', {}, error);
+      } else {
+        logger.debug('WORKER', 'Claude executable auto-detection failed (non-Error thrown)', { thrownValue: String(error) });
+      }
     }
 
     throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json');

@@ -13,6 +13,21 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 
+async function sendObservationToWorker(requestBody: string, toolName: string): Promise<void> {
+  const response = await workerHttpRequest('/api/sessions/observations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: requestBody
+  });
+
+  if (!response.ok) {
+    logger.warn('HOOK', 'Observation storage failed, skipping', { status: response.status, toolName });
+    return;
+  }
+
+  logger.debug('HOOK', 'Observation sent successfully', { toolName });
+}
+
 export const observationHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     // Ensure worker is running before any other logic
@@ -47,27 +62,19 @@ export const observationHandler: EventHandler = {
     }
 
     // Send to worker - worker handles privacy check and database operations
+    const requestBody = JSON.stringify({
+      contentSessionId: sessionId,
+      platformSource,
+      tool_name: toolName,
+      tool_input: toolInput,
+      tool_response: toolResponse,
+      cwd,
+      agentId: input.agentId,
+      agentType: input.agentType
+    });
+
     try {
-      const response = await workerHttpRequest('/api/sessions/observations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contentSessionId: sessionId,
-          platformSource,
-          tool_name: toolName,
-          tool_input: toolInput,
-          tool_response: toolResponse,
-          cwd
-        })
-      });
-
-      if (!response.ok) {
-        // Log but don't throw — observation storage failure should not block tool use
-        logger.warn('HOOK', 'Observation storage failed, skipping', { status: response.status, toolName });
-        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-      }
-
-      logger.debug('HOOK', 'Observation sent successfully', { toolName });
+      await sendObservationToWorker(requestBody, toolName);
     } catch (error) {
       // Worker unreachable — skip observation gracefully
       logger.warn('HOOK', 'Observation fetch error, skipping', { error: error instanceof Error ? error.message : String(error) });

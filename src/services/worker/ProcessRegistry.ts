@@ -382,21 +382,65 @@ export function createPidCapturingSpawn(sessionDbId: number) {
     env?: NodeJS.ProcessEnv;
     signal?: AbortSignal;
   }) => {
+    // Kill any existing process for this session before spawning a new one.
+    // Multiple processes sharing the same --resume UUID waste API credits and
+    // can conflict with each other (Issue #1590).
+    const existing = getProcessBySession(sessionDbId);
+    if (existing && existing.process.exitCode === null) {
+      logger.warn('PROCESS', `Killing duplicate process PID ${existing.pid} before spawning new one for session ${sessionDbId}`, {
+        existingPid: existing.pid,
+        sessionDbId
+      });
+      let exited = false;
+      try {
+        existing.process.kill('SIGTERM');
+        exited = existing.process.exitCode !== null;
+      } catch (error: unknown) {
+        // Already dead — safe to unregister immediately
+        if (error instanceof Error) {
+          logger.warn('WORKER', `Failed to kill duplicate process PID ${existing.pid}, likely already dead`, { existingPid: existing.pid, sessionDbId }, error);
+        }
+        exited = true;
+      }
+
+      if (exited) {
+        unregisterProcess(existing.pid);
+      }
+      // If still alive, the 'exit' handler (line ~440) will unregister it.
+    }
+
     getSupervisor().assertCanSpawn('claude sdk');
 
     // On Windows, use cmd.exe wrapper for .cmd files to properly handle paths with spaces
     const useCmdWrapper = process.platform === 'win32' && spawnOptions.command.endsWith('.cmd');
     const env = sanitizeEnv(spawnOptions.env ?? process.env);
 
+    // Filter empty string args AND their preceding flag (Issue #2049).
+    // The Agent SDK emits ["--setting-sources", ""] when settingSources defaults to [].
+    // Simply dropping "" leaves an orphan --setting-sources that consumes the next
+    // flag (e.g. --permission-mode) as its value, crashing Claude Code 2.1.109+ with
+    // "Invalid setting source: --permission-mode". Drop the flag too so the SDK
+    // default (no setting sources) is preserved by omission.
+    const args: string[] = [];
+    for (const arg of spawnOptions.args) {
+      if (arg === '') {
+        if (args.length > 0 && args[args.length - 1].startsWith('--')) {
+          args.pop();
+        }
+        continue;
+      }
+      args.push(arg);
+    }
+
     const child = useCmdWrapper
-      ? spawn('cmd.exe', ['/d', '/c', spawnOptions.command, ...spawnOptions.args], {
+      ? spawn('cmd.exe', ['/d', '/c', spawnOptions.command, ...args], {
           cwd: spawnOptions.cwd,
           env,
           stdio: ['pipe', 'pipe', 'pipe'],
           signal: spawnOptions.signal,
           windowsHide: true
         })
-      : spawn(spawnOptions.command, spawnOptions.args, {
+      : spawn(spawnOptions.command, args, {
           cwd: spawnOptions.cwd,
           env,
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -454,7 +498,11 @@ export function startOrphanReaper(getActiveSessionIds: () => Set<number>, interv
         logger.info('PROCESS', `Reaper cleaned up ${killed} orphaned processes`, { killed });
       }
     } catch (error) {
-      logger.error('PROCESS', 'Reaper error', {}, error as Error);
+      if (error instanceof Error) {
+        logger.error('WORKER', 'Reaper error', {}, error);
+      } else {
+        logger.error('WORKER', 'Reaper error', { rawError: String(error) });
+      }
     }
   }, intervalMs);
 

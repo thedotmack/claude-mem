@@ -59,29 +59,35 @@ function buildTimestampMap(): TimestampMapping {
 
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index];
+      let data: any;
       try {
-        const data = JSON.parse(line);
-        const timestamp = data.timestamp;
-        const sessionId = data.sessionId;
-        const project = data.cwd;
-
-        if (timestamp && sessionId) {
-          // Round timestamp to second for matching with XML timestamps
-          const roundedTimestamp = new Date(timestamp);
-          roundedTimestamp.setMilliseconds(0);
-          const key = roundedTimestamp.toISOString();
-
-          // Only store first occurrence for each second (they're all the same session anyway)
-          if (!map[key]) {
-            map[key] = { sessionId, project };
-          }
-        }
-      } catch (e) {
+        data = JSON.parse(line);
+      } catch (e: unknown) {
         logger.debug('IMPORT', 'Skipping invalid JSON line', {
           lineNumber: index + 1,
           filename,
           error: e instanceof Error ? e.message : String(e)
         });
+        continue;
+      }
+
+      const timestamp = data.timestamp;
+      const sessionId = data.sessionId;
+      const project = data.cwd;
+
+      if (timestamp && sessionId) {
+        // Round timestamp to second for matching with XML timestamps
+        const roundedTimestamp = new Date(timestamp);
+        if (Number.isNaN(roundedTimestamp.getTime())) {
+          continue;
+        }
+        roundedTimestamp.setMilliseconds(0);
+        const key = roundedTimestamp.toISOString();
+
+        // Only store first occurrence for each second (they're all the same session anyway)
+        if (!map[key]) {
+          map[key] = { sessionId, project };
+        }
       }
     }
   }
@@ -131,28 +137,23 @@ function parseObservation(xml: string): ObservationData | null {
     return null;
   }
 
-  try {
-    const observation: ObservationData = {
-      type: extractTag(xml, 'type'),
-      title: extractTag(xml, 'title'),
-      subtitle: extractTag(xml, 'subtitle'),
-      facts: extractArrayTags(xml, 'facts', 'fact'),
-      narrative: extractTag(xml, 'narrative'),
-      concepts: extractArrayTags(xml, 'concepts', 'concept'),
-      files_read: extractArrayTags(xml, 'files_read', 'file'),
-      files_modified: extractArrayTags(xml, 'files_modified', 'file'),
-    };
+  const observation: ObservationData = {
+    type: extractTag(xml, 'type'),
+    title: extractTag(xml, 'title'),
+    subtitle: extractTag(xml, 'subtitle'),
+    facts: extractArrayTags(xml, 'facts', 'fact'),
+    narrative: extractTag(xml, 'narrative'),
+    concepts: extractArrayTags(xml, 'concepts', 'concept'),
+    files_read: extractArrayTags(xml, 'files_read', 'file'),
+    files_modified: extractArrayTags(xml, 'files_modified', 'file'),
+  };
 
-    // Validate required fields
-    if (!observation.type || !observation.title) {
-      return null;
-    }
-
-    return observation;
-  } catch (e) {
-    console.error('Error parsing observation:', e);
+  // Validate required fields
+  if (!observation.type || !observation.title) {
     return null;
   }
+
+  return observation;
 }
 
 /**
@@ -164,26 +165,21 @@ function parseSummary(xml: string): SummaryData | null {
     return null;
   }
 
-  try {
-    const summary: SummaryData = {
-      request: extractTag(xml, 'request'),
-      investigated: extractTag(xml, 'investigated'),
-      learned: extractTag(xml, 'learned'),
-      completed: extractTag(xml, 'completed'),
-      next_steps: extractTag(xml, 'next_steps'),
-      notes: extractTag(xml, 'notes') || null,
-    };
+  const summary: SummaryData = {
+    request: extractTag(xml, 'request'),
+    investigated: extractTag(xml, 'investigated'),
+    learned: extractTag(xml, 'learned'),
+    completed: extractTag(xml, 'completed'),
+    next_steps: extractTag(xml, 'next_steps'),
+    notes: extractTag(xml, 'notes') || null,
+  };
 
-    // Validate required fields
-    if (!summary.request) {
-      return null;
-    }
-
-    return summary;
-  } catch (e) {
-    console.error('Error parsing summary:', e);
+  // Validate required fields
+  if (!summary.request) {
     return null;
   }
+
+  return summary;
 }
 
 /**
@@ -326,8 +322,8 @@ function main() {
         if (importedObs % 50 === 0) {
           console.log(`Imported ${importedObs} observations...`);
         }
-      } catch (e) {
-        console.error(`Error storing observation:`, e);
+      } catch (e: unknown) {
+        console.error(`Error storing observation:`, e instanceof Error ? e.message : String(e));
         skipped++;
       }
       continue;
@@ -358,8 +354,8 @@ function main() {
         if (importedSum % 10 === 0) {
           console.log(`Imported ${importedSum} summaries...`);
         }
-      } catch (e) {
-        console.error(`Error storing summary:`, e);
+      } catch (e: unknown) {
+        console.error(`Error storing summary:`, e instanceof Error ? e.message : String(e));
         skipped++;
       }
       continue;

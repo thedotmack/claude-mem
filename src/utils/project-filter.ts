@@ -63,8 +63,9 @@ export function isProjectExcluded(projectPath: string, exclusionPatterns: string
       if (regex.test(normalizedProjectPath)) {
         return true;
       }
-    } catch {
+    } catch (error: unknown) {
       // Invalid pattern, skip it
+      console.warn(`[project-filter] Invalid exclusion pattern "${pattern}":`, error instanceof Error ? error.message : String(error));
       continue;
     }
   }

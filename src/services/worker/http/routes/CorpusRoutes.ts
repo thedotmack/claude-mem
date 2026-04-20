@@ -7,10 +7,13 @@
 
 import express, { Request, Response } from 'express';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { logger } from '../../../../utils/logger.js';
 import { CorpusStore } from '../../knowledge/CorpusStore.js';
 import { CorpusBuilder } from '../../knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from '../../knowledge/KnowledgeAgent.js';
 import type { CorpusFilter } from '../../knowledge/types.js';
+
+const ALLOWED_CORPUS_TYPES = new Set(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']);
 
 export class CorpusRoutes extends BaseRouteHandler {
   constructor(
@@ -49,15 +52,31 @@ export class CorpusRoutes extends BaseRouteHandler {
 
     const { name, description, project, types, concepts, files, query, date_start, date_end, limit } = req.body;
 
+    const coercedTypes = this.coerceStringArray(types, 'types', res);
+    if (coercedTypes === null) return;
+    if (coercedTypes && !coercedTypes.every(type => ALLOWED_CORPUS_TYPES.has(type))) {
+      this.badRequest(res, 'types must contain valid observation types');
+      return;
+    }
+
+    const coercedConcepts = this.coerceStringArray(concepts, 'concepts', res);
+    if (coercedConcepts === null) return;
+
+    const coercedFiles = this.coerceStringArray(files, 'files', res);
+    if (coercedFiles === null) return;
+
+    const coercedLimit = this.coercePositiveInteger(limit, 'limit', res);
+    if (coercedLimit === null) return;
+
     const filter: CorpusFilter = {};
     if (project) filter.project = project;
-    if (types) filter.types = types;
-    if (concepts) filter.concepts = concepts;
-    if (files) filter.files = files;
+    if (coercedTypes && coercedTypes.length > 0) filter.types = coercedTypes as CorpusFilter['types'];
+    if (coercedConcepts && coercedConcepts.length > 0) filter.concepts = coercedConcepts;
+    if (coercedFiles && coercedFiles.length > 0) filter.files = coercedFiles;
     if (query) filter.query = query;
     if (date_start) filter.date_start = date_start;
     if (date_end) filter.date_end = date_end;
-    if (limit) filter.limit = limit;
+    if (coercedLimit !== undefined) filter.limit = coercedLimit;
 
     const corpus = await this.corpusBuilder.build(name, description || '', filter);
 
@@ -66,13 +85,59 @@ export class CorpusRoutes extends BaseRouteHandler {
     res.json(metadata);
   });
 
+  private coerceStringArray(value: unknown, fieldName: string, res: Response): string[] | null | undefined {
+    if (value === undefined || value === null || value === '') {
+      return undefined;
+    }
+
+    let parsed = value;
+    if (typeof value === 'string') {
+      try {
+        parsed = JSON.parse(value);
+      } catch (parseError: unknown) {
+        if (parseError instanceof Error) {
+          logger.debug('HTTP', `${fieldName} is not valid JSON, treating as comma-separated string`, { value });
+        }
+        parsed = value.split(',').map(part => part.trim()).filter(Boolean);
+      }
+    }
+
+    if (!Array.isArray(parsed) || !parsed.every(item => typeof item === 'string')) {
+      this.badRequest(res, `${fieldName} must be an array of strings`);
+      return null;
+    }
+
+    return parsed.map(item => item.trim()).filter(Boolean);
+  }
+
+  private coercePositiveInteger(value: unknown, fieldName: string, res: Response): number | null | undefined {
+    if (value === undefined || value === null || value === '') {
+      return undefined;
+    }
+
+    const parsed = typeof value === 'string' ? Number(value) : value;
+    if (typeof parsed !== 'number' || !Number.isInteger(parsed) || parsed <= 0) {
+      this.badRequest(res, `${fieldName} must be a positive integer`);
+      return null;
+    }
+
+    return parsed;
+  }
+
   /**
    * List all corpora with stats
    * GET /api/corpus
    */
   private handleListCorpora = this.wrapHandler((_req: Request, res: Response): void => {
     const corpora = this.corpusStore.list();
-    res.json(corpora);
+    // Wrap in MCP CallToolResult shape so the MCP server wrapper (callWorkerAPI)
+    // can forward it without failing tools/call schema validation.
+    // See: #1700 — every other corpus endpoint is a POST that already returns
+    // {content:[...]}, but this GET used to return a bare array, which MCP
+    // rejects with "expected object, received array".
+    res.json({
+      content: [{ type: 'text', text: JSON.stringify(corpora, null, 2) }]
+    });
   });
 
   /**

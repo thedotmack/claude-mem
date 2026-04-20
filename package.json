@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "12.1.0",
+  "version": "12.3.1",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -115,7 +115,7 @@
     "ansi-to-html": "^0.7.2",
     "dompurify": "^3.3.1",
     "express": "^4.18.2",
-    "glob": "^11.0.3",
+    "glob": "^13.0.0",
     "handlebars": "^4.7.8",
     "picocolors": "^1.1.1",
     "react": "^18.3.1",

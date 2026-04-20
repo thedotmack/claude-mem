@@ -52,7 +52,7 @@ export function queryObservations(
       o.created_at_epoch
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE o.project = ?
+    WHERE (o.project = ? OR o.merged_into_project = ?)
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(o.concepts)
@@ -62,6 +62,7 @@ export function queryObservations(
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
   `).all(
+    project,
     project,
     ...typeArray,
     ...conceptArray,
@@ -93,12 +94,12 @@ export function querySummaries(
       ss.created_at_epoch
     FROM session_summaries ss
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    WHERE ss.project = ?
+    WHERE (ss.project = ? OR ss.merged_into_project = ?)
       ${platformSource ? "AND COALESCE(s.platform_source, 'claude') = ?" : ''}
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
   `).all(
-    ...[project, ...(platformSource ? [platformSource] : []), config.sessionCount + SUMMARY_LOOKAHEAD]
+    ...[project, project, ...(platformSource ? [platformSource] : []), config.sessionCount + SUMMARY_LOOKAHEAD]
   ) as SessionSummary[];
 }
 
@@ -141,7 +142,8 @@ export function queryObservationsMulti(
       o.project
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE o.project IN (${projectPlaceholders})
+    WHERE (o.project IN (${projectPlaceholders})
+           OR o.merged_into_project IN (${projectPlaceholders}))
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(o.concepts)
@@ -151,6 +153,7 @@ export function queryObservationsMulti(
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
   `).all(
+    ...projects,
     ...projects,
     ...typeArray,
     ...conceptArray,
@@ -189,11 +192,12 @@ export function querySummariesMulti(
       ss.project
     FROM session_summaries ss
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    WHERE ss.project IN (${projectPlaceholders})
+    WHERE (ss.project IN (${projectPlaceholders})
+           OR ss.merged_into_project IN (${projectPlaceholders}))
       ${platformSource ? "AND COALESCE(s.platform_source, 'claude') = ?" : ''}
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
-  `).all(...projects, ...(platformSource ? [platformSource] : []), config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+  `).all(...projects, ...projects, ...(platformSource ? [platformSource] : []), config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
 }
 
 /**
@@ -204,52 +208,58 @@ function cwdToDashed(cwd: string): string {
 }
 
 /**
+ * Find the last assistant message text from parsed transcript lines.
+ */
+function parseAssistantTextFromLine(line: string): string | null {
+  if (!line.includes('"type":"assistant"')) return null;
+
+  const entry = JSON.parse(line);
+  if (entry.type === 'assistant' && entry.message?.content && Array.isArray(entry.message.content)) {
+    let text = '';
+    for (const block of entry.message.content) {
+      if (block.type === 'text') text += block.text;
+    }
+    text = text.replace(SYSTEM_REMINDER_REGEX, '').trim();
+    if (text) return text;
+  }
+  return null;
+}
+
+function findLastAssistantMessage(lines: string[]): string {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const result = parseAssistantTextFromLine(lines[i]);
+      if (result) return result;
+    } catch (parseError) {
+      if (parseError instanceof Error) {
+        logger.debug('WORKER', 'Skipping malformed transcript line', { lineIndex: i }, parseError);
+      } else {
+        logger.debug('WORKER', 'Skipping malformed transcript line', { lineIndex: i, error: String(parseError) });
+      }
+      continue;
+    }
+  }
+  return '';
+}
+
+/**
  * Extract prior messages from transcript file
  */
 export function extractPriorMessages(transcriptPath: string): PriorMessages {
   try {
-    if (!existsSync(transcriptPath)) {
-      return { userMessage: '', assistantMessage: '' };
-    }
-
+    if (!existsSync(transcriptPath)) return { userMessage: '', assistantMessage: '' };
     const content = readFileSync(transcriptPath, 'utf-8').trim();
-    if (!content) {
-      return { userMessage: '', assistantMessage: '' };
-    }
+    if (!content) return { userMessage: '', assistantMessage: '' };
 
     const lines = content.split('\n').filter(line => line.trim());
-    let lastAssistantMessage = '';
-
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const line = lines[i];
-        if (!line.includes('"type":"assistant"')) {
-          continue;
-        }
-
-        const entry = JSON.parse(line);
-        if (entry.type === 'assistant' && entry.message?.content && Array.isArray(entry.message.content)) {
-          let text = '';
-          for (const block of entry.message.content) {
-            if (block.type === 'text') {
-              text += block.text;
-            }
-          }
-          text = text.replace(SYSTEM_REMINDER_REGEX, '').trim();
-          if (text) {
-            lastAssistantMessage = text;
-            break;
-          }
-        }
-      } catch (parseError) {
-        logger.debug('PARSER', 'Skipping malformed transcript line', { lineIndex: i }, parseError as Error);
-        continue;
-      }
-    }
-
+    const lastAssistantMessage = findLastAssistantMessage(lines);
     return { userMessage: '', assistantMessage: lastAssistantMessage };
   } catch (error) {
-    logger.failure('WORKER', `Failed to extract prior messages from transcript`, { transcriptPath }, error as Error);
+    if (error instanceof Error) {
+      logger.failure('WORKER', 'Failed to extract prior messages from transcript', { transcriptPath }, error);
+    } else {
+      logger.warn('WORKER', 'Failed to extract prior messages from transcript', { transcriptPath, error: String(error) });
+    }
     return { userMessage: '', assistantMessage: '' };
   }
 }

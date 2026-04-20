@@ -221,8 +221,8 @@ export class SettingsDefaultsManager {
           writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
           // Use console instead of logger to avoid circular dependency
           console.log('[SETTINGS] Created settings file with defaults:', settingsPath);
-        } catch (error) {
-          console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error);
+        } catch (error: unknown) {
+          console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
         }
         // Still apply env var overrides even when file doesn't exist
         return this.applyEnvOverrides(defaults);
@@ -241,8 +241,8 @@ export class SettingsDefaultsManager {
         try {
           writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
           console.log('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
-        } catch (error) {
-          console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error);
+        } catch (error: unknown) {
+          console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
           // Continue with in-memory migration even if write fails
         }
       }
@@ -257,8 +257,8 @@ export class SettingsDefaultsManager {
 
       // Apply environment variable overrides (highest priority)
       return this.applyEnvOverrides(result);
-    } catch (error) {
-      console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error);
+    } catch (error: unknown) {
+      console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
       // Still apply env var overrides even on error
       return this.applyEnvOverrides(this.getAllDefaults());
     }

@@ -43,56 +43,55 @@ export const contextHandler: EventHandler = {
 const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}&platformSource=${encodeURIComponent(platformSource)}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
+    const emptyResult = {
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      exitCode: HOOK_EXIT_CODES.SUCCESS
+    };
+
     // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
     // Worker service has its own timeouts, so client-side timeout is redundant
+    let response: Response;
+    let colorResponse: Response | null;
     try {
-      // Fetch markdown (for Claude context) and optionally colored (for user display)
-      const [response, colorResponse] = await Promise.all([
+      [response, colorResponse] = await Promise.all([
         workerHttpRequest(apiPath),
         showTerminalOutput ? workerHttpRequest(colorApiPath).catch(() => null) : Promise.resolve(null)
       ]);
-
-      if (!response.ok) {
-        // Log but don't throw — context fetch failure should not block session start
-        logger.warn('HOOK', 'Context generation failed, returning empty', { status: response.status });
-        return {
-          hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
-          exitCode: HOOK_EXIT_CODES.SUCCESS
-        };
-      }
-
-      const [contextResult, colorResult] = await Promise.all([
-        response.text(),
-        colorResponse?.ok ? colorResponse.text() : Promise.resolve('')
-      ]);
-
-      const additionalContext = contextResult.trim();
-      const coloredTimeline = colorResult.trim();
-      const platform = input.platform;
-
-      // Use colored timeline for display if available, otherwise fall back to 
-      // plain markdown context (especially useful for platforms like Gemini 
-      // where we want to ensure visibility even if colors aren't fetched).
-      const displayContent = coloredTimeline || (platform === 'gemini-cli' || platform === 'gemini' ? additionalContext : '');
-
-      const systemMessage = showTerminalOutput && displayContent
-        ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}`
-        : undefined;
-
-      return {
-        hookSpecificOutput: {
-          hookEventName: 'SessionStart',
-          additionalContext
-        },
-        systemMessage
-      };
     } catch (error) {
       // Worker unreachable — return empty context gracefully
       logger.warn('HOOK', 'Context fetch error, returning empty', { error: error instanceof Error ? error.message : String(error) });
-      return {
-        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
-        exitCode: HOOK_EXIT_CODES.SUCCESS
-      };
+      return emptyResult;
     }
+
+    if (!response.ok) {
+      logger.warn('HOOK', 'Context generation failed, returning empty', { status: response.status });
+      return emptyResult;
+    }
+
+    const [contextResult, colorResult] = await Promise.all([
+      response.text(),
+      colorResponse?.ok ? colorResponse.text() : Promise.resolve('')
+    ]);
+
+    const additionalContext = contextResult.trim();
+    const coloredTimeline = colorResult.trim();
+    const platform = input.platform;
+
+    // Use colored timeline for display if available, otherwise fall back to
+    // plain markdown context (especially useful for platforms like Gemini
+    // where we want to ensure visibility even if colors aren't fetched).
+    const displayContent = coloredTimeline || (platform === 'gemini-cli' || platform === 'gemini' ? additionalContext : '');
+
+    const systemMessage = showTerminalOutput && displayContent
+      ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}`
+      : undefined;
+
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext
+      },
+      systemMessage
+    };
   }
 };

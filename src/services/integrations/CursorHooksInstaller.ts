@@ -117,7 +117,11 @@ export async function updateCursorContextForProject(projectName: string, _port: 
     logger.debug('CURSOR', 'Updated context file', { projectName, workspacePath: entry.workspacePath });
   } catch (error) {
     // [ANTI-PATTERN IGNORED]: Background context update - failure is non-critical, user workflow continues
-    logger.error('CURSOR', 'Failed to update context file', { projectName }, error as Error);
+    if (error instanceof Error) {
+      logger.error('WORKER', 'Failed to update context file', { projectName }, error);
+    } else {
+      logger.error('WORKER', 'Failed to update context file', { projectName }, new Error(String(error)));
+    }
   }
 }
 
@@ -259,7 +263,11 @@ export function configureCursorMcp(target: CursorInstallTarget): number {
         }
       } catch (error) {
         // [ANTI-PATTERN IGNORED]: Fallback behavior - corrupt config, continue with empty
-        logger.error('SYSTEM', 'Corrupt mcp.json, creating new config', { path: mcpJsonPath }, error as Error);
+        if (error instanceof Error) {
+          logger.error('WORKER', 'Corrupt mcp.json, creating new config', { path: mcpJsonPath }, error);
+        } else {
+          logger.error('WORKER', 'Corrupt mcp.json, creating new config', { path: mcpJsonPath }, new Error(String(error)));
+        }
         config = { mcpServers: {} };
       }
     }
@@ -308,60 +316,79 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
 
   const workspaceRoot = process.cwd();
 
-  try {
-    // Create target directory
-    mkdirSync(targetDir, { recursive: true });
+  // Generate hooks.json with unified CLI commands
+  const hooksJsonPath = path.join(targetDir, 'hooks.json');
 
-    // Generate hooks.json with unified CLI commands
-    const hooksJsonPath = path.join(targetDir, 'hooks.json');
+  // Find bun executable - required because worker-service.cjs uses bun:sqlite
+  const bunPath = findBunPath();
+  const escapedBunPath = bunPath.replace(/\\/g, '\\\\');
 
-    // Find bun executable - required because worker-service.cjs uses bun:sqlite
-    const bunPath = findBunPath();
-    const escapedBunPath = bunPath.replace(/\\/g, '\\\\');
+  // Use the absolute path to worker-service.cjs
+  // Escape backslashes for JSON on Windows
+  const escapedWorkerPath = workerServicePath.replace(/\\/g, '\\\\');
 
-    // Use the absolute path to worker-service.cjs
-    // Escape backslashes for JSON on Windows
-    const escapedWorkerPath = workerServicePath.replace(/\\/g, '\\\\');
+  // Helper to create hook command using unified CLI with bun runtime
+  const makeHookCommand = (command: string) => {
+    return `"${escapedBunPath}" "${escapedWorkerPath}" hook cursor ${command}`;
+  };
 
-    // Helper to create hook command using unified CLI with bun runtime
-    const makeHookCommand = (command: string) => {
-      return `"${escapedBunPath}" "${escapedWorkerPath}" hook cursor ${command}`;
-    };
+  console.log(`  Using Bun runtime: ${bunPath}`);
 
-    console.log(`  Using Bun runtime: ${bunPath}`);
-
-    const hooksJson: CursorHooksJson = {
-      version: 1,
-      hooks: {
-        beforeSubmitPrompt: [
-          { command: makeHookCommand('session-init') },
-          { command: makeHookCommand('context') }
-        ],
-        afterMCPExecution: [
-          { command: makeHookCommand('observation') }
-        ],
-        afterShellExecution: [
-          { command: makeHookCommand('observation') }
-        ],
-        afterFileEdit: [
-          { command: makeHookCommand('file-edit') }
-        ],
-        stop: [
-          { command: makeHookCommand('summarize') }
-        ]
-      }
-    };
-
-    writeFileSync(hooksJsonPath, JSON.stringify(hooksJson, null, 2));
-    console.log(`  Created hooks.json (unified CLI mode)`);
-    console.log(`  Worker service: ${workerServicePath}`);
-
-    // For project-level: create initial context file
-    if (target === 'project') {
-      await setupProjectContext(targetDir, workspaceRoot);
+  const hooksJson: CursorHooksJson = {
+    version: 1,
+    hooks: {
+      beforeSubmitPrompt: [
+        { command: makeHookCommand('session-init') },
+        { command: makeHookCommand('context') }
+      ],
+      afterMCPExecution: [
+        { command: makeHookCommand('observation') }
+      ],
+      afterShellExecution: [
+        { command: makeHookCommand('observation') }
+      ],
+      afterFileEdit: [
+        { command: makeHookCommand('file-edit') }
+      ],
+      stop: [
+        { command: makeHookCommand('summarize') }
+      ]
     }
+  };
 
-    console.log(`
+  try {
+    // Create target directory inside try to catch EACCES/EPERM
+    mkdirSync(targetDir, { recursive: true });
+    await writeHooksJsonAndSetupProject(hooksJsonPath, hooksJson, workerServicePath, target, targetDir, workspaceRoot);
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\nInstallation failed: ${message}`);
+    if (target === 'enterprise') {
+      console.error('   Tip: Enterprise installation may require sudo/admin privileges');
+    }
+    return 1;
+  }
+}
+
+async function writeHooksJsonAndSetupProject(
+  hooksJsonPath: string,
+  hooksJson: CursorHooksJson,
+  workerServicePath: string,
+  target: CursorInstallTarget,
+  targetDir: string,
+  workspaceRoot: string,
+): Promise<void> {
+  writeFileSync(hooksJsonPath, JSON.stringify(hooksJson, null, 2));
+  console.log(`  Created hooks.json (unified CLI mode)`);
+  console.log(`  Worker service: ${workerServicePath}`);
+
+  // For project-level: create initial context file
+  if (target === 'project') {
+    await setupProjectContext(targetDir, workspaceRoot);
+  }
+
+  console.log(`
 Installation complete!
 
 Hooks installed to: ${targetDir}/hooks.json
@@ -376,15 +403,6 @@ Context Injection:
   Context from past sessions is stored in .cursor/rules/claude-mem-context.mdc
   and automatically included in every chat. It updates after each session ends.
 `);
-
-    return 0;
-  } catch (error) {
-    console.error(`\nInstallation failed: ${(error as Error).message}`);
-    if (target === 'enterprise') {
-      console.error('   Tip: Enterprise installation may require sudo/admin privileges');
-    }
-    return 1;
-  }
 }
 
 /**
@@ -400,25 +418,14 @@ async function setupProjectContext(targetDir: string, workspaceRoot: string): Pr
   console.log(`  Generating initial context...`);
 
   try {
-    // Check if worker is running (uses socket or TCP automatically)
-    const healthResponse = await workerHttpRequest('/api/readiness');
-    if (healthResponse.ok) {
-      // Fetch context
-      const contextResponse = await workerHttpRequest(
-        `/api/context/inject?project=${encodeURIComponent(projectName)}`
-      );
-      if (contextResponse.ok) {
-        const context = await contextResponse.text();
-        if (context && context.trim()) {
-          writeContextFile(workspaceRoot, context);
-          contextGenerated = true;
-          console.log(`  Generated initial context from existing memory`);
-        }
-      }
-    }
+    contextGenerated = await fetchInitialContextFromWorker(projectName, workspaceRoot);
   } catch (error) {
     // [ANTI-PATTERN IGNORED]: Fallback behavior - worker not running, use placeholder
-    logger.debug('CURSOR', 'Worker not running during install', {}, error as Error);
+    if (error instanceof Error) {
+      logger.debug('WORKER', 'Worker not running during install', {}, error);
+    } else {
+      logger.debug('WORKER', 'Worker not running during install', {}, new Error(String(error)));
+    }
   }
 
   if (!contextGenerated) {
@@ -444,6 +451,27 @@ Use claude-mem's MCP search tools for manual memory queries.
   console.log(`  Registered for auto-context updates`);
 }
 
+async function fetchInitialContextFromWorker(
+  projectName: string,
+  workspaceRoot: string,
+): Promise<boolean> {
+  const healthResponse = await workerHttpRequest('/api/readiness');
+  if (!healthResponse.ok) return false;
+
+  const contextResponse = await workerHttpRequest(
+    `/api/context/inject?project=${encodeURIComponent(projectName)}`,
+  );
+  if (!contextResponse.ok) return false;
+
+  const context = await contextResponse.text();
+  if (context && context.trim()) {
+    writeContextFile(workspaceRoot, context);
+    console.log(`  Generated initial context from existing memory`);
+    return true;
+  }
+  return false;
+}
+
 /**
  * Uninstall Cursor hooks
  */
@@ -456,54 +484,61 @@ export function uninstallCursorHooks(target: CursorInstallTarget): number {
     return 1;
   }
 
+  const hooksDir = path.join(targetDir, 'hooks');
+  const hooksJsonPath = path.join(targetDir, 'hooks.json');
+
+  // Remove legacy shell scripts if they exist (from old installations)
+  const bashScripts = ['common.sh', 'session-init.sh', 'context-inject.sh',
+                      'save-observation.sh', 'save-file-edit.sh', 'session-summary.sh'];
+  const psScripts = ['common.ps1', 'session-init.ps1', 'context-inject.ps1',
+                     'save-observation.ps1', 'save-file-edit.ps1', 'session-summary.ps1'];
+
+  const allScripts = [...bashScripts, ...psScripts];
+
   try {
-    const hooksDir = path.join(targetDir, 'hooks');
-    const hooksJsonPath = path.join(targetDir, 'hooks.json');
-
-    // Remove legacy shell scripts if they exist (from old installations)
-    const bashScripts = ['common.sh', 'session-init.sh', 'context-inject.sh',
-                        'save-observation.sh', 'save-file-edit.sh', 'session-summary.sh'];
-    const psScripts = ['common.ps1', 'session-init.ps1', 'context-inject.ps1',
-                       'save-observation.ps1', 'save-file-edit.ps1', 'session-summary.ps1'];
-
-    const allScripts = [...bashScripts, ...psScripts];
-
-    for (const script of allScripts) {
-      const scriptPath = path.join(hooksDir, script);
-      if (existsSync(scriptPath)) {
-        unlinkSync(scriptPath);
-        console.log(`  Removed legacy script: ${script}`);
-      }
-    }
-
-    // Remove hooks.json
-    if (existsSync(hooksJsonPath)) {
-      unlinkSync(hooksJsonPath);
-      console.log(`  Removed hooks.json`);
-    }
-
-    // Remove context file and unregister if project-level
-    if (target === 'project') {
-      const contextFile = path.join(targetDir, 'rules', 'claude-mem-context.mdc');
-      if (existsSync(contextFile)) {
-        unlinkSync(contextFile);
-        console.log(`  Removed context file`);
-      }
-
-      // Unregister from auto-context updates
-      const projectName = path.basename(process.cwd());
-      unregisterCursorProject(projectName);
-      console.log(`  Unregistered from auto-context updates`);
-    }
-
-    console.log(`\nUninstallation complete!\n`);
-    console.log('Restart Cursor to apply changes.');
-
+    removeCursorHooksFiles(hooksDir, allScripts, hooksJsonPath, target, targetDir);
     return 0;
   } catch (error) {
-    console.error(`\nUninstallation failed: ${(error as Error).message}`);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\nUninstallation failed: ${message}`);
     return 1;
   }
+}
+
+function removeCursorHooksFiles(
+  hooksDir: string,
+  allScripts: string[],
+  hooksJsonPath: string,
+  target: CursorInstallTarget,
+  targetDir: string,
+): void {
+  for (const script of allScripts) {
+    const scriptPath = path.join(hooksDir, script);
+    if (existsSync(scriptPath)) {
+      unlinkSync(scriptPath);
+      console.log(`  Removed legacy script: ${script}`);
+    }
+  }
+
+  if (existsSync(hooksJsonPath)) {
+    unlinkSync(hooksJsonPath);
+    console.log(`  Removed hooks.json`);
+  }
+
+  if (target === 'project') {
+    const contextFile = path.join(targetDir, 'rules', 'claude-mem-context.mdc');
+    if (existsSync(contextFile)) {
+      unlinkSync(contextFile);
+      console.log(`  Removed context file`);
+    }
+
+    const projectName = path.basename(process.cwd());
+    unregisterCursorProject(projectName);
+    console.log(`  Unregistered from auto-context updates`);
+  }
+
+  console.log(`\nUninstallation complete!\n`);
+  console.log('Restart Cursor to apply changes.');
 }
 
 /**
@@ -535,8 +570,19 @@ export function checkCursorHooksStatus(): number {
       console.log(`   Config: ${hooksJson}`);
 
       // Check if using unified CLI mode or legacy shell scripts
+      let hooksContent: any = null;
       try {
-        const hooksContent = JSON.parse(readFileSync(hooksJson, 'utf-8'));
+        hooksContent = JSON.parse(readFileSync(hooksJson, 'utf-8'));
+      } catch (error) {
+        if (error instanceof Error) {
+          logger.error('WORKER', 'Unable to parse hooks.json', { path: hooksJson }, error);
+        } else {
+          logger.error('WORKER', 'Unable to parse hooks.json', { path: hooksJson }, new Error(String(error)));
+        }
+        console.log(`   Mode: Unable to parse hooks.json`);
+      }
+
+      if (hooksContent) {
         const firstCommand = hooksContent?.hooks?.beforeSubmitPrompt?.[0]?.command || '';
 
         if (firstCommand.includes('worker-service.cjs') && firstCommand.includes('hook cursor')) {
@@ -562,8 +608,6 @@ export function checkCursorHooksStatus(): number {
             console.log(`   Mode: Unknown configuration`);
           }
         }
-      } catch {
-        console.log(`   Mode: Unable to parse hooks.json`);
       }
 
       // Check for context file (project only)
@@ -601,7 +645,11 @@ export async function detectClaudeCode(): Promise<boolean> {
     }
   } catch (error) {
     // [ANTI-PATTERN IGNORED]: Fallback behavior - CLI not found, continue to directory check
-    logger.debug('SYSTEM', 'Claude CLI not in PATH', {}, error as Error);
+    if (error instanceof Error) {
+      logger.debug('WORKER', 'Claude CLI not in PATH', {}, error);
+    } else {
+      logger.debug('WORKER', 'Claude CLI not in PATH', {}, new Error(String(error)));
+    }
   }
 
   // Check for Claude Code plugin directory (respects CLAUDE_CONFIG_DIR)

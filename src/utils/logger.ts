@@ -60,9 +60,9 @@ class Logger {
       // Create log file path with date
       const date = new Date().toISOString().split('T')[0];
       this.logFilePath = join(logsDir, `claude-mem-${date}.log`);
-    } catch (error) {
-      // If log file initialization fails, just log to console
-      console.error('[LOGGER] Failed to initialize log file:', error);
+    } catch (error: unknown) {
+      // [ANTI-PATTERN IGNORED]: Logger cannot log its own failures, using stderr/console as last resort
+      console.error('[LOGGER] Failed to initialize log file:', error instanceof Error ? error.message : String(error));
       this.logFilePath = null;
     }
   }
@@ -84,8 +84,9 @@ class Logger {
         } else {
           this.level = LogLevel.INFO;
         }
-      } catch (error) {
-        // Fallback to INFO if settings can't be loaded
+      } catch (error: unknown) {
+        // [ANTI-PATTERN IGNORED]: Logger cannot log its own failures, using stderr/console as last resort
+        console.error('[LOGGER] Failed to load log level from settings:', error instanceof Error ? error.message : String(error));
         this.level = LogLevel.INFO;
       }
     }
@@ -152,8 +153,8 @@ class Logger {
     if (typeof toolInput === 'string') {
       try {
         input = JSON.parse(toolInput);
-      } catch {
-        // Input is a raw string (e.g., Bash command), use as-is
+      } catch (_parseError: unknown) {
+        // Input is a raw string (e.g., Bash command), use as-is — JSON.parse failure is expected here
         input = toolInput;
       }
     }
@@ -289,10 +290,10 @@ class Logger {
     if (this.logFilePath) {
       try {
         appendFileSync(this.logFilePath, logLine + '\n', 'utf8');
-      } catch (error) {
-        // Logger can't log its own failures - use stderr as last resort
+      } catch (error: unknown) {
+        // [ANTI-PATTERN IGNORED]: Logger cannot log its own failures, using stderr/console as last resort
         // This is expected during disk full / permission errors
-        process.stderr.write(`[LOGGER] Failed to write to log file: ${error}\n`);
+        process.stderr.write(`[LOGGER] Failed to write to log file: ${error instanceof Error ? error.message : String(error)}\n`);
       }
     } else {
       // If no log file available, write to stderr as fallback

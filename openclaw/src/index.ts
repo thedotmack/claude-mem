@@ -264,12 +264,80 @@ function workerBaseUrl(port: number): string {
   return `http://${_workerHost}:${port}`;
 }
 
+// ============================================================================
+// Worker Circuit Breaker
+// ============================================================================
+// Prevents CPU-spinning retry loops when the worker is unreachable.
+// After CIRCUIT_BREAKER_THRESHOLD consecutive network errors, the circuit
+// opens and all worker calls are silently dropped for CIRCUIT_BREAKER_COOLDOWN_MS.
+// After the cooldown, one probe attempt is allowed to check if the worker recovered.
+
+const CIRCUIT_BREAKER_THRESHOLD = 3;
+const CIRCUIT_BREAKER_COOLDOWN_MS = 30_000;
+
+type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
+
+let _circuitState: CircuitState = "CLOSED";
+let _circuitFailures = 0;
+let _circuitOpenedAt = 0;
+let _halfOpenProbeInFlight = false;
+
+function circuitAllow(logger: PluginLogger): boolean {
+  if (_circuitState === "CLOSED") return true;
+  if (_circuitState === "OPEN") {
+    if (Date.now() - _circuitOpenedAt >= CIRCUIT_BREAKER_COOLDOWN_MS) {
+      _circuitState = "HALF_OPEN";
+      logger.info("[claude-mem] Circuit breaker: probing worker connection");
+      if (_halfOpenProbeInFlight) return false;
+      _halfOpenProbeInFlight = true;
+      return true;
+    }
+    return false;
+  }
+  // HALF_OPEN: allow one probe through
+  if (_halfOpenProbeInFlight) return false;
+  _halfOpenProbeInFlight = true;
+  return true;
+}
+
+function circuitOnSuccess(logger: PluginLogger): void {
+  if (_circuitState !== "CLOSED") {
+    logger.info("[claude-mem] Worker connection restored — circuit closed");
+  }
+  _circuitState = "CLOSED";
+  _circuitFailures = 0;
+  _halfOpenProbeInFlight = false;
+}
+
+function circuitOnFailure(logger: PluginLogger): void {
+  _halfOpenProbeInFlight = false;
+  _circuitFailures++;
+  if (
+    _circuitState === "HALF_OPEN" ||
+    (_circuitState === "CLOSED" && _circuitFailures >= CIRCUIT_BREAKER_THRESHOLD)
+  ) {
+    _circuitState = "OPEN";
+    _circuitOpenedAt = Date.now();
+    logger.warn(
+      `[claude-mem] Worker unreachable — disabling requests for ${CIRCUIT_BREAKER_COOLDOWN_MS / 1000}s`
+    );
+  }
+}
+
+function circuitReset(): void {
+  _circuitState = "CLOSED";
+  _circuitFailures = 0;
+  _circuitOpenedAt = 0;
+  _halfOpenProbeInFlight = false;
+}
+
 async function workerPost(
   port: number,
   path: string,
   body: Record<string, unknown>,
   logger: PluginLogger
 ): Promise<Record<string, unknown> | null> {
+  if (!circuitAllow(logger)) return null;
   try {
     const response = await fetch(`${workerBaseUrl(port)}${path}`, {
       method: "POST",
@@ -277,13 +345,18 @@ async function workerPost(
       body: JSON.stringify(body),
     });
     if (!response.ok) {
+      circuitOnFailure(logger);
       logger.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
       return null;
     }
+    circuitOnSuccess(logger);
     return (await response.json()) as Record<string, unknown>;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    logger.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
+    circuitOnFailure(logger);
+    if (_circuitState !== "OPEN") {
+      logger.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
+    }
     return null;
   }
 }
@@ -294,13 +367,24 @@ function workerPostFireAndForget(
   body: Record<string, unknown>,
   logger: PluginLogger
 ): void {
+  if (!circuitAllow(logger)) return;
   fetch(`${workerBaseUrl(port)}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  }).then((response) => {
+    if (!response.ok) {
+      circuitOnFailure(logger);
+      logger.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
+      return;
+    }
+    circuitOnSuccess(logger);
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    logger.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
+    circuitOnFailure(logger);
+    if (_circuitState !== "OPEN") {
+      logger.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
+    }
   });
 }
 
@@ -309,16 +393,22 @@ async function workerGetText(
   path: string,
   logger: PluginLogger
 ): Promise<string | null> {
+  if (!circuitAllow(logger)) return null;
   try {
     const response = await fetch(`${workerBaseUrl(port)}${path}`);
     if (!response.ok) {
+      circuitOnFailure(logger);
       logger.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
       return null;
     }
+    circuitOnSuccess(logger);
     return await response.text();
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    logger.warn(`[claude-mem] Worker GET ${path} failed: ${message}`);
+    circuitOnFailure(logger);
+    if (_circuitState !== "OPEN") {
+      logger.warn(`[claude-mem] Worker GET ${path} failed: ${message}`);
+    }
     return null;
   }
 }
@@ -856,6 +946,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // Event: gateway_start — clear session tracking for fresh start
   // ------------------------------------------------------------------
   api.on("gateway_start", async () => {
+    circuitReset();
     sessionIds.clear();
     contextCache.clear();
     recentPromptInits.clear();

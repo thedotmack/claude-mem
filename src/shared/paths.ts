@@ -75,6 +75,10 @@ export const VECTOR_DB_DIR = join(DATA_DIR, 'vector-db');
 // Sessions here won't appear in user's `claude --resume` for their actual projects
 export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');
 
+// Project name assigned to observer sessions (basename of OBSERVER_SESSIONS_DIR).
+// UI queries filter this out so internal worker sessions don't pollute project lists.
+export const OBSERVER_SESSIONS_PROJECT = basename(OBSERVER_SESSIONS_DIR);
+
 // Claude integration paths
 export const CLAUDE_SETTINGS_PATH = join(CLAUDE_CONFIG_DIR, 'settings.json');
 export const CLAUDE_COMMANDS_DIR = join(CLAUDE_CONFIG_DIR, 'commands');
@@ -142,10 +146,10 @@ export function getCurrentProjectName(): string {
       windowsHide: true
     }).trim();
     return basename(dirname(gitRoot)) + '/' + basename(gitRoot);
-  } catch (error) {
+  } catch (error: unknown) {
     logger.debug('SYSTEM', 'Git root detection failed, using cwd basename', {
       cwd: process.cwd()
-    }, error as Error);
+    }, error instanceof Error ? error : new Error(String(error)));
     const cwd = process.cwd();
     return basename(dirname(cwd)) + '/' + basename(cwd);
   }

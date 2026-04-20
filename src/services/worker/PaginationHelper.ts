@@ -9,6 +9,7 @@
 
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
+import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import type { PaginatedResult, Observation, Summary, UserPrompt } from '../worker-types.js';
 
 export class PaginationHelper {
@@ -24,15 +25,17 @@ export class PaginationHelper {
    * Uses first occurrence of project name from left (project root)
    */
   private stripProjectPath(filePath: string, projectName: string): string {
-    const marker = `/${projectName}/`;
+    // Composite names ("parent/worktree") don't appear in on-disk paths for
+    // standard git worktrees — only the checkout basename does. Match on the
+    // leaf segment so the heuristic works regardless of worktree layout.
+    const leaf = projectName.includes('/') ? projectName.split('/').pop()! : projectName;
+    const marker = `/${leaf}/`;
     const index = filePath.indexOf(marker);
 
     if (index !== -1) {
-      // Strip everything before and including the project name
       return filePath.substring(index + marker.length);
     }
 
-    // Fallback: return original path if project name not found
     return filePath;
   }
 
@@ -52,7 +55,11 @@ export class PaginationHelper {
       // Return as JSON string
       return JSON.stringify(strippedPaths);
     } catch (err) {
-      logger.debug('WORKER', 'File paths is plain string, using as-is', {}, err as Error);
+      if (err instanceof Error) {
+        logger.debug('WORKER', 'File paths is plain string, using as-is', {}, err);
+      } else {
+        logger.debug('WORKER', 'File paths is plain string, using as-is', { rawError: String(err) });
+      }
       return filePathsStr;
     }
   }
@@ -78,6 +85,7 @@ export class PaginationHelper {
         o.id,
         o.memory_session_id,
         o.project,
+        o.merged_into_project,
         COALESCE(s.platform_source, 'claude') as platform_source,
         o.type,
         o.title,
@@ -99,8 +107,14 @@ export class PaginationHelper {
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('o.project = ?');
-      params.push(project);
+      // Include adopted merged-worktree rows so the parent project's view
+      // surfaces observations that originated under its merged children.
+      conditions.push('(o.project = ? OR o.merged_into_project = ?)');
+      params.push(project, project);
+    } else {
+      // Hide internal observer-session rows from the unfiltered UI list.
+      conditions.push('o.project != ?');
+      params.push(OBSERVER_SESSIONS_PROJECT);
     }
     if (platformSource) {
       conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
@@ -155,8 +169,13 @@ export class PaginationHelper {
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('ss.project = ?');
-      params.push(project);
+      // Include adopted merged-worktree summaries so the parent project's view
+      // surfaces rows that originated under its merged children.
+      conditions.push('(ss.project = ? OR ss.merged_into_project = ?)');
+      params.push(project, project);
+    } else {
+      // Hide internal observer-session rows from the unfiltered UI list.
+      conditions.push("ss.project != 'observer-sessions'");
     }
 
     if (platformSource) {
@@ -208,6 +227,9 @@ export class PaginationHelper {
     if (project) {
       conditions.push('s.project = ?');
       params.push(project);
+    } else {
+      // Hide internal observer-session rows from the unfiltered UI list.
+      conditions.push("s.project != 'observer-sessions'");
     }
 
     if (platformSource) {
