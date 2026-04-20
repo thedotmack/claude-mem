@@ -80,17 +80,31 @@ export async function processAgentResponse(
 
   const summary = parseSummary(text, session.sessionDbId, summaryExpected);
 
-  if (
+  // Detect non-XML responses (auth errors, rate limits, garbled output).
+  // When the response contains no parseable XML and produced no observations,
+  // mark the pending messages as failed instead of confirming them — this prevents
+  // silent data loss when the LLM returns garbage (#1874).
+  const isNonXmlResponse = (
     text.trim() &&
     observations.length === 0 &&
     !summary &&
     !/<observation>|<summary>|<skip_summary\b/.test(text)
-  ) {
+  );
+
+  if (isNonXmlResponse) {
     const preview = text.length > 200 ? `${text.slice(0, 200)}...` : text;
-    logger.warn('PARSER', `${agentName} returned non-XML response; observation content was discarded`, {
+    logger.warn('PARSER', `${agentName} returned non-XML response; marking messages as failed for retry (#1874)`, {
       sessionId: session.sessionDbId,
       preview
     });
+
+    // Mark messages as failed (retry logic in PendingMessageStore handles retries)
+    const pendingStore = sessionManager.getPendingMessageStore();
+    for (const messageId of session.processingMessageIds) {
+      pendingStore.markFailed(messageId);
+    }
+    session.processingMessageIds = [];
+    return;
   }
 
   // Convert nullable fields to empty strings for storeSummary (if summary exists)
