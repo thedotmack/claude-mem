@@ -64,13 +64,15 @@ else:
     sys.exit(1)
 PY
 
-REPO=$(python3 -c "import json,sys; print(json.load(open('$INSTANCE_JSON'))['repo'])")
-BASE_COMMIT=$(python3 -c "import json,sys; print(json.load(open('$INSTANCE_JSON'))['base_commit'])")
+# Read JSON fields from stdin so $INSTANCE_JSON paths with spaces/special chars
+# don't break shell interpolation inside `python3 -c`.
+REPO=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["repo"])' < "$INSTANCE_JSON")
+BASE_COMMIT=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["base_commit"])' < "$INSTANCE_JSON")
 
 SCRATCH="$(mktemp -d -t claude-mem-smoke.XXXXXX)"
 trap 'rm -f "$CREDS_FILE" "$INSTANCE_JSON"; rm -rf "$SCRATCH"' EXIT
 
-python3 -c "import json; open('$SCRATCH/problem.txt','w').write(json.load(open('$INSTANCE_JSON'))['problem_statement'])"
+python3 -c 'import json,sys,os; open(os.path.join(sys.argv[1],"problem.txt"),"w").write(json.load(sys.stdin)["problem_statement"])' "$SCRATCH" < "$INSTANCE_JSON"
 
 echo "=== Running $INSTANCE_ID ($REPO @ $BASE_COMMIT) ===" >&2
 echo "Scratch: $SCRATCH" >&2

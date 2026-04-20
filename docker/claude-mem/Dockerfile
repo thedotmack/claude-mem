@@ -38,14 +38,18 @@ RUN apt-get update \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Bun — system-wide so the unprivileged `node` user can execute it.
+# Pin via --build-arg BUN_VERSION=X.Y.Z; default is the version verified at PR time.
+ARG BUN_VERSION=1.3.12
 ENV BUN_INSTALL="/usr/local/bun"
-RUN curl -fsSL https://bun.sh/install | bash \
+RUN curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" \
  && chmod -R a+rX /usr/local/bun
 ENV PATH="/usr/local/bun/bin:${PATH}"
 
-# uv — system-wide, for Chroma's Python runtime.
+# uv — system-wide, for Chroma's Python runtime. Pin via --build-arg UV_VERSION=X.Y.Z.
+# Versioned installer URL per https://docs.astral.sh/uv/getting-started/installation/.
+ARG UV_VERSION=0.11.7
 ENV UV_INSTALL_DIR="/usr/local/bin"
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh \
  && chmod a+rX /usr/local/bin/uv /usr/local/bin/uvx 2>/dev/null || true
 
 # Match the upstream devcontainer's npm-global prefix so `npm install -g`

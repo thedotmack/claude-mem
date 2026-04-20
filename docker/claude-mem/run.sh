@@ -38,7 +38,7 @@ if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
     echo "ERROR: no ANTHROPIC_API_KEY and no ~/.claude/.credentials.json." >&2
     exit 1
   fi
-  chmod 644 "$CREDS_FILE"
+  chmod 600 "$CREDS_FILE"
   CREDS_MOUNT_ARGS=(
     -e CLAUDE_MEM_CREDENTIALS_FILE=/auth/.credentials.json
     -v "$CREDS_FILE:/auth/.credentials.json:ro"

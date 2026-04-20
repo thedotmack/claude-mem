@@ -183,6 +183,15 @@ def parse_args() -> argparse.Namespace:
             "falls back to api-key."
         ),
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Truncate existing predictions.jsonl for this --run-id. "
+            "Without this flag, the run aborts if predictions already exist "
+            "(protects partial results from accidental re-runs)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -407,7 +416,19 @@ def main() -> int:
     predictions_dir = predictions_path.parent
     run_dir = predictions_dir  # logs land in evals/swebench/runs/<run_id>/<instance_id>/
     predictions_dir.mkdir(parents=True, exist_ok=True)
-    # Truncate any existing predictions file for this run so re-runs are clean.
+    # Don't silently discard partial results from a prior run.
+    if predictions_path.exists() and predictions_path.stat().st_size > 0:
+        if not args.overwrite:
+            print(
+                f"ERROR: {predictions_path} already exists and is non-empty. "
+                "Pass --overwrite to truncate, or pick a different --run-id.",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"WARN: --overwrite set; truncating existing {predictions_path}",
+            file=sys.stderr,
+        )
     predictions_path.write_text("", encoding="utf-8")
 
     # Resolve auth: OAuth (Max/Pro subscription) or API key.
