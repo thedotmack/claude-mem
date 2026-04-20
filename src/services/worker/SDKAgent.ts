@@ -14,7 +14,7 @@ import path from 'path';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt, buildConversationObservationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../shared/paths.js';
 import { buildIsolatedEnv, getAuthMethodDescription } from '../../shared/EnvManager.js';
@@ -425,6 +425,23 @@ export class SDKAgent {
           message: {
             role: 'user',
             content: summaryPrompt
+          },
+          session_id: session.contentSessionId,
+          parent_tool_use_id: null,
+          isSynthetic: true
+        };
+      } else if (message.type === 'conversation') {
+        // TITANS conversation observer: analyze exchanges for behavioral/emotional signals
+        const conversationPrompt = buildConversationObservationPrompt(message.exchanges || [], mode);
+
+        // Add to shared conversation history for provider interop
+        session.conversationHistory.push({ role: 'user', content: conversationPrompt });
+
+        yield {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: conversationPrompt
           },
           session_id: session.contentSessionId,
           parent_tool_use_id: null,

@@ -39,6 +39,7 @@ export class MigrationRunner {
     this.addSessionPlatformSourceColumn();
     this.addObservationModelColumns();
     this.addObservationMetadataColumn();
+    this.addConversationMessageType();
   }
 
   /**
@@ -515,7 +516,7 @@ export class MigrationRunner {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_db_id INTEGER NOT NULL,
         content_session_id TEXT NOT NULL,
-        message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize')),
+        message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize', 'conversation')),
         tool_name TEXT,
         tool_input TEXT,
         tool_response TEXT,
@@ -972,5 +973,57 @@ export class MigrationRunner {
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(27, new Date().toISOString());
     logger.debug('DB', 'Added metadata column to observations table with computed indexes');
+  }
+
+  /**
+   * Add 'conversation' to pending_messages message_type CHECK constraint (migration 28).
+   * SQLite does not support ALTER CHECK — must recreate the table.
+   */
+  private addConversationMessageType(): void {
+    const applied = this.db.prepare('SELECT 1 FROM schema_versions WHERE version = 28').get();
+    if (applied) return;
+
+    logger.debug('DB', 'Adding conversation message type to pending_messages');
+
+    this.db.run('ALTER TABLE pending_messages RENAME TO pending_messages_old');
+
+    this.db.run(`
+      CREATE TABLE pending_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_db_id INTEGER NOT NULL,
+        content_session_id TEXT NOT NULL,
+        message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize', 'conversation')),
+        tool_name TEXT,
+        tool_input TEXT,
+        tool_response TEXT,
+        cwd TEXT,
+        last_user_message TEXT,
+        last_assistant_message TEXT,
+        prompt_number INTEGER,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'processed', 'failed')),
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        created_at_epoch INTEGER NOT NULL,
+        started_processing_at_epoch INTEGER,
+        completed_at_epoch INTEGER,
+        failed_at_epoch INTEGER,
+        branch TEXT,
+        commit_sha TEXT,
+        FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
+      )
+    `);
+
+    this.db.run(`
+      INSERT INTO pending_messages
+      SELECT * FROM pending_messages_old
+    `);
+
+    this.db.run('DROP TABLE pending_messages_old');
+
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_session ON pending_messages(session_db_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_status ON pending_messages(status)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_claude_session ON pending_messages(content_session_id)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
+    logger.debug('DB', 'Added conversation message type to pending_messages CHECK constraint');
   }
 }

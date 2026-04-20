@@ -242,6 +242,48 @@ export class SessionManager {
   }
 
   /**
+   * Queue a conversation observation for processing (zero-latency notification)
+   * Auto-initializes session if not in memory but exists in database
+   *
+   * CRITICAL: Persists to database FIRST before adding to in-memory queue.
+   * Conversation exchanges are analyzed by the SDK agent using the TITANS
+   * conversation observation prompt for behavioral/emotional signal detection.
+   */
+  queueConversation(sessionDbId: number, exchanges: Array<{ promptNumber: number; userText: string; assistantText: string }>): void {
+    // Auto-initialize from database if needed (handles worker restarts)
+    let session = this.sessions.get(sessionDbId);
+    if (!session) {
+      session = this.initializeSession(sessionDbId);
+    }
+
+    // CRITICAL: Persist to database FIRST
+    // Store exchanges in tool_response — enqueue() will JSON.stringify it
+    const message: PendingMessage = {
+      type: 'conversation',
+      tool_response: exchanges,
+      prompt_number: exchanges[0]?.promptNumber ?? 1
+    };
+
+    try {
+      const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
+      const queueDepth = this.getPendingStore().getPendingCount(sessionDbId);
+      logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=conversation | exchangeCount=${exchanges.length} | depth=${queueDepth}`, {
+        sessionId: sessionDbId
+      });
+    } catch (error) {
+      logger.error('SESSION', 'Failed to persist conversation to DB', {
+        sessionId: sessionDbId,
+        exchangeCount: exchanges.length
+      }, error);
+      throw error; // Don't continue if we can't persist
+    }
+
+    // Notify generator immediately (zero latency)
+    const emitter = this.sessionQueues.get(sessionDbId);
+    emitter?.emit('message');
+  }
+
+  /**
    * Queue a summarize request (zero-latency notification)
    * Auto-initializes session if not in memory but exists in database
    *

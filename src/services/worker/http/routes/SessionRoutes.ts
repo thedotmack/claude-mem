@@ -9,10 +9,6 @@ import express, { Request, Response } from 'express';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt, stripTranscriptPrivacyTags, chunkText } from '../../../../utils/tag-stripping.js';
-import { buildConversationObservationPrompt } from '../../../../sdk/prompts.js';
-import { parseObservations } from '../../../../sdk/parser.js';
-import { oneShotQuery } from '../../OneShotQuery.js';
-import { ModeManager } from '../../../domain/ModeManager.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
@@ -978,7 +974,8 @@ export class SessionRoutes extends BaseRouteHandler {
 
   /**
    * TITANS: Analyze conversation exchanges for emotional/behavioral signals.
-   * Fire-and-forget: responds immediately, processes async in background.
+   * Queues exchanges through the existing SDK agent pipeline (same as tool observations).
+   * Fire-and-forget: responds immediately, SDK agent processes async in background.
    */
   private handleConversationObserve = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId, exchanges, project } = req.body;
@@ -991,46 +988,20 @@ export class SessionRoutes extends BaseRouteHandler {
     // Fire-and-forget: respond immediately
     res.json({ status: 'accepted', exchangeCount: exchanges.length });
 
-    // Process in background
+    // Queue through the existing SDK agent pipeline
     try {
-      const mode = ModeManager.getInstance().getActiveMode();
-      const prompt = buildConversationObservationPrompt(exchanges, mode);
-
-      const response = await oneShotQuery(prompt);
-      if (!response) {
-        logger.debug('SESSION', 'No provider available for conversation observation');
-        return;
-      }
-
-      const observations = parseObservations(response);
-      if (observations.length === 0) return;
-
       const store = this.dbManager.getSessionStore();
-
-      // Find session by contentSessionId to get memory_session_id
       const sessionDbId = store.createSDKSession(contentSessionId, project || 'unknown', '', undefined);
-      const session = store.getSessionById(sessionDbId);
-      if (!session?.memory_session_id) {
-        logger.debug('SESSION', 'No memory session ID for conversation observation', { contentSessionId });
-        return;
-      }
 
-      for (const obs of observations) {
-        store.storeObservation(
-          session.memory_session_id,
-          project || 'unknown',
-          obs,
-          exchanges[0]?.promptNumber ?? 1,
-          0
-        );
-      }
+      this.sessionManager.queueConversation(sessionDbId, exchanges);
+      this.ensureGeneratorRunning(sessionDbId, 'conversation-observe');
 
-      logger.info('SESSION', 'Conversation observations stored', {
+      logger.info('SESSION', 'Conversation exchanges queued for SDK processing', {
         contentSessionId,
-        count: observations.length
+        exchangeCount: exchanges.length
       });
     } catch (err) {
-      logger.warn('SESSION', 'Conversation observation failed', {
+      logger.warn('SESSION', 'Failed to queue conversation observation', {
         contentSessionId,
         error: err instanceof Error ? err.message : String(err)
       });

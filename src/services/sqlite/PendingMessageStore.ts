@@ -12,7 +12,7 @@ export interface PersistentPendingMessage {
   id: number;
   session_db_id: number;
   content_session_id: string;
-  message_type: 'observation' | 'summarize';
+  message_type: 'observation' | 'summarize' | 'conversation';
   tool_name: string | null;
   tool_input: string | null;
   tool_response: string | null;
@@ -489,11 +489,13 @@ export class PendingMessageStore {
    * Convert a PersistentPendingMessage back to PendingMessage format
    */
   toPendingMessage(persistent: PersistentPendingMessage): PendingMessage {
+    const parsed = persistent.tool_response ? JSON.parse(persistent.tool_response) : undefined;
     return {
       type: persistent.message_type,
       tool_name: persistent.tool_name || undefined,
       tool_input: persistent.tool_input ? JSON.parse(persistent.tool_input) : undefined,
-      tool_response: persistent.tool_response ? JSON.parse(persistent.tool_response) : undefined,
+      tool_response: persistent.message_type === 'conversation' ? undefined : parsed,
+      exchanges: persistent.message_type === 'conversation' ? parsed : undefined,
       prompt_number: persistent.prompt_number || undefined,
       cwd: persistent.cwd || undefined,
       last_assistant_message: persistent.last_assistant_message || undefined

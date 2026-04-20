@@ -47,13 +47,14 @@ export interface ActiveSession {
 }
 
 export interface PendingMessage {
-  type: 'observation' | 'summarize';
+  type: 'observation' | 'summarize' | 'conversation';
   tool_name?: string;
   tool_input?: any;
   tool_response?: any;
   prompt_number?: number;
   cwd?: string;
   last_assistant_message?: string;
+  exchanges?: Array<{ promptNumber: number; userText: string; assistantText: string }>;
 }
 
 /**

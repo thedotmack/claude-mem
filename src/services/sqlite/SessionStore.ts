@@ -543,7 +543,7 @@ export class SessionStore {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_db_id INTEGER NOT NULL,
         content_session_id TEXT NOT NULL,
-        message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize')),
+        message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize', 'conversation')),
         tool_name TEXT,
         tool_input TEXT,
         tool_response TEXT,
