@@ -557,6 +557,32 @@ export class WorkerService {
             logger.error('WORKER', 'Stale session reaper error with non-Error', {}, new Error(String(e)));
           }
         }
+
+        // Purge failed pending messages to prevent unbounded queue growth (#1957)
+        try {
+          const pendingStore = this.sessionManager.getPendingMessageStore();
+          const purged = pendingStore.clearFailed();
+          if (purged > 0) {
+            logger.info('SYSTEM', `Purged ${purged} failed pending messages`);
+          }
+        } catch (e) {
+          if (e instanceof Error) {
+            logger.error('WORKER', 'Failed message purge error', {}, e);
+          } else {
+            logger.error('WORKER', 'Failed message purge error with non-Error', {}, new Error(String(e)));
+          }
+        }
+
+        // Periodic WAL checkpoint to prevent unbounded WAL growth (#1956)
+        try {
+          this.dbManager.getSessionStore().db.run('PRAGMA wal_checkpoint(PASSIVE)');
+        } catch (e) {
+          if (e instanceof Error) {
+            logger.error('WORKER', 'WAL checkpoint error', {}, e);
+          } else {
+            logger.error('WORKER', 'WAL checkpoint error with non-Error', {}, new Error(String(e)));
+          }
+        }
       }, 2 * 60 * 1000);
 
       // Auto-recover orphaned queues (fire-and-forget with error logging)

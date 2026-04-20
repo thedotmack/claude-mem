@@ -44,6 +44,7 @@ export class SessionStore {
     this.db.run('PRAGMA journal_mode = WAL');
     this.db.run('PRAGMA synchronous = NORMAL');
     this.db.run('PRAGMA foreign_keys = ON');
+    this.db.run('PRAGMA journal_size_limit = 4194304'); // 4MB WAL cap (#1956)
 
     // Initialize schema if needed (fresh database)
     this.initializeSchema();
