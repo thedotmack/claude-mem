@@ -42,39 +42,6 @@ export function createMiddleware(
     credentials: false
   }));
 
-  // Simple in-memory rate limiter (#1935)
-  const requestCounts = new Map<string, { count: number; resetAt: number }>();
-  const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
-  const RATE_LIMIT_MAX_REQUESTS = 300; // 300 requests per minute per IP
-
-  const rateLimiter: RequestHandler = (req, res, next) => {
-    const clientIp = req.ip || 'unknown';
-    const now = Date.now();
-    let entry = requestCounts.get(clientIp);
-
-    if (!entry || now >= entry.resetAt) {
-      entry = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
-      requestCounts.set(clientIp, entry);
-    }
-
-    // Lazy cleanup: remove expired entries when map grows large
-    if (requestCounts.size > 100) {
-      for (const [ip, e] of requestCounts) {
-        if (now >= e.resetAt) requestCounts.delete(ip);
-      }
-    }
-
-    entry.count++;
-    if (entry.count > RATE_LIMIT_MAX_REQUESTS) {
-      res.status(429).json({ error: 'Rate limit exceeded' });
-      return;
-    }
-
-    next();
-  };
-
-  middlewares.push(rateLimiter);
-
   // HTTP request/response logging
   middlewares.push((req: Request, res: Response, next: NextFunction) => {
     // Skip logging for static assets, health checks, and polling endpoints
