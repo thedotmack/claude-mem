@@ -97,6 +97,12 @@ export class SearchManager {
       delete normalized.filePath;
     }
 
+    // Map concept (singular, HTTP query param) to concepts (plural, internal key)
+    if (normalized.concept && !normalized.concepts) {
+      normalized.concepts = normalized.concept;
+      delete normalized.concept;
+    }
+
     // Parse comma-separated concepts into array
     if (normalized.concepts && typeof normalized.concepts === 'string') {
       normalized.concepts = normalized.concepts.split(',').map((s: string) => s.trim()).filter(Boolean);
@@ -277,14 +283,18 @@ export class SearchManager {
         logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
       }
     }
-    // ChromaDB not initialized - mark as failed to show proper error message
+    // ChromaDB not initialized - fall back to FTS5 keyword search (#1913, #2048)
     else if (query) {
-      chromaFailed = true;
-      logger.debug('SEARCH', 'ChromaDB not initialized - semantic search unavailable', {});
-      logger.debug('SEARCH', 'Install UVX/Python to enable vector search', { url: 'https://docs.astral.sh/uv/getting-started/installation/' });
-      observations = [];
-      sessions = [];
-      prompts = [];
+      logger.debug('SEARCH', 'ChromaDB not initialized — falling back to FTS5 keyword search', {});
+      if (searchObservations) {
+        observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
+      }
+      if (searchSessions) {
+        sessions = this.sessionSearch.searchSessions(query, options);
+      }
+      if (searchPrompts) {
+        prompts = this.sessionSearch.searchUserPrompts(query, options);
+      }
     }
 
     const totalResults = observations.length + sessions.length + prompts.length;

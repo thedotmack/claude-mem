@@ -38,7 +38,14 @@ export class ViewerRoutes extends BaseRouteHandler {
    * Health check endpoint
    */
   private handleHealth = this.wrapHandler((req: Request, res: Response): void => {
-    res.json({ status: 'ok', timestamp: Date.now() });
+    // Include queue liveness info so monitoring can detect dead queues (#1867)
+    const activeSessions = this.sessionManager.getActiveSessionCount();
+
+    res.json({
+      status: 'ok',
+      timestamp: Date.now(),
+      activeSessions
+    });
   });
 
   /**

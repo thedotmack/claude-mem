@@ -56,13 +56,14 @@ else
 fi
 
 # Pick -it only when a TTY is attached (keeps non-interactive callers working).
+# Initialize with a no-op flag so the array is never empty (nounset-safe).
 TTY_ARGS=()
 [[ -t 0 && -t 1 ]] && TTY_ARGS=(-it)
 
 # NOT `exec` — we want the EXIT trap above to run and remove $CREDS_FILE
 # after the container exits. Running docker as a child keeps the shell
 # alive long enough for the trap to fire.
-docker run --rm "${TTY_ARGS[@]}" \
+docker run --rm ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
   "${CREDS_MOUNT_ARGS[@]}" \
   -v "$HOST_MEM_DIR:/home/node/.claude-mem" \
   "$TAG" \
