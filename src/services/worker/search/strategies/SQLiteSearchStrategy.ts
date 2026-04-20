@@ -64,42 +64,43 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
       hasProject: !!project
     });
 
+    const obsOptions = searchObservations ? { ...baseOptions, type: obsType, concepts, files } : null;
+
     try {
-      if (searchObservations) {
-        const obsOptions = {
-          ...baseOptions,
-          type: obsType,
-          concepts,
-          files
-        };
-        observations = this.sessionSearch.searchObservations(undefined, obsOptions);
-      }
-
-      if (searchSessions) {
-        sessions = this.sessionSearch.searchSessions(undefined, baseOptions);
-      }
-
-      if (searchPrompts) {
-        prompts = this.sessionSearch.searchUserPrompts(undefined, baseOptions);
-      }
-
-      logger.debug('SEARCH', 'SQLiteSearchStrategy: Results', {
-        observations: observations.length,
-        sessions: sessions.length,
-        prompts: prompts.length
-      });
-
-      return {
-        results: { observations, sessions, prompts },
-        usedChroma: false,
-        fellBack: false,
-        strategy: 'sqlite'
-      };
-
+      return this.executeSqliteSearch(obsOptions, searchSessions, searchPrompts, baseOptions);
     } catch (error) {
-      logger.error('SEARCH', 'SQLiteSearchStrategy: Search failed', {}, error as Error);
+      const errorObj = error instanceof Error ? error : new Error(String(error));
+      logger.error('WORKER', 'SQLiteSearchStrategy: Search failed', {}, errorObj);
       return this.emptyResult('sqlite');
     }
+  }
+
+  private executeSqliteSearch(
+    obsOptions: Record<string, any> | null,
+    searchSessions: boolean,
+    searchPrompts: boolean,
+    baseOptions: Record<string, any>
+  ): StrategySearchResult {
+    let observations: ObservationSearchResult[] = [];
+    let sessions: SessionSummarySearchResult[] = [];
+    let prompts: UserPromptSearchResult[] = [];
+
+    if (obsOptions) {
+      observations = this.sessionSearch.searchObservations(undefined, obsOptions);
+    }
+    if (searchSessions) {
+      sessions = this.sessionSearch.searchSessions(undefined, baseOptions);
+    }
+    if (searchPrompts) {
+      prompts = this.sessionSearch.searchUserPrompts(undefined, baseOptions);
+    }
+
+    return {
+      results: { observations, sessions, prompts },
+      usedChroma: false,
+      fellBack: false,
+      strategy: 'sqlite'
+    };
   }
 
   /**

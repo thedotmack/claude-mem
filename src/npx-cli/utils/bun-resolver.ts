@@ -79,7 +79,8 @@ export function getBunVersionString(): string | null {
       shell: IS_WINDOWS,
     });
     return result.status === 0 ? result.stdout.trim() : null;
-  } catch {
+  } catch (error: unknown) {
+    console.error('[bun-resolver] Failed to get Bun version:', error instanceof Error ? error.message : String(error));
     return null;
   }
 }

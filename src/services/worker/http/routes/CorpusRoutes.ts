@@ -7,6 +7,7 @@
 
 import express, { Request, Response } from 'express';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { logger } from '../../../../utils/logger.js';
 import { CorpusStore } from '../../knowledge/CorpusStore.js';
 import { CorpusBuilder } from '../../knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from '../../knowledge/KnowledgeAgent.js';
@@ -93,7 +94,10 @@ export class CorpusRoutes extends BaseRouteHandler {
     if (typeof value === 'string') {
       try {
         parsed = JSON.parse(value);
-      } catch {
+      } catch (parseError: unknown) {
+        if (parseError instanceof Error) {
+          logger.debug('HTTP', `${fieldName} is not valid JSON, treating as comma-separated string`, { value });
+        }
         parsed = value.split(',').map(part => part.trim()).filter(Boolean);
       }
     }

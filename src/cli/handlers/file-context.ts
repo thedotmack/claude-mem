@@ -199,9 +199,12 @@ export const fileContextHandler: EventHandler = {
         return { continue: true, suppressOutput: true };
       }
       fileMtimeMs = stat.mtimeMs;
-    } catch (err: any) {
-      if (err.code === 'ENOENT') return { continue: true, suppressOutput: true };
+    } catch (err) {
+      if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { continue: true, suppressOutput: true };
+      }
       // Other errors (symlink, permission denied) — fall through and let gate proceed
+      logger.debug('HOOK', 'File stat failed, proceeding with gate', { error: err instanceof Error ? err.message : String(err) });
     }
 
     // Check if project is excluded from tracking
@@ -218,78 +221,76 @@ export const fileContextHandler: EventHandler = {
     }
 
     // Query worker for observations related to this file
-    try {
-      const context = getProjectContext(input.cwd);
-      // Observations store relative paths — convert absolute to relative using cwd
-      const cwd = input.cwd || process.cwd();
-      const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
-      const relativePath = path.relative(cwd, absolutePath).split(path.sep).join("/");
-      const queryParams = new URLSearchParams({ path: relativePath });
-      // Pass all project names (parent + worktree) for unified lookup
-      if (context.allProjects.length > 0) {
-        queryParams.set('projects', context.allProjects.join(','));
-      }
-      queryParams.set('limit', String(FETCH_LOOKAHEAD_LIMIT));
+    const context = getProjectContext(input.cwd);
+    const cwd = input.cwd || process.cwd();
+    const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+    const relativePath = path.relative(cwd, absolutePath).split(path.sep).join("/");
+    const queryParams = new URLSearchParams({ path: relativePath });
+    // Pass all project names (parent + worktree) for unified lookup
+    if (context.allProjects.length > 0) {
+      queryParams.set('projects', context.allProjects.join(','));
+    }
+    queryParams.set('limit', String(FETCH_LOOKAHEAD_LIMIT));
 
-      const response = await workerHttpRequest(`/api/observations/by-file?${queryParams.toString()}`, {
-        method: 'GET',
-      });
+    let data: { observations: ObservationRow[]; count: number };
+    try {
+      const response = await workerHttpRequest(`/api/observations/by-file?${queryParams.toString()}`, { method: 'GET' });
 
       if (!response.ok) {
         logger.warn('HOOK', 'File context query failed, skipping', { status: response.status, filePath });
         return { continue: true, suppressOutput: true };
       }
 
-      const data = await response.json() as { observations: ObservationRow[]; count: number };
-
-      if (!data.observations || data.observations.length === 0) {
-        return { continue: true, suppressOutput: true };
-      }
-
-      // mtime invalidation: bypass truncation when the file is newer than the latest observation.
-      // Uses >= to handle same-millisecond edits (cost: one extra full read vs risk of stuck truncation).
-      if (fileMtimeMs > 0) {
-        const newestObservationMs = Math.max(...data.observations.map(o => o.created_at_epoch));
-        if (fileMtimeMs >= newestObservationMs) {
-          logger.debug('HOOK', 'File modified since last observation, skipping truncation', {
-            filePath: relativePath,
-            fileMtimeMs,
-            newestObservationMs,
-          });
-          return { continue: true, suppressOutput: true };
-        }
-      }
-
-      // Deduplicate: one per session, ranked by specificity to this file
-      const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
-      if (dedupedObservations.length === 0) {
-        return { continue: true, suppressOutput: true };
-      }
-
-      // Unconstrained → truncate to 1 line; targeted → preserve offset/limit.
-      const truncated = !isTargetedRead;
-      const timeline = formatFileTimeline(dedupedObservations, filePath, truncated);
-      const updatedInput: Record<string, unknown> = { file_path: filePath };
-      if (isTargetedRead) {
-        if (userOffset !== undefined) updatedInput.offset = userOffset;
-        if (userLimit !== undefined) updatedInput.limit = userLimit;
-      } else {
-        updatedInput.limit = 1;
-      }
-
-      return {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          additionalContext: timeline,
-          permissionDecision: 'allow',
-          updatedInput,
-        },
-      };
+      data = await response.json() as { observations: ObservationRow[]; count: number };
     } catch (error) {
       logger.warn('HOOK', 'File context fetch error, skipping', {
         error: error instanceof Error ? error.message : String(error),
       });
       return { continue: true, suppressOutput: true };
     }
+
+    if (!data.observations || data.observations.length === 0) {
+      return { continue: true, suppressOutput: true };
+    }
+
+    // mtime invalidation: bypass truncation when the file is newer than the latest observation.
+    // Uses >= to handle same-millisecond edits (cost: one extra full read vs risk of stuck truncation).
+    if (fileMtimeMs > 0) {
+      const newestObservationMs = Math.max(...data.observations.map(o => o.created_at_epoch));
+      if (fileMtimeMs >= newestObservationMs) {
+        logger.debug('HOOK', 'File modified since last observation, skipping truncation', {
+          filePath: relativePath,
+          fileMtimeMs,
+          newestObservationMs,
+        });
+        return { continue: true, suppressOutput: true };
+      }
+    }
+
+    // Deduplicate: one per session, ranked by specificity to this file
+    const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
+    if (dedupedObservations.length === 0) {
+      return { continue: true, suppressOutput: true };
+    }
+
+    // Unconstrained → truncate to 1 line; targeted → preserve offset/limit.
+    const truncated = !isTargetedRead;
+    const timeline = formatFileTimeline(dedupedObservations, filePath, truncated);
+    const updatedInput: Record<string, unknown> = { file_path: filePath };
+    if (isTargetedRead) {
+      if (userOffset !== undefined) updatedInput.offset = userOffset;
+      if (userLimit !== undefined) updatedInput.limit = userLimit;
+    } else {
+      updatedInput.limit = 1;
+    }
+
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        additionalContext: timeline,
+        permissionDecision: 'allow',
+        updatedInput,
+      },
+    };
   },
 };

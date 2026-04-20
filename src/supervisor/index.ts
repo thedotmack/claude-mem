@@ -69,12 +69,20 @@ class Supervisor {
         } else {
           await this.stop();
         }
-      } catch (error) {
-        logger.error('SYSTEM', 'Error during shutdown', {}, error as Error);
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          logger.error('SYSTEM', 'Error during shutdown', {}, error);
+        } else {
+          logger.error('SYSTEM', 'Error during shutdown (non-Error)', { error: String(error) });
+        }
         try {
           await this.stop();
-        } catch (stopError) {
-          logger.debug('SYSTEM', 'Supervisor shutdown fallback failed', {}, stopError as Error);
+        } catch (stopError: unknown) {
+          if (stopError instanceof Error) {
+            logger.debug('SYSTEM', 'Supervisor shutdown fallback failed', {}, stopError);
+          } else {
+            logger.debug('SYSTEM', 'Supervisor shutdown fallback failed', { error: String(stopError) });
+          }
         }
       }
 
@@ -161,8 +169,15 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
 
   try {
     pidInfo = JSON.parse(readFileSync(pidFilePath, 'utf-8')) as PidInfo;
-  } catch (error) {
-    logger.warn('SYSTEM', 'Failed to parse worker PID file, removing it', { path: pidFilePath }, error as Error);
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      logger.warn('SYSTEM', 'Failed to parse worker PID file, removing it', { path: pidFilePath }, error);
+    } else {
+      logger.warn('SYSTEM', 'Failed to parse worker PID file, removing it', {
+        path: pidFilePath,
+        error: String(error)
+      });
+    }
     rmSync(pidFilePath, { force: true });
     return 'invalid';
   }

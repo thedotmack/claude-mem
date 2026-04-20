@@ -22,8 +22,9 @@ export function isPluginDisabledInClaudeSettings(): boolean {
     const raw = readFileSync(settingsPath, 'utf-8');
     const settings = JSON.parse(raw);
     return settings?.enabledPlugins?.[PLUGIN_SETTINGS_KEY] === false;
-  } catch {
+  } catch (error: unknown) {
     // If settings can't be read/parsed, assume not disabled
+    console.error('[plugin-state] Failed to read Claude settings:', error instanceof Error ? error.message : String(error));
     return false;
   }
 }

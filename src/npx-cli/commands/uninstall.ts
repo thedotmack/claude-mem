@@ -120,8 +120,10 @@ export async function runUninstallCommand(): Promise<void> {
           signal: AbortSignal.timeout(1000),
         });
         // Still alive — keep waiting
-      } catch {
-        break; // Connection refused = worker is gone
+      } catch (error: unknown) {
+        // Connection refused = worker is gone (expected shutdown behavior)
+        console.error('[uninstall] Worker health check failed (worker stopped):', error instanceof Error ? error.message : String(error));
+        break;
       }
     }
     p.log.info('Worker service stopped.');
@@ -201,8 +203,9 @@ export async function runUninstallCommand(): Promise<void> {
       if (result === 0) {
         p.log.info(`${label}: removed.`);
       }
-    } catch {
-      // IDE not configured or uninstaller errored — skip silently
+    } catch (error: unknown) {
+      // IDE not configured or uninstaller errored — log and continue
+      console.warn(`[uninstall] ${label} cleanup failed:`, error instanceof Error ? error.message : String(error));
     }
   }
 

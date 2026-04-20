@@ -33,8 +33,14 @@ export function isPidAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException).code;
-    return code === 'EPERM';
+    if (error instanceof Error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EPERM') return true;
+      logger.debug('SYSTEM', 'PID check failed', { pid, code });
+      return false;
+    }
+    logger.warn('SYSTEM', 'PID check threw non-Error', { pid, error: String(error) });
+    return false;
   }
 }
 
@@ -65,10 +71,17 @@ export class ProcessRegistry {
       for (const [id, info] of Object.entries(processes)) {
         this.entries.set(id, info);
       }
-    } catch (error) {
-      logger.warn('SYSTEM', 'Failed to parse supervisor registry, rebuilding', {
-        path: this.registryPath
-      }, error as Error);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        logger.warn('SYSTEM', 'Failed to parse supervisor registry, rebuilding', {
+          path: this.registryPath
+        }, error);
+      } else {
+        logger.warn('SYSTEM', 'Failed to parse supervisor registry, rebuilding', {
+          path: this.registryPath,
+          error: String(error)
+        });
+      }
       this.entries.clear();
     }
 
@@ -168,11 +181,18 @@ export class ProcessRegistry {
       try {
         process.kill(record.pid, 'SIGTERM');
       } catch (error: unknown) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== 'ESRCH') {
-          logger.debug('SYSTEM', `Failed to SIGTERM session process PID ${record.pid}`, {
-            pid: record.pid
-          }, error as Error);
+        if (error instanceof Error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'ESRCH') {
+            logger.debug('SYSTEM', `Failed to SIGTERM session process PID ${record.pid}`, {
+              pid: record.pid
+            }, error);
+          }
+        } else {
+          logger.warn('SYSTEM', `Failed to SIGTERM session process PID ${record.pid} (non-Error)`, {
+            pid: record.pid,
+            error: String(error)
+          });
         }
       }
     }
@@ -195,11 +215,18 @@ export class ProcessRegistry {
       try {
         process.kill(record.pid, 'SIGKILL');
       } catch (error: unknown) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== 'ESRCH') {
-          logger.debug('SYSTEM', `Failed to SIGKILL session process PID ${record.pid}`, {
-            pid: record.pid
-          }, error as Error);
+        if (error instanceof Error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'ESRCH') {
+            logger.debug('SYSTEM', `Failed to SIGKILL session process PID ${record.pid}`, {
+              pid: record.pid
+            }, error);
+          }
+        } else {
+          logger.warn('SYSTEM', `Failed to SIGKILL session process PID ${record.pid} (non-Error)`, {
+            pid: record.pid,
+            error: String(error)
+          });
         }
       }
     }

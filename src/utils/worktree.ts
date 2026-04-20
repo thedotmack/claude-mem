@@ -38,8 +38,11 @@ export function detectWorktree(cwd: string): WorktreeInfo {
   let stat;
   try {
     stat = statSync(gitPath);
-  } catch {
-    // No .git at all - not a git repo
+  } catch (error: unknown) {
+    // No .git at all - not a git repo (ENOENT is expected, other errors are noteworthy)
+    if (error instanceof Error && (error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn(`[worktree] Unexpected error checking .git:`, error);
+    }
     return NOT_A_WORKTREE;
   }
 
@@ -52,7 +55,8 @@ export function detectWorktree(cwd: string): WorktreeInfo {
   let content: string;
   try {
     content = readFileSync(gitPath, 'utf-8').trim();
-  } catch {
+  } catch (error: unknown) {
+    console.warn(`[worktree] Failed to read .git file:`, error instanceof Error ? error.message : String(error));
     return NOT_A_WORKTREE;
   }
 

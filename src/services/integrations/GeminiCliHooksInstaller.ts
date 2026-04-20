@@ -162,6 +162,11 @@ function readGeminiSettings(): GeminiSettingsJson {
   try {
     return JSON.parse(content) as GeminiSettingsJson;
   } catch (error) {
+    if (error instanceof Error) {
+      logger.error('WORKER', 'Corrupt JSON in Gemini settings', { path: GEMINI_SETTINGS_PATH }, error);
+    } else {
+      logger.error('WORKER', 'Corrupt JSON in Gemini settings', { path: GEMINI_SETTINGS_PATH }, new Error(String(error)));
+    }
     throw new Error(`Corrupt JSON in ${GEMINI_SETTINGS_PATH}, refusing to overwrite user settings`);
   }
 }
@@ -286,35 +291,42 @@ export async function installGeminiCliHooks(): Promise<number> {
   console.log(`  Using Bun runtime: ${bunPath}`);
   console.log(`  Worker service: ${workerServicePath}`);
 
+  // Build hook commands for all mapped events
+  const hooksConfig: GeminiHooksConfig = {};
+  for (const geminiEvent of Object.keys(GEMINI_EVENT_TO_INTERNAL_EVENT)) {
+    const command = buildHookCommand(bunPath, workerServicePath, geminiEvent);
+    hooksConfig[geminiEvent] = [createHookGroup(command)];
+  }
+
+  // Read existing settings and merge
+  const existingSettings = readGeminiSettings();
+  const mergedSettings = mergeHooksIntoSettings(existingSettings, hooksConfig);
+
   try {
-    // Build hook commands for all mapped events
-    const hooksConfig: GeminiHooksConfig = {};
-    for (const geminiEvent of Object.keys(GEMINI_EVENT_TO_INTERNAL_EVENT)) {
-      const command = buildHookCommand(bunPath, workerServicePath, geminiEvent);
-      hooksConfig[geminiEvent] = [createHookGroup(command)];
-    }
+    writeGeminiHooksAndSetupContext(mergedSettings);
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\nInstallation failed: ${message}`);
+    return 1;
+  }
+}
 
-    // Read existing settings and merge
-    const existingSettings = readGeminiSettings();
-    const mergedSettings = mergeHooksIntoSettings(existingSettings, hooksConfig);
+function writeGeminiHooksAndSetupContext(mergedSettings: GeminiSettingsJson): void {
+  writeGeminiSettings(mergedSettings);
+  console.log(`  Merged hooks into ${GEMINI_SETTINGS_PATH}`);
 
-    // Write back
-    writeGeminiSettings(mergedSettings);
-    console.log(`  Merged hooks into ${GEMINI_SETTINGS_PATH}`);
+  setupGeminiMdContextSection();
+  console.log(`  Setup context injection in ${GEMINI_MD_PATH}`);
 
-    // Setup GEMINI.md context injection
-    setupGeminiMdContextSection();
-    console.log(`  Setup context injection in ${GEMINI_MD_PATH}`);
+  const eventNames = Object.keys(GEMINI_EVENT_TO_INTERNAL_EVENT);
+  console.log(`  Registered ${eventNames.length} hook events:`);
+  for (const event of eventNames) {
+    const internalEvent = GEMINI_EVENT_TO_INTERNAL_EVENT[event];
+    console.log(`    ${event} → ${internalEvent}`);
+  }
 
-    // List installed events
-    const eventNames = Object.keys(GEMINI_EVENT_TO_INTERNAL_EVENT);
-    console.log(`  Registered ${eventNames.length} hook events:`);
-    for (const event of eventNames) {
-      const internalEvent = GEMINI_EVENT_TO_INTERNAL_EVENT[event];
-      console.log(`    ${event} → ${internalEvent}`);
-    }
-
-    console.log(`
+  console.log(`
 Installation complete!
 
 Hooks installed to: ${GEMINI_SETTINGS_PATH}
@@ -329,12 +341,6 @@ Context Injection:
   Context from past sessions is injected via ~/.gemini/GEMINI.md
   and automatically included in Gemini CLI conversations.
 `);
-
-    return 0;
-  } catch (error) {
-    console.error(`\nInstallation failed: ${(error as Error).message}`);
-    return 1;
-  }
 }
 
 /**
@@ -347,63 +353,70 @@ Context Injection:
 export function uninstallGeminiCliHooks(): number {
   console.log('\nUninstalling Claude-Mem Gemini CLI hooks...\n');
 
+  if (!existsSync(GEMINI_SETTINGS_PATH)) {
+    console.log('  No Gemini CLI settings found — nothing to uninstall.');
+    return 0;
+  }
+
+  const settings = readGeminiSettings();
+  if (!settings.hooks) {
+    console.log('  No hooks found in Gemini CLI settings — nothing to uninstall.');
+    return 0;
+  }
+
+  let removedCount = 0;
+
+  // Remove claude-mem hooks from within each group, preserving other hooks
+  for (const [eventName, groups] of Object.entries(settings.hooks)) {
+    const filteredGroups = groups
+      .map(group => {
+        const remainingHooks = group.hooks.filter(hook => hook.name !== HOOK_NAME);
+        removedCount += group.hooks.length - remainingHooks.length;
+        return { ...group, hooks: remainingHooks };
+      })
+      .filter(group => group.hooks.length > 0);
+
+    if (filteredGroups.length > 0) {
+      settings.hooks[eventName] = filteredGroups;
+    } else {
+      delete settings.hooks[eventName];
+    }
+  }
+
+  // Clean up empty hooks object
+  if (Object.keys(settings.hooks).length === 0) {
+    delete settings.hooks;
+  }
+
   try {
-    if (!existsSync(GEMINI_SETTINGS_PATH)) {
-      console.log('  No Gemini CLI settings found — nothing to uninstall.');
-      return 0;
-    }
-
-    const settings = readGeminiSettings();
-    if (!settings.hooks) {
-      console.log('  No hooks found in Gemini CLI settings — nothing to uninstall.');
-      return 0;
-    }
-
-    let removedCount = 0;
-
-    // Remove claude-mem hooks from within each group, preserving other hooks
-    for (const [eventName, groups] of Object.entries(settings.hooks)) {
-      const filteredGroups = groups
-        .map(group => {
-          const remainingHooks = group.hooks.filter(hook => hook.name !== HOOK_NAME);
-          removedCount += group.hooks.length - remainingHooks.length;
-          return { ...group, hooks: remainingHooks };
-        })
-        .filter(group => group.hooks.length > 0);
-
-      if (filteredGroups.length > 0) {
-        settings.hooks[eventName] = filteredGroups;
-      } else {
-        delete settings.hooks[eventName];
-      }
-    }
-
-    // Clean up empty hooks object
-    if (Object.keys(settings.hooks).length === 0) {
-      delete settings.hooks;
-    }
-
-    writeGeminiSettings(settings);
-    console.log(`  Removed ${removedCount} claude-mem hook(s) from ${GEMINI_SETTINGS_PATH}`);
-
-    // Remove claude-mem context section from GEMINI.md
-    if (existsSync(GEMINI_MD_PATH)) {
-      let mdContent = readFileSync(GEMINI_MD_PATH, 'utf-8');
-      const contextRegex = /\n?<claude-mem-context>[\s\S]*?<\/claude-mem-context>\n?/;
-      if (contextRegex.test(mdContent)) {
-        mdContent = mdContent.replace(contextRegex, '');
-        writeFileSync(GEMINI_MD_PATH, mdContent);
-        console.log(`  Removed context section from ${GEMINI_MD_PATH}`);
-      }
-    }
-
-    console.log('\nUninstallation complete!\n');
-    console.log('Restart Gemini CLI to apply changes.');
+    writeSettingsAndCleanupGeminiContext(settings, removedCount);
     return 0;
   } catch (error) {
-    console.error(`\nUninstallation failed: ${(error as Error).message}`);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\nUninstallation failed: ${message}`);
     return 1;
   }
+}
+
+function writeSettingsAndCleanupGeminiContext(
+  settings: GeminiSettingsJson,
+  removedCount: number,
+): void {
+  writeGeminiSettings(settings);
+  console.log(`  Removed ${removedCount} claude-mem hook(s) from ${GEMINI_SETTINGS_PATH}`);
+
+  if (existsSync(GEMINI_MD_PATH)) {
+    let mdContent = readFileSync(GEMINI_MD_PATH, 'utf-8');
+    const contextRegex = /\n?<claude-mem-context>[\s\S]*?<\/claude-mem-context>\n?/;
+    if (contextRegex.test(mdContent)) {
+      mdContent = mdContent.replace(contextRegex, '');
+      writeFileSync(GEMINI_MD_PATH, mdContent);
+      console.log(`  Removed context section from ${GEMINI_MD_PATH}`);
+    }
+  }
+
+  console.log('\nUninstallation complete!\n');
+  console.log('Restart Gemini CLI to apply changes.');
 }
 
 /**
@@ -425,7 +438,13 @@ export function checkGeminiCliHooksStatus(): number {
   try {
     settings = readGeminiSettings();
   } catch (error) {
-    console.log(`Gemini CLI settings: ${(error as Error).message}\n`);
+    const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof Error) {
+      logger.error('WORKER', 'Failed to read Gemini CLI settings', { path: GEMINI_SETTINGS_PATH }, error);
+    } else {
+      logger.error('WORKER', 'Failed to read Gemini CLI settings', { path: GEMINI_SETTINGS_PATH }, new Error(String(error)));
+    }
+    console.log(`Gemini CLI settings: ${message}\n`);
     return 0;
   }
 

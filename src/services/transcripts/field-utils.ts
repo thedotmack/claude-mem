@@ -1,3 +1,4 @@
+import { logger } from '../../utils/logger.js';
 import type { FieldSpec, MatchRule, TranscriptSchema, WatchTarget } from './types.js';
 
 interface ResolveContext {
@@ -142,7 +143,8 @@ export function matchesRule(
     try {
       const regex = new RegExp(rule.regex);
       return regex.test(String(value ?? ''));
-    } catch {
+    } catch (error: unknown) {
+      logger.debug('WORKER', 'Invalid regex in match rule', { regex: rule.regex }, error instanceof Error ? error : undefined);
       return false;
     }
   }

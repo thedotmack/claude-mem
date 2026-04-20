@@ -395,8 +395,11 @@ export function createPidCapturingSpawn(sessionDbId: number) {
       try {
         existing.process.kill('SIGTERM');
         exited = existing.process.exitCode !== null;
-      } catch {
+      } catch (error: unknown) {
         // Already dead — safe to unregister immediately
+        if (error instanceof Error) {
+          logger.warn('WORKER', `Failed to kill duplicate process PID ${existing.pid}, likely already dead`, { existingPid: existing.pid, sessionDbId }, error);
+        }
         exited = true;
       }
 
@@ -495,7 +498,11 @@ export function startOrphanReaper(getActiveSessionIds: () => Set<number>, interv
         logger.info('PROCESS', `Reaper cleaned up ${killed} orphaned processes`, { killed });
       }
     } catch (error) {
-      logger.error('PROCESS', 'Reaper error', {}, error as Error);
+      if (error instanceof Error) {
+        logger.error('WORKER', 'Reaper error', {}, error);
+      } else {
+        logger.error('WORKER', 'Reaper error', { rawError: String(error) });
+      }
     }
   }, intervalMs);
 

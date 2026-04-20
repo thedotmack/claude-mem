@@ -269,35 +269,34 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
+    let result: any;
     try {
-      const result = await this.searchManager.search({
-        query,
-        type: 'observations',
-        project,
-        limit: String(limit),
-        format: 'json'
+      result = await this.searchManager.search({
+        query, type: 'observations', project, limit: String(limit), format: 'json'
       });
-
-      const observations = (result as any)?.observations || [];
-      if (!observations.length) {
-        res.json({ context: '', count: 0 });
-        return;
-      }
-
-      // Format as compact markdown for context injection
-      const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
-      for (const obs of observations.slice(0, limit)) {
-        const date = obs.created_at?.slice(0, 10) || '';
-        lines.push(`### ${obs.title || 'Observation'} (${date})`);
-        if (obs.narrative) lines.push(obs.narrative);
-        lines.push('');
-      }
-
-      res.json({ context: lines.join('\n'), count: observations.length });
     } catch (error) {
-      logger.error('SEARCH', 'Semantic context query failed', {}, error as Error);
+      const normalizedError = error instanceof Error ? error : new Error(String(error));
+      logger.error('HTTP', 'Semantic context query failed', { query, project }, normalizedError);
       res.json({ context: '', count: 0 });
+      return;
     }
+
+    const observations = result?.observations || [];
+    if (!observations.length) {
+      res.json({ context: '', count: 0 });
+      return;
+    }
+
+    // Format as compact markdown for context injection
+    const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
+    for (const obs of observations.slice(0, limit)) {
+      const date = obs.created_at?.slice(0, 10) || '';
+      lines.push(`### ${obs.title || 'Observation'} (${date})`);
+      if (obs.narrative) lines.push(obs.narrative);
+      lines.push('');
+    }
+
+    res.json({ context: lines.join('\n'), count: observations.length });
   });
 
   /**

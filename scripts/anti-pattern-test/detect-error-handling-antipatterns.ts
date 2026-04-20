@@ -224,8 +224,9 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
       }
     }
 
-    // Detect try block start
-    if (trimmed.match(/^\s*try\s*{/) || trimmed.match(/}\s*try\s*{/)) {
+    // Detect try block start (only when NOT already inside a catch block —
+    // nested try/catch inside a catch is just catch-block content)
+    if (!inCatch && (trimmed.match(/^\s*try\s*{/) || trimmed.match(/}\s*try\s*{/))) {
       inTry = true;
       tryStartLine = i + 1;
       tryLines = [line];

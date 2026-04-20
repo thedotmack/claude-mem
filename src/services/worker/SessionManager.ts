@@ -69,7 +69,13 @@ export function detectStaleGenerator(
   if (proc && proc.exitCode === null) {
     try {
       proc.kill('SIGKILL');
-    } catch {}
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.warn('SESSION', 'Failed to SIGKILL stale generator subprocess', {}, error);
+      } else {
+        logger.warn('SESSION', 'Failed to SIGKILL stale generator subprocess with non-Error', {}, new Error(String(error)));
+      }
+    }
   }
   // Signal the SDK agent loop to exit
   session.abortController.abort();
@@ -292,10 +298,17 @@ export class SessionManager {
         sessionId: sessionDbId
       });
     } catch (error) {
-      logger.error('SESSION', 'Failed to persist observation to DB', {
-        sessionId: sessionDbId,
-        tool: data.tool_name
-      }, error);
+      if (error instanceof Error) {
+        logger.error('SESSION', 'Failed to persist observation to DB', {
+          sessionId: sessionDbId,
+          tool: data.tool_name
+        }, error);
+      } else {
+        logger.error('SESSION', 'Failed to persist observation to DB with non-Error', {
+          sessionId: sessionDbId,
+          tool: data.tool_name
+        }, new Error(String(error)));
+      }
       throw error; // Don't continue if we can't persist
     }
 
@@ -343,9 +356,15 @@ export class SessionManager {
         sessionId: sessionDbId
       });
     } catch (error) {
-      logger.error('SESSION', 'Failed to persist summarize to DB', {
-        sessionId: sessionDbId
-      }, error);
+      if (error instanceof Error) {
+        logger.error('SESSION', 'Failed to persist summarize to DB', {
+          sessionId: sessionDbId
+        }, error);
+      } else {
+        logger.error('SESSION', 'Failed to persist summarize to DB with non-Error', {
+          sessionId: sessionDbId
+        }, new Error(String(error)));
+      }
       throw error; // Don't continue if we can't persist
     }
 
@@ -397,9 +416,15 @@ export class SessionManager {
     try {
       await getSupervisor().getRegistry().reapSession(sessionDbId);
     } catch (error) {
-      logger.warn('SESSION', 'Supervisor reapSession failed (non-blocking)', {
-        sessionId: sessionDbId
-      }, error as Error);
+      if (error instanceof Error) {
+        logger.warn('SESSION', 'Supervisor reapSession failed (non-blocking)', {
+          sessionId: sessionDbId
+        }, error);
+      } else {
+        logger.warn('SESSION', 'Supervisor reapSession failed (non-blocking) with non-Error', {
+          sessionId: sessionDbId
+        }, new Error(String(error)));
+      }
     }
 
     // 4. Cleanup
@@ -469,7 +494,11 @@ export class SessionManager {
             try {
               trackedProcess.process.kill('SIGKILL');
             } catch (err) {
-              logger.warn('SESSION', 'Failed to SIGKILL subprocess for stale generator', { sessionDbId }, err as Error);
+              if (err instanceof Error) {
+                logger.warn('SESSION', 'Failed to SIGKILL subprocess for stale generator', { sessionDbId }, err);
+              } else {
+                logger.warn('SESSION', 'Failed to SIGKILL subprocess for stale generator with non-Error', { sessionDbId }, new Error(String(err)));
+              }
             }
           }
           // Signal the SDK agent loop to exit after the subprocess dies

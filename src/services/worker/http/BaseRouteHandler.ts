@@ -27,8 +27,9 @@ export abstract class BaseRouteHandler {
           result.catch(error => this.handleError(res, error as Error));
         }
       } catch (error) {
-        logger.error('HTTP', 'Route handler error', { path: req.path }, error as Error);
-        this.handleError(res, error as Error);
+        const normalizedError = error instanceof Error ? error : new Error(String(error));
+        logger.error('HTTP', 'Route handler error', { path: req.path }, normalizedError);
+        this.handleError(res, normalizedError);
       }
     };
   }

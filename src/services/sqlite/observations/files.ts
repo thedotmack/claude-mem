@@ -18,6 +18,7 @@ export function parseFileList(value: string | null | undefined): string[] {
     const parsed = JSON.parse(value);
     return Array.isArray(parsed) ? parsed : [String(parsed)];
   } catch {
+    // [ANTI-PATTERN IGNORED]: legacy bare-path strings are expected input, not errors
     return [value];
   }
 }

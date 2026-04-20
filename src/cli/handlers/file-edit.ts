@@ -11,6 +11,21 @@ import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 
+async function sendFileEditObservation(requestBody: string, filePath: string): Promise<void> {
+  const response = await workerHttpRequest('/api/sessions/observations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: requestBody
+  });
+
+  if (!response.ok) {
+    logger.warn('HOOK', 'File edit observation storage failed, skipping', { status: response.status, filePath });
+    return;
+  }
+
+  logger.debug('HOOK', 'File edit observation sent successfully', { filePath });
+}
+
 export const fileEditHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     // Ensure worker is running before any other logic
@@ -38,27 +53,17 @@ export const fileEditHandler: EventHandler = {
 
     // Send to worker as an observation with file edit metadata
     // The observation handler on the worker will process this appropriately
+    const requestBody = JSON.stringify({
+      contentSessionId: sessionId,
+      platformSource,
+      tool_name: 'write_file',
+      tool_input: { filePath, edits },
+      tool_response: { success: true },
+      cwd
+    });
+
     try {
-      const response = await workerHttpRequest('/api/sessions/observations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contentSessionId: sessionId,
-          platformSource,
-          tool_name: 'write_file',
-          tool_input: { filePath, edits },
-          tool_response: { success: true },
-          cwd
-        })
-      });
-
-      if (!response.ok) {
-        // Log but don't throw — file edit observation failure should not block editing
-        logger.warn('HOOK', 'File edit observation storage failed, skipping', { status: response.status, filePath });
-        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-      }
-
-      logger.debug('HOOK', 'File edit observation sent successfully', { filePath });
+      await sendFileEditObservation(requestBody, filePath);
     } catch (error) {
       // Worker unreachable — skip file edit observation gracefully
       logger.warn('HOOK', 'File edit observation fetch error, skipping', { error: error instanceof Error ? error.message : String(error) });
