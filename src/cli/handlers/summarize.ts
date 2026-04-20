@@ -84,24 +84,16 @@ export const summarizeHandler: EventHandler = {
     const platformSource = normalizePlatformSource(input.platform);
 
     // 1. Queue summarize request — worker returns immediately with { status: 'queued' }
-    let response: Response;
-    try {
-      response = await workerHttpRequest('/api/sessions/summarize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contentSessionId: sessionId,
-          last_assistant_message: lastAssistantMessage,
-          platformSource
-        }),
-        timeoutMs: SUMMARIZE_TIMEOUT_MS
-      });
-    } catch (err) {
-      // Network error, worker crash, or timeout — exit gracefully instead of
-      // bubbling to hook runner which exits code 2 and blocks session exit (#1901)
-      logger.warn('HOOK', `Stop hook: summarize request failed: ${err instanceof Error ? err.message : err}`);
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-    }
+    const response = await workerHttpRequest('/api/sessions/summarize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contentSessionId: sessionId,
+        last_assistant_message: lastAssistantMessage,
+        platformSource
+      }),
+      timeoutMs: SUMMARIZE_TIMEOUT_MS
+    });
 
     if (!response.ok) {
       return { continue: true, suppressOutput: true };

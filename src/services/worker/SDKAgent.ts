@@ -90,11 +90,9 @@ export class SDKAgent {
     }
 
     // Wait for agent pool slot (configurable via CLAUDE_MEM_MAX_CONCURRENT_AGENTS)
-    // Pass idle session eviction callback to prevent pool deadlock (#1868):
-    // idle sessions hold slots during 3-min idle wait, blocking new sessions
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
-    await waitForSlot(maxConcurrent, 60_000, () => this.sessionManager.evictIdlestSession());
+    await waitForSlot(maxConcurrent);
 
     // Build isolated environment from ~/.claude-mem/.env
     // This prevents Issue #733: random ANTHROPIC_API_KEY from project .env files

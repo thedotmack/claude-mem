@@ -108,22 +108,12 @@ try {
   // Trigger worker restart after file sync
   console.log('\n🔄 Triggering worker restart...');
   const http = require('http');
-  const fs = require('fs');
-  const os = require('os');
-  // Read auth token for API auth (#1932/#1933)
-  const dataDir = process.env.CLAUDE_MEM_DATA_DIR || require('path').join(os.homedir(), '.claude-mem');
-  let authToken = '';
-  try { authToken = fs.readFileSync(require('path').join(dataDir, 'worker-auth-token'), 'utf-8').trim(); } catch {}
-  // Use per-user port derivation (#1936)
-  const uid = typeof process.getuid === 'function' ? process.getuid() : 77;
-  const workerPort = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || String(37700 + (uid % 100)), 10);
   const req = http.request({
     hostname: '127.0.0.1',
-    port: workerPort,
+    port: 37777,
     path: '/api/admin/restart',
     method: 'POST',
-    timeout: 2000,
-    headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
+    timeout: 2000
   }, (res) => {
     if (res.statusCode === 200) {
       console.log('\x1b[32m%s\x1b[0m', '✓ Worker restart triggered');

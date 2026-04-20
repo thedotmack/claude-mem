@@ -67,20 +67,8 @@ export class SearchManager {
     return await this.chromaSync.queryChroma(query, limit, whereFilter);
   }
 
-  private async searchChromaForTimeline(query: string, ninetyDaysAgo: number, project?: string): Promise<ObservationSearchResult[]> {
-    // Build where filter scoped to observations only + project if provided
-    let whereFilter: Record<string, any> = { doc_type: 'observation' };
-    if (project) {
-      const projectFilter = {
-        $or: [
-          { project },
-          { merged_into_project: project }
-        ]
-      };
-      whereFilter = { $and: [whereFilter, projectFilter] };
-    }
-
-    const chromaResults = await this.queryChroma(query, 100, whereFilter);
+  private async searchChromaForTimeline(query: string, ninetyDaysAgo: number): Promise<ObservationSearchResult[]> {
+    const chromaResults = await this.queryChroma(query, 100);
     logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults?.ids?.length ?? 0 });
 
     if (chromaResults?.ids && chromaResults.ids.length > 0) {
@@ -90,7 +78,7 @@ export class SearchManager {
       });
 
       if (recentIds.length > 0) {
-        return this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: 1, project });
+        return this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: 1 });
       }
     }
     return [];
@@ -298,20 +286,14 @@ export class SearchManager {
     // ChromaDB not initialized - fall back to FTS5 keyword search (#1913, #2048)
     else if (query) {
       logger.debug('SEARCH', 'ChromaDB not initialized — falling back to FTS5 keyword search', {});
-      try {
-        if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
-        }
-        if (searchSessions) {
-          sessions = this.sessionSearch.searchSessions(query, options);
-        }
-        if (searchPrompts) {
-          prompts = this.sessionSearch.searchUserPrompts(query, options);
-        }
-      } catch (ftsError) {
-        const errorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
-        logger.error('WORKER', 'FTS5 fallback search failed', {}, errorObject);
-        chromaFailed = true;
+      if (searchObservations) {
+        observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
+      }
+      if (searchSessions) {
+        sessions = this.sessionSearch.searchSessions(query, options);
+      }
+      if (searchPrompts) {
+        prompts = this.sessionSearch.searchUserPrompts(query, options);
       }
     }
 
@@ -487,22 +469,10 @@ export class SearchManager {
         logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
         const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
         try {
-          results = await this.searchChromaForTimeline(query, ninetyDaysAgo, project);
+          results = await this.searchChromaForTimeline(query, ninetyDaysAgo);
         } catch (chromaError) {
           const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
           logger.error('WORKER', 'Chroma search failed for timeline, continuing without semantic results', {}, errorObject);
-        }
-      }
-
-      // FTS fallback when Chroma is unavailable or returned no results
-      if (results.length === 0) {
-        try {
-          const ftsResults = this.sessionSearch.searchObservations(query, { project, limit: 1 });
-          if (ftsResults.length > 0) {
-            results = ftsResults;
-          }
-        } catch (ftsError) {
-          logger.warn('SEARCH', 'FTS fallback failed for timeline', {}, ftsError instanceof Error ? ftsError : undefined);
         }
       }
 
@@ -957,55 +927,26 @@ export class SearchManager {
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search (Chroma + SQLite)', {});
 
-      // Build Chroma where filter with doc_type and project scope
-      let whereFilter: Record<string, any> = { doc_type: 'observation' };
-      if (options.project) {
-        const projectFilter = {
-          $or: [
-            { project: options.project },
-            { merged_into_project: options.project }
-          ]
-        };
-        whereFilter = { $and: [whereFilter, projectFilter] };
-      }
-
       // Step 1: Chroma semantic search (top 100)
-      try {
-        const chromaResults = await this.queryChroma(query, 100, whereFilter);
-        logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults.ids.length });
+      const chromaResults = await this.queryChroma(query, 100);
+      logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults.ids.length });
 
-        if (chromaResults.ids.length > 0) {
-          // Step 2: Filter by recency (90 days)
-          const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-          const recentIds = chromaResults.ids.filter((_id, idx) => {
-            const meta = chromaResults.metadatas[idx];
-            return meta && meta.created_at_epoch > ninetyDaysAgo;
-          });
+      if (chromaResults.ids.length > 0) {
+        // Step 2: Filter by recency (90 days)
+        const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+        const recentIds = chromaResults.ids.filter((_id, idx) => {
+          const meta = chromaResults.metadatas[idx];
+          return meta && meta.created_at_epoch > ninetyDaysAgo;
+        });
 
-          logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
+        logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
 
-          // Step 3: Hydrate from SQLite in temporal order
-          if (recentIds.length > 0) {
-            const limit = options.limit || 20;
-            results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
-            logger.debug('SEARCH', 'Hydrated observations from SQLite', { count: results.length });
-          }
+        // Step 3: Hydrate from SQLite in temporal order
+        if (recentIds.length > 0) {
+          const limit = options.limit || 20;
+          results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit });
+          logger.debug('SEARCH', 'Hydrated observations from SQLite', { count: results.length });
         }
-      } catch (chromaError) {
-        const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
-        logger.error('WORKER', 'Chroma search failed for observations, falling back to FTS', {}, errorObject);
-      }
-    }
-
-    // FTS fallback when Chroma is unavailable or returned no results
-    if (results.length === 0) {
-      try {
-        const ftsResults = this.sessionSearch.searchObservations(query, options);
-        if (ftsResults.length > 0) {
-          results = ftsResults;
-        }
-      } catch (ftsError) {
-        logger.warn('SEARCH', 'FTS fallback failed for observations', {}, ftsError instanceof Error ? ftsError : undefined);
       }
     }
 
@@ -1043,55 +984,26 @@ export class SearchManager {
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search for sessions', {});
 
-      // Build Chroma where filter with doc_type and project scope
-      let whereFilter: Record<string, any> = { doc_type: 'session_summary' };
-      if (options.project) {
-        const projectFilter = {
-          $or: [
-            { project: options.project },
-            { merged_into_project: options.project }
-          ]
-        };
-        whereFilter = { $and: [whereFilter, projectFilter] };
-      }
-
       // Step 1: Chroma semantic search (top 100)
-      try {
-        const chromaResults = await this.queryChroma(query, 100, whereFilter);
-        logger.debug('SEARCH', 'Chroma returned semantic matches for sessions', { matchCount: chromaResults.ids.length });
+      const chromaResults = await this.queryChroma(query, 100, { doc_type: 'session_summary' });
+      logger.debug('SEARCH', 'Chroma returned semantic matches for sessions', { matchCount: chromaResults.ids.length });
 
-        if (chromaResults.ids.length > 0) {
-          // Step 2: Filter by recency (90 days)
-          const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-          const recentIds = chromaResults.ids.filter((_id, idx) => {
-            const meta = chromaResults.metadatas[idx];
-            return meta && meta.created_at_epoch > ninetyDaysAgo;
-          });
+      if (chromaResults.ids.length > 0) {
+        // Step 2: Filter by recency (90 days)
+        const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+        const recentIds = chromaResults.ids.filter((_id, idx) => {
+          const meta = chromaResults.metadatas[idx];
+          return meta && meta.created_at_epoch > ninetyDaysAgo;
+        });
 
-          logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
+        logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
 
-          // Step 3: Hydrate from SQLite in temporal order
-          if (recentIds.length > 0) {
-            const limit = options.limit || 20;
-            results = this.sessionStore.getSessionSummariesByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
-            logger.debug('SEARCH', 'Hydrated sessions from SQLite', { count: results.length });
-          }
+        // Step 3: Hydrate from SQLite in temporal order
+        if (recentIds.length > 0) {
+          const limit = options.limit || 20;
+          results = this.sessionStore.getSessionSummariesByIds(recentIds, { orderBy: 'date_desc', limit });
+          logger.debug('SEARCH', 'Hydrated sessions from SQLite', { count: results.length });
         }
-      } catch (chromaError) {
-        const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
-        logger.error('WORKER', 'Chroma search failed for sessions, falling back to FTS', {}, errorObject);
-      }
-    }
-
-    // FTS fallback when Chroma is unavailable or returned no results
-    if (results.length === 0) {
-      try {
-        const ftsResults = this.sessionSearch.searchSessions(query, options);
-        if (ftsResults.length > 0) {
-          results = ftsResults;
-        }
-      } catch (ftsError) {
-        logger.warn('SEARCH', 'FTS fallback failed for sessions', {}, ftsError instanceof Error ? ftsError : undefined);
       }
     }
 
@@ -1129,55 +1041,26 @@ export class SearchManager {
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search for user prompts', {});
 
-      // Build Chroma where filter with doc_type and project scope
-      let whereFilter: Record<string, any> = { doc_type: 'user_prompt' };
-      if (options.project) {
-        const projectFilter = {
-          $or: [
-            { project: options.project },
-            { merged_into_project: options.project }
-          ]
-        };
-        whereFilter = { $and: [whereFilter, projectFilter] };
-      }
-
       // Step 1: Chroma semantic search (top 100)
-      try {
-        const chromaResults = await this.queryChroma(query, 100, whereFilter);
-        logger.debug('SEARCH', 'Chroma returned semantic matches for prompts', { matchCount: chromaResults.ids.length });
+      const chromaResults = await this.queryChroma(query, 100, { doc_type: 'user_prompt' });
+      logger.debug('SEARCH', 'Chroma returned semantic matches for prompts', { matchCount: chromaResults.ids.length });
 
-        if (chromaResults.ids.length > 0) {
-          // Step 2: Filter by recency (90 days)
-          const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-          const recentIds = chromaResults.ids.filter((_id, idx) => {
-            const meta = chromaResults.metadatas[idx];
-            return meta && meta.created_at_epoch > ninetyDaysAgo;
-          });
+      if (chromaResults.ids.length > 0) {
+        // Step 2: Filter by recency (90 days)
+        const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+        const recentIds = chromaResults.ids.filter((_id, idx) => {
+          const meta = chromaResults.metadatas[idx];
+          return meta && meta.created_at_epoch > ninetyDaysAgo;
+        });
 
-          logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
+        logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
 
-          // Step 3: Hydrate from SQLite in temporal order
-          if (recentIds.length > 0) {
-            const limit = options.limit || 20;
-            results = this.sessionStore.getUserPromptsByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
-            logger.debug('SEARCH', 'Hydrated user prompts from SQLite', { count: results.length });
-          }
+        // Step 3: Hydrate from SQLite in temporal order
+        if (recentIds.length > 0) {
+          const limit = options.limit || 20;
+          results = this.sessionStore.getUserPromptsByIds(recentIds, { orderBy: 'date_desc', limit });
+          logger.debug('SEARCH', 'Hydrated user prompts from SQLite', { count: results.length });
         }
-      } catch (chromaError) {
-        const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
-        logger.error('WORKER', 'Chroma search failed for user prompts, falling back to FTS', {}, errorObject);
-      }
-    }
-
-    // FTS fallback when Chroma is unavailable or returned no results
-    if (results.length === 0 && query) {
-      try {
-        const ftsResults = this.sessionSearch.searchUserPrompts(query, options);
-        if (ftsResults.length > 0) {
-          results = ftsResults;
-        }
-      } catch (ftsError) {
-        logger.warn('SEARCH', 'FTS fallback failed for user prompts', {}, ftsError instanceof Error ? ftsError : undefined);
       }
     }
 
@@ -1819,53 +1702,23 @@ export class SearchManager {
     // Use hybrid search if available
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
+      const chromaResults = await this.queryChroma(query, 100);
+      logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults.ids.length });
 
-      // Build Chroma where filter scoped to observations + project if provided
-      let whereFilter: Record<string, any> = { doc_type: 'observation' };
-      if (project) {
-        const projectFilter = {
-          $or: [
-            { project },
-            { merged_into_project: project }
-          ]
-        };
-        whereFilter = { $and: [whereFilter, projectFilter] };
-      }
+      if (chromaResults.ids.length > 0) {
+        // Filter by recency (90 days)
+        const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+        const recentIds = chromaResults.ids.filter((_id, idx) => {
+          const meta = chromaResults.metadatas[idx];
+          return meta && meta.created_at_epoch > ninetyDaysAgo;
+        });
 
-      try {
-        const chromaResults = await this.queryChroma(query, 100, whereFilter);
-        logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults.ids.length });
+        logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
 
-        if (chromaResults.ids.length > 0) {
-          // Filter by recency (90 days)
-          const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-          const recentIds = chromaResults.ids.filter((_id, idx) => {
-            const meta = chromaResults.metadatas[idx];
-            return meta && meta.created_at_epoch > ninetyDaysAgo;
-          });
-
-          logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
-
-          if (recentIds.length > 0) {
-            results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: mode === 'auto' ? 1 : limit, project });
-            logger.debug('SEARCH', 'Hydrated observations from SQLite', { count: results.length });
-          }
+        if (recentIds.length > 0) {
+          results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: mode === 'auto' ? 1 : limit });
+          logger.debug('SEARCH', 'Hydrated observations from SQLite', { count: results.length });
         }
-      } catch (chromaError) {
-        const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
-        logger.error('WORKER', 'Chroma search failed for timeline by query, falling back to FTS', {}, errorObject);
-      }
-    }
-
-    // FTS fallback when Chroma is unavailable or returned no results
-    if (results.length === 0) {
-      try {
-        const ftsResults = this.sessionSearch.searchObservations(query, { project, limit: mode === 'auto' ? 1 : limit });
-        if (ftsResults.length > 0) {
-          results = ftsResults;
-        }
-      } catch (ftsError) {
-        logger.warn('SEARCH', 'FTS fallback failed for timeline by query', {}, ftsError instanceof Error ? ftsError : undefined);
       }
     }
 

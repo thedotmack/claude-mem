@@ -6,68 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## 
 ✅ CHANGELOG.md generated successfully!
-   239 new release(s) prepended
-oks, security, and search
-
-### Security Hardening
-- Bearer token authentication for all worker API endpoints with auto-generated tokens
-- Path traversal protection on context write paths
-- Per-user worker port derivation (37700 + uid%100) to prevent cross-user data leakage
-- Rate limiting (300 req/min/IP) and reduced JSON body limit (50MB → 5MB)
-- Caller headers can no longer override the bearer auth token
-
-### Worker Stability
-- Time-windowed RestartGuard replaces flat counter — prevents stranding pending messages on long sessions
-- Idle session eviction prevents pool slot deadlock when all slots are full
-- MCP loopback self-check uses process.execPath instead of bare 'node'
-- Age-scoped failed message purge (1h retention) instead of clearing all
-- RestartGuard decay anchored to real successes, not object creation time
-
-### Search & Chroma
-- FTS5 keyword fallback when ChromaDB is unavailable for all search handlers
-- doc_type:'observation' filter on Chroma queries feeding observation hydration
-- Project filtering passed to Chroma queries and SQLite hydration in all endpoints
-- Bounded post-import Chroma sync with concurrency limit of 8
-- FTS5 MATCH input escaped as quoted literal phrases to prevent syntax errors
-- LIKE metacharacters escaped in prompt text search
-- date_desc ordering respected in FTS session search
-
-### Hooks Reliability
-- Summarize hook wrapped in try/catch to prevent exit code 2 on network failures
-- Session-init gated on health check success — no longer runs when worker unreachable
-- Health-check wait loop added to UserPromptSubmit for Linux/WSL startup race
-
-### Database & Performance
-- Periodic WAL checkpoint and journal_size_limit to prevent unbounded WAL growth
-- FTS5 availability cached at construction time (no DDL probe per query)
-- _fts5Available downgraded when FTS table creation fails
-
-### Viewer UI
-- response.ok check added to settings save and initial load flows
-- Auth failure handling in saveSettings
-
-## [12.3.2] - 2026-04-20
-
-## Bug Fixes
-
-- **Search**: Fix `concept`/`concepts` parameter mismatch in `/api/search/by-concept` (#1916)
-- **Search**: Add FTS5 keyword fallback when ChromaDB is unavailable (#1913, #2048)
-- **Database**: Add periodic `clearFailed()` to purge stale pending messages (#1957)
-- **Database**: Add WAL checkpoint schedule and `journal_size_limit` to prevent unbounded growth (#1956)
-- **Worker**: Mark messages as failed (with retry) instead of confirming on non-XML responses (#1874)
-- **Worker**: Include `activeSessions` in `/health` endpoint for queue liveness monitoring (#1867)
-- **Docker**: Fix nounset-safe `TTY_ARGS` expansion in `run.sh`
-- **Search**: Cache `isFts5Available()` at construction time (Greptile review)
-
-## Closed Issues
-
-#1908, #1953, #1916, #1913, #2048, #1957, #1956, #1874, #1867
-
-## [12.3.1] - 2026-04-20
-
-## Error Handling & Code Quality
-
-This patch release resolves error handling anti-patterns across the entire codebase (91 files), improving resilience and correctness.
+   237 new release(s) prepended
+e resolves error handling anti-patterns across the entire codebase (91 files), improving resilience and correctness.
 
 ### Bug Fixes
 
