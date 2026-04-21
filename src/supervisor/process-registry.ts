@@ -68,12 +68,14 @@ export interface PidInfo {
  * liveness check then says "yes, PID is alive" — but it's actually *us*
  * checking against our own PID file and refusing to boot.
  *
- * Sources by platform:
- * - Linux: field 22 of /proc/<pid>/stat (starttime, jiffies since boot).
+ * Sources by platform (`process.platform`):
+ * - `linux`: field 22 of /proc/<pid>/stat (starttime, jiffies since boot).
  *   Cheap, no exec. Same approach pgrep/systemd use.
- * - Other POSIX (macOS, *BSD): `ps -p <pid> -o lstart=` (wall-clock start
- *   time). A one-shot exec at worker startup — fine.
- * - Windows: null (caller falls back to liveness-only behavior). The PID-
+ * - `darwin` and any other POSIX (*BSD, SunOS) that falls through the Linux
+ *   check: `ps -p <pid> -o lstart=` (wall-clock start time). A one-shot exec
+ *   at worker startup — fine. If `ps` is missing the ENOENT is caught and
+ *   null is returned; callers then fall back to liveness-only.
+ * - `win32`: null (caller falls back to liveness-only behavior). The PID-
  *   reuse scenario doesn't affect Windows deployments the way containers do.
  *
  * Returns null when we can't read a token (permission denied, process gone,
@@ -139,7 +141,7 @@ export function captureProcessStartToken(pid: number): string | null {
  * mismatch means the PID has been reused by an unrelated process — the PID
  * file is stale even though kill(0) succeeds.
  */
-export function verifyPidFileOwnership(info: PidInfo | null): boolean {
+export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
   if (!info) return false;
   if (!isPidAlive(info.pid)) return false;
 

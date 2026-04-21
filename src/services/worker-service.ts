@@ -1369,9 +1369,9 @@ async function main() {
       const existingPidInfo = readPidFile();
       if (verifyPidFileOwnership(existingPidInfo)) {
         logger.info('SYSTEM', 'Worker already running (PID alive), refusing to start duplicate', {
-          existingPid: existingPidInfo!.pid,
-          existingPort: existingPidInfo!.port,
-          startedAt: existingPidInfo!.startedAt
+          existingPid: existingPidInfo.pid,
+          existingPort: existingPidInfo.port,
+          startedAt: existingPidInfo.startedAt
         });
         process.exit(0);
       }

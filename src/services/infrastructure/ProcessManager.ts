@@ -185,10 +185,12 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
   return lookupInPath('bun', platform);
 }
 
-export type { PidInfo } from '../../supervisor/process-registry.js';
-import type { PidInfo } from '../../supervisor/process-registry.js';
-import { captureProcessStartToken, verifyPidFileOwnership } from '../../supervisor/process-registry.js';
-export { captureProcessStartToken, verifyPidFileOwnership };
+import {
+  captureProcessStartToken,
+  verifyPidFileOwnership,
+  type PidInfo
+} from '../../supervisor/process-registry.js';
+export { captureProcessStartToken, verifyPidFileOwnership, type PidInfo };
 
 /**
  * Write PID info to the standard PID file location.
