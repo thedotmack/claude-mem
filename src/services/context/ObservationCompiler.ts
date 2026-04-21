@@ -5,10 +5,8 @@
  */
 
 import path from 'path';
-import { existsSync, readFileSync } from 'fs';
 import { SessionStore } from '../sqlite/SessionStore.js';
-import { logger } from '../../utils/logger.js';
-import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
+import { extractLastMessage } from '../../shared/transcript-parser.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import type {
   ContextConfig,
@@ -196,60 +194,11 @@ function cwdToDashed(cwd: string): string {
 }
 
 /**
- * Find the last assistant message text from parsed transcript lines.
- */
-function parseAssistantTextFromLine(line: string): string | null {
-  if (!line.includes('"type":"assistant"')) return null;
-
-  const entry = JSON.parse(line);
-  if (entry.type === 'assistant' && entry.message?.content && Array.isArray(entry.message.content)) {
-    let text = '';
-    for (const block of entry.message.content) {
-      if (block.type === 'text') text += block.text;
-    }
-    text = text.replace(SYSTEM_REMINDER_REGEX, '').trim();
-    if (text) return text;
-  }
-  return null;
-}
-
-function findLastAssistantMessage(lines: string[]): string {
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const result = parseAssistantTextFromLine(lines[i]);
-      if (result) return result;
-    } catch (parseError) {
-      if (parseError instanceof Error) {
-        logger.debug('WORKER', 'Skipping malformed transcript line', { lineIndex: i }, parseError);
-      } else {
-        logger.debug('WORKER', 'Skipping malformed transcript line', { lineIndex: i, error: String(parseError) });
-      }
-      continue;
-    }
-  }
-  return '';
-}
-
-/**
  * Extract prior messages from transcript file
  */
 export function extractPriorMessages(transcriptPath: string): PriorMessages {
-  try {
-    if (!existsSync(transcriptPath)) return { userMessage: '', assistantMessage: '' };
-    const content = readFileSync(transcriptPath, 'utf-8').trim();
-    if (!content) return { userMessage: '', assistantMessage: '' };
-
-    const lines = content.split('\n').filter(line => line.trim());
-    const lastAssistantMessage = findLastAssistantMessage(lines);
-    return { userMessage: '', assistantMessage: lastAssistantMessage };
-  } catch (error) {
-    if (error instanceof Error) {
-      logger.failure('WORKER', 'Failed to extract prior messages from transcript', { transcriptPath }, error);
-    } else {
-      logger.warn('WORKER', 'Failed to extract prior messages from transcript', { transcriptPath, error: String(error) });
-    }
-    return { userMessage: '', assistantMessage: '' };
-  }
+  const assistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
+  return { userMessage: '', assistantMessage };
 }
 
 /**

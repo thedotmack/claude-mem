@@ -17,6 +17,7 @@ import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import { getWorkerPort, workerHttpRequest } from '../../shared/worker-utils.js';
 import { DATA_DIR, MARKETPLACE_ROOT, CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { resolveBunBinaryPathOrDefault } from '../../shared/bun-resolution.js';
 import {
   readCursorRegistry as readCursorRegistryFromFile,
   writeCursorRegistry as writeCursorRegistryToFile,
@@ -170,34 +171,15 @@ export function findWorkerServicePath(): string | null {
 }
 
 /**
- * Find the Bun executable path
- * Required because worker-service.cjs uses bun:sqlite which is Bun-specific
- * Searches common installation locations across platforms
+ * Find the Bun executable path.
+ * Required because worker-service.cjs uses bun:sqlite which is Bun-specific.
+ *
+ * Delegates to the shared resolver; falls back to the literal `'bun'` so
+ * hook config generation always emits an invocation even if Bun isn't
+ * detected at install time (the user sees a clear error at hook-run time).
  */
 export function findBunPath(): string {
-  const possiblePaths = [
-    // Standard user install location (most common)
-    path.join(homedir(), '.bun', 'bin', 'bun'),
-    // Global install locations
-    '/usr/local/bin/bun',
-    '/usr/bin/bun',
-    // Windows locations
-    ...(process.platform === 'win32' ? [
-      path.join(homedir(), '.bun', 'bin', 'bun.exe'),
-      path.join(process.env.LOCALAPPDATA || '', 'bun', 'bun.exe'),
-    ] : []),
-  ];
-
-  for (const p of possiblePaths) {
-    if (p && existsSync(p)) {
-      return p;
-    }
-  }
-
-  // Fallback to 'bun' and hope it's in PATH
-  // This allows the installation to proceed even if we can't find bun
-  // The user will get a clear error when the hook runs if bun isn't available
-  return 'bun';
+  return resolveBunBinaryPathOrDefault();
 }
 
 /**
