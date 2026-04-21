@@ -1,4 +1,4 @@
-import { ChildProcess } from 'child_process';
+import { ChildProcess, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
@@ -42,6 +42,113 @@ export function isPidAlive(pid: number): boolean {
     logger.warn('SYSTEM', 'PID check threw non-Error', { pid, error: String(error) });
     return false;
   }
+}
+
+export interface PidInfo {
+  pid: number;
+  port: number;
+  startedAt: string;
+  // Opaque process-start token used to distinguish a worker incarnation from
+  // another process that happens to reuse the same PID. Captured via
+  // captureProcessStartToken() at write time, checked via
+  // verifyPidFileOwnership() at read time. Optional for backwards
+  // compatibility with PID files written by older versions.
+  startToken?: string;
+}
+
+/**
+ * Capture an opaque "identity" token for a running PID — something stable
+ * across time for that exact process incarnation, but different if the PID
+ * gets reused by a later process.
+ *
+ * Fixes a class of false-positive "worker already running" errors where the
+ * PID file survives (bind-mounted volume, persistent home dir, etc.) while
+ * the PID namespace resets (docker stop / docker start), and the new worker
+ * incarnation happens to get the same PID as the old one. A plain kill(0)
+ * liveness check then says "yes, PID is alive" — but it's actually *us*
+ * checking against our own PID file and refusing to boot.
+ *
+ * Sources by platform:
+ * - Linux: field 22 of /proc/<pid>/stat (starttime, jiffies since boot).
+ *   Cheap, no exec. Same approach pgrep/systemd use.
+ * - Other POSIX (macOS, *BSD): `ps -p <pid> -o lstart=` (wall-clock start
+ *   time). A one-shot exec at worker startup — fine.
+ * - Windows: null (caller falls back to liveness-only behavior). The PID-
+ *   reuse scenario doesn't affect Windows deployments the way containers do.
+ *
+ * Returns null when we can't read a token (permission denied, process gone,
+ * unsupported platform). Callers should treat null as "can't verify" and
+ * fall back to the liveness-only code path to preserve existing behavior.
+ */
+export function captureProcessStartToken(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+
+  if (process.platform === 'linux') {
+    try {
+      // /proc/<pid>/stat format:
+      //   <pid> (comm) <state> <ppid> ... <starttime@field-22> ...
+      // `comm` can contain spaces and parens, so we key off the LAST ')' and
+      // split the tail — avoids being confused by weird process names.
+      const raw = readFileSync(`/proc/${pid}/stat`, 'utf-8');
+      const tailStart = raw.lastIndexOf(') ');
+      if (tailStart < 0) return null;
+      const fields = raw.slice(tailStart + 2).split(' ');
+      // After ') ' we're at field 3 (state). starttime is field 22.
+      // Offset into `fields`: 22 - 3 = 19.
+      const starttime = fields[19];
+      return starttime && /^\d+$/.test(starttime) ? starttime : null;
+    } catch (error: unknown) {
+      logger.debug('SYSTEM', 'captureProcessStartToken: /proc read failed', {
+        pid,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  }
+
+  if (process.platform === 'win32') {
+    return null;
+  }
+
+  try {
+    const result = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], {
+      encoding: 'utf-8',
+      timeout: 2000
+    });
+    if (result.status !== 0) return null;
+    const token = result.stdout.trim();
+    return token.length > 0 ? token : null;
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'captureProcessStartToken: ps exec failed', {
+      pid,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+/**
+ * Verify that the process named by `info` is the same worker incarnation
+ * that wrote the PID file. Returns true only when:
+ *   - the PID is currently alive, AND
+ *   - either the stored start token matches the current token for that PID,
+ *     OR no token is stored (PID file written by an older version — fall
+ *     back to liveness-only for backwards compatibility).
+ *
+ * Returns false for null input, dead PIDs, and token mismatches. A token
+ * mismatch means the PID has been reused by an unrelated process — the PID
+ * file is stale even though kill(0) succeeds.
+ */
+export function verifyPidFileOwnership(info: PidInfo | null): boolean {
+  if (!info) return false;
+  if (!isPidAlive(info.pid)) return false;
+
+  if (!info.startToken) return true;
+
+  const currentToken = captureProcessStartToken(info.pid);
+  if (currentToken === null) return true;
+
+  return currentToken === info.startToken;
 }
 
 export class ProcessRegistry {

@@ -185,18 +185,24 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
   return lookupInPath('bun', platform);
 }
 
-export interface PidInfo {
-  pid: number;
-  port: number;
-  startedAt: string;
-}
+export type { PidInfo } from '../../supervisor/process-registry.js';
+import type { PidInfo } from '../../supervisor/process-registry.js';
+import { captureProcessStartToken, verifyPidFileOwnership } from '../../supervisor/process-registry.js';
+export { captureProcessStartToken, verifyPidFileOwnership };
 
 /**
- * Write PID info to the standard PID file location
+ * Write PID info to the standard PID file location.
+ *
+ * Automatically captures a process-start token for `info.pid` if the caller
+ * didn't supply one. The token lets future readers detect PID reuse across
+ * reboots/container restarts — see captureProcessStartToken in
+ * supervisor/process-registry.ts.
  */
 export function writePidFile(info: PidInfo): void {
   mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(PID_FILE, JSON.stringify(info, null, 2));
+  const startToken = info.startToken ?? captureProcessStartToken(info.pid) ?? undefined;
+  const payload: PidInfo = startToken ? { ...info, startToken } : info;
+  writeFileSync(PID_FILE, JSON.stringify(payload, null, 2));
 }
 
 /**
