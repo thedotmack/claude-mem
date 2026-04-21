@@ -43,8 +43,8 @@ plugin/.cli-installed
 # Local contribution analysis (not part of upstream)
 CONTRIB_NOTES.md
 
-# Docker dev harness — persistent SQLite + Chroma state
-.docker-claude-mem-data/
+# Docker dev harness — persistent SQLite + Chroma state (per-container scratch dirs)
+.docker-claude-mem*-data/
 
 # SWE-bench eval outputs
 evals/swebench/runs/
