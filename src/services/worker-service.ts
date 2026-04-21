@@ -84,7 +84,6 @@ import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from './
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
-import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './transcripts/config.js';
@@ -427,13 +426,11 @@ export class WorkerService {
       }
 
       // Initialize search services
-      const formattingService = new FormattingService();
       const timelineService = new TimelineService();
       const searchManager = new SearchManager(
         this.dbManager.getSessionSearch(),
         this.dbManager.getSessionStore(),
         this.dbManager.getChromaSync(),
-        formattingService,
         timelineService
       );
       this.searchRoutes = new SearchRoutes(searchManager);

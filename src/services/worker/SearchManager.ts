@@ -16,30 +16,35 @@
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
-import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
-import type { TimelineItem } from './TimelineService.js';
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
-import { ModeManager } from '../domain/ModeManager.js';
+import { extractFirstFile, groupByDate } from '../../shared/timeline-formatting.js';
 
-import { SEARCH_CONSTANTS } from './search/index.js';
-import type { TimelineData } from './TimelineService.js';
+import {
+  SEARCH_CONSTANTS,
+  formatTimeline,
+  formatTableHeader,
+  formatSearchTableHeader,
+  formatObservationIndex,
+  formatSessionIndex,
+  formatUserPromptIndex,
+  formatObservationSearchRow,
+  formatSessionSearchRow,
+  formatUserPromptSearchRow,
+} from './search/index.js';
 
 export class SearchManager {
   constructor(
     private sessionSearch: SessionSearch,
     private sessionStore: SessionStore,
     private chromaSync: ChromaSync | null,
-    private formatter: FormattingService,
     private timelineService: TimelineService
   ) {}
 
   /**
-   * Query Chroma vector database via ChromaSync
-   * @deprecated Use orchestrator.search() instead
+   * Query Chroma vector database via ChromaSync.
    */
   private async queryChroma(
     query: string,
@@ -52,33 +57,83 @@ export class SearchManager {
     return await this.chromaSync.queryChroma(query, limit, whereFilter);
   }
 
-  private async searchChromaForTimeline(query: string, ninetyDaysAgo: number, project?: string): Promise<ObservationSearchResult[]> {
-    // Build where filter scoped to observations only + project if provided
-    let whereFilter: Record<string, any> = { doc_type: 'observation' };
+  /**
+   * Chroma -> recency -> hydrate pipeline used by every doc-type search.
+   * Returns [] on any Chroma failure so callers can fall back to FTS.
+   */
+  private async semanticSearch<T>(opts: {
+    query: string;
+    docType: 'observation' | 'session_summary' | 'user_prompt';
+    project?: string;
+    limit: number;
+    hydrate: (ids: number[], opts: { orderBy: 'date_desc'; limit: number; project?: string }) => T[];
+    recencyMs?: number;
+  }): Promise<T[]> {
+    if (!this.chromaSync) return [];
+    const { query, docType, project, limit, hydrate } = opts;
+    const recencyMs = opts.recencyMs ?? SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+
+    let whereFilter: Record<string, any> = { doc_type: docType };
     if (project) {
       const projectFilter = {
-        $or: [
-          { project },
-          { merged_into_project: project }
-        ]
+        $or: [{ project }, { merged_into_project: project }]
       };
       whereFilter = { $and: [whereFilter, projectFilter] };
     }
 
-    const chromaResults = await this.queryChroma(query, 100, whereFilter);
-    logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults?.ids?.length ?? 0 });
+    try {
+      const chromaResults = await this.queryChroma(query, 100, whereFilter);
+      logger.debug('SEARCH', 'Chroma returned semantic matches', { docType, matchCount: chromaResults.ids.length });
+      if (chromaResults.ids.length === 0) return [];
 
-    if (chromaResults?.ids && chromaResults.ids.length > 0) {
+      const cutoff = Date.now() - recencyMs;
       const recentIds = chromaResults.ids.filter((_id, idx) => {
         const meta = chromaResults.metadatas[idx];
-        return meta && meta.created_at_epoch > ninetyDaysAgo;
+        return meta && meta.created_at_epoch > cutoff;
       });
+      logger.debug('SEARCH', 'Results within recency window', { count: recentIds.length });
+      if (recentIds.length === 0) return [];
 
-      if (recentIds.length > 0) {
-        return this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: 1, project });
+      const hydrated = hydrate(recentIds, { orderBy: 'date_desc', limit, project });
+      logger.debug('SEARCH', 'Hydrated from SQLite', { docType, count: hydrated.length });
+      return hydrated;
+    } catch (chromaError) {
+      const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
+      logger.error('WORKER', 'Chroma semantic search failed, returning empty for FTS fallback', { docType }, errorObject);
+      return [];
+    }
+  }
+
+
+  /**
+   * Metadata-first then Chroma semantic rerank.
+   * Runs a SQLite metadata filter (findByConcept/findByType), then asks Chroma
+   * to rank the survivors by semantic relevance to `keyword`. Falls back to
+   * the metadata-only result set on any failure.
+   */
+  private async rerankByMetadata(
+    keyword: string,
+    metadataFetch: () => ObservationSearchResult[],
+    filterLimit: number
+  ): Promise<ObservationSearchResult[]> {
+    const metadataResults = metadataFetch();
+    logger.debug('SEARCH', 'Metadata-first candidate set', { keyword, count: metadataResults.length });
+    if (!this.chromaSync || metadataResults.length === 0) return metadataResults;
+
+    const ids = metadataResults.map(obs => obs.id);
+    const chromaResults = await this.queryChroma(keyword, Math.min(ids.length, 100));
+    const rankedIds: number[] = [];
+    for (const chromaId of chromaResults.ids) {
+      if (ids.includes(chromaId) && !rankedIds.includes(chromaId)) {
+        rankedIds.push(chromaId);
       }
     }
-    return [];
+    logger.debug('SEARCH', 'Chroma ranked results by semantic relevance', { count: rankedIds.length });
+    if (rankedIds.length === 0) return metadataResults;
+
+    const hydrated = this.sessionStore.getObservationsByIds(rankedIds, { limit: filterLimit });
+    hydrated.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+    return hydrated;
   }
 
   /**
@@ -398,20 +453,20 @@ export class SearchManager {
       // Render each file section
       for (const [file, fileResults] of resultsByFile) {
         lines.push(`**${file}**`);
-        lines.push(this.formatter.formatSearchTableHeader());
+        lines.push(formatSearchTableHeader());
 
         let lastTime = '';
         for (const result of fileResults) {
           if (result.type === 'observation') {
-            const formatted = this.formatter.formatObservationSearchRow(result.data as ObservationSearchResult, lastTime);
+            const formatted = formatObservationSearchRow(result.data as ObservationSearchResult, lastTime);
             lines.push(formatted.row);
             lastTime = formatted.time;
           } else if (result.type === 'session') {
-            const formatted = this.formatter.formatSessionSearchRow(result.data as SessionSummarySearchResult, lastTime);
+            const formatted = formatSessionSearchRow(result.data as SessionSummarySearchResult, lastTime);
             lines.push(formatted.row);
             lastTime = formatted.time;
           } else {
-            const formatted = this.formatter.formatUserPromptSearchRow(result.data as UserPromptSearchResult, lastTime);
+            const formatted = formatUserPromptSearchRow(result.data as UserPromptSearchResult, lastTime);
             lines.push(formatted.row);
             lastTime = formatted.time;
           }
@@ -436,144 +491,78 @@ export class SearchManager {
     const { anchor, query, depth_before, depth_after, project } = args;
     const depthBefore = depth_before != null ? Number(depth_before) : 10;
     const depthAfter = depth_after != null ? Number(depth_after) : 10;
-    const cwd = process.cwd();
 
-    // Validate: must provide either anchor or query, not both
     if (!anchor && !query) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: 'Error: Must provide either "anchor" or "query" parameter'
-        }],
-        isError: true
-      };
+      return { content: [{ type: 'text' as const, text: 'Error: Must provide either "anchor" or "query" parameter' }], isError: true };
     }
-
     if (anchor && query) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: 'Error: Cannot provide both "anchor" and "query" parameters. Use one or the other.'
-        }],
-        isError: true
-      };
+      return { content: [{ type: 'text' as const, text: 'Error: Cannot provide both "anchor" and "query" parameters. Use one or the other.' }], isError: true };
     }
 
     let anchorId: string | number;
     let anchorEpoch: number;
     let timelineData: any;
 
-    // MODE 1: Query-based timeline
     if (query) {
-      // Step 1: Search for observations
-      let results: ObservationSearchResult[] = [];
-
-      if (this.chromaSync) {
-        logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
-        const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-        try {
-          results = await this.searchChromaForTimeline(query, ninetyDaysAgo, project);
-        } catch (chromaError) {
-          const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
-          logger.error('WORKER', 'Chroma search failed for timeline, continuing without semantic results', {}, errorObject);
-        }
-      }
-
-      // FTS fallback when Chroma is unavailable or returned no results
+      let results: ObservationSearchResult[] = await this.semanticSearch({
+        query,
+        docType: 'observation',
+        project,
+        limit: 1,
+        hydrate: (ids, opts) => this.sessionStore.getObservationsByIds(ids, opts),
+      });
       if (results.length === 0) {
         try {
           const ftsResults = this.sessionSearch.searchObservations(query, { project, limit: 1 });
-          if (ftsResults.length > 0) {
-            results = ftsResults;
-          }
+          if (ftsResults.length > 0) results = ftsResults;
         } catch (ftsError) {
           logger.warn('SEARCH', 'FTS fallback failed for timeline', {}, ftsError instanceof Error ? ftsError : undefined);
         }
       }
-
       if (results.length === 0) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: `No observations found matching "${query}". Try a different search query.`
-          }]
-        };
+        return { content: [{ type: 'text' as const, text: `No observations found matching "${query}". Try a different search query.` }] };
       }
-
-      // Use top result as anchor
       const topResult = results[0];
       anchorId = topResult.id;
       anchorEpoch = topResult.created_at_epoch;
       logger.debug('SEARCH', 'Query mode: Using observation as timeline anchor', { observationId: topResult.id });
       timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project);
-    }
-    // MODE 2: Anchor-based timeline
-    else if (typeof anchor === 'number') {
-      // Observation ID
+    } else if (typeof anchor === 'number') {
       const obs = this.sessionStore.getObservationById(anchor);
       if (!obs) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: `Observation #${anchor} not found`
-          }],
-          isError: true
-        };
+        return { content: [{ type: 'text' as const, text: `Observation #${anchor} not found` }], isError: true };
       }
       anchorId = anchor;
       anchorEpoch = obs.created_at_epoch;
       timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depthBefore, depthAfter, project);
     } else if (typeof anchor === 'string') {
-      // Session ID or ISO timestamp
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
-        const sessionId = anchor.replace(/^#?S/, '');
-        const sessionNum = parseInt(sessionId, 10);
+        const sessionNum = parseInt(anchor.replace(/^#?S/, ''), 10);
         const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum]);
         if (sessions.length === 0) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Session #${sessionNum} not found`
-            }],
-            isError: true
-          };
+          return { content: [{ type: 'text' as const, text: `Session #${sessionNum} not found` }], isError: true };
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
         timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       } else {
-        // ISO timestamp
         const date = new Date(anchor);
         if (isNaN(date.getTime())) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Invalid timestamp: ${anchor}`
-            }],
-            isError: true
-          };
+          return { content: [{ type: 'text' as const, text: `Invalid timestamp: ${anchor}` }], isError: true };
         }
         anchorEpoch = date.getTime();
         anchorId = anchor;
         timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       }
     } else {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: 'Invalid anchor: must be observation ID (number), session ID (e.g., "S123"), or ISO timestamp'
-        }],
-        isError: true
-      };
+      return { content: [{ type: 'text' as const, text: 'Invalid anchor: must be observation ID (number), session ID (e.g., "S123"), or ISO timestamp' }], isError: true };
     }
 
-    // Combine, sort, and filter timeline items
-    const items: TimelineItem[] = [
-      ...(timelineData.observations || []).map((obs: any) => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
-      ...(timelineData.sessions || []).map((sess: any) => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
-      ...(timelineData.prompts || []).map((prompt: any) => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
-    ];
-    items.sort((a, b) => a.epoch - b.epoch);
+    const items = this.timelineService.buildTimeline({
+      observations: timelineData.observations || [],
+      sessions: timelineData.sessions || [],
+      prompts: timelineData.prompts || [],
+    });
     const filteredItems = this.timelineService.filterByDepth(items, anchorId, anchorEpoch, depthBefore, depthAfter);
 
     if (!filteredItems || filteredItems.length === 0) {
@@ -587,125 +576,24 @@ export class SearchManager {
       };
     }
 
-    // Format results
-    const lines: string[] = [];
-
-    // Header
+    let header: string;
     if (query) {
       const anchorObs = filteredItems.find(item => item.type === 'observation' && item.data.id === anchorId);
       const anchorTitle = anchorObs && anchorObs.type === 'observation' ? ((anchorObs.data as ObservationSearchResult).title || 'Untitled') : 'Unknown';
-      lines.push(`# Timeline for query: "${query}"`);
-      lines.push(`**Anchor:** Observation #${anchorId} - ${anchorTitle}`);
+      header = `# Timeline for query: "${query}"\n**Anchor:** Observation #${anchorId} - ${anchorTitle}`;
     } else {
-      lines.push(`# Timeline around anchor: ${anchorId}`);
-    }
-
-    lines.push(`**Window:** ${depthBefore} records before -> ${depthAfter} records after | **Items:** ${filteredItems?.length ?? 0}`);
-    lines.push('');
-
-
-    // Group by day
-    const dayMap = new Map<string, TimelineItem[]>();
-    for (const item of filteredItems) {
-      const day = formatDate(item.epoch);
-      if (!dayMap.has(day)) {
-        dayMap.set(day, []);
-      }
-      dayMap.get(day)!.push(item);
-    }
-
-    // Sort days chronologically
-    const sortedDays = Array.from(dayMap.entries()).sort((a, b) => {
-      const aDate = new Date(a[0]).getTime();
-      const bDate = new Date(b[0]).getTime();
-      return aDate - bDate;
-    });
-
-    // Render each day
-    for (const [day, dayItems] of sortedDays) {
-      lines.push(`### ${day}`);
-      lines.push('');
-
-      let currentFile: string | null = null;
-      let lastTime = '';
-      let tableOpen = false;
-
-      for (const item of dayItems) {
-        const isAnchor = (
-          (typeof anchorId === 'number' && item.type === 'observation' && item.data.id === anchorId) ||
-          (typeof anchorId === 'string' && anchorId.startsWith('S') && item.type === 'session' && `S${item.data.id}` === anchorId)
-        );
-
-        if (item.type === 'session') {
-          if (tableOpen) {
-            lines.push('');
-            tableOpen = false;
-            currentFile = null;
-            lastTime = '';
-          }
-
-          const sess = item.data as SessionSummarySearchResult;
-          const title = sess.request || 'Session summary';
-          const marker = isAnchor ? ' <- **ANCHOR**' : '';
-
-          lines.push(`**\uD83C\uDFAF #S${sess.id}** ${title} (${formatDateTime(item.epoch)})${marker}`);
-          lines.push('');
-        } else if (item.type === 'prompt') {
-          if (tableOpen) {
-            lines.push('');
-            tableOpen = false;
-            currentFile = null;
-            lastTime = '';
-          }
-
-          const prompt = item.data as UserPromptSearchResult;
-          const truncated = prompt.prompt_text.length > 100 ? prompt.prompt_text.substring(0, 100) + '...' : prompt.prompt_text;
-
-          lines.push(`**\uD83D\uDCAC User Prompt #${prompt.prompt_number}** (${formatDateTime(item.epoch)})`);
-          lines.push(`> ${truncated}`);
-          lines.push('');
-        } else if (item.type === 'observation') {
-          const obs = item.data as ObservationSearchResult;
-          const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
-
-          if (file !== currentFile) {
-            if (tableOpen) {
-              lines.push('');
-            }
-
-            lines.push(`**${file}**`);
-            lines.push(`| ID | Time | T | Title | Tokens |`);
-            lines.push(`|----|------|---|-------|--------|`);
-
-            currentFile = file;
-            tableOpen = true;
-            lastTime = '';
-          }
-
-          const icon = ModeManager.getInstance().getTypeIcon(obs.type);
-
-          const time = formatTime(item.epoch);
-          const title = obs.title || 'Untitled';
-          const tokens = estimateTokens(obs.narrative);
-
-          const showTime = time !== lastTime;
-          const timeDisplay = showTime ? time : '"';
-          lastTime = time;
-
-          const anchorMarker = isAnchor ? ' <- **ANCHOR**' : '';
-          lines.push(`| #${obs.id} | ${timeDisplay} | ${icon} | ${title}${anchorMarker} | ~${tokens} |`);
-        }
-      }
-
-      if (tableOpen) {
-        lines.push('');
-      }
+      header = `# Timeline around anchor: ${anchorId}`;
     }
 
     return {
       content: [{
         type: 'text' as const,
-        text: lines.join('\n')
+        text: formatTimeline({
+          items: filteredItems,
+          anchorId,
+          title: header,
+          window: `**Window:** ${depthBefore} records before -> ${depthAfter} records after | **Items:** ${filteredItems.length}`,
+        })
       }]
     };
   }
@@ -778,8 +666,8 @@ export class SearchManager {
     }
 
     // Format as table
-    const header = `Found ${results.length} decision(s)\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
+    const header = `Found ${results.length} decision(s)\n\n${formatTableHeader()}`;
+    const formattedResults = results.map((obs) => formatObservationIndex(obs));
 
     return {
       content: [{
@@ -861,8 +749,8 @@ export class SearchManager {
     }
 
     // Format as table
-    const header = `Found ${results.length} change-related observation(s)\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
+    const header = `Found ${results.length} change-related observation(s)\n\n${formatTableHeader()}`;
+    const formattedResults = results.map((obs) => formatObservationIndex(obs));
 
     return {
       content: [{
@@ -918,8 +806,8 @@ export class SearchManager {
     }
 
     // Format as table
-    const header = `Found ${results.length} "how it works" observation(s)\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
+    const header = `Found ${results.length} "how it works" observation(s)\n\n${formatTableHeader()}`;
+    const formattedResults = results.map((obs) => formatObservationIndex(obs));
 
     return {
       content: [{
@@ -936,59 +824,20 @@ export class SearchManager {
   async searchObservations(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { query, ...options } = normalized;
-    let results: ObservationSearchResult[] = [];
+    const limit = options.limit || 20;
 
-    // Vector-first search via ChromaDB
-    if (this.chromaSync) {
-      logger.debug('SEARCH', 'Using hybrid semantic search (Chroma + SQLite)', {});
+    let results: ObservationSearchResult[] = await this.semanticSearch({
+      query,
+      docType: 'observation',
+      project: options.project,
+      limit,
+      hydrate: (ids, opts) => this.sessionStore.getObservationsByIds(ids, opts),
+    });
 
-      // Build Chroma where filter with doc_type and project scope
-      let whereFilter: Record<string, any> = { doc_type: 'observation' };
-      if (options.project) {
-        const projectFilter = {
-          $or: [
-            { project: options.project },
-            { merged_into_project: options.project }
-          ]
-        };
-        whereFilter = { $and: [whereFilter, projectFilter] };
-      }
-
-      // Step 1: Chroma semantic search (top 100)
-      try {
-        const chromaResults = await this.queryChroma(query, 100, whereFilter);
-        logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults.ids.length });
-
-        if (chromaResults.ids.length > 0) {
-          // Step 2: Filter by recency (90 days)
-          const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-          const recentIds = chromaResults.ids.filter((_id, idx) => {
-            const meta = chromaResults.metadatas[idx];
-            return meta && meta.created_at_epoch > ninetyDaysAgo;
-          });
-
-          logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
-
-          // Step 3: Hydrate from SQLite in temporal order
-          if (recentIds.length > 0) {
-            const limit = options.limit || 20;
-            results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
-            logger.debug('SEARCH', 'Hydrated observations from SQLite', { count: results.length });
-          }
-        }
-      } catch (chromaError) {
-        const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
-        logger.error('WORKER', 'Chroma search failed for observations, falling back to FTS', {}, errorObject);
-      }
-    }
-
-    // FTS fallback when Chroma is unavailable or returned no results
     if (results.length === 0) {
       try {
         const ftsResults = this.sessionSearch.searchObservations(query, options);
-        if (ftsResults.length > 0) {
-          results = ftsResults;
-        }
+        if (ftsResults.length > 0) results = ftsResults;
       } catch (ftsError) {
         logger.warn('SEARCH', 'FTS fallback failed for observations', {}, ftsError instanceof Error ? ftsError : undefined);
       }
@@ -1004,8 +853,8 @@ export class SearchManager {
     }
 
     // Format as table
-    const header = `Found ${results.length} observation(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
+    const header = `Found ${results.length} observation(s) matching "${query}"\n\n${formatTableHeader()}`;
+    const formattedResults = results.map((obs) => formatObservationIndex(obs));
 
     return {
       content: [{
@@ -1022,59 +871,20 @@ export class SearchManager {
   async searchSessions(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { query, ...options } = normalized;
-    let results: SessionSummarySearchResult[] = [];
+    const limit = options.limit || 20;
 
-    // Vector-first search via ChromaDB
-    if (this.chromaSync) {
-      logger.debug('SEARCH', 'Using hybrid semantic search for sessions', {});
+    let results: SessionSummarySearchResult[] = await this.semanticSearch({
+      query,
+      docType: 'session_summary',
+      project: options.project,
+      limit,
+      hydrate: (ids, opts) => this.sessionStore.getSessionSummariesByIds(ids, opts),
+    });
 
-      // Build Chroma where filter with doc_type and project scope
-      let whereFilter: Record<string, any> = { doc_type: 'session_summary' };
-      if (options.project) {
-        const projectFilter = {
-          $or: [
-            { project: options.project },
-            { merged_into_project: options.project }
-          ]
-        };
-        whereFilter = { $and: [whereFilter, projectFilter] };
-      }
-
-      // Step 1: Chroma semantic search (top 100)
-      try {
-        const chromaResults = await this.queryChroma(query, 100, whereFilter);
-        logger.debug('SEARCH', 'Chroma returned semantic matches for sessions', { matchCount: chromaResults.ids.length });
-
-        if (chromaResults.ids.length > 0) {
-          // Step 2: Filter by recency (90 days)
-          const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-          const recentIds = chromaResults.ids.filter((_id, idx) => {
-            const meta = chromaResults.metadatas[idx];
-            return meta && meta.created_at_epoch > ninetyDaysAgo;
-          });
-
-          logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
-
-          // Step 3: Hydrate from SQLite in temporal order
-          if (recentIds.length > 0) {
-            const limit = options.limit || 20;
-            results = this.sessionStore.getSessionSummariesByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
-            logger.debug('SEARCH', 'Hydrated sessions from SQLite', { count: results.length });
-          }
-        }
-      } catch (chromaError) {
-        const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
-        logger.error('WORKER', 'Chroma search failed for sessions, falling back to FTS', {}, errorObject);
-      }
-    }
-
-    // FTS fallback when Chroma is unavailable or returned no results
     if (results.length === 0) {
       try {
         const ftsResults = this.sessionSearch.searchSessions(query, options);
-        if (ftsResults.length > 0) {
-          results = ftsResults;
-        }
+        if (ftsResults.length > 0) results = ftsResults;
       } catch (ftsError) {
         logger.warn('SEARCH', 'FTS fallback failed for sessions', {}, ftsError instanceof Error ? ftsError : undefined);
       }
@@ -1090,8 +900,8 @@ export class SearchManager {
     }
 
     // Format as table
-    const header = `Found ${results.length} session(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults = results.map((session, i) => this.formatter.formatSessionIndex(session, i));
+    const header = `Found ${results.length} session(s) matching "${query}"\n\n${formatTableHeader()}`;
+    const formattedResults = results.map((session) => formatSessionIndex(session));
 
     return {
       content: [{
@@ -1108,59 +918,20 @@ export class SearchManager {
   async searchUserPrompts(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { query, ...options } = normalized;
-    let results: UserPromptSearchResult[] = [];
+    const limit = options.limit || 20;
 
-    // Vector-first search via ChromaDB
-    if (this.chromaSync) {
-      logger.debug('SEARCH', 'Using hybrid semantic search for user prompts', {});
+    let results: UserPromptSearchResult[] = await this.semanticSearch({
+      query,
+      docType: 'user_prompt',
+      project: options.project,
+      limit,
+      hydrate: (ids, opts) => this.sessionStore.getUserPromptsByIds(ids, opts),
+    });
 
-      // Build Chroma where filter with doc_type and project scope
-      let whereFilter: Record<string, any> = { doc_type: 'user_prompt' };
-      if (options.project) {
-        const projectFilter = {
-          $or: [
-            { project: options.project },
-            { merged_into_project: options.project }
-          ]
-        };
-        whereFilter = { $and: [whereFilter, projectFilter] };
-      }
-
-      // Step 1: Chroma semantic search (top 100)
-      try {
-        const chromaResults = await this.queryChroma(query, 100, whereFilter);
-        logger.debug('SEARCH', 'Chroma returned semantic matches for prompts', { matchCount: chromaResults.ids.length });
-
-        if (chromaResults.ids.length > 0) {
-          // Step 2: Filter by recency (90 days)
-          const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-          const recentIds = chromaResults.ids.filter((_id, idx) => {
-            const meta = chromaResults.metadatas[idx];
-            return meta && meta.created_at_epoch > ninetyDaysAgo;
-          });
-
-          logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
-
-          // Step 3: Hydrate from SQLite in temporal order
-          if (recentIds.length > 0) {
-            const limit = options.limit || 20;
-            results = this.sessionStore.getUserPromptsByIds(recentIds, { orderBy: 'date_desc', limit, project: options.project });
-            logger.debug('SEARCH', 'Hydrated user prompts from SQLite', { count: results.length });
-          }
-        }
-      } catch (chromaError) {
-        const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
-        logger.error('WORKER', 'Chroma search failed for user prompts, falling back to FTS', {}, errorObject);
-      }
-    }
-
-    // FTS fallback when Chroma is unavailable or returned no results
     if (results.length === 0 && query) {
       try {
         const ftsResults = this.sessionSearch.searchUserPrompts(query, options);
-        if (ftsResults.length > 0) {
-          results = ftsResults;
-        }
+        if (ftsResults.length > 0) results = ftsResults;
       } catch (ftsError) {
         logger.warn('SEARCH', 'FTS fallback failed for user prompts', {}, ftsError instanceof Error ? ftsError : undefined);
       }
@@ -1176,8 +947,8 @@ export class SearchManager {
     }
 
     // Format as table
-    const header = `Found ${results.length} user prompt(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults = results.map((prompt, i) => this.formatter.formatUserPromptIndex(prompt, i));
+    const header = `Found ${results.length} user prompt(s) matching "${query}"\n\n${formatTableHeader()}`;
+    const formattedResults = results.map((prompt) => formatUserPromptIndex(prompt));
 
     return {
       content: [{
@@ -1194,65 +965,19 @@ export class SearchManager {
   async findByConcept(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { concepts: concept, ...filters } = normalized;
-    let results: ObservationSearchResult[] = [];
-
-    // Metadata-first, semantic-enhanced search
-    if (this.chromaSync) {
-      logger.debug('SEARCH', 'Using metadata-first + semantic ranking for concept search', {});
-
-      // Step 1: SQLite metadata filter (get all IDs with this concept)
-      const metadataResults = this.sessionSearch.findByConcept(concept, filters);
-      logger.debug('SEARCH', 'Found observations with concept', { concept, count: metadataResults.length });
-
-      if (metadataResults.length > 0) {
-        // Step 2: Chroma semantic ranking (rank by relevance to concept)
-        const ids = metadataResults.map(obs => obs.id);
-        const chromaResults = await this.queryChroma(concept, Math.min(ids.length, 100));
-
-        // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
-        const rankedIds: number[] = [];
-        for (const chromaId of chromaResults.ids) {
-          if (ids.includes(chromaId) && !rankedIds.includes(chromaId)) {
-            rankedIds.push(chromaId);
-          }
-        }
-
-        logger.debug('SEARCH', 'Chroma ranked results by semantic relevance', { count: rankedIds.length });
-
-        // Step 3: Hydrate in semantic rank order
-        if (rankedIds.length > 0) {
-          results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
-          // Restore semantic ranking order
-          results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
-        }
-      }
-    }
-
-    // Fall back to SQLite-only if Chroma unavailable or failed
-    if (results.length === 0) {
-      logger.debug('SEARCH', 'Using SQLite-only concept search', {});
-      results = this.sessionSearch.findByConcept(concept, filters);
-    }
+    const results = await this.rerankByMetadata(
+      concept,
+      () => this.sessionSearch.findByConcept(concept, filters),
+      filters.limit || 20
+    );
 
     if (results.length === 0) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `No observations found with concept "${concept}"`
-        }]
-      };
+      return { content: [{ type: 'text' as const, text: `No observations found with concept "${concept}"` }] };
     }
 
-    // Format as table
-    const header = `Found ${results.length} observation(s) with concept "${concept}"\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-
-    return {
-      content: [{
-        type: 'text' as const,
-        text: header + '\n' + formattedResults.join('\n')
-      }]
-    };
+    const header = `Found ${results.length} observation(s) with concept "${concept}"\n\n${formatTableHeader()}`;
+    const formattedResults = results.map((obs) => formatObservationIndex(obs));
+    return { content: [{ type: 'text' as const, text: header + '\n' + formattedResults.join('\n') }] };
   }
 
 
@@ -1357,13 +1082,13 @@ export class SearchManager {
     for (const [day, dayResults] of resultsByDate) {
       lines.push(`### ${day}`);
       lines.push('');
-      lines.push(this.formatter.formatTableHeader());
+      lines.push(formatTableHeader());
 
       for (const result of dayResults) {
         if (result.type === 'observation') {
-          lines.push(this.formatter.formatObservationIndex(result.data as ObservationSearchResult, 0));
+          lines.push(formatObservationIndex(result.data as ObservationSearchResult));
         } else {
-          lines.push(this.formatter.formatSessionIndex(result.data as SessionSummarySearchResult, 0));
+          lines.push(formatSessionIndex(result.data as SessionSummarySearchResult));
         }
       }
       lines.push('');
@@ -1385,65 +1110,19 @@ export class SearchManager {
     const normalized = this.normalizeParams(args);
     const { type, ...filters } = normalized;
     const typeStr = Array.isArray(type) ? type.join(', ') : type;
-    let results: ObservationSearchResult[] = [];
-
-    // Metadata-first, semantic-enhanced search
-    if (this.chromaSync) {
-      logger.debug('SEARCH', 'Using metadata-first + semantic ranking for type search', {});
-
-      // Step 1: SQLite metadata filter (get all IDs with this type)
-      const metadataResults = this.sessionSearch.findByType(type, filters);
-      logger.debug('SEARCH', 'Found observations with type', { type: typeStr, count: metadataResults.length });
-
-      if (metadataResults.length > 0) {
-        // Step 2: Chroma semantic ranking (rank by relevance to type)
-        const ids = metadataResults.map(obs => obs.id);
-        const chromaResults = await this.queryChroma(typeStr, Math.min(ids.length, 100));
-
-        // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
-        const rankedIds: number[] = [];
-        for (const chromaId of chromaResults.ids) {
-          if (ids.includes(chromaId) && !rankedIds.includes(chromaId)) {
-            rankedIds.push(chromaId);
-          }
-        }
-
-        logger.debug('SEARCH', 'Chroma ranked results by semantic relevance', { count: rankedIds.length });
-
-        // Step 3: Hydrate in semantic rank order
-        if (rankedIds.length > 0) {
-          results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
-          // Restore semantic ranking order
-          results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
-        }
-      }
-    }
-
-    // Fall back to SQLite-only if Chroma unavailable or failed
-    if (results.length === 0) {
-      logger.debug('SEARCH', 'Using SQLite-only type search', {});
-      results = this.sessionSearch.findByType(type, filters);
-    }
+    const results = await this.rerankByMetadata(
+      typeStr,
+      () => this.sessionSearch.findByType(type, filters),
+      filters.limit || 20
+    );
 
     if (results.length === 0) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `No observations found with type "${typeStr}"`
-        }]
-      };
+      return { content: [{ type: 'text' as const, text: `No observations found with type "${typeStr}"` }] };
     }
 
-    // Format as table
-    const header = `Found ${results.length} observation(s) with type "${typeStr}"\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-
-    return {
-      content: [{
-        type: 'text' as const,
-        text: header + '\n' + formattedResults.join('\n')
-      }]
-    };
+    const header = `Found ${results.length} observation(s) with type "${typeStr}"\n\n${formatTableHeader()}`;
+    const formattedResults = results.map((obs) => formatObservationIndex(obs));
+    return { content: [{ type: 'text' as const, text: header + '\n' + formattedResults.join('\n') }] };
   }
 
 
@@ -1582,209 +1261,60 @@ export class SearchManager {
     const { anchor, depth_before, depth_after, project } = args;
     const depthBefore = depth_before != null ? Number(depth_before) : 10;
     const depthAfter = depth_after != null ? Number(depth_after) : 10;
-    const cwd = process.cwd();
     let anchorEpoch: number;
     let anchorId: string | number = anchor;
-
-    // Resolve anchor and get timeline data
     let timelineData;
+
     if (typeof anchor === 'number') {
-      // Observation ID - use ID-based boundary detection
       const obs = this.sessionStore.getObservationById(anchor);
       if (!obs) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: `Observation #${anchor} not found`
-          }],
-          isError: true
-        };
+        return { content: [{ type: 'text' as const, text: `Observation #${anchor} not found` }], isError: true };
       }
       anchorEpoch = obs.created_at_epoch;
       timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depthBefore, depthAfter, project);
     } else if (typeof anchor === 'string') {
-      // Session ID or ISO timestamp
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
-        const sessionId = anchor.replace(/^#?S/, '');
-        const sessionNum = parseInt(sessionId, 10);
+        const sessionNum = parseInt(anchor.replace(/^#?S/, ''), 10);
         const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum]);
         if (sessions.length === 0) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Session #${sessionNum} not found`
-            }],
-            isError: true
-          };
+          return { content: [{ type: 'text' as const, text: `Session #${sessionNum} not found` }], isError: true };
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
         timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       } else {
-        // ISO timestamp
         const date = new Date(anchor);
         if (isNaN(date.getTime())) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Invalid timestamp: ${anchor}`
-            }],
-            isError: true
-          };
+          return { content: [{ type: 'text' as const, text: `Invalid timestamp: ${anchor}` }], isError: true };
         }
-        anchorEpoch = date.getTime(); // Keep as milliseconds
+        anchorEpoch = date.getTime();
         timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       }
     } else {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: 'Invalid anchor: must be observation ID (number), session ID (e.g., "S123"), or ISO timestamp'
-        }],
-        isError: true
-      };
+      return { content: [{ type: 'text' as const, text: 'Invalid anchor: must be observation ID (number), session ID (e.g., "S123"), or ISO timestamp' }], isError: true };
     }
 
-    // Combine, sort, and filter timeline items
-    const items: TimelineItem[] = [
-      ...timelineData.observations.map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
-      ...timelineData.sessions.map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
-      ...timelineData.prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
-    ];
-    items.sort((a, b) => a.epoch - b.epoch);
+    const items = this.timelineService.buildTimeline({
+      observations: timelineData.observations,
+      sessions: timelineData.sessions,
+      prompts: timelineData.prompts,
+    });
     const filteredItems = this.timelineService.filterByDepth(items, anchorId, anchorEpoch, depthBefore, depthAfter);
 
     if (!filteredItems || filteredItems.length === 0) {
       const anchorDate = new Date(anchorEpoch).toLocaleString();
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `No context found around ${anchorDate} (${depthBefore} records before, ${depthAfter} records after)`
-        }]
-      };
-    }
-
-    // Format results matching context-hook.ts exactly
-    const lines: string[] = [];
-
-    // Header
-    lines.push(`# Timeline around anchor: ${anchorId}`);
-    lines.push(`**Window:** ${depthBefore} records before -> ${depthAfter} records after | **Items:** ${filteredItems?.length ?? 0}`);
-    lines.push('');
-
-
-    // Group by day
-    const dayMap = new Map<string, TimelineItem[]>();
-    for (const item of filteredItems) {
-      const day = formatDate(item.epoch);
-      if (!dayMap.has(day)) {
-        dayMap.set(day, []);
-      }
-      dayMap.get(day)!.push(item);
-    }
-
-    // Sort days chronologically
-    const sortedDays = Array.from(dayMap.entries()).sort((a, b) => {
-      const aDate = new Date(a[0]).getTime();
-      const bDate = new Date(b[0]).getTime();
-      return aDate - bDate;
-    });
-
-    // Render each day
-    for (const [day, dayItems] of sortedDays) {
-      lines.push(`### ${day}`);
-      lines.push('');
-
-      let currentFile: string | null = null;
-      let lastTime = '';
-      let tableOpen = false;
-
-      for (const item of dayItems) {
-        const isAnchor = (
-          (typeof anchorId === 'number' && item.type === 'observation' && item.data.id === anchorId) ||
-          (typeof anchorId === 'string' && anchorId.startsWith('S') && item.type === 'session' && `S${item.data.id}` === anchorId)
-        );
-
-        if (item.type === 'session') {
-          // Close any open table
-          if (tableOpen) {
-            lines.push('');
-            tableOpen = false;
-            currentFile = null;
-            lastTime = '';
-          }
-
-          // Render session
-          const sess = item.data as SessionSummarySearchResult;
-          const title = sess.request || 'Session summary';
-          const marker = isAnchor ? ' <- **ANCHOR**' : '';
-
-          lines.push(`**\uD83C\uDFAF #S${sess.id}** ${title} (${formatDateTime(item.epoch)})${marker}`);
-          lines.push('');
-        } else if (item.type === 'prompt') {
-          // Close any open table
-          if (tableOpen) {
-            lines.push('');
-            tableOpen = false;
-            currentFile = null;
-            lastTime = '';
-          }
-
-          // Render prompt
-          const prompt = item.data as UserPromptSearchResult;
-          const truncated = prompt.prompt_text.length > 100 ? prompt.prompt_text.substring(0, 100) + '...' : prompt.prompt_text;
-
-          lines.push(`**\uD83D\uDCAC User Prompt #${prompt.prompt_number}** (${formatDateTime(item.epoch)})`);
-          lines.push(`> ${truncated}`);
-          lines.push('');
-        } else if (item.type === 'observation') {
-          // Render observation in table
-          const obs = item.data as ObservationSearchResult;
-          const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
-
-          // Check if we need a new file section
-          if (file !== currentFile) {
-            // Close previous table
-            if (tableOpen) {
-              lines.push('');
-            }
-
-            // File header
-            lines.push(`**${file}**`);
-            lines.push(`| ID | Time | T | Title | Tokens |`);
-            lines.push(`|----|------|---|-------|--------|`);
-
-            currentFile = file;
-            tableOpen = true;
-            lastTime = '';
-          }
-
-          // Map observation type to emoji
-          const icon = ModeManager.getInstance().getTypeIcon(obs.type);
-
-          const time = formatTime(item.epoch);
-          const title = obs.title || 'Untitled';
-          const tokens = estimateTokens(obs.narrative);
-
-          const showTime = time !== lastTime;
-          const timeDisplay = showTime ? time : '"';
-          lastTime = time;
-
-          const anchorMarker = isAnchor ? ' <- **ANCHOR**' : '';
-          lines.push(`| #${obs.id} | ${timeDisplay} | ${icon} | ${title}${anchorMarker} | ~${tokens} |`);
-        }
-      }
-
-      // Close final table if open
-      if (tableOpen) {
-        lines.push('');
-      }
+      return { content: [{ type: 'text' as const, text: `No context found around ${anchorDate} (${depthBefore} records before, ${depthAfter} records after)` }] };
     }
 
     return {
       content: [{
         type: 'text' as const,
-        text: lines.join('\n')
+        text: formatTimeline({
+          items: filteredItems,
+          anchorId,
+          title: `# Timeline around anchor: ${anchorId}`,
+          window: `**Window:** ${depthBefore} records before -> ${depthAfter} records after | **Items:** ${filteredItems.length}`,
+        })
       }]
     };
   }
@@ -1796,76 +1326,32 @@ export class SearchManager {
     const { query, mode = 'auto', depth_before, depth_after, limit = 5, project } = args;
     const depthBefore = depth_before != null ? Number(depth_before) : 10;
     const depthAfter = depth_after != null ? Number(depth_after) : 10;
-    const cwd = process.cwd();
+    const hydrateLimit = mode === 'auto' ? 1 : limit;
 
-    // Step 1: Search for observations
     let results: ObservationSearchResult[] = [];
-
-    // Use hybrid search if available
     if (this.chromaSync) {
-      logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
-
-      // Build Chroma where filter scoped to observations + project if provided
-      let whereFilter: Record<string, any> = { doc_type: 'observation' };
-      if (project) {
-        const projectFilter = {
-          $or: [
-            { project },
-            { merged_into_project: project }
-          ]
-        };
-        whereFilter = { $and: [whereFilter, projectFilter] };
-      }
-
-      try {
-        const chromaResults = await this.queryChroma(query, 100, whereFilter);
-        logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults.ids.length });
-
-        if (chromaResults.ids.length > 0) {
-          // Filter by recency (90 days)
-          const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-          const recentIds = chromaResults.ids.filter((_id, idx) => {
-            const meta = chromaResults.metadatas[idx];
-            return meta && meta.created_at_epoch > ninetyDaysAgo;
-          });
-
-          logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
-
-          if (recentIds.length > 0) {
-            results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: mode === 'auto' ? 1 : limit, project });
-            logger.debug('SEARCH', 'Hydrated observations from SQLite', { count: results.length });
-          }
-        }
-      } catch (chromaError) {
-        const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
-        logger.error('WORKER', 'Chroma search failed for timeline by query, falling back to FTS', {}, errorObject);
-      }
+      results = await this.semanticSearch({
+        query,
+        docType: 'observation',
+        project,
+        limit: hydrateLimit,
+        hydrate: (ids, opts) => this.sessionStore.getObservationsByIds(ids, opts),
+      });
     }
-
-    // FTS fallback when Chroma is unavailable or returned no results
     if (results.length === 0) {
       try {
-        const ftsResults = this.sessionSearch.searchObservations(query, { project, limit: mode === 'auto' ? 1 : limit });
-        if (ftsResults.length > 0) {
-          results = ftsResults;
-        }
+        const ftsResults = this.sessionSearch.searchObservations(query, { project, limit: hydrateLimit });
+        if (ftsResults.length > 0) results = ftsResults;
       } catch (ftsError) {
         logger.warn('SEARCH', 'FTS fallback failed for timeline by query', {}, ftsError instanceof Error ? ftsError : undefined);
       }
     }
 
     if (results.length === 0) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `No observations found matching "${query}". Try a different search query.`
-        }]
-      };
+      return { content: [{ type: 'text' as const, text: `No observations found matching "${query}". Try a different search query.` }] };
     }
 
-    // Step 2: Handle based on mode
     if (mode === 'interactive') {
-      // Return formatted index of top results for LLM to choose from
       const lines: string[] = [];
       lines.push(`# Timeline Anchor Search Results`);
       lines.push('');
@@ -1875,180 +1361,44 @@ export class SearchManager {
       lines.push('');
       lines.push(`**Top ${results.length} matches:**`);
       lines.push('');
-
       for (let i = 0; i < results.length; i++) {
         const obs = results[i];
         const title = obs.title || `Observation #${obs.id}`;
         const date = new Date(obs.created_at_epoch).toLocaleString();
         const type = obs.type ? `[${obs.type}]` : '';
-
         lines.push(`${i + 1}. **${type} ${title}**`);
         lines.push(`   - ID: ${obs.id}`);
         lines.push(`   - Date: ${date}`);
-        if (obs.subtitle) {
-          lines.push(`   - ${obs.subtitle}`);
-        }
+        if (obs.subtitle) lines.push(`   - ${obs.subtitle}`);
         lines.push('');
       }
-
-      return {
-        content: [{
-          type: 'text' as const,
-          text: lines.join('\n')
-        }]
-      };
-    } else {
-      // Auto mode: Use top result as timeline anchor
-      const topResult = results[0];
-      logger.debug('SEARCH', 'Auto mode: Using observation as timeline anchor', { observationId: topResult.id });
-
-      // Get timeline around this observation
-      const timelineData = this.sessionStore.getTimelineAroundObservation(
-        topResult.id,
-        topResult.created_at_epoch,
-        depthBefore,
-        depthAfter,
-        project
-      );
-
-      // Combine, sort, and filter timeline items
-      const items: TimelineItem[] = [
-        ...(timelineData.observations || []).map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
-        ...(timelineData.sessions || []).map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
-        ...(timelineData.prompts || []).map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
-      ];
-      items.sort((a, b) => a.epoch - b.epoch);
-      const filteredItems = this.timelineService.filterByDepth(items, topResult.id, 0, depthBefore, depthAfter);
-
-      if (!filteredItems || filteredItems.length === 0) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: `Found observation #${topResult.id} matching "${query}", but no timeline context available (${depthBefore} records before, ${depthAfter} records after).`
-          }]
-        };
-      }
-
-      // Format timeline (reused from get_context_timeline)
-      const lines: string[] = [];
-
-      // Header
-      lines.push(`# Timeline for query: "${query}"`);
-      lines.push(`**Anchor:** Observation #${topResult.id} - ${topResult.title || 'Untitled'}`);
-      lines.push(`**Window:** ${depthBefore} records before -> ${depthAfter} records after | **Items:** ${filteredItems?.length ?? 0}`);
-      lines.push('');
-
-
-      // Group by day
-      const dayMap = new Map<string, TimelineItem[]>();
-      for (const item of filteredItems) {
-        const day = formatDate(item.epoch);
-        if (!dayMap.has(day)) {
-          dayMap.set(day, []);
-        }
-        dayMap.get(day)!.push(item);
-      }
-
-      // Sort days chronologically
-      const sortedDays = Array.from(dayMap.entries()).sort((a, b) => {
-        const aDate = new Date(a[0]).getTime();
-        const bDate = new Date(b[0]).getTime();
-        return aDate - bDate;
-      });
-
-      // Render each day
-      for (const [day, dayItems] of sortedDays) {
-        lines.push(`### ${day}`);
-        lines.push('');
-
-        let currentFile: string | null = null;
-        let lastTime = '';
-        let tableOpen = false;
-
-        for (const item of dayItems) {
-          const isAnchor = (item.type === 'observation' && item.data.id === topResult.id);
-
-          if (item.type === 'session') {
-            // Close any open table
-            if (tableOpen) {
-              lines.push('');
-              tableOpen = false;
-              currentFile = null;
-              lastTime = '';
-            }
-
-            // Render session
-            const sess = item.data as SessionSummarySearchResult;
-            const title = sess.request || 'Session summary';
-
-            lines.push(`**\uD83C\uDFAF #S${sess.id}** ${title} (${formatDateTime(item.epoch)})`);
-            lines.push('');
-          } else if (item.type === 'prompt') {
-            // Close any open table
-            if (tableOpen) {
-              lines.push('');
-              tableOpen = false;
-              currentFile = null;
-              lastTime = '';
-            }
-
-            // Render prompt
-            const prompt = item.data as UserPromptSearchResult;
-            const truncated = prompt.prompt_text.length > 100 ? prompt.prompt_text.substring(0, 100) + '...' : prompt.prompt_text;
-
-            lines.push(`**\uD83D\uDCAC User Prompt #${prompt.prompt_number}** (${formatDateTime(item.epoch)})`);
-            lines.push(`> ${truncated}`);
-            lines.push('');
-          } else if (item.type === 'observation') {
-            // Render observation in table
-            const obs = item.data as ObservationSearchResult;
-            const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
-
-            // Check if we need a new file section
-            if (file !== currentFile) {
-              // Close previous table
-              if (tableOpen) {
-                lines.push('');
-              }
-
-              // File header
-              lines.push(`**${file}**`);
-              lines.push(`| ID | Time | T | Title | Tokens |`);
-              lines.push(`|----|------|---|-------|--------|`);
-
-              currentFile = file;
-              tableOpen = true;
-              lastTime = '';
-            }
-
-            // Map observation type to emoji
-            const icon = ModeManager.getInstance().getTypeIcon(obs.type);
-
-            const time = formatTime(item.epoch);
-            const title = obs.title || 'Untitled';
-            const tokens = estimateTokens(obs.narrative);
-
-            const showTime = time !== lastTime;
-            const timeDisplay = showTime ? time : '"';
-            lastTime = time;
-
-            const anchorMarker = isAnchor ? ' <- **ANCHOR**' : '';
-            lines.push(`| #${obs.id} | ${timeDisplay} | ${icon} | ${title}${anchorMarker} | ~${tokens} |`);
-          }
-        }
-
-        // Close final table if open
-        if (tableOpen) {
-          lines.push('');
-        }
-      }
-
-      return {
-        content: [{
-          type: 'text' as const,
-          text: lines.join('\n')
-        }]
-      };
+      return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
     }
+
+    const topResult = results[0];
+    logger.debug('SEARCH', 'Auto mode: Using observation as timeline anchor', { observationId: topResult.id });
+    const timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project);
+    const items = this.timelineService.buildTimeline({
+      observations: timelineData.observations || [],
+      sessions: timelineData.sessions || [],
+      prompts: timelineData.prompts || [],
+    });
+    const filteredItems = this.timelineService.filterByDepth(items, topResult.id, 0, depthBefore, depthAfter);
+
+    if (!filteredItems || filteredItems.length === 0) {
+      return { content: [{ type: 'text' as const, text: `Found observation #${topResult.id} matching "${query}", but no timeline context available (${depthBefore} records before, ${depthAfter} records after).` }] };
+    }
+
+    return {
+      content: [{
+        type: 'text' as const,
+        text: formatTimeline({
+          items: filteredItems,
+          anchorId: topResult.id,
+          title: `# Timeline for query: "${query}"\n**Anchor:** Observation #${topResult.id} - ${topResult.title || 'Untitled'}`,
+          window: `**Window:** ${depthBefore} records before -> ${depthAfter} records after | **Items:** ${filteredItems.length}`,
+        })
+      }]
+    };
   }
 }

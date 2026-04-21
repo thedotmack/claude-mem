@@ -6,3 +6,6 @@
 
 // Types and constants
 export * from './types.js';
+
+// Formatters (timeline + search table rows)
+export * from './Format.js';
