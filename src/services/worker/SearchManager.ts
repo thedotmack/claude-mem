@@ -21,6 +21,7 @@ import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSea
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { extractFirstFile, groupByDate } from '../../shared/timeline-formatting.js';
+import { ModeManager } from '../domain/ModeManager.js';
 
 import {
   SEARCH_CONSTANTS,
@@ -983,10 +984,14 @@ export class SearchManager {
 
   /**
    * Tool handler: find_by_file
+   *
+   * Supports `format: 'json'` in args to return a structured
+   * `{ filePath, observations, sessions }` payload instead of the
+   * default MCP-style markdown `{ content: [{ text }] }`.
    */
   async findByFile(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { files: rawFilePath, ...filters } = normalized;
+    const { files: rawFilePath, format, ...filters } = normalized;
     // Handle both string and array (normalizeParams may split on comma)
     const filePath = Array.isArray(rawFilePath) ? rawFilePath[0] : rawFilePath;
     let observations: ObservationSearchResult[] = [];
@@ -1037,6 +1042,22 @@ export class SearchManager {
     }
 
     const totalResults = observations.length + sessions.length;
+
+    // Structured JSON payload for internal callers (context-file-writer).
+    // Defaulting to markdown preserves MCP tool compatibility.
+    // Type icons are pre-rendered server-side so clients don't need ModeManager.
+    if (format === 'json') {
+      const modeManager = ModeManager.getInstance();
+      return {
+        filePath,
+        totalResults,
+        observations: observations.map(obs => ({
+          ...obs,
+          typeIcon: modeManager.getTypeIcon(obs.type)
+        })),
+        sessions
+      };
+    }
 
     if (totalResults === 0) {
       return {

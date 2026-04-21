@@ -44,6 +44,51 @@ import {
 let tempDir: string;
 const originalFetch = global.fetch;
 
+// Helper: build a minimal /api/search/by-file?format=json response
+// that renders to a single-row observation in CLAUDE.md. The server
+// pre-renders `typeIcon` so clients don't depend on ModeManager.
+function buildJsonApiResponse(opts: {
+  id?: number;
+  title?: string;
+  narrativeTokenEstimate?: number;
+  type?: string;
+  epoch?: number;
+  typeIcon?: string;
+} = {}) {
+  const id = opts.id ?? 123;
+  const title = opts.title ?? 'Test observation';
+  const tokens = opts.narrativeTokenEstimate ?? 100;
+  const type = opts.type ?? 'discovery';
+  const epoch = opts.epoch ?? Date.parse('2026-01-27T16:30:00.000Z');
+  const typeIcon = opts.typeIcon ?? '🔵';
+  return {
+    filePath: '/tmp/x',
+    totalResults: 1,
+    observations: [
+      {
+        id,
+        memory_session_id: 'sess-1',
+        project: 'demo',
+        text: 'obs text',
+        type,
+        typeIcon,
+        title,
+        subtitle: null,
+        facts: null,
+        narrative: 'a'.repeat(tokens * 4),
+        concepts: null,
+        files_read: null,
+        files_modified: null,
+        prompt_number: null,
+        discovery_tokens: 0,
+        created_at: new Date(epoch).toISOString(),
+        created_at_epoch: epoch,
+      }
+    ],
+    sessions: []
+  };
+}
+
 beforeEach(() => {
   tempDir = join(tmpdir(), `test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(tempDir, { recursive: true });
@@ -113,54 +158,109 @@ describe('replaceTaggedContent', () => {
 });
 
 describe('formatTimelineForClaudeMd', () => {
-  it('should return empty string for empty input', () => {
-    const result = formatTimelineForClaudeMd('');
+  // Helper: build a realistic observation payload
+  const makeObs = (overrides: Record<string, unknown> = {}) => ({
+    id: 123,
+    memory_session_id: 'sess-1',
+    project: 'demo',
+    text: 'obs text',
+    type: 'discovery',
+    typeIcon: '🔵',
+    title: 'User logged in',
+    subtitle: null,
+    facts: null,
+    narrative: 'a'.repeat(400), // ~100 estimated tokens
+    concepts: null,
+    files_read: null,
+    files_modified: null,
+    prompt_number: null,
+    discovery_tokens: 0,
+    created_at: '2026-01-27T16:30:00.000Z',
+    created_at_epoch: Date.parse('2026-01-27T16:30:00.000Z'),
+    ...overrides
+  });
+
+  const makeSession = (overrides: Record<string, unknown> = {}) => ({
+    id: 123,
+    memory_session_id: 'abcdef12',
+    project: 'demo',
+    request: 'Session started',
+    investigated: null,
+    learned: null,
+    completed: null,
+    next_steps: null,
+    files_read: null,
+    files_edited: null,
+    notes: null,
+    prompt_number: null,
+    discovery_tokens: 0,
+    created_at: '2026-01-27T16:30:00.000Z',
+    created_at_epoch: Date.parse('2026-01-27T16:30:00.000Z'),
+    ...overrides
+  });
+
+  it('should return empty string for null/undefined input', () => {
+    expect(formatTimelineForClaudeMd(null as any)).toBe('');
+    expect(formatTimelineForClaudeMd(undefined as any)).toBe('');
+  });
+
+  it('should return empty string when response has no observations or sessions', () => {
+    const result = formatTimelineForClaudeMd({
+      filePath: '/tmp/x',
+      totalResults: 0,
+      observations: [],
+      sessions: []
+    });
 
     expect(result).toBe('');
   });
 
-  it('should return empty string when no table rows exist', () => {
-    const input = 'Just some plain text without table rows';
+  it('should render single observation correctly', () => {
+    const result = formatTimelineForClaudeMd({
+      filePath: '/tmp/x',
+      totalResults: 1,
+      observations: [makeObs()],
+      sessions: []
+    });
 
-    const result = formatTimelineForClaudeMd(input);
-
-    expect(result).toBe('');
-  });
-
-  it('should parse single observation row correctly', () => {
-    const input = '| #123 | 4:30 PM | 🔵 | User logged in | ~100 |';
-
-    const result = formatTimelineForClaudeMd(input);
-
+    expect(result).toContain('# Recent Activity');
     expect(result).toContain('#123');
-    expect(result).toContain('4:30 PM');
-    expect(result).toContain('🔵');
     expect(result).toContain('User logged in');
-    expect(result).toContain('~100');
+    // Token estimate: ~104 from 400-char narrative + "User logged in" title (15 chars)
+    expect(result).toMatch(/~\d+/);
+    // Day header present
+    expect(result).toContain('### ');
+    // 5-column table header
+    expect(result).toContain('| ID | Time | T | Title | Read |');
   });
 
-  it('should parse ditto mark for repeated time correctly', () => {
-    const input = `| #123 | 4:30 PM | 🔵 | First action | ~100 |
-| #124 | ″ | 🔵 | Second action | ~150 |`;
-
-    const result = formatTimelineForClaudeMd(input);
+  it('should use ditto mark for repeated times within the same day', () => {
+    const epoch = Date.parse('2026-01-27T16:30:00.000Z');
+    const result = formatTimelineForClaudeMd({
+      filePath: '/tmp/x',
+      totalResults: 2,
+      observations: [
+        makeObs({ id: 123, title: 'First action', created_at_epoch: epoch }),
+        makeObs({ id: 124, title: 'Second action', created_at_epoch: epoch })
+      ],
+      sessions: []
+    });
 
     expect(result).toContain('#123');
     expect(result).toContain('#124');
-    // First occurrence should show time
-    expect(result).toContain('4:30 PM');
-    // Second occurrence should show ditto mark
-    expect(result).toContain('"');
+    // Ditto mark used for the second observation (same minute)
+    expect(result).toContain('| " |');
   });
 
-  it('should parse session ID format (#S123) correctly', () => {
-    const input = '| #S123 | 4:30 PM | 🟣 | Session started | ~200 |';
-
-    const result = formatTimelineForClaudeMd(input);
+  it('should render session rows with #S-prefixed IDs', () => {
+    const result = formatTimelineForClaudeMd({
+      filePath: '/tmp/x',
+      totalResults: 1,
+      observations: [],
+      sessions: [makeSession({ id: 123 })]
+    });
 
     expect(result).toContain('#S123');
-    expect(result).toContain('4:30 PM');
-    expect(result).toContain('🟣');
     expect(result).toContain('Session started');
   });
 });
@@ -298,11 +398,7 @@ describe('updateFolderClaudeMdFiles', () => {
     mkdirSync(folderPath, { recursive: true }); // Folder must exist - we no longer create directories
     const filePath = join(folderPath, 'test.ts');
 
-    const apiResponse = {
-      content: [{
-        text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
-      }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test observation' });
 
     global.fetch = mock(() => Promise.resolve({
       ok: true,
@@ -325,11 +421,7 @@ describe('updateFolderClaudeMdFiles', () => {
     const file1 = join(folderPath, 'file1.ts');
     const file2 = join(folderPath, 'file2.ts');
 
-    const apiResponse = {
-      content: [{
-        text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |'
-      }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test' });
 
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
@@ -375,11 +467,7 @@ describe('updateFolderClaudeMdFiles', () => {
   });
 
   it('should resolve relative paths using projectRoot', async () => {
-    const apiResponse = {
-      content: [{
-        text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
-      }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test observation' });
 
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
@@ -404,11 +492,7 @@ describe('updateFolderClaudeMdFiles', () => {
     const folderPath = join(tempDir, 'absolute-path-test');
     const filePath = join(folderPath, 'file.ts');
 
-    const apiResponse = {
-      content: [{
-        text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
-      }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test observation' });
 
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
@@ -433,11 +517,7 @@ describe('updateFolderClaudeMdFiles', () => {
     const folderPath = join(tempDir, 'backward-compat-test');
     const filePath = join(folderPath, 'file.ts');
 
-    const apiResponse = {
-      content: [{
-        text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
-      }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test observation' });
 
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
@@ -459,11 +539,7 @@ describe('updateFolderClaudeMdFiles', () => {
   });
 
   it('should handle projectRoot with trailing slash correctly', async () => {
-    const apiResponse = {
-      content: [{
-        text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
-      }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test observation' });
 
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
@@ -492,11 +568,7 @@ describe('updateFolderClaudeMdFiles', () => {
     const subfolderPath = join(tempDir, 'project-root-write-test', 'src', 'utils');
     mkdirSync(subfolderPath, { recursive: true }); // Folder must exist - we no longer create directories
 
-    const apiResponse = {
-      content: [{
-        text: '| #456 | 5:00 PM | 🔵 | Written to correct path | ~200 |'
-      }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 456, title: 'Written to correct path', narrativeTokenEstimate: 200 });
 
     global.fetch = mock(() => Promise.resolve({
       ok: true,
@@ -521,11 +593,7 @@ describe('updateFolderClaudeMdFiles', () => {
   });
 
   it('should deduplicate relative paths from same folder with projectRoot', async () => {
-    const apiResponse = {
-      content: [{
-        text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |'
-      }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test' });
 
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
@@ -548,7 +616,10 @@ describe('updateFolderClaudeMdFiles', () => {
   });
 
   it('should handle empty string paths gracefully with projectRoot', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ filePath: '/home/user/project/src', totalResults: 0, observations: [], sessions: [] })
+    } as Response));
     global.fetch = fetchMock;
 
     await updateFolderClaudeMdFiles(
@@ -651,9 +722,7 @@ describe('path validation in updateFolderClaudeMdFiles', () => {
   });
 
   it('should accept absolute paths within project root', async () => {
-    const apiResponse = {
-      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test' });
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
       json: () => Promise.resolve(apiResponse)
@@ -674,9 +743,7 @@ describe('path validation in updateFolderClaudeMdFiles', () => {
   });
 
   it('should accept absolute paths when no projectRoot is provided', async () => {
-    const apiResponse = {
-      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test' });
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
       json: () => Promise.resolve(apiResponse)
@@ -694,9 +761,7 @@ describe('path validation in updateFolderClaudeMdFiles', () => {
   });
 
   it('should accept valid relative paths', async () => {
-    const apiResponse = {
-      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test' });
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
       json: () => Promise.resolve(apiResponse)
@@ -748,9 +813,7 @@ describe('issue #814 - reject consecutive duplicate path segments', () => {
   });
 
   it('should allow paths with non-consecutive duplicate segments', async () => {
-    const apiResponse = {
-      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test' });
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
       json: () => Promise.resolve(apiResponse)
@@ -804,9 +867,7 @@ describe('issue #859 - skip folders with active CLAUDE.md', () => {
   });
 
   it('should process other folders even when one has active CLAUDE.md', async () => {
-    const apiResponse = {
-      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test' });
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
       json: () => Promise.resolve(apiResponse)
@@ -848,9 +909,7 @@ describe('issue #859 - skip folders with active CLAUDE.md', () => {
   });
 
   it('should skip only the specific folder containing active CLAUDE.md', async () => {
-    const apiResponse = {
-      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test' });
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
       json: () => Promise.resolve(apiResponse)
@@ -969,9 +1028,7 @@ describe('issue #912 - skip unsafe directories for CLAUDE.md generation', () => 
   });
 
   it('should allow safe directories like src/', async () => {
-    const apiResponse = {
-      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test' });
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
       json: () => Promise.resolve(apiResponse)
@@ -1086,9 +1143,7 @@ describe('CLAUDE.local.md support', () => {
   });
 
   it('should skip folder when either CLAUDE.md or CLAUDE.local.md was read', async () => {
-    const apiResponse = {
-      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
-    };
+    const apiResponse = buildJsonApiResponse({ id: 123, title: 'Test' });
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
       json: () => Promise.resolve(apiResponse)

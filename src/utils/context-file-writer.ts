@@ -23,9 +23,10 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from '
 import path, { dirname, resolve } from 'path';
 import os from 'os';
 import { logger } from './logger.js';
-import { groupByDate } from '../shared/timeline-formatting.js';
+import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../shared/worker-utils.js';
+import type { ObservationSearchResult, SessionSummarySearchResult } from '../services/sqlite/types.js';
 
 // ============================================================================
 // Tag Constants
@@ -245,98 +246,102 @@ export function injectContextIntoMarkdownFile(
 // Timeline Formatting (used by updateFolderClaudeMdFiles)
 // ============================================================================
 
-interface ParsedObservation {
+/**
+ * Shape returned by the worker API when queried with `format=json`.
+ * Mirrors `SearchManager.findByFile` structured payload. The server
+ * pre-renders `typeIcon` so hook processes don't need ModeManager.
+ */
+export type SearchByFileObservation = ObservationSearchResult & { typeIcon?: string };
+
+export interface SearchByFileJsonResponse {
+  filePath: string;
+  totalResults: number;
+  observations: SearchByFileObservation[];
+  sessions: SessionSummarySearchResult[];
+}
+
+const CHARS_PER_TOKEN_ESTIMATE = 4;
+const DEFAULT_TYPE_ICON = '\uD83D\uDCDD'; // 📝 fallback when server omits typeIcon
+
+function estimateReadTokens(obs: ObservationSearchResult): number {
+  const size =
+    (obs.title?.length || 0) +
+    (obs.subtitle?.length || 0) +
+    (obs.narrative?.length || 0) +
+    (obs.facts?.length || 0);
+  return Math.ceil(size / CHARS_PER_TOKEN_ESTIMATE);
+}
+
+interface TimelineRow {
   id: string;
-  time: string;
+  epoch: number;
   typeEmoji: string;
   title: string;
   tokens: string;
-  epoch: number;
+}
+
+function observationToRow(obs: SearchByFileObservation): TimelineRow {
+  return {
+    id: `#${obs.id}`,
+    epoch: obs.created_at_epoch,
+    typeEmoji: obs.typeIcon || DEFAULT_TYPE_ICON,
+    title: obs.title || 'Untitled',
+    tokens: `~${estimateReadTokens(obs)}`
+  };
+}
+
+function sessionToRow(session: SessionSummarySearchResult): TimelineRow {
+  return {
+    id: `#S${session.id}`,
+    epoch: session.created_at_epoch,
+    typeEmoji: '\uD83C\uDFAF',
+    title:
+      session.request ||
+      `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`,
+    tokens: '-'
+  };
 }
 
 /**
- * Format timeline text from API response to timeline format.
+ * Render a structured search-by-file response to the CLAUDE.md timeline format.
  *
- * Uses the same format as search results:
- * - Grouped by date (### Jan 4, 2026)
- * - Table with columns: ID, Time, T (type emoji), Title, Read (tokens)
- * - Ditto marks for repeated times
+ * Output:
+ * - `# Recent Activity` header
+ * - One section per day (`### Mon D, YYYY`) in chronological order
+ * - Table with columns: ID, Time, T (type emoji), Title, Read (~tokens)
+ * - Ditto marks (`"`) for repeated times within a day
+ *
+ * Returns `''` when there are no results so callers can skip empty writes.
  */
-export function formatTimelineForClaudeMd(timelineText: string): string {
-  const lines: string[] = [];
-  lines.push('# Recent Activity');
-  lines.push('');
+export function formatTimelineForClaudeMd(response: SearchByFileJsonResponse | null | undefined): string {
+  if (!response) return '';
 
-  const apiLines = timelineText.split('\n');
-  const observations: ParsedObservation[] = [];
-  let lastTimeStr = '';
-  let currentDate: Date | null = null;
+  const rows: TimelineRow[] = [
+    ...response.observations.map(observationToRow),
+    ...response.sessions.map(sessionToRow)
+  ];
 
-  for (const line of apiLines) {
-    const dateMatch = line.match(/^###\s+(.+)$/);
-    if (dateMatch) {
-      const dateStr = dateMatch[1].trim();
-      const parsedDate = new Date(dateStr);
-      if (!isNaN(parsedDate.getTime())) {
-        currentDate = parsedDate;
-      }
-      continue;
-    }
+  if (rows.length === 0) return '';
 
-    // Match table rows: | #123 | 4:30 PM | 🔧 | Title | ~250 | ... |
-    const match = line.match(/^\|\s*(#[S]?\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|/);
-    if (match) {
-      const [, id, timeStr, typeEmoji, title, tokens] = match;
+  // Most-recent first (same ordering as previous markdown path).
+  rows.sort((a, b) => b.epoch - a.epoch);
 
-      let time: string;
-      if (timeStr.trim() === '″' || timeStr.trim() === '"') {
-        time = lastTimeStr;
-      } else {
-        time = timeStr.trim();
-        lastTimeStr = time;
-      }
+  const byDate = groupByDate(rows, row => new Date(row.epoch).toISOString());
 
-      const baseDate = currentDate ? new Date(currentDate) : new Date();
-      const timeParts = time.match(/(\d+):(\d+)\s*(AM|PM)/i);
-      let epoch = baseDate.getTime();
-      if (timeParts) {
-        let hours = parseInt(timeParts[1], 10);
-        const minutes = parseInt(timeParts[2], 10);
-        const isPM = timeParts[3].toUpperCase() === 'PM';
-        if (isPM && hours !== 12) hours += 12;
-        if (!isPM && hours === 12) hours = 0;
-        baseDate.setHours(hours, minutes, 0, 0);
-        epoch = baseDate.getTime();
-      }
+  const lines: string[] = ['# Recent Activity', ''];
 
-      observations.push({
-        id: id.trim(),
-        time,
-        typeEmoji: typeEmoji.trim(),
-        title: title.trim(),
-        tokens: tokens.trim(),
-        epoch
-      });
-    }
-  }
-
-  if (observations.length === 0) {
-    return '';
-  }
-
-  const byDate = groupByDate(observations, obs => new Date(obs.epoch).toISOString());
-
-  for (const [day, dayObs] of byDate) {
+  for (const [day, dayRows] of byDate) {
     lines.push(`### ${day}`);
     lines.push('');
     lines.push('| ID | Time | T | Title | Read |');
     lines.push('|----|------|---|-------|------|');
 
     let lastTime = '';
-    for (const obs of dayObs) {
-      const timeDisplay = obs.time === lastTime ? '"' : obs.time;
-      lastTime = obs.time;
-      lines.push(`| ${obs.id} | ${timeDisplay} | ${obs.typeEmoji} | ${obs.title} | ${obs.tokens} |`);
+    for (const row of dayRows) {
+      const time = formatTime(row.epoch);
+      const timeDisplay = time === lastTime ? '"' : time;
+      lastTime = time;
+      lines.push(`| ${row.id} | ${timeDisplay} | ${row.typeEmoji} | ${row.title} | ${row.tokens} |`);
     }
 
     lines.push('');
@@ -480,7 +485,7 @@ export async function updateFolderClaudeMdFiles(
     let response: Response;
     try {
       response = await workerHttpRequest(
-        `/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
+        `/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true&format=json`
       );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -498,21 +503,16 @@ export async function updateFolderClaudeMdFiles(
       continue;
     }
 
-    const result = await response.json() as { content?: Array<{ text?: string }> };
-    if (!result.content?.[0]?.text) {
-      logger.debug('FOLDER_INDEX', 'No content for folder', { folderPath });
-      continue;
-    }
-
-    const formatted = formatTimelineForClaudeMd(result.content[0].text);
+    const result = await response.json() as SearchByFileJsonResponse;
+    const formatted = formatTimelineForClaudeMd(result);
 
     // Fix for #794: Don't create new context files if there's no activity.
-    // But update existing ones to show "No recent activity" if they already exist.
+    // The renderer returns '' when there are no rows; skip creating files for
+    // folders that don't have any yet, but overwrite (clear) files that exist.
     const claudeMdPath = path.join(folderPath, targetFilename);
-    const hasNoActivity = formatted.includes('*No recent activity*');
     const fileExists = existsSync(claudeMdPath);
 
-    if (hasNoActivity && !fileExists) {
+    if (!formatted && !fileExists) {
       logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
       continue;
     }
