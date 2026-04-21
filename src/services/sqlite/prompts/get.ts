@@ -4,7 +4,7 @@
 
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
-import type { UserPromptRecord, LatestPromptResult } from '../../../types/database.js';
+import type { UserPromptRecord, LatestPromptResult } from '../types.js';
 import type { RecentUserPromptResult, PromptWithProject, GetPromptsByIdsOptions } from './types.js';
 
 /**

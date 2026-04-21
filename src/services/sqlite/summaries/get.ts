@@ -3,7 +3,7 @@
  */
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
-import type { SessionSummaryRecord } from '../../../types/database.js';
+import type { SessionSummaryRecord } from '../types.js';
 import type { SessionSummary, GetByIdsOptions } from './types.js';
 
 /**

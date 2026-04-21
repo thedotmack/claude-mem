@@ -285,3 +285,61 @@ export interface UserPromptSearchResult extends UserPromptRow {
   rank?: number; // FTS5 relevance score (lower is better)
   score?: number; // Normalized score (higher is better, 0-1)
 }
+
+// Schema introspection types (PRAGMA results)
+
+export interface TableColumnInfo {
+  cid: number;
+  name: string;
+  type: string;
+  notnull: number;
+  dflt_value: string | null;
+  pk: number;
+}
+
+export interface IndexInfo {
+  seq: number;
+  name: string;
+  unique: number;
+  origin: string;
+  partial: number;
+}
+
+export interface TableNameRow {
+  name: string;
+}
+
+export interface SchemaVersion {
+  version: number;
+}
+
+// Legacy *Record aliases. Historically these were separate (under-specified)
+// views of the same rows represented by the *Row types above. Unified here
+// to eliminate drift — callers using `*Record` get the full row shape.
+export type SdkSessionRecord = SDKSessionRow;
+export type ObservationRecord = ObservationRow;
+export type SessionSummaryRecord = SessionSummaryRow;
+
+// JOIN-projected prompt shapes (not a single-table SELECT *). Kept distinct
+// from UserPromptRow which reflects the raw user_prompts table.
+export interface UserPromptRecord {
+  id: number;
+  content_session_id: string;
+  prompt_number: number;
+  prompt_text: string;
+  project?: string;        // From JOIN with sdk_sessions
+  platform_source?: string;
+  created_at: string;
+  created_at_epoch: number;
+}
+
+export interface LatestPromptResult {
+  id: number;
+  content_session_id: string;
+  memory_session_id: string;
+  project: string;
+  platform_source: string;
+  prompt_number: number;
+  prompt_text: string;
+  created_at_epoch: number;
+}

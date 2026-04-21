@@ -7,7 +7,7 @@ import {
   SessionSummaryRecord,
   UserPromptRecord,
   LatestPromptResult
-} from '../../types/database.js';
+} from './types.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
 import { computeObservationContentHash, findDuplicateObservation } from './observations/store.js';
 import { parseFileList } from './observations/files.js';

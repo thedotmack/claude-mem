@@ -6,7 +6,7 @@
  */
 
 import { logger } from '../../../utils/logger.js';
-import type { ObservationRecord } from '../../../types/database.js';
+import type { ObservationRecord } from '../../sqlite/types.js';
 import type { SessionStore } from '../../sqlite/SessionStore.js';
 import type { SearchManager } from '../SearchManager.js';
 import { CorpusRenderer } from './CorpusRenderer.js';

@@ -6,7 +6,7 @@
  */
 
 import type { Database } from 'bun:sqlite';
-import type { ObservationRecord, SessionSummaryRecord, UserPromptRecord } from '../../../types/database.js';
+import type { ObservationRecord, SessionSummaryRecord, UserPromptRecord } from '../types.js';
 import { logger } from '../../../utils/logger.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../../shared/paths.js';
 

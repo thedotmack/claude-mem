@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { TableNameRow } from '../../types/database.js';
+import { TableNameRow } from './types.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isDirectChild } from '../../shared/path-utils.js';

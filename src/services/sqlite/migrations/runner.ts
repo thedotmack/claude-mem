@@ -5,7 +5,7 @@ import {
   IndexInfo,
   TableNameRow,
   SchemaVersion
-} from '../../../types/database.js';
+} from '../types.js';
 import { DEFAULT_PLATFORM_SOURCE } from '../../../shared/platform-source.js';
 
 /**
