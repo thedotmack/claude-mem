@@ -202,8 +202,8 @@ export { captureProcessStartToken, verifyPidFileOwnership, type PidInfo };
  */
 export function writePidFile(info: PidInfo): void {
   mkdirSync(DATA_DIR, { recursive: true });
-  const startToken = info.startToken ?? captureProcessStartToken(info.pid) ?? undefined;
-  const payload: PidInfo = startToken ? { ...info, startToken } : info;
+  const resolvedToken = info.startToken ?? captureProcessStartToken(info.pid);
+  const payload: PidInfo = resolvedToken ? { ...info, startToken: resolvedToken } : info;
   writeFileSync(PID_FILE, JSON.stringify(payload, null, 2));
 }
 

@@ -388,6 +388,18 @@ describe('ProcessManager', () => {
       expect(captureProcessStartToken(1.5)).toBeNull();
       expect(captureProcessStartToken(NaN)).toBeNull();
     });
+
+    it('returns null on win32 (liveness-only fallback path)', () => {
+      // Simulate Windows to exercise the documented fallback. Real CI doesn't
+      // run on win32, so without this mock the branch is uncovered.
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      try {
+        expect(captureProcessStartToken(process.pid)).toBeNull();
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      }
+    });
   });
 
   describe('writePidFile (start-token capture)', () => {

@@ -157,7 +157,19 @@ export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
   const currentToken = captureProcessStartToken(info.pid);
   if (currentToken === null) return true;
 
-  return currentToken === info.startToken;
+  const match = currentToken === info.startToken;
+  if (!match) {
+    // Emit a debug signal when liveness passes but identity fails — the
+    // exact container-restart scenario this helper exists to catch. Without
+    // this log the callers just say "stale" and can't distinguish
+    // "process dead" from "PID reused by a different process".
+    logger.debug('SYSTEM', 'verifyPidFileOwnership: start-token mismatch (PID reused)', {
+      pid: info.pid,
+      stored: info.startToken,
+      current: currentToken
+    });
+  }
+  return match;
 }
 
 export class ProcessRegistry {
