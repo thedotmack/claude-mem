@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { ClaudeMemDatabase } from '../../../src/services/sqlite/Database.js';
 import { PendingMessageStore } from '../../../src/services/sqlite/PendingMessageStore.js';
-import { createSDKSession } from '../../../src/services/sqlite/Sessions.js';
+import { createSDKSession } from '../../../src/services/sqlite/index.js';
 import type { PendingMessage } from '../../../src/services/worker-types.js';
 import type { Database } from 'bun:sqlite';
 

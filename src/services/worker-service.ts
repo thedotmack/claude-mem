@@ -440,16 +440,10 @@ export class WorkerService {
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
-      // Register corpus routes (knowledge agents) — needs SearchOrchestrator from search module
-      const { SearchOrchestrator } = await import('./worker/search/SearchOrchestrator.js');
-      const corpusSearchOrchestrator = new SearchOrchestrator(
-        this.dbManager.getSessionSearch(),
-        this.dbManager.getSessionStore(),
-        this.dbManager.getChromaSync()
-      );
+      // Register corpus routes (knowledge agents) — uses SearchManager for observation lookup
       const corpusBuilder = new CorpusBuilder(
         this.dbManager.getSessionStore(),
-        corpusSearchOrchestrator,
+        searchManager,
         this.corpusStore
       );
       const knowledgeAgent = new KnowledgeAgent(this.corpusStore);

@@ -4,7 +4,7 @@
  * Shows ALL available context data from a Claude Code transcript
  */
 
-import { TranscriptParser } from '../src/utils/transcript-parser.js';
+import { TranscriptParser } from './transcript-parser.js';
 import type { UserTranscriptEntry, AssistantTranscriptEntry, ToolResultContent } from '../types/transcript.js';
 import { writeFileSync } from 'fs';
 import { basename } from 'path';

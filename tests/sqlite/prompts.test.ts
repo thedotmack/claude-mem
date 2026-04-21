@@ -13,8 +13,8 @@ import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
 import {
   saveUserPrompt,
   getPromptNumberFromUserPrompts,
-} from '../../src/services/sqlite/Prompts.js';
-import { createSDKSession } from '../../src/services/sqlite/Sessions.js';
+} from '../../src/services/sqlite/index.js';
+import { createSDKSession } from '../../src/services/sqlite/index.js';
 import type { Database } from 'bun:sqlite';
 
 describe('Prompts Module', () => {

@@ -13,7 +13,7 @@ import {
 import {
   createSDKSession,
   updateMemorySessionId,
-} from '../../src/services/sqlite/Sessions.js';
+} from '../../src/services/sqlite/index.js';
 import { storeObservations } from '../../src/services/sqlite/transactions.js';
 import { PendingMessageStore } from '../../src/services/sqlite/PendingMessageStore.js';
 import type { ObservationInput } from '../../src/services/sqlite/observations/types.js';

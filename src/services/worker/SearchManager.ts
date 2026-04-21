@@ -25,32 +25,17 @@ import { getProjectContext } from '../../utils/project-name.js';
 import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
-import {
-  SearchOrchestrator,
-  TimelineBuilder,
-  SEARCH_CONSTANTS
-} from './search/index.js';
-import type { TimelineData } from './search/index.js';
+import { SEARCH_CONSTANTS } from './search/index.js';
+import type { TimelineData } from './TimelineService.js';
 
 export class SearchManager {
-  private orchestrator: SearchOrchestrator;
-  private timelineBuilder: TimelineBuilder;
-
   constructor(
     private sessionSearch: SessionSearch,
     private sessionStore: SessionStore,
     private chromaSync: ChromaSync | null,
     private formatter: FormattingService,
     private timelineService: TimelineService
-  ) {
-    // Initialize the new modular search infrastructure
-    this.orchestrator = new SearchOrchestrator(
-      sessionSearch,
-      sessionStore,
-      chromaSync
-    );
-    this.timelineBuilder = new TimelineBuilder();
-  }
+  ) {}
 
   /**
    * Query Chroma vector database via ChromaSync

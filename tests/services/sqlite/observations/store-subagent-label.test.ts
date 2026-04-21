@@ -18,11 +18,11 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ClaudeMemDatabase } from '../../../../src/services/sqlite/Database.js';
-import { storeObservation } from '../../../../src/services/sqlite/Observations.js';
+import { storeObservation } from '../../../../src/services/sqlite/index.js';
 import {
   createSDKSession,
   updateMemorySessionId,
-} from '../../../../src/services/sqlite/Sessions.js';
+} from '../../../../src/services/sqlite/index.js';
 import type { ObservationInput } from '../../../../src/services/sqlite/observations/types.js';
 import type { Database } from 'bun:sqlite';
 

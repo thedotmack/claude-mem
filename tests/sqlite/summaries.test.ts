@@ -13,11 +13,11 @@ import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
 import {
   storeSummary,
   getSummaryForSession,
-} from '../../src/services/sqlite/Summaries.js';
+} from '../../src/services/sqlite/index.js';
 import {
   createSDKSession,
   updateMemorySessionId,
-} from '../../src/services/sqlite/Sessions.js';
+} from '../../src/services/sqlite/index.js';
 import type { SummaryInput } from '../../src/services/sqlite/summaries/types.js';
 import type { Database } from 'bun:sqlite';
 

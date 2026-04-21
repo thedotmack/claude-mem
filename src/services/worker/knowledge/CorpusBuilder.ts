@@ -1,14 +1,14 @@
 /**
  * CorpusBuilder - Compiles observations from the database into a corpus file
  *
- * Uses SearchOrchestrator to find matching observations, hydrates them via
+ * Uses SearchManager to find matching observations, hydrates them via
  * SessionStore, and assembles them into a complete CorpusFile.
  */
 
 import { logger } from '../../../utils/logger.js';
 import type { ObservationRecord } from '../../../types/database.js';
 import type { SessionStore } from '../../sqlite/SessionStore.js';
-import type { SearchOrchestrator } from '../search/SearchOrchestrator.js';
+import type { SearchManager } from '../SearchManager.js';
 import { CorpusRenderer } from './CorpusRenderer.js';
 import { CorpusStore } from './CorpusStore.js';
 import type { CorpusFile, CorpusFilter, CorpusObservation, CorpusStats } from './types.js';
@@ -38,7 +38,7 @@ export class CorpusBuilder {
 
   constructor(
     private sessionStore: SessionStore,
-    private searchOrchestrator: SearchOrchestrator,
+    private searchManager: SearchManager,
     private corpusStore: CorpusStore
   ) {
     this.renderer = new CorpusRenderer();
@@ -50,8 +50,8 @@ export class CorpusBuilder {
   async build(name: string, description: string, filter: CorpusFilter): Promise<CorpusFile> {
     logger.debug('WORKER', `Building corpus "${name}" with filter`, { filter });
 
-    // Step 1: Search for matching observation IDs via SearchOrchestrator
-    const searchArgs: Record<string, unknown> = {};
+    // Step 1: Search for matching observation IDs via SearchManager (json format for raw data)
+    const searchArgs: Record<string, unknown> = { format: 'json' };
     if (filter.project) searchArgs.project = filter.project;
     if (filter.types && filter.types.length > 0) searchArgs.type = filter.types.join(',');
     if (filter.concepts && filter.concepts.length > 0) searchArgs.concepts = filter.concepts.join(',');
@@ -61,10 +61,10 @@ export class CorpusBuilder {
     if (filter.date_end) searchArgs.dateEnd = filter.date_end;
     if (filter.limit) searchArgs.limit = filter.limit;
 
-    const searchResult = await this.searchOrchestrator.search(searchArgs);
+    const searchResult = await this.searchManager.search(searchArgs);
 
-    // Extract observation IDs from search results
-    const observationIds = (searchResult.results.observations || []).map(
+    // Extract observation IDs from search results (format: 'json' returns { observations, sessions, prompts, ... })
+    const observationIds = (searchResult.observations || []).map(
       (obs: { id: number }) => obs.id
     );
 

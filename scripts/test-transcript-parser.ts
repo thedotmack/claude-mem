@@ -6,7 +6,7 @@
  * Usage: npx tsx scripts/test-transcript-parser.ts <path-to-transcript.jsonl>
  */
 
-import { TranscriptParser } from '../src/utils/transcript-parser.js';
+import { TranscriptParser } from './transcript-parser.js';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
 

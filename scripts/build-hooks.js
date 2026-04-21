@@ -24,7 +24,7 @@ const MCP_SERVER = {
 
 const CONTEXT_GENERATOR = {
   name: 'context-generator',
-  source: 'src/services/context-generator.ts'
+  source: 'src/services/context/index.ts'
 };
 
 /**

@@ -4,7 +4,7 @@
  * Shows what data we have available for memory worker using TranscriptParser API
  */
 
-import { TranscriptParser } from '../src/utils/transcript-parser.js';
+import { TranscriptParser } from './transcript-parser.js';
 import { writeFileSync } from 'fs';
 import type { AssistantTranscriptEntry, UserTranscriptEntry } from '../src/types/transcript.js';
 

@@ -4,7 +4,7 @@
  * Shows exactly what's in the transcript, chronologically
  */
 
-import { TranscriptParser } from '../src/utils/transcript-parser.js';
+import { TranscriptParser } from './transcript-parser.js';
 import { writeFileSync } from 'fs';
 
 const transcriptPath = process.argv[2];

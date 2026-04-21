@@ -389,15 +389,6 @@ const QUERIES: Record<string, string> = {
 (import_declaration) @imp
 `,
 
-  php: `
-(function_definition name: (name) @name) @func
-(class_declaration name: (name) @name) @cls
-(interface_declaration name: (name) @name) @iface
-(trait_declaration name: (name) @name) @trait_def
-(method_declaration name: (name) @name) @method
-(namespace_use_declaration) @imp
-`,
-
   lua: `
 (function_declaration name: (identifier) @name) @func
 (function_declaration name: (dot_index_expression) @name) @func

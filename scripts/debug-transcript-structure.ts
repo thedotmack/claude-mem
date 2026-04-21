@@ -4,7 +4,7 @@
  * Examines the first few entries to understand the conversation flow
  */
 
-import { TranscriptParser } from '../src/utils/transcript-parser.js';
+import { TranscriptParser } from './transcript-parser.js';
 
 const transcriptPath = process.argv[2];
 

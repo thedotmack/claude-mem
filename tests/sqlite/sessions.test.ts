@@ -14,7 +14,7 @@ import {
   createSDKSession,
   getSessionById,
   updateMemorySessionId,
-} from '../../src/services/sqlite/Sessions.js';
+} from '../../src/services/sqlite/index.js';
 import type { Database } from 'bun:sqlite';
 
 describe('Sessions Module', () => {

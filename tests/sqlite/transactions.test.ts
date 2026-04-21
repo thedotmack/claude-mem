@@ -13,12 +13,12 @@ import {
   storeObservations,
   storeObservationsAndMarkComplete,
 } from '../../src/services/sqlite/transactions.js';
-import { getObservationById } from '../../src/services/sqlite/Observations.js';
-import { getSummaryForSession } from '../../src/services/sqlite/Summaries.js';
+import { getObservationById } from '../../src/services/sqlite/index.js';
+import { getSummaryForSession } from '../../src/services/sqlite/index.js';
 import {
   createSDKSession,
   updateMemorySessionId,
-} from '../../src/services/sqlite/Sessions.js';
+} from '../../src/services/sqlite/index.js';
 import type { ObservationInput } from '../../src/services/sqlite/observations/types.js';
 import type { SummaryInput } from '../../src/services/sqlite/summaries/types.js';
 import type { Database } from 'bun:sqlite';

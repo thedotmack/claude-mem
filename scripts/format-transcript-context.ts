@@ -6,7 +6,7 @@
  * that could be used for improved observation generation.
  */
 
-import { TranscriptParser } from '../src/utils/transcript-parser.js';
+import { TranscriptParser } from './transcript-parser.js';
 import { writeFileSync } from 'fs';
 import { basename } from 'path';
 
