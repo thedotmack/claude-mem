@@ -29,6 +29,7 @@ import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 // transitively pulls in the SQLite database layer via ChromaSync/DatabaseManager.
 import { ensureWorkerStarted as ensureWorkerStartedShared } from './worker-spawner.js';
 import { RestartGuard } from './worker/RestartGuard.js';
+import { isUnrecoverableError } from './worker/unrecoverable-patterns.js';
 
 // Re-export for backward compatibility — canonical implementation in shared/plugin-state.ts
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -709,23 +710,10 @@ export class WorkerService {
         const errorMessage = (error as Error)?.message || '';
 
         // Detect unrecoverable errors that should NOT trigger restart
-        // These errors will fail immediately on retry, causing infinite loops
-        const unrecoverablePatterns = [
-          'Claude executable not found',
-          'CLAUDE_CODE_PATH',
-          'ENOENT',
-          'spawn',
-          'Invalid API key',
-          'API_KEY_INVALID',
-          'API key expired',
-          'API key not valid',
-          'PERMISSION_DENIED',
-          'Gemini API error: 400',
-          'Gemini API error: 401',
-          'Gemini API error: 403',
-          'FOREIGN KEY constraint failed',
-        ];
-        if (unrecoverablePatterns.some(pattern => errorMessage.includes(pattern))) {
+        // These errors will fail immediately on retry, causing infinite loops.
+        // Pattern list lives in ./worker/unrecoverable-patterns.ts so the matcher
+        // is unit-testable without importing this full module.
+        if (isUnrecoverableError(errorMessage)) {
           hadUnrecoverableError = true;
           this.lastAiInteraction = {
             timestamp: Date.now(),
@@ -831,7 +819,9 @@ export class WorkerService {
               pendingCount,
               restartsInWindow: session.restartGuard.restartsInWindow,
               windowMs: session.restartGuard.windowMs,
-              maxRestarts: session.restartGuard.maxRestarts
+              maxRestarts: session.restartGuard.maxRestarts,
+              totalRestarts: session.restartGuard.totalRestarts,
+              lifetimeCap: session.restartGuard.lifetimeCap
             });
             session.consecutiveRestarts = 0;
             this.terminateSession(session.sessionDbId, 'max_restarts_exceeded');

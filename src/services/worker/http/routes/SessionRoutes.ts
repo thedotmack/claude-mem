@@ -97,6 +97,49 @@ export class SessionRoutes extends BaseRouteHandler {
   private static readonly STALE_GENERATOR_THRESHOLD_MS = 30_000; // 30 seconds (#1099)
   private static readonly MAX_SESSION_WALL_CLOCK_MS = 4 * 60 * 60 * 1000; // 4 hours (#1590)
 
+  /**
+   * Handle the restart-guard-tripped branch of crash recovery.
+   *
+   * When the windowed restart guard (or lifetime cap) trips, we must:
+   *   1. abort the SDK subprocess so it stops consuming Claude
+   *   2. mark pending messages abandoned so the next worker startup's
+   *      processPendingQueues() does NOT replay them (drain loop fix)
+   *   3. remove the in-memory session and broadcast completion so the UI
+   *      reflects the terminal state
+   *
+   * Mirrors WorkerService.terminateSession() semantics — cannot call that
+   * method directly because it's private. Extracted into a helper so it's
+   * unit-testable without standing up a full HTTP harness (see
+   * tests/worker/http/SessionRoutes.restart-trip.test.ts).
+   */
+  private handleRestartGuardTripped(
+    sessionDbId: number,
+    pendingCount: number,
+    session: { abortController: AbortController; restartGuard?: RestartGuard }
+  ): void {
+    const restartGuard = session.restartGuard;
+    logger.error('SESSION', `CRITICAL: Restart guard tripped — too many restarts in window, stopping to prevent runaway costs`, {
+      sessionId: sessionDbId,
+      pendingCount,
+      restartsInWindow: restartGuard?.restartsInWindow,
+      windowMs: restartGuard?.windowMs,
+      maxRestarts: restartGuard?.maxRestarts,
+      totalRestarts: restartGuard?.totalRestarts,
+      lifetimeCap: restartGuard?.lifetimeCap,
+      action: 'Pending messages abandoned to prevent replay loop.'
+    });
+    session.abortController.abort();
+    const pendingStore = this.sessionManager.getPendingMessageStore();
+    const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+    logger.info('SYSTEM', 'Session terminated', {
+      sessionId: sessionDbId,
+      reason: 'max_restarts_exceeded',
+      abandonedMessages: abandoned
+    });
+    this.sessionManager.removeSessionImmediate(sessionDbId);
+    this.eventBroadcaster.broadcastSessionCompleted(sessionDbId);
+  }
+
   private ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
@@ -316,16 +359,7 @@ export class SessionRoutes extends BaseRouteHandler {
             session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1; // Keep for logging
 
             if (!restartAllowed) {
-              logger.error('SESSION', `CRITICAL: Restart guard tripped — too many restarts in window, stopping to prevent runaway costs`, {
-                sessionId: sessionDbId,
-                pendingCount,
-                restartsInWindow: session.restartGuard.restartsInWindow,
-                windowMs: session.restartGuard.windowMs,
-                maxRestarts: session.restartGuard.maxRestarts,
-                action: 'Generator will NOT restart. Check logs for root cause. Messages remain in pending state.'
-              });
-              // Don't restart - abort to prevent further API calls
-              session.abortController.abort();
+              this.handleRestartGuardTripped(sessionDbId, pendingCount, session);
               return;
             }
 
@@ -334,7 +368,9 @@ export class SessionRoutes extends BaseRouteHandler {
               pendingCount,
               consecutiveRestarts: session.consecutiveRestarts,
               restartsInWindow: session.restartGuard!.restartsInWindow,
-              maxRestarts: session.restartGuard!.maxRestarts
+              maxRestarts: session.restartGuard!.maxRestarts,
+              totalRestarts: session.restartGuard!.totalRestarts,
+              lifetimeCap: session.restartGuard!.lifetimeCap
             });
 
             // Abort OLD controller before replacing to prevent child process leaks
