@@ -1,11 +1,16 @@
-import { ChildProcess, spawnSync } from 'child_process';
+import { ChildProcess, exec, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
+import { promisify } from 'util';
 import { logger } from '../utils/logger.js';
+
+const execAsync = promisify(exec);
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
 const REAP_SESSION_SIGKILL_TIMEOUT_MS = 1_000;
+const UNIFIED_REAPER_INTERVAL_MS = 60_000;
+const IDLE_DAEMON_CHILD_MIN_MINUTES = 1;
 
 const DATA_DIR = path.join(homedir(), '.claude-mem');
 const DEFAULT_REGISTRY_PATH = path.join(DATA_DIR, 'supervisor.json');
@@ -405,4 +410,137 @@ export function getProcessRegistry(): ProcessRegistry {
 
 export function createProcessRegistry(registryPath: string): ProcessRegistry {
   return new ProcessRegistry(registryPath);
+}
+
+/**
+ * Kill system-level orphans and idle daemon children.
+ *
+ * Two concerns, one `ps` sweep:
+ *   - ppid=1 orphans matching "claude.*haiku|claude.*output-format" — their parent died.
+ *   - claude children of this daemon that are idle (0% CPU) for >=1 minute — zombie SDK procs.
+ */
+async function sweepSystemOrphans(daemonPid: number): Promise<number> {
+  if (process.platform === 'win32') return 0;
+
+  let killed = 0;
+
+  try {
+    const { stdout } = await execAsync(
+      'ps -eo pid,ppid,%cpu,etime,args 2>/dev/null | grep -E "claude.*haiku|claude.*output-format|claude$" | grep -v grep || true'
+    );
+
+    for (const line of stdout.trim().split('\n')) {
+      if (!line) continue;
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 5) continue;
+
+      const pid = parseInt(parts[0], 10);
+      const ppid = parseInt(parts[1], 10);
+      const cpu = parseFloat(parts[2]);
+      const etime = parts[3];
+
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      if (pid === daemonPid) continue;
+
+      const isPpidOneOrphan = ppid === 1;
+      const isIdleDaemonChild = ppid === daemonPid && cpu === 0 && parseEtimeMinutes(etime) >= IDLE_DAEMON_CHILD_MIN_MINUTES;
+
+      if (!isPpidOneOrphan && !isIdleDaemonChild) continue;
+
+      logger.warn('SYSTEM', `Reaper killing ${isPpidOneOrphan ? 'ppid=1 orphan' : 'idle daemon child'} PID ${pid}`, { pid, ppid });
+      try {
+        process.kill(pid, 'SIGKILL');
+        killed++;
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'ESRCH') {
+            logger.debug('SYSTEM', `Failed to SIGKILL orphan PID ${pid}`, { pid }, error);
+          }
+        }
+      }
+    }
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      logger.debug('SYSTEM', 'sweepSystemOrphans: ps scan failed', {}, error);
+    }
+  }
+
+  return killed;
+}
+
+function parseEtimeMinutes(etime: string): number {
+  // Formats: MM:SS, HH:MM:SS, D-HH:MM:SS
+  const day = etime.match(/^(\d+)-(\d+):(\d+):(\d+)$/);
+  if (day) return parseInt(day[1], 10) * 24 * 60 + parseInt(day[2], 10) * 60 + parseInt(day[3], 10);
+  const hour = etime.match(/^(\d+):(\d+):(\d+)$/);
+  if (hour) return parseInt(hour[1], 10) * 60 + parseInt(hour[2], 10);
+  const min = etime.match(/^(\d+):(\d+)$/);
+  if (min) return parseInt(min[1], 10);
+  return 0;
+}
+
+/**
+ * Start the unified orphan/stale reaper.
+ *
+ * One 60s loop that:
+ *   - iterates registry entries, SIGKILLs PIDs whose session is no longer active
+ *   - sweeps system-level orphans (ppid=1) and idle daemon-children claude processes
+ *
+ * Returns a stop function that clears the interval.
+ */
+export function startUnifiedReaper(
+  registry: ProcessRegistry,
+  getActiveSessionIds: () => Set<number>,
+  onSlotFreed: () => void = () => {}
+): () => void {
+  const interval = setInterval(async () => {
+    let killed = 0;
+    try {
+      const activeIds = getActiveSessionIds();
+
+      for (const record of registry.getAll()) {
+        if (record.type !== 'sdk') continue;
+        const sessionDbId = Number(record.sessionId);
+        if (activeIds.has(sessionDbId)) continue;
+
+        const processRef = registry.getRuntimeProcess(record.id);
+        logger.warn('SYSTEM', `Reaper killing orphan PID ${record.pid} (session ${sessionDbId} gone)`, {
+          pid: record.pid,
+          sessionDbId
+        });
+        try {
+          if (processRef) {
+            processRef.kill('SIGKILL');
+          } else if (isPidAlive(record.pid)) {
+            process.kill(record.pid, 'SIGKILL');
+          }
+          killed++;
+        } catch (error: unknown) {
+          if (error instanceof Error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code !== 'ESRCH') {
+              logger.debug('SYSTEM', `Reaper SIGKILL failed for PID ${record.pid}`, { pid: record.pid }, error);
+            }
+          }
+        }
+        registry.unregister(record.id);
+        onSlotFreed();
+      }
+
+      killed += await sweepSystemOrphans(process.pid);
+
+      if (killed > 0) {
+        logger.info('SYSTEM', `Unified reaper cleaned up ${killed} processes`, { killed });
+      }
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        logger.error('SYSTEM', 'Unified reaper error', {}, error);
+      } else {
+        logger.error('SYSTEM', 'Unified reaper error', { rawError: String(error) });
+      }
+    }
+  }, UNIFIED_REAPER_INTERVAL_MS);
+
+  return () => clearInterval(interval);
 }

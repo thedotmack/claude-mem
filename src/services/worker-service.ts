@@ -105,7 +105,8 @@ import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from './worker/knowledge/KnowledgeAgent.js';
 
 // Process management for zombie cleanup (Issue #737)
-import { startOrphanReaper, reapOrphanedProcesses, getProcessBySession, ensureProcessExit } from './worker/ProcessRegistry.js';
+import { getProcessBySession, ensureProcessExit, notifySlotAvailable } from './worker/ProcessRegistry.js';
+import { startUnifiedReaper } from '../supervisor/process-registry.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -524,15 +525,20 @@ export class WorkerService {
       }
       logger.success('WORKER', 'MCP loopback self-check connected');
 
-      // Start orphan reaper to clean up zombie processes (Issue #737)
-      this.stopOrphanReaper = startOrphanReaper(() => {
-        const activeIds = new Set<number>();
-        for (const [id] of this.sessionManager['sessions']) {
-          activeIds.add(id);
-        }
-        return activeIds;
-      });
-      logger.info('SYSTEM', 'Started orphan reaper (runs every 30 seconds)');
+      // Start unified orphan/stale reaper (Issue #737) — runs every 60s,
+      // reaps registry entries for dead sessions + ppid=1 orphans + idle daemon children.
+      this.stopOrphanReaper = startUnifiedReaper(
+        getSupervisor().getRegistry(),
+        () => {
+          const activeIds = new Set<number>();
+          for (const [id] of this.sessionManager['sessions']) {
+            activeIds.add(id);
+          }
+          return activeIds;
+        },
+        notifySlotAvailable
+      );
+      logger.info('SYSTEM', 'Started unified reaper (runs every 60 seconds)');
 
       // Reap stale sessions to unblock orphan process cleanup (Issue #1168)
       this.staleSessionReaperInterval = setInterval(async () => {

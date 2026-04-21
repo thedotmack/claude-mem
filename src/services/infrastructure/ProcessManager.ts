@@ -888,40 +888,6 @@ export function spawnDaemon(
 }
 
 /**
- * Check if a process with the given PID is alive.
- *
- * Uses the process.kill(pid, 0) idiom: signal 0 doesn't send a signal,
- * it just checks if the process exists and is reachable.
- *
- * EPERM is treated as "alive" because it means the process exists but
- * belongs to a different user/session (common in multi-user setups).
- * PID 0 (Windows sentinel for unknown PID) is treated as alive.
- */
-export function isProcessAlive(pid: number): boolean {
-  // PID 0 is the Windows sentinel value — process was spawned but PID unknown
-  if (pid === 0) return true;
-
-  // Invalid PIDs are not alive
-  if (!Number.isInteger(pid) || pid < 0) return false;
-
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      // EPERM = process exists but different user/session — treat as alive
-      if (code === 'EPERM') return true;
-      logger.debug('SYSTEM', 'Process not alive', { pid, code });
-    } else {
-      logger.debug('SYSTEM', 'Process not alive (non-Error thrown)', { pid }, new Error(String(error)));
-    }
-    // ESRCH = no such process — it's dead
-    return false;
-  }
-}
-
-/**
  * Check if the PID file was written recently (within thresholdMs).
  *
  * Used to coordinate restarts across concurrent sessions: if the PID file

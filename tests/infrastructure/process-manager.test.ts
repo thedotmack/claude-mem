@@ -9,7 +9,6 @@ import {
   removePidFile,
   getPlatformTimeout,
   parseElapsedTime,
-  isProcessAlive,
   cleanStalePidFile,
   isPidFileRecent,
   touchPidFile,
@@ -335,31 +334,6 @@ describe('ProcessManager', () => {
       });
 
       expect(resolved).toBeNull();
-    });
-  });
-
-  describe('isProcessAlive', () => {
-    it('should return true for the current process', () => {
-      expect(isProcessAlive(process.pid)).toBe(true);
-    });
-
-    it('should return false for a non-existent PID', () => {
-      // Use a very high PID that's extremely unlikely to exist
-      expect(isProcessAlive(2147483647)).toBe(false);
-    });
-
-    it('should return true for PID 0 (Windows WMIC sentinel)', () => {
-      expect(isProcessAlive(0)).toBe(true);
-    });
-
-    it('should return false for negative PIDs', () => {
-      expect(isProcessAlive(-1)).toBe(false);
-      expect(isProcessAlive(-999)).toBe(false);
-    });
-
-    it('should return false for non-integer PIDs', () => {
-      expect(isProcessAlive(1.5)).toBe(false);
-      expect(isProcessAlive(NaN)).toBe(false);
     });
   });
 
