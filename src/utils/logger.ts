@@ -299,6 +299,12 @@ class Logger {
       // If no log file available, write to stderr as fallback
       process.stderr.write(logLine + '\n');
     }
+
+    // Opt-in stdout mirror: set CLAUDE_MEM_LOG_TO_STDOUT=1 when running in a container
+    // so `tee -a worker.log` captures logs that otherwise only go to the date-stamped file.
+    if (process.env.CLAUDE_MEM_LOG_TO_STDOUT === '1' || process.env.CLAUDE_MEM_LOG_TO_STDOUT === 'true') {
+      process.stdout.write(logLine + '\n');
+    }
   }
 
   // Public logging methods

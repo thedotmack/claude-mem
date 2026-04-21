@@ -374,6 +374,7 @@ export class SDKAgent {
       // The message is now in 'processing' status in DB until ResponseProcessor calls confirmProcessed()
       session.processingMessageIds.push(message._persistentId);
       session.processingMessageMeta.push({ tool_name: message.tool_name, tool_input: message.tool_input });
+      logger.info('QUEUE', `TRACKED_FOR_CONFIRM | sessionDbId=${session.sessionDbId} | messageId=${message._persistentId} | type=${message.type}`, { sessionId: session.sessionDbId });
 
       // Capture subagent identity from the claimed message so ResponseProcessor
       // can label observation rows with the originating Claude Code subagent.

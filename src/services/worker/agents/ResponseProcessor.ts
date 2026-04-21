@@ -143,7 +143,8 @@ export async function processAgentResponse(
   }));
 
   // ATOMIC TRANSACTION: Store observations + summary ONCE
-  // Messages are already deleted from queue on claim, so no completion tracking needed.
+  // Messages transition pending→processing on claim; FIFO confirm below deletes
+  // the tracked message only when this response produced stored output.
   // Wrap in try/finally so the subagent tracker clears even if storage throws —
   // otherwise stale identity could leak into the next batch and mislabel rows.
   // Expected invariant: all observations in a batch share the same agent context,
@@ -202,18 +203,24 @@ export async function processAgentResponse(
     }
   }
 
-  // CLAIM-CONFIRM: Now that storage succeeded, confirm all processing messages (delete from queue)
-  // This is the critical step that prevents message loss on generator crash
+  // CLAIM-CONFIRM: confirm the oldest tracked message ONLY when this response actually
+  // produced stored output. The SDK pre-fetches the next user message before delivering
+  // the response to the current one, so processingMessageIds can be populated with a
+  // future message's ID while an earlier init/continuation-prompt response is arriving.
+  // Pre-consuming the tracker on an empty response would delete the wrong pending row.
+  // FIFO dequeue aligns 1:1 with SDK request-response order.
   const pendingStore = sessionManager.getPendingMessageStore();
-  for (const messageId of session.processingMessageIds) {
+  const storedSomething = result.observationIds.length > 0 || result.summaryId !== null;
+  if (storedSomething && session.processingMessageIds.length > 0) {
+    const messageId = session.processingMessageIds.shift()!;
+    if (session.processingMessageMeta.length > 0) {
+      session.processingMessageMeta.shift();
+    }
     pendingStore.confirmProcessed(messageId);
+    logger.info('QUEUE', `CONFIRM_PASS | sessionDbId=${session.sessionDbId} | messageId=${messageId} | obsStored=${result.observationIds.length} | summaryStored=${result.summaryId !== null} | remainingTracked=${session.processingMessageIds.length}`, { sessionId: session.sessionDbId });
+  } else {
+    logger.info('QUEUE', `CONFIRM_SKIP | sessionDbId=${session.sessionDbId} | tracked=${session.processingMessageIds.length} | obsStored=${result.observationIds.length} | summaryStored=${result.summaryId !== null} | reason=${storedSomething ? 'no-tracked-ids' : 'nothing-stored'}`, { sessionId: session.sessionDbId });
   }
-  if (session.processingMessageIds.length > 0) {
-    logger.debug('QUEUE', `CONFIRMED_BATCH | sessionDbId=${session.sessionDbId} | count=${session.processingMessageIds.length} | ids=[${session.processingMessageIds.join(',')}]`);
-  }
-  // Clear the tracking array after confirmation
-  session.processingMessageIds = [];
-  session.processingMessageMeta = [];
 
   // AFTER transaction commits - async operations (can fail safely without data loss)
   await syncAndBroadcastObservations(

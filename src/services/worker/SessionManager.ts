@@ -645,7 +645,9 @@ export class SessionManager {
 
     const processor = new SessionQueueProcessor(this.getPendingStore(), emitter);
 
-    // Use the robust iterator - messages are deleted on claim (no tracking needed)
+    // Messages transition pending→processing on claim; ResponseProcessor calls
+    // confirmProcessed (DELETE) after successful storage. Crash-recovery relies on
+    // self-healing in claimNextMessage to reset stale 'processing' rows back to pending.
     // CRITICAL: Pass onIdleTimeout callback that triggers abort to kill the subprocess
     // Without this, the iterator returns but the Claude subprocess stays alive as a zombie
     for await (const message of processor.createIterator({

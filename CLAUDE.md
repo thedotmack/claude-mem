@@ -93,6 +93,7 @@ mkdir -p .docker-claude-mem-data
 docker run -d --name claude-mem-dev \
   -p 37778:37777 \
   -e CLAUDE_MEM_WORKER_HOST=0.0.0.0 \
+  -e CLAUDE_MEM_LOG_TO_STDOUT=1 \
   -e CLAUDE_MEM_CREDENTIALS_FILE=/auth/.credentials.json \
   -v "$CREDS_FILE:/auth/.credentials.json:ro" \
   -v "$(pwd)/plugin:/opt/claude-mem" \
@@ -112,6 +113,7 @@ docker run -d --name claude-mem-dev \
 
 - **Port 37778, not 37777** — avoids colliding with the host's own claude-mem worker.
 - **`CLAUDE_MEM_WORKER_HOST=0.0.0.0`** required — the default `127.0.0.1` bind makes Docker Desktop port forwarding reset the connection.
+- **`CLAUDE_MEM_LOG_TO_STDOUT=1`** — mirrors log lines to stdout so `tee -a worker.log` captures them. Without this, logs only land in `~/.claude-mem/logs/claude-mem-{YYYY-MM-DD}.log` and `worker.log` stays empty.
 - **Bind-mount `plugin/` over `/opt/claude-mem`** — host `npm run build` propagates without an image rebuild. The image only needs rebuilding when Docker-level deps change (Bun/uv/Node/Claude CLI versions).
 - **Persistent state** at `.docker-claude-mem-data/` in repo root (gitignored) — SQLite + Chroma survive across container restarts so test data carries over.
 - **Git operations stay on host** — commits, diffs, and branch switches happen in the worktree.
