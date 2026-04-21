@@ -113,9 +113,16 @@ export function captureProcessStartToken(pid: number): string | null {
   }
 
   try {
+    // Pin LC_ALL=C so `ps lstart=` emits a locale-independent timestamp
+    // (e.g. `Mon Apr 21 09:00:00 2026`). Without this, a bind-mounted PID
+    // file written under one locale and read under another would hash to
+    // different tokens and the new worker would incorrectly treat itself
+    // as a stale prior incarnation — reintroducing the bug this helper
+    // exists to prevent. Flagged by Greptile on PR #2082.
     const result = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], {
       encoding: 'utf-8',
-      timeout: 2000
+      timeout: 2000,
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C' }
     });
     if (result.status !== 0) return null;
     const token = result.stdout.trim();
