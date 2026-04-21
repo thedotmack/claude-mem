@@ -692,8 +692,6 @@ export class WorkerService {
       session.abortController = new AbortController();
     }
 
-    // Track whether generator failed with an unrecoverable error to prevent infinite restart loops
-    let hadUnrecoverableError = false;
     let sessionFailed = false;
 
     logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
@@ -705,50 +703,9 @@ export class WorkerService {
       .catch(async (error: unknown) => {
         const errorMessage = (error as Error)?.message || '';
 
-        // Detect unrecoverable errors that should NOT trigger restart
-        // These errors will fail immediately on retry, causing infinite loops
-        const unrecoverablePatterns = [
-          'Claude executable not found',
-          'CLAUDE_CODE_PATH',
-          'ENOENT',
-          'spawn',
-          'Invalid API key',
-          'API_KEY_INVALID',
-          'API key expired',
-          'API key not valid',
-          'PERMISSION_DENIED',
-          'Gemini API error: 400',
-          'Gemini API error: 401',
-          'Gemini API error: 403',
-          'FOREIGN KEY constraint failed',
-        ];
-        if (unrecoverablePatterns.some(pattern => errorMessage.includes(pattern))) {
-          hadUnrecoverableError = true;
-          this.lastAiInteraction = {
-            timestamp: Date.now(),
-            success: false,
-            provider: providerName,
-            error: errorMessage,
-          };
-          logger.error('SDK', 'Unrecoverable generator error - will NOT restart', {
-            sessionId: session.sessionDbId,
-            project: session.project,
-            errorMessage
-          });
-          return;
-        }
-
-        // Fallback for terminated SDK sessions (provider abstraction)
-        if (this.isSessionTerminatedError(error)) {
-          logger.warn('SDK', 'SDK resume failed, falling back to standalone processing', {
-            sessionId: session.sessionDbId,
-            project: session.project,
-            reason: error instanceof Error ? error.message : String(error)
-          });
-          return this.runFallbackForTerminatedSession(session, error);
-        }
-
-        // Detect stale resume failures - SDK session context was lost
+        // Detect stale resume failures - SDK session context was lost.
+        // This is a recovery hint (forces fresh init on next restart), not a
+        // restart-or-terminate gate. Restart decisions are owned by RestartGuard.
         const staleResumePatterns = ['aborted by user', 'No conversation found'];
         if (staleResumePatterns.some(p => errorMessage.includes(p))
             && session.memorySessionId) {
@@ -774,7 +731,10 @@ export class WorkerService {
           provider: providerName,
           error: errorMessage,
         };
-        throw error;
+        // Do NOT rethrow: the generatorPromise is observed only via .finally()
+        // in this file; rethrowing would produce an unhandled rejection. The
+        // .finally() block below owns the restart-or-terminate decision via
+        // RestartGuard.
       })
       .finally(async () => {
         // CRITICAL: Verify subprocess exit to prevent zombie accumulation (Issue #1168)
@@ -786,18 +746,12 @@ export class WorkerService {
         session.generatorPromise = null;
 
         // Record successful AI interaction if no error occurred
-        if (!sessionFailed && !hadUnrecoverableError) {
+        if (!sessionFailed) {
           this.lastAiInteraction = {
             timestamp: Date.now(),
             success: true,
             provider: providerName,
           };
-        }
-
-        // Do NOT restart after unrecoverable errors - prevents infinite loops
-        if (hadUnrecoverableError) {
-          this.terminateSession(session.sessionDbId, 'unrecoverable_error');
-          return;
         }
 
         const pendingStore = this.sessionManager.getPendingMessageStore();
@@ -823,7 +777,7 @@ export class WorkerService {
           session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1; // Keep for logging
 
           if (!restartAllowed) {
-            logger.error('SYSTEM', 'Restart guard tripped: too many restarts in window, stopping to prevent runaway costs', {
+            logger.error('SYSTEM', 'Restart guard tripped: too many restarts in window, running fallback chain once before termination', {
               sessionId: session.sessionDbId,
               pendingCount,
               restartsInWindow: session.restartGuard.restartsInWindow,
@@ -831,7 +785,10 @@ export class WorkerService {
               maxRestarts: session.restartGuard.maxRestarts
             });
             session.consecutiveRestarts = 0;
-            this.terminateSession(session.sessionDbId, 'max_restarts_exceeded');
+            // Fallback chain (Gemini → OpenRouter) runs ONCE on RestartGuard
+            // termination to drain pending messages. If it fails or is unavailable,
+            // messages are abandoned and the session is removed inside the helper.
+            await this.runFallbackForTerminatedSession(session);
             return;
           }
 
@@ -856,42 +813,13 @@ export class WorkerService {
   }
 
   /**
-   * Match errors that indicate the Claude Code process/session is gone (resume impossible).
-   * Used to trigger graceful fallback instead of leaving pending messages stuck forever.
-   *
-   * These patterns come from the Claude SDK's ProcessTransport and related internals.
-   * The SDK does not export typed error classes, so string matching on normalized
-   * messages is the only reliable detection method. Each pattern corresponds to a
-   * specific SDK failure mode:
-   *   - 'process aborted by user': user cancelled the Claude Code session
-   *   - 'processtransport': transport layer disconnected
-   *   - 'not ready for writing': stdio pipe to Claude process is closed
-   *   - 'session generator failed': wrapper error from our own agent layer
-   *   - 'claude code process': process exited or was killed
-   */
-  private static readonly SESSION_TERMINATED_PATTERNS = [
-    'process aborted by user',
-    'processtransport',
-    'not ready for writing',
-    'session generator failed',
-    'claude code process',
-  ] as const;
-
-  private isSessionTerminatedError(error: unknown): boolean {
-    const msg = error instanceof Error ? error.message : String(error);
-    const normalized = msg.toLowerCase();
-    return WorkerService.SESSION_TERMINATED_PATTERNS.some(
-      pattern => normalized.includes(pattern)
-    );
-  }
-
-  /**
-   * When SDK resume fails due to terminated session: try Gemini then OpenRouter to drain
-   * pending messages; if no fallback available, mark messages abandoned and remove session.
+   * Invoked exactly once when RestartGuard trips (too many restarts in the 60s
+   * window). Attempts Gemini, then OpenRouter, to drain pending messages on the
+   * terminated session. If no fallback is available or both fail, messages are
+   * marked abandoned and the session is removed.
    */
   private async runFallbackForTerminatedSession(
-    session: ReturnType<typeof this.sessionManager.getSession>,
-    _originalError: unknown
+    session: ReturnType<typeof this.sessionManager.getSession>
   ): Promise<void> {
     if (!session) return;
 
