@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.3.8] - 2026-04-21
+
+## 🔧 Fix
+
+**Detect PID reuse in the worker start-guard so containers can restart cleanly.** (#2082)
+
+The `kill(pid, 0)` liveness check false-positived when the worker's PID file outlived its PID namespace — most commonly after `docker stop` / `docker start` with a bind-mounted `~/.claude-mem`. The new worker would boot as the same low PID (often 11) as the old one, `kill(0)` would report "alive," and the worker would refuse to start *against its own prior incarnation*. Symptom: container appeared to start, immediately exited cleanly with no user-visible error, worker never came up.
+
+### What changed
+
+- Capture an opaque **process-start identity token** alongside the PID and verify identity, not just liveness:
+  - **Linux**: `/proc/<pid>/stat` field 22 (starttime in jiffies) — cheap, no exec, same signal `pgrep`/`systemd` use.
+  - **macOS / POSIX**: `ps -p <pid> -o lstart=` with `LC_ALL=C` pinned so the emitted timestamp is locale-independent across environments.
+  - **Windows**: unchanged — falls back to liveness-only. The PID-reuse scenario doesn't affect Windows deployments the way containers do.
+- `verifyPidFileOwnership` emits a DEBUG log when liveness passes but the token mismatches, so the "PID reused" case is distinguishable from "process dead" in production logs.
+- PID files written by older versions are token-less; `verifyPidFileOwnership` falls back to the existing liveness-only behavior for backwards compatibility. **No migration required.**
+
+### Surface
+
+Shared helpers (`PidInfo`, `captureProcessStartToken`, `verifyPidFileOwnership`) live in `src/supervisor/process-registry.ts` and are re-exported from `ProcessManager.ts` to preserve the existing public surface. Both entry points updated: `worker-service.ts` GUARD 1 and `supervisor/index.ts` `validateWorkerPidFile`.
+
+### Tests
+
++14 new tests covering token capture, ownership verification, backwards compatibility for tokenless PID files, and the container-restart regression scenario. Zero regressions.
+
 ## [12.3.7] - 2026-04-20
 
 ## What's Changed
