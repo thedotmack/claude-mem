@@ -39,7 +39,7 @@ import {
   writeClaudeMdToFolder,
   updateFolderClaudeMdFiles,
   getTargetFilename
-} from '../../src/utils/claude-md-utils.js';
+} from '../../src/utils/context-file-writer.js';
 
 let tempDir: string;
 const originalFetch = global.fetch;

@@ -16,7 +16,7 @@ import { tmpdir } from 'os';
  */
 
 import { readJsonSafe } from '../src/utils/json-utils';
-import { injectContextIntoMarkdownFile, CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from '../src/utils/context-injection';
+import { injectContextIntoMarkdownFile, CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from '../src/utils/context-file-writer';
 
 /**
  * Reimplements the core logic of buildMcpServerEntry and writeMcpJsonConfig

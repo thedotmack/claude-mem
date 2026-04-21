@@ -22,7 +22,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { findMcpServerPath } from './CursorHooksInstaller.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
-import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
+import { injectContextIntoMarkdownFile } from '../../utils/context-file-writer.js';
 
 // ============================================================================
 // Shared Constants

@@ -6,7 +6,7 @@ import {
   injectContextIntoMarkdownFile,
   CONTEXT_TAG_OPEN,
   CONTEXT_TAG_CLOSE,
-} from '../src/utils/context-injection';
+} from '../src/utils/context-file-writer';
 
 /**
  * Tests for the shared context injection utility.

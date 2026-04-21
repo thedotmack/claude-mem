@@ -17,7 +17,6 @@ import {
   existsSync,
   writeFileSync,
   readFileSync,
-  renameSync,
   unlinkSync,
   readdirSync
 } from 'fs';
@@ -26,6 +25,7 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
 import { isDirectChild } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
+import { writeClaudeMdToFolder } from '../utils/context-file-writer.js';
 
 const DB_PATH = path.join(os.homedir(), '.claude-mem', 'claude-mem.db');
 const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
@@ -269,51 +269,6 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
 }
 
 /**
- * Write CLAUDE.md file with tagged content preservation.
- * Only writes to folders that exist — never creates directories.
- */
-function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
-  const resolvedPath = path.resolve(folderPath);
-
-  // Never write inside .git directories — corrupts refs (#1165)
-  if (resolvedPath.includes('/.git/') || resolvedPath.includes('\\.git\\') || resolvedPath.endsWith('/.git') || resolvedPath.endsWith('\\.git')) return;
-
-  const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
-  const tempFile = `${claudeMdPath}.tmp`;
-
-  if (!existsSync(folderPath)) {
-    throw new Error(`Folder does not exist: ${folderPath}`);
-  }
-
-  let existingContent = '';
-  if (existsSync(claudeMdPath)) {
-    existingContent = readFileSync(claudeMdPath, 'utf-8');
-  }
-
-  const startTag = '<claude-mem-context>';
-  const endTag = '</claude-mem-context>';
-
-  let finalContent: string;
-  if (!existingContent) {
-    finalContent = `${startTag}\n${newContent}\n${endTag}`;
-  } else {
-    const startIdx = existingContent.indexOf(startTag);
-    const endIdx = existingContent.indexOf(endTag);
-
-    if (startIdx !== -1 && endIdx !== -1) {
-      finalContent = existingContent.substring(0, startIdx) +
-        `${startTag}\n${newContent}\n${endTag}` +
-        existingContent.substring(endIdx + endTag.length);
-    } else {
-      finalContent = existingContent + `\n\n${startTag}\n${newContent}\n${endTag}`;
-    }
-  }
-
-  writeFileSync(tempFile, finalContent);
-  renameSync(tempFile, claudeMdPath);
-}
-
-/**
  * Regenerate CLAUDE.md for a single folder.
  */
 function regenerateFolder(
@@ -348,7 +303,7 @@ function regenerateFolder(
 
   try {
     const formatted = formatObservationsForClaudeMd(observations, relativeFolder);
-    writeClaudeMdToFolder(absoluteFolder, formatted);
+    writeClaudeMdToFolder(absoluteFolder, formatted, 'CLAUDE.md');
     return { success: true, observationCount: observations.length };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

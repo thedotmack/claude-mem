@@ -18,7 +18,7 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { replaceTaggedContent } from '../../utils/claude-md-utils.js';
+import { replaceTaggedContent } from '../../utils/context-file-writer.js';
 import {
   DEFAULT_CONFIG_PATH,
   DEFAULT_STATE_PATH,

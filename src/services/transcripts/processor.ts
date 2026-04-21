@@ -7,7 +7,7 @@ import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-util
 import { DATA_DIR } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { writeAgentsMd } from '../../utils/agents-md-utils.js';
+import { writeAgentsMd } from '../../utils/context-file-writer.js';
 import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
 import { expandHomePath } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';

@@ -15,7 +15,7 @@ import { logger } from '../../../utils/logger.js';
 import { parseObservations, parseSummary, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import { SUMMARY_MODE_MARKER, MAX_CONSECUTIVE_SUMMARY_FAILURES } from '../../../sdk/prompts.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
-import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
+import { updateFolderClaudeMdFiles } from '../../../utils/context-file-writer.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';

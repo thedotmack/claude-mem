@@ -46,7 +46,7 @@ interface ObservationRow {
 // Import shared utilities
 import { formatTime, groupByDate } from '../src/shared/timeline-formatting.js';
 import { isDirectChild } from '../src/shared/path-utils.js';
-import { replaceTaggedContent } from '../src/utils/claude-md-utils.js';
+import { replaceTaggedContent } from '../src/utils/context-file-writer.js';
 
 // Type icon map (matches ModeManager)
 const TYPE_ICONS: Record<string, string> = {

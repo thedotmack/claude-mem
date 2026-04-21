@@ -19,7 +19,7 @@ import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
+import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-file-writer.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
 
 // ============================================================================
