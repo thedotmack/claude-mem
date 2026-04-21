@@ -68,6 +68,29 @@ describe('validateWorkerPidFile', () => {
     const status = validateWorkerPidFile({ logAlive: false, pidFilePath });
     expect(status).toBe('alive');
   });
+
+  // Regression: container restart (docker stop / docker start) reused low PIDs
+  // across boots. The PID file on a bind-mounted volume pointed at PID 11;
+  // the new worker also came up as PID 11. kill(0) returned "alive" and the
+  // worker refused to boot, thinking its own prior incarnation was still up.
+  // With the start-token identity check, a stored token that doesn't match
+  // the current PID's token should resolve as "stale" and the PID file should
+  // be cleared so the new worker can proceed.
+  const tokenSupported = process.platform === 'linux' || process.platform === 'darwin';
+  it.if(tokenSupported)('returns "stale" when startToken does not match the live PID (PID reused)', () => {
+    const tempDir = makeTempDir();
+    tempDirs.push(tempDir);
+    const pidFilePath = path.join(tempDir, 'worker.pid');
+    writeFileSync(pidFilePath, JSON.stringify({
+      pid: process.pid,
+      port: 37777,
+      startedAt: new Date().toISOString(),
+      startToken: 'token-from-a-different-incarnation'
+    }));
+
+    const status = validateWorkerPidFile({ logAlive: false, pidFilePath });
+    expect(status).toBe('stale');
+  });
 });
 
 describe('Supervisor assertCanSpawn behavior', () => {

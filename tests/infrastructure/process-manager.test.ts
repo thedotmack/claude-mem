@@ -16,6 +16,8 @@ import {
   spawnDaemon,
   resolveWorkerRuntimePath,
   runOneTimeChromaMigration,
+  captureProcessStartToken,
+  verifyPidFileOwnership,
   type PidInfo
 } from '../../src/services/infrastructure/index.js';
 
@@ -358,6 +360,121 @@ describe('ProcessManager', () => {
     it('should return false for non-integer PIDs', () => {
       expect(isProcessAlive(1.5)).toBe(false);
       expect(isProcessAlive(NaN)).toBe(false);
+    });
+  });
+
+  describe('captureProcessStartToken', () => {
+    const supported = process.platform === 'linux' || process.platform === 'darwin';
+
+    it.if(supported)('returns a non-empty token for the current process', () => {
+      const token = captureProcessStartToken(process.pid);
+      expect(typeof token).toBe('string');
+      expect((token ?? '').length).toBeGreaterThan(0);
+    });
+
+    it.if(supported)('returns a stable token across calls for the same PID', () => {
+      const first = captureProcessStartToken(process.pid);
+      const second = captureProcessStartToken(process.pid);
+      expect(first).toBe(second);
+    });
+
+    it('returns null for a non-existent PID', () => {
+      expect(captureProcessStartToken(2147483647)).toBeNull();
+    });
+
+    it('returns null for invalid PIDs', () => {
+      expect(captureProcessStartToken(0)).toBeNull();
+      expect(captureProcessStartToken(-1)).toBeNull();
+      expect(captureProcessStartToken(1.5)).toBeNull();
+      expect(captureProcessStartToken(NaN)).toBeNull();
+    });
+
+    it('returns null on win32 (liveness-only fallback path)', () => {
+      // Simulate Windows to exercise the documented fallback. Real CI doesn't
+      // run on win32, so without this mock the branch is uncovered.
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      try {
+        expect(captureProcessStartToken(process.pid)).toBeNull();
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      }
+    });
+  });
+
+  describe('writePidFile (start-token capture)', () => {
+    const supported = process.platform === 'linux' || process.platform === 'darwin';
+
+    it.if(supported)('auto-captures a startToken when writing for the current process', () => {
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
+      const persisted = readPidFile();
+      expect(persisted).not.toBeNull();
+      expect(typeof persisted!.startToken).toBe('string');
+      expect((persisted!.startToken ?? '').length).toBeGreaterThan(0);
+    });
+
+    it('preserves a caller-supplied startToken verbatim', () => {
+      const provided = 'caller-supplied-token-xyz';
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString(), startToken: provided });
+      const persisted = readPidFile();
+      expect(persisted!.startToken).toBe(provided);
+    });
+
+    it('omits startToken when the target PID has no readable token (dead PID)', () => {
+      // pid is dead, so captureProcessStartToken() returns null and writePidFile
+      // should not persist a startToken field.
+      writePidFile({ pid: 2147483647, port: 37777, startedAt: new Date().toISOString() });
+      const persisted = readPidFile();
+      expect(persisted).not.toBeNull();
+      expect(persisted!.startToken).toBeUndefined();
+    });
+  });
+
+  describe('verifyPidFileOwnership', () => {
+    const supported = process.platform === 'linux' || process.platform === 'darwin';
+
+    it('returns false for null input', () => {
+      expect(verifyPidFileOwnership(null)).toBe(false);
+    });
+
+    it('returns false when the PID is not alive', () => {
+      expect(verifyPidFileOwnership({
+        pid: 2147483647,
+        port: 37777,
+        startedAt: new Date().toISOString(),
+        startToken: 'anything'
+      })).toBe(false);
+    });
+
+    it('returns true when no startToken is stored (back-compat with older PID files)', () => {
+      expect(verifyPidFileOwnership({
+        pid: process.pid,
+        port: 37777,
+        startedAt: new Date().toISOString()
+        // intentionally no startToken
+      })).toBe(true);
+    });
+
+    it.if(supported)('returns true when the stored token matches the current PID', () => {
+      const token = captureProcessStartToken(process.pid);
+      expect(token).not.toBeNull();
+      expect(verifyPidFileOwnership({
+        pid: process.pid,
+        port: 37777,
+        startedAt: new Date().toISOString(),
+        startToken: token!
+      })).toBe(true);
+    });
+
+    it.if(supported)('returns false when the stored token does not match (PID reused)', () => {
+      // Simulates the container-restart bug: PID is alive (we pass our own),
+      // but the stored token was written by a prior incarnation.
+      expect(verifyPidFileOwnership({
+        pid: process.pid,
+        port: 37777,
+        startedAt: new Date().toISOString(),
+        startToken: 'token-from-a-different-incarnation'
+      })).toBe(false);
     });
   });
 

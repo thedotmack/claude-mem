@@ -48,7 +48,7 @@ import {
   runOneTimeChromaMigration,
   runOneTimeCwdRemap,
   cleanStalePidFile,
-  isProcessAlive,
+  verifyPidFileOwnership,
   spawnDaemon,
   touchPidFile
 } from './infrastructure/ProcessManager.js';
@@ -1361,10 +1361,13 @@ async function main() {
 
     case '--daemon':
     default: {
-      // GUARD 1: Refuse to start if another worker is already alive (PID check).
-      // Instant check (kill -0) — no HTTP dependency.
+      // GUARD 1: Refuse to start if another worker is already alive.
+      // Verifies PID *identity* (via start-time token) not just liveness, so a
+      // stale PID file pointing at a PID that's since been reused by an
+      // unrelated process (e.g. container restart reusing low PIDs) doesn't
+      // false-positive.
       const existingPidInfo = readPidFile();
-      if (existingPidInfo && isProcessAlive(existingPidInfo.pid)) {
+      if (verifyPidFileOwnership(existingPidInfo)) {
         logger.info('SYSTEM', 'Worker already running (PID alive), refusing to start duplicate', {
           existingPid: existingPidInfo.pid,
           existingPort: existingPidInfo.port,
