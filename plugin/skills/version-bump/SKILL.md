@@ -41,10 +41,11 @@ description: Automated semantic versioning and release workflow for Claude Code 
     ```
     Alternative: `npm run release:patch` / `release:minor` / `release:major` invokes `np` and handles tag+push+publish in one shot — use ONLY if you skipped steps 4–6, otherwise `np` will error on the existing tag.
 8.  **GitHub release**: `gh release create vX.Y.Z --title "vX.Y.Z" --notes "RELEASE_NOTES"`.
-9.  **Changelog**: Regenerate via the GitHub API + script:
+9.  **Changelog**: Regenerate via the project's changelog script:
     ```bash
-    gh api repos/{owner}/{repo}/releases --paginate | ./scripts/generate_changelog.js > CHANGELOG.md
+    npm run changelog:generate
     ```
+    (Runs `node scripts/generate-changelog.js`, which pulls releases from the GitHub API and rewrites `CHANGELOG.md`.)
 10. **Sync changelog**: Commit and push the updated `CHANGELOG.md`.
 11. **Notify**: `npm run discord:notify vX.Y.Z` if applicable.
 12. **Finalize**: `git status` — working tree must be clean.
