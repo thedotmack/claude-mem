@@ -87,6 +87,7 @@ import { SearchManager } from './worker/SearchManager.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
+import { SessionCompletionHandler } from './worker/session/SessionCompletionHandler.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
 
@@ -152,6 +153,7 @@ export class WorkerService {
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
+  private sessionCompletionHandler: SessionCompletionHandler;
   private corpusStore: CorpusStore;
 
   // Route handlers
@@ -198,6 +200,11 @@ export class WorkerService {
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
+    this.sessionCompletionHandler = new SessionCompletionHandler(
+      this.sessionManager,
+      this.sessionEventBroadcaster,
+      this.dbManager
+    );
     this.corpusStore = new CorpusStore();
 
     // Set callback for when sessions are deleted
@@ -305,7 +312,7 @@ export class WorkerService {
 
     // Standard routes (registered AFTER guard middleware)
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
+    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.sessionCompletionHandler));
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
@@ -853,6 +860,17 @@ export class WorkerService {
           // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
           session.restartGuard?.recordSuccess();
           session.consecutiveRestarts = 0;
+          // Finalize session (mark completed in DB + drain pending + broadcast). Idempotent.
+          // Summary/observation writes inside processAgentResponse() are committed
+          // synchronously to SQLite before startSession() returns, so by the time
+          // this .finally() runs the summary is durably persisted.
+          try {
+            this.sessionCompletionHandler.finalizeSession(session.sessionDbId);
+          } catch (err) {
+            logger.warn('SESSION', 'finalizeSession failed in WorkerService generator .finally()', {
+              sessionId: session.sessionDbId
+            }, err as Error);
+          }
           this.sessionManager.removeSessionImmediate(session.sessionDbId);
         }
       });
@@ -947,6 +965,16 @@ export class WorkerService {
         abandoned
       });
     }
+    // Finalize so DB status + broadcast + pending-drain are consistent even on fallback failure.
+    // Idempotent; safe even though we also call broadcastSessionCompleted below (finalizeSession
+    // is a no-op when already completed).
+    try {
+      this.sessionCompletionHandler.finalizeSession(sessionDbId);
+    } catch (err) {
+      logger.warn('SESSION', 'finalizeSession failed in runFallbackForTerminatedSession', {
+        sessionId: sessionDbId
+      }, err as Error);
+    }
     this.sessionManager.removeSessionImmediate(sessionDbId);
     this.sessionEventBroadcaster.broadcastSessionCompleted(sessionDbId);
   }
@@ -970,6 +998,17 @@ export class WorkerService {
       reason,
       abandonedMessages: abandoned
     });
+
+    // Finalize session (mark completed in DB + drain pending + broadcast). Idempotent.
+    // This runs AFTER startSession() has returned, which means any summary/observation
+    // writes inside processAgentResponse() are already committed to SQLite synchronously.
+    try {
+      this.sessionCompletionHandler.finalizeSession(sessionDbId);
+    } catch (err) {
+      logger.warn('SESSION', 'finalizeSession failed during terminateSession', {
+        sessionId: sessionDbId, reason
+      }, err as Error);
+    }
 
     // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
     this.sessionManager.removeSessionImmediate(sessionDbId);

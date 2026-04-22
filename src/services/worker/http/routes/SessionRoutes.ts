@@ -38,14 +38,14 @@ export class SessionRoutes extends BaseRouteHandler {
     private geminiAgent: GeminiAgent,
     private openRouterAgent: OpenRouterAgent,
     private eventBroadcaster: SessionEventBroadcaster,
-    private workerService: WorkerService
+    private workerService: WorkerService,
+    completionHandler: SessionCompletionHandler
   ) {
     super();
-    this.completionHandler = new SessionCompletionHandler(
-      sessionManager,
-      eventBroadcaster,
-      dbManager
-    );
+    // Use the shared completion handler from WorkerService so the SDK-agent
+    // completion path and the HTTP fallback route operate on the same instance
+    // (avoids duplicate construction; keeps finalize semantics consistent).
+    this.completionHandler = completionHandler;
   }
 
   /**
@@ -288,6 +288,43 @@ export class SessionRoutes extends BaseRouteHandler {
         session.generatorPromise = null;
         session.currentProvider = null;
         this.workerService.broadcastProcessingStatus();
+
+        // Stop-hook fire-and-forget (Phase 2): if the generator just processed
+        // a summary and no work remains, the Stop hook is done and we should
+        // self-clean the session. The summary write is already committed to
+        // SQLite synchronously inside processAgentResponse() BEFORE startSession()
+        // returns (see ResponseProcessor.ts: storeObservations() is sync, and
+        // confirmProcessed() runs right after), so by the time this .finally()
+        // runs the summary is durably persisted.
+        //
+        // We gate on lastSummaryStored so we don't finalize after every idle
+        // timeout between tool calls — only when a real Stop event produced
+        // a summary record.
+        try {
+          const pendingStore = this.sessionManager.getPendingMessageStore();
+          const pendingNow = pendingStore.getPendingCount(sessionDbId);
+          if (session.lastSummaryStored === true && pendingNow === 0) {
+            logger.info('SESSION', 'Stop-hook self-clean: summary persisted + queue drained → finalizing', {
+              sessionId: sessionDbId
+            });
+            // finalizeSession is idempotent and does NOT touch the in-memory map —
+            // it only marks DB completed, drains any orphaned pending messages,
+            // and broadcasts the completion event. sessionManager cleanup is
+            // handled below by the existing abort/removeSessionImmediate flow.
+            this.completionHandler.finalizeSession(sessionDbId);
+            // Clear the flag so a subsequent re-activation of the same session
+            // does not fire finalize again without a fresh summary.
+            session.lastSummaryStored = false;
+            // Ensure the session is removed from the active-sessions map so the
+            // Stop-hook path doesn't depend on a later idle-timeout tick.
+            this.sessionManager.removeSessionImmediate(sessionDbId);
+            return;
+          }
+        } catch (err) {
+          logger.warn('SESSION', 'finalizeSession failed in SessionRoutes generator .finally()', {
+            sessionId: sessionDbId
+          }, err as Error);
+        }
 
         // Crash recovery: If not aborted and still has work, restart (with limit)
         if (!wasAborted) {
