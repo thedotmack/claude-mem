@@ -87,6 +87,7 @@ import { SearchManager } from './worker/SearchManager.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
+import { SessionCompletionHandler } from './worker/session/SessionCompletionHandler.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
 
@@ -152,6 +153,7 @@ export class WorkerService {
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
+  private sessionCompletionHandler: SessionCompletionHandler;
   private corpusStore: CorpusStore;
 
   // Route handlers
@@ -198,6 +200,11 @@ export class WorkerService {
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
+    this.sessionCompletionHandler = new SessionCompletionHandler(
+      this.sessionManager,
+      this.sessionEventBroadcaster,
+      this.dbManager
+    );
     this.corpusStore = new CorpusStore();
 
     // Set callback for when sessions are deleted
@@ -305,7 +312,7 @@ export class WorkerService {
 
     // Standard routes (registered AFTER guard middleware)
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
+    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.sessionCompletionHandler));
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
@@ -849,11 +856,26 @@ export class WorkerService {
           this.startSessionProcessor(session, 'pending-work-restart');
           this.broadcastProcessingStatus();
         } else {
-          // Successful completion with no pending work — clean up session
-          // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
+          // Successful completion with no pending work — clean up session.
+          // Only remove from the in-memory map if finalize succeeds; otherwise
+          // leave the session in place so the 60s orphan reaper (or a future
+          // retry) can repair the inconsistency. Removing a still-"active" DB
+          // row from memory would orphan it indefinitely under the new
+          // fire-and-forget Stop hook (no /api/sessions/complete to retry).
           session.restartGuard?.recordSuccess();
           session.consecutiveRestarts = 0;
-          this.sessionManager.removeSessionImmediate(session.sessionDbId);
+          let finalized = false;
+          try {
+            this.sessionCompletionHandler.finalizeSession(session.sessionDbId);
+            finalized = true;
+          } catch (err) {
+            logger.warn('SESSION', 'finalizeSession failed in WorkerService generator .finally()', {
+              sessionId: session.sessionDbId
+            }, err as Error);
+          }
+          if (finalized) {
+            this.sessionManager.removeSessionImmediate(session.sessionDbId);
+          }
         }
       });
   }
@@ -947,8 +969,25 @@ export class WorkerService {
         abandoned
       });
     }
-    this.sessionManager.removeSessionImmediate(sessionDbId);
-    this.sessionEventBroadcaster.broadcastSessionCompleted(sessionDbId);
+    // Finalize so DB status + broadcast + pending-drain are consistent on fallback failure.
+    // finalizeSession already broadcasts session_completed, so we don't also call
+    // broadcastSessionCompleted below. On finalize failure, fall back to the
+    // explicit broadcast so the UI still gets the event and leave the session
+    // in memory for the orphan reaper to retry.
+    let finalized = false;
+    try {
+      this.sessionCompletionHandler.finalizeSession(sessionDbId);
+      finalized = true;
+    } catch (err) {
+      logger.warn('SESSION', 'finalizeSession failed in runFallbackForTerminatedSession', {
+        sessionId: sessionDbId
+      }, err as Error);
+    }
+    if (finalized) {
+      this.sessionManager.removeSessionImmediate(sessionDbId);
+    } else {
+      this.sessionEventBroadcaster.broadcastSessionCompleted(sessionDbId);
+    }
   }
 
   /**
@@ -971,8 +1010,25 @@ export class WorkerService {
       abandonedMessages: abandoned
     });
 
-    // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
-    this.sessionManager.removeSessionImmediate(sessionDbId);
+    // Finalize session (mark completed in DB + drain pending + broadcast). Idempotent.
+    // This runs AFTER startSession() has returned, which means any summary/observation
+    // writes inside processAgentResponse() are already committed to SQLite synchronously.
+    // Only remove from the in-memory map if finalize succeeds; otherwise leave the
+    // session in place so the 60s orphan reaper can repair the DB inconsistency.
+    let finalized = false;
+    try {
+      this.sessionCompletionHandler.finalizeSession(sessionDbId);
+      finalized = true;
+    } catch (err) {
+      logger.warn('SESSION', 'finalizeSession failed during terminateSession', {
+        sessionId: sessionDbId, reason
+      }, err as Error);
+    }
+
+    if (finalized) {
+      // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
+      this.sessionManager.removeSessionImmediate(sessionDbId);
+    }
   }
 
   /**

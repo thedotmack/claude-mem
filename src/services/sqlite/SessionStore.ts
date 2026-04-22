@@ -1588,11 +1588,12 @@ export class SessionStore {
     platform_source: string;
     user_prompt: string;
     custom_title: string | null;
+    status: string;
   } | null {
     const stmt = this.db.prepare(`
       SELECT id, content_session_id, memory_session_id, project,
              COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
-             user_prompt, custom_title
+             user_prompt, custom_title, status
       FROM sdk_sessions
       WHERE id = ?
       LIMIT 1

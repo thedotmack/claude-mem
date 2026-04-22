@@ -76,6 +76,12 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_API_KEY: string;
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
+  // Telegram Notifier
+  CLAUDE_MEM_TELEGRAM_ENABLED: string;
+  CLAUDE_MEM_TELEGRAM_BOT_TOKEN: string;
+  CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
+  CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: string;
+  CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: string;
 }
 
 export class SettingsDefaultsManager {
@@ -147,6 +153,12 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_API_KEY: '',
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
+    // Telegram Notifier
+    CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
+    CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
+    CLAUDE_MEM_TELEGRAM_CHAT_ID: '',
+    CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert',
+    CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: '',
   };
 
   /**

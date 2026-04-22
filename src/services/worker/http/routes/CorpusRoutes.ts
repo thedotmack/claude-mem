@@ -13,7 +13,7 @@ import { CorpusBuilder } from '../../knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from '../../knowledge/KnowledgeAgent.js';
 import type { CorpusFilter } from '../../knowledge/types.js';
 
-const ALLOWED_CORPUS_TYPES = new Set(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']);
+const ALLOWED_CORPUS_TYPES = new Set(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change', 'security_alert', 'security_note']);
 
 export class CorpusRoutes extends BaseRouteHandler {
   constructor(
