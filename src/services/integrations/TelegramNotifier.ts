@@ -63,6 +63,10 @@ async function postOne(botToken: string, chatId: string, text: string): Promise<
 }
 
 export async function notifyTelegram(input: TelegramNotifyInput): Promise<void> {
+  if (!SettingsDefaultsManager.getBool('CLAUDE_MEM_TELEGRAM_ENABLED')) {
+    return;
+  }
+
   const botToken = SettingsDefaultsManager.get('CLAUDE_MEM_TELEGRAM_BOT_TOKEN');
   const chatId = SettingsDefaultsManager.get('CLAUDE_MEM_TELEGRAM_CHAT_ID');
   if (!botToken || !chatId) {
