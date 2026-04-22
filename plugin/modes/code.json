@@ -44,6 +44,20 @@
       "description": "Architectural/design choice with rationale",
       "emoji": "⚖️",
       "work_emoji": "⚖️"
+    },
+    {
+      "id": "security_alert",
+      "label": "Security Alert",
+      "description": "A security issue that needs attention before continuing.",
+      "emoji": "🚨",
+      "work_emoji": "🚨"
+    },
+    {
+      "id": "security_note",
+      "label": "Security Note",
+      "description": "A security-relevant observation worth recording, but not urgent.",
+      "emoji": "🔐",
+      "work_emoji": "🔐"
     }
   ],
   "observation_concepts": [
