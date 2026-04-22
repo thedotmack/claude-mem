@@ -449,7 +449,7 @@ ${o.stack}`:` ${o.message}`:this.getLevel()===0&&typeof o=="object"?u=`
     `).all(e),n=new Set,o=new Set;for(let i of s)re(i.files_read).forEach(a=>n.add(a)),re(i.files_modified).forEach(a=>o.add(a));return{filesRead:Array.from(n),filesModified:Array.from(o)}}getSessionById(e){return this.db.prepare(`
       SELECT id, content_session_id, memory_session_id, project,
              COALESCE(platform_source, '${h}') as platform_source,
-             user_prompt, custom_title
+             user_prompt, custom_title, status
       FROM sdk_sessions
       WHERE id = ?
       LIMIT 1

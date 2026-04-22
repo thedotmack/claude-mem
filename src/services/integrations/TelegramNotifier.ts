@@ -8,6 +8,7 @@
 
 import { ParsedObservation } from '../../sdk/parser.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 
 export interface TelegramNotifyInput {
@@ -18,6 +19,14 @@ export interface TelegramNotifyInput {
 }
 
 const MARKDOWN_V2_RESERVED = /[_*\[\]()~`>#+\-=|{}.!\\]/g;
+
+// Emoji per observation type. Unknown types fall back to the generic 🔔 so
+// the message is still readable rather than misleadingly loud.
+const TYPE_EMOJI: Record<string, string> = {
+  security_alert: '🚨',
+  security_note: '🔐',
+};
+const DEFAULT_EMOJI = '🔔';
 
 function escapeMarkdownV2(value: string): string {
   return value.replace(MARKDOWN_V2_RESERVED, '\\$&');
@@ -36,12 +45,13 @@ function formatMessage(
   memorySessionId: string,
   observationId: number,
 ): string {
+  const emoji = TYPE_EMOJI[obs.type] ?? DEFAULT_EMOJI;
   const type = escapeMarkdownV2(obs.type);
   const title = escapeMarkdownV2(obs.title ?? '');
   const subtitle = escapeMarkdownV2(obs.subtitle ?? '');
   const projectEscaped = escapeMarkdownV2(project);
   const idEscaped = escapeMarkdownV2(String(observationId));
-  return `🚨 *${type}* — ${title}\n${subtitle}\nProject: \`${projectEscaped}\` · obs \\#${idEscaped}`;
+  return `${emoji} *${type}* — ${title}\n${subtitle}\nProject: \`${projectEscaped}\` · obs \\#${idEscaped}`;
 }
 
 async function postOne(botToken: string, chatId: string, text: string): Promise<void> {
@@ -63,18 +73,23 @@ async function postOne(botToken: string, chatId: string, text: string): Promise<
 }
 
 export async function notifyTelegram(input: TelegramNotifyInput): Promise<void> {
-  if (!SettingsDefaultsManager.getBool('CLAUDE_MEM_TELEGRAM_ENABLED')) {
+  // loadFromFile merges env > settings.json > defaults so values stored in
+  // ~/.claude-mem/settings.json actually take effect. SettingsDefaultsManager.get()
+  // alone skips the file and would silently ignore user-configured credentials.
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+
+  if (settings.CLAUDE_MEM_TELEGRAM_ENABLED !== 'true') {
     return;
   }
 
-  const botToken = SettingsDefaultsManager.get('CLAUDE_MEM_TELEGRAM_BOT_TOKEN');
-  const chatId = SettingsDefaultsManager.get('CLAUDE_MEM_TELEGRAM_CHAT_ID');
+  const botToken = settings.CLAUDE_MEM_TELEGRAM_BOT_TOKEN;
+  const chatId = settings.CLAUDE_MEM_TELEGRAM_CHAT_ID;
   if (!botToken || !chatId) {
     return;
   }
 
-  const triggerTypes = splitCsv(SettingsDefaultsManager.get('CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES'));
-  const triggerConcepts = splitCsv(SettingsDefaultsManager.get('CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS'));
+  const triggerTypes = splitCsv(settings.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES);
+  const triggerConcepts = splitCsv(settings.CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS);
   if (triggerTypes.length === 0 && triggerConcepts.length === 0) {
     return;
   }

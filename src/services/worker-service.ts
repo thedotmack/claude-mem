@@ -856,22 +856,26 @@ export class WorkerService {
           this.startSessionProcessor(session, 'pending-work-restart');
           this.broadcastProcessingStatus();
         } else {
-          // Successful completion with no pending work — clean up session
-          // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
+          // Successful completion with no pending work — clean up session.
+          // Only remove from the in-memory map if finalize succeeds; otherwise
+          // leave the session in place so the 60s orphan reaper (or a future
+          // retry) can repair the inconsistency. Removing a still-"active" DB
+          // row from memory would orphan it indefinitely under the new
+          // fire-and-forget Stop hook (no /api/sessions/complete to retry).
           session.restartGuard?.recordSuccess();
           session.consecutiveRestarts = 0;
-          // Finalize session (mark completed in DB + drain pending + broadcast). Idempotent.
-          // Summary/observation writes inside processAgentResponse() are committed
-          // synchronously to SQLite before startSession() returns, so by the time
-          // this .finally() runs the summary is durably persisted.
+          let finalized = false;
           try {
             this.sessionCompletionHandler.finalizeSession(session.sessionDbId);
+            finalized = true;
           } catch (err) {
             logger.warn('SESSION', 'finalizeSession failed in WorkerService generator .finally()', {
               sessionId: session.sessionDbId
             }, err as Error);
           }
-          this.sessionManager.removeSessionImmediate(session.sessionDbId);
+          if (finalized) {
+            this.sessionManager.removeSessionImmediate(session.sessionDbId);
+          }
         }
       });
   }
@@ -965,18 +969,25 @@ export class WorkerService {
         abandoned
       });
     }
-    // Finalize so DB status + broadcast + pending-drain are consistent even on fallback failure.
-    // Idempotent; safe even though we also call broadcastSessionCompleted below (finalizeSession
-    // is a no-op when already completed).
+    // Finalize so DB status + broadcast + pending-drain are consistent on fallback failure.
+    // finalizeSession already broadcasts session_completed, so we don't also call
+    // broadcastSessionCompleted below. On finalize failure, fall back to the
+    // explicit broadcast so the UI still gets the event and leave the session
+    // in memory for the orphan reaper to retry.
+    let finalized = false;
     try {
       this.sessionCompletionHandler.finalizeSession(sessionDbId);
+      finalized = true;
     } catch (err) {
       logger.warn('SESSION', 'finalizeSession failed in runFallbackForTerminatedSession', {
         sessionId: sessionDbId
       }, err as Error);
     }
-    this.sessionManager.removeSessionImmediate(sessionDbId);
-    this.sessionEventBroadcaster.broadcastSessionCompleted(sessionDbId);
+    if (finalized) {
+      this.sessionManager.removeSessionImmediate(sessionDbId);
+    } else {
+      this.sessionEventBroadcaster.broadcastSessionCompleted(sessionDbId);
+    }
   }
 
   /**
@@ -1002,16 +1013,22 @@ export class WorkerService {
     // Finalize session (mark completed in DB + drain pending + broadcast). Idempotent.
     // This runs AFTER startSession() has returned, which means any summary/observation
     // writes inside processAgentResponse() are already committed to SQLite synchronously.
+    // Only remove from the in-memory map if finalize succeeds; otherwise leave the
+    // session in place so the 60s orphan reaper can repair the DB inconsistency.
+    let finalized = false;
     try {
       this.sessionCompletionHandler.finalizeSession(sessionDbId);
+      finalized = true;
     } catch (err) {
       logger.warn('SESSION', 'finalizeSession failed during terminateSession', {
         sessionId: sessionDbId, reason
       }, err as Error);
     }
 
-    // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
-    this.sessionManager.removeSessionImmediate(sessionDbId);
+    if (finalized) {
+      // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
+      this.sessionManager.removeSessionImmediate(sessionDbId);
+    }
   }
 
   /**
