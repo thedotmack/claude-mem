@@ -2208,11 +2208,6 @@ export class SessionStore {
 
 
 
-  // REMOVED: cleanupOrphanedSessions - violates "EVERYTHING SHOULD SAVE ALWAYS"
-  // There's no such thing as an "orphaned" session. Sessions are created by hooks
-  // and managed by Claude Code's lifecycle. Worker restarts don't invalidate them.
-  // Marking all active sessions as 'failed' on startup destroys the user's current work.
-
   /**
    * Get session summaries by IDs (for hybrid Chroma search)
    * Returns summaries in specified temporal order

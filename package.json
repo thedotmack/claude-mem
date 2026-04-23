@@ -158,6 +158,7 @@
     "tree-sitter-scss": "^1.0.0",
     "tree-sitter-swift": "^0.7.1",
     "tree-sitter-typescript": "^0.23.2",
+    "ts-prune": "^0.10.3",
     "tsx": "^4.20.6",
     "typescript": "^5.3.0"
   },

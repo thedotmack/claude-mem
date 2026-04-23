@@ -760,15 +760,7 @@ Please see the 3.x to 4.x migration guide for details on how to update your app.
       SELECT * FROM pending_messages
       WHERE session_db_id = ? AND status = 'pending'
       ORDER BY id ASC
-    `).all(e)}retryMessage(e){return this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'pending', worker_pid = NULL
-      WHERE id = ? AND status IN ('pending', 'processing', 'failed')
-    `).run(e).changes>0}resetProcessingToPending(e){return this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'pending', worker_pid = NULL
-      WHERE session_db_id = ? AND status = 'processing'
-    `).run(e).changes}transitionMessagesTo(e,r){let n=Date.now(),s=e==="failed"?"status = 'processing'":"status IN ('pending', 'processing')";return r.sessionDbId===void 0?this.db.prepare(`
+    `).all(e)}transitionMessagesTo(e,r){let n=Date.now(),s=e==="failed"?"status = 'processing'":"status IN ('pending', 'processing')";return r.sessionDbId===void 0?this.db.prepare(`
         UPDATE pending_messages
         SET status = 'failed', failed_at_epoch = ?
         WHERE ${s}
@@ -776,7 +768,7 @@ Please see the 3.x to 4.x migration guide for details on how to update your app.
       UPDATE pending_messages
       SET status = 'failed', failed_at_epoch = ?
       WHERE session_db_id = ? AND ${s}
-    `).run(n,r.sessionDbId).changes}abortMessage(e){return this.db.prepare("DELETE FROM pending_messages WHERE id = ?").run(e).changes>0}markFailed(e){let r=Date.now(),n=this.db.prepare("SELECT retry_count FROM pending_messages WHERE id = ?").get(e);n&&(n.retry_count<this.maxRetries?this.db.prepare(`
+    `).run(n,r.sessionDbId).changes}markFailed(e){let r=Date.now(),n=this.db.prepare("SELECT retry_count FROM pending_messages WHERE id = ?").get(e);n&&(n.retry_count<this.maxRetries?this.db.prepare(`
         UPDATE pending_messages
         SET status = 'pending', retry_count = retry_count + 1, worker_pid = NULL
         WHERE id = ?

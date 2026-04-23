@@ -89,10 +89,6 @@ export class DatabaseManager {
     return this.chromaSync;
   }
 
-  // REMOVED: cleanupOrphanedSessions - violates "EVERYTHING SHOULD SAVE ALWAYS"
-  // Worker restarts don't make sessions orphaned. Sessions are managed by hooks
-  // and exist independently of worker state.
-
   /**
    * Get session by ID (throws if not found)
    */

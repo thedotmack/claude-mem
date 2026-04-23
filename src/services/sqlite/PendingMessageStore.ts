@@ -237,34 +237,6 @@ export class PendingMessageStore {
   }
 
   /**
-   * Retry a specific message (reset to pending)
-   * Works for pending (re-queue), processing (reset stuck), and failed messages
-   */
-  retryMessage(messageId: number): boolean {
-    const stmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'pending', worker_pid = NULL
-      WHERE id = ? AND status IN ('pending', 'processing', 'failed')
-    `);
-    const result = stmt.run(messageId);
-    return result.changes > 0;
-  }
-
-  /**
-   * Reset all processing messages for a session to pending
-   * Used when force-restarting a stuck session
-   */
-  resetProcessingToPending(sessionDbId: number): number {
-    const stmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'pending', worker_pid = NULL
-      WHERE session_db_id = ? AND status = 'processing'
-    `);
-    const result = stmt.run(sessionDbId);
-    return result.changes;
-  }
-
-  /**
    * Transition pending_messages rows to a terminal status — PATHFINDER-2026-04-22
    * Plan 06 Phase 9. One SQL UPDATE path, one place to add a new terminal status
    * later, zero divergence between call sites.
@@ -311,15 +283,6 @@ export class PendingMessageStore {
       WHERE session_db_id = ? AND ${statusClause}
     `);
     return stmt.run(now, filter.sessionDbId).changes;
-  }
-
-  /**
-   * Abort a specific message (delete from queue)
-   */
-  abortMessage(messageId: number): boolean {
-    const stmt = this.db.prepare('DELETE FROM pending_messages WHERE id = ?');
-    const result = stmt.run(messageId);
-    return result.changes > 0;
   }
 
   /**
