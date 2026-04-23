@@ -1,5 +1,5 @@
 import { existsSync, statSync, watch as fsWatch, createReadStream } from 'fs';
-import { basename, join } from 'path';
+import { basename, join, resolve as resolvePath } from 'path';
 import { globSync } from 'glob';
 import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
@@ -84,7 +84,7 @@ export class TranscriptWatcher {
   private processor = new TranscriptEventProcessor();
   private tailers = new Map<string, FileTailer>();
   private state: TranscriptWatchState;
-  private rescanTimers: Array<NodeJS.Timeout> = [];
+  private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
 
   constructor(private config: TranscriptWatchConfig, private statePath: string) {
     this.state = loadWatchState(statePath);
@@ -101,10 +101,10 @@ export class TranscriptWatcher {
       tailer.close();
     }
     this.tailers.clear();
-    for (const timer of this.rescanTimers) {
-      clearInterval(timer);
+    for (const watcher of this.rootWatchers) {
+      watcher.close();
     }
-    this.rescanTimers = [];
+    this.rootWatchers = [];
   }
 
   private async setupWatch(watch: WatchTarget): Promise<void> {
@@ -121,16 +121,65 @@ export class TranscriptWatcher {
       await this.addTailer(filePath, watch, schema, true);
     }
 
-    const rescanIntervalMs = watch.rescanIntervalMs ?? 5000;
-      const timer = setInterval(async () => {
-      const newFiles = this.resolveWatchFiles(resolvedPath);
-      for (const filePath of newFiles) {
-        if (!this.tailers.has(filePath)) {
-          await this.addTailer(filePath, watch, schema, false);
+    // PATHFINDER plan 03 phase 5: 5-second rescan timer replaced by a
+    // recursive fs.watch on the configured root. Requires Node 20+ on Linux
+    // for recursive mode (engines.node >= 20.0.0 — already enforced in
+    // package.json).
+    const watchRoot = this.deepestNonGlobAncestor(resolvedPath);
+    if (!watchRoot || !existsSync(watchRoot)) {
+      logger.debug('TRANSCRIPT', 'Watch root does not exist, skipping fs.watch', { watch: watch.name, watchRoot });
+      return;
+    }
+
+    try {
+      const watcher = fsWatch(watchRoot, { recursive: true, persistent: true }, (event, name) => {
+        if (!name) return;                                  // some events omit filename
+        // Re-resolve the configured path; new files surface here. Restricting
+        // to the configured pattern keeps unrelated edits in the watched root
+        // from triggering tailer churn.
+        const matches = this.resolveWatchFiles(resolvedPath);
+        for (const filePath of matches) {
+          if (!this.tailers.has(filePath)) {
+            void this.addTailer(filePath, watch, schema, false);
+          }
+        }
+      });
+      this.rootWatchers.push(watcher);
+      logger.info('TRANSCRIPT', 'Watching transcript root recursively', { watch: watch.name, watchRoot });
+    } catch (error) {
+      logger.warn('TRANSCRIPT', 'Failed to start recursive fs.watch on transcript root', {
+        watch: watch.name,
+        watchRoot,
+      }, error instanceof Error ? error : undefined);
+    }
+  }
+
+  /**
+   * Return the deepest path component that contains no glob meta-characters.
+   * Used to anchor `fs.watch(recursive: true)` for both literal directories
+   * and patterns like `~/.codex/sessions/**\/*.jsonl`.
+   */
+  private deepestNonGlobAncestor(inputPath: string): string {
+    if (!this.hasGlob(inputPath)) {
+      // Literal path: if it's a file, return its directory; otherwise return as-is.
+      if (existsSync(inputPath)) {
+        try {
+          const stat = statSync(inputPath);
+          return stat.isDirectory() ? inputPath : resolvePath(inputPath, '..');
+        } catch {
+          return resolvePath(inputPath, '..');
         }
       }
-    }, rescanIntervalMs);
-    this.rescanTimers.push(timer);
+      return inputPath;
+    }
+
+    const segments = inputPath.split('/');
+    const literalSegments: string[] = [];
+    for (const segment of segments) {
+      if (/[*?[\]{}()]/.test(segment)) break;
+      literalSegments.push(segment);
+    }
+    return literalSegments.join('/') || '/';
   }
 
   private resolveSchema(watch: WatchTarget): TranscriptSchema | null {

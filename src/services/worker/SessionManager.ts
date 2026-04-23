@@ -16,7 +16,6 @@ import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
 import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { MAX_CONSECUTIVE_SUMMARY_FAILURES } from '../../sdk/prompts.js';
 import { RestartGuard } from './RestartGuard.js';
 
 export class SessionManager {
@@ -165,7 +164,6 @@ export class SessionManager {
       restartGuard: new RestartGuard(),
       processingMessageIds: [],  // CLAIM-CONFIRM: Track message IDs for confirmProcessed()
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
-      consecutiveSummaryFailures: 0,  // Circuit breaker for summary retry loop (#1633)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
       pendingAgentType: null  // (null for main-session messages)
     };
@@ -225,7 +223,8 @@ export class SessionManager {
       prompt_number: data.prompt_number,
       cwd: data.cwd,
       agentId: data.agentId,
-      agentType: data.agentType
+      agentType: data.agentType,
+      toolUseId: data.toolUseId,
     };
 
     try {
@@ -269,17 +268,10 @@ export class SessionManager {
       session = this.initializeSession(sessionDbId);
     }
 
-    // Circuit breaker: skip summarize if too many consecutive failures (#1633).
-    // This prevents the infinite loop where each failed summary spawns a new session
-    // with an ever-growing prompt. Counter is in-memory per ActiveSession — it resets
-    // on worker restart, which is acceptable because session state is already ephemeral.
-    if (session.consecutiveSummaryFailures >= MAX_CONSECUTIVE_SUMMARY_FAILURES) {
-      logger.warn('SESSION', `Circuit breaker OPEN: skipping summarize after ${session.consecutiveSummaryFailures} consecutive failures (#1633)`, {
-        sessionId: sessionDbId,
-        contentSessionId: session.contentSessionId
-      });
-      return;
-    }
+    // PATHFINDER plan 03 phase 3: summary-failure circuit breaker deleted.
+    // Each failed parse is independently marked failed via the retry ladder
+    // in PendingMessageStore.markFailed; a storm of bad parses surfaces as
+    // retry exhaustion, not as silent suppression of further requests.
 
     // CRITICAL: Persist to database FIRST
     const message: PendingMessage = {

@@ -48,9 +48,6 @@ export interface ActiveSession {
   // Track whether the most recent storage operation persisted a summary record.
   // Used by the status endpoint so the Stop hook can detect silent summary loss (#1633).
   lastSummaryStored?: boolean;
-  // Circuit breaker: track consecutive summary failures to prevent infinite retry loops (#1633).
-  // When this reaches MAX_CONSECUTIVE_SUMMARY_FAILURES, further summarize requests are skipped.
-  consecutiveSummaryFailures: number;
   // Subagent identity carried forward from the most recent claimed pending message.
   // When observations are parsed and stored, these fields label the resulting rows
   // so subagent work is attributable. NULL / undefined means the batch came from the main session.
@@ -69,6 +66,9 @@ export interface PendingMessage {
   // Claude Code subagent identity — present only when the hook fired inside a subagent.
   agentId?: string;
   agentType?: string;
+  /** Provider-assigned tool-use id; underpins the
+   * UNIQUE(content_session_id, tool_use_id) idempotency index added in plan 01. */
+  toolUseId?: string;
 }
 
 /**
@@ -90,6 +90,8 @@ export interface ObservationData {
   // Claude Code subagent identity — present only when the hook fired inside a subagent.
   agentId?: string;
   agentType?: string;
+  /** Provider-assigned tool-use id (plan 03 phase 6 idempotency key). */
+  toolUseId?: string;
 }
 
 // ============================================================================

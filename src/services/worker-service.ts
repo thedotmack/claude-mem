@@ -87,6 +87,7 @@ import { SearchManager } from './worker/SearchManager.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
+import { setIngestContext } from './worker/http/shared.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
 
@@ -196,6 +197,14 @@ export class WorkerService {
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
     this.corpusStore = new CorpusStore();
+
+    // Wire ingest helpers (plan 03 phase 0). Worker-internal callers use these
+    // directly instead of HTTP-loopback into our own routes.
+    setIngestContext({
+      sessionManager: this.sessionManager,
+      dbManager: this.dbManager,
+      eventBroadcaster: this.sessionEventBroadcaster,
+    });
 
     // Set callback for when sessions are deleted
     this.sessionManager.setOnSessionDeleted(() => {

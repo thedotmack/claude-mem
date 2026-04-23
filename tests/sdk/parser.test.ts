@@ -11,9 +11,16 @@ mock.module('../../src/services/domain/ModeManager.js', () => ({
   },
 }));
 
-import { parseObservations } from '../../src/sdk/parser.js';
+import { parseAgentXml } from '../../src/sdk/parser.js';
 
-describe('parseObservations', () => {
+function expectObservation(raw: string) {
+  const result = parseAgentXml(raw);
+  if (!result.valid) throw new Error(`expected valid observation, got reason: ${result.reason}`);
+  if (result.kind !== 'observation') throw new Error(`expected observation, got ${result.kind}`);
+  return result.data;
+}
+
+describe('parseAgentXml — observations', () => {
   it('returns a populated observation when title is present', () => {
     const xml = `<observation>
       <type>discovery</type>
@@ -21,7 +28,7 @@ describe('parseObservations', () => {
       <narrative>The token refresh logic skips expired tokens.</narrative>
     </observation>`;
 
-    const result = parseObservations(xml);
+    const result = expectObservation(xml);
 
     expect(result).toHaveLength(1);
     expect(result[0].title).toBe('Found a bug in auth module');
@@ -35,7 +42,7 @@ describe('parseObservations', () => {
       <narrative>Patched the null pointer dereference in session handler.</narrative>
     </observation>`;
 
-    const result = parseObservations(xml);
+    const result = expectObservation(xml);
 
     expect(result).toHaveLength(1);
     expect(result[0].title).toBeNull();
@@ -48,7 +55,7 @@ describe('parseObservations', () => {
       <facts><fact>File limit is hardcoded to 5</fact></facts>
     </observation>`;
 
-    const result = parseObservations(xml);
+    const result = expectObservation(xml);
 
     expect(result).toHaveLength(1);
     expect(result[0].facts).toEqual(['File limit is hardcoded to 5']);
@@ -60,7 +67,7 @@ describe('parseObservations', () => {
       <concepts><concept>dependency-injection</concept></concepts>
     </observation>`;
 
-    const result = parseObservations(xml);
+    const result = expectObservation(xml);
 
     expect(result).toHaveLength(1);
     expect(result[0].concepts).toEqual(['dependency-injection']);
@@ -73,9 +80,8 @@ describe('parseObservations', () => {
       <type>bugfix</type>
     </observation>`;
 
-    const result = parseObservations(xml);
-
-    expect(result).toHaveLength(0);
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(false);
   });
 
   it('filters out ghost observation with empty tags but no text content (#1625)', () => {
@@ -87,9 +93,8 @@ describe('parseObservations', () => {
       <concepts></concepts>
     </observation>`;
 
-    const result = parseObservations(xml);
-
-    expect(result).toHaveLength(0);
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(false);
   });
 
   it('filters out multiple ghost observations while keeping valid ones (#1625)', () => {
@@ -102,7 +107,7 @@ describe('parseObservations', () => {
       <observation><type>refactor</type><title></title><narrative>  </narrative></observation>
     `;
 
-    const result = parseObservations(xml);
+    const result = expectObservation(xml);
 
     expect(result).toHaveLength(1);
     expect(result[0].title).toBe('Real observation');
@@ -116,9 +121,8 @@ describe('parseObservations', () => {
       <subtitle>Only a subtitle, no real content</subtitle>
     </observation>`;
 
-    const result = parseObservations(xml);
-
-    expect(result).toHaveLength(0);
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(false);
   });
 
   it('uses first mode type as fallback when type is missing', () => {
@@ -126,16 +130,19 @@ describe('parseObservations', () => {
       <title>Missing type field</title>
     </observation>`;
 
-    const result = parseObservations(xml);
+    const result = expectObservation(xml);
 
     expect(result).toHaveLength(1);
     // First type in mocked mode is 'bugfix'
     expect(result[0].type).toBe('bugfix');
   });
 
-  it('returns empty array when no observation blocks are present', () => {
-    const result = parseObservations('Some text without any observations.');
-    expect(result).toHaveLength(0);
+  it('returns a fail-fast result when no observation/summary blocks are present', () => {
+    const result = parseAgentXml('Some text without any observations.');
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toMatch(/unknown root|empty/);
+    }
   });
 
   it('parses files_read and files_modified arrays correctly', () => {
@@ -146,7 +153,7 @@ describe('parseObservations', () => {
       <files_modified><file>src/utils.ts</file></files_modified>
     </observation>`;
 
-    const result = parseObservations(xml);
+    const result = expectObservation(xml);
 
     expect(result).toHaveLength(1);
     expect(result[0].files_read).toEqual(['src/utils.ts', 'src/parser.ts']);

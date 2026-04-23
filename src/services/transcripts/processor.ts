@@ -1,6 +1,5 @@
 import path from 'path';
 import { sessionInitHandler } from '../../cli/handlers/session-init.js';
-import { observationHandler } from '../../cli/handlers/observation.js';
 import { fileEditHandler } from '../../cli/handlers/file-edit.js';
 import { sessionCompleteHandler } from '../../cli/handlers/session-complete.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
@@ -12,6 +11,7 @@ import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
 import { expandHomePath } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { ingestObservation } from '../worker/http/shared.js';
 
 interface SessionState {
   sessionId: string;
@@ -20,14 +20,6 @@ interface SessionState {
   project?: string;
   lastUserMessage?: string;
   lastAssistantMessage?: string;
-  pendingTools: Map<string, { name?: string; input?: unknown }>;
-}
-
-interface PendingTool {
-  id?: string;
-  name?: string;
-  input?: unknown;
-  response?: unknown;
 }
 
 export class TranscriptEventProcessor {
@@ -56,7 +48,6 @@ export class TranscriptEventProcessor {
       session = {
         sessionId,
         platformSource: normalizePlatformSource(watch.name),
-        pendingTools: new Map()
       };
       this.sessions.set(key, session);
     }
@@ -196,12 +187,6 @@ export class TranscriptEventProcessor {
     const toolInput = this.maybeParseJson(fields.toolInput);
     const toolResponse = this.maybeParseJson(fields.toolResponse);
 
-    const pending: PendingTool = { id: toolId, name: toolName, input: toolInput, response: toolResponse };
-
-    if (toolId) {
-      session.pendingTools.set(toolId, { name: pending.name, input: pending.input });
-    }
-
     if (toolName === 'apply_patch' && typeof toolInput === 'string') {
       const files = this.parseApplyPatchFiles(toolInput);
       for (const filePath of files) {
@@ -212,11 +197,17 @@ export class TranscriptEventProcessor {
       }
     }
 
+    // PATHFINDER plan 03 phase 6: per-process tool pairing Map deleted.
+    // Each event emits independently; the database's
+    // UNIQUE(content_session_id, tool_use_id) index makes the insert
+    // idempotent so duplicate observations from overlapping
+    // tool_use + tool_result lines collapse to a single row.
     if (toolResponse !== undefined && toolName) {
       await this.sendObservation(session, {
         toolName,
         toolInput,
-        toolResponse
+        toolResponse,
+        toolUseId: toolId,
       });
     }
   }
@@ -225,22 +216,14 @@ export class TranscriptEventProcessor {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolResponse = this.maybeParseJson(fields.toolResponse);
+    const toolInput = this.maybeParseJson(fields.toolInput);
 
-    let toolInput: unknown = this.maybeParseJson(fields.toolInput);
-    let name = toolName;
-
-    if (toolId && session.pendingTools.has(toolId)) {
-      const pending = session.pendingTools.get(toolId)!;
-      toolInput = pending.input ?? toolInput;
-      name = name ?? pending.name;
-      session.pendingTools.delete(toolId);
-    }
-
-    if (name) {
+    if (toolName) {
       await this.sendObservation(session, {
-        toolName: name,
+        toolName,
         toolInput,
-        toolResponse
+        toolResponse,
+        toolUseId: toolId,
       });
     }
   }
@@ -249,14 +232,23 @@ export class TranscriptEventProcessor {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     if (!toolName) return;
 
-    await observationHandler.execute({
-      sessionId: session.sessionId,
+    // PATHFINDER plan 03 phase 7: replace HTTP loopback (worker → its own
+    // /api/sessions/observations endpoint) with a direct in-process call to
+    // ingestObservation. Same implementation backs the cross-process HTTP
+    // route handler (one helper, N callers).
+    const result = ingestObservation({
+      contentSessionId: session.sessionId,
       cwd: session.cwd ?? process.cwd(),
       toolName,
       toolInput: this.maybeParseJson(fields.toolInput),
       toolResponse: this.maybeParseJson(fields.toolResponse),
-      platform: session.platformSource
+      platformSource: session.platformSource,
+      toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
     });
+
+    if (!result.ok) {
+      throw new Error(`ingestObservation failed: ${result.reason}`);
+    }
   }
 
   private async sendFileEdit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
@@ -277,12 +269,10 @@ export class TranscriptEventProcessor {
     const trimmed = value.trim();
     if (!trimmed) return value;
     if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return value;
-    try {
-      return JSON.parse(trimmed);
-    } catch (error: unknown) {
-      logger.debug('WORKER', 'Failed to parse JSON string', { length: trimmed.length }, error instanceof Error ? error : undefined);
-      return value;
-    }
+    // PATHFINDER plan 03 phase 7: fail-fast. Strings that look like JSON but
+    // do not parse are a contract violation, not a passthrough — throw so the
+    // upstream `try` in `handleLine` logs and the caller decides.
+    return JSON.parse(trimmed);
   }
 
   private parseApplyPatchFiles(patch: string): string[] {
@@ -314,7 +304,6 @@ export class TranscriptEventProcessor {
       platform: session.platformSource
     });
     await this.updateContext(session, watch);
-    session.pendingTools.clear();
     const key = this.getSessionKey(watch, session.sessionId);
     this.sessions.delete(key);
   }

@@ -84,24 +84,32 @@ export class PendingMessageStore {
   }
 
   /**
-   * Enqueue a new message (persist before processing)
-   * @returns The database ID of the persisted message
+   * Enqueue a new message (persist before processing).
+   *
+   * Uses `INSERT OR IGNORE` so duplicate (content_session_id, tool_use_id)
+   * pairs collapse to a single row — the UNIQUE INDEX added in plan 01 phase 1
+   * is the authority on tool-use idempotency. Per principle 3 (UNIQUE
+   * constraint over dedup window), we don't time-gate duplicates.
+   *
+   * @returns The database ID of the persisted message, or 0 when the insert
+   *          was suppressed by ON CONFLICT (caller must handle 0 explicitly).
    */
   enqueue(sessionDbId: number, contentSessionId: string, message: PendingMessage): number {
     const now = Date.now();
     const stmt = this.db.prepare(`
-      INSERT INTO pending_messages (
-        session_db_id, content_session_id, message_type,
+      INSERT OR IGNORE INTO pending_messages (
+        session_db_id, content_session_id, tool_use_id, message_type,
         tool_name, tool_input, tool_response, cwd,
         last_assistant_message,
         prompt_number, status, retry_count, created_at_epoch,
         agent_type, agent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
     `);
 
     const result = stmt.run(
       sessionDbId,
       contentSessionId,
+      message.toolUseId ?? null,
       message.type,
       message.tool_name || null,
       message.tool_input ? JSON.stringify(message.tool_input) : null,
@@ -115,6 +123,38 @@ export class PendingMessageStore {
     );
 
     return result.lastInsertRowid as number;
+  }
+
+  /**
+   * PATHFINDER plan 03 phase 6: pair tool_use rows with their tool_result by
+   * (content_session_id, tool_use_id) at read time. Replaces the per-process
+   * `pendingTools` Map deleted from `src/services/transcripts/processor.ts`.
+   *
+   * Returns observation rows whose tool_use_id is non-null and which have at
+   * least one prior matching row in the same session (the UNIQUE INDEX
+   * guarantees at most one logical pair survives per id).
+   */
+  pairToolUsesByJoin(contentSessionId: string): Array<{
+    tool_use_id: string;
+    tool_use_payload: string | null;
+    tool_result_payload: string | null;
+  }> {
+    const stmt = this.db.prepare(`
+      SELECT u.tool_use_id   AS tool_use_id,
+             u.tool_input    AS tool_use_payload,
+             r.tool_response AS tool_result_payload
+        FROM pending_messages u
+        JOIN pending_messages r USING (content_session_id, tool_use_id)
+       WHERE u.content_session_id = ?
+         AND u.tool_use_id IS NOT NULL
+         AND u.tool_input IS NOT NULL
+         AND r.tool_response IS NOT NULL
+    `);
+    return stmt.all(contentSessionId) as Array<{
+      tool_use_id: string;
+      tool_use_payload: string | null;
+      tool_result_payload: string | null;
+    }>;
   }
 
   /**
