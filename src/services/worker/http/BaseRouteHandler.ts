@@ -48,20 +48,6 @@ export abstract class BaseRouteHandler {
   }
 
   /**
-   * Validate required body parameters
-   * Returns true if all required params present, sends 400 error otherwise
-   */
-  protected validateRequired(req: Request, res: Response, params: string[]): boolean {
-    for (const param of params) {
-      if (req.body[param] === undefined || req.body[param] === null) {
-        this.badRequest(res, `Missing ${param}`);
-        return false;
-      }
-    }
-    return true;
-  }
-
-  /**
    * Send 400 Bad Request response
    */
   protected badRequest(res: Response, message: string): void {

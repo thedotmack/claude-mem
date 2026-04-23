@@ -342,7 +342,7 @@ describe('Zombie Agent Prevention', () => {
       expect(pendingStore.hasAnyPendingWork()).toBe(true);
 
       // Terminate: mark abandoned (same as terminateSession does)
-      const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionId);
+      const abandoned = pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sessionId });
       expect(abandoned).toBe(2);
 
       // Spinner should stop: no pending work remains
@@ -357,7 +357,7 @@ describe('Zombie Agent Prevention', () => {
       expect(pendingStore.getPendingCount(sessionId)).toBe(0);
 
       // Terminate with nothing to abandon
-      const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionId);
+      const abandoned = pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sessionId });
       expect(abandoned).toBe(0);
 
       // Still no pending work
@@ -369,11 +369,11 @@ describe('Zombie Agent Prevention', () => {
       enqueueTestMessage(sessionId, 'content-terminate-idempotent');
 
       // First terminate
-      const first = pendingStore.markAllSessionMessagesAbandoned(sessionId);
+      const first = pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sessionId });
       expect(first).toBe(1);
 
       // Second terminate — already failed, nothing to mark
-      const second = pendingStore.markAllSessionMessagesAbandoned(sessionId);
+      const second = pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sessionId });
       expect(second).toBe(0);
 
       expect(pendingStore.hasAnyPendingWork()).toBe(false);
@@ -409,9 +409,9 @@ describe('Zombie Agent Prevention', () => {
       expect(pendingStore.hasAnyPendingWork()).toBe(true);
 
       // Terminate all sessions
-      pendingStore.markAllSessionMessagesAbandoned(sid1);
-      pendingStore.markAllSessionMessagesAbandoned(sid2);
-      pendingStore.markAllSessionMessagesAbandoned(sid3);
+      pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sid1 });
+      pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sid2 });
+      pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sid3 });
 
       // Spinner must stop
       expect(pendingStore.hasAnyPendingWork()).toBe(false);
@@ -425,7 +425,7 @@ describe('Zombie Agent Prevention', () => {
       enqueueTestMessage(sid2, 'content-isolate-2');
 
       // Terminate only session 1
-      pendingStore.markAllSessionMessagesAbandoned(sid1);
+      pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sid1 });
 
       // Session 2 still has work
       expect(pendingStore.getPendingCount(sid1)).toBe(0);
@@ -449,7 +449,7 @@ describe('Zombie Agent Prevention', () => {
       expect(pendingStore.getPendingCount(sessionId)).toBe(2);
 
       // Terminate should mark BOTH as failed
-      const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionId);
+      const abandoned = pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sessionId });
       expect(abandoned).toBe(2);
       expect(pendingStore.hasAnyPendingWork()).toBe(false);
     });
@@ -469,7 +469,7 @@ describe('Zombie Agent Prevention', () => {
       expect(pendingStore.getPendingCount(sessionId)).toBe(3);
 
       // THE INVARIANT: after terminate, hasAnyPendingWork MUST be false
-      pendingStore.markAllSessionMessagesAbandoned(sessionId);
+      pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sessionId });
       expect(pendingStore.hasAnyPendingWork()).toBe(false);
       expect(pendingStore.getPendingCount(sessionId)).toBe(0);
     });

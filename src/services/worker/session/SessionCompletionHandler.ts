@@ -41,7 +41,7 @@ export class SessionCompletionHandler {
     // In practice this race is rare (zero orphans over 23 days, 3400+ observations).
     try {
       const pendingStore = this.sessionManager.getPendingMessageStore();
-      const drainedCount = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+      const drainedCount = pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
       if (drainedCount > 0) {
         logger.warn('SESSION', `Drained ${drainedCount} orphaned pending messages on session completion`, {
           sessionId: sessionDbId, drainedCount

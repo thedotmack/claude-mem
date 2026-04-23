@@ -5,11 +5,16 @@
  */
 
 import express, { Request, Response } from 'express';
+import { z } from 'zod';
 import { openSync, fstatSync, readSync, closeSync, existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { validateBody } from '../middleware/validateBody.js';
+
+// Plan 06 Phase 3 — per-route Zod schema. The clear-logs endpoint takes no body.
+const clearLogsSchema = z.object({}).passthrough();
 
 /**
  * Read the last N lines from a file without loading the entire file into memory.
@@ -99,7 +104,7 @@ export class LogsRoutes extends BaseRouteHandler {
 
   setupRoutes(app: express.Application): void {
     app.get('/api/logs', this.handleGetLogs.bind(this));
-    app.post('/api/logs/clear', this.handleClearLogs.bind(this));
+    app.post('/api/logs/clear', validateBody(clearLogsSchema), this.handleClearLogs.bind(this));
   }
 
   /**

@@ -6,9 +6,18 @@
  */
 
 import express, { Request, Response } from 'express';
+import { z } from 'zod';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
+
+// Plan 06 Phase 3 — per-route Zod schema.
+const saveMemorySchema = z.object({
+  text: z.string().trim().min(1),
+  title: z.string().optional(),
+  project: z.string().optional(),
+}).passthrough();
 
 export class MemoryRoutes extends BaseRouteHandler {
   constructor(
@@ -19,7 +28,7 @@ export class MemoryRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
-    app.post('/api/memory/save', this.handleSaveMemory.bind(this));
+    app.post('/api/memory/save', validateBody(saveMemorySchema), this.handleSaveMemory.bind(this));
   }
 
   /**
@@ -27,13 +36,8 @@ export class MemoryRoutes extends BaseRouteHandler {
    * Body: { text: string, title?: string, project?: string }
    */
   private handleSaveMemory = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { text, title, project } = req.body;
+    const { text, title, project } = req.body as z.infer<typeof saveMemorySchema>;
     const targetProject = project || this.defaultProject;
-
-    if (!text || typeof text !== 'string' || text.trim().length === 0) {
-      this.badRequest(res, 'text is required and must be non-empty');
-      return;
-    }
 
     const sessionStore = this.dbManager.getSessionStore();
     const chromaSync = this.dbManager.getChromaSync();

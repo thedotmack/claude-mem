@@ -6,11 +6,21 @@
  */
 
 import express, { Request, Response } from 'express';
+import { z } from 'zod';
 import { SearchManager } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
+
+// Plan 06 Phase 3 — per-route Zod schema. The semantic-context endpoint
+// also accepts query-string fallbacks, so the body itself is fully optional.
+const semanticContextSchema = z.object({
+  q: z.string().optional(),
+  project: z.string().optional(),
+  limit: z.union([z.string(), z.number()]).optional(),
+}).passthrough();
 
 export class SearchRoutes extends BaseRouteHandler {
   constructor(
@@ -40,7 +50,7 @@ export class SearchRoutes extends BaseRouteHandler {
     app.get('/api/context/timeline', this.handleGetContextTimeline.bind(this));
     app.get('/api/context/preview', this.handleContextPreview.bind(this));
     app.get('/api/context/inject', this.handleContextInject.bind(this));
-    app.post('/api/context/semantic', this.handleSemanticContext.bind(this));
+    app.post('/api/context/semantic', validateBody(semanticContextSchema), this.handleSemanticContext.bind(this));
 
     // Timeline and help endpoints
     app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));

@@ -10,7 +10,7 @@
 
 import http from 'http';
 import { logger } from '../../utils/logger.js';
-import { stopSupervisor } from '../../supervisor/index.js';
+import { getSupervisor } from '../../supervisor/index.js';
 
 export interface ShutdownableService {
   shutdownAll(): Promise<void>;
@@ -80,7 +80,10 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
   }
 
   // STEP 6: Supervisor handles tracked child termination, PID cleanup, and stale sockets.
-  await stopSupervisor();
+  // Plan 06 Phase 8 — call the supervisor singleton directly; the wrapper
+  // re-export from supervisor/index.ts was deleted (one wrapper, one caller,
+  // no value).
+  await getSupervisor().stop();
 
   logger.info('SYSTEM', 'Worker shutdown complete');
 }

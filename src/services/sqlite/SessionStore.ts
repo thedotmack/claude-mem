@@ -660,7 +660,7 @@ export class SessionStore {
 
   /**
    * Add failed_at_epoch column to pending_messages (migration 20)
-   * Used by markSessionMessagesFailed() for error recovery tracking
+   * Used by transitionMessagesTo() for error recovery tracking
    */
   private addFailedAtEpochColumn(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(20) as SchemaVersion | undefined;

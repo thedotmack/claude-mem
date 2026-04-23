@@ -146,10 +146,6 @@ export async function startSupervisor(): Promise<void> {
   await supervisorSingleton.start();
 }
 
-export async function stopSupervisor(): Promise<void> {
-  await supervisorSingleton.stop();
-}
-
 export function getSupervisor(): Supervisor {
   return supervisorSingleton;
 }

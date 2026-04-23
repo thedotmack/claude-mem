@@ -6,6 +6,7 @@
  */
 
 import express, { Request, Response } from 'express';
+import { z } from 'zod';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
@@ -18,8 +19,62 @@ import { SessionManager } from '../../SessionManager.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { validateBody } from '../middleware/validateBody.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
+
+// Plan 06 Phase 3 — per-route Zod schemas. Coercions match the legacy
+// behaviour where MCP clients sometimes send arrays as JSON-encoded strings
+// or comma-separated strings.
+const integerArrayLike = z.preprocess((value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // not JSON, fall through to comma split
+    }
+    // Keep NaN values so the inner z.number().int() schema rejects them
+    // — coercion does not silently drop garbage input.
+    return value.split(',').map((part) => Number(part.trim()));
+  }
+  return value;
+}, z.array(z.number().int()));
+
+const stringArrayLike = z.preprocess((value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // not JSON, fall through to comma split
+    }
+    return value.split(',').map((part) => part.trim()).filter(Boolean);
+  }
+  return value;
+}, z.array(z.string()));
+
+const observationsBatchSchema = z.object({
+  ids: integerArrayLike,
+  orderBy: z.enum(['date_desc', 'date_asc']).optional(),
+  limit: z.number().int().positive().optional(),
+  project: z.string().optional(),
+}).passthrough();
+
+const sdkSessionsBatchSchema = z.object({
+  memorySessionIds: stringArrayLike,
+}).passthrough();
+
+const setProcessingSchema = z.object({}).passthrough();
+
+const importSchema = z.object({
+  sessions: z.array(z.unknown()).optional(),
+  summaries: z.array(z.unknown()).optional(),
+  observations: z.array(z.unknown()).optional(),
+  prompts: z.array(z.unknown()).optional(),
+}).passthrough();
 
 export class DataRoutes extends BaseRouteHandler {
   constructor(
@@ -42,9 +97,9 @@ export class DataRoutes extends BaseRouteHandler {
     // Fetch by ID endpoints
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
     app.get('/api/observations/by-file', this.handleGetObservationsByFile.bind(this));
-    app.post('/api/observations/batch', this.handleGetObservationsByIds.bind(this));
+    app.post('/api/observations/batch', validateBody(observationsBatchSchema), this.handleGetObservationsByIds.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
-    app.post('/api/sdk-sessions/batch', this.handleGetSdkSessionsByIds.bind(this));
+    app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
 
     // Metadata endpoints
@@ -53,16 +108,10 @@ export class DataRoutes extends BaseRouteHandler {
 
     // Processing status endpoints
     app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
-    app.post('/api/processing', this.handleSetProcessing.bind(this));
-
-    // Pending queue management endpoints
-    app.get('/api/pending-queue', this.handleGetPendingQueue.bind(this));
-    app.post('/api/pending-queue/process', this.handleProcessPendingQueue.bind(this));
-    app.delete('/api/pending-queue/failed', this.handleClearFailedQueue.bind(this));
-    app.delete('/api/pending-queue/all', this.handleClearAllQueue.bind(this));
+    app.post('/api/processing', validateBody(setProcessingSchema), this.handleSetProcessing.bind(this));
 
     // Import endpoint
-    app.post('/api/import', this.handleImport.bind(this));
+    app.post('/api/import', validateBody(importSchema), this.handleImport.bind(this));
   }
 
   /**
@@ -139,26 +188,10 @@ export class DataRoutes extends BaseRouteHandler {
    * Body: { ids: number[], orderBy?: 'date_desc' | 'date_asc', limit?: number, project?: string }
    */
   private handleGetObservationsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    let { ids, orderBy, limit, project } = req.body;
-
-    // Coerce string-encoded arrays from MCP clients (e.g. "[1,2,3]" or "1,2,3")
-    if (typeof ids === 'string') {
-      try { ids = JSON.parse(ids); } catch { ids = ids.split(',').map(Number); }
-    }
-
-    if (!ids || !Array.isArray(ids)) {
-      this.badRequest(res, 'ids must be an array of numbers');
-      return;
-    }
+    const { ids, orderBy, limit, project } = req.body as z.infer<typeof observationsBatchSchema>;
 
     if (ids.length === 0) {
       res.json([]);
-      return;
-    }
-
-    // Validate all IDs are numbers
-    if (!ids.every(id => typeof id === 'number' && Number.isInteger(id))) {
-      this.badRequest(res, 'All ids must be integers');
       return;
     }
 
@@ -193,17 +226,7 @@ export class DataRoutes extends BaseRouteHandler {
    * Body: { memorySessionIds: string[] }
    */
   private handleGetSdkSessionsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    let { memorySessionIds } = req.body;
-
-    // Coerce string-encoded arrays from MCP clients (e.g. '["a","b"]' or "a,b")
-    if (typeof memorySessionIds === 'string') {
-      try { memorySessionIds = JSON.parse(memorySessionIds); } catch { memorySessionIds = memorySessionIds.split(',').map((s: string) => s.trim()); }
-    }
-
-    if (!Array.isArray(memorySessionIds)) {
-      this.badRequest(res, 'memorySessionIds must be an array');
-      return;
-    }
+    const { memorySessionIds } = req.body as z.infer<typeof sdkSessionsBatchSchema>;
 
     const store = this.dbManager.getSessionStore();
     const sessions = store.getSdkSessionsBySessionIds(memorySessionIds);
@@ -464,98 +487,6 @@ export class DataRoutes extends BaseRouteHandler {
     res.json({
       success: true,
       stats
-    });
-  });
-
-  /**
-   * Get pending queue contents
-   * GET /api/pending-queue
-   * Returns all pending, processing, and failed messages with optional recently processed
-   */
-  private handleGetPendingQueue = this.wrapHandler((req: Request, res: Response): void => {
-    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
-    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-
-    // Get queue contents (pending, processing, failed)
-    const queueMessages = pendingStore.getQueueMessages();
-
-    // Get recently processed (last 30 min, up to 20)
-    const recentlyProcessed = pendingStore.getRecentlyProcessed(20, 30);
-
-    // Get stuck message count (rows the self-healing claim would reclaim)
-    const stuckCount = pendingStore.getStuckCount();
-
-    // Get sessions with pending work
-    const sessionsWithPending = pendingStore.getSessionsWithPendingMessages();
-
-    res.json({
-      queue: {
-        messages: queueMessages,
-        totalPending: queueMessages.filter((m: { status: string }) => m.status === 'pending').length,
-        totalProcessing: queueMessages.filter((m: { status: string }) => m.status === 'processing').length,
-        totalFailed: queueMessages.filter((m: { status: string }) => m.status === 'failed').length,
-        stuckCount
-      },
-      recentlyProcessed,
-      sessionsWithPendingWork: sessionsWithPending
-    });
-  });
-
-  /**
-   * Process pending queue
-   * POST /api/pending-queue/process
-   * Body: { sessionLimit?: number } - defaults to 10
-   * Starts SDK agents for sessions with pending messages
-   */
-  private handleProcessPendingQueue = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const sessionLimit = Math.min(
-      Math.max(parseInt(req.body.sessionLimit, 10) || 10, 1),
-      100 // Max 100 sessions at once
-    );
-
-    const result = await this.workerService.processPendingQueues(sessionLimit);
-
-    res.json({
-      success: true,
-      ...result
-    });
-  });
-
-  /**
-   * Clear all failed messages from the queue
-   * DELETE /api/pending-queue/failed
-   * Returns the number of messages cleared
-   */
-  private handleClearFailedQueue = this.wrapHandler((req: Request, res: Response): void => {
-    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
-    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-
-    const clearedCount = pendingStore.clearFailed();
-
-    logger.info('QUEUE', 'Cleared failed queue messages', { clearedCount });
-
-    res.json({
-      success: true,
-      clearedCount
-    });
-  });
-
-  /**
-   * Clear all messages from the queue (pending, processing, and failed)
-   * DELETE /api/pending-queue/all
-   * Returns the number of messages cleared
-   */
-  private handleClearAllQueue = this.wrapHandler((req: Request, res: Response): void => {
-    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
-    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-
-    const clearedCount = pendingStore.clearAll();
-
-    logger.warn('QUEUE', 'Cleared ALL queue messages (pending, processing, failed)', { clearedCount });
-
-    res.json({
-      success: true,
-      clearedCount
     });
   });
 

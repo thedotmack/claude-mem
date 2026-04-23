@@ -124,7 +124,7 @@ export class SessionRoutes extends BaseRouteHandler {
         session.abortController.abort();
       }
       const pendingStore = this.sessionManager.getPendingMessageStore();
-      pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+      pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
       this.sessionManager.removeSessionImmediate(sessionDbId);
       return;
     }
@@ -256,7 +256,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // Mark all processing messages as failed so they can be retried or abandoned
         const pendingStore = this.sessionManager.getPendingMessageStore();
         try {
-          const failedCount = pendingStore.markSessionMessagesFailed(session.sessionDbId);
+          const failedCount = pendingStore.transitionMessagesTo('failed', { sessionDbId: session.sessionDbId });
           if (failedCount > 0) {
             logger.error('SESSION', `Marked messages as failed after generator error`, {
               sessionId: session.sessionDbId,
@@ -378,18 +378,46 @@ export class SessionRoutes extends BaseRouteHandler {
 
   setupRoutes(app: express.Application): void {
     // Legacy session endpoints (use sessionDbId)
-    app.post('/sessions/:sessionDbId/init', this.handleSessionInit.bind(this));
-    app.post('/sessions/:sessionDbId/observations', this.handleObservations.bind(this));
-    app.post('/sessions/:sessionDbId/summarize', this.handleSummarize.bind(this));
+    app.post(
+      '/sessions/:sessionDbId/init',
+      validateBody(SessionRoutes.legacySessionInitSchema),
+      this.handleSessionInit.bind(this)
+    );
+    app.post(
+      '/sessions/:sessionDbId/observations',
+      validateBody(SessionRoutes.legacyObservationsSchema),
+      this.handleObservations.bind(this)
+    );
+    app.post(
+      '/sessions/:sessionDbId/summarize',
+      validateBody(SessionRoutes.legacySummarizeSchema),
+      this.handleSummarize.bind(this)
+    );
     app.get('/sessions/:sessionDbId/status', this.handleSessionStatus.bind(this));
     app.delete('/sessions/:sessionDbId', this.handleSessionDelete.bind(this));
     app.post('/sessions/:sessionDbId/complete', this.handleSessionComplete.bind(this));
 
     // New session endpoints (use contentSessionId)
-    app.post('/api/sessions/init', this.handleSessionInitByClaudeId.bind(this));
-    app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
-    app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
-    app.post('/api/sessions/complete', this.handleCompleteByClaudeId.bind(this));
+    app.post(
+      '/api/sessions/init',
+      validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
+      this.handleSessionInitByClaudeId.bind(this)
+    );
+    app.post(
+      '/api/sessions/observations',
+      validateBody(SessionRoutes.observationsByClaudeIdSchema),
+      this.handleObservationsByClaudeId.bind(this)
+    );
+    app.post(
+      '/api/sessions/summarize',
+      validateBody(SessionRoutes.summarizeByClaudeIdSchema),
+      this.handleSummarizeByClaudeId.bind(this)
+    );
+    app.post(
+      '/api/sessions/complete',
+      validateBody(SessionRoutes.completeByClaudeIdSchema),
+      this.handleCompleteByClaudeId.bind(this)
+    );
     app.get('/api/sessions/status', this.handleStatusByClaudeId.bind(this));
 
     // Plan 05 Phase 3 — blocking session-end endpoint. Replaces the
@@ -403,12 +431,61 @@ export class SessionRoutes extends BaseRouteHandler {
     );
   }
 
-  // Plan 05 Phase 3 — Zod schema for the blocking session-end endpoint.
-  // Plan 06 will move schemas into a per-route registry; for now they live
-  // inline at the top of the route file that consumes them.
+  // Plan 06 Phase 3 — per-route Zod schemas. Schemas live at the top of the
+  // owning route file and gate body validation via `validateBody`.
+  // `passthrough()` preserves optional/forwarded fields the handlers
+  // already accept (e.g. cwd, agentId, agentType, platformSource).
   private static readonly sessionEndSchema = z.object({
     sessionId: z.string().min(1),
   });
+
+  private static readonly legacySessionInitSchema = z.object({
+    userPrompt: z.string().optional(),
+    promptNumber: z.number().int().optional(),
+  }).passthrough();
+
+  private static readonly legacyObservationsSchema = z.object({
+    tool_name: z.string().min(1),
+    tool_input: z.unknown().optional(),
+    tool_response: z.unknown().optional(),
+    prompt_number: z.number().int().optional(),
+    cwd: z.string().optional(),
+  }).passthrough();
+
+  private static readonly legacySummarizeSchema = z.object({
+    last_assistant_message: z.string().optional(),
+  }).passthrough();
+
+  private static readonly sessionInitByClaudeIdSchema = z.object({
+    contentSessionId: z.string().min(1),
+    project: z.string().optional(),
+    prompt: z.string().optional(),
+    platformSource: z.string().optional(),
+    customTitle: z.string().optional(),
+  }).passthrough();
+
+  private static readonly observationsByClaudeIdSchema = z.object({
+    contentSessionId: z.string().min(1),
+    tool_name: z.string().min(1),
+    tool_input: z.unknown().optional(),
+    tool_response: z.unknown().optional(),
+    cwd: z.string().optional(),
+    agentId: z.string().optional(),
+    agentType: z.string().optional(),
+    platformSource: z.string().optional(),
+  }).passthrough();
+
+  private static readonly summarizeByClaudeIdSchema = z.object({
+    contentSessionId: z.string().min(1),
+    last_assistant_message: z.string().optional(),
+    agentId: z.string().optional(),
+    platformSource: z.string().optional(),
+  }).passthrough();
+
+  private static readonly completeByClaudeIdSchema = z.object({
+    contentSessionId: z.string().min(1),
+    platformSource: z.string().optional(),
+  }).passthrough();
 
   // Plan 05 Phase 3 — server-side timeout for the blocking summary wait.
   // 30s is a starting point per `05-hook-surface.md` Phase 3 — revisit once
@@ -639,10 +716,6 @@ export class SessionRoutes extends BaseRouteHandler {
     const platformSource = normalizePlatformSource(req.body.platformSource);
     const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : '';
 
-    if (!contentSessionId) {
-      return this.badRequest(res, 'Missing contentSessionId');
-    }
-
     // Load skip tools from settings
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const skipTools = new Set(settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim()).filter(Boolean));
@@ -742,10 +815,6 @@ export class SessionRoutes extends BaseRouteHandler {
     const { contentSessionId, last_assistant_message, agentId } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
 
-    if (!contentSessionId) {
-      return this.badRequest(res, 'Missing contentSessionId');
-    }
-
     // Belt-and-suspenders: reject summarize requests from subagent context.
     // Gate on agentId only — agentType alone indicates a main session started with
     // --agent, which still owns its summary. Mirrors the hook-side guard in summarize.ts.
@@ -837,10 +906,6 @@ export class SessionRoutes extends BaseRouteHandler {
 
     logger.info('HTTP', '→ POST /api/sessions/complete', { contentSessionId });
 
-    if (!contentSessionId) {
-      return this.badRequest(res, 'Missing contentSessionId');
-    }
-
     const store = this.dbManager.getSessionStore();
 
     // Look up sessionDbId from contentSessionId (createSDKSession is idempotent)
@@ -900,11 +965,6 @@ export class SessionRoutes extends BaseRouteHandler {
       prompt_length: prompt?.length,
       customTitle
     });
-
-    // Validate required parameters
-    if (!this.validateRequired(req, res, ['contentSessionId'])) {
-      return;
-    }
 
     const store = this.dbManager.getSessionStore();
 

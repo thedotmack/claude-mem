@@ -899,7 +899,7 @@ export class WorkerService {
 
     // No fallback or both failed: mark messages abandoned and remove session so queue doesn't grow
     const pendingStore = this.sessionManager.getPendingMessageStore();
-    const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+    const abandoned = pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
     if (abandoned > 0) {
       logger.warn('SDK', 'No fallback available; marked pending messages abandoned', {
         sessionId: sessionDbId,
@@ -922,7 +922,7 @@ export class WorkerService {
    */
   private terminateSession(sessionDbId: number, reason: string): void {
     const pendingStore = this.sessionManager.getPendingMessageStore();
-    const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+    const abandoned = pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
 
     logger.info('SYSTEM', 'Session terminated', {
       sessionId: sessionDbId,
