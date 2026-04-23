@@ -54,7 +54,6 @@ export abstract class BaseSearchStrategy implements SearchStrategy {
         prompts: []
       },
       usedChroma: strategy === 'chroma' || strategy === 'hybrid',
-      fellBack: false,
       strategy
     };
   }

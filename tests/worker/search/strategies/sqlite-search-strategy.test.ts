@@ -116,7 +116,6 @@ describe('SQLiteSearchStrategy', () => {
       const result = await strategy.search(options);
 
       expect(result.usedChroma).toBe(false);
-      expect(result.fellBack).toBe(false);
       expect(result.strategy).toBe('sqlite');
       expect(result.results.observations).toHaveLength(1);
       expect(result.results.sessions).toHaveLength(1);

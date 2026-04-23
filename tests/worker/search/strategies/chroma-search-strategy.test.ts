@@ -130,7 +130,6 @@ describe('ChromaSearchStrategy', () => {
       const result = await strategy.search(options);
 
       expect(result.usedChroma).toBe(true);
-      expect(result.fellBack).toBe(false);
       expect(result.strategy).toBe('chroma');
     });
 
@@ -310,23 +309,18 @@ describe('ChromaSearchStrategy', () => {
       expect(mockSessionStore.getObservationsByIds).not.toHaveBeenCalled();
     });
 
-    it('should handle Chroma errors gracefully (returns usedChroma: false)', async () => {
+    it('should propagate Chroma errors (fail-fast, no silent fallback)', async () => {
       mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma connection failed')));
 
       const options: StrategySearchOptions = {
         query: 'test query'
       };
 
-      const result = await strategy.search(options);
-
-      expect(result.usedChroma).toBe(false);
-      expect(result.fellBack).toBe(false);
-      expect(result.results.observations).toHaveLength(0);
-      expect(result.results.sessions).toHaveLength(0);
-      expect(result.results.prompts).toHaveLength(0);
+      // Fail-fast: the orchestrator wraps this into a ChromaUnavailableError (HTTP 503).
+      await expect(strategy.search(options)).rejects.toThrow('Chroma connection failed');
     });
 
-    it('should handle SQLite hydration errors gracefully', async () => {
+    it('should propagate SQLite hydration errors (fail-fast)', async () => {
       mockSessionStore.getObservationsByIds = mock(() => {
         throw new Error('SQLite error');
       });
@@ -336,10 +330,7 @@ describe('ChromaSearchStrategy', () => {
         searchType: 'observations'
       };
 
-      const result = await strategy.search(options);
-
-      expect(result.usedChroma).toBe(false); // Error occurred
-      expect(result.results.observations).toHaveLength(0);
+      await expect(strategy.search(options)).rejects.toThrow('SQLite error');
     });
 
     it('should correctly align IDs with metadatas when Chroma returns duplicate sqlite_ids (multiple docs per observation)', async () => {

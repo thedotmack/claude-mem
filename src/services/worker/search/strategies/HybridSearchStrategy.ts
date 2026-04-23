@@ -79,20 +79,8 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     const ids = metadataResults.map(obs => obs.id);
 
-    try {
-      return await this.rankAndHydrate(concept, ids, limit);
-    } catch (error) {
-      const errorObj = error instanceof Error ? error : new Error(String(error));
-      logger.error('WORKER', 'HybridSearchStrategy: findByConcept failed', {}, errorObj);
-      // Fall back to metadata-only results
-      const results = this.sessionSearch.findByConcept(concept, filterOptions);
-      return {
-        results: { observations: results, sessions: [], prompts: [] },
-        usedChroma: false,
-        fellBack: true,
-        strategy: 'hybrid'
-      };
-    }
+    // Fail-fast: Chroma errors propagate to orchestrator (HTTP 503).
+    return await this.rankAndHydrate(concept, ids, limit);
   }
 
   /**
@@ -117,19 +105,8 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     const ids = metadataResults.map(obs => obs.id);
 
-    try {
-      return await this.rankAndHydrate(typeStr, ids, limit);
-    } catch (error) {
-      const errorObj = error instanceof Error ? error : new Error(String(error));
-      logger.error('WORKER', 'HybridSearchStrategy: findByType failed', {}, errorObj);
-      const results = this.sessionSearch.findByType(type as any, filterOptions);
-      return {
-        results: { observations: results, sessions: [], prompts: [] },
-        usedChroma: false,
-        fellBack: true,
-        strategy: 'hybrid'
-      };
-    }
+    // Fail-fast: Chroma errors propagate to orchestrator (HTTP 503).
+    return await this.rankAndHydrate(typeStr, ids, limit);
   }
 
   /**
@@ -158,18 +135,8 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     const ids = metadataResults.observations.map(obs => obs.id);
 
-    try {
-      return await this.rankAndHydrateForFile(filePath, ids, limit, sessions);
-    } catch (error) {
-      const errorObj = error instanceof Error ? error : new Error(String(error));
-      logger.error('WORKER', 'HybridSearchStrategy: findByFile failed', {}, errorObj);
-      const results = this.sessionSearch.findByFile(filePath, filterOptions);
-      return {
-        observations: results.observations,
-        sessions: results.sessions,
-        usedChroma: false
-      };
-    }
+    // Fail-fast: Chroma errors propagate to orchestrator (HTTP 503).
+    return await this.rankAndHydrateForFile(filePath, ids, limit, sessions);
   }
 
   private async rankAndHydrate(
@@ -191,7 +158,6 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       return {
         results: { observations, sessions: [], prompts: [] },
         usedChroma: true,
-        fellBack: false,
         strategy: 'hybrid'
       };
     }

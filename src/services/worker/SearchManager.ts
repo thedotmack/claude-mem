@@ -53,6 +53,22 @@ export class SearchManager {
   }
 
   /**
+   * Accessor for the underlying orchestrator. Used by HTTP routes that need
+   * raw StrategySearchResult instead of formatted MCP text output.
+   */
+  getOrchestrator(): SearchOrchestrator {
+    return this.orchestrator;
+  }
+
+  /**
+   * Accessor for the formatter. Used by HTTP routes that construct
+   * text output from raw orchestrator results.
+   */
+  getFormatter(): FormattingService {
+    return this.formatter;
+  }
+
+  /**
    * Query Chroma vector database via ChromaSync
    * @deprecated Use orchestrator.search() instead
    */
@@ -1193,265 +1209,6 @@ export class SearchManager {
     // Format as table
     const header = `Found ${results.length} user prompt(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
     const formattedResults = results.map((prompt, i) => this.formatter.formatUserPromptIndex(prompt, i));
-
-    return {
-      content: [{
-        type: 'text' as const,
-        text: header + '\n' + formattedResults.join('\n')
-      }]
-    };
-  }
-
-
-  /**
-   * Tool handler: find_by_concept
-   */
-  async findByConcept(args: any): Promise<any> {
-    const normalized = this.normalizeParams(args);
-    const { concepts: concept, ...filters } = normalized;
-    let results: ObservationSearchResult[] = [];
-
-    // Metadata-first, semantic-enhanced search
-    if (this.chromaSync) {
-      logger.debug('SEARCH', 'Using metadata-first + semantic ranking for concept search', {});
-
-      // Step 1: SQLite metadata filter (get all IDs with this concept)
-      const metadataResults = this.sessionSearch.findByConcept(concept, filters);
-      logger.debug('SEARCH', 'Found observations with concept', { concept, count: metadataResults.length });
-
-      if (metadataResults.length > 0) {
-        // Step 2: Chroma semantic ranking (rank by relevance to concept)
-        const ids = metadataResults.map(obs => obs.id);
-        const chromaResults = await this.queryChroma(concept, Math.min(ids.length, 100));
-
-        // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
-        const rankedIds: number[] = [];
-        for (const chromaId of chromaResults.ids) {
-          if (ids.includes(chromaId) && !rankedIds.includes(chromaId)) {
-            rankedIds.push(chromaId);
-          }
-        }
-
-        logger.debug('SEARCH', 'Chroma ranked results by semantic relevance', { count: rankedIds.length });
-
-        // Step 3: Hydrate in semantic rank order
-        if (rankedIds.length > 0) {
-          results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
-          // Restore semantic ranking order
-          results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
-        }
-      }
-    }
-
-    // Fall back to SQLite-only if Chroma unavailable or failed
-    if (results.length === 0) {
-      logger.debug('SEARCH', 'Using SQLite-only concept search', {});
-      results = this.sessionSearch.findByConcept(concept, filters);
-    }
-
-    if (results.length === 0) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `No observations found with concept "${concept}"`
-        }]
-      };
-    }
-
-    // Format as table
-    const header = `Found ${results.length} observation(s) with concept "${concept}"\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-
-    return {
-      content: [{
-        type: 'text' as const,
-        text: header + '\n' + formattedResults.join('\n')
-      }]
-    };
-  }
-
-
-  /**
-   * Tool handler: find_by_file
-   */
-  async findByFile(args: any): Promise<any> {
-    const normalized = this.normalizeParams(args);
-    const { files: rawFilePath, ...filters } = normalized;
-    // Handle both string and array (normalizeParams may split on comma)
-    const filePath = Array.isArray(rawFilePath) ? rawFilePath[0] : rawFilePath;
-    let observations: ObservationSearchResult[] = [];
-    let sessions: SessionSummarySearchResult[] = [];
-
-    // Metadata-first, semantic-enhanced search for observations
-    if (this.chromaSync) {
-      logger.debug('SEARCH', 'Using metadata-first + semantic ranking for file search', {});
-
-      // Step 1: SQLite metadata filter (get all results with this file)
-      const metadataResults = this.sessionSearch.findByFile(filePath, filters);
-      logger.debug('SEARCH', 'Found results for file', { file: filePath, observations: metadataResults.observations.length, sessions: metadataResults.sessions.length });
-
-      // Sessions: Keep as-is (already summarized, no semantic ranking needed)
-      sessions = metadataResults.sessions;
-
-      // Observations: Apply semantic ranking
-      if (metadataResults.observations.length > 0) {
-        // Step 2: Chroma semantic ranking (rank by relevance to file path)
-        const ids = metadataResults.observations.map(obs => obs.id);
-        const chromaResults = await this.queryChroma(filePath, Math.min(ids.length, 100));
-
-        // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
-        const rankedIds: number[] = [];
-        for (const chromaId of chromaResults.ids) {
-          if (ids.includes(chromaId) && !rankedIds.includes(chromaId)) {
-            rankedIds.push(chromaId);
-          }
-        }
-
-        logger.debug('SEARCH', 'Chroma ranked observations by semantic relevance', { count: rankedIds.length });
-
-        // Step 3: Hydrate in semantic rank order
-        if (rankedIds.length > 0) {
-          observations = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
-          // Restore semantic ranking order
-          observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
-        }
-      }
-    }
-
-    // Fall back to SQLite-only if Chroma unavailable or failed
-    if (observations.length === 0 && sessions.length === 0) {
-      logger.debug('SEARCH', 'Using SQLite-only file search', {});
-      const results = this.sessionSearch.findByFile(filePath, filters);
-      observations = results.observations;
-      sessions = results.sessions;
-    }
-
-    const totalResults = observations.length + sessions.length;
-
-    if (totalResults === 0) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `No results found for file "${filePath}"`
-        }]
-      };
-    }
-
-    // Combine observations and sessions with timestamps for date grouping
-    const combined: Array<{
-      type: 'observation' | 'session';
-      data: ObservationSearchResult | SessionSummarySearchResult;
-      epoch: number;
-      created_at: string;
-    }> = [
-      ...observations.map(obs => ({
-        type: 'observation' as const,
-        data: obs,
-        epoch: obs.created_at_epoch,
-        created_at: obs.created_at
-      })),
-      ...sessions.map(sess => ({
-        type: 'session' as const,
-        data: sess,
-        epoch: sess.created_at_epoch,
-        created_at: sess.created_at
-      }))
-    ];
-
-    // Sort by date (most recent first)
-    combined.sort((a, b) => b.epoch - a.epoch);
-
-    // Group by date for proper timeline rendering
-    const resultsByDate = groupByDate(combined, item => item.created_at);
-
-    // Format with date headers for proper date parsing by folder CLAUDE.md generator
-    const lines: string[] = [];
-    lines.push(`Found ${totalResults} result(s) for file "${filePath}"`);
-    lines.push('');
-
-    for (const [day, dayResults] of resultsByDate) {
-      lines.push(`### ${day}`);
-      lines.push('');
-      lines.push(this.formatter.formatTableHeader());
-
-      for (const result of dayResults) {
-        if (result.type === 'observation') {
-          lines.push(this.formatter.formatObservationIndex(result.data as ObservationSearchResult, 0));
-        } else {
-          lines.push(this.formatter.formatSessionIndex(result.data as SessionSummarySearchResult, 0));
-        }
-      }
-      lines.push('');
-    }
-
-    return {
-      content: [{
-        type: 'text' as const,
-        text: lines.join('\n')
-      }]
-    };
-  }
-
-
-  /**
-   * Tool handler: find_by_type
-   */
-  async findByType(args: any): Promise<any> {
-    const normalized = this.normalizeParams(args);
-    const { type, ...filters } = normalized;
-    const typeStr = Array.isArray(type) ? type.join(', ') : type;
-    let results: ObservationSearchResult[] = [];
-
-    // Metadata-first, semantic-enhanced search
-    if (this.chromaSync) {
-      logger.debug('SEARCH', 'Using metadata-first + semantic ranking for type search', {});
-
-      // Step 1: SQLite metadata filter (get all IDs with this type)
-      const metadataResults = this.sessionSearch.findByType(type, filters);
-      logger.debug('SEARCH', 'Found observations with type', { type: typeStr, count: metadataResults.length });
-
-      if (metadataResults.length > 0) {
-        // Step 2: Chroma semantic ranking (rank by relevance to type)
-        const ids = metadataResults.map(obs => obs.id);
-        const chromaResults = await this.queryChroma(typeStr, Math.min(ids.length, 100));
-
-        // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
-        const rankedIds: number[] = [];
-        for (const chromaId of chromaResults.ids) {
-          if (ids.includes(chromaId) && !rankedIds.includes(chromaId)) {
-            rankedIds.push(chromaId);
-          }
-        }
-
-        logger.debug('SEARCH', 'Chroma ranked results by semantic relevance', { count: rankedIds.length });
-
-        // Step 3: Hydrate in semantic rank order
-        if (rankedIds.length > 0) {
-          results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
-          // Restore semantic ranking order
-          results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
-        }
-      }
-    }
-
-    // Fall back to SQLite-only if Chroma unavailable or failed
-    if (results.length === 0) {
-      logger.debug('SEARCH', 'Using SQLite-only type search', {});
-      results = this.sessionSearch.findByType(type, filters);
-    }
-
-    if (results.length === 0) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `No observations found with type "${typeStr}"`
-        }]
-      };
-    }
-
-    // Format as table
-    const header = `Found ${results.length} observation(s) with type "${typeStr}"\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
     return {
       content: [{

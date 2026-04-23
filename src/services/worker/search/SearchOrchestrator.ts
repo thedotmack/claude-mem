@@ -30,6 +30,7 @@ import type {
   SearchResults,
   ObservationSearchResult
 } from './types.js';
+import { ChromaUnavailableError } from './errors.js';
 import { logger } from '../../../utils/logger.js';
 
 /**
@@ -88,34 +89,27 @@ export class SearchOrchestrator {
     }
 
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
+    // Fail-fast: if Chroma errors, ChromaSearchStrategy now lets the error
+    // propagate. We catch it here only to translate into a typed 503.
     if (this.chromaStrategy) {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
-      const result = await this.chromaStrategy.search(options);
-
-      // If Chroma succeeded (even with 0 results), return
-      if (result.usedChroma) {
-        return result;
+      try {
+        return await this.chromaStrategy.search(options);
+      } catch (error) {
+        const errorObj = error instanceof Error ? error : new Error(String(error));
+        throw new ChromaUnavailableError(
+          `Chroma query failed: ${errorObj.message}`,
+          errorObj
+        );
       }
-
-      // Chroma failed - fall back to SQLite for filter-only
-      logger.debug('SEARCH', 'Orchestrator: Chroma failed, falling back to SQLite', {});
-      const fallbackResult = await this.sqliteStrategy.search({
-        ...options,
-        query: undefined // Remove query for SQLite fallback
-      });
-
-      return {
-        ...fallbackResult,
-        fellBack: true
-      };
     }
 
-    // PATH 3: No Chroma available
-    logger.debug('SEARCH', 'Orchestrator: Chroma not available', {});
+    // PATH 3: Chroma not configured (explicitly uninitialized at construction).
+    // This is a legitimate config state — return empty results, not an error.
+    logger.debug('SEARCH', 'Orchestrator: Chroma not configured', {});
     return {
       results: { observations: [], sessions: [], prompts: [] },
       usedChroma: false,
-      fellBack: false,
       strategy: 'sqlite'
     };
   }
@@ -130,12 +124,11 @@ export class SearchOrchestrator {
       return await this.hybridStrategy.findByConcept(concept, options);
     }
 
-    // Fallback to SQLite
+    // Chroma not configured: SQLite metadata-only result.
     const results = this.sqliteStrategy.findByConcept(concept, options);
     return {
       results: { observations: results, sessions: [], prompts: [] },
       usedChroma: false,
-      fellBack: false,
       strategy: 'sqlite'
     };
   }
@@ -150,12 +143,11 @@ export class SearchOrchestrator {
       return await this.hybridStrategy.findByType(type, options);
     }
 
-    // Fallback to SQLite
+    // Chroma not configured: SQLite metadata-only result.
     const results = this.sqliteStrategy.findByType(type, options);
     return {
       results: { observations: results, sessions: [], prompts: [] },
       usedChroma: false,
-      fellBack: false,
       strategy: 'sqlite'
     };
   }
