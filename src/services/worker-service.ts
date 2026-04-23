@@ -105,8 +105,11 @@ import { CorpusStore } from './worker/knowledge/CorpusStore.js';
 import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from './worker/knowledge/KnowledgeAgent.js';
 
-// Process management for zombie cleanup (Issue #737)
-import { startOrphanReaper, reapOrphanedProcesses, getProcessBySession, ensureProcessExit } from './worker/ProcessRegistry.js';
+// Primary-path session lifecycle helpers — no reapers, no orphan sweeps.
+// The SDK subprocess is spawned in its own POSIX process group via
+// createSdkSpawnFactory; teardown via ensureSdkProcessExit kills the whole
+// group so no descendants leak (Principle 5).
+import { getSdkProcessForSession, ensureSdkProcessExit } from '../supervisor/process-registry.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -166,12 +169,6 @@ export class WorkerService {
   // Initialization tracking
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
-
-  // Orphan reaper cleanup function (Issue #737)
-  private stopOrphanReaper: (() => void) | null = null;
-
-  // Stale session reaper interval (Issue #1168)
-  private staleSessionReaperInterval: ReturnType<typeof setInterval> | null = null;
 
   // AI interaction tracking for health endpoint
   private lastAiInteraction: {
@@ -530,43 +527,15 @@ export class WorkerService {
       }
       logger.success('WORKER', 'MCP loopback self-check connected');
 
-      // Start orphan reaper to clean up zombie processes (Issue #737)
-      this.stopOrphanReaper = startOrphanReaper(() => {
-        const activeIds = new Set<number>();
-        for (const [id] of this.sessionManager['sessions']) {
-          activeIds.add(id);
-        }
-        return activeIds;
-      });
-      logger.info('SYSTEM', 'Started orphan reaper (runs every 30 seconds)');
-
-      // Reap stale sessions to unblock orphan process cleanup (Issue #1168)
-      this.staleSessionReaperInterval = setInterval(async () => {
-        try {
-          const reaped = await this.sessionManager.reapStaleSessions();
-          if (reaped > 0) {
-            logger.info('SYSTEM', `Reaped ${reaped} stale sessions`);
-          }
-        } catch (e) {
-          // [ANTI-PATTERN IGNORED]: setInterval callback cannot throw; reaper retries on next tick (every 2 min)
-          if (e instanceof Error) {
-            logger.error('WORKER', 'Stale session reaper error', {}, e);
-          } else {
-            logger.error('WORKER', 'Stale session reaper error with non-Error', {}, new Error(String(e)));
-          }
-        }
-
-        // Periodic WAL checkpoint to prevent unbounded WAL growth (#1956)
-        try {
-          this.dbManager.getSessionStore().db.run('PRAGMA wal_checkpoint(PASSIVE)');
-        } catch (e) {
-          if (e instanceof Error) {
-            logger.error('WORKER', 'WAL checkpoint error', {}, e);
-          } else {
-            logger.error('WORKER', 'WAL checkpoint error with non-Error', {}, new Error(String(e)));
-          }
-        }
-      }, 2 * 60 * 1000);
+      // No orphan reaper, no stale-session reaper, no periodic WAL checkpoint.
+      // - Orphan prevention: SDK subprocesses spawn in their own process group
+      //   via createSdkSpawnFactory so `kill(-pgid, signal)` tears down every
+      //   descendant in one syscall (Principle 5).
+      // - Stale sessions: session cleanup runs in the `generatorPromise.finally`
+      //   block of startSessionProcessor — primary-path teardown on generator
+      //   exit, not a periodic sweep (Principle 4).
+      // - WAL growth: handled by SQLite's built-in `PRAGMA wal_autocheckpoint`
+      //   (applied at DB open time); no app-level timer is required.
 
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
@@ -760,10 +729,11 @@ export class WorkerService {
         throw error;
       })
       .finally(async () => {
-        // CRITICAL: Verify subprocess exit to prevent zombie accumulation (Issue #1168)
-        const trackedProcess = getProcessBySession(session.sessionDbId);
+        // Primary-path subprocess teardown — process-group kill ensures any
+        // SDK descendants are reaped too (Principle 5).
+        const trackedProcess = getSdkProcessForSession(session.sessionDbId);
         if (trackedProcess && trackedProcess.process.exitCode === null) {
-          await ensureProcessExit(trackedProcess, 5000);
+          await ensureSdkProcessExit(trackedProcess, 5000);
         }
 
         session.generatorPromise = null;
@@ -1076,18 +1046,6 @@ export class WorkerService {
       this.transcriptWatcher.stop();
       this.transcriptWatcher = null;
       logger.info('TRANSCRIPT', 'Transcript watcher stopped');
-    }
-
-    // Stop orphan reaper before shutdown (Issue #737)
-    if (this.stopOrphanReaper) {
-      this.stopOrphanReaper();
-      this.stopOrphanReaper = null;
-    }
-
-    // Stop stale session reaper (Issue #1168)
-    if (this.staleSessionReaperInterval) {
-      clearInterval(this.staleSessionReaperInterval);
-      this.staleSessionReaperInterval = null;
     }
 
     await performGracefulShutdown({

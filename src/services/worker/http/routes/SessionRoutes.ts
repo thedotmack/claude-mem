@@ -21,7 +21,7 @@ import { SessionCompletionHandler } from '../../session/SessionCompletionHandler
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
-import { getProcessBySession, ensureProcessExit } from '../../ProcessRegistry.js';
+import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../../supervisor/process-registry.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { RestartGuard } from '../../RestartGuard.js';
@@ -268,10 +268,11 @@ export class SessionRoutes extends BaseRouteHandler {
         }
       })
       .finally(async () => {
-        // CRITICAL: Verify subprocess exit to prevent zombie accumulation (Issue #1168)
-        const tracked = getProcessBySession(session.sessionDbId);
+        // Primary-path subprocess teardown — process-group kill ensures any
+        // SDK descendants are reaped too (Principle 5).
+        const tracked = getSdkProcessForSession(session.sessionDbId);
         if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
-          await ensureProcessExit(tracked, 5000);
+          await ensureSdkProcessExit(tracked, 5000);
         }
 
         const sessionDbId = session.sessionDbId;
