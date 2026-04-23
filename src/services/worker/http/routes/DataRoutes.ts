@@ -482,8 +482,8 @@ export class DataRoutes extends BaseRouteHandler {
     // Get recently processed (last 30 min, up to 20)
     const recentlyProcessed = pendingStore.getRecentlyProcessed(20, 30);
 
-    // Get stuck message count (processing > 5 min)
-    const stuckCount = pendingStore.getStuckCount(5 * 60 * 1000);
+    // Get stuck message count (rows the self-healing claim would reclaim)
+    const stuckCount = pendingStore.getStuckCount();
 
     // Get sessions with pending work
     const sessionsWithPending = pendingStore.getSessionsWithPendingMessages();

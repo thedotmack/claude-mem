@@ -13,7 +13,7 @@ import {
   LatestPromptResult
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
-import { computeObservationContentHash, findDuplicateObservation } from './observations/store.js';
+import { computeObservationContentHash } from './observations/store.js';
 import { parseFileList } from './observations/files.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 
@@ -565,7 +565,6 @@ export class SessionStore {
         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'processed', 'failed')),
         retry_count INTEGER NOT NULL DEFAULT 0,
         created_at_epoch INTEGER NOT NULL,
-        started_processing_at_epoch INTEGER,
         completed_at_epoch INTEGER,
         FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
       )
@@ -1804,12 +1803,9 @@ export class SessionStore {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
-    // Content-hash deduplication
+    // DB-enforced dedup: UNIQUE(memory_session_id, content_hash) +
+    // ON CONFLICT DO NOTHING (Plan 01 Phase 4).
     const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-    const existing = findDuplicateObservation(this.db, contentHash, timestampEpoch);
-    if (existing) {
-      return { id: existing.id, createdAtEpoch: existing.created_at_epoch };
-    }
 
     const stmt = this.db.prepare(`
       INSERT INTO observations
@@ -1817,9 +1813,11 @@ export class SessionStore {
        files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
        generated_by_model)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(memory_session_id, content_hash) DO NOTHING
+      RETURNING id, created_at_epoch
     `);
 
-    const result = stmt.run(
+    const inserted = stmt.get(
       memorySessionId,
       project,
       observation.type,
@@ -1838,12 +1836,22 @@ export class SessionStore {
       timestampIso,
       timestampEpoch,
       generatedByModel || null
-    );
+    ) as { id: number; created_at_epoch: number } | null;
 
-    return {
-      id: Number(result.lastInsertRowid),
-      createdAtEpoch: timestampEpoch
-    };
+    if (inserted) {
+      return { id: inserted.id, createdAtEpoch: inserted.created_at_epoch };
+    }
+
+    const existing = this.db.prepare(
+      'SELECT id, created_at_epoch FROM observations WHERE memory_session_id = ? AND content_hash = ?'
+    ).get(memorySessionId, contentHash) as { id: number; created_at_epoch: number } | null;
+
+    if (!existing) {
+      throw new Error(
+        `storeObservation: ON CONFLICT without existing row for content_hash=${contentHash}`
+      );
+    }
+    return { id: existing.id, createdAtEpoch: existing.created_at_epoch };
   }
 
   /**
@@ -1949,25 +1957,25 @@ export class SessionStore {
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
 
-      // 1. Store all observations (with content-hash deduplication)
+      // 1. Store all observations.
+      // DB-enforced dedup via UNIQUE(memory_session_id, content_hash) +
+      // ON CONFLICT DO NOTHING (Plan 01 Phase 4).
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
          generated_by_model)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(memory_session_id, content_hash) DO NOTHING
+        RETURNING id
       `);
+      const lookupExistingStmt = this.db.prepare(
+        'SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ?'
+      );
 
       for (const observation of observations) {
-        // Content-hash deduplication (same logic as storeObservation singular)
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-        const existing = findDuplicateObservation(this.db, contentHash, timestampEpoch);
-        if (existing) {
-          observationIds.push(existing.id);
-          continue;
-        }
-
-        const result = obsStmt.run(
+        const inserted = obsStmt.get(
           memorySessionId,
           project,
           observation.type,
@@ -1986,8 +1994,20 @@ export class SessionStore {
           timestampIso,
           timestampEpoch,
           generatedByModel || null
-        );
-        observationIds.push(Number(result.lastInsertRowid));
+        ) as { id: number } | null;
+
+        if (inserted) {
+          observationIds.push(inserted.id);
+          continue;
+        }
+
+        const existing = lookupExistingStmt.get(memorySessionId, contentHash) as { id: number } | null;
+        if (!existing) {
+          throw new Error(
+            `storeObservations: ON CONFLICT without existing row for content_hash=${contentHash}`
+          );
+        }
+        observationIds.push(existing.id);
       }
 
       // 2. Store summary if provided
@@ -2085,25 +2105,25 @@ export class SessionStore {
     const storeAndMarkTx = this.db.transaction(() => {
       const observationIds: number[] = [];
 
-      // 1. Store all observations (with content-hash deduplication)
+      // 1. Store all observations.
+      // DB-enforced dedup via UNIQUE(memory_session_id, content_hash) +
+      // ON CONFLICT DO NOTHING (Plan 01 Phase 4).
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
          generated_by_model)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(memory_session_id, content_hash) DO NOTHING
+        RETURNING id
       `);
+      const lookupExistingStmt = this.db.prepare(
+        'SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ?'
+      );
 
       for (const observation of observations) {
-        // Content-hash deduplication (same logic as storeObservation singular)
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-        const existing = findDuplicateObservation(this.db, contentHash, timestampEpoch);
-        if (existing) {
-          observationIds.push(existing.id);
-          continue;
-        }
-
-        const result = obsStmt.run(
+        const inserted = obsStmt.get(
           memorySessionId,
           project,
           observation.type,
@@ -2122,8 +2142,20 @@ export class SessionStore {
           timestampIso,
           timestampEpoch,
           generatedByModel || null
-        );
-        observationIds.push(Number(result.lastInsertRowid));
+        ) as { id: number } | null;
+
+        if (inserted) {
+          observationIds.push(inserted.id);
+          continue;
+        }
+
+        const existing = lookupExistingStmt.get(memorySessionId, contentHash) as { id: number } | null;
+        if (!existing) {
+          throw new Error(
+            `storeObservationsAndMarkComplete: ON CONFLICT without existing row for content_hash=${contentHash}`
+          );
+        }
+        observationIds.push(existing.id);
       }
 
       // 2. Store summary if provided

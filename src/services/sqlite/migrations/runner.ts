@@ -30,7 +30,6 @@ export class MigrationRunner {
     this.ensureDiscoveryTokensColumn();
     this.createPendingMessagesTable();
     this.renameSessionIdColumns();
-    this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
@@ -39,6 +38,8 @@ export class MigrationRunner {
     this.addSessionPlatformSourceColumn();
     this.ensureMergedIntoProjectColumns();
     this.addObservationSubagentColumns();
+    this.rebuildPendingMessagesForSelfHealingClaim();
+    this.addObservationsUniqueContentHashIndex();
   }
 
   /**
@@ -533,7 +534,6 @@ export class MigrationRunner {
         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'processed', 'failed')),
         retry_count INTEGER NOT NULL DEFAULT 0,
         created_at_epoch INTEGER NOT NULL,
-        started_processing_at_epoch INTEGER,
         completed_at_epoch INTEGER,
         FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
       )
@@ -611,20 +611,6 @@ export class MigrationRunner {
     } else {
       logger.debug('DB', 'No session ID column renames needed (already up to date)');
     }
-  }
-
-  /**
-   * Repair session ID column renames (migration 19)
-   * DEPRECATED: Migration 17 is now fully idempotent and handles all cases.
-   * This migration is kept for backwards compatibility but does nothing.
-   */
-  private repairSessionIdColumnRename(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(19) as SchemaVersion | undefined;
-    if (applied) return;
-
-    // Migration 17 now handles all column rename cases idempotently.
-    // Just record this migration as applied.
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(19, new Date().toISOString());
   }
 
   /**
@@ -1013,6 +999,209 @@ export class MigrationRunner {
 
     if (!applied) {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(27, new Date().toISOString());
+    }
+  }
+
+  /**
+   * Rebuild pending_messages for self-healing claim (migration 28).
+   *
+   * PATHFINDER-2026-04-22 Plan 01 Phase 2.
+   *
+   *  - Drops the legacy stale-reset epoch column (was the input to the
+   *    60-s stale-reset; replaced by worker-PID liveness at claim time).
+   *  - Adds `worker_pid INTEGER` (set by claimNextMessage to the live
+   *    worker's PID; rows whose worker_pid is no longer alive are
+   *    immediately reclaimable).
+   *  - Adds `tool_use_id TEXT` so ingestion-time pairing of tool_use →
+   *    tool_result can be DB-backed instead of an in-memory Map
+   *    (Plan 03 dependency).
+   *  - Dedupes any existing rows that share (content_session_id,
+   *    tool_use_id), then creates a partial UNIQUE index.
+   *
+   * Follows the table-rebuild precedent at runner.ts:691 (migration 21):
+   * disable FKs, BEGIN, recreate, INSERT-SELECT, RENAME, COMMIT, re-enable.
+   */
+  private rebuildPendingMessagesForSelfHealingClaim(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(28) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const pendingExists = (this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'").all() as TableNameRow[]).length > 0;
+    if (!pendingExists) {
+      // pending_messages table never created on this DB — nothing to rebuild.
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
+      return;
+    }
+
+    logger.debug('DB', 'Rebuilding pending_messages for self-healing claim (migration 28)');
+
+    // PRAGMA foreign_keys must be set outside a transaction.
+    this.db.run('PRAGMA foreign_keys = OFF');
+    this.db.run('BEGIN TRANSACTION');
+
+    try {
+      // Source columns may include legacy fields. We build the SELECT explicitly
+      // using only columns we know are present in the source after migration 27.
+      const sourceCols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+      const colNames = new Set(sourceCols.map(c => c.name));
+      const has = (name: string) => colNames.has(name);
+
+      // Clean up leftover temp from a previously-crashed run.
+      this.db.run('DROP TABLE IF EXISTS pending_messages_new');
+
+      this.db.run(`
+        CREATE TABLE pending_messages_new (
+          id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_db_id            INTEGER NOT NULL,
+          content_session_id       TEXT    NOT NULL,
+          tool_use_id              TEXT,
+          message_type             TEXT    NOT NULL CHECK(message_type IN ('observation', 'summarize')),
+          tool_name                TEXT,
+          tool_input               TEXT,
+          tool_response            TEXT,
+          cwd                      TEXT,
+          last_user_message        TEXT,
+          last_assistant_message   TEXT,
+          prompt_number            INTEGER,
+          status                   TEXT    NOT NULL DEFAULT 'pending'
+                                           CHECK(status IN ('pending', 'processing', 'processed', 'failed')),
+          retry_count              INTEGER NOT NULL DEFAULT 0,
+          created_at_epoch         INTEGER NOT NULL,
+          failed_at_epoch          INTEGER,
+          completed_at_epoch       INTEGER,
+          worker_pid               INTEGER,
+          agent_type               TEXT,
+          agent_id                 TEXT,
+          FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
+        )
+      `);
+
+      // INSERT-SELECT — note that the legacy stale-reset epoch column is
+      // intentionally omitted. Any 'processing' row is left with worker_pid =
+      // NULL so that a self-healing claim picks it up immediately on next
+      // worker boot.
+      this.db.run(`
+        INSERT INTO pending_messages_new (
+          id, session_db_id, content_session_id, tool_use_id, message_type,
+          tool_name, tool_input, tool_response, cwd, last_user_message,
+          last_assistant_message, prompt_number, status, retry_count,
+          created_at_epoch, failed_at_epoch, completed_at_epoch, worker_pid,
+          agent_type, agent_id
+        )
+        SELECT
+          id,
+          session_db_id,
+          content_session_id,
+          ${has('tool_use_id') ? 'tool_use_id' : 'NULL'},
+          message_type,
+          tool_name,
+          tool_input,
+          tool_response,
+          cwd,
+          ${has('last_user_message') ? 'last_user_message' : 'NULL'},
+          ${has('last_assistant_message') ? 'last_assistant_message' : 'NULL'},
+          ${has('prompt_number') ? 'prompt_number' : 'NULL'},
+          status,
+          retry_count,
+          created_at_epoch,
+          ${has('failed_at_epoch') ? 'failed_at_epoch' : 'NULL'},
+          ${has('completed_at_epoch') ? 'completed_at_epoch' : 'NULL'},
+          NULL,
+          ${has('agent_type') ? 'agent_type' : 'NULL'},
+          ${has('agent_id') ? 'agent_id' : 'NULL'}
+        FROM pending_messages
+      `);
+
+      this.db.run('DROP TABLE pending_messages');
+      this.db.run('ALTER TABLE pending_messages_new RENAME TO pending_messages');
+
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_session        ON pending_messages(session_db_id)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_status         ON pending_messages(status)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_claude_session ON pending_messages(content_session_id)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_worker_pid     ON pending_messages(worker_pid)');
+
+      // Dedup any pre-existing duplicate (content_session_id, tool_use_id) pairs
+      // before adding the UNIQUE index. Keep the lowest id (oldest) per pair.
+      this.db.run(`
+        DELETE FROM pending_messages
+         WHERE tool_use_id IS NOT NULL
+           AND id NOT IN (
+             SELECT MIN(id) FROM pending_messages
+              WHERE tool_use_id IS NOT NULL
+              GROUP BY content_session_id, tool_use_id
+           )
+      `);
+
+      this.db.run(`
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
+        ON pending_messages(content_session_id, tool_use_id)
+        WHERE tool_use_id IS NOT NULL
+      `);
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
+      this.db.run('COMMIT');
+      this.db.run('PRAGMA foreign_keys = ON');
+
+      logger.debug('DB', 'Rebuilt pending_messages for self-healing claim');
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      this.db.run('PRAGMA foreign_keys = ON');
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error(`Migration 28 failed: ${String(error)}`);
+    }
+  }
+
+  /**
+   * Add UNIQUE(memory_session_id, content_hash) on observations (migration 29).
+   *
+   * PATHFINDER-2026-04-22 Plan 01 Phase 2 + Phase 4.
+   *
+   *  - Dedupes existing rows that share (memory_session_id, content_hash),
+   *    keeping the lowest id (oldest) per pair.
+   *  - Creates a UNIQUE index that lets writers use
+   *    INSERT … ON CONFLICT(memory_session_id, content_hash) DO NOTHING
+   *    in place of the legacy dedup window scan.
+   */
+  private addObservationsUniqueContentHashIndex(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(29) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // Need both columns to exist.
+    const obsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasMem = obsCols.some(c => c.name === 'memory_session_id');
+    const hasHash = obsCols.some(c => c.name === 'content_hash');
+    if (!hasMem || !hasHash) {
+      // Nothing to do; record so we don't keep retrying.
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(29, new Date().toISOString());
+      return;
+    }
+
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      // Dedup before adding the UNIQUE index — keep the lowest id per pair.
+      this.db.run(`
+        DELETE FROM observations
+         WHERE id NOT IN (
+           SELECT MIN(id) FROM observations
+            GROUP BY memory_session_id, content_hash
+         )
+      `);
+
+      this.db.run(`
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_observations_session_hash
+        ON observations(memory_session_id, content_hash)
+      `);
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(29, new Date().toISOString());
+      this.db.run('COMMIT');
+      logger.debug('DB', 'Added UNIQUE(memory_session_id, content_hash) on observations');
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error(`Migration 29 failed: ${String(error)}`);
     }
   }
 }

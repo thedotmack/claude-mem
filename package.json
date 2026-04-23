@@ -121,6 +121,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "yaml": "^2.8.2",
+    "zod": "^3.23.8",
     "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {

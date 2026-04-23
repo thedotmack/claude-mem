@@ -418,13 +418,10 @@ export class WorkerService {
 
       await this.dbManager.initialize();
 
-      // Reset any messages that were processing when worker died
-      const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
-      const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-      const resetCount = pendingStore.resetStaleProcessingMessages(0); // 0 = reset ALL processing
-      if (resetCount > 0) {
-        logger.info('SYSTEM', `Reset ${resetCount} stale processing messages to pending`);
-      }
+      // No startup recovery sweep: claimNextMessage's self-healing predicate
+      // (worker_pid NOT IN live_worker_pids) reclaims any 'processing' rows
+      // left by a previous worker incarnation on the next claim. See
+      // PATHFINDER-2026-04-22 Plan 01 Phase 3.
 
       // Initialize search services
       const formattingService = new FormattingService();
@@ -556,23 +553,6 @@ export class WorkerService {
             logger.error('WORKER', 'Stale session reaper error', {}, e);
           } else {
             logger.error('WORKER', 'Stale session reaper error with non-Error', {}, new Error(String(e)));
-          }
-        }
-
-        // Purge stale failed pending messages to prevent unbounded queue growth (#1957)
-        // Only remove failures older than 1 hour to preserve recent failures for inspection/retry
-        try {
-          const pendingStore = this.sessionManager.getPendingMessageStore();
-          const FAILED_MESSAGE_RETENTION_MS = 60 * 60 * 1000; // 1 hour
-          const purged = pendingStore.clearFailedOlderThan(FAILED_MESSAGE_RETENTION_MS);
-          if (purged > 0) {
-            logger.info('SYSTEM', `Purged ${purged} stale failed pending messages (older than 1h)`);
-          }
-        } catch (e) {
-          if (e instanceof Error) {
-            logger.error('WORKER', 'Failed message purge error', {}, e);
-          } else {
-            logger.error('WORKER', 'Failed message purge error with non-Error', {}, new Error(String(e)));
           }
         }
 
