@@ -343,8 +343,8 @@ export class SessionManager {
     }
 
     // 3b. Reap all supervisor-tracked processes for this session (#1351)
-    // This catches MCP servers and other child processes not tracked by the
-    // in-memory ProcessRegistry (e.g. processes registered only in supervisor.json).
+    // Catches MCP servers and other child processes registered only in
+    // supervisor.json that the in-process tracking would not see.
     try {
       await getSupervisor().getRegistry().reapSession(sessionDbId);
     } catch (error) {
