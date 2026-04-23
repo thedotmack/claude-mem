@@ -6,6 +6,9 @@
  */
 
 import express, { Request, Response } from 'express';
+import { z } from 'zod';
+import { ingestEventBus, type SummaryStoredEvent } from '../shared.js';
+import { validateBody } from '../middleware/validateBody.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
@@ -388,7 +391,75 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
     app.post('/api/sessions/complete', this.handleCompleteByClaudeId.bind(this));
     app.get('/api/sessions/status', this.handleStatusByClaudeId.bind(this));
+
+    // Plan 05 Phase 3 — blocking session-end endpoint. Replaces the
+    // 120-second client-side polling loop in the Stop hook with a single
+    // POST that the server holds open until the summary lands (event-bus
+    // signal from Plan 03 Phase 2).
+    app.post(
+      '/api/session/end',
+      validateBody(SessionRoutes.sessionEndSchema),
+      this.handleSessionEnd,
+    );
   }
+
+  // Plan 05 Phase 3 — Zod schema for the blocking session-end endpoint.
+  // Plan 06 will move schemas into a per-route registry; for now they live
+  // inline at the top of the route file that consumes them.
+  private static readonly sessionEndSchema = z.object({
+    sessionId: z.string().min(1),
+  });
+
+  // Plan 05 Phase 3 — server-side timeout for the blocking summary wait.
+  // 30s is a starting point per `05-hook-surface.md` Phase 3 — revisit once
+  // we have measured summary-latency distribution post-Plan 03.
+  private static readonly SERVER_SIDE_SUMMARY_TIMEOUT_MS = 30_000;
+
+  /**
+   * Plan 05 Phase 3 — POST /api/session/end
+   *
+   * One request, one response. Holds the connection open until the
+   * `summaryStoredEvent` for `sessionId` fires (Plan 03 Phase 2 emitter), or
+   * until SERVER_SIDE_SUMMARY_TIMEOUT_MS elapses, or until the client aborts.
+   *
+   * No polling on either side. No retry inside this handler. Listener +
+   * timer + abort handler all share one cleanup function so the listener can
+   * never leak past the response.
+   */
+  private handleSessionEnd = (req: Request, res: Response): void => {
+    const { sessionId } = req.body as { sessionId: string };
+
+    let settled = false;
+    const onStored = (evt: SummaryStoredEvent): void => {
+      if (evt.sessionId !== sessionId) return;
+      if (settled) return;
+      settled = true;
+      cleanup();
+      res.status(200).json({ ok: true, messageId: evt.messageId });
+    };
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      res.status(504).json({ ok: false, reason: 'summary_not_stored_in_time' });
+    }, SessionRoutes.SERVER_SIDE_SUMMARY_TIMEOUT_MS);
+
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      ingestEventBus.off('summaryStoredEvent', onStored);
+    };
+
+    ingestEventBus.on('summaryStoredEvent', onStored);
+
+    // Client aborted (hook process died) — drop the listener immediately so
+    // it doesn't accumulate. No response is sent for an aborted client.
+    req.on('close', () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+    });
+  };
 
   /**
    * Initialize a new session

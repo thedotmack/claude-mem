@@ -1,5 +1,6 @@
 import { readJsonFromStdin } from './stdin-reader.js';
 import { getPlatformAdapter } from './adapters/index.js';
+import { AdapterRejectedInput } from './adapters/errors.js';
 import { getEventHandler } from './handlers/index.js';
 import { HOOK_EXIT_CODES } from '../shared/hook-constants.js';
 import { logger } from '../utils/logger.js';
@@ -98,6 +99,18 @@ export async function hookCommand(platform: string, event: string, options: Hook
   try {
     return await executeHookPipeline(adapter, handler, platform, options);
   } catch (error) {
+    // Plan 05 Phase 6 — adapter rejected the input (invalid cwd or other
+    // boundary-detected payload defect). Treat as graceful: emit a continue
+    // envelope and exit 0 so the user's session is not blocked by a malformed
+    // hook payload from the platform.
+    if (error instanceof AdapterRejectedInput) {
+      logger.warn('HOOK', `Adapter rejected input (${error.reason}), skipping hook`);
+      console.log(JSON.stringify({ continue: true, suppressOutput: true }));
+      if (!options.skipExit) {
+        process.exit(HOOK_EXIT_CODES.SUCCESS);
+      }
+      return HOOK_EXIT_CODES.SUCCESS;
+    }
     if (isWorkerUnavailableError(error)) {
       // Worker unavailable — degrade gracefully, don't block the user
       // Log to file instead of stderr (#1181)

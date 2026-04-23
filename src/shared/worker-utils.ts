@@ -1,10 +1,11 @@
 import path from "path";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync } from "fs";
 import { spawn, execSync } from "child_process";
 import { logger } from "../utils/logger.js";
-import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
+import { HOOK_TIMEOUTS, HOOK_EXIT_CODES, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
-import { MARKETPLACE_ROOT } from "./paths.js";
+import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
+import { loadFromFileOnce } from "./hook-settings.js";
 // `validateWorkerPidFile` consults `captureProcessStartToken` at
 // `src/supervisor/process-registry.ts` for PID-reuse detection (commit
 // 99060bac). The lazy-spawn fast path below uses it to confirm a live port
@@ -385,4 +386,211 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     return false;
   }
   return true;
+}
+
+// ============================================================================
+// Plan 05 Phase 9 — single per-process alive cache.
+//
+// One hook invocation may issue multiple worker requests (session-init issues
+// several). The alive-state cannot change mid-invocation without the hook
+// process exiting, so memoize the first result. By Principle 6 (one helper,
+// N callers), this is the ONLY alive-state cache; all hook→worker call sites
+// route through `executeWithWorkerFallback` (Phase 2) which calls this.
+// ============================================================================
+
+let aliveCache: boolean | null = null;
+
+export async function ensureWorkerAliveOnce(): Promise<boolean> {
+  if (aliveCache !== null) return aliveCache;
+  aliveCache = await ensureWorkerRunning();
+  return aliveCache;
+}
+
+// ============================================================================
+// Plan 05 Phase 8 — fail-loud counter.
+//
+// The counter records how many consecutive hook invocations have seen the
+// worker unreachable. After N (default 3) consecutive failures, the next
+// hook exits code 2 so Claude Code's hook contract surfaces the outage to
+// Claude. Below N, hooks exit 0 to avoid breaking the user's session.
+//
+// This is NOT a retry. We do not reinvoke `ensureWorkerAliveOnce` or
+// reattempt the HTTP request. We record the result of the one primary-path
+// attempt and either return (graceful) or escalate (fail-loud).
+//
+// File: ~/.claude-mem/state/hook-failures.json
+// Atomic write: tmp + rename (POSIX atomic within a filesystem).
+// ============================================================================
+
+interface HookFailureState {
+  consecutiveFailures: number;
+  lastFailureAt: number;
+}
+
+const FAIL_LOUD_DEFAULT_THRESHOLD = 3;
+
+function getStateDir(): string {
+  return path.join(DATA_DIR, 'state');
+}
+
+function getHookFailuresPath(): string {
+  return path.join(getStateDir(), 'hook-failures.json');
+}
+
+function readHookFailureState(): HookFailureState {
+  try {
+    const raw = readFileSync(getHookFailuresPath(), 'utf-8');
+    const parsed = JSON.parse(raw) as Partial<HookFailureState>;
+    return {
+      consecutiveFailures: typeof parsed.consecutiveFailures === 'number' && Number.isFinite(parsed.consecutiveFailures)
+        ? Math.max(0, Math.floor(parsed.consecutiveFailures))
+        : 0,
+      lastFailureAt: typeof parsed.lastFailureAt === 'number' && Number.isFinite(parsed.lastFailureAt)
+        ? parsed.lastFailureAt
+        : 0,
+    };
+  } catch {
+    // Missing file or corrupt JSON → fresh state.
+    return { consecutiveFailures: 0, lastFailureAt: 0 };
+  }
+}
+
+function writeHookFailureStateAtomic(state: HookFailureState): void {
+  const stateDir = getStateDir();
+  const dest = getHookFailuresPath();
+  const tmp = `${dest}.tmp`;
+  try {
+    if (!existsSync(stateDir)) {
+      mkdirSync(stateDir, { recursive: true });
+    }
+    writeFileSync(tmp, JSON.stringify(state), 'utf-8');
+    renameSync(tmp, dest);
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Failed to persist hook-failure counter', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function getFailLoudThreshold(): number {
+  try {
+    const settings = loadFromFileOnce();
+    const raw = settings.CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD;
+    const parsed = parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+  } catch {
+    // settings unreadable — fall through to default
+  }
+  return FAIL_LOUD_DEFAULT_THRESHOLD;
+}
+
+/**
+ * Record a worker-unreachable hook invocation. Returns the new counter value.
+ * If the counter reaches the threshold, this function writes to stderr and
+ * exits the process with code 2 (blocking error per Claude Code hook contract).
+ *
+ * Not a retry — does not reattempt the operation. The caller already ran the
+ * single primary-path attempt and got `false` from `ensureWorkerAliveOnce`.
+ */
+function recordWorkerUnreachable(): number {
+  const state = readHookFailureState();
+  const next: HookFailureState = {
+    consecutiveFailures: state.consecutiveFailures + 1,
+    lastFailureAt: Date.now(),
+  };
+  writeHookFailureStateAtomic(next);
+
+  const threshold = getFailLoudThreshold();
+  if (next.consecutiveFailures >= threshold) {
+    process.stderr.write(
+      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.\n`
+    );
+    process.exit(HOOK_EXIT_CODES.BLOCKING_ERROR);
+  }
+  return next.consecutiveFailures;
+}
+
+/**
+ * Reset the consecutive-failure counter. Called when the worker is alive,
+ * acknowledging that any prior outage has ended. Not a retry — it is a
+ * success-path acknowledgement.
+ */
+function resetWorkerFailureCounter(): void {
+  const state = readHookFailureState();
+  if (state.consecutiveFailures === 0) return;       // skip a no-op write
+  writeHookFailureStateAtomic({ consecutiveFailures: 0, lastFailureAt: 0 });
+}
+
+// ============================================================================
+// Plan 05 Phase 2 — `executeWithWorkerFallback(url, method, body)`.
+//
+// Eight handlers used to duplicate the
+// `ensureWorkerRunning() → workerHttpRequest() → if (!ok) return { continue: true }`
+// sequence. This helper is the ONE implementation; eight handlers import it.
+//
+// Behavior:
+//   1. ensureWorkerAliveOnce() (Phase 9). If false → fail-loud counter
+//      (Phase 8). May process.exit(2). Otherwise return graceful fallback.
+//   2. workerHttpRequest(url, method, body). Parse JSON.
+//   3. On success, reset the fail-loud counter.
+//
+// No retry inside this helper. No timeout-and-exit-0 swallow. The fail-loud
+// counter records consecutive invocation outcomes; it does not reinvoke work.
+// ============================================================================
+
+export type WorkerFallback =
+  | { continue: true }
+  | { continue: true; reason: string };
+
+export type WorkerCallResult<T> = T | WorkerFallback;
+
+export function isWorkerFallback<T>(result: WorkerCallResult<T>): result is WorkerFallback {
+  return typeof result === 'object'
+    && result !== null
+    && (result as WorkerFallback).continue === true
+    && Object.prototype.hasOwnProperty.call(result, 'continue');
+}
+
+export async function executeWithWorkerFallback<T = unknown>(
+  url: string,
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+  body?: unknown,
+): Promise<WorkerCallResult<T>> {
+  const alive = await ensureWorkerAliveOnce();
+  if (!alive) {
+    // Records and possibly process.exit(2). If we return below, the counter
+    // is below threshold, the user's session continues uninterrupted.
+    recordWorkerUnreachable();
+    return { continue: true, reason: 'worker_unreachable' };
+  }
+
+  const init: { method: string; headers?: Record<string, string>; body?: string } = { method };
+  if (body !== undefined) {
+    init.headers = { 'Content-Type': 'application/json' };
+    init.body = JSON.stringify(body);
+  }
+
+  const response = await workerHttpRequest(url, init);
+  if (!response.ok) {
+    // Non-2xx is a real worker response (so the worker IS reachable). Reset
+    // the consecutive-failures counter; surface the response body to the
+    // caller as a typed value via T's caller-controlled shape. Callers that
+    // care about non-2xx must inspect the value (or wrap with their own
+    // status check); the helper does not silently coerce non-2xx into a
+    // graceful fallback.
+    resetWorkerFailureCounter();
+    const text = await response.text().catch(() => '');
+    let parsed: unknown = text;
+    try { parsed = JSON.parse(text); } catch { /* keep raw text */ }
+    return parsed as T;
+  }
+
+  resetWorkerFailureCounter();
+  const text = await response.text();
+  if (text.length === 0) return undefined as unknown as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return text as unknown as T;
+  }
 }

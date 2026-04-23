@@ -1,4 +1,5 @@
 import type { PlatformAdapter } from '../types.js';
+import { AdapterRejectedInput, isValidCwd } from './errors.js';
 
 /**
  * Gemini CLI Platform Adapter
@@ -39,6 +40,10 @@ export const geminiCliAdapter: PlatformAdapter = {
       ?? process.env.GEMINI_PROJECT_DIR
       ?? process.env.CLAUDE_PROJECT_DIR
       ?? process.cwd();
+    // Plan 05 Phase 6 — cwd validation at the adapter boundary.
+    if (!isValidCwd(cwd)) {
+      throw new AdapterRejectedInput('invalid_cwd');
+    }
 
     const sessionId = r.session_id
       ?? process.env.GEMINI_SESSION_ID
