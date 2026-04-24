@@ -1,5 +1,5 @@
 import { existsSync, statSync, watch as fsWatch, createReadStream } from 'fs';
-import { basename, join, resolve as resolvePath } from 'path';
+import { basename, join, resolve as resolvePath, sep as pathSep } from 'path';
 import { globSync } from 'glob';
 import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
@@ -158,6 +158,12 @@ export class TranscriptWatcher {
    * Return the deepest path component that contains no glob meta-characters.
    * Used to anchor `fs.watch(recursive: true)` for both literal directories
    * and patterns like `~/.codex/sessions/**\/*.jsonl`.
+   *
+   * Handles both `/` and `\` as separators so Windows-native paths
+   * (e.g. `C:\Users\x\codex\sessions\**\*.jsonl`) resolve correctly. When
+   * the input is purely glob meta (no literal prefix) we return an empty
+   * string so the caller skips the watch instead of anchoring at the
+   * filesystem root.
    */
   private deepestNonGlobAncestor(inputPath: string): string {
     if (!this.hasGlob(inputPath)) {
@@ -173,13 +179,19 @@ export class TranscriptWatcher {
       return inputPath;
     }
 
-    const segments = inputPath.split('/');
+    const segments = inputPath.split(/[/\\]/);
     const literalSegments: string[] = [];
     for (const segment of segments) {
       if (/[*?[\]{}()]/.test(segment)) break;
       literalSegments.push(segment);
     }
-    return literalSegments.join('/') || '/';
+    if (literalSegments.length === 0) return '';
+    if (literalSegments.length === 1 && literalSegments[0] === '') {
+      // Input started with a separator but the first real segment was a
+      // glob (e.g. `/**/foo`). Don't silently broaden the watch to `/`.
+      return '';
+    }
+    return literalSegments.join(pathSep);
   }
 
   private resolveSchema(watch: WatchTarget): TranscriptSchema | null {

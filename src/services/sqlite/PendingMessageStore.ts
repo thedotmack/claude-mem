@@ -92,7 +92,13 @@ export class PendingMessageStore {
    * constraint over dedup window), we don't time-gate duplicates.
    *
    * @returns The database ID of the persisted message, or 0 when the insert
-   *          was suppressed by ON CONFLICT (caller must handle 0 explicitly).
+   *          was suppressed by ON CONFLICT. Callers MUST guard with `id > 0`
+   *          before threading the value into any subsequent SQL (e.g.
+   *          `confirmProcessed`, `markFailed`, `processingMessageIds`) —
+   *          a zero id would silently target zero rows. The only two call
+   *          sites today (`SessionManager.queueObservation` and
+   *          `queueSummarize`) use the id purely for logging and both
+   *          branch on `messageId === 0`.
    */
   enqueue(sessionDbId: number, contentSessionId: string, message: PendingMessage): number {
     const now = Date.now();
