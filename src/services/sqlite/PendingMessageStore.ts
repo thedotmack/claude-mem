@@ -131,39 +131,7 @@ export class PendingMessageStore {
     return result.lastInsertRowid as number;
   }
 
-  /**
-   * PATHFINDER plan 03 phase 6: pair tool_use rows with their tool_result by
-   * (content_session_id, tool_use_id) at read time. Replaces the per-process
-   * `pendingTools` Map deleted from `src/services/transcripts/processor.ts`.
-   *
-   * Returns observation rows whose tool_use_id is non-null and which have at
-   * least one prior matching row in the same session (the UNIQUE INDEX
-   * guarantees at most one logical pair survives per id).
-   */
-  pairToolUsesByJoin(contentSessionId: string): Array<{
-    tool_use_id: string;
-    tool_use_payload: string | null;
-    tool_result_payload: string | null;
-  }> {
-    const stmt = this.db.prepare(`
-      SELECT u.tool_use_id   AS tool_use_id,
-             u.tool_input    AS tool_use_payload,
-             r.tool_response AS tool_result_payload
-        FROM pending_messages u
-        JOIN pending_messages r USING (content_session_id, tool_use_id)
-       WHERE u.content_session_id = ?
-         AND u.tool_use_id IS NOT NULL
-         AND u.tool_input IS NOT NULL
-         AND r.tool_response IS NOT NULL
-    `);
-    return stmt.all(contentSessionId) as Array<{
-      tool_use_id: string;
-      tool_use_payload: string | null;
-      tool_result_payload: string | null;
-    }>;
-  }
-
-  /**
+/**
    * Atomically claim the next message for `sessionDbId`.
    *
    * A row is claimable iff:

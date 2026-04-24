@@ -511,6 +511,15 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleSessionEnd = (req: Request, res: Response): void => {
     const { sessionId } = req.body as { sessionId: string };
 
+    // Closes the register-after-emit race: if the summary already stored
+    // between the summarize POST and this POST, the event fired before we
+    // could attach a listener. Drain the recent-events buffer first.
+    const already = ingestEventBus.takeRecentSummaryStored(sessionId);
+    if (already) {
+      res.status(200).json({ ok: true, messageId: already.messageId });
+      return;
+    }
+
     let settled = false;
     const onStored = (evt: SummaryStoredEvent): void => {
       if (evt.sessionId !== sessionId) return;

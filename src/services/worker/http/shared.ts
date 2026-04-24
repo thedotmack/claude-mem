@@ -46,12 +46,44 @@ export interface SummaryStoredEvent {
 }
 
 class IngestEventBus extends EventEmitter {
+  /**
+   * Recent summaryStoredEvent buffer keyed by sessionId. Protects against the
+   * register-after-emit race: a client that queues a summarize and then makes
+   * a second HTTP call to attach the listener can miss an emission that
+   * happens between the two requests. The session-end handler consults this
+   * buffer before registering to catch any already-fired event.
+   *
+   * Entries are evicted after RECENT_EVENT_TTL_MS or when consumed.
+   */
+  private readonly recentStored = new Map<string, { event: SummaryStoredEvent; at: number }>();
+  private static readonly RECENT_EVENT_TTL_MS = 60_000;
+
   constructor() {
     super();
     // Listener count is bounded by concurrent /api/session/end calls and they
     // all clean up on completion. Disable the default 10-listener warning so
     // normal load doesn't look like a leak in monitoring.
     this.setMaxListeners(0);
+    this.on('summaryStoredEvent', (evt: SummaryStoredEvent) => {
+      this.recentStored.set(evt.sessionId, { event: evt, at: Date.now() });
+      this.evictExpiredStored();
+    });
+  }
+
+  /** Retrieve and remove a recently-emitted summaryStoredEvent, if any. */
+  takeRecentSummaryStored(sessionId: string): SummaryStoredEvent | undefined {
+    const entry = this.recentStored.get(sessionId);
+    if (!entry) return undefined;
+    this.recentStored.delete(sessionId);
+    if (Date.now() - entry.at > IngestEventBus.RECENT_EVENT_TTL_MS) return undefined;
+    return entry.event;
+  }
+
+  private evictExpiredStored(): void {
+    const cutoff = Date.now() - IngestEventBus.RECENT_EVENT_TTL_MS;
+    for (const [key, entry] of this.recentStored) {
+      if (entry.at < cutoff) this.recentStored.delete(key);
+    }
   }
 }
 
