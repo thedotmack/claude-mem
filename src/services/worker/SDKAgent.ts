@@ -110,7 +110,7 @@ export class SDKAgent {
     logger.info('SDK', 'Starting SDK query', {
       sessionDbId: session.sessionDbId,
       contentSessionId: session.contentSessionId,
-      memorySessionId: session.memorySessionId,
+      memorySessionId: session.memorySessionId ?? undefined,
       hasRealMemorySessionId,
       shouldResume,
       resume_parameter: shouldResume ? session.memorySessionId : '(none - fresh start)',
@@ -144,7 +144,7 @@ export class SDKAgent {
         // instead of polluting user's actual project resume lists
         cwd: OBSERVER_SESSIONS_DIR,
         // Only resume if shouldResume is true (memorySessionId exists, not first prompt, not forceInit)
-        ...(shouldResume && { resume: session.memorySessionId }),
+        ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
         disallowedTools,
         abortController: session.abortController,
         pathToClaudeCodeExecutable: claudePath,

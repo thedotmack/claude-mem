@@ -195,7 +195,7 @@ export class SettingsDefaultsManager {
    * Handles both string 'true' and boolean true from JSON
    */
   static getBool(key: keyof SettingsDefaults): boolean {
-    const value = this.get(key);
+    const value: unknown = this.get(key);
     return value === 'true' || value === true;
   }
 

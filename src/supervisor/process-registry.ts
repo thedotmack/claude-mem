@@ -597,9 +597,9 @@ export async function waitForSlot(maxConcurrent: number, timeoutMs: number = 60_
 // ---------------------------------------------------------------------------
 
 export interface SpawnedSdkProcess {
-  stdin: ChildProcess['stdin'];
-  stdout: ChildProcess['stdout'];
-  stderr: ChildProcess['stderr'];
+  stdin: NonNullable<ChildProcess['stdin']>;
+  stdout: NonNullable<ChildProcess['stdout']>;
+  stderr: NonNullable<ChildProcess['stderr']>;
   readonly killed: boolean;
   readonly exitCode: number | null;
   kill: ChildProcess['kill'];
@@ -719,6 +719,18 @@ export function spawnSdkProcess(
     // Wake one pool-slot waiter since a slot just freed up.
     notifySlotAvailable();
   });
+
+  if (!child.stdin || !child.stdout || !child.stderr) {
+    logger.error('PROCESS', 'Spawned SDK child missing required stdio streams', {
+      sessionDbId,
+      pid,
+      hasStdin: Boolean(child.stdin),
+      hasStdout: Boolean(child.stdout),
+      hasStderr: Boolean(child.stderr),
+    });
+    try { child.kill('SIGKILL'); } catch { /* already dead */ }
+    return null;
+  }
 
   const spawned: SpawnedSdkProcess = {
     stdin: child.stdin,

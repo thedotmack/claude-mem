@@ -37,7 +37,9 @@ export class SettingsManager {
       for (const row of rows) {
         const key = row.key as keyof ViewerSettings;
         if (key in settings) {
-          settings[key] = JSON.parse(row.value) as ViewerSettings[typeof key];
+          // Object.assign narrows correctly across the discriminated union
+          // where `settings[key] = value` would collapse to `never`.
+          Object.assign(settings, { [key]: JSON.parse(row.value) });
         }
       }
 

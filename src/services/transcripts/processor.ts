@@ -124,7 +124,7 @@ export class TranscriptEventProcessor {
     const project = this.resolveProject(entry, watch, schema, event, session);
     if (project) session.project = project;
 
-    const fields = resolveFields(event.fields, entry, { watch, schema, session });
+    const fields = resolveFields(event.fields, entry, { watch, schema, session: session as unknown as Record<string, unknown> });
 
     switch (event.action) {
       case 'session_context':

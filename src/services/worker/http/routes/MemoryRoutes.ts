@@ -73,6 +73,17 @@ export class MemoryRoutes extends BaseRouteHandler {
     });
 
     // 4. Sync to ChromaDB (async, fire-and-forget)
+    if (!chromaSync) {
+      logger.debug('CHROMA', 'ChromaDB sync skipped (chromaSync not available)', { id: result.id });
+      res.json({
+        success: true,
+        id: result.id,
+        title: observation.title,
+        project: targetProject,
+        message: `Memory saved as observation #${result.id}`
+      });
+      return;
+    }
     chromaSync.syncObservation(
       result.id,
       memorySessionId,

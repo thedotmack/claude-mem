@@ -79,6 +79,7 @@ import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
+import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from './worker/GeminiAgent.js';
 import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
@@ -136,7 +137,7 @@ export function buildStatusOutput(status: 'ready' | 'error', message?: string): 
   };
 }
 
-export class WorkerService {
+export class WorkerService implements WorkerRef {
   private server: Server;
   private startTime: number = Date.now();
   private mcpClient: Client;
@@ -149,7 +150,7 @@ export class WorkerService {
   // Service layer
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
-  private sseBroadcaster: SSEBroadcaster;
+  public sseBroadcaster: SSEBroadcaster;
   private sdkAgent: SDKAgent;
   private geminiAgent: GeminiAgent;
   private openRouterAgent: OpenRouterAgent;
@@ -496,7 +497,10 @@ export class WorkerService {
       const transport = new StdioClientTransport({
         command: process.execPath,  // Use resolved path, not bare 'node' which fails on non-interactive PATH (#1876)
         args: [mcpServerPath],
-        env: sanitizeEnv(process.env)
+        env: Object.fromEntries(
+          Object.entries(sanitizeEnv(process.env)).filter(([, value]) => value !== undefined)
+        ) as Record<string, string>
+
       });
 
       const MCP_INIT_TIMEOUT_MS = 300000;
