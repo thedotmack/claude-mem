@@ -88,6 +88,7 @@ import { SearchManager } from './worker/SearchManager.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
+import { SessionCompletionHandler } from './worker/session/SessionCompletionHandler.js';
 import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
@@ -157,6 +158,7 @@ export class WorkerService implements WorkerRef {
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
+  private completionHandler: SessionCompletionHandler;
   private corpusStore: CorpusStore;
 
   // Route handlers
@@ -197,6 +199,11 @@ export class WorkerService implements WorkerRef {
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
+    this.completionHandler = new SessionCompletionHandler(
+      this.sessionManager,
+      this.sessionEventBroadcaster,
+      this.dbManager,
+    );
     this.corpusStore = new CorpusStore();
 
     // Wire ingest helpers (plan 03 phase 0). Worker-internal callers use these
@@ -909,17 +916,12 @@ export class WorkerService implements WorkerRef {
       }
     }
 
-    // No fallback or both failed: mark messages abandoned and remove session so queue doesn't grow
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const abandoned = pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
-    if (abandoned > 0) {
-      logger.warn('SDK', 'No fallback available; marked pending messages abandoned', {
-        sessionId: sessionDbId,
-        abandoned
-      });
-    }
+    // No fallback or both failed: mark session completed in DB (drain pending
+    // + broadcast via finalizeSession, idempotent) then drop in-memory state.
+    // Without this, sdk_sessions.status stays 'active' forever — the deleted
+    // reapStaleSessions interval was the only prior backstop.
+    this.completionHandler.finalizeSession(sessionDbId);
     this.sessionManager.removeSessionImmediate(sessionDbId);
-    this.sessionEventBroadcaster.broadcastSessionCompleted(sessionDbId);
   }
 
   /**
@@ -933,14 +935,12 @@ export class WorkerService implements WorkerRef {
    *                    no?  → terminateSession()
    */
   private terminateSession(sessionDbId: number, reason: string): void {
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const abandoned = pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
+    logger.info('SYSTEM', 'Session terminated', { sessionId: sessionDbId, reason });
 
-    logger.info('SYSTEM', 'Session terminated', {
-      sessionId: sessionDbId,
-      reason,
-      abandonedMessages: abandoned
-    });
+    // finalizeSession marks sdk_sessions.status='completed', drains pending
+    // messages, and broadcasts. Idempotent. Without this, wall-clock-limited
+    // and unrecoverable-error paths leave DB rows as 'active' forever.
+    this.completionHandler.finalizeSession(sessionDbId);
 
     // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
     this.sessionManager.removeSessionImmediate(sessionDbId);
