@@ -290,9 +290,14 @@ export type SummaryPayload =
     };
 
 export function ingestSummary(payload: SummaryPayload): IngestResult {
-  const { sessionManager, dbManager, ensureGeneratorRunning } = requireContext();
-
+  // The 'parsed' branch is a pure post-store notification — it only touches
+  // the module-scope event bus, not the database/session manager. Resolving
+  // requireContext() before the branch split breaks unit tests that drive
+  // ResponseProcessor with a mocked sessionManager but no setIngestContext.
+  // Only the 'queue' branch needs the worker-internal context.
   if (payload.kind === 'queue') {
+    const { sessionManager, dbManager, ensureGeneratorRunning } = requireContext();
+
     if (!payload.contentSessionId) {
       return { ok: false, reason: 'missing contentSessionId', status: 400 };
     }
@@ -327,10 +332,11 @@ export function ingestSummary(payload: SummaryPayload): IngestResult {
     return { ok: true, sessionDbId: payload.sessionDbId, messageId: payload.messageId };
   }
 
-  // Note: the actual storage of the parsed summary remains in
-  // `processAgentResponse` (it is co-transactional with the observation batch).
-  // This branch exists to centralize the event emission so that producers
-  // never forget to fire it.
+  // The actual storage of the parsed summary remains co-transactional with
+  // the observation batch in `processAgentResponse`. By the time this branch
+  // is reached the row is already persisted; this call is the canonical
+  // post-store notification path so every producer fires the event the same
+  // way (Plan 03 Phase 2 + greploop fix — sole emitter of summaryStoredEvent).
   ingestEventBus.emit('summaryStoredEvent', {
     sessionId: payload.contentSessionId,
     messageId: payload.messageId,

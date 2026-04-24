@@ -538,36 +538,55 @@ function resetWorkerFailureCounter(): void {
 // counter records consecutive invocation outcomes; it does not reinvoke work.
 // ============================================================================
 
+// Branded sentinel so isWorkerFallback cannot false-positive on legitimate
+// API responses that happen to carry `continue: true` in their own schema.
+const WORKER_FALLBACK_BRAND: unique symbol = Symbol.for('claude-mem/worker-fallback');
+
 export type WorkerFallback =
-  | { continue: true }
-  | { continue: true; reason: string };
+  | { continue: true; [WORKER_FALLBACK_BRAND]: true }
+  | { continue: true; reason: string; [WORKER_FALLBACK_BRAND]: true };
 
 export type WorkerCallResult<T> = T | WorkerFallback;
 
 export function isWorkerFallback<T>(result: WorkerCallResult<T>): result is WorkerFallback {
   return typeof result === 'object'
     && result !== null
-    && (result as WorkerFallback).continue === true
-    && Object.prototype.hasOwnProperty.call(result, 'continue');
+    && (result as { [WORKER_FALLBACK_BRAND]?: unknown })[WORKER_FALLBACK_BRAND] === true;
+}
+
+export interface WorkerFallbackOptions {
+  /**
+   * Per-call HTTP timeout in ms. Forwarded to workerHttpRequest. Omit to use
+   * HEALTH_CHECK_TIMEOUT_MS (the default ~3 s suitable for short pings).
+   * Long-lived endpoints like POST /api/session/end (server holds up to
+   * SessionRoutes.SERVER_SIDE_SUMMARY_TIMEOUT_MS = 30_000) MUST set this
+   * above the server-side hold window, or the client will race to a spurious
+   * timeout and treat the worker as unreachable.
+   */
+  timeoutMs?: number;
 }
 
 export async function executeWithWorkerFallback<T = unknown>(
   url: string,
   method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   body?: unknown,
+  options: WorkerFallbackOptions = {},
 ): Promise<WorkerCallResult<T>> {
   const alive = await ensureWorkerAliveOnce();
   if (!alive) {
     // Records and possibly process.exit(2). If we return below, the counter
     // is below threshold, the user's session continues uninterrupted.
     recordWorkerUnreachable();
-    return { continue: true, reason: 'worker_unreachable' };
+    return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
   }
 
-  const init: { method: string; headers?: Record<string, string>; body?: string } = { method };
+  const init: { method: string; headers?: Record<string, string>; body?: string; timeoutMs?: number } = { method };
   if (body !== undefined) {
     init.headers = { 'Content-Type': 'application/json' };
     init.body = JSON.stringify(body);
+  }
+  if (options.timeoutMs !== undefined) {
+    init.timeoutMs = options.timeoutMs;
   }
 
   const response = await workerHttpRequest(url, init);

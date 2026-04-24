@@ -95,10 +95,14 @@ export const summarizeHandler: EventHandler = {
     // 2. Plan 05 Phase 3 — single blocking POST. Server holds the connection
     //    open until the summary-stored event fires (Plan 03 Phase 2 emitter)
     //    or its server-side timeout elapses. No polling on this side.
+    // Server holds the connection up to SessionRoutes.SERVER_SIDE_SUMMARY_TIMEOUT_MS (30_000).
+    // Client timeout must exceed that, otherwise the hook races to a spurious
+    // "worker unreachable" fallback before the summary-stored event fires.
     const endResult = await executeWithWorkerFallback<SessionEndResponse>(
       '/api/session/end',
       'POST',
       { sessionId },
+      { timeoutMs: 35_000 },
     );
     if (isWorkerFallback(endResult)) {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };

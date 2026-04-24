@@ -13,7 +13,7 @@
 
 import { logger } from '../../../utils/logger.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
-import { ingestEventBus, type SummaryStoredEvent } from '../http/shared.js';
+import { ingestSummary } from '../http/shared.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
@@ -161,16 +161,21 @@ export async function processAgentResponse(
   // to the Stop hook for silent-summary-loss detection (#1633)
   session.lastSummaryStored = result.summaryId !== null;
 
-  // PATHFINDER plan 03 phase 2: emit summaryStoredEvent for the blocking
-  // /api/session/end endpoint (consumed by plan 05 hook surface). Fired once
-  // per successful ingestSummary path (parsed summary that hit the store, or
-  // an explicit <skip_summary/> bypass).
+  // PATHFINDER plan 03 phase 2 + greploop fix: route summary completion
+  // through ingestSummary({ kind: 'parsed' }) so the event-emission path is
+  // single-sourced. Storage already happened in the atomic transaction above
+  // (it is co-transactional with the observation batch); this call is the
+  // post-store notification — ingestSummary's parsed branch fires
+  // summaryStoredEvent for the blocking /api/session/end endpoint (Plan 05).
   if (parsed.kind === 'summary') {
     const messageId = session.processingMessageIds[0] ?? -1;
-    ingestEventBus.emit('summaryStoredEvent', {
-      sessionId: session.contentSessionId,
+    ingestSummary({
+      kind: 'parsed',
+      sessionDbId: session.sessionDbId,
       messageId,
-    } satisfies SummaryStoredEvent);
+      contentSessionId: session.contentSessionId,
+      parsed: parsed.data,
+    });
   }
 
   // CLAIM-CONFIRM: Now that storage succeeded, confirm all processing messages (delete from queue)
