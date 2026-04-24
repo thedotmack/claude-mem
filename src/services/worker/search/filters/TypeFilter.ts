@@ -5,7 +5,7 @@
  */
 import { logger } from '../../../../utils/logger.js';
 
-type ObservationType = 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
+type ObservationType = 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change' | 'security_alert' | 'security_note';
 
 /**
  * Valid observation types
@@ -16,7 +16,9 @@ export const OBSERVATION_TYPES: ObservationType[] = [
   'feature',
   'refactor',
   'discovery',
-  'change'
+  'change',
+  'security_alert',
+  'security_note'
 ];
 
 /**

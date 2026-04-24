@@ -15,6 +15,7 @@ import { logger } from '../../../utils/logger.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import { ingestSummary } from '../http/shared.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
+import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
@@ -199,6 +200,13 @@ export async function processAgentResponse(
   }
   // Clear the tracking array after confirmation
   session.processingMessageIds = [];
+
+  void notifyTelegram({
+    observations: labeledObservations,
+    observationIds: result.observationIds,
+    project: session.project,
+    memorySessionId: session.memorySessionId,
+  });
 
   // AFTER transaction commits - async operations (can fail safely without data loss)
   await syncAndBroadcastObservations(

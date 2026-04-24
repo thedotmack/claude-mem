@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.3.9] - 2026-04-22
+
+## Highlights
+
+### 🔐 Security observation types + Telegram notifier
+- New observation types: `security_alert` 🚨 (high-priority, triggers notifications) and `security_note` 🔐 (low-priority).
+- Fire-and-forget Telegram notifier — MarkdownV2 formatting, per-observation error isolation, no token logging.
+- Five env vars control behavior. `CLAUDE_MEM_TELEGRAM_ENABLED` master toggle defaults on (no-op without bot token + chat ID).
+
+### ⚡ Stop hook: fire-and-forget summarize
+- Eliminated the ~110s terminal block when a session ended. Summarize handler now enqueues and returns immediately.
+- Server-side `SessionCompletionHandler` finalizes off the hook's critical path (generator + HTTP fallback), with singleton sharing across the worker.
+
+### 🐛 Hooks: worker-port precedence + Windows (#2086 / PR #2084)
+- Hooks now resolve endpoint with the same precedence as the worker: env (`CLAUDE_MEM_WORKER_PORT`, `CLAUDE_MEM_WORKER_HOST`) > settings.json > defaults.
+- Looser sed regex handles both quoted and unquoted JSON port values.
+- Windows fallback to 37777 when per-uid formula doesn't apply.
+
+### 🔧 Bug fixes (reviewer rounds on PR #2084)
+- Don't remove in-memory session after a failed finalize; preserve crash-recovery state at 3 sites.
+- Eliminate double-broadcast of `session_completed` on fallback path.
+- Sync `DatabaseManager.getSessionById` return type.
+- `TelegramNotifier` now respects `settings.json` (not just env).
+- Hardcoded 🚨 emoji replaced with per-type mapping.
+
+### 📝 Docs
+- `version-bump` skill now covers `npm publish` + all 6 manifest paths so `npx claude-mem@<version>` always resolves. Adds `git grep` pre-flight for new manifests.
+
+### ⚙️ Chores
+-
+
 ## [12.3.8] - 2026-04-21
 
 ## 🔧 Fix
