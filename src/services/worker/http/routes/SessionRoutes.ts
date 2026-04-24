@@ -473,6 +473,11 @@ export class SessionRoutes extends BaseRouteHandler {
     agentId: z.string().optional(),
     agentType: z.string().optional(),
     platformSource: z.string().optional(),
+    // Idempotency key for the UNIQUE(content_session_id, tool_use_id) index
+    // added in Plan 01 Phase 1. Accept both snake and camel shapes so
+    // cross-process callers using either convention still deduplicate.
+    tool_use_id: z.string().optional(),
+    toolUseId: z.string().optional(),
   }).passthrough();
 
   private static readonly summarizeByClaudeIdSchema = z.object({
@@ -712,7 +717,18 @@ export class SessionRoutes extends BaseRouteHandler {
    * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, tool_name, tool_input, tool_response, cwd, platformSource, agentId, agentType } = req.body;
+    const {
+      contentSessionId,
+      tool_name,
+      tool_input,
+      tool_response,
+      cwd,
+      platformSource,
+      agentId,
+      agentType,
+      tool_use_id,
+      toolUseId,
+    } = req.body;
 
     const result = ingestObservation({
       contentSessionId,
@@ -723,6 +739,7 @@ export class SessionRoutes extends BaseRouteHandler {
       platformSource,
       agentId,
       agentType,
+      toolUseId: typeof tool_use_id === 'string' ? tool_use_id : (typeof toolUseId === 'string' ? toolUseId : undefined),
     });
 
     if (!result.ok) {

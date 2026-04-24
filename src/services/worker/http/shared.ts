@@ -234,6 +234,11 @@ export function ingestObservation(payload: ObservationPayload): IngestResult {
     })(),
     agentId: typeof payload.agentId === 'string' ? payload.agentId : undefined,
     agentType: typeof payload.agentType === 'string' ? payload.agentType : undefined,
+    // Forward the provider-assigned tool-use id so the
+    // UNIQUE(content_session_id, tool_use_id) idempotency index from Plan 01
+    // can actually collapse replays. SQLite treats NULL tool_use_id values as
+    // distinct, so dropping it here silently defeats the INSERT OR IGNORE.
+    toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
   });
 
   ensureGeneratorRunning?.(sessionDbId, 'observation');
