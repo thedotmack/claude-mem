@@ -683,6 +683,20 @@ export function spawnSdkProcess(
         windowsHide: true,
       });
 
+  // ALWAYS attach an 'error' listener BEFORE any other code runs, regardless of
+  // whether the child has a PID. child_process.spawn emits 'error' asynchronously
+  // for ENOENT, EACCES, AbortSignal-driven aborts, etc. Without a listener these
+  // become uncaughtException — the cause of "The operation was aborted." escaping
+  // to the daemon during crash-recovery loops.
+  child.on('error', (err: Error) => {
+    logger.warn('SDK_SPAWN', `[session-${sessionDbId}] child emitted error event`, {
+      sessionDbId,
+      pid: child.pid,
+      errorName: err.name,
+      errorCode: (err as NodeJS.ErrnoException).code,
+    }, err);
+  });
+
   if (!child.pid) {
     logger.error('PROCESS', 'Spawn succeeded but produced no PID', { sessionDbId });
     return null;

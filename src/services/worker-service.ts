@@ -819,12 +819,14 @@ export class WorkerService implements WorkerRef {
           session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1; // Keep for logging
 
           if (!restartAllowed) {
-            logger.error('SYSTEM', 'Restart guard tripped: too many restarts in window, stopping to prevent runaway costs', {
+            logger.error('SYSTEM', 'Restart guard tripped: session is dead, terminating', {
               sessionId: session.sessionDbId,
               pendingCount,
               restartsInWindow: session.restartGuard.restartsInWindow,
               windowMs: session.restartGuard.windowMs,
-              maxRestarts: session.restartGuard.maxRestarts
+              maxRestarts: session.restartGuard.maxRestarts,
+              consecutiveFailures: session.restartGuard.consecutiveFailuresSinceSuccess,
+              maxConsecutiveFailures: session.restartGuard.maxConsecutiveFailures
             });
             session.consecutiveRestarts = 0;
             this.terminateSession(session.sessionDbId, 'max_restarts_exceeded');

@@ -315,16 +315,34 @@ export class SessionRoutes extends BaseRouteHandler {
             session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1; // Keep for logging
 
             if (!restartAllowed) {
-              logger.error('SESSION', `CRITICAL: Restart guard tripped — too many restarts in window, stopping to prevent runaway costs`, {
+              logger.error('SESSION', `CRITICAL: Restart guard tripped — session is dead, draining pending messages and terminating`, {
                 sessionId: sessionDbId,
                 pendingCount,
                 restartsInWindow: session.restartGuard.restartsInWindow,
                 windowMs: session.restartGuard.windowMs,
                 maxRestarts: session.restartGuard.maxRestarts,
-                action: 'Generator will NOT restart. Check logs for root cause. Messages remain in pending state.'
+                consecutiveFailures: session.restartGuard.consecutiveFailuresSinceSuccess,
+                maxConsecutiveFailures: session.restartGuard.maxConsecutiveFailures,
+                action: 'Generator will NOT restart. Pending messages drained to abandoned. Check logs for root cause.'
               });
-              // Don't restart - abort to prevent further API calls
+              // Don't restart - abort to prevent further API calls AND drain pending
+              // messages so the session doesn't reappear in getSessionsWithPendingMessages
+              // and trigger another auto-start cycle.
               session.abortController.abort();
+              try {
+                const drained = pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
+                if (drained > 0) {
+                  logger.error('SESSION', 'Drained pending messages to abandoned after restart guard trip', {
+                    sessionId: sessionDbId,
+                    drained,
+                  });
+                }
+              } catch (drainErr) {
+                const normalized = drainErr instanceof Error ? drainErr : new Error(String(drainErr));
+                logger.error('SESSION', 'Failed to drain pending messages after restart guard trip', {
+                  sessionId: sessionDbId,
+                }, normalized);
+              }
               return;
             }
 
@@ -333,7 +351,9 @@ export class SessionRoutes extends BaseRouteHandler {
               pendingCount,
               consecutiveRestarts: session.consecutiveRestarts,
               restartsInWindow: session.restartGuard!.restartsInWindow,
-              maxRestarts: session.restartGuard!.maxRestarts
+              maxRestarts: session.restartGuard!.maxRestarts,
+              consecutiveFailures: session.restartGuard!.consecutiveFailuresSinceSuccess,
+              maxConsecutiveFailures: session.restartGuard!.maxConsecutiveFailures
             });
 
             // Abort OLD controller before replacing to prevent child process leaks
