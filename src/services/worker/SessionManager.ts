@@ -231,9 +231,20 @@ export class SessionManager {
       const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
       const queueDepth = this.getPendingStore().getPendingCount(sessionDbId);
       const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
-      logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=observation | tool=${toolSummary} | depth=${queueDepth}`, {
-        sessionId: sessionDbId
-      });
+      // enqueue returns 0 on INSERT OR IGNORE conflict (UNIQUE(session_id, tool_use_id)
+      // — Plan 01 Phase 1). The duplicate is correctly suppressed by the DB; surface
+      // it visibly so it isn't misread as "messageId=0 was inserted." Per
+      // Principle 3 (UNIQUE constraint over dedup window) this is the success path
+      // for replayed transcript lines, not an error.
+      if (messageId === 0) {
+        logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
+          sessionId: sessionDbId
+        });
+      } else {
+        logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=observation | tool=${toolSummary} | depth=${queueDepth}`, {
+          sessionId: sessionDbId
+        });
+      }
     } catch (error) {
       if (error instanceof Error) {
         logger.error('SESSION', 'Failed to persist observation to DB', {
@@ -282,9 +293,16 @@ export class SessionManager {
     try {
       const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
       const queueDepth = this.getPendingStore().getPendingCount(sessionDbId);
-      logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=summarize | depth=${queueDepth}`, {
-        sessionId: sessionDbId
-      });
+      // See queueObservation note: messageId=0 means UNIQUE-suppressed duplicate.
+      if (messageId === 0) {
+        logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
+          sessionId: sessionDbId
+        });
+      } else {
+        logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=summarize | depth=${queueDepth}`, {
+          sessionId: sessionDbId
+        });
+      }
     } catch (error) {
       if (error instanceof Error) {
         logger.error('SESSION', 'Failed to persist summarize to DB', {

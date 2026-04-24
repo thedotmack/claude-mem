@@ -161,13 +161,16 @@ export async function processAgentResponse(
   // to the Stop hook for silent-summary-loss detection (#1633)
   session.lastSummaryStored = result.summaryId !== null;
 
-  // PATHFINDER plan 03 phase 2 + greploop fix: route summary completion
+  // PATHFINDER plan 03 phase 2 + greploop iter 2 fix: route summary completion
   // through ingestSummary({ kind: 'parsed' }) so the event-emission path is
-  // single-sourced. Storage already happened in the atomic transaction above
-  // (it is co-transactional with the observation batch); this call is the
-  // post-store notification — ingestSummary's parsed branch fires
-  // summaryStoredEvent for the blocking /api/session/end endpoint (Plan 05).
-  if (parsed.kind === 'summary') {
+  // single-sourced. Gate on real persistence: only fire summaryStoredEvent
+  // when storage actually wrote a row (lastSummaryStored=true) OR the parsed
+  // payload was an explicit <skip_summary/> bypass. A non-skipped summary
+  // whose summaryId came back null (e.g. FK violation, null
+  // memory_session_id) must NOT confirm — the blocking /api/session/end
+  // endpoint would otherwise lie to the Stop hook with {ok:true} for a
+  // non-existent row.
+  if (parsed.kind === 'summary' && (parsed.data.skipped || session.lastSummaryStored)) {
     const messageId = session.processingMessageIds[0] ?? -1;
     ingestSummary({
       kind: 'parsed',
@@ -175,6 +178,11 @@ export async function processAgentResponse(
       messageId,
       contentSessionId: session.contentSessionId,
       parsed: parsed.data,
+    });
+  } else if (parsed.kind === 'summary') {
+    logger.warn('DB', 'summary parsed but no row persisted; suppressing summaryStoredEvent to avoid lying to /api/session/end', {
+      sessionId: session.sessionDbId,
+      memorySessionId: session.memorySessionId,
     });
   }
 
