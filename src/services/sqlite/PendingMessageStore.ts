@@ -199,6 +199,22 @@ export class PendingMessageStore {
   }
 
   /**
+   * Delete `status='failed'` rows older than `thresholdMs`. Called once at
+   * worker startup so `pending_messages` does not grow unbounded on long-
+   * running or high-failure-rate installations; `claimNextMessage`'s
+   * self-healing subquery scans this table, so bounded rows keep claim
+   * latency predictable. Not a reaper — one-shot, idempotent.
+   */
+  clearFailedOlderThan(thresholdMs: number): number {
+    const cutoff = Date.now() - thresholdMs;
+    const stmt = this.db.prepare(`
+      DELETE FROM pending_messages
+      WHERE status = 'failed' AND COALESCE(failed_at_epoch, completed_at_epoch, 0) < ?
+    `);
+    return stmt.run(cutoff).changes;
+  }
+
+  /**
    * Get all pending messages for session (ordered by creation time)
    */
   getAllPending(sessionDbId: number): PersistentPendingMessage[] {

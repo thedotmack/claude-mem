@@ -445,6 +445,21 @@ export class WorkerService implements WorkerRef {
       // left by a previous worker incarnation on the next claim. See
       // PATHFINDER-2026-04-22 Plan 01 Phase 3.
 
+      // One-shot GC for terminally-failed rows so pending_messages does not
+      // grow unbounded on long-running or high-failure-rate installations.
+      // Not a reaper — runs once per worker start. 7 days retains enough
+      // history for operator inspection without degrading claim latency.
+      try {
+        const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
+        const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+        const cleared = pendingStore.clearFailedOlderThan(7 * 24 * 60 * 60 * 1000);
+        if (cleared > 0) {
+          logger.info('QUEUE', 'Startup GC cleared old failed pending_messages rows', { cleared });
+        }
+      } catch (err) {
+        logger.warn('QUEUE', 'Startup GC for failed pending_messages rows failed', {}, err instanceof Error ? err : undefined);
+      }
+
       // Initialize search services
       const formattingService = new FormattingService();
       const timelineService = new TimelineService();
