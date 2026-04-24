@@ -319,7 +319,7 @@ export class WorkerService implements WorkerRef {
 
     // Standard routes (registered AFTER guard middleware)
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this);
+    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler);
     this.server.registerRoutes(sessionRoutes);
     // Wire the generator-starter callback now that SessionRoutes exists.
     // `setIngestContext` ran in the constructor before routes were
@@ -842,10 +842,16 @@ export class WorkerService implements WorkerRef {
           this.startSessionProcessor(session, 'pending-work-restart');
           this.broadcastProcessingStatus();
         } else {
-          // Successful completion with no pending work — clean up session
-          // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
+          // Successful completion with no pending work — finalize then drop
+          // in-memory state. finalizeSession flips sdk_sessions.status to
+          // 'completed', drains orphaned pendings, broadcasts; idempotent so
+          // the later POST /api/sessions/complete from the Stop hook is a
+          // no-op. Without this, hooks-disabled installs (and any session
+          // whose Stop hook fails before /api/sessions/complete) leave the
+          // DB row permanently 'active'.
           session.restartGuard?.recordSuccess();
           session.consecutiveRestarts = 0;
+          this.completionHandler.finalizeSession(session.sessionDbId);
           this.sessionManager.removeSessionImmediate(session.sessionDbId);
         }
       });

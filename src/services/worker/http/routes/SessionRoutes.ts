@@ -30,7 +30,6 @@ import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { RestartGuard } from '../../RestartGuard.js';
 
 export class SessionRoutes extends BaseRouteHandler {
-  private completionHandler: SessionCompletionHandler;
   private spawnInProgress = new Map<number, boolean>();
   private crashRecoveryScheduled = new Set<number>();
 
@@ -41,14 +40,10 @@ export class SessionRoutes extends BaseRouteHandler {
     private geminiAgent: GeminiAgent,
     private openRouterAgent: OpenRouterAgent,
     private eventBroadcaster: SessionEventBroadcaster,
-    private workerService: WorkerService
+    private workerService: WorkerService,
+    private completionHandler: SessionCompletionHandler,
   ) {
     super();
-    this.completionHandler = new SessionCompletionHandler(
-      sessionManager,
-      eventBroadcaster,
-      dbManager
-    );
   }
 
   /**
@@ -521,6 +516,7 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const onStored = (evt: SummaryStoredEvent): void => {
       if (evt.sessionId !== sessionId) return;
       if (settled) return;
@@ -528,18 +524,17 @@ export class SessionRoutes extends BaseRouteHandler {
       cleanup();
       res.status(200).json({ ok: true, messageId: evt.messageId });
     };
+    const cleanup = (): void => {
+      if (timer) clearTimeout(timer);
+      ingestEventBus.off('summaryStoredEvent', onStored);
+    };
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       cleanup();
       res.status(504).json({ ok: false, reason: 'summary_not_stored_in_time' });
     }, SessionRoutes.SERVER_SIDE_SUMMARY_TIMEOUT_MS);
-
-    const cleanup = (): void => {
-      clearTimeout(timer);
-      ingestEventBus.off('summaryStoredEvent', onStored);
-    };
 
     ingestEventBus.on('summaryStoredEvent', onStored);
 
