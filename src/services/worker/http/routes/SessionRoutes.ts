@@ -508,7 +508,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * timer + abort handler all share one cleanup function so the listener can
    * never leak past the response.
    */
-  private handleSessionEnd = (req: Request, res: Response): void => {
+  private handleSessionEnd = this.wrapHandler((req: Request, res: Response): void => {
     const { sessionId } = req.body as { sessionId: string };
 
     // Closes the register-after-emit race: if the summary already stored
@@ -550,7 +550,7 @@ export class SessionRoutes extends BaseRouteHandler {
       settled = true;
       cleanup();
     });
-  };
+  });
 
   /**
    * Initialize a new session

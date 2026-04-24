@@ -232,10 +232,14 @@ export class TranscriptEventProcessor {
     const toolResponse = this.maybeParseJson(fields.toolResponse);
     let toolInput = this.maybeParseJson(fields.toolInput);
 
-    if (!toolName && toolId && session.pendingTools) {
+    // Consume any pending-tool entry for this toolId regardless of whether the
+    // tool_result already carries toolName: in the split-schema path the
+    // result always resolves the pending entry, so leaving it behind would
+    // grow the map until session end.
+    if (toolId && session.pendingTools) {
       const pending = session.pendingTools.get(toolId);
       if (pending) {
-        toolName = pending.toolName;
+        if (!toolName) toolName = pending.toolName;
         if (toolInput === undefined) toolInput = pending.toolInput;
         session.pendingTools.delete(toolId);
       }
