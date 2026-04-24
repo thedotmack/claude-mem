@@ -134,9 +134,12 @@ export class TranscriptWatcher {
     try {
       const watcher = fsWatch(watchRoot, { recursive: true, persistent: true }, (event, name) => {
         if (!name) return;                                  // some events omit filename
-        // Re-resolve the configured path; new files surface here. Restricting
-        // to the configured pattern keeps unrelated edits in the watched root
-        // from triggering tailer churn.
+        // Skip the glob scan for paths we already tail — JSONL appends fire
+        // here on every line and a full resolveWatchFiles() per append is
+        // more expensive than the prior 5-s interval. Only unknown paths
+        // warrant a rescan (new transcript files surface here first).
+        const changed = resolvePath(watchRoot, name);
+        if (this.tailers.has(changed)) return;
         const matches = this.resolveWatchFiles(resolvedPath);
         for (const filePath of matches) {
           if (!this.tailers.has(filePath)) {

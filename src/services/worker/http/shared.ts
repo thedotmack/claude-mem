@@ -53,7 +53,10 @@ class IngestEventBus extends EventEmitter {
    * happens between the two requests. The session-end handler consults this
    * buffer before registering to catch any already-fired event.
    *
-   * Entries are evicted after RECENT_EVENT_TTL_MS or when consumed.
+   * Entries are evicted only on TTL expiry (RECENT_EVENT_TTL_MS) so that a
+   * retried Stop hook — which opens a second `/api/session/end` — still sees
+   * the already-emitted event instead of hanging 30 s for a replay that will
+   * never come.
    */
   private readonly recentStored = new Map<string, { event: SummaryStoredEvent; at: number }>();
   private static readonly RECENT_EVENT_TTL_MS = 60_000;
@@ -70,12 +73,14 @@ class IngestEventBus extends EventEmitter {
     });
   }
 
-  /** Retrieve and remove a recently-emitted summaryStoredEvent, if any. */
+  /** Read a recently-emitted summaryStoredEvent (idempotent; TTL-evicted). */
   takeRecentSummaryStored(sessionId: string): SummaryStoredEvent | undefined {
     const entry = this.recentStored.get(sessionId);
     if (!entry) return undefined;
-    this.recentStored.delete(sessionId);
-    if (Date.now() - entry.at > IngestEventBus.RECENT_EVENT_TTL_MS) return undefined;
+    if (Date.now() - entry.at > IngestEventBus.RECENT_EVENT_TTL_MS) {
+      this.recentStored.delete(sessionId);
+      return undefined;
+    }
     return entry.event;
   }
 

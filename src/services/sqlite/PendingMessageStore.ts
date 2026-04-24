@@ -230,26 +230,18 @@ export class PendingMessageStore {
    * old per-status wrapper methods were deleted in the same PR).
    *
    * @param status  `'failed'` (processing-only) or `'abandoned'` (pending+processing)
-   * @param filter  `{ sessionDbId?: number }` — scope to one session's rows
+   * @param filter  `{ sessionDbId: number }` — scope to one session's rows.
+   *   Required: no unscoped path exists, to prevent accidental global drain.
    * @returns Number of rows updated
    */
   transitionMessagesTo(
     status: 'failed' | 'abandoned',
-    filter: { sessionDbId?: number }
+    filter: { sessionDbId: number }
   ): number {
     const now = Date.now();
     const statusClause = status === 'failed'
       ? `status = 'processing'`
       : `status IN ('pending', 'processing')`;
-
-    if (filter.sessionDbId === undefined) {
-      const stmt = this.db.prepare(`
-        UPDATE pending_messages
-        SET status = 'failed', failed_at_epoch = ?
-        WHERE ${statusClause}
-      `);
-      return stmt.run(now).changes;
-    }
 
     const stmt = this.db.prepare(`
       UPDATE pending_messages
