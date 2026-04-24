@@ -7,7 +7,7 @@
 
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
-import { ingestEventBus, type SummaryStoredEvent } from '../shared.js';
+import { ingestEventBus, ingestObservation, type SummaryStoredEvent } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
@@ -100,7 +100,7 @@ export class SessionRoutes extends BaseRouteHandler {
   private static readonly STALE_GENERATOR_THRESHOLD_MS = 30_000; // 30 seconds (#1099)
   private static readonly MAX_SESSION_WALL_CLOCK_MS = 4 * 60 * 60 * 1000; // 4 hours (#1590)
 
-  private ensureGeneratorRunning(sessionDbId: number, source: string): void {
+  public ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 
@@ -712,94 +712,28 @@ export class SessionRoutes extends BaseRouteHandler {
    * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, tool_name, tool_input, tool_response, cwd, agentId, agentType } = req.body;
-    const platformSource = normalizePlatformSource(req.body.platformSource);
-    const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : '';
+    const { contentSessionId, tool_name, tool_input, tool_response, cwd, platformSource, agentId, agentType } = req.body;
 
-    // Load skip tools from settings
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const skipTools = new Set(settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim()).filter(Boolean));
-
-    // Skip low-value or meta tools
-    if (skipTools.has(tool_name)) {
-      logger.debug('SESSION', 'Skipping observation for tool', { tool_name });
-      res.json({ status: 'skipped', reason: 'tool_excluded' });
-      return;
-    }
-
-    // Skip meta-observations: file operations on session-memory files
-    const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);
-    if (fileOperationTools.has(tool_name) && tool_input) {
-      const filePath = tool_input.file_path || tool_input.notebook_path;
-      if (filePath && filePath.includes('session-memory')) {
-        logger.debug('SESSION', 'Skipping meta-observation for session-memory file', {
-          tool_name,
-          file_path: filePath
-        });
-        res.json({ status: 'skipped', reason: 'session_memory_meta' });
-        return;
-      }
-    }
-
-    const store = this.dbManager.getSessionStore();
-
-    let sessionDbId: number;
-    let promptNumber: number;
-    try {
-      sessionDbId = store.createSDKSession(contentSessionId, project, '', undefined, platformSource);
-      promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
-    } catch (error) {
-      const normalizedError = error instanceof Error ? error : new Error(String(error));
-      logger.error('HTTP', 'Observation storage failed', { contentSessionId, tool_name }, normalizedError);
-      res.json({ stored: false, reason: normalizedError.message });
-      return;
-    }
-
-    // Privacy check: skip if user prompt was entirely private
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
-      store,
+    const result = ingestObservation({
       contentSessionId,
-      promptNumber,
-      'observation',
-      sessionDbId,
-      { tool_name }
-    );
-    if (!userPrompt) {
-      res.json({ status: 'skipped', reason: 'private' });
-      return;
-    }
-
-    // Strip memory tags from tool_input and tool_response
-    const cleanedToolInput = tool_input !== undefined
-      ? stripMemoryTagsFromJson(JSON.stringify(tool_input))
-      : '{}';
-
-    const cleanedToolResponse = tool_response !== undefined
-      ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
-      : '{}';
-
-    // Queue observation
-    this.sessionManager.queueObservation(sessionDbId, {
-      tool_name,
-      tool_input: cleanedToolInput,
-      tool_response: cleanedToolResponse,
-      prompt_number: promptNumber,
-      cwd: cwd || (() => {
-        logger.error('SESSION', 'Missing cwd when queueing observation in SessionRoutes', {
-          sessionId: sessionDbId,
-          tool_name
-        });
-        return '';
-      })(),
-      agentId: typeof agentId === 'string' ? agentId : undefined,
-      agentType: typeof agentType === 'string' ? agentType : undefined,
+      toolName: tool_name,
+      toolInput: tool_input,
+      toolResponse: tool_response,
+      cwd,
+      platformSource,
+      agentId,
+      agentType,
     });
 
-    // Ensure SDK agent is running
-    this.ensureGeneratorRunning(sessionDbId, 'observation');
+    if (!result.ok) {
+      res.status(result.status ?? 500).json({ stored: false, reason: result.reason });
+      return;
+    }
 
-    // Broadcast observation queued event
-    this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
+    if ('status' in result && result.status === 'skipped') {
+      res.json({ status: 'skipped', reason: result.reason });
+      return;
+    }
 
     res.json({ status: 'queued' });
   });

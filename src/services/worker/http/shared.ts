@@ -45,7 +45,15 @@ export interface SummaryStoredEvent {
   messageId: number;
 }
 
-class IngestEventBus extends EventEmitter {}
+class IngestEventBus extends EventEmitter {
+  constructor() {
+    super();
+    // Listener count is bounded by concurrent /api/session/end calls and they
+    // all clean up on completion. Disable the default 10-listener warning so
+    // normal load doesn't look like a leak in monitoring.
+    this.setMaxListeners(0);
+  }
+}
 
 /**
  * Process-local event bus for ingestion lifecycle events.
@@ -79,6 +87,22 @@ let ctx: IngestContext | null = null;
  */
 export function setIngestContext(next: IngestContext): void {
   ctx = next;
+}
+
+/**
+ * Attach the generator-running callback after `SessionRoutes` has been
+ * constructed. `setIngestContext` is called early in `WorkerService` startup
+ * (before routes exist), so the callback is wired in as a second step once
+ * `SessionRoutes.ensureGeneratorRunning` is available.
+ *
+ * Without this, transcript-watcher observations queue via
+ * `ingestObservation()` but the SDK generator never auto-starts to drain
+ * them.
+ */
+export function attachIngestGeneratorStarter(
+  ensureGeneratorRunning: (sessionDbId: number, source: string) => void,
+): void {
+  requireContext().ensureGeneratorRunning = ensureGeneratorRunning;
 }
 
 function requireContext(): IngestContext {
