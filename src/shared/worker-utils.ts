@@ -558,10 +558,8 @@ export interface WorkerFallbackOptions {
   /**
    * Per-call HTTP timeout in ms. Forwarded to workerHttpRequest. Omit to use
    * HEALTH_CHECK_TIMEOUT_MS (the default ~3 s suitable for short pings).
-   * Long-lived endpoints like POST /api/session/end (server holds up to
-   * SessionRoutes.SERVER_SIDE_SUMMARY_TIMEOUT_MS = 30_000) MUST set this
-   * above the server-side hold window, or the client will race to a spurious
-   * timeout and treat the worker as unreachable.
+   * All hook endpoints are fire-and-forget queueing endpoints that return
+   * `{status: 'queued'}` immediately, so the default suffices.
    */
   timeoutMs?: number;
 }

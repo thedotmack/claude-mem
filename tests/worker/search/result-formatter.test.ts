@@ -207,8 +207,35 @@ describe('ResultFormatter', () => {
 
       const formatted = formatter.formatSearchResults(results, 'test', true);
 
-      expect(formatted).toContain('Vector search failed');
-      expect(formatted).toContain('semantic search unavailable');
+      expect(formatted).toContain('Semantic search failed');
+      expect(formatted).toContain('Falling back to keyword search');
+      expect(formatted).not.toContain('Install uv');
+    });
+  });
+
+  describe('formatChromaFailureMessage', () => {
+    it('formats connection-error reasons with offline messaging', () => {
+      const message = ResultFormatter.formatChromaFailureMessage({
+        message: 'subprocess closed',
+        isConnectionError: true,
+      });
+
+      expect(message).toContain('Semantic search is offline');
+      expect(message).toContain('Chroma MCP unreachable: subprocess closed');
+      expect(message).toContain('Falling back to keyword search');
+      expect(message).not.toContain('Install uv');
+    });
+
+    it('formats generic failure reasons with diagnostic pointer', () => {
+      const message = ResultFormatter.formatChromaFailureMessage({
+        message: 'something went wrong',
+        isConnectionError: false,
+      });
+
+      expect(message).toContain('Semantic search failed: something went wrong');
+      expect(message).toContain('Falling back to keyword search');
+      expect(message).toContain('CHROMA_SYNC');
+      expect(message).not.toContain('Install uv');
     });
   });
 

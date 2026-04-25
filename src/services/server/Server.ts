@@ -149,11 +149,20 @@ export class Server {
    */
   async listen(port: number, host: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      this.server = this.app.listen(port, host, () => {
+      const server = http.createServer(this.app);
+      this.server = server;
+      const onError = (err: Error) => {
+        server.off('listening', onListening);
+        reject(err);
+      };
+      const onListening = () => {
+        server.off('error', onError);
         logger.info('SYSTEM', 'HTTP server started', { host, port, pid: process.pid });
         resolve();
-      });
-      this.server.on('error', reject);
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(port, host);
     });
   }
 

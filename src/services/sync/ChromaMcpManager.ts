@@ -342,6 +342,73 @@ export class ChromaMcpManager {
   }
 
   /**
+   * Deep semantic-search probe — verifies the actual query path works,
+   * not just that the subprocess responds to one tool. Each stage is wrapped
+   * in its own try/catch so the returned `stage` reflects where it failed.
+   *
+   * Stages:
+   *  - 'list'  → chroma_list_collections (also counts collections)
+   *  - 'query' → chroma_query_documents against cm__claude-mem with a trivial
+   *              query and n_results: 1 (measures latency)
+   *  - 'done'  → both stages succeeded
+   */
+  async probeSemanticSearch(): Promise<{
+    ok: boolean;
+    stage: 'connect' | 'list' | 'query' | 'done';
+    error?: string;
+    collections?: number;
+    queryLatencyMs?: number;
+  }> {
+    let collections: number | undefined;
+
+    // Stage: list — also lazy-connects via callTool
+    try {
+      const listResult: any = await this.callTool('chroma_list_collections', { limit: 100 });
+      if (Array.isArray(listResult)) {
+        collections = listResult.length;
+      } else if (listResult && Array.isArray(listResult.collections)) {
+        collections = listResult.collections.length;
+      } else if (listResult && typeof listResult === 'object' && 'length' in listResult) {
+        collections = (listResult as { length: number }).length;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn('CHROMA_MCP', 'Deep probe failed at list stage', { error: message });
+      return { ok: false, stage: 'list', error: message };
+    }
+
+    // Stage: query — round-trip through the embedding/vector path
+    const queryStartedAt = Date.now();
+    try {
+      await this.callTool('chroma_query_documents', {
+        collection_name: 'cm__claude-mem',
+        query_texts: ['ping'],
+        n_results: 1
+      });
+      const queryLatencyMs = Date.now() - queryStartedAt;
+      return { ok: true, stage: 'done', collections, queryLatencyMs };
+    } catch (error) {
+      const queryLatencyMs = Date.now() - queryStartedAt;
+      const rawMessage = error instanceof Error ? error.message : String(error);
+      const isMissingOrEmpty = /not exist|missing|empty|no such/i.test(rawMessage);
+      const errorMessage = isMissingOrEmpty
+        ? `collection cm__claude-mem missing or empty (${rawMessage})`
+        : rawMessage;
+      logger.warn('CHROMA_MCP', 'Deep probe failed at query stage', {
+        error: rawMessage,
+        queryLatencyMs
+      });
+      return {
+        ok: false,
+        stage: 'query',
+        error: errorMessage,
+        collections,
+        queryLatencyMs
+      };
+    }
+  }
+
+  /**
    * Gracefully stop the MCP connection and kill the chroma-mcp subprocess.
    * client.close() sends stdin close -> SIGTERM -> SIGKILL to the subprocess.
    */

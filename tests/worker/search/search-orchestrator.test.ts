@@ -299,7 +299,8 @@ describe('SearchOrchestrator', () => {
 
         const formatted = orchestrator.formatSearchResults(results, 'test', true);
 
-        expect(formatted).toContain('Vector search failed');
+        expect(formatted).toContain('Semantic search');
+        expect(formatted).toContain('Falling back to keyword search');
       });
     });
   });

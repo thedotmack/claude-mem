@@ -13,11 +13,18 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { shouldTrackProject } from '../../shared/should-track-project.js';
 
 export const sessionCompleteHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const { sessionId } = input;
     const platformSource = normalizePlatformSource(input.platform);
+
+    // Same OBSERVER_SESSIONS_DIR exclusion as the rest of the hook surface —
+    // the observer's child Claude Code must never call /api/sessions/complete.
+    if (input.cwd && !shouldTrackProject(input.cwd)) {
+      return { continue: true, suppressOutput: true };
+    }
 
     if (!sessionId) {
       logger.warn('HOOK', 'session-complete: Missing sessionId, skipping');
