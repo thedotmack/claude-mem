@@ -108,23 +108,30 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
   backupPath = path.join(effectiveBackupsDir, `claude-mem-pre-12.4.3-${ts}.db`);
 
   const backupDb = new Database(dbPath, { readonly: true });
+  let vacuumFailed = false;
+  let vacuumError: Error | null = null;
   try {
     backupDb.run(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
     logger.info('SYSTEM', 'v12.4.3 backup created via VACUUM INTO', { backupPath, dbSize });
   } catch (err: unknown) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    logger.warn('SYSTEM', 'VACUUM INTO failed, falling back to copyFileSync', {}, error);
+    vacuumFailed = true;
+    vacuumError = err instanceof Error ? err : new Error(String(err));
+  }
+  // Close before any fallback: on Windows an open SQLite handle holds a
+  // file lock that can prevent copyFileSync from reading the source.
+  backupDb.close();
+
+  if (vacuumFailed) {
+    logger.warn('SYSTEM', 'VACUUM INTO failed, falling back to copyFileSync', {}, vacuumError ?? undefined);
     try {
       copyFileSync(dbPath, backupPath);
       logger.info('SYSTEM', 'v12.4.3 backup created via copyFileSync', { backupPath, dbSize });
     } catch (copyErr: unknown) {
       const copyError = copyErr instanceof Error ? copyErr : new Error(String(copyErr));
       logger.error('SYSTEM', 'v12.4.3 backup failed via both VACUUM INTO and copyFileSync; aborting cleanup', {}, copyError);
-      backupDb.close();
       return;
     }
   }
-  backupDb.close();
 
   const counts = emptyCounts();
   const db = new Database(dbPath);

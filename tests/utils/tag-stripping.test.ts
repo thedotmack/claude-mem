@@ -420,6 +420,10 @@ after`;
       expect(isInternalProtocolPayload('<task-notification>agent done</task-notification>')).toBe(true);
     });
 
+    it('returns true for an empty-body task-notification block', () => {
+      expect(isInternalProtocolPayload('<task-notification></task-notification>')).toBe(true);
+    });
+
     it('returns true with surrounding whitespace', () => {
       expect(isInternalProtocolPayload('\n  <task-notification>x</task-notification>\n')).toBe(true);
     });
