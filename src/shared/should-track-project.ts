@@ -11,9 +11,16 @@
  * references `isProjectExcluded` directly — the import lives only here.
  */
 
+import { relative, isAbsolute } from 'path';
 import { isProjectExcluded } from '../utils/project-filter.js';
 import { loadFromFileOnce } from './hook-settings.js';
 import { OBSERVER_SESSIONS_DIR } from './paths.js';
+
+function isWithin(child: string, parent: string): boolean {
+  if (child === parent) return true;
+  const rel = relative(parent, child);
+  return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel);
+}
 
 /**
  * @returns true when the project at `cwd` is NOT excluded from claude-mem
@@ -27,7 +34,9 @@ import { OBSERVER_SESSIONS_DIR } from './paths.js';
  */
 export function shouldTrackProject(cwd: string): boolean {
   if (!cwd) return true;
-  if (cwd === OBSERVER_SESSIONS_DIR || cwd.startsWith(OBSERVER_SESSIONS_DIR + '/')) {
+  // path.relative handles separator differences (Windows '\\' vs POSIX '/')
+  // and trailing-slash variance, which a literal startsWith would miss.
+  if (isWithin(cwd, OBSERVER_SESSIONS_DIR)) {
     return false;
   }
   const settings = loadFromFileOnce();

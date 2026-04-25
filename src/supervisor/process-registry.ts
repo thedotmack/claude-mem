@@ -665,6 +665,11 @@ export function spawnSdkProcess(
   // child becomes leader of a new process group whose pgid equals its pid.
   // Windows: detached:true decouples the child from the parent console; there
   // is no POSIX group, but the flag is still safe to pass.
+  //
+  // stdin must be 'pipe' (not 'ignore') because SpawnedSdkProcess.stdin is
+  // typed NonNullable<...> and the Claude Agent SDK consumes that pipe to
+  // stream prompts in. With 'ignore', child.stdin would be null and the
+  // null-check below (line ~737) would tear the child down immediately.
   const child = useCmdWrapper
     ? spawn('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
         cwd: options.cwd,
