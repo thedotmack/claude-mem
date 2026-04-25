@@ -944,7 +944,10 @@ export class SessionRoutes extends BaseRouteHandler {
         maxBytes: MAX_USER_PROMPT_BYTES,
         preview: prompt.slice(0, 200)
       });
-      prompt = Buffer.from(prompt).subarray(0, MAX_USER_PROMPT_BYTES).toString('utf8');
+      const buf = Buffer.from(prompt, 'utf8');
+      let end = MAX_USER_PROMPT_BYTES;
+      while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+      prompt = buf.subarray(0, end).toString('utf8');
     }
 
     logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {
