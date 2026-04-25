@@ -44,16 +44,18 @@ export const sessionInitHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    // Handle image-only prompts (where text prompt is empty/undefined)
-    // Use placeholder so sessions still get created and tracked for memory
-    const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
-
-    if (isInternalProtocolPayload(prompt)) {
+    // Filter on the raw prompt so the check is independent of the
+    // [media prompt] substitution below.
+    if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
       logger.debug('HOOK', 'session-init: skipping internal protocol payload', {
-        preview: prompt.slice(0, 80),
+        preview: rawPrompt.slice(0, 80),
       });
       return { continue: true, suppressOutput: true };
     }
+
+    // Handle image-only prompts (where text prompt is empty/undefined)
+    // Use placeholder so sessions still get created and tracked for memory
+    const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
 
     const project = getProjectContext(cwd).primary;
     const platformSource = normalizePlatformSource(input.platform);
