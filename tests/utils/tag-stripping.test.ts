@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson } from '../../src/utils/tag-stripping.js';
+import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson, isInternalProtocolPayload } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
 // Suppress logger output during tests
@@ -408,6 +408,62 @@ after`;
       const shouldSkip = !cleanedPrompt || cleanedPrompt.trim() === '';
       expect(shouldSkip).toBe(false);
       expect(cleanedPrompt.trim()).toBe('Please help me with my code');
+    });
+  });
+
+  describe('isInternalProtocolPayload', () => {
+    it('returns false for empty input', () => {
+      expect(isInternalProtocolPayload('')).toBe(false);
+    });
+
+    it('returns true for a bare task-notification block', () => {
+      expect(isInternalProtocolPayload('<task-notification>agent done</task-notification>')).toBe(true);
+    });
+
+    it('returns true for an empty-body task-notification block', () => {
+      expect(isInternalProtocolPayload('<task-notification></task-notification>')).toBe(true);
+    });
+
+    it('returns true with surrounding whitespace', () => {
+      expect(isInternalProtocolPayload('\n  <task-notification>x</task-notification>\n')).toBe(true);
+    });
+
+    it('returns true for multi-line payload', () => {
+      const payload = '<task-notification>\nline1\nline2\n</task-notification>';
+      expect(isInternalProtocolPayload(payload)).toBe(true);
+    });
+
+    it('returns true when tag has attributes', () => {
+      expect(isInternalProtocolPayload('<task-notification data-id="42">x</task-notification>')).toBe(true);
+    });
+
+    it('returns false for partial / unclosed tag', () => {
+      expect(isInternalProtocolPayload('<task-notification>oops')).toBe(false);
+    });
+
+    it('returns false when surrounded by user text', () => {
+      const text = 'hi <task-notification>x</task-notification> more';
+      expect(isInternalProtocolPayload(text)).toBe(false);
+    });
+
+    it('returns false for unrelated tags', () => {
+      expect(isInternalProtocolPayload('<private>secret</private>')).toBe(false);
+      expect(isInternalProtocolPayload('<system-reminder>hi</system-reminder>')).toBe(false);
+    });
+
+    it('returns false for over-large input', () => {
+      const huge = '<task-notification>' + 'a'.repeat(300 * 1024);
+      expect(isInternalProtocolPayload(huge)).toBe(false);
+    });
+
+    it('returns false for two protocol blocks separated by user text', () => {
+      const text = '<task-notification>a</task-notification> hello <task-notification>b</task-notification>';
+      expect(isInternalProtocolPayload(text)).toBe(false);
+    });
+
+    it('returns false for two adjacent protocol blocks (deliberate: deny-list per single block, not concatenations)', () => {
+      const text = '<task-notification>a</task-notification><task-notification>b</task-notification>';
+      expect(isInternalProtocolPayload(text)).toBe(false);
     });
   });
 });

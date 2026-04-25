@@ -11,7 +11,7 @@ import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
@@ -857,9 +857,19 @@ export class SessionRoutes extends BaseRouteHandler {
     // Only contentSessionId is truly required — Cursor and other platforms
     // may omit prompt/project in their payload (#838, #1049)
     const project = req.body.project || 'unknown';
-    let prompt = req.body.prompt || '[media prompt]';
+    const rawPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : undefined;
     const platformSource = normalizePlatformSource(req.body.platformSource);
     const customTitle = req.body.customTitle || undefined;
+
+    // Filter on the raw prompt before truncation / [media prompt] substitution
+    // so the check is independent of those transforms.
+    if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
+      logger.debug('HTTP', 'session-init: skipping internal protocol payload before session creation', { contentSessionId });
+      res.json({ skipped: true, reason: 'internal_protocol' });
+      return;
+    }
+
+    let prompt = rawPrompt || '[media prompt]';
 
     const promptByteLength = Buffer.byteLength(prompt, 'utf8');
     if (promptByteLength > MAX_USER_PROMPT_BYTES) {

@@ -42,6 +42,12 @@ export class SDKAgent {
     this.sessionManager = sessionManager;
   }
 
+  private resetSessionForFreshStart(session: ActiveSession): void {
+    this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
+    session.memorySessionId = null;
+    session.forceInit = true;
+  }
+
   /**
    * Start SDK agent for a session (event-driven, no polling)
    * @param worker WorkerService reference for spinner control (optional)
@@ -151,7 +157,8 @@ export class SDKAgent {
         // Custom spawn factory: spawns the SDK child in its own POSIX process
         // group so the worker can tear down the whole subtree on shutdown.
         spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId),
-        env: isolatedEnv  // Use isolated credentials from ~/.claude-mem/.env, not process.env
+        env: isolatedEnv,  // Use isolated credentials from ~/.claude-mem/.env, not process.env
+        mcpServers: {},
       }
     });
 
@@ -208,7 +215,8 @@ export class SDKAgent {
           // Check for context overflow - prevents infinite retry loops
           if (textContent.includes('prompt is too long') ||
               textContent.includes('context window')) {
-            logger.error('SDK', 'Context overflow detected - terminating session');
+            logger.error('SDK', 'Context overflow detected - terminating session and forcing fresh start');
+            this.resetSessionForFreshStart(session);
             session.abortController.abort();
             return;
           }
@@ -259,6 +267,12 @@ export class SDKAgent {
 
           // Detect fatal context overflow and terminate gracefully (issue #870)
           if (typeof textContent === 'string' && textContent.includes('Prompt is too long')) {
+            // Resume of this SDK session will overflow forever. Force a fresh session on the
+            // next spawn so crash-recovery can drain remaining pending messages successfully.
+            this.resetSessionForFreshStart(session);
+            logger.error('SDK', 'Context overflow — cleared memorySessionId so next spawn starts fresh', {
+              sessionDbId: session.sessionDbId
+            });
             throw new Error('Claude session context overflow: prompt is too long');
           }
 

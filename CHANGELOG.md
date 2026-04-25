@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.4.2] - 2026-04-25
+
+## Two ship-blockers from yesterday's triage + 5 trivial fixes
+
+### Worker reliability
+- **Context overflow no longer loops forever.** When the Claude SDK throws `Prompt is too long`, `SDKAgent` now clears `session.memorySessionId` and sets `session.forceInit = true` before throwing — so the immediately-following crash-recovery spawn starts a fresh SDK session instead of resuming the same overflowed context. In the wild this had stranded 68+ pending messages on a single poisoned session before the windowed RestartGuard finally abandoned the queue.
+- **`<task-notification>` payloads no longer pollute `user_prompts`.** Claude Code's autonomous protocol blocks (emitted on background `Agent` completion) were being captured as if they were user prompts — 471 such rows in one local DB. New `isInternalProtocolPayload()` predicate in `src/utils/tag-stripping.ts` blocks them at both the hook layer (`session-init.ts`) and the worker boundary (`SessionRoutes.ts`). Conservative deny-list — does NOT touch `<command-name>` / `<command-message>` which wrap real user slash-commands.
+
+### Triage cleanup (from yesterday's open-issue review)
+- **#2092**: `worker-service.cjs` build banner now CJS-safe (no `import.meta.url`); `node -c` passes for the first time in several releases.
+- **#2100**: PreToolUse Read hook timeout reduced from `2000` (s, plainly a typo) to `60`.
+- **#2131**: `"shell": "bash"` added to every hook in `plugin/hooks/hooks.json` so Claude Code on Windows routes through Git Bash instead of cmd.exe.
+- **#2132**: Antigravity context file path corrected from `.agent/rules` to `.agents/rules`.
+- **#2088**: Worker SDK `query()` calls now pass `mcpServers: {}` to suppress inheritance of the user's global MCP servers (Serena, etc.) into observer/knowledge sessions.
+
+### Notes
+- Cleanup of polluted rows is included in the worker — fresh installs are clean. To clean an existing DB: `sqlite3 ~/.claude-mem/claude-mem.db "DELETE FROM user_prompts WHERE prompt_text LIKE '<task-notification>%';"` (the AFTER-DELETE trigger handles FTS).
+- The 5 triage fixes were authored from a multi-agent review of 38 open issues against the v12.3.0–v12.4.1 cleanup arc.
+
 ## [12.4.1] - 2026-04-25
 
 ## perf(chroma): Cache backfill watermarks to skip per-restart Chroma scans

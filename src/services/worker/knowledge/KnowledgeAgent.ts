@@ -79,7 +79,8 @@ export class KnowledgeAgent {
         cwd: OBSERVER_SESSIONS_DIR,
         disallowedTools: KNOWLEDGE_AGENT_DISALLOWED_TOOLS,
         pathToClaudeCodeExecutable: claudePath,
-        env: isolatedEnv
+        env: isolatedEnv,
+        mcpServers: {},
       }
     });
 
@@ -195,7 +196,8 @@ export class KnowledgeAgent {
         cwd: OBSERVER_SESSIONS_DIR,
         disallowedTools: KNOWLEDGE_AGENT_DISALLOWED_TOOLS,
         pathToClaudeCodeExecutable: claudePath,
-        env: isolatedEnv
+        env: isolatedEnv,
+        mcpServers: {},
       }
     });
 

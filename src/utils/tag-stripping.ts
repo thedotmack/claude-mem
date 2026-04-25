@@ -104,3 +104,38 @@ export function stripMemoryTagsFromJson(content: string): string {
 export function stripMemoryTagsFromPrompt(content: string): string {
   return stripTags(content).stripped;
 }
+
+/**
+ * Tag names that Claude Code emits autonomously into the prompt stream as
+ * protocol notifications — never authored by the user. When the entire prompt
+ * payload is one of these blocks (with no surrounding user text), the hook
+ * MUST skip storage to keep `user_prompts` clean.
+ *
+ * Conservative deny-list: do NOT add `<command-name>` / `<command-message>`
+ * here — those wrap genuine user slash-command invocations.
+ */
+const PROTOCOL_ONLY_TAGS = ['task-notification'] as const;
+
+// Negative lookahead in the body keeps a payload like
+// "<task-notification>x</task-notification> hi <task-notification>y</task-notification>"
+// from matching as a single outer block (greedy [\s\S]* would otherwise span
+// the middle user text and silently drop a real prompt).
+const PROTOCOL_ONLY_REGEX = new RegExp(
+  `^\\s*<(${PROTOCOL_ONLY_TAGS.join('|')})\\b[^>]*>(?:(?!<\\1\\b|</\\1\\b)[\\s\\S])*</\\1>\\s*$`,
+);
+
+// Bounds the unanchored `[\s\S]*` body to keep a malformed 1MB+ payload that
+// opens a protocol tag and never closes it from running the regex engine
+// against the whole prompt before failing.
+const MAX_PROTOCOL_PAYLOAD_BYTES = 256 * 1024;
+
+/**
+ * Returns true when `text` is *entirely* a Claude Code protocol payload
+ * (e.g. a `<task-notification>` block emitted on background Agent completion)
+ * with no surrounding user-authored content.
+ */
+export function isInternalProtocolPayload(text: string): boolean {
+  if (!text) return false;
+  if (text.length > MAX_PROTOCOL_PAYLOAD_BYTES) return false;
+  return PROTOCOL_ONLY_REGEX.test(text);
+}
