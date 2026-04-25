@@ -13,6 +13,7 @@ import { logger } from '../../utils/logger.js';
 import { extractLastMessage } from '../../shared/transcript-parser.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { shouldTrackProject } from '../../shared/should-track-project.js';
 
 interface SessionEndResponse {
   ok: boolean;
@@ -22,6 +23,13 @@ interface SessionEndResponse {
 
 export const summarizeHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    // Skip Stop hook entirely when firing from an excluded project (notably
+    // OBSERVER_SESSIONS_DIR). Without this, the SDK observer's own Stop hook
+    // queues summaries against its meta-session and triggers a recovery loop.
+    if (input.cwd && !shouldTrackProject(input.cwd)) {
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     // Skip summaries in subagent context — subagents do not own the session summary.
     // Gate on agentId only: that field is present exclusively for Task-spawned subagents.
     // agentType alone (no agentId) indicates `--agent`-started main sessions, which still

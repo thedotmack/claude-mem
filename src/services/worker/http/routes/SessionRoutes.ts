@@ -29,6 +29,8 @@ import { getProjectContext } from '../../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { RestartGuard } from '../../RestartGuard.js';
 
+const MAX_USER_PROMPT_BYTES = 256 * 1024;
+
 export class SessionRoutes extends BaseRouteHandler {
   private spawnInProgress = new Map<number, boolean>();
   private crashRecoveryScheduled = new Set<number>();
@@ -929,9 +931,21 @@ export class SessionRoutes extends BaseRouteHandler {
     // Only contentSessionId is truly required — Cursor and other platforms
     // may omit prompt/project in their payload (#838, #1049)
     const project = req.body.project || 'unknown';
-    const prompt = req.body.prompt || '[media prompt]';
+    let prompt = req.body.prompt || '[media prompt]';
     const platformSource = normalizePlatformSource(req.body.platformSource);
     const customTitle = req.body.customTitle || undefined;
+
+    const promptByteLength = Buffer.byteLength(prompt, 'utf8');
+    if (promptByteLength > MAX_USER_PROMPT_BYTES) {
+      logger.warn('HTTP', 'SessionRoutes: oversized prompt truncated at session-init boundary', {
+        project,
+        contentSessionId,
+        promptByteLength,
+        maxBytes: MAX_USER_PROMPT_BYTES,
+        preview: prompt.slice(0, 200)
+      });
+      prompt = Buffer.from(prompt).subarray(0, MAX_USER_PROMPT_BYTES).toString('utf8');
+    }
 
     logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {
       contentSessionId,

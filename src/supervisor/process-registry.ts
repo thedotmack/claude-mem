@@ -670,7 +670,7 @@ export function spawnSdkProcess(
         cwd: options.cwd,
         env,
         detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         signal: options.signal,
         windowsHide: true,
       })
@@ -678,7 +678,7 @@ export function spawnSdkProcess(
         cwd: options.cwd,
         env,
         detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         signal: options.signal,
         windowsHide: true,
       });
