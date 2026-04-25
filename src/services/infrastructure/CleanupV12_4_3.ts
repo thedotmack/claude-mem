@@ -24,7 +24,7 @@
 import path from 'path';
 import { existsSync, writeFileSync, mkdirSync, rmSync, statSync, copyFileSync, statfsSync } from 'fs';
 import { Database } from 'bun:sqlite';
-import { DATA_DIR, BACKUPS_DIR, DB_PATH, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import { DATA_DIR, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 
 const MARKER_FILENAME = '.cleanup-v12.4.3-applied';
@@ -100,9 +100,10 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
     logger.warn('SYSTEM', 'statfsSync failed; proceeding without disk-space pre-flight', {}, error);
   }
 
-  mkdirSync(BACKUPS_DIR, { recursive: true });
+  const effectiveBackupsDir = path.join(effectiveDataDir, 'backups');
+  mkdirSync(effectiveBackupsDir, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  backupPath = path.join(BACKUPS_DIR, `claude-mem-pre-12.4.3-${ts}.db`);
+  backupPath = path.join(effectiveBackupsDir, `claude-mem-pre-12.4.3-${ts}.db`);
 
   const backupDb = new Database(dbPath, { readonly: true });
   try {
@@ -149,7 +150,7 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
     chromaWiped,
     ...counts,
   });
-  logger.info('SYSTEM', `To restore: cp '${backupPath}' '${DB_PATH}'`);
+  logger.info('SYSTEM', `To restore: cp '${backupPath}' '${dbPath}'`);
 }
 
 function runObserverSessionsPurge(db: Database, counts: CleanupCounts): void {

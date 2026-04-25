@@ -884,6 +884,12 @@ export class SessionRoutes extends BaseRouteHandler {
       customTitle
     });
 
+    if (isInternalProtocolPayload(prompt)) {
+      logger.debug('HTTP', 'session-init: skipping internal protocol payload before session creation', { contentSessionId });
+      res.json({ skipped: true, reason: 'internal_protocol' });
+      return;
+    }
+
     const store = this.dbManager.getSessionStore();
 
     // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
@@ -906,12 +912,6 @@ export class SessionRoutes extends BaseRouteHandler {
       logger.debug('HTTP', `[ALIGNMENT] DB Lookup Proof | contentSessionId=${contentSessionId} → memorySessionId=${memorySessionId || '(not yet captured)'} | prompt#=${promptNumber}`);
     } else {
       logger.debug('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${promptNumber} | memorySessionId will be captured on first SDK response`);
-    }
-
-    if (isInternalProtocolPayload(prompt)) {
-      logger.debug('HTTP', 'session-init: skipping internal protocol payload', { contentSessionId });
-      res.json({ sessionDbId, promptNumber, skipped: true, reason: 'internal_protocol' });
-      return;
     }
 
     // Step 3: Strip privacy tags from prompt
