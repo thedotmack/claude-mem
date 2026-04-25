@@ -31,6 +31,8 @@ import {
   SEARCH_CONSTANTS
 } from './search/index.js';
 import type { TimelineData } from './search/index.js';
+import { ResultFormatter } from './search/ResultFormatter.js';
+import { ChromaUnavailableError } from './search/errors.js';
 
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
@@ -182,6 +184,7 @@ export class SearchManager {
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
     let chromaFailed = false;
+    let chromaFailureReason: { message: string; isConnectionError: boolean } | null = null;
 
     // Determine which types to query based on type filter
     const searchObservations = !type || type === 'observations';
@@ -300,6 +303,10 @@ export class SearchManager {
         }
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
+        chromaFailureReason = {
+          message: errorObject.message,
+          isConnectionError: chromaError instanceof ChromaUnavailableError,
+        };
         logger.warn('SEARCH', 'ChromaDB semantic search failed, falling back to FTS5 keyword search', {}, errorObject);
         chromaFailed = true;
 
@@ -349,11 +356,11 @@ export class SearchManager {
     }
 
     if (totalResults === 0) {
-      if (chromaFailed) {
+      if (chromaFailureReason !== null) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Vector search failed - semantic search unavailable.\n\nTo enable semantic search:\n1. Install uv: https://docs.astral.sh/uv/getting-started/installation/\n2. Restart the worker: npm run worker:restart\n\nNote: You can still use filter-only searches (date ranges, types, files) without a query term.`
+            text: ResultFormatter.formatChromaFailureMessage(chromaFailureReason)
           }]
         };
       }
