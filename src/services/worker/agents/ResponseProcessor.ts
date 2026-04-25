@@ -162,15 +162,9 @@ export async function processAgentResponse(
   // to the Stop hook for silent-summary-loss detection (#1633)
   session.lastSummaryStored = result.summaryId !== null;
 
-  // PATHFINDER plan 03 phase 2 + greploop iter 2 fix: route summary completion
-  // through ingestSummary({ kind: 'parsed' }) so the event-emission path is
-  // single-sourced. Gate on real persistence: only fire summaryStoredEvent
-  // when storage actually wrote a row (lastSummaryStored=true) OR the parsed
-  // payload was an explicit <skip_summary/> bypass. A non-skipped summary
-  // whose summaryId came back null (e.g. FK violation, null
-  // memory_session_id) must NOT confirm — the blocking /api/session/end
-  // endpoint would otherwise lie to the Stop hook with {ok:true} for a
-  // non-existent row.
+  // Gate ingestSummary({kind:'parsed'}) on real persistence so the event bus
+  // only fires for summaries that actually landed in the DB. Skipped summaries
+  // (<skip_summary/>) are an explicit bypass and still notify.
   if (parsed.kind === 'summary' && (parsed.data.skipped || session.lastSummaryStored)) {
     const messageId = session.processingMessageIds[0] ?? -1;
     ingestSummary({
@@ -181,7 +175,7 @@ export async function processAgentResponse(
       parsed: parsed.data,
     });
   } else if (parsed.kind === 'summary') {
-    logger.warn('DB', 'summary parsed but no row persisted; suppressing summaryStoredEvent to avoid lying to /api/session/end', {
+    logger.warn('DB', 'summary parsed but no row persisted; suppressing summaryStoredEvent', {
       sessionId: session.sessionDbId,
       memorySessionId: session.memorySessionId,
     });

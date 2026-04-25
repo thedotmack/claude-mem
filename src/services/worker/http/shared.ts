@@ -37,8 +37,9 @@ import { EventEmitter } from 'events';
  * actually stored a summary row. `messageId` is the pending_messages row id
  * that produced the summary; `sessionId` is the contentSessionId.
  *
- * The blocking `/api/session/end` endpoint defined by `05-hook-surface.md`
- * Phase 3 awaits this event to know the summary has landed in the DB.
+ * Currently dormant — the only consumer (the blocking `/api/session/end`
+ * endpoint) was removed when the Stop hook went fire-and-forget. Kept for
+ * future internal subscribers; emissions are cheap no-ops with no listeners.
  */
 export interface SummaryStoredEvent {
   sessionId: string;
@@ -47,25 +48,18 @@ export interface SummaryStoredEvent {
 
 class IngestEventBus extends EventEmitter {
   /**
-   * Recent summaryStoredEvent buffer keyed by sessionId. Protects against the
-   * register-after-emit race: a client that queues a summarize and then makes
-   * a second HTTP call to attach the listener can miss an emission that
-   * happens between the two requests. The session-end handler consults this
-   * buffer before registering to catch any already-fired event.
-   *
-   * Entries are evicted only on TTL expiry (RECENT_EVENT_TTL_MS) so that a
-   * retried Stop hook — which opens a second `/api/session/end` — still sees
-   * the already-emitted event instead of hanging 30 s for a replay that will
-   * never come.
+   * Recent summaryStoredEvent buffer keyed by sessionId. Originally protected
+   * the register-after-emit race for the blocking `/api/session/end` handler.
+   * Currently unused (handler removed when Stop hook went fire-and-forget);
+   * preserved so any future subscriber gets the same race-free contract.
    */
   private readonly recentStored = new Map<string, { event: SummaryStoredEvent; at: number }>();
   private static readonly RECENT_EVENT_TTL_MS = 60_000;
 
   constructor() {
     super();
-    // Listener count is bounded by concurrent /api/session/end calls and they
-    // all clean up on completion. Disable the default 10-listener warning so
-    // normal load doesn't look like a leak in monitoring.
+    // Disable the default 10-listener warning. With no current consumers
+    // this is moot, but kept for parity if future subscribers attach.
     this.setMaxListeners(0);
     this.on('summaryStoredEvent', (evt: SummaryStoredEvent) => {
       this.recentStored.set(evt.sessionId, { event: evt, at: Date.now() });

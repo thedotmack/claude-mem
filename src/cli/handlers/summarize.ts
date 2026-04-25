@@ -1,10 +1,10 @@
 /**
  * Summarize Handler - Stop
  *
- * Plan 05 Phase 3 (PATHFINDER-2026-04-22): the 120-second client-side polling
- * loop is replaced by a single POST to `/api/session/end`, which the worker
- * holds open until the summary-stored event fires. One request, one response,
- * no polling on either side.
+ * Fire-and-forget: queue the summarize request and exit. The worker handles
+ * summary generation, storage, and session cleanup asynchronously. The Stop
+ * hook does not wait for any of it — Claude Code must exit immediately.
+ * Session-complete cleanup is performed by the SessionEnd handler.
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
@@ -14,12 +14,6 @@ import { extractLastMessage } from '../../shared/transcript-parser.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
-
-interface SessionEndResponse {
-  ok: boolean;
-  messageId?: number;
-  reason?: string;
-}
 
 export const summarizeHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -98,50 +92,7 @@ export const summarizeHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    logger.debug('HOOK', 'Summary request queued, awaiting blocking session-end response');
-
-    // 2. Plan 05 Phase 3 — single blocking POST. Server holds the connection
-    //    open until the summary-stored event fires (Plan 03 Phase 2 emitter)
-    //    or its server-side timeout elapses. No polling on this side.
-    // Server holds the connection up to SessionRoutes.SERVER_SIDE_SUMMARY_TIMEOUT_MS (30_000).
-    // Client timeout must exceed that, otherwise the hook races to a spurious
-    // "worker unreachable" fallback before the summary-stored event fires.
-    const endResult = await executeWithWorkerFallback<SessionEndResponse>(
-      '/api/session/end',
-      'POST',
-      { sessionId },
-      { timeoutMs: 35_000 },
-    );
-    if (isWorkerFallback(endResult)) {
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-    }
-    if (endResult?.ok) {
-      logger.info('HOOK', 'Summary stored', {
-        sessionId,
-        messageId: endResult.messageId,
-      });
-    } else {
-      // 504 from server — agent didn't store a summary inside the server-side
-      // window. Logged so the silent-failure path (#1633) stays visible.
-      logger.warn('HOOK', 'Session-end did not observe a stored summary', {
-        sessionId,
-        reason: endResult?.reason,
-      });
-    }
-
-    // 3. Complete the session — clean up active sessions map.
-    //    Runs here in Stop (120s timeout) instead of SessionEnd (1.5s cap)
-    //    so it reliably fires after summary work is done.
-    const completeResult = await executeWithWorkerFallback<{ status?: string }>(
-      '/api/sessions/complete',
-      'POST',
-      { contentSessionId: sessionId },
-    );
-    if (isWorkerFallback(completeResult)) {
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-    }
-    logger.info('HOOK', 'Session completed in Stop hook', { contentSessionId: sessionId });
-
+    logger.debug('HOOK', 'Summary request queued, exiting hook');
     return { continue: true, suppressOutput: true };
   },
 };
