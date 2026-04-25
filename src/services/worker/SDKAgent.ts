@@ -270,7 +270,7 @@ export class SDKAgent {
             // Resume of this SDK session will overflow forever. Force a fresh session on the
             // next spawn so crash-recovery can drain remaining pending messages successfully.
             this.resetSessionForFreshStart(session);
-            logger.warn('SDK', 'Context overflow — cleared memorySessionId so next spawn starts fresh', {
+            logger.error('SDK', 'Context overflow — cleared memorySessionId so next spawn starts fresh', {
               sessionDbId: session.sessionDbId
             });
             throw new Error('Claude session context overflow: prompt is too long');

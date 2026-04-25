@@ -125,7 +125,14 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
     logger.warn('SYSTEM', 'VACUUM INTO failed, falling back to copyFileSync', {}, vacuumError ?? undefined);
     try {
       copyFileSync(dbPath, backupPath);
-      logger.info('SYSTEM', 'v12.4.3 backup created via copyFileSync', { backupPath, dbSize });
+      // The DB is in WAL mode; recent committed pages may live in -wal/-shm.
+      // VACUUM INTO captures them automatically; copyFileSync does not, so
+      // mirror them alongside so the backup represents the same state.
+      const walPath = `${dbPath}-wal`;
+      const shmPath = `${dbPath}-shm`;
+      if (existsSync(walPath)) copyFileSync(walPath, `${backupPath}-wal`);
+      if (existsSync(shmPath)) copyFileSync(shmPath, `${backupPath}-shm`);
+      logger.info('SYSTEM', 'v12.4.3 backup created via copyFileSync (incl. -wal/-shm if present)', { backupPath, dbSize });
     } catch (copyErr: unknown) {
       const copyError = copyErr instanceof Error ? copyErr : new Error(String(copyErr));
       logger.error('SYSTEM', 'v12.4.3 backup failed via both VACUUM INTO and copyFileSync; aborting cleanup', {}, copyError);
@@ -196,7 +203,9 @@ function runObserverSessionsPurge(db: Database, counts: CleanupCounts): void {
       cascadeRows: counts.observerCascadeRows,
     });
   } catch (err: unknown) {
-    db.run('ROLLBACK');
+    // Defensive: SQLite may have already auto-rolled back on certain
+    // constraint failures. Don't let a no-op ROLLBACK shadow the real error.
+    try { db.run('ROLLBACK'); } catch { /* already rolled back */ }
     throw err;
   }
 }
@@ -219,7 +228,9 @@ function runStuckPendingPurge(db: Database, counts: CleanupCounts): void {
     db.run('COMMIT');
     logger.info('SYSTEM', 'v12.4.3: stuck pending_messages purge committed', { rows: counts.stuckPendingMessages });
   } catch (err: unknown) {
-    db.run('ROLLBACK');
+    // Defensive: SQLite may have already auto-rolled back on certain
+    // constraint failures. Don't let a no-op ROLLBACK shadow the real error.
+    try { db.run('ROLLBACK'); } catch { /* already rolled back */ }
     throw err;
   }
 }
