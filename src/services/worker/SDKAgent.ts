@@ -209,7 +209,10 @@ export class SDKAgent {
           // Check for context overflow - prevents infinite retry loops
           if (textContent.includes('prompt is too long') ||
               textContent.includes('context window')) {
-            logger.error('SDK', 'Context overflow detected - terminating session');
+            logger.error('SDK', 'Context overflow detected - terminating session and forcing fresh start');
+            this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
+            session.memorySessionId = null;
+            session.forceInit = true;
             session.abortController.abort();
             return;
           }
@@ -260,6 +263,14 @@ export class SDKAgent {
 
           // Detect fatal context overflow and terminate gracefully (issue #870)
           if (typeof textContent === 'string' && textContent.includes('Prompt is too long')) {
+            // Resume of this SDK session will overflow forever. Force a fresh session on the
+            // next spawn so crash-recovery can drain remaining pending messages successfully.
+            this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
+            session.memorySessionId = null;
+            session.forceInit = true;
+            logger.warn('SDK', 'Context overflow — cleared memorySessionId so next spawn starts fresh', {
+              sessionDbId: session.sessionDbId
+            });
             throw new Error('Claude session context overflow: prompt is too long');
           }
 

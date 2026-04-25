@@ -12,6 +12,7 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
 
 interface SessionInitResponse {
   sessionDbId: number;
@@ -46,6 +47,13 @@ export const sessionInitHandler: EventHandler = {
     // Handle image-only prompts (where text prompt is empty/undefined)
     // Use placeholder so sessions still get created and tracked for memory
     const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
+
+    if (isInternalProtocolPayload(prompt)) {
+      logger.debug('HOOK', 'session-init: skipping internal protocol payload', {
+        preview: prompt.slice(0, 80),
+      });
+      return { continue: true, suppressOutput: true };
+    }
 
     const project = getProjectContext(cwd).primary;
     const platformSource = normalizePlatformSource(input.platform);
