@@ -1,7 +1,7 @@
 # Plan — Fix MCP Semantic Search
 
 **Branch:** `fix/stop-hook-observer-leakage`
-**Repo:** `/Users/alexnewman/.superset/worktrees/claude-mem/vivacious-teeth`
+**Repo:** `<repo-root>` (e.g. `$HOME/.superset/worktrees/claude-mem/vivacious-teeth`)
 
 ## Up-front: about "use a damn MCP library"
 
@@ -117,6 +117,7 @@ Change shape (do not copy verbatim — match existing types):
 
 1. At line 184, also declare `let chromaFailureReason: { message: string; isConnectionError: boolean } | null = null;`.
 2. In the catch at line 301-304, populate it from the caught error:
+
    ```ts
    } catch (chromaError) {
      const message = chromaError instanceof Error ? chromaError.message : String(chromaError);
@@ -127,6 +128,7 @@ Change shape (do not copy verbatim — match existing types):
      chromaFailed = true;
      logger.warn('SEARCH', 'ChromaDB semantic search failed, falling back to FTS5 keyword search', {}, chromaError as Error);
    ```
+
 3. At line 351-359, replace the call to `ResultFormatter.formatChromaFailureMessage()` with a call that takes `chromaFailureReason`. If `chromaFailureReason !== null` AND `totalResults === 0`, surface the actual error. Otherwise, return the normal "no results" string (do NOT show the failure message at all if FTS5 simply matched nothing).
 
 ### 2b. Rewrite the formatter
@@ -243,7 +245,7 @@ The `uvx chroma-mcp` subprocess is dying. `ChromaMcpManager` should already auto
 
 ```bash
 # Build and reinstall the bundle
-cd /Users/alexnewman/.superset/worktrees/claude-mem/vivacious-teeth
+cd <repo-root>
 bun run build-and-sync
 
 # Confirm bundled artifact no longer contains the lying string
@@ -260,7 +262,7 @@ curl -s 'http://localhost:37777/api/chroma/status?deep=1' | jq .
 
 Then call the MCP tool the same way the user originally did:
 
-```
+```text
 mcp__plugin_claude-mem_mcp-search__search({ query: "observer prompt leakage", limit: 3 })
 ```
 
