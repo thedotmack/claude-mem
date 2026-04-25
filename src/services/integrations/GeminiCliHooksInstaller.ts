@@ -86,7 +86,6 @@ const GEMINI_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
   'AfterTool': 'observation',
   'PreCompress': 'summarize',
   'Notification': 'observation',
-  'SessionEnd': 'session-complete',
 };
 
 // ============================================================================

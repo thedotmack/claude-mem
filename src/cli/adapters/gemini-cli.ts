@@ -5,11 +5,10 @@ import { AdapterRejectedInput, isValidCwd } from './errors.js';
  * Gemini CLI Platform Adapter
  *
  * Normalizes Gemini CLI's hook JSON to NormalizedHookInput.
- * Gemini CLI supports 11 lifecycle hooks; we register 8:
+ * Gemini CLI supports 11 lifecycle hooks; we register 7:
  *
  * Lifecycle:
  *   SessionStart  → context     (inject memory context)
- *   SessionEnd    → session-complete
  *   PreCompress   → summarize
  *   Notification  → observation (system events like ToolPermission)
  *
@@ -28,7 +27,7 @@ import { AdapterRejectedInput, isValidCwd } from './errors.js';
  * Base fields (all events): session_id, transcript_path, cwd, hook_event_name, timestamp
  *
  * Output format: { continue, stopReason, suppressOutput, systemMessage, decision, reason, hookSpecificOutput }
- * Advisory hooks (SessionStart, SessionEnd, PreCompress, Notification) ignore flow-control fields.
+ * Advisory hooks (SessionStart, PreCompress, Notification) ignore flow-control fields.
  */
 export const geminiCliAdapter: PlatformAdapter = {
   normalizeInput(raw) {

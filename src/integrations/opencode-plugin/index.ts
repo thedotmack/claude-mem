@@ -299,16 +299,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
 
         case "session.deleted": {
           const { event } = payload as SessionDeletedEvent;
-          const contentSessionId = contentSessionIdsByOpenCodeSessionId.get(
-            event.sessionID,
-          );
-
-          if (contentSessionId) {
-            workerPostFireAndForget("/api/sessions/complete", {
-              contentSessionId,
-            });
-            contentSessionIdsByOpenCodeSessionId.delete(event.sessionID);
-          }
+          contentSessionIdsByOpenCodeSessionId.delete(event.sessionID);
           break;
         }
       }

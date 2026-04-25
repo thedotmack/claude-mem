@@ -644,12 +644,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   const sessionIds = new Map<string, string>();
   const canonicalSessionKeys = new Map<string, string>();
   const sessionAliasesByCanonicalKey = new Map<string, Set<string>>();
-  const pendingCompletionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const recentPromptInits = new Map<string, number>();
-  const completionDelayMs = (() => {
-    const val = Number((userConfig as Record<string, unknown>).completionDelayMs);
-    return Number.isFinite(val) ? Math.max(0, val) : 5000;
-  })();
   const syncMemoryFile = userConfig.syncMemoryFile !== false; // default true
   const syncMemoryFileExclude = new Set(userConfig.syncMemoryFileExclude || []);
 
@@ -731,18 +726,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     }
     sessionAliasesByCanonicalKey.delete(canonicalKey);
     sessionIds.delete(canonicalKey);
-  }
-
-  function scheduleSessionComplete(contentSessionId: string): void {
-    const existingTimer = pendingCompletionTimers.get(contentSessionId);
-    if (existingTimer) clearTimeout(existingTimer);
-    const timer = setTimeout(() => {
-      pendingCompletionTimers.delete(contentSessionId);
-      workerPostFireAndForget(workerPort, "/api/sessions/complete", {
-        contentSessionId,
-      }, api.logger);
-    }, completionDelayMs);
-    pendingCompletionTimers.set(contentSessionId, timer);
   }
 
   // TTL cache for context injection to avoid re-fetching on every LLM turn.
@@ -898,7 +881,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   });
 
   // ------------------------------------------------------------------
-  // Event: agent_end — summarize and complete session
+  // Event: agent_end — summarize session (worker self-completes)
   // ------------------------------------------------------------------
   api.on("agent_end", async (event, ctx) => {
     const { contentSessionId } = rememberSessionContext(ctx);
@@ -922,16 +905,12 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       }
     }
 
-    // Await summarize so the worker receives it before complete.
-    // This also gives in-flight tool_result_persist observations time to arrive
-    // (they use fire-and-forget and may still be in transit).
+    // Send summarize. The worker self-completes the session when its SDK-agent
+    // generator drains; no explicit complete call needed.
     await workerPost(workerPort, "/api/sessions/summarize", {
       contentSessionId,
       last_assistant_message: lastAssistantMessage,
     }, api.logger);
-
-    api.logger.info(`[claude-mem] Scheduling session complete in ${completionDelayMs}ms: ${contentSessionId}`);
-    scheduleSessionComplete(contentSessionId);
   });
 
   // ------------------------------------------------------------------
@@ -952,10 +931,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     recentPromptInits.clear();
     canonicalSessionKeys.clear();
     sessionAliasesByCanonicalKey.clear();
-    for (const timer of pendingCompletionTimers.values()) {
-      clearTimeout(timer);
-    }
-    pendingCompletionTimers.clear();
     api.logger.info("[claude-mem] Gateway started — session tracking reset");
   });
 

@@ -266,12 +266,6 @@ describe("Observation I/O event handlers", () => {
             return;
           }
 
-          if (req.url === "/api/sessions/complete") {
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ status: "completed" }));
-            return;
-          }
-
           if (req.url?.startsWith("/api/context/inject")) {
             res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
             res.end("# Claude-Mem Context\n\n## Timeline\n- Session 1: Did some work");
@@ -446,8 +440,7 @@ describe("Observation I/O event handlers", () => {
     assert.ok(summarizeRequest!.body.contentSessionId.startsWith("openclaw-summarize-test-"));
 
     const completeRequest = receivedRequests.find((r) => r.url === "/api/sessions/complete");
-    assert.ok(completeRequest, "should send complete to worker");
-    assert.ok(completeRequest!.body.contentSessionId.startsWith("openclaw-summarize-test-"));
+    assert.ok(!completeRequest, "should not send complete (worker self-completes)");
   });
 
   it("agent_end extracts text from array content", async () => {
