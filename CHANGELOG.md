@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.4.3] - 2026-04-25
+
+One-time pollution cleanup migration plus the v12.4.1 / v12.4.2 ship-blocker fixes folded into a single release.
+
+## Headline
+
+**One-shot DB cleanup migration** (`CleanupV12_4_3.ts`) — runs once per data directory at worker startup, marker-file gated, opt-out via `CLAUDE_MEM_SKIP_CLEANUP_V12_4_3=1`. Cleans:
+- `observer-sessions` rows that polluted user-facing search/timeline before the observer-sessions filter shipped (cascades to `user_prompts`, `observations`, `session_summaries`).
+- Stuck `pending_messages` chains (≥10 rows per session in `failed`/`processing`) left over from the pre-v12.4.2 context-overflow loop.
+- `~/.claude-mem/chroma/` and `chroma-sync-state.json` so `backfillAllProjects` rebuilds vectors from the cleaned SQLite.
+
+Backups before any delete: `VACUUM INTO` first, with a `copyFileSync` fallback that also mirrors `-wal` / `-shm` sidecars so a WAL-mode restore is complete. Pre-flight `statfsSync` disk check before backup. The marker is only written after SQLite purges succeed; Chroma-wipe failures record the error on the marker rather than re-running the backup on every boot.
+
+- **Context-overflow loop fix** (`SDKAgent.ts`): both overflow detection paths (`'prompt is too long'` / `'Prompt is too long'`) now clear `memorySessionId` and force a fresh session via the new `resetSessionForFreshStart` helper before aborting/throwing. Stops the infinite retry seen in pre-v12.4.2 logs.
+- **`<task-notification>` storage leak** (`tag-stripping.ts` + `session-init.ts` + `SessionRoutes.ts`): dual-layer filter at the hook and at the worker HTTP boundary. `isInternalProtocolPayload` uses a tempered greedy body with negative lookahead so adjacent and surrounded protocol tags can't span across user text. 256 KB size guard before the regex prevents ReDoS on malformed payloads.
+
+## v12.4.1 trivial fixes
+
+- `mcpServers: {}` on `SDKAgent` and `KnowledgeAgent` spawns prevents host MCP server inheritance.
+- `McpIntegrations.ts`: `.agent` → `.agents` path correction.
+- `hooks.json`: `file-context` timeout `2000` → `60` (was 33 minutes); explicit `shell: bash` on hooks that use bash-only syntax.
+
+## Cleanup-migration counts (sample run)
+
+11 sessions + 3 cascade rows + 141 pending_messages purged in 1.1s; 277 MB pre-cleanup backup written.
+
+## Tests
+
+New: `tests/infrastructure/cleanup-v12_4_3.test.ts` — real on-disk SQLite under a tmpdir, exercises the happy path, idempotency, opt-out env var, no-DB marker, threshold-boundary preservation. Writing these tests caught a real counting bug (bun:sqlite `result.changes` inflates with FTS triggers) and the regex false positive (greedy `[\s\S]*` spanning two protocol blocks).
+
+## Notes
+
+- The migration is intentionally NOT atomic across the two transactions: if `runStuckPendingPurge` fails after `runObserverSessionsPurge` commits, the observer rows stay deleted and the cleanup retries on next boot. Both purges are idempotent.
+- A user low on disk at first post-upgrade boot will retry on the next boot with adequate space (the marker is not written on disk-skip).
+
 ## [12.4.2] - 2026-04-25
 
 ## Two ship-blockers from yesterday's triage + 5 trivial fixes
