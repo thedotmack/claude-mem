@@ -460,5 +460,10 @@ after`;
       const text = '<task-notification>a</task-notification> hello <task-notification>b</task-notification>';
       expect(isInternalProtocolPayload(text)).toBe(false);
     });
+
+    it('returns false for two adjacent protocol blocks (deliberate: deny-list per single block, not concatenations)', () => {
+      const text = '<task-notification>a</task-notification><task-notification>b</task-notification>';
+      expect(isInternalProtocolPayload(text)).toBe(false);
+    });
   });
 });

@@ -213,7 +213,21 @@ function runObserverSessionsPurge(db: Database, counts: CleanupCounts): void {
 function runStuckPendingPurge(db: Database, counts: CleanupCounts): void {
   db.run('BEGIN IMMEDIATE');
   try {
-    const result = db.run(
+    // Pre-count for consistency with runObserverSessionsPurge: result.changes
+    // would be reliable today (no FTS on pending_messages) but the explicit
+    // count protects against future schema changes.
+    const stuckCount = (db.prepare(
+      `SELECT COUNT(*) AS n FROM pending_messages
+         WHERE status IN ('failed', 'processing')
+           AND session_db_id IN (
+             SELECT session_db_id FROM pending_messages
+              WHERE status IN ('failed', 'processing')
+              GROUP BY session_db_id
+              HAVING COUNT(*) >= ?
+           )`
+    ).get(STUCK_PENDING_THRESHOLD) as { n: number }).n;
+
+    db.run(
       `DELETE FROM pending_messages
          WHERE status IN ('failed', 'processing')
            AND session_db_id IN (
@@ -224,7 +238,7 @@ function runStuckPendingPurge(db: Database, counts: CleanupCounts): void {
            )`,
       [STUCK_PENDING_THRESHOLD]
     );
-    counts.stuckPendingMessages = result.changes;
+    counts.stuckPendingMessages = stuckCount;
     db.run('COMMIT');
     logger.info('SYSTEM', 'v12.4.3: stuck pending_messages purge committed', { rows: counts.stuckPendingMessages });
   } catch (err: unknown) {
