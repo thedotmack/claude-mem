@@ -40,6 +40,7 @@ interface MarkerPayload {
   appliedAt: string;
   backupPath: string | null;
   chromaWiped: boolean;
+  chromaWipeError?: string;
   counts: CleanupCounts;
   skipped?: string;
 }
@@ -91,8 +92,9 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
     const fs = statfsSync(effectiveDataDir);
     const free = Number(fs.bavail) * Number(fs.bsize);
     if (free < required) {
-      logger.error('SYSTEM', 'Insufficient disk for v12.4.3 backup; skipping cleanup', { dbSize, free, required });
-      writeMarker(markerPath, { appliedAt: new Date().toISOString(), backupPath: null, chromaWiped: false, counts: emptyCounts(), skipped: 'disk' });
+      // Don't write the marker — once the user frees disk space, the next
+      // worker startup should retry the cleanup rather than skipping forever.
+      logger.error('SYSTEM', 'Insufficient disk for v12.4.3 backup; skipping cleanup (will retry on next startup)', { dbSize, free, required });
       return;
     }
   } catch (err: unknown) {
@@ -136,12 +138,24 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
     db.close();
   }
 
-  const chromaWiped = wipeChromaArtifacts(effectiveDataDir);
+  // SQLite purge succeeded; chroma wipe failure must NOT re-run the migration
+  // on the next startup or we accumulate one new backup per boot. Capture the
+  // failure on the marker instead.
+  let chromaWiped = false;
+  let chromaWipeError: string | undefined;
+  try {
+    chromaWiped = wipeChromaArtifacts(effectiveDataDir);
+  } catch (err: unknown) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    chromaWipeError = error.message;
+    logger.error('SYSTEM', 'v12.4.3: Chroma wipe failed; marker still written so cleanup does not re-run', {}, error);
+  }
 
   writeMarker(markerPath, {
     appliedAt: new Date().toISOString(),
     backupPath,
     chromaWiped,
+    chromaWipeError,
     counts,
   });
 
