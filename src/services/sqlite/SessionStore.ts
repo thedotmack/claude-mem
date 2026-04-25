@@ -35,17 +35,21 @@ function resolveCreateSessionArgs(
 export class SessionStore {
   public db: Database;
 
-  constructor(dbPath: string = DB_PATH) {
-    if (dbPath !== ':memory:') {
-      ensureDir(DATA_DIR);
-    }
-    this.db = new Database(dbPath);
+  constructor(dbPathOrDb: string | Database = DB_PATH) {
+    if (dbPathOrDb instanceof Database) {
+      this.db = dbPathOrDb;
+    } else {
+      if (dbPathOrDb !== ':memory:') {
+        ensureDir(DATA_DIR);
+      }
+      this.db = new Database(dbPathOrDb);
 
-    // Ensure optimized settings
-    this.db.run('PRAGMA journal_mode = WAL');
-    this.db.run('PRAGMA synchronous = NORMAL');
-    this.db.run('PRAGMA foreign_keys = ON');
-    this.db.run('PRAGMA journal_size_limit = 4194304'); // 4MB WAL cap (#1956)
+      // Ensure optimized settings only for new connections
+      this.db.run('PRAGMA journal_mode = WAL');
+      this.db.run('PRAGMA synchronous = NORMAL');
+      this.db.run('PRAGMA foreign_keys = ON');
+      this.db.run('PRAGMA journal_size_limit = 4194304'); // 4MB WAL cap (#1956)
+    }
 
     // Initialize schema if needed (fresh database)
     this.initializeSchema();

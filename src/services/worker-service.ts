@@ -102,6 +102,7 @@ import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
+import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 
 // Knowledge agent services
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
@@ -275,6 +276,9 @@ export class WorkerService implements WorkerRef {
   private registerRoutes(): void {
     // IMPORTANT: Middleware must be registered BEFORE routes (Express processes in order)
 
+    // Register Chroma routes immediately so they bypass the initialization guard
+    this.server.registerRoutes(new ChromaRoutes());
+
     // Early handler for /api/context/inject — fail open if not yet initialized
     this.server.app.get('/api/context/inject', async (req, res, next) => {
       if (!this.initializationCompleteFlag || !this.searchRoutes) {
@@ -288,14 +292,20 @@ export class WorkerService implements WorkerRef {
 
     // Guard ALL /api/* routes during initialization — wait for DB with timeout
     // Exceptions: /api/health, /api/readiness, /api/version (handled by Server.ts core routes)
-    // and /api/context/inject (handled above with fail-open)
+    // and /api/chroma/status (diagnostic endpoint)
     this.server.app.use('/api', async (req, res, next) => {
+      // Bypass guard for diagnostic endpoints
+      if (req.path === '/chroma/status' || req.path === '/health' || req.path === '/readiness' || req.path === '/version') {
+        next();
+        return;
+      }
+
       if (this.initializationCompleteFlag) {
         next();
         return;
       }
 
-      const timeoutMs = 30000;
+      const timeoutMs = 120000; // 2 minutes
       const timeoutPromise = new Promise<void>((_, reject) =>
         setTimeout(() => reject(new Error('Database initialization timeout')), timeoutMs)
       );
@@ -374,6 +384,7 @@ export class WorkerService implements WorkerRef {
    */
   private async initializeBackground(): Promise<void> {
     try {
+      logger.info('WORKER', 'Background initialization starting...');
       await aggressiveStartupCleanup();
 
       // Load mode configuration
@@ -383,47 +394,39 @@ export class WorkerService implements WorkerRef {
 
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
+      const modeId = settings.CLAUDE_MEM_MODE;
+      ModeManager.getInstance().loadMode(modeId);
+      logger.info('SYSTEM', `Mode loaded: ${modeId}`);
+
       // One-time chroma wipe for users upgrading from versions with duplicate worker bugs.
-      // Only runs in local mode (chroma is local-only). Backfill at line ~414 rebuilds from SQLite.
       if (settings.CLAUDE_MEM_MODE === 'local' || !settings.CLAUDE_MEM_MODE) {
+        logger.info('WORKER', 'Checking for one-time Chroma migration...');
         runOneTimeChromaMigration();
       }
 
       // One-time remap of pre-worktree project names using pending_messages.cwd.
-      // Must run before dbManager.initialize() so we don't hold the DB open.
+      logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();
 
-      // Stamp merged worktrees so their observations surface under the parent
-      // project. Runs every startup (not marker-gated) because git state evolves
-      // and the engine is fully idempotent. Must also precede dbManager.initialize().
-      //
-      // The worker daemon is spawned with cwd=marketplace-plugin-dir (not a git
-      // repo), so we can't seed adoption with process.cwd(). Instead, discover
-      // parent repos from recorded pending_messages.cwd values.
-      let adoptions: Awaited<ReturnType<typeof adoptMergedWorktreesForAllKnownRepos>> | null = null;
-      try {
-        adoptions = await adoptMergedWorktreesForAllKnownRepos({});
-      } catch (err) {
-        // [ANTI-PATTERN IGNORED]: Worktree adoption is best-effort on startup; failure must not block worker initialization
-        if (err instanceof Error) {
-          logger.error('WORKER', 'Worktree adoption failed (non-fatal)', {}, err);
-        } else {
-          logger.error('WORKER', 'Worktree adoption failed (non-fatal) with non-Error', {}, new Error(String(err)));
-        }
-      }
-      if (adoptions) {
-        for (const adoption of adoptions) {
-          if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
-            logger.info('SYSTEM', 'Merged worktrees adopted on startup', adoption);
-          }
-          if (adoption.errors.length > 0) {
-            logger.warn('SYSTEM', 'Worktree adoption had per-branch errors', {
-              repoPath: adoption.repoPath,
-              errors: adoption.errors
-            });
+      // Stamp merged worktrees (Non-blocking, fire-and-forget)
+      logger.info('WORKER', 'Adopting merged worktrees (background)...');
+      adoptMergedWorktreesForAllKnownRepos({}).then(adoptions => {
+        if (adoptions) {
+          for (const adoption of adoptions) {
+            if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
+              logger.info('SYSTEM', 'Merged worktrees adopted in background', adoption);
+            }
+            if (adoption.errors.length > 0) {
+              logger.warn('SYSTEM', 'Worktree adoption had per-branch errors', {
+                repoPath: adoption.repoPath,
+                errors: adoption.errors
+              });
+            }
           }
         }
-      }
+      }).catch(err => {
+        logger.error('WORKER', 'Worktree adoption failed (background)', {}, err instanceof Error ? err : new Error(String(err)));
+      });
 
       // Initialize ChromaMcpManager only if Chroma is enabled
       const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
@@ -434,22 +437,12 @@ export class WorkerService implements WorkerRef {
         logger.info('SYSTEM', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, skipping ChromaMcpManager');
       }
 
-      const modeId = settings.CLAUDE_MEM_MODE;
-      ModeManager.getInstance().loadMode(modeId);
-      logger.info('SYSTEM', `Mode loaded: ${modeId}`);
-
+      logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
 
-      // No startup recovery sweep: claimNextMessage's self-healing predicate
-      // (worker_pid NOT IN live_worker_pids) reclaims any 'processing' rows
-      // left by a previous worker incarnation on the next claim. See
-      // PATHFINDER-2026-04-22 Plan 01 Phase 3.
-
-      // One-shot GC for terminally-failed rows so pending_messages does not
-      // grow unbounded on long-running or high-failure-rate installations.
-      // Not a reaper — runs once per worker start. 7 days retains enough
-      // history for operator inspection without degrading claim latency.
+      // One-shot GC for terminally-failed rows
       try {
+        logger.info('WORKER', 'Running startup GC for pending messages...');
         const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
         const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
         const cleared = pendingStore.clearFailedOlderThan(7 * 24 * 60 * 60 * 1000);
@@ -461,6 +454,7 @@ export class WorkerService implements WorkerRef {
       }
 
       // Initialize search services
+      logger.info('WORKER', 'Initializing search services...');
       const formattingService = new FormattingService();
       const timelineService = new TimelineService();
       const searchManager = new SearchManager(
@@ -491,8 +485,6 @@ export class WorkerService implements WorkerRef {
       logger.info('WORKER', 'CorpusRoutes registered');
 
       // DB and search are ready — mark initialization complete so hooks can proceed.
-      // MCP connection is tracked separately via mcpReady and is NOT required for
-      // the worker to serve context/search requests.
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
@@ -501,7 +493,7 @@ export class WorkerService implements WorkerRef {
 
       // Auto-backfill Chroma for all projects if out of sync with SQLite (fire-and-forget)
       if (this.chromaMcpManager) {
-        ChromaSync.backfillAllProjects().then(() => {
+        ChromaSync.backfillAllProjects(this.dbManager.getSessionStore()).then(() => {
           logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
         }).catch(error => {
           logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
@@ -509,92 +501,55 @@ export class WorkerService implements WorkerRef {
       }
 
       // Mark MCP as externally ready once the bundled stdio server binary exists.
-      // Codex/Claude Desktop connect to this binary directly; the loopback client
-      // below is only a best-effort self-check and should not mark health false.
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       this.mcpReady = existsSync(mcpServerPath);
 
-      // Best-effort loopback MCP self-check
+      // Best-effort loopback MCP self-check (Non-blocking, F&F)
+      this.runMcpSelfCheck(mcpServerPath).catch(err => {
+        logger.debug('WORKER', 'MCP self-check failed (non-fatal)', { error: err.message });
+      });
+
+      return;
+    } catch (error) {
+      // Background initialization failed - log and let worker fail health checks
+      logger.error('SYSTEM', 'Background initialization failed', {}, error instanceof Error ? error : undefined);
+    }
+  }
+
+  /**
+   * Run a best-effort loopback MCP self-check to verify the bundled server can start.
+   * This is entirely diagnostic and does not block worker availability.
+   */
+  private async runMcpSelfCheck(mcpServerPath: string): Promise<void> {
+    try {
       getSupervisor().assertCanSpawn('mcp server');
       const transport = new StdioClientTransport({
-        command: process.execPath,  // Use resolved path, not bare 'node' which fails on non-interactive PATH (#1876)
+        command: process.execPath,
         args: [mcpServerPath],
         env: Object.fromEntries(
           Object.entries(sanitizeEnv(process.env)).filter(([, value]) => value !== undefined)
         ) as Record<string, string>
-
       });
 
-      const MCP_INIT_TIMEOUT_MS = 300000;
+      const MCP_INIT_TIMEOUT_MS = 60000; // 1 minute is plenty for local check
       const mcpConnectionPromise = this.mcpClient.connect(transport);
-      let timeoutId: ReturnType<typeof setTimeout>;
+      
       const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(
-          () => reject(new Error('MCP connection timeout after 5 minutes')),
-          MCP_INIT_TIMEOUT_MS
+        setTimeout(
+          () => reject(new Error('MCP connection timeout')),
+          60000
         );
       });
 
-      try {
-        await Promise.race([mcpConnectionPromise, timeoutPromise]);
-      } catch (connectionError) {
-        clearTimeout(timeoutId!);
-        logger.warn('WORKER', 'MCP loopback self-check failed, cleaning up subprocess', {
-          error: connectionError instanceof Error ? connectionError.message : String(connectionError)
-        });
-        try {
-          await transport.close();
-        } catch (transportCloseError) {
-          // [ANTI-PATTERN IGNORED]: transport.close() is best-effort cleanup after MCP connection already failed; supervisor handles orphan processes
-          logger.debug('WORKER', 'transport.close() failed during MCP cleanup', {
-            error: transportCloseError instanceof Error ? transportCloseError.message : String(transportCloseError)
-          });
-        }
-        logger.info('WORKER', 'Bundled MCP server remains available for external stdio clients', {
-          path: mcpServerPath
-        });
-        return;
-      }
-      clearTimeout(timeoutId!);
+      await Promise.race([mcpConnectionPromise, timeoutPromise]);
+      logger.info('WORKER', 'MCP loopback self-check connected successfully');
 
-      const mcpProcess = (transport as unknown as { _process?: import('child_process').ChildProcess })._process;
-      if (mcpProcess?.pid) {
-        getSupervisor().registerProcess('mcp-server', {
-          pid: mcpProcess.pid,
-          type: 'mcp',
-          startedAt: new Date().toISOString()
-        }, mcpProcess);
-        mcpProcess.once('exit', () => {
-          getSupervisor().unregisterProcess('mcp-server');
-        });
-      }
-      logger.success('WORKER', 'MCP loopback self-check connected');
-
-      // No orphan reaper, no stale-session reaper, no periodic WAL checkpoint.
-      // - Orphan prevention: SDK subprocesses spawn in their own process group
-      //   via createSdkSpawnFactory so `kill(-pgid, signal)` tears down every
-      //   descendant in one syscall (Principle 5).
-      // - Stale sessions: session cleanup runs in the `generatorPromise.finally`
-      //   block of startSessionProcessor — primary-path teardown on generator
-      //   exit, not a periodic sweep (Principle 4).
-      // - WAL growth: handled by SQLite's built-in `PRAGMA wal_autocheckpoint`
-      //   (applied at DB open time); no app-level timer is required.
-
-      // Auto-recover orphaned queues (fire-and-forget with error logging)
-      this.processPendingQueues(50).then(result => {
-        if (result.sessionsStarted > 0) {
-          logger.info('SYSTEM', `Auto-recovered ${result.sessionsStarted} sessions with pending work`, {
-            totalPending: result.totalPendingSessions,
-            started: result.sessionsStarted,
-            sessionIds: result.startedSessionIds
-          });
-        }
-      }).catch(error => {
-        logger.error('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
-      });
+      // Cleanup
+      await transport.close();
     } catch (error) {
-      logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
-      throw error;
+      logger.warn('WORKER', 'MCP loopback self-check failed', { 
+        error: error instanceof Error ? error.message : String(error) 
+      });
     }
   }
 

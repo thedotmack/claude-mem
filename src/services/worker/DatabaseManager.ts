@@ -8,15 +8,17 @@
  * - ChromaSync integration
  */
 
+import { Database } from 'bun:sqlite';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { DBSession } from '../worker-types.js';
 
 export class DatabaseManager {
+  private db: Database | null = null;
   private sessionStore: SessionStore | null = null;
   private sessionSearch: SessionSearch | null = null;
   private chromaSync: ChromaSync | null = null;
@@ -26,8 +28,11 @@ export class DatabaseManager {
    */
   async initialize(): Promise<void> {
     // Open database connection (ONCE)
-    this.sessionStore = new SessionStore();
-    this.sessionSearch = new SessionSearch();
+    this.db = new Database(DB_PATH);
+    
+    // Shared connection between store and search
+    this.sessionStore = new SessionStore(this.db);
+    this.sessionSearch = new SessionSearch(this.db);
 
     // Initialize ChromaSync only if Chroma is enabled (SQLite-only fallback when disabled)
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -38,7 +43,7 @@ export class DatabaseManager {
       logger.info('DB', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, using SQLite-only search');
     }
 
-    logger.info('DB', 'Database initialized');
+    logger.info('DB', 'Database initialized (shared connection)');
   }
 
   /**
@@ -51,13 +56,14 @@ export class DatabaseManager {
       this.chromaSync = null;
     }
 
-    if (this.sessionStore) {
-      this.sessionStore.close();
-      this.sessionStore = null;
-    }
-    if (this.sessionSearch) {
-      this.sessionSearch.close();
-      this.sessionSearch = null;
+    // We don't call sessionStore.close() or sessionSearch.close() 
+    // because they share this.db which we close below.
+    this.sessionStore = null;
+    this.sessionSearch = null;
+
+    if (this.db) {
+      this.db.close();
+      this.db = null;
     }
     logger.info('DB', 'Database closed');
   }
