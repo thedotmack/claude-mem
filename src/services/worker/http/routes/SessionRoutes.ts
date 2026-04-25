@@ -908,14 +908,14 @@ export class SessionRoutes extends BaseRouteHandler {
       logger.debug('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${promptNumber} | memorySessionId will be captured on first SDK response`);
     }
 
-    // Step 3: Strip privacy tags from prompt
-    const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);
-
     if (isInternalProtocolPayload(prompt)) {
       logger.debug('HTTP', 'session-init: skipping internal protocol payload', { contentSessionId });
       res.json({ sessionDbId, promptNumber, skipped: true, reason: 'internal_protocol' });
       return;
     }
+
+    // Step 3: Strip privacy tags from prompt
+    const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);
 
     // Step 4: Check if prompt is entirely private
     if (!cleanedPrompt || cleanedPrompt.trim() === '') {

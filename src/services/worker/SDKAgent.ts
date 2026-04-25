@@ -42,6 +42,12 @@ export class SDKAgent {
     this.sessionManager = sessionManager;
   }
 
+  private resetSessionForFreshStart(session: ActiveSession): void {
+    this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
+    session.memorySessionId = null;
+    session.forceInit = true;
+  }
+
   /**
    * Start SDK agent for a session (event-driven, no polling)
    * @param worker WorkerService reference for spinner control (optional)
@@ -210,9 +216,7 @@ export class SDKAgent {
           if (textContent.includes('prompt is too long') ||
               textContent.includes('context window')) {
             logger.error('SDK', 'Context overflow detected - terminating session and forcing fresh start');
-            this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
-            session.memorySessionId = null;
-            session.forceInit = true;
+            this.resetSessionForFreshStart(session);
             session.abortController.abort();
             return;
           }
@@ -265,9 +269,7 @@ export class SDKAgent {
           if (typeof textContent === 'string' && textContent.includes('Prompt is too long')) {
             // Resume of this SDK session will overflow forever. Force a fresh session on the
             // next spawn so crash-recovery can drain remaining pending messages successfully.
-            this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
-            session.memorySessionId = null;
-            session.forceInit = true;
+            this.resetSessionForFreshStart(session);
             logger.warn('SDK', 'Context overflow — cleared memorySessionId so next spawn starts fresh', {
               sessionDbId: session.sessionDbId
             });

@@ -456,7 +456,6 @@ export class WorkerService implements WorkerRef {
 
       // One-time v12.4.3 pollution cleanup. Runs AFTER migrations have applied
       // and BEFORE backfillAllProjects so the rebuilt Chroma sees a clean SQLite.
-      logger.info('WORKER', 'Checking for one-time v12.4.3 pollution cleanup...');
       runOneTimeV12_4_3Cleanup();
 
       // Initialize search services

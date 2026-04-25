@@ -120,6 +120,11 @@ const PROTOCOL_ONLY_REGEX = new RegExp(
   `^\\s*<(${PROTOCOL_ONLY_TAGS.join('|')})\\b[^>]*>[\\s\\S]*</\\1>\\s*$`,
 );
 
+// Bounds the unanchored `[\s\S]*` body to keep a malformed 1MB+ payload that
+// opens a protocol tag and never closes it from running the regex engine
+// against the whole prompt before failing.
+const MAX_PROTOCOL_PAYLOAD_BYTES = 256 * 1024;
+
 /**
  * Returns true when `text` is *entirely* a Claude Code protocol payload
  * (e.g. a `<task-notification>` block emitted on background Agent completion)
@@ -127,5 +132,6 @@ const PROTOCOL_ONLY_REGEX = new RegExp(
  */
 export function isInternalProtocolPayload(text: string): boolean {
   if (!text) return false;
+  if (text.length > MAX_PROTOCOL_PAYLOAD_BYTES) return false;
   return PROTOCOL_ONLY_REGEX.test(text);
 }
