@@ -185,7 +185,7 @@ const ANTIGRAVITY_CONFIG: McpInstallerConfig = {
   configPath: path.join(homedir(), '.gemini', 'antigravity', 'mcp_config.json'),
   configKey: 'mcpServers',
   contextFile: {
-    path: path.join(process.cwd(), '.agent', 'rules', 'claude-mem-context.md'),
+    path: path.join(process.cwd(), '.agents', 'rules', 'claude-mem-context.md'),
     isWorkspaceRelative: true,
   },
 };

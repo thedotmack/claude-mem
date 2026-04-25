@@ -175,8 +175,8 @@ async function buildHooks() {
       banner: {
         js: [
           '#!/usr/bin/env bun',
-          'var __filename = require("node:url").fileURLToPath(import.meta.url);',
-          'var __dirname = require("node:path").dirname(__filename);'
+          'var __filename = __filename || require("node:path").resolve(process.argv[1] || "");',
+          'var __dirname = __dirname || require("node:path").dirname(__filename);'
         ].join('\n')
       }
     });

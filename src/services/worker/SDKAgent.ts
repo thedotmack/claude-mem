@@ -151,7 +151,8 @@ export class SDKAgent {
         // Custom spawn factory: spawns the SDK child in its own POSIX process
         // group so the worker can tear down the whole subtree on shutdown.
         spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId),
-        env: isolatedEnv  // Use isolated credentials from ~/.claude-mem/.env, not process.env
+        env: isolatedEnv,  // Use isolated credentials from ~/.claude-mem/.env, not process.env
+        mcpServers: {},
       }
     });
 
