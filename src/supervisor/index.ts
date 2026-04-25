@@ -146,10 +146,6 @@ export async function startSupervisor(): Promise<void> {
   await supervisorSingleton.start();
 }
 
-export async function stopSupervisor(): Promise<void> {
-  await supervisorSingleton.stop();
-}
-
 export function getSupervisor(): Supervisor {
   return supervisorSingleton;
 }
@@ -168,7 +164,7 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
   let pidInfo: PidInfo | null = null;
 
   try {
-    pidInfo = JSON.parse(readFileSync(pidFilePath, 'utf-8')) as PidInfo;
+    pidInfo = JSON.parse(readFileSync(pidFilePath, 'utf-8')) as PidInfo | null;
   } catch (error: unknown) {
     if (error instanceof Error) {
       logger.warn('SYSTEM', 'Failed to parse worker PID file, removing it', { path: pidFilePath }, error);
@@ -182,7 +178,8 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
     return 'invalid';
   }
 
-  if (verifyPidFileOwnership(pidInfo)) {
+  const isAlive = verifyPidFileOwnership(pidInfo);
+  if (isAlive && pidInfo) {
     if (options.logAlive ?? true) {
       logger.info('SYSTEM', 'Worker already running (PID alive)', {
         existingPid: pidInfo.pid,
@@ -194,9 +191,9 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
   }
 
   logger.info('SYSTEM', 'Removing stale PID file (worker process is dead or PID has been reused)', {
-    pid: pidInfo.pid,
-    port: pidInfo.port,
-    startedAt: pidInfo.startedAt
+    pid: pidInfo?.pid,
+    port: pidInfo?.port,
+    startedAt: pidInfo?.startedAt
   });
   rmSync(pidFilePath, { force: true });
   return 'stale';

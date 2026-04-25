@@ -6,6 +6,9 @@
  */
 
 import express, { Request, Response } from 'express';
+import { z } from 'zod';
+import { ingestObservation } from '../shared.js';
+import { validateBody } from '../middleware/validateBody.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
@@ -21,13 +24,14 @@ import { SessionCompletionHandler } from '../../session/SessionCompletionHandler
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
-import { getProcessBySession, ensureProcessExit } from '../../ProcessRegistry.js';
+import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../../supervisor/process-registry.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { RestartGuard } from '../../RestartGuard.js';
 
+const MAX_USER_PROMPT_BYTES = 256 * 1024;
+
 export class SessionRoutes extends BaseRouteHandler {
-  private completionHandler: SessionCompletionHandler;
   private spawnInProgress = new Map<number, boolean>();
   private crashRecoveryScheduled = new Set<number>();
 
@@ -39,13 +43,9 @@ export class SessionRoutes extends BaseRouteHandler {
     private openRouterAgent: OpenRouterAgent,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
-    completionHandler: SessionCompletionHandler
+    private completionHandler: SessionCompletionHandler,
   ) {
     super();
-    // Use the shared completion handler from WorkerService so the SDK-agent
-    // completion path and the HTTP fallback route operate on the same instance
-    // (avoids duplicate construction; keeps finalize semantics consistent).
-    this.completionHandler = completionHandler;
   }
 
   /**
@@ -97,7 +97,7 @@ export class SessionRoutes extends BaseRouteHandler {
   private static readonly STALE_GENERATOR_THRESHOLD_MS = 30_000; // 30 seconds (#1099)
   private static readonly MAX_SESSION_WALL_CLOCK_MS = 4 * 60 * 60 * 1000; // 4 hours (#1590)
 
-  private ensureGeneratorRunning(sessionDbId: number, source: string): void {
+  public ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 
@@ -121,7 +121,7 @@ export class SessionRoutes extends BaseRouteHandler {
         session.abortController.abort();
       }
       const pendingStore = this.sessionManager.getPendingMessageStore();
-      pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+      pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
       this.sessionManager.removeSessionImmediate(sessionDbId);
       return;
     }
@@ -253,7 +253,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // Mark all processing messages as failed so they can be retried or abandoned
         const pendingStore = this.sessionManager.getPendingMessageStore();
         try {
-          const failedCount = pendingStore.markSessionMessagesFailed(session.sessionDbId);
+          const failedCount = pendingStore.transitionMessagesTo('failed', { sessionDbId: session.sessionDbId });
           if (failedCount > 0) {
             logger.error('SESSION', `Marked messages as failed after generator error`, {
               sessionId: session.sessionDbId,
@@ -268,10 +268,11 @@ export class SessionRoutes extends BaseRouteHandler {
         }
       })
       .finally(async () => {
-        // CRITICAL: Verify subprocess exit to prevent zombie accumulation (Issue #1168)
-        const tracked = getProcessBySession(session.sessionDbId);
+        // Primary-path subprocess teardown — process-group kill ensures any
+        // SDK descendants are reaped too (Principle 5).
+        const tracked = getSdkProcessForSession(session.sessionDbId);
         if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
-          await ensureProcessExit(tracked, 5000);
+          await ensureSdkProcessExit(tracked, 5000);
         }
 
         const sessionDbId = session.sessionDbId;
@@ -288,43 +289,6 @@ export class SessionRoutes extends BaseRouteHandler {
         session.generatorPromise = null;
         session.currentProvider = null;
         this.workerService.broadcastProcessingStatus();
-
-        // Stop-hook fire-and-forget (Phase 2): if the generator just processed
-        // a summary and no work remains, the Stop hook is done and we should
-        // self-clean the session. The summary write is already committed to
-        // SQLite synchronously inside processAgentResponse() BEFORE startSession()
-        // returns (see ResponseProcessor.ts: storeObservations() is sync, and
-        // confirmProcessed() runs right after), so by the time this .finally()
-        // runs the summary is durably persisted.
-        //
-        // We gate on lastSummaryStored so we don't finalize after every idle
-        // timeout between tool calls — only when a real Stop event produced
-        // a summary record.
-        try {
-          const pendingStore = this.sessionManager.getPendingMessageStore();
-          const pendingNow = pendingStore.getPendingCount(sessionDbId);
-          if (session.lastSummaryStored === true && pendingNow === 0) {
-            logger.info('SESSION', 'Stop-hook self-clean: summary persisted + queue drained → finalizing', {
-              sessionId: sessionDbId
-            });
-            // finalizeSession is idempotent and does NOT touch the in-memory map —
-            // it only marks DB completed, drains any orphaned pending messages,
-            // and broadcasts the completion event. sessionManager cleanup is
-            // handled below by the existing abort/removeSessionImmediate flow.
-            this.completionHandler.finalizeSession(sessionDbId);
-            // Clear the flag so a subsequent re-activation of the same session
-            // does not fire finalize again without a fresh summary.
-            session.lastSummaryStored = false;
-            // Ensure the session is removed from the active-sessions map so the
-            // Stop-hook path doesn't depend on a later idle-timeout tick.
-            this.sessionManager.removeSessionImmediate(sessionDbId);
-            return;
-          }
-        } catch (err) {
-          logger.warn('SESSION', 'finalizeSession failed in SessionRoutes generator .finally()', {
-            sessionId: sessionDbId
-          }, err as Error);
-        }
 
         // Crash recovery: If not aborted and still has work, restart (with limit)
         if (!wasAborted) {
@@ -353,16 +317,34 @@ export class SessionRoutes extends BaseRouteHandler {
             session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1; // Keep for logging
 
             if (!restartAllowed) {
-              logger.error('SESSION', `CRITICAL: Restart guard tripped — too many restarts in window, stopping to prevent runaway costs`, {
+              logger.error('SESSION', `CRITICAL: Restart guard tripped — session is dead, draining pending messages and terminating`, {
                 sessionId: sessionDbId,
                 pendingCount,
                 restartsInWindow: session.restartGuard.restartsInWindow,
                 windowMs: session.restartGuard.windowMs,
                 maxRestarts: session.restartGuard.maxRestarts,
-                action: 'Generator will NOT restart. Check logs for root cause. Messages remain in pending state.'
+                consecutiveFailures: session.restartGuard.consecutiveFailuresSinceSuccess,
+                maxConsecutiveFailures: session.restartGuard.maxConsecutiveFailures,
+                action: 'Generator will NOT restart. Pending messages drained to abandoned. Check logs for root cause.'
               });
-              // Don't restart - abort to prevent further API calls
+              // Don't restart - abort to prevent further API calls AND drain pending
+              // messages so the session doesn't reappear in getSessionsWithPendingMessages
+              // and trigger another auto-start cycle.
               session.abortController.abort();
+              try {
+                const drained = pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
+                if (drained > 0) {
+                  logger.error('SESSION', 'Drained pending messages to abandoned after restart guard trip', {
+                    sessionId: sessionDbId,
+                    drained,
+                  });
+                }
+              } catch (drainErr) {
+                const normalized = drainErr instanceof Error ? drainErr : new Error(String(drainErr));
+                logger.error('SESSION', 'Failed to drain pending messages after restart guard trip', {
+                  sessionId: sessionDbId,
+                }, normalized);
+              }
               return;
             }
 
@@ -371,7 +353,9 @@ export class SessionRoutes extends BaseRouteHandler {
               pendingCount,
               consecutiveRestarts: session.consecutiveRestarts,
               restartsInWindow: session.restartGuard!.restartsInWindow,
-              maxRestarts: session.restartGuard!.maxRestarts
+              maxRestarts: session.restartGuard!.maxRestarts,
+              consecutiveFailures: session.restartGuard!.consecutiveFailuresSinceSuccess,
+              maxConsecutiveFailures: session.restartGuard!.maxConsecutiveFailures
             });
 
             // Abort OLD controller before replacing to prevent child process leaks
@@ -411,20 +395,105 @@ export class SessionRoutes extends BaseRouteHandler {
 
   setupRoutes(app: express.Application): void {
     // Legacy session endpoints (use sessionDbId)
-    app.post('/sessions/:sessionDbId/init', this.handleSessionInit.bind(this));
-    app.post('/sessions/:sessionDbId/observations', this.handleObservations.bind(this));
-    app.post('/sessions/:sessionDbId/summarize', this.handleSummarize.bind(this));
+    app.post(
+      '/sessions/:sessionDbId/init',
+      validateBody(SessionRoutes.legacySessionInitSchema),
+      this.handleSessionInit.bind(this)
+    );
+    app.post(
+      '/sessions/:sessionDbId/observations',
+      validateBody(SessionRoutes.legacyObservationsSchema),
+      this.handleObservations.bind(this)
+    );
+    app.post(
+      '/sessions/:sessionDbId/summarize',
+      validateBody(SessionRoutes.legacySummarizeSchema),
+      this.handleSummarize.bind(this)
+    );
     app.get('/sessions/:sessionDbId/status', this.handleSessionStatus.bind(this));
     app.delete('/sessions/:sessionDbId', this.handleSessionDelete.bind(this));
     app.post('/sessions/:sessionDbId/complete', this.handleSessionComplete.bind(this));
 
     // New session endpoints (use contentSessionId)
-    app.post('/api/sessions/init', this.handleSessionInitByClaudeId.bind(this));
-    app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
-    app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
-    app.post('/api/sessions/complete', this.handleCompleteByClaudeId.bind(this));
+    app.post(
+      '/api/sessions/init',
+      validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
+      this.handleSessionInitByClaudeId.bind(this)
+    );
+    app.post(
+      '/api/sessions/observations',
+      validateBody(SessionRoutes.observationsByClaudeIdSchema),
+      this.handleObservationsByClaudeId.bind(this)
+    );
+    app.post(
+      '/api/sessions/summarize',
+      validateBody(SessionRoutes.summarizeByClaudeIdSchema),
+      this.handleSummarizeByClaudeId.bind(this)
+    );
+    app.post(
+      '/api/sessions/complete',
+      validateBody(SessionRoutes.completeByClaudeIdSchema),
+      this.handleCompleteByClaudeId.bind(this)
+    );
     app.get('/api/sessions/status', this.handleStatusByClaudeId.bind(this));
   }
+
+  // Plan 06 Phase 3 — per-route Zod schemas. Schemas live at the top of the
+  // owning route file and gate body validation via `validateBody`.
+  // `passthrough()` preserves optional/forwarded fields the handlers
+  // already accept (e.g. cwd, agentId, agentType, platformSource).
+  private static readonly legacySessionInitSchema = z.object({
+    userPrompt: z.string().optional(),
+    promptNumber: z.number().int().optional(),
+  }).passthrough();
+
+  private static readonly legacyObservationsSchema = z.object({
+    tool_name: z.string().min(1),
+    tool_input: z.unknown().optional(),
+    tool_response: z.unknown().optional(),
+    prompt_number: z.number().int().optional(),
+    cwd: z.string().optional(),
+  }).passthrough();
+
+  private static readonly legacySummarizeSchema = z.object({
+    last_assistant_message: z.string().optional(),
+  }).passthrough();
+
+  private static readonly sessionInitByClaudeIdSchema = z.object({
+    contentSessionId: z.string().min(1),
+    project: z.string().optional(),
+    prompt: z.string().optional(),
+    platformSource: z.string().optional(),
+    customTitle: z.string().optional(),
+  }).passthrough();
+
+  private static readonly observationsByClaudeIdSchema = z.object({
+    contentSessionId: z.string().min(1),
+    tool_name: z.string().min(1),
+    tool_input: z.unknown().optional(),
+    tool_response: z.unknown().optional(),
+    cwd: z.string().optional(),
+    agentId: z.string().optional(),
+    agentType: z.string().optional(),
+    platformSource: z.string().optional(),
+    // Idempotency key for the UNIQUE(content_session_id, tool_use_id) index
+    // added in Plan 01 Phase 1. Accept both snake and camel shapes so
+    // cross-process callers using either convention still deduplicate.
+    tool_use_id: z.string().optional(),
+    toolUseId: z.string().optional(),
+  }).passthrough();
+
+  private static readonly summarizeByClaudeIdSchema = z.object({
+    contentSessionId: z.string().min(1),
+    last_assistant_message: z.string().optional(),
+    agentId: z.string().optional(),
+    platformSource: z.string().optional(),
+  }).passthrough();
+
+  private static readonly completeByClaudeIdSchema = z.object({
+    contentSessionId: z.string().min(1),
+    platformSource: z.string().optional(),
+  }).passthrough();
 
   /**
    * Initialize a new session
@@ -600,98 +669,40 @@ export class SessionRoutes extends BaseRouteHandler {
    * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, tool_name, tool_input, tool_response, cwd, agentId, agentType } = req.body;
-    const platformSource = normalizePlatformSource(req.body.platformSource);
-    const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : '';
-
-    if (!contentSessionId) {
-      return this.badRequest(res, 'Missing contentSessionId');
-    }
-
-    // Load skip tools from settings
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const skipTools = new Set(settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim()).filter(Boolean));
-
-    // Skip low-value or meta tools
-    if (skipTools.has(tool_name)) {
-      logger.debug('SESSION', 'Skipping observation for tool', { tool_name });
-      res.json({ status: 'skipped', reason: 'tool_excluded' });
-      return;
-    }
-
-    // Skip meta-observations: file operations on session-memory files
-    const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);
-    if (fileOperationTools.has(tool_name) && tool_input) {
-      const filePath = tool_input.file_path || tool_input.notebook_path;
-      if (filePath && filePath.includes('session-memory')) {
-        logger.debug('SESSION', 'Skipping meta-observation for session-memory file', {
-          tool_name,
-          file_path: filePath
-        });
-        res.json({ status: 'skipped', reason: 'session_memory_meta' });
-        return;
-      }
-    }
-
-    const store = this.dbManager.getSessionStore();
-
-    let sessionDbId: number;
-    let promptNumber: number;
-    try {
-      sessionDbId = store.createSDKSession(contentSessionId, project, '', undefined, platformSource);
-      promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
-    } catch (error) {
-      const normalizedError = error instanceof Error ? error : new Error(String(error));
-      logger.error('HTTP', 'Observation storage failed', { contentSessionId, tool_name }, normalizedError);
-      res.json({ stored: false, reason: normalizedError.message });
-      return;
-    }
-
-    // Privacy check: skip if user prompt was entirely private
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
-      store,
+    const {
       contentSessionId,
-      promptNumber,
-      'observation',
-      sessionDbId,
-      { tool_name }
-    );
-    if (!userPrompt) {
-      res.json({ status: 'skipped', reason: 'private' });
-      return;
-    }
-
-    // Strip memory tags from tool_input and tool_response
-    const cleanedToolInput = tool_input !== undefined
-      ? stripMemoryTagsFromJson(JSON.stringify(tool_input))
-      : '{}';
-
-    const cleanedToolResponse = tool_response !== undefined
-      ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
-      : '{}';
-
-    // Queue observation
-    this.sessionManager.queueObservation(sessionDbId, {
       tool_name,
-      tool_input: cleanedToolInput,
-      tool_response: cleanedToolResponse,
-      prompt_number: promptNumber,
-      cwd: cwd || (() => {
-        logger.error('SESSION', 'Missing cwd when queueing observation in SessionRoutes', {
-          sessionId: sessionDbId,
-          tool_name
-        });
-        return '';
-      })(),
-      agentId: typeof agentId === 'string' ? agentId : undefined,
-      agentType: typeof agentType === 'string' ? agentType : undefined,
+      tool_input,
+      tool_response,
+      cwd,
+      platformSource,
+      agentId,
+      agentType,
+      tool_use_id,
+      toolUseId,
+    } = req.body;
+
+    const result = ingestObservation({
+      contentSessionId,
+      toolName: tool_name,
+      toolInput: tool_input,
+      toolResponse: tool_response,
+      cwd,
+      platformSource,
+      agentId,
+      agentType,
+      toolUseId: typeof tool_use_id === 'string' ? tool_use_id : (typeof toolUseId === 'string' ? toolUseId : undefined),
     });
 
-    // Ensure SDK agent is running
-    this.ensureGeneratorRunning(sessionDbId, 'observation');
+    if (!result.ok) {
+      res.status(result.status ?? 500).json({ stored: false, reason: result.reason });
+      return;
+    }
 
-    // Broadcast observation queued event
-    this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
+    if ('status' in result && result.status === 'skipped') {
+      res.json({ status: 'skipped', reason: result.reason });
+      return;
+    }
 
     res.json({ status: 'queued' });
   });
@@ -706,10 +717,6 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleSummarizeByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { contentSessionId, last_assistant_message, agentId } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
-
-    if (!contentSessionId) {
-      return this.badRequest(res, 'Missing contentSessionId');
-    }
 
     // Belt-and-suspenders: reject summarize requests from subagent context.
     // Gate on agentId only — agentType alone indicates a main session started with
@@ -802,10 +809,6 @@ export class SessionRoutes extends BaseRouteHandler {
 
     logger.info('HTTP', '→ POST /api/sessions/complete', { contentSessionId });
 
-    if (!contentSessionId) {
-      return this.badRequest(res, 'Missing contentSessionId');
-    }
-
     const store = this.dbManager.getSessionStore();
 
     // Look up sessionDbId from contentSessionId (createSDKSession is idempotent)
@@ -854,9 +857,24 @@ export class SessionRoutes extends BaseRouteHandler {
     // Only contentSessionId is truly required — Cursor and other platforms
     // may omit prompt/project in their payload (#838, #1049)
     const project = req.body.project || 'unknown';
-    const prompt = req.body.prompt || '[media prompt]';
+    let prompt = req.body.prompt || '[media prompt]';
     const platformSource = normalizePlatformSource(req.body.platformSource);
     const customTitle = req.body.customTitle || undefined;
+
+    const promptByteLength = Buffer.byteLength(prompt, 'utf8');
+    if (promptByteLength > MAX_USER_PROMPT_BYTES) {
+      logger.warn('HTTP', 'SessionRoutes: oversized prompt truncated at session-init boundary', {
+        project,
+        contentSessionId,
+        promptByteLength,
+        maxBytes: MAX_USER_PROMPT_BYTES,
+        preview: prompt.slice(0, 200)
+      });
+      const buf = Buffer.from(prompt, 'utf8');
+      let end = MAX_USER_PROMPT_BYTES;
+      while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+      prompt = buf.subarray(0, end).toString('utf8');
+    }
 
     logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {
       contentSessionId,
@@ -865,11 +883,6 @@ export class SessionRoutes extends BaseRouteHandler {
       prompt_length: prompt?.length,
       customTitle
     });
-
-    // Validate required parameters
-    if (!this.validateRequired(req, res, ['contentSessionId'])) {
-      return;
-    }
 
     const store = this.dbManager.getSessionStore();
 

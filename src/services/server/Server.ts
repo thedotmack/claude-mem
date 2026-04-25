@@ -21,6 +21,61 @@ import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
 import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.js';
 
+/**
+ * Plan 06 Phase 6 — instruction content (SKILL.md + ALLOWED_OPERATIONS .md
+ * files) is read once at module init and held in memory for the lifetime of
+ * the worker process. Process restart is the cache-invalidation event.
+ *
+ * `SKILL.md` is held as the full UTF-8 string so `extractInstructionSection`
+ * can slice topic windows on every request without re-reading the file.
+ * Per-operation files are cached as a `Map<operation, content>`. Files that
+ * are missing on disk simply omit from the map; the request handler returns
+ * 404 in that case (preserving legacy behaviour).
+ */
+const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
+const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
+const INSTRUCTIONS_SKILL_PATH: string = path.join(INSTRUCTIONS_BASE_DIR, 'SKILL.md');
+
+const cachedSkillMd: string | null = (() => {
+  try {
+    const text = fs.readFileSync(INSTRUCTIONS_SKILL_PATH, 'utf-8');
+    logger.info('SYSTEM', 'Cached SKILL.md at boot', {
+      path: INSTRUCTIONS_SKILL_PATH,
+      bytes: Buffer.byteLength(text, 'utf-8'),
+    });
+    return text;
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'SKILL.md not present at boot, /api/instructions will 404 for topic queries', {
+      path: INSTRUCTIONS_SKILL_PATH,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+})();
+
+const cachedOperationContent: ReadonlyMap<string, string> = (() => {
+  const map = new Map<string, string>();
+  for (const operation of ALLOWED_OPERATIONS) {
+    const operationPath = path.join(INSTRUCTIONS_OPERATIONS_DIR, `${operation}.md`);
+    try {
+      map.set(operation, fs.readFileSync(operationPath, 'utf-8'));
+    } catch (error: unknown) {
+      // Missing operation files are non-fatal — 404 is returned per request.
+      logger.debug('SYSTEM', 'Operation instruction file not present at boot', {
+        path: operationPath,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  if (map.size > 0) {
+    logger.info('SYSTEM', 'Cached operation instruction files at boot', {
+      count: map.size,
+      operations: Array.from(map.keys()),
+    });
+  }
+  return map;
+})();
+
 // Build-time injected version constant (set by esbuild define)
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
@@ -94,11 +149,20 @@ export class Server {
    */
   async listen(port: number, host: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      this.server = this.app.listen(port, host, () => {
+      const server = http.createServer(this.app);
+      this.server = server;
+      const onError = (err: Error) => {
+        server.off('listening', onListening);
+        reject(err);
+      };
+      const onListening = () => {
+        server.off('error', onError);
         logger.info('SYSTEM', 'HTTP server started', { host, port, pid: process.pid });
         resolve();
-      });
-      this.server.on('error', reject);
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(port, host);
     });
   }
 
@@ -198,8 +262,9 @@ export class Server {
       res.status(200).json({ version: BUILT_IN_VERSION });
     });
 
-    // Instructions endpoint - loads SKILL.md sections on-demand
-    this.app.get('/api/instructions', async (req: Request, res: Response) => {
+    // Instructions endpoint — Plan 06 Phase 6 — serves the cached SKILL.md /
+    // operations content loaded once at module init.
+    this.app.get('/api/instructions', (req: Request, res: Response) => {
       const topic = (req.query.topic as string) || 'all';
       const operation = req.query.operation as string | undefined;
 
@@ -213,24 +278,20 @@ export class Server {
       }
 
       if (operation) {
-        const OPERATIONS_BASE_DIR = path.resolve(__dirname, '../skills/mem-search/operations');
-        const operationPath = path.resolve(OPERATIONS_BASE_DIR, `${operation}.md`);
-        if (!operationPath.startsWith(OPERATIONS_BASE_DIR + path.sep)) {
-          return res.status(400).json({ error: 'Invalid request' });
+        const cached = cachedOperationContent.get(operation);
+        if (cached === undefined) {
+          logger.debug('HTTP', 'Instruction file not cached at boot', { operation });
+          return res.status(404).json({ error: 'Instruction not found' });
         }
+        return res.json({ content: [{ type: 'text', text: cached }] });
       }
 
-      try {
-        const content = await this.loadInstructionContent(operation, topic);
-        res.json({ content: [{ type: 'text', text: content }] });
-      } catch (error) {
-        if (error instanceof Error) {
-          logger.debug('HTTP', 'Instruction file not found', { topic, operation, message: error.message });
-        } else {
-          logger.debug('HTTP', 'Instruction file not found', { topic, operation, error: String(error) });
-        }
-        res.status(404).json({ error: 'Instruction not found' });
+      if (cachedSkillMd === null) {
+        logger.debug('HTTP', 'SKILL.md not cached at boot', { topic });
+        return res.status(404).json({ error: 'Instruction not found' });
       }
+      const sectionText = this.extractInstructionSection(cachedSkillMd, topic);
+      res.json({ content: [{ type: 'text', text: sectionText }] });
     });
 
     // Admin endpoints for process management (localhost-only)
@@ -328,20 +389,6 @@ export class Server {
         },
       });
     });
-  }
-
-  /**
-   * Load instruction content from disk for the /api/instructions endpoint.
-   * Caller must validate operation/topic before calling.
-   */
-  private async loadInstructionContent(operation: string | undefined, topic: string): Promise<string> {
-    if (operation) {
-      const operationPath = path.resolve(__dirname, '../skills/mem-search/operations', `${operation}.md`);
-      return fs.promises.readFile(operationPath, 'utf-8');
-    }
-    const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
-    const fullContent = await fs.promises.readFile(skillPath, 'utf-8');
-    return this.extractInstructionSection(fullContent, topic);
   }
 
   /**

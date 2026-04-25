@@ -10,82 +10,97 @@
  *    (should not be persisted to memory)
  * 4. <system-reminder> - Claude Code-injected system reminders
  *    (CLAUDE.md contents, deferred tool lists, etc. — should not be persisted)
+ * 5. <persisted-output> - Persisted-output payload tag
  *
  * EDGE PROCESSING PATTERN: Filter at hook layer before sending to worker/storage.
  * This keeps the worker service simple and follows one-way data stream.
+ *
+ * PATHFINDER plan 03 phase 8: collapsed countTags + stripTagsInternal into a
+ * single alternation regex. One pass over the input. One helper, N callers
+ * (`stripMemoryTagsFromJson` / `stripMemoryTagsFromPrompt` are thin adapters).
  */
 
 import { logger } from './logger.js';
 
+/** All tag names this module strips. Single source of truth for the regex. */
+const TAG_NAMES = [
+  'private',
+  'claude-mem-context',
+  'system_instruction',
+  'system-instruction',
+  'persisted-output',
+  'system-reminder',
+] as const;
+type TagName = (typeof TAG_NAMES)[number];
+
+/**
+ * Single-pass alternation regex covering every privacy / context tag.
+ * Backreference `\1` ensures a closing tag matches the opening name; tag
+ * attributes (e.g. `<system-reminder data-foo="…">`) are tolerated via
+ * `[^>]*`.
+ */
+const STRIP_REGEX = new RegExp(
+  `<(${TAG_NAMES.join('|')})\\b[^>]*>[\\s\\S]*?</\\1>`,
+  'g'
+);
+
 /**
  * Regex to match <system-reminder> tags and their content.
  * Exported for use by transcript parsers that strip system-reminder at read-time.
+ *
+ * Kept as a separate single-tag regex because the active transcript parser
+ * (`src/shared/transcript-parser.ts`) consumes only this one tag and would
+ * otherwise need to re-import the multi-tag list.
  */
 export const SYSTEM_REMINDER_REGEX = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 
-/**
- * Maximum number of tags allowed in a single content block
- * This protects against ReDoS (Regular Expression Denial of Service) attacks
- * where malicious input with many nested/unclosed tags could cause catastrophic backtracking
- */
+/** Maximum total stripped-tag count before we log a ReDoS-class anomaly. */
 const MAX_TAG_COUNT = 100;
 
 /**
- * Count total number of opening tags in content
- * Used for ReDoS protection before regex processing
+ * Strip every recognised tag from `input` in a single pass.
+ *
+ * @returns the stripped string (trimmed) and per-tag counts. Counts are
+ *          surfaced to logs for observability but are not used as a control
+ *          signal.
  */
-function countTags(content: string): number {
-  const privateCount = (content.match(/<private>/g) || []).length;
-  const contextCount = (content.match(/<claude-mem-context>/g) || []).length;
-  const systemInstructionCount = (content.match(/<system_instruction>/g) || []).length;
-  const systemInstructionHyphenCount = (content.match(/<system-instruction>/g) || []).length;
-const persistedOutputCount = (content.match(/<persisted-output>/g) || []).length;
-  const systemReminderCount = (content.match(/<system-reminder>/g) || []).length;
-  return privateCount + contextCount + systemInstructionCount + systemInstructionHyphenCount + persistedOutputCount + systemReminderCount;
-}
+export function stripTags(input: string): { stripped: string; counts: Record<TagName, number> } {
+  const counts: Record<TagName, number> = Object.fromEntries(
+    TAG_NAMES.map(name => [name, 0])
+  ) as Record<TagName, number>;
 
-/**
- * Internal function to strip memory tags from content
- * Shared logic extracted from both JSON and prompt stripping functions
- */
-function stripTagsInternal(content: string): string {
-  // ReDoS protection: limit tag count before regex processing
-  const tagCount = countTags(content);
-  if (tagCount > MAX_TAG_COUNT) {
+  STRIP_REGEX.lastIndex = 0; // /g state is per-instance — reset before each call.
+
+  let total = 0;
+  const stripped = input.replace(STRIP_REGEX, (_, name: TagName) => {
+    counts[name] = (counts[name] ?? 0) + 1;
+    total += 1;
+    return '';
+  });
+
+  if (total > MAX_TAG_COUNT) {
     logger.warn('SYSTEM', 'tag count exceeds limit', undefined, {
-      tagCount,
+      tagCount: total,
       maxAllowed: MAX_TAG_COUNT,
-      contentLength: content.length
+      contentLength: input.length,
     });
-    // Still process but log the anomaly
   }
 
-  return content
-    .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
-    .replace(/<private>[\s\S]*?<\/private>/g, '')
-    .replace(/<system_instruction>[\s\S]*?<\/system_instruction>/g, '')
-    .replace(/<system-instruction>[\s\S]*?<\/system-instruction>/g, '')
-.replace(/<persisted-output>[\s\S]*?<\/persisted-output>/g, '')
-    .replace(SYSTEM_REMINDER_REGEX, '')
-    .trim();
+  return { stripped: stripped.trim(), counts };
 }
 
 /**
- * Strip memory tags from JSON-serialized content (tool inputs/responses)
- *
- * @param content - Stringified JSON content from tool_input or tool_response
- * @returns Cleaned content with tags removed, or '{}' if invalid
+ * Strip memory tags from JSON-serialized content (tool inputs/responses).
+ * Thin adapter around `stripTags` — same regex, same single pass.
  */
 export function stripMemoryTagsFromJson(content: string): string {
-  return stripTagsInternal(content);
+  return stripTags(content).stripped;
 }
 
 /**
- * Strip memory tags from user prompt content
- *
- * @param content - Raw user prompt text
- * @returns Cleaned content with tags removed
+ * Strip memory tags from user prompt content.
+ * Thin adapter around `stripTags` — same regex, same single pass.
  */
 export function stripMemoryTagsFromPrompt(content: string): string {
-  return stripTagsInternal(content);
+  return stripTags(content).stripped;
 }

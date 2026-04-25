@@ -8,7 +8,6 @@ import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
 import {
   storeObservation,
   computeObservationContentHash,
-  findDuplicateObservation,
 } from '../../src/services/sqlite/observations/store.js';
 import {
   createSDKSession,
@@ -91,16 +90,19 @@ describe('TRIAGE-03: Data Integrity', () => {
       expect(result2.id).toBe(result1.id);
     });
 
-    it('storeObservation allows same content after dedup window expires', () => {
+    it('storeObservation deduplicates identical content regardless of time gap (UNIQUE constraint)', () => {
+      // PATHFINDER-2026-04-22 Plan 01 Phase 4: the legacy time-window dedup
+      // was replaced by UNIQUE(memory_session_id, content_hash) +
+      // ON CONFLICT DO NOTHING. Identical content always dedupes.
       const memId = createSessionWithMemoryId(db, 'content-dedup-2', 'mem-dedup-2');
       const obs = createObservationInput({ title: 'Same Title', narrative: 'Same Narrative' });
 
       const now = Date.now();
       const result1 = storeObservation(db, memId, 'test-project', obs, 1, 0, now);
-      // 31 seconds later — outside the 30s window
+      // Far outside any legacy window — UNIQUE constraint still dedupes.
       const result2 = storeObservation(db, memId, 'test-project', obs, 1, 0, now + 31_000);
 
-      expect(result2.id).not.toBe(result1.id);
+      expect(result2.id).toBe(result1.id);
     });
 
     it('storeObservation allows different content at same time', () => {
@@ -159,47 +161,10 @@ describe('TRIAGE-03: Data Integrity', () => {
     });
   });
 
-  describe('Stuck isProcessing flag', () => {
-    it('hasAnyPendingWork resets stuck processing messages older than 5 minutes', () => {
-      // Create a pending_messages table entry that's stuck in 'processing'
-      const sessionId = createSDKSession(db, 'content-stuck', 'stuck-project', 'test');
-
-      // Insert a processing message stuck for 6 minutes
-      const sixMinutesAgo = Date.now() - (6 * 60 * 1000);
-      db.prepare(`
-        INSERT INTO pending_messages (session_db_id, content_session_id, message_type, status, retry_count, created_at_epoch, started_processing_at_epoch)
-        VALUES (?, 'content-stuck', 'observation', 'processing', 0, ?, ?)
-      `).run(sessionId, sixMinutesAgo, sixMinutesAgo);
-
-      const pendingStore = new PendingMessageStore(db);
-
-      // hasAnyPendingWork should reset the stuck message and still return true (it's now pending again)
-      const hasPending = pendingStore.hasAnyPendingWork();
-      expect(hasPending).toBe(true);
-
-      // Verify the message was reset to 'pending'
-      const msg = db.prepare('SELECT status FROM pending_messages WHERE content_session_id = ?').get('content-stuck') as { status: string };
-      expect(msg.status).toBe('pending');
-    });
-
-    it('hasAnyPendingWork does NOT reset recently-started processing messages', () => {
-      const sessionId = createSDKSession(db, 'content-recent', 'recent-project', 'test');
-
-      // Insert a processing message started 1 minute ago (well within 5-minute threshold)
-      const oneMinuteAgo = Date.now() - (1 * 60 * 1000);
-      db.prepare(`
-        INSERT INTO pending_messages (session_db_id, content_session_id, message_type, status, retry_count, created_at_epoch, started_processing_at_epoch)
-        VALUES (?, 'content-recent', 'observation', 'processing', 0, ?, ?)
-      `).run(sessionId, oneMinuteAgo, oneMinuteAgo);
-
-      const pendingStore = new PendingMessageStore(db);
-      const hasPending = pendingStore.hasAnyPendingWork();
-      expect(hasPending).toBe(true);
-
-      // Verify the message is still 'processing' (not reset)
-      const msg = db.prepare('SELECT status FROM pending_messages WHERE content_session_id = ?').get('content-recent') as { status: string };
-      expect(msg.status).toBe('processing');
-    });
+  describe('hasAnyPendingWork', () => {
+    // PATHFINDER-2026-04-22 Plan 01: time-based stale-reset on
+    // started_processing_at_epoch was replaced by worker-PID liveness.
+    // The legacy "5-minute reset" tests were removed with the column.
 
     it('hasAnyPendingWork returns false when no pending or processing messages exist', () => {
       const pendingStore = new PendingMessageStore(db);

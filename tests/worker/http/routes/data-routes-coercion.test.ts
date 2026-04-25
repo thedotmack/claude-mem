@@ -38,6 +38,37 @@ function createMockReqRes(body: any): { req: Partial<Request>; res: Partial<Resp
   };
 }
 
+/**
+ * Plan 06 Phase 3 — body validation lives in `validateBody` middleware now.
+ * Build a single chain function that runs the validateBody middleware
+ * followed by the handler, mirroring how Express dispatches them in
+ * production.
+ */
+function captureChain(mockApp: any, targetPath: string): (req: Request, res: Response) => void {
+  let middleware: (req: Request, res: Response, next: () => void) => void;
+  let handler: (req: Request, res: Response) => void;
+  mockApp.post = mock((path: string, ...rest: any[]) => {
+    if (path !== targetPath) return;
+    if (rest.length === 1) {
+      handler = rest[0];
+    } else {
+      middleware = rest[0];
+      handler = rest[1];
+    }
+  });
+  return (req: Request, res: Response): void => {
+    if (!middleware) {
+      handler(req, res);
+      return;
+    }
+    let nextCalled = false;
+    middleware(req, res, () => {
+      nextCalled = true;
+    });
+    if (nextCalled) handler(req, res);
+  };
+}
+
 describe('DataRoutes Type Coercion', () => {
   let routes: DataRoutes;
   let mockGetObservationsByIds: ReturnType<typeof mock>;
@@ -82,13 +113,12 @@ describe('DataRoutes Type Coercion', () => {
     let handler: (req: Request, res: Response) => void;
 
     beforeEach(() => {
-      const mockApp = {
+      const mockApp: any = {
         get: mock(() => {}),
-        post: mock((path: string, fn: any) => {
-          if (path === '/api/observations/batch') handler = fn;
-        }),
         delete: mock(() => {}),
+        use: mock(() => {}),
       };
+      handler = captureChain(mockApp, '/api/observations/batch');
       routes.setupRoutes(mockApp as any);
     });
 
@@ -143,13 +173,12 @@ describe('DataRoutes Type Coercion', () => {
     let handler: (req: Request, res: Response) => void;
 
     beforeEach(() => {
-      const mockApp = {
+      const mockApp: any = {
         get: mock(() => {}),
-        post: mock((path: string, fn: any) => {
-          if (path === '/api/sdk-sessions/batch') handler = fn;
-        }),
         delete: mock(() => {}),
+        use: mock(() => {}),
       };
+      handler = captureChain(mockApp, '/api/sdk-sessions/batch');
       routes.setupRoutes(mockApp as any);
     });
 

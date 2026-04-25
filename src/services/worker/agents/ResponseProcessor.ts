@@ -12,8 +12,8 @@
  */
 
 import { logger } from '../../../utils/logger.js';
-import { parseObservations, parseSummary, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
-import { SUMMARY_MODE_MARKER, MAX_CONSECUTIVE_SUMMARY_FAILURES } from '../../../sdk/prompts.js';
+import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
+import { ingestSummary } from '../http/shared.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
@@ -67,45 +67,33 @@ export async function processAgentResponse(
     session.conversationHistory.push({ role: 'assistant', content: text });
   }
 
-  // Parse observations and summary
-  const observations = parseObservations(text, session.contentSessionId);
+  // Single fail-fast parse (PATHFINDER plan 03 phase 1+2). On invalid XML,
+  // mark each in-flight pending message failed and stop. The PendingMessageStore
+  // retry ladder is the legitimate primary-path surface for transient failures;
+  // there is no circuit breaker, no coercion.
+  const parsed = parseAgentXml(text, session.contentSessionId);
 
-  // Detect whether the most recent prompt was a summary request.
-  // If so, enable observation-to-summary coercion to prevent the infinite
-  // retry loop described in #1633.
-  const lastMessage = session.conversationHistory.at(-1);
-  const lastUserMessage = lastMessage?.role === 'user'
-    ? lastMessage
-    : session.conversationHistory.findLast(m => m.role === 'user') ?? null;
-  const summaryExpected = lastUserMessage?.content?.includes(SUMMARY_MODE_MARKER) ?? false;
-
-  const summary = parseSummary(text, session.sessionDbId, summaryExpected);
-
-  // Detect non-XML responses (auth errors, rate limits, garbled output).
-  // When the response contains no parseable XML and produced no observations,
-  // mark the pending messages as failed instead of confirming them — this prevents
-  // silent data loss when the LLM returns garbage (#1874).
-  const isNonXmlResponse = (
-    text.trim() &&
-    observations.length === 0 &&
-    !summary &&
-    !/<observation>|<summary>|<skip_summary\b/.test(text)
-  );
-
-  if (isNonXmlResponse) {
-    const preview = text.length > 200 ? `${text.slice(0, 200)}...` : text;
-    logger.warn('PARSER', `${agentName} returned non-XML response; marking messages as failed for retry (#1874)`, {
+  if (!parsed.valid) {
+    logger.warn('PARSER', `${agentName} returned unparseable response: ${parsed.reason}`, {
       sessionId: session.sessionDbId,
-      preview
     });
-
-    // Mark messages as failed (retry logic in PendingMessageStore handles retries)
     const pendingStore = sessionManager.getPendingMessageStore();
     for (const messageId of session.processingMessageIds) {
       pendingStore.markFailed(messageId);
     }
     session.processingMessageIds = [];
     return;
+  }
+
+  let observations: ParsedObservation[] = [];
+  let summary: ParsedSummary | null = null;
+  if (parsed.kind === 'observation') {
+    observations = parsed.data;
+  } else if (!parsed.data.skipped) {
+    // `<skip_summary/>` is a first-class parser result but carries nothing to
+    // persist; the summary storage path is skipped entirely so storeObservations
+    // does not see an empty record.
+    summary = parsed.data;
   }
 
   // Convert nullable fields to empty strings for storeSummary (if summary exists)
@@ -174,30 +162,23 @@ export async function processAgentResponse(
   // to the Stop hook for silent-summary-loss detection (#1633)
   session.lastSummaryStored = result.summaryId !== null;
 
-  // Circuit breaker: track consecutive summary failures (#1633).
-  // Only evaluate when a summary was actually expected (summarize message was sent).
-  // Without this guard, the counter would increment on every normal observation
-  // response, tripping the breaker after 3 observations and permanently blocking
-  // summarization — reproducing the data-loss scenario this fix is meant to prevent.
-  if (summaryExpected) {
-    const skippedIntentionally = /<skip_summary\b/.test(text);
-    if (summaryForStore !== null) {
-      // Summary was present in the response — reset the failure counter
-      session.consecutiveSummaryFailures = 0;
-    } else if (skippedIntentionally) {
-      // Explicit <skip_summary/> is a valid protocol response — neither success
-      // nor failure. Leave the counter unchanged so we don't mask a bad run that
-      // happens to end on a skip, but also don't punish intentional skips.
-    } else {
-      // Summary was expected but none was stored — count as failure
-      session.consecutiveSummaryFailures += 1;
-      if (session.consecutiveSummaryFailures >= MAX_CONSECUTIVE_SUMMARY_FAILURES) {
-        logger.error('SESSION', `Circuit breaker: ${session.consecutiveSummaryFailures} consecutive summary failures — further summarize requests will be skipped (#1633)`, {
-          sessionId: session.sessionDbId,
-          contentSessionId: session.contentSessionId
-        });
-      }
-    }
+  // Gate ingestSummary({kind:'parsed'}) on real persistence so the event bus
+  // only fires for summaries that actually landed in the DB. Skipped summaries
+  // (<skip_summary/>) are an explicit bypass and still notify.
+  if (parsed.kind === 'summary' && (parsed.data.skipped || session.lastSummaryStored)) {
+    const messageId = session.processingMessageIds[0] ?? -1;
+    ingestSummary({
+      kind: 'parsed',
+      sessionDbId: session.sessionDbId,
+      messageId,
+      contentSessionId: session.contentSessionId,
+      parsed: parsed.data,
+    });
+  } else if (parsed.kind === 'summary') {
+    logger.warn('DB', 'summary parsed but no row persisted; suppressing summaryStoredEvent', {
+      sessionId: session.sessionDbId,
+      memorySessionId: session.memorySessionId,
+    });
   }
 
   // CLAIM-CONFIRM: Now that storage succeeded, confirm all processing messages (delete from queue)
@@ -342,7 +323,7 @@ async function syncAndBroadcastObservations(
   // Only runs if CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED is true (default: false)
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
   // Handle both string 'true' and boolean true from JSON settings
-  const settingValue = settings.CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED;
+  const settingValue: unknown = settings.CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED;
   const folderClaudeMdEnabled = settingValue === 'true' || settingValue === true;
 
   if (folderClaudeMdEnabled) {

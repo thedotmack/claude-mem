@@ -42,42 +42,6 @@ export function createMiddleware(
     credentials: false
   }));
 
-  // Simple in-memory rate limiter (#1935).
-  // Worker binds localhost-only, so in practice this is a global 300 req/min
-  // cap — every caller shares the 127.0.0.1/::1 bucket.
-  const requestCounts = new Map<string, { count: number; resetAt: number }>();
-  const RATE_LIMIT_WINDOW_MS = 60_000;
-  const RATE_LIMIT_MAX_REQUESTS = 300;
-
-  const rateLimiter: RequestHandler = (req, res, next) => {
-    // Normalise IPv4-mapped IPv6 so 127.0.0.1 and ::ffff:127.0.0.1 share a bucket.
-    const clientIp = (req.socket.remoteAddress ?? req.ip ?? 'unknown').replace(/^::ffff:/, '');
-    const now = Date.now();
-    let entry = requestCounts.get(clientIp);
-
-    if (!entry || now >= entry.resetAt) {
-      // Safety valve in case the worker is ever bound non-localhost.
-      if (requestCounts.size > 1000) {
-        for (const [ip, e] of requestCounts) {
-          if (now >= e.resetAt) requestCounts.delete(ip);
-        }
-      }
-      entry = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
-      requestCounts.set(clientIp, entry);
-    }
-
-    if (entry.count >= RATE_LIMIT_MAX_REQUESTS) {
-      res.set('Retry-After', String(Math.ceil((entry.resetAt - now) / 1000)));
-      res.status(429).json({ error: 'Rate limit exceeded' });
-      return;
-    }
-    entry.count++;
-
-    next();
-  };
-
-  middlewares.push(rateLimiter);
-
   // HTTP request/response logging
   middlewares.push((req: Request, res: Response, next: NextFunction) => {
     // Skip logging for static assets, health checks, and polling endpoints

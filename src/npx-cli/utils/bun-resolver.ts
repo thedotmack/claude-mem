@@ -64,23 +64,3 @@ export function resolveBunBinaryPath(): string | null {
   return null;
 }
 
-/**
- * Get the installed Bun version string (e.g. `"1.2.3"`), or `null`
- * if Bun is not available.
- */
-export function getBunVersionString(): string | null {
-  const bunPath = resolveBunBinaryPath();
-  if (!bunPath) return null;
-
-  try {
-    const result = spawnSync(bunPath, ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
-    return result.status === 0 ? result.stdout.trim() : null;
-  } catch (error: unknown) {
-    console.error('[bun-resolver] Failed to get Bun version:', error instanceof Error ? error.message : String(error));
-    return null;
-  }
-}

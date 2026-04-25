@@ -79,6 +79,7 @@ import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
+import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from './worker/GeminiAgent.js';
 import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
@@ -88,6 +89,7 @@ import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from './worker/session/SessionCompletionHandler.js';
+import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
 
@@ -100,14 +102,18 @@ import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
+import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 
 // Knowledge agent services
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
 import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from './worker/knowledge/KnowledgeAgent.js';
 
-// Process management for zombie cleanup (Issue #737)
-import { startOrphanReaper, reapOrphanedProcesses, getProcessBySession, ensureProcessExit } from './worker/ProcessRegistry.js';
+// Primary-path session lifecycle helpers — no reapers, no orphan sweeps.
+// The SDK subprocess is spawned in its own POSIX process group via
+// createSdkSpawnFactory; teardown via ensureSdkProcessExit kills the whole
+// group so no descendants leak (Principle 5).
+import { getSdkProcessForSession, ensureSdkProcessExit } from '../supervisor/process-registry.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -133,7 +139,7 @@ export function buildStatusOutput(status: 'ready' | 'error', message?: string): 
   };
 }
 
-export class WorkerService {
+export class WorkerService implements WorkerRef {
   private server: Server;
   private startTime: number = Date.now();
   private mcpClient: Client;
@@ -146,14 +152,14 @@ export class WorkerService {
   // Service layer
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
-  private sseBroadcaster: SSEBroadcaster;
+  public sseBroadcaster: SSEBroadcaster;
   private sdkAgent: SDKAgent;
   private geminiAgent: GeminiAgent;
   private openRouterAgent: OpenRouterAgent;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
-  private sessionCompletionHandler: SessionCompletionHandler;
+  private completionHandler: SessionCompletionHandler;
   private corpusStore: CorpusStore;
 
   // Route handlers
@@ -168,12 +174,6 @@ export class WorkerService {
   // Initialization tracking
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
-
-  // Orphan reaper cleanup function (Issue #737)
-  private stopOrphanReaper: (() => void) | null = null;
-
-  // Stale session reaper interval (Issue #1168)
-  private staleSessionReaperInterval: ReturnType<typeof setInterval> | null = null;
 
   // AI interaction tracking for health endpoint
   private lastAiInteraction: {
@@ -200,12 +200,20 @@ export class WorkerService {
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
-    this.sessionCompletionHandler = new SessionCompletionHandler(
+    this.completionHandler = new SessionCompletionHandler(
       this.sessionManager,
       this.sessionEventBroadcaster,
-      this.dbManager
+      this.dbManager,
     );
     this.corpusStore = new CorpusStore();
+
+    // Wire ingest helpers (plan 03 phase 0). Worker-internal callers use these
+    // directly instead of HTTP-loopback into our own routes.
+    setIngestContext({
+      sessionManager: this.sessionManager,
+      dbManager: this.dbManager,
+      eventBroadcaster: this.sessionEventBroadcaster,
+    });
 
     // Set callback for when sessions are deleted
     this.sessionManager.setOnSessionDeleted(() => {
@@ -268,6 +276,9 @@ export class WorkerService {
   private registerRoutes(): void {
     // IMPORTANT: Middleware must be registered BEFORE routes (Express processes in order)
 
+    // Register Chroma routes immediately so they bypass the initialization guard
+    this.server.registerRoutes(new ChromaRoutes());
+
     // Early handler for /api/context/inject — fail open if not yet initialized
     this.server.app.get('/api/context/inject', async (req, res, next) => {
       if (!this.initializationCompleteFlag || !this.searchRoutes) {
@@ -281,14 +292,20 @@ export class WorkerService {
 
     // Guard ALL /api/* routes during initialization — wait for DB with timeout
     // Exceptions: /api/health, /api/readiness, /api/version (handled by Server.ts core routes)
-    // and /api/context/inject (handled above with fail-open)
+    // and /api/chroma/status (diagnostic endpoint)
     this.server.app.use('/api', async (req, res, next) => {
+      // Bypass guard for diagnostic endpoints
+      if (req.path === '/chroma/status' || req.path === '/health' || req.path === '/readiness' || req.path === '/version') {
+        next();
+        return;
+      }
+
       if (this.initializationCompleteFlag) {
         next();
         return;
       }
 
-      const timeoutMs = 30000;
+      const timeoutMs = 120000; // 2 minutes
       const timeoutPromise = new Promise<void>((_, reject) =>
         setTimeout(() => reject(new Error('Database initialization timeout')), timeoutMs)
       );
@@ -312,7 +329,15 @@ export class WorkerService {
 
     // Standard routes (registered AFTER guard middleware)
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.sessionCompletionHandler));
+    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler);
+    this.server.registerRoutes(sessionRoutes);
+    // Wire the generator-starter callback now that SessionRoutes exists.
+    // `setIngestContext` ran in the constructor before routes were
+    // constructed; transcript-watcher observations depend on this side-effect
+    // to auto-start the SDK generator after enqueue.
+    attachIngestGeneratorStarter((sessionDbId, source) =>
+      sessionRoutes.ensureGeneratorRunning(sessionDbId, source),
+    );
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
@@ -359,6 +384,7 @@ export class WorkerService {
    */
   private async initializeBackground(): Promise<void> {
     try {
+      logger.info('WORKER', 'Background initialization starting...');
       await aggressiveStartupCleanup();
 
       // Load mode configuration
@@ -368,47 +394,39 @@ export class WorkerService {
 
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
+      const modeId = settings.CLAUDE_MEM_MODE;
+      ModeManager.getInstance().loadMode(modeId);
+      logger.info('SYSTEM', `Mode loaded: ${modeId}`);
+
       // One-time chroma wipe for users upgrading from versions with duplicate worker bugs.
-      // Only runs in local mode (chroma is local-only). Backfill at line ~414 rebuilds from SQLite.
       if (settings.CLAUDE_MEM_MODE === 'local' || !settings.CLAUDE_MEM_MODE) {
+        logger.info('WORKER', 'Checking for one-time Chroma migration...');
         runOneTimeChromaMigration();
       }
 
       // One-time remap of pre-worktree project names using pending_messages.cwd.
-      // Must run before dbManager.initialize() so we don't hold the DB open.
+      logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();
 
-      // Stamp merged worktrees so their observations surface under the parent
-      // project. Runs every startup (not marker-gated) because git state evolves
-      // and the engine is fully idempotent. Must also precede dbManager.initialize().
-      //
-      // The worker daemon is spawned with cwd=marketplace-plugin-dir (not a git
-      // repo), so we can't seed adoption with process.cwd(). Instead, discover
-      // parent repos from recorded pending_messages.cwd values.
-      let adoptions: Awaited<ReturnType<typeof adoptMergedWorktreesForAllKnownRepos>> | null = null;
-      try {
-        adoptions = await adoptMergedWorktreesForAllKnownRepos({});
-      } catch (err) {
-        // [ANTI-PATTERN IGNORED]: Worktree adoption is best-effort on startup; failure must not block worker initialization
-        if (err instanceof Error) {
-          logger.error('WORKER', 'Worktree adoption failed (non-fatal)', {}, err);
-        } else {
-          logger.error('WORKER', 'Worktree adoption failed (non-fatal) with non-Error', {}, new Error(String(err)));
-        }
-      }
-      if (adoptions) {
-        for (const adoption of adoptions) {
-          if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
-            logger.info('SYSTEM', 'Merged worktrees adopted on startup', adoption);
-          }
-          if (adoption.errors.length > 0) {
-            logger.warn('SYSTEM', 'Worktree adoption had per-branch errors', {
-              repoPath: adoption.repoPath,
-              errors: adoption.errors
-            });
+      // Stamp merged worktrees (Non-blocking, fire-and-forget)
+      logger.info('WORKER', 'Adopting merged worktrees (background)...');
+      adoptMergedWorktreesForAllKnownRepos({}).then(adoptions => {
+        if (adoptions) {
+          for (const adoption of adoptions) {
+            if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
+              logger.info('SYSTEM', 'Merged worktrees adopted in background', adoption);
+            }
+            if (adoption.errors.length > 0) {
+              logger.warn('SYSTEM', 'Worktree adoption had per-branch errors', {
+                repoPath: adoption.repoPath,
+                errors: adoption.errors
+              });
+            }
           }
         }
-      }
+      }).catch(err => {
+        logger.error('WORKER', 'Worktree adoption failed (background)', {}, err instanceof Error ? err : new Error(String(err)));
+      });
 
       // Initialize ChromaMcpManager only if Chroma is enabled
       const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
@@ -419,21 +437,24 @@ export class WorkerService {
         logger.info('SYSTEM', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, skipping ChromaMcpManager');
       }
 
-      const modeId = settings.CLAUDE_MEM_MODE;
-      ModeManager.getInstance().loadMode(modeId);
-      logger.info('SYSTEM', `Mode loaded: ${modeId}`);
-
+      logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
 
-      // Reset any messages that were processing when worker died
-      const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
-      const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-      const resetCount = pendingStore.resetStaleProcessingMessages(0); // 0 = reset ALL processing
-      if (resetCount > 0) {
-        logger.info('SYSTEM', `Reset ${resetCount} stale processing messages to pending`);
+      // One-shot GC for terminally-failed rows
+      try {
+        logger.info('WORKER', 'Running startup GC for pending messages...');
+        const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
+        const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+        const cleared = pendingStore.clearFailedOlderThan(7 * 24 * 60 * 60 * 1000);
+        if (cleared > 0) {
+          logger.info('QUEUE', 'Startup GC cleared old failed pending_messages rows', { cleared });
+        }
+      } catch (err) {
+        logger.warn('QUEUE', 'Startup GC for failed pending_messages rows failed', {}, err instanceof Error ? err : undefined);
       }
 
       // Initialize search services
+      logger.info('WORKER', 'Initializing search services...');
       const formattingService = new FormattingService();
       const timelineService = new TimelineService();
       const searchManager = new SearchManager(
@@ -464,8 +485,6 @@ export class WorkerService {
       logger.info('WORKER', 'CorpusRoutes registered');
 
       // DB and search are ready — mark initialization complete so hooks can proceed.
-      // MCP connection is tracked separately via mcpReady and is NOT required for
-      // the worker to serve context/search requests.
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
@@ -474,7 +493,7 @@ export class WorkerService {
 
       // Auto-backfill Chroma for all projects if out of sync with SQLite (fire-and-forget)
       if (this.chromaMcpManager) {
-        ChromaSync.backfillAllProjects().then(() => {
+        ChromaSync.backfillAllProjects(this.dbManager.getSessionStore()).then(() => {
           logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
         }).catch(error => {
           logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
@@ -482,134 +501,55 @@ export class WorkerService {
       }
 
       // Mark MCP as externally ready once the bundled stdio server binary exists.
-      // Codex/Claude Desktop connect to this binary directly; the loopback client
-      // below is only a best-effort self-check and should not mark health false.
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       this.mcpReady = existsSync(mcpServerPath);
 
-      // Best-effort loopback MCP self-check
-      getSupervisor().assertCanSpawn('mcp server');
-      const transport = new StdioClientTransport({
-        command: process.execPath,  // Use resolved path, not bare 'node' which fails on non-interactive PATH (#1876)
-        args: [mcpServerPath],
-        env: sanitizeEnv(process.env)
+      // Best-effort loopback MCP self-check (Non-blocking, F&F)
+      this.runMcpSelfCheck(mcpServerPath).catch(err => {
+        logger.debug('WORKER', 'MCP self-check failed (non-fatal)', { error: err.message });
       });
 
-      const MCP_INIT_TIMEOUT_MS = 300000;
+      return;
+    } catch (error) {
+      // Background initialization failed - log and let worker fail health checks
+      logger.error('SYSTEM', 'Background initialization failed', {}, error instanceof Error ? error : undefined);
+    }
+  }
+
+  /**
+   * Run a best-effort loopback MCP self-check to verify the bundled server can start.
+   * This is entirely diagnostic and does not block worker availability.
+   */
+  private async runMcpSelfCheck(mcpServerPath: string): Promise<void> {
+    try {
+      getSupervisor().assertCanSpawn('mcp server');
+      const transport = new StdioClientTransport({
+        command: process.execPath,
+        args: [mcpServerPath],
+        env: Object.fromEntries(
+          Object.entries(sanitizeEnv(process.env)).filter(([, value]) => value !== undefined)
+        ) as Record<string, string>
+      });
+
+      const MCP_INIT_TIMEOUT_MS = 60000; // 1 minute is plenty for local check
       const mcpConnectionPromise = this.mcpClient.connect(transport);
-      let timeoutId: ReturnType<typeof setTimeout>;
+      
       const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(
-          () => reject(new Error('MCP connection timeout after 5 minutes')),
-          MCP_INIT_TIMEOUT_MS
+        setTimeout(
+          () => reject(new Error('MCP connection timeout')),
+          60000
         );
       });
 
-      try {
-        await Promise.race([mcpConnectionPromise, timeoutPromise]);
-      } catch (connectionError) {
-        clearTimeout(timeoutId!);
-        logger.warn('WORKER', 'MCP loopback self-check failed, cleaning up subprocess', {
-          error: connectionError instanceof Error ? connectionError.message : String(connectionError)
-        });
-        try {
-          await transport.close();
-        } catch (transportCloseError) {
-          // [ANTI-PATTERN IGNORED]: transport.close() is best-effort cleanup after MCP connection already failed; supervisor handles orphan processes
-          logger.debug('WORKER', 'transport.close() failed during MCP cleanup', {
-            error: transportCloseError instanceof Error ? transportCloseError.message : String(transportCloseError)
-          });
-        }
-        logger.info('WORKER', 'Bundled MCP server remains available for external stdio clients', {
-          path: mcpServerPath
-        });
-        return;
-      }
-      clearTimeout(timeoutId!);
+      await Promise.race([mcpConnectionPromise, timeoutPromise]);
+      logger.info('WORKER', 'MCP loopback self-check connected successfully');
 
-      const mcpProcess = (transport as unknown as { _process?: import('child_process').ChildProcess })._process;
-      if (mcpProcess?.pid) {
-        getSupervisor().registerProcess('mcp-server', {
-          pid: mcpProcess.pid,
-          type: 'mcp',
-          startedAt: new Date().toISOString()
-        }, mcpProcess);
-        mcpProcess.once('exit', () => {
-          getSupervisor().unregisterProcess('mcp-server');
-        });
-      }
-      logger.success('WORKER', 'MCP loopback self-check connected');
-
-      // Start orphan reaper to clean up zombie processes (Issue #737)
-      this.stopOrphanReaper = startOrphanReaper(() => {
-        const activeIds = new Set<number>();
-        for (const [id] of this.sessionManager['sessions']) {
-          activeIds.add(id);
-        }
-        return activeIds;
-      });
-      logger.info('SYSTEM', 'Started orphan reaper (runs every 30 seconds)');
-
-      // Reap stale sessions to unblock orphan process cleanup (Issue #1168)
-      this.staleSessionReaperInterval = setInterval(async () => {
-        try {
-          const reaped = await this.sessionManager.reapStaleSessions();
-          if (reaped > 0) {
-            logger.info('SYSTEM', `Reaped ${reaped} stale sessions`);
-          }
-        } catch (e) {
-          // [ANTI-PATTERN IGNORED]: setInterval callback cannot throw; reaper retries on next tick (every 2 min)
-          if (e instanceof Error) {
-            logger.error('WORKER', 'Stale session reaper error', {}, e);
-          } else {
-            logger.error('WORKER', 'Stale session reaper error with non-Error', {}, new Error(String(e)));
-          }
-        }
-
-        // Purge stale failed pending messages to prevent unbounded queue growth (#1957)
-        // Only remove failures older than 1 hour to preserve recent failures for inspection/retry
-        try {
-          const pendingStore = this.sessionManager.getPendingMessageStore();
-          const FAILED_MESSAGE_RETENTION_MS = 60 * 60 * 1000; // 1 hour
-          const purged = pendingStore.clearFailedOlderThan(FAILED_MESSAGE_RETENTION_MS);
-          if (purged > 0) {
-            logger.info('SYSTEM', `Purged ${purged} stale failed pending messages (older than 1h)`);
-          }
-        } catch (e) {
-          if (e instanceof Error) {
-            logger.error('WORKER', 'Failed message purge error', {}, e);
-          } else {
-            logger.error('WORKER', 'Failed message purge error with non-Error', {}, new Error(String(e)));
-          }
-        }
-
-        // Periodic WAL checkpoint to prevent unbounded WAL growth (#1956)
-        try {
-          this.dbManager.getSessionStore().db.run('PRAGMA wal_checkpoint(PASSIVE)');
-        } catch (e) {
-          if (e instanceof Error) {
-            logger.error('WORKER', 'WAL checkpoint error', {}, e);
-          } else {
-            logger.error('WORKER', 'WAL checkpoint error with non-Error', {}, new Error(String(e)));
-          }
-        }
-      }, 2 * 60 * 1000);
-
-      // Auto-recover orphaned queues (fire-and-forget with error logging)
-      this.processPendingQueues(50).then(result => {
-        if (result.sessionsStarted > 0) {
-          logger.info('SYSTEM', `Auto-recovered ${result.sessionsStarted} sessions with pending work`, {
-            totalPending: result.totalPendingSessions,
-            started: result.sessionsStarted,
-            sessionIds: result.startedSessionIds
-          });
-        }
-      }).catch(error => {
-        logger.error('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
-      });
+      // Cleanup
+      await transport.close();
     } catch (error) {
-      logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
-      throw error;
+      logger.warn('WORKER', 'MCP loopback self-check failed', { 
+        error: error instanceof Error ? error.message : String(error) 
+      });
     }
   }
 
@@ -787,10 +727,11 @@ export class WorkerService {
         throw error;
       })
       .finally(async () => {
-        // CRITICAL: Verify subprocess exit to prevent zombie accumulation (Issue #1168)
-        const trackedProcess = getProcessBySession(session.sessionDbId);
+        // Primary-path subprocess teardown — process-group kill ensures any
+        // SDK descendants are reaped too (Principle 5).
+        const trackedProcess = getSdkProcessForSession(session.sessionDbId);
         if (trackedProcess && trackedProcess.process.exitCode === null) {
-          await ensureProcessExit(trackedProcess, 5000);
+          await ensureSdkProcessExit(trackedProcess, 5000);
         }
 
         session.generatorPromise = null;
@@ -833,12 +774,14 @@ export class WorkerService {
           session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1; // Keep for logging
 
           if (!restartAllowed) {
-            logger.error('SYSTEM', 'Restart guard tripped: too many restarts in window, stopping to prevent runaway costs', {
+            logger.error('SYSTEM', 'Restart guard tripped: session is dead, terminating', {
               sessionId: session.sessionDbId,
               pendingCount,
               restartsInWindow: session.restartGuard.restartsInWindow,
               windowMs: session.restartGuard.windowMs,
-              maxRestarts: session.restartGuard.maxRestarts
+              maxRestarts: session.restartGuard.maxRestarts,
+              consecutiveFailures: session.restartGuard.consecutiveFailuresSinceSuccess,
+              maxConsecutiveFailures: session.restartGuard.maxConsecutiveFailures
             });
             session.consecutiveRestarts = 0;
             this.terminateSession(session.sessionDbId, 'max_restarts_exceeded');
@@ -856,26 +799,17 @@ export class WorkerService {
           this.startSessionProcessor(session, 'pending-work-restart');
           this.broadcastProcessingStatus();
         } else {
-          // Successful completion with no pending work — clean up session.
-          // Only remove from the in-memory map if finalize succeeds; otherwise
-          // leave the session in place so the 60s orphan reaper (or a future
-          // retry) can repair the inconsistency. Removing a still-"active" DB
-          // row from memory would orphan it indefinitely under the new
-          // fire-and-forget Stop hook (no /api/sessions/complete to retry).
+          // Successful completion with no pending work — finalize then drop
+          // in-memory state. finalizeSession flips sdk_sessions.status to
+          // 'completed', drains orphaned pendings, broadcasts; idempotent so
+          // the later POST /api/sessions/complete from the Stop hook is a
+          // no-op. Without this, hooks-disabled installs (and any session
+          // whose Stop hook fails before /api/sessions/complete) leave the
+          // DB row permanently 'active'.
           session.restartGuard?.recordSuccess();
           session.consecutiveRestarts = 0;
-          let finalized = false;
-          try {
-            this.sessionCompletionHandler.finalizeSession(session.sessionDbId);
-            finalized = true;
-          } catch (err) {
-            logger.warn('SESSION', 'finalizeSession failed in WorkerService generator .finally()', {
-              sessionId: session.sessionDbId
-            }, err as Error);
-          }
-          if (finalized) {
-            this.sessionManager.removeSessionImmediate(session.sessionDbId);
-          }
+          this.completionHandler.finalizeSession(session.sessionDbId);
+          this.sessionManager.removeSessionImmediate(session.sessionDbId);
         }
       });
   }
@@ -960,34 +894,12 @@ export class WorkerService {
       }
     }
 
-    // No fallback or both failed: mark messages abandoned and remove session so queue doesn't grow
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
-    if (abandoned > 0) {
-      logger.warn('SDK', 'No fallback available; marked pending messages abandoned', {
-        sessionId: sessionDbId,
-        abandoned
-      });
-    }
-    // Finalize so DB status + broadcast + pending-drain are consistent on fallback failure.
-    // finalizeSession already broadcasts session_completed, so we don't also call
-    // broadcastSessionCompleted below. On finalize failure, fall back to the
-    // explicit broadcast so the UI still gets the event and leave the session
-    // in memory for the orphan reaper to retry.
-    let finalized = false;
-    try {
-      this.sessionCompletionHandler.finalizeSession(sessionDbId);
-      finalized = true;
-    } catch (err) {
-      logger.warn('SESSION', 'finalizeSession failed in runFallbackForTerminatedSession', {
-        sessionId: sessionDbId
-      }, err as Error);
-    }
-    if (finalized) {
-      this.sessionManager.removeSessionImmediate(sessionDbId);
-    } else {
-      this.sessionEventBroadcaster.broadcastSessionCompleted(sessionDbId);
-    }
+    // No fallback or both failed: mark session completed in DB (drain pending
+    // + broadcast via finalizeSession, idempotent) then drop in-memory state.
+    // Without this, sdk_sessions.status stays 'active' forever — the deleted
+    // reapStaleSessions interval was the only prior backstop.
+    this.completionHandler.finalizeSession(sessionDbId);
+    this.sessionManager.removeSessionImmediate(sessionDbId);
   }
 
   /**
@@ -1001,34 +913,15 @@ export class WorkerService {
    *                    no?  → terminateSession()
    */
   private terminateSession(sessionDbId: number, reason: string): void {
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+    logger.info('SYSTEM', 'Session terminated', { sessionId: sessionDbId, reason });
 
-    logger.info('SYSTEM', 'Session terminated', {
-      sessionId: sessionDbId,
-      reason,
-      abandonedMessages: abandoned
-    });
+    // finalizeSession marks sdk_sessions.status='completed', drains pending
+    // messages, and broadcasts. Idempotent. Without this, wall-clock-limited
+    // and unrecoverable-error paths leave DB rows as 'active' forever.
+    this.completionHandler.finalizeSession(sessionDbId);
 
-    // Finalize session (mark completed in DB + drain pending + broadcast). Idempotent.
-    // This runs AFTER startSession() has returned, which means any summary/observation
-    // writes inside processAgentResponse() are already committed to SQLite synchronously.
-    // Only remove from the in-memory map if finalize succeeds; otherwise leave the
-    // session in place so the 60s orphan reaper can repair the DB inconsistency.
-    let finalized = false;
-    try {
-      this.sessionCompletionHandler.finalizeSession(sessionDbId);
-      finalized = true;
-    } catch (err) {
-      logger.warn('SESSION', 'finalizeSession failed during terminateSession', {
-        sessionId: sessionDbId, reason
-      }, err as Error);
-    }
-
-    if (finalized) {
-      // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
-      this.sessionManager.removeSessionImmediate(sessionDbId);
-    }
+    // removeSessionImmediate fires onSessionDeletedCallback → broadcastProcessingStatus()
+    this.sessionManager.removeSessionImmediate(sessionDbId);
   }
 
   /**
@@ -1152,18 +1045,6 @@ export class WorkerService {
       this.transcriptWatcher.stop();
       this.transcriptWatcher = null;
       logger.info('TRANSCRIPT', 'Transcript watcher stopped');
-    }
-
-    // Stop orphan reaper before shutdown (Issue #737)
-    if (this.stopOrphanReaper) {
-      this.stopOrphanReaper();
-      this.stopOrphanReaper = null;
-    }
-
-    // Stop stale session reaper (Issue #1168)
-    if (this.staleSessionReaperInterval) {
-      clearInterval(this.staleSessionReaperInterval);
-      this.staleSessionReaperInterval = null;
     }
 
     await performGracefulShutdown({

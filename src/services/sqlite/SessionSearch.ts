@@ -25,13 +25,14 @@ export class SessionSearch {
 
   private static readonly MISSING_SEARCH_INPUT_MESSAGE = 'Either query or filters required for search';
 
-  constructor(dbPath?: string) {
-    if (!dbPath) {
+  constructor(dbPathOrDb: string | Database = DB_PATH) {
+    if (dbPathOrDb instanceof Database) {
+      this.db = dbPathOrDb;
+    } else {
       ensureDir(DATA_DIR);
-      dbPath = DB_PATH;
+      this.db = new Database(dbPathOrDb);
+      this.db.run('PRAGMA journal_mode = WAL');
     }
-    this.db = new Database(dbPath);
-    this.db.run('PRAGMA journal_mode = WAL');
 
     // Cache FTS5 availability once at construction (avoids DDL probe on every query)
     this._fts5Available = this.isFts5Available();

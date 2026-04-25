@@ -1,4 +1,5 @@
 import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
+import { AdapterRejectedInput, isValidCwd } from './errors.js';
 
 // Maps Claude Code stdin format (session_id, cwd, tool_name, etc.)
 // SessionStart hooks receive no stdin, so we must handle undefined input gracefully
@@ -12,9 +13,15 @@ const pickAgentField = (v: unknown): string | undefined =>
 export const claudeCodeAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
+    // Plan 05 Phase 6 — cwd validation at the adapter boundary (single check,
+    // not duplicated in handlers). Falls back to process.cwd() when unset.
+    const cwd = r.cwd ?? process.cwd();
+    if (!isValidCwd(cwd)) {
+      throw new AdapterRejectedInput('invalid_cwd');
+    }
     return {
       sessionId: r.session_id ?? r.id ?? r.sessionId,
-      cwd: r.cwd ?? process.cwd(),
+      cwd,
       prompt: r.prompt,
       toolName: r.tool_name,
       toolInput: r.tool_input,

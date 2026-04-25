@@ -33,7 +33,13 @@ export class ResultFormatter {
 
     if (totalResults === 0) {
       if (chromaFailed) {
-        return this.formatChromaFailureMessage();
+        // Legacy callers route through here without a specific reason; surface a
+        // generic non-connection failure so users still get the diagnostic pointer
+        // instead of the old "install uv" lie.
+        return ResultFormatter.formatChromaFailureMessage({
+          message: 'unknown error (no reason captured by caller)',
+          isConnectionError: false,
+        });
       }
       return `No results found matching "${query}"`;
     }
@@ -270,16 +276,18 @@ export class ResultFormatter {
   }
 
   /**
-   * Format Chroma failure message
+   * Format Chroma failure message with the real underlying error.
+   *
+   * Static so callers (e.g. SearchManager) can format without needing
+   * an instance. The message intentionally surfaces the raw error text
+   * and points users at /api/chroma/status?deep=1 for diagnostics —
+   * never a static "install uv" instruction (which lies about the cause).
    */
-  private formatChromaFailureMessage(): string {
-    return `Vector search failed - semantic search unavailable.
-
-To enable semantic search:
-1. Install uv: https://docs.astral.sh/uv/getting-started/installation/
-2. Restart the worker: npm run worker:restart
-
-Note: You can still use filter-only searches (date ranges, types, files) without a query term.`;
+  static formatChromaFailureMessage(reason: { message: string; isConnectionError: boolean }): string {
+    if (reason.isConnectionError) {
+      return `Semantic search is offline (Chroma MCP unreachable: ${reason.message}). Falling back to keyword search; results may be incomplete. Run \`/api/chroma/status?deep=1\` to diagnose.`;
+    }
+    return `Semantic search failed: ${reason.message}. Falling back to keyword search; results may be incomplete. Check \`~/.claude-mem/logs/\` for the CHROMA_SYNC entry. Run \`/api/chroma/status?deep=1\` for a deeper probe.`;
   }
 
   /**

@@ -48,7 +48,7 @@ interface WorktreeEntry {
   branch: string | null;
 }
 
-const GIT_TIMEOUT_MS = 5000;
+const GIT_TIMEOUT_MS = 15000;
 
 class DryRunRollback extends Error {
   constructor() {
@@ -58,11 +58,31 @@ class DryRunRollback extends Error {
 }
 
 function gitCapture(cwd: string, args: string[]): string | null {
+  const startTime = Date.now();
   const r = spawnSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
     timeout: GIT_TIMEOUT_MS
   });
-  if (r.status !== 0) return null;
+  const duration = Date.now() - startTime;
+  
+  if (duration > 1000) {
+    logger.debug('GIT', `Slow git operation: git -C ${cwd} ${args.join(' ')} took ${duration}ms`);
+  }
+
+  if (r.error) {
+    logger.warn('GIT', `Git operation failed: git -C ${cwd} ${args.join(' ')}`, {
+      error: r.error.message,
+      timedOut: r.error.name === 'ETIMEDOUT' || (r.status === null && r.signal === 'SIGTERM')
+    });
+    return null;
+  }
+
+  if (r.status !== 0) {
+    logger.debug('GIT', `Git returned non-zero exit code ${r.status}: git -C ${cwd} ${args.join(' ')}`, {
+      stderr: r.stderr?.toString().trim()
+    });
+    return null;
+  }
   return (r.stdout ?? '').trim();
 }
 

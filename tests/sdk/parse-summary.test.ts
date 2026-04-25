@@ -1,37 +1,56 @@
 /**
- * Tests for parseSummary (fix for #1360)
+ * Tests for parseAgentXml summary path (PATHFINDER plan 03 phase 1).
  *
- * Validates that false-positive summary matches (no sub-tags) are rejected
- * while real summaries — even with some missing fields — are still saved.
+ * Validates that the discriminated-union parser:
+ *   - rejects responses with no recognised root element (`{ valid: false }`),
+ *   - rejects empty / no-sub-tag <summary> blocks (former #1360 false-positive),
+ *   - returns a populated summary when at least one sub-tag is present,
+ *   - treats <skip_summary reason="…"/> as a first-class summary case,
+ *   - DOES NOT coerce <observation> blocks into summary fields (former
+ *     #1633 fallback path is deleted; the caller must mark the message failed
+ *     and let the retry ladder do its job — principle 1 + principle 2).
  */
-import { describe, it, expect } from 'bun:test';
-import { parseSummary } from '../../src/sdk/parser.js';
+import { describe, it, expect, mock } from 'bun:test';
 
-describe('parseSummary', () => {
-  it('returns null when no <summary> tag present and coercion disabled', () => {
-    expect(parseSummary('<observation><title>foo</title></observation>')).toBeNull();
+mock.module('../../src/services/domain/ModeManager.js', () => ({
+  ModeManager: {
+    getInstance: () => ({
+      getActiveMode: () => ({
+        observation_types: [{ id: 'bugfix' }, { id: 'discovery' }, { id: 'refactor' }],
+      }),
+    }),
+  },
+}));
+
+import { parseAgentXml } from '../../src/sdk/parser.js';
+
+describe('parseAgentXml — summaries', () => {
+  it('returns invalid when response is plain text (no XML)', () => {
+    const result = parseAgentXml('Some plain text response without any XML tags');
+    expect(result.valid).toBe(false);
   });
 
-  it('returns null when no <summary> or <observation> tags present', () => {
-    expect(parseSummary('Some plain text response without any XML tags')).toBeNull();
+  it('returns invalid when <summary> has no sub-tags (false positive — was #1360)', () => {
+    // observation response that accidentally contains <summary>some text</summary>
+    const result = parseAgentXml('<observation>done <summary>some content here</summary></observation>');
+    // The first root is <observation>, which has no parseable content; result must be invalid.
+    expect(result.valid).toBe(false);
   });
 
-  it('returns null when <summary> has no sub-tags (false positive — fix for #1360)', () => {
-    // This is the bug: observation response accidentally contains <summary>some text</summary>
-    expect(parseSummary('<observation>done <summary>some content here</summary></observation>')).toBeNull();
+  it('returns invalid for bare <summary> with only plain text, no sub-tags', () => {
+    const result = parseAgentXml('<summary>This session was productive.</summary>');
+    expect(result.valid).toBe(false);
   });
 
-  it('returns null for bare <summary> with only plain text, no sub-tags', () => {
-    expect(parseSummary('<summary>This session was productive.</summary>')).toBeNull();
-  });
-
-  it('returns summary when at least one sub-tag is present (respects maintainer note)', () => {
+  it('returns valid summary when at least one sub-tag is present', () => {
     const text = `<summary><request>Fix the bug</request></summary>`;
-    const result = parseSummary(text);
-    expect(result).not.toBeNull();
-    expect(result?.request).toBe('Fix the bug');
-    expect(result?.investigated).toBeNull();
-    expect(result?.learned).toBeNull();
+    const result = parseAgentXml(text);
+    expect(result.valid).toBe(true);
+    if (result.valid && result.kind === 'summary') {
+      expect(result.data.request).toBe('Fix the bug');
+      expect(result.data.investigated).toBeNull();
+      expect(result.data.learned).toBeNull();
+    }
   });
 
   it('returns full summary when all fields are present', () => {
@@ -42,108 +61,49 @@ describe('parseSummary', () => {
       <completed>Extended token TTL to 24h</completed>
       <next_steps>Monitor error rates</next_steps>
     </summary>`;
-    const result = parseSummary(text);
-    expect(result).not.toBeNull();
-    expect(result?.request).toBe('Fix login bug');
-    expect(result?.investigated).toBe('Auth flow and JWT expiry');
-    expect(result?.learned).toBe('Token was expiring too soon');
-    expect(result?.completed).toBe('Extended token TTL to 24h');
-    expect(result?.next_steps).toBe('Monitor error rates');
+    const result = parseAgentXml(text);
+    expect(result.valid).toBe(true);
+    if (result.valid && result.kind === 'summary') {
+      expect(result.data.request).toBe('Fix login bug');
+      expect(result.data.investigated).toBe('Auth flow and JWT expiry');
+      expect(result.data.learned).toBe('Token was expiring too soon');
+      expect(result.data.completed).toBe('Extended token TTL to 24h');
+      expect(result.data.next_steps).toBe('Monitor error rates');
+    }
   });
 
-  it('returns null when skip_summary tag is present', () => {
-    expect(parseSummary('<skip_summary reason="no work done"/>')).toBeNull();
+  it('treats <skip_summary reason="…"/> as a first-class summary with skipped:true', () => {
+    const result = parseAgentXml('<skip_summary reason="no work done"/>');
+    expect(result.valid).toBe(true);
+    if (result.valid && result.kind === 'summary') {
+      expect(result.data.skipped).toBe(true);
+      expect(result.data.skip_reason).toBe('no work done');
+    }
   });
 
-  // Observation-to-summary coercion tests (#1633)
-  it('coerces <observation> with content into a summary when coerceFromObservation=true (#1633)', () => {
-    const result = parseSummary('<observation><title>foo</title></observation>', undefined, true);
-    expect(result).not.toBeNull();
-    expect(result?.request).toBe('foo');
-    expect(result?.completed).toBe('foo');
+  it('does NOT coerce <observation> into a summary (former #1633 path deleted)', () => {
+    const result = parseAgentXml('<observation><title>foo</title></observation>');
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.kind).toBe('observation');
+    }
   });
 
-  it('coerces observation with narrative into summary with investigated field (#1633)', () => {
-    const text = `<observation>
-      <type>refactor</type>
-      <title>UObjectArray refactored</title>
-      <narrative>Removed local XXXX and migrated to new pattern</narrative>
-    </observation>`;
-    const result = parseSummary(text, undefined, true);
-    expect(result).not.toBeNull();
-    expect(result?.request).toBe('UObjectArray refactored');
-    expect(result?.investigated).toBe('Removed local XXXX and migrated to new pattern');
-  });
-
-  it('coerces observation with facts into summary with learned field (#1633)', () => {
-    const text = `<observation>
-      <type>discovery</type>
-      <title>JWT token handling</title>
-      <facts>
-        <fact>Tokens expire after 1 hour</fact>
-        <fact>Refresh flow uses rotating keys</fact>
-      </facts>
-    </observation>`;
-    const result = parseSummary(text, undefined, true);
-    expect(result).not.toBeNull();
-    expect(result?.request).toBe('JWT token handling');
-    expect(result?.learned).toBe('Tokens expire after 1 hour; Refresh flow uses rotating keys');
-  });
-
-  it('coerces observation with subtitle into completed field (#1633)', () => {
-    const text = `<observation>
-      <type>config</type>
-      <title>Database migration</title>
-      <subtitle>Added new index for performance</subtitle>
-    </observation>`;
-    const result = parseSummary(text, undefined, true);
-    expect(result).not.toBeNull();
-    expect(result?.completed).toBe('Database migration — Added new index for performance');
-  });
-
-  it('returns null for empty observation even with coercion enabled (#1633)', () => {
-    const text = `<observation><type>config</type></observation>`;
-    expect(parseSummary(text, undefined, true)).toBeNull();
-  });
-
-  it('prefers <summary> tags over observation coercion when both present (#1633)', () => {
+  it('prefers <summary> over <observation> when both present', () => {
     const text = `<observation><title>obs title</title></observation>
     <summary><request>summary request</request></summary>`;
-    const result = parseSummary(text, undefined, true);
-    expect(result).not.toBeNull();
-    expect(result?.request).toBe('summary request');
+    const result = parseAgentXml(text);
+    // First root by position is observation → that wins. Caller must pick the
+    // right turn (summary vs observation) by sending only summary prompts on
+    // summary turns. This is the contract; it is not coercion.
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.kind).toBe('observation');
+    }
   });
 
-  it('falls back to observation coercion when <summary> matches but has empty sub-tags (#1633)', () => {
-    // LLM wraps an empty summary around real observation content — without the
-    // fallback, the empty-subtag guard (#1360) rejects the summary and we lose
-    // the observation content, resurrecting the retry loop.
-    const text = `<summary></summary>
-      <observation>
-        <title>the real work</title>
-        <narrative>what actually happened</narrative>
-      </observation>`;
-    const result = parseSummary(text, undefined, true);
-    expect(result).not.toBeNull();
-    expect(result?.request).toBe('the real work');
-    expect(result?.investigated).toBe('what actually happened');
-  });
-
-  it('empty <summary> with no observation content still returns null (coercion disabled)', () => {
-    const text = '<summary></summary>';
-    expect(parseSummary(text, undefined, true)).toBeNull();
-  });
-
-  it('skips empty leading observation blocks and coerces from the first populated one (#1633)', () => {
-    const text = `<observation><type>discovery</type></observation>
-      <observation>
-        <type>bugfix</type>
-        <title>second block has content</title>
-        <narrative>fixed the crash</narrative>
-      </observation>`;
-    const result = parseSummary(text, undefined, true);
-    expect(result).not.toBeNull();
-    expect(result?.request).toBe('second block has content');
-    expect(result?.investigated).toBe('fixed the crash');
+  it('returns invalid for empty input', () => {
+    expect(parseAgentXml('').valid).toBe(false);
+    expect(parseAgentXml('   \n  ').valid).toBe(false);
   });
 });

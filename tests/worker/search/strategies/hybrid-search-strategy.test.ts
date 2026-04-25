@@ -198,7 +198,6 @@ describe('HybridSearchStrategy', () => {
       expect(mockSessionSearch.findByConcept).toHaveBeenCalledWith('test-concept', expect.any(Object));
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith('test-concept', expect.any(Number));
       expect(result.usedChroma).toBe(true);
-      expect(result.fellBack).toBe(false);
       expect(result.strategy).toBe('hybrid');
     });
 
@@ -251,18 +250,16 @@ describe('HybridSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).not.toHaveBeenCalled(); // Should short-circuit
     });
 
-    it('should fall back to metadata-only on Chroma error', async () => {
+    it('should propagate Chroma error (fail-fast, no silent fallback)', async () => {
       mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma failed')));
 
       const options: StrategySearchOptions = {
         limit: 10
       };
 
-      const result = await strategy.findByConcept('test-concept', options);
-
-      expect(result.usedChroma).toBe(false);
-      expect(result.fellBack).toBe(true);
-      expect(result.results.observations).toHaveLength(3); // All metadata results
+      await expect(
+        strategy.findByConcept('test-concept', options)
+      ).rejects.toThrow('Chroma failed');
     });
   });
 
@@ -307,18 +304,16 @@ describe('HybridSearchStrategy', () => {
       expect(result.results.observations[0].id).toBe(2);
     });
 
-    it('should fall back on Chroma error', async () => {
+    it('should propagate Chroma error (fail-fast, no silent fallback)', async () => {
       mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma unavailable')));
 
       const options: StrategySearchOptions = {
         limit: 10
       };
 
-      const result = await strategy.findByType('bugfix', options);
-
-      expect(result.usedChroma).toBe(false);
-      expect(result.fellBack).toBe(true);
-      expect(result.results.observations.length).toBeGreaterThan(0);
+      await expect(
+        strategy.findByType('bugfix', options)
+      ).rejects.toThrow('Chroma unavailable');
     });
 
     it('should return empty when no metadata matches', async () => {
@@ -394,18 +389,16 @@ describe('HybridSearchStrategy', () => {
       expect(result.sessions).toHaveLength(1);
     });
 
-    it('should fall back on Chroma error', async () => {
+    it('should propagate Chroma error (fail-fast, no silent fallback)', async () => {
       mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma down')));
 
       const options: StrategySearchOptions = {
         limit: 10
       };
 
-      const result = await strategy.findByFile('/path/to/file.ts', options);
-
-      expect(result.usedChroma).toBe(false);
-      expect(result.observations.length).toBeGreaterThan(0);
-      expect(result.sessions).toHaveLength(1);
+      await expect(
+        strategy.findByFile('/path/to/file.ts', options)
+      ).rejects.toThrow('Chroma down');
     });
   });
 

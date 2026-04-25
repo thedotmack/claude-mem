@@ -7,6 +7,7 @@
  * - Efficient LIMIT+1 trick to avoid COUNT(*) query
  */
 
+import type { SQLQueryBindings } from 'bun:sqlite';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
@@ -102,7 +103,7 @@ export class PaginationHelper {
       FROM observations o
       LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     `;
-    const params: unknown[] = [];
+    const params: SQLQueryBindings[] = [];
     const conditions: string[] = [];
 
     if (project) {

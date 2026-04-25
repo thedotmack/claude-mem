@@ -21,7 +21,12 @@ import { buildIsolatedEnv, getAuthMethodDescription } from '../../shared/EnvMana
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
-import { createPidCapturingSpawn, getProcessBySession, ensureProcessExit, waitForSlot } from './ProcessRegistry.js';
+import {
+  createSdkSpawnFactory,
+  getSdkProcessForSession,
+  ensureSdkProcessExit,
+  waitForSlot,
+} from '../../supervisor/process-registry.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 
 // Import Agent SDK (assumes it's installed)
@@ -90,11 +95,11 @@ export class SDKAgent {
     }
 
     // Wait for agent pool slot (configurable via CLAUDE_MEM_MAX_CONCURRENT_AGENTS)
-    // Pass idle session eviction callback to prevent pool deadlock (#1868):
-    // idle sessions hold slots during 3-min idle wait, blocking new sessions
+    // Backpressure only — a full pool waits, never evicts a live session
+    // (Principle 1: do not kick live work to make room).
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
-    await waitForSlot(maxConcurrent, 60_000, () => this.sessionManager.evictIdlestSession());
+    await waitForSlot(maxConcurrent, 60_000);
 
     // Build isolated environment from ~/.claude-mem/.env
     // This prevents Issue #733: random ANTHROPIC_API_KEY from project .env files
@@ -105,7 +110,7 @@ export class SDKAgent {
     logger.info('SDK', 'Starting SDK query', {
       sessionDbId: session.sessionDbId,
       contentSessionId: session.contentSessionId,
-      memorySessionId: session.memorySessionId,
+      memorySessionId: session.memorySessionId ?? undefined,
       hasRealMemorySessionId,
       shouldResume,
       resume_parameter: shouldResume ? session.memorySessionId : '(none - fresh start)',
@@ -139,12 +144,13 @@ export class SDKAgent {
         // instead of polluting user's actual project resume lists
         cwd: OBSERVER_SESSIONS_DIR,
         // Only resume if shouldResume is true (memorySessionId exists, not first prompt, not forceInit)
-        ...(shouldResume && { resume: session.memorySessionId }),
+        ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
         disallowedTools,
         abortController: session.abortController,
         pathToClaudeCodeExecutable: claudePath,
-        // Custom spawn function captures PIDs to fix zombie process accumulation
-        spawnClaudeCodeProcess: createPidCapturingSpawn(session.sessionDbId),
+        // Custom spawn factory: spawns the SDK child in its own POSIX process
+        // group so the worker can tear down the whole subtree on shutdown.
+        spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId),
         env: isolatedEnv  // Use isolated credentials from ~/.claude-mem/.env, not process.env
       }
     });
@@ -283,10 +289,12 @@ export class SDKAgent {
         }
       }
     } finally {
-      // Ensure subprocess is terminated after query completes (or on error)
-      const tracked = getProcessBySession(session.sessionDbId);
+      // Ensure subprocess is terminated after query completes (or on error).
+      // Process-group teardown via ensureSdkProcessExit kills any descendants
+      // the SDK spawned, so no orphan reaper is needed (Principle 5).
+      const tracked = getSdkProcessForSession(session.sessionDbId);
       if (tracked && tracked.process.exitCode === null) {
-        await ensureProcessExit(tracked, 5000);
+        await ensureSdkProcessExit(tracked, 5000);
       }
     }
 

@@ -15,6 +15,40 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { SessionManager } from '../../SessionManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 
+/**
+ * Plan 06 Phase 6 — viewer.html is loaded once at module init and held in
+ * memory for the lifetime of the worker process. Process restart is the
+ * cache-invalidation event; no fs.watch, no TTL, no refresh.
+ *
+ * We probe the same two on-disk locations the legacy handler did so the
+ * dev (cache) and installed (marketplace) layouts both keep working.
+ */
+const VIEWER_HTML_CANDIDATE_PATHS: readonly string[] = (() => {
+  const packageRoot = getPackageRoot();
+  return [
+    path.join(packageRoot, 'ui', 'viewer.html'),
+    path.join(packageRoot, 'plugin', 'ui', 'viewer.html'),
+  ];
+})();
+
+const resolvedViewerHtmlPath: string | null =
+  VIEWER_HTML_CANDIDATE_PATHS.find((candidate) => existsSync(candidate)) ?? null;
+
+const viewerHtmlBytes: Buffer | null = resolvedViewerHtmlPath
+  ? readFileSync(resolvedViewerHtmlPath)
+  : null;
+
+if (resolvedViewerHtmlPath) {
+  logger.info('SYSTEM', 'Cached viewer.html at boot', {
+    path: resolvedViewerHtmlPath,
+    bytes: viewerHtmlBytes!.byteLength,
+  });
+} else {
+  logger.warn('SYSTEM', 'viewer.html not found at any expected location at boot', {
+    candidates: VIEWER_HTML_CANDIDATE_PATHS,
+  });
+}
+
 export class ViewerRoutes extends BaseRouteHandler {
   constructor(
     private sseBroadcaster: SSEBroadcaster,
@@ -49,26 +83,15 @@ export class ViewerRoutes extends BaseRouteHandler {
   });
 
   /**
-   * Serve viewer UI
+   * Serve viewer UI from the in-memory cache populated at module init.
+   * Plan 06 Phase 6 — single read at boot, no per-request fs hit.
    */
   private handleViewerUI = this.wrapHandler((req: Request, res: Response): void => {
-    const packageRoot = getPackageRoot();
-
-    // Try cache structure first (ui/viewer.html), then marketplace structure (plugin/ui/viewer.html)
-    const viewerPaths = [
-      path.join(packageRoot, 'ui', 'viewer.html'),
-      path.join(packageRoot, 'plugin', 'ui', 'viewer.html')
-    ];
-
-    const viewerPath = viewerPaths.find(p => existsSync(p));
-
-    if (!viewerPath) {
+    if (!viewerHtmlBytes) {
       throw new Error('Viewer UI not found at any expected location');
     }
-
-    const html = readFileSync(viewerPath, 'utf-8');
-    res.setHeader('Content-Type', 'text/html');
-    res.send(html);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(viewerHtmlBytes);
   });
 
   /**

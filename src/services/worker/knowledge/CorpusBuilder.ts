@@ -6,7 +6,7 @@
  */
 
 import { logger } from '../../../utils/logger.js';
-import type { ObservationRecord } from '../../../types/database.js';
+import type { ObservationSearchResult } from '../../sqlite/types.js';
 import type { SessionStore } from '../../sqlite/SessionStore.js';
 import type { SearchOrchestrator } from '../search/SearchOrchestrator.js';
 import { CorpusRenderer } from './CorpusRenderer.js';
@@ -121,19 +121,19 @@ export class CorpusBuilder {
   }
 
   /**
-   * Map a raw ObservationRecord (with JSON string fields) to a CorpusObservation
+   * Map a raw ObservationSearchResult (with JSON string fields) to a CorpusObservation
    */
-  private mapObservationToCorpus(row: ObservationRecord): CorpusObservation {
+  private mapObservationToCorpus(row: ObservationSearchResult): CorpusObservation {
     return {
       id: row.id,
       type: row.type,
-      title: (row as any).title || '',
-      subtitle: (row as any).subtitle || null,
-      narrative: (row as any).narrative || null,
-      facts: safeParseJsonArray((row as any).facts),
-      concepts: safeParseJsonArray((row as any).concepts),
-      files_read: safeParseJsonArray((row as any).files_read),
-      files_modified: safeParseJsonArray((row as any).files_modified),
+      title: row.title || '',
+      subtitle: row.subtitle || null,
+      narrative: row.narrative || null,
+      facts: safeParseJsonArray(row.facts),
+      concepts: safeParseJsonArray(row.concepts),
+      files_read: safeParseJsonArray(row.files_read),
+      files_modified: safeParseJsonArray(row.files_modified),
       project: row.project,
       created_at: row.created_at,
       created_at_epoch: row.created_at_epoch,

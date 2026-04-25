@@ -1,26 +1,33 @@
 /**
  * Summarize Handler - Stop
  *
- * Fire-and-forget: enqueue the summarize request with the worker and return
- * immediately so the Stop hook does not block the user's terminal. The worker
- * owns completion and session cleanup.
+ * Fire-and-forget: queue the summarize request and exit. The worker handles
+ * summary generation, storage, and session cleanup asynchronously. The Stop
+ * hook does not wait for any of it — Claude Code must exit immediately.
+ * Session-complete cleanup is performed by the SessionEnd handler.
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
+import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { extractLastMessage } from '../../shared/transcript-parser.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-
-const SUMMARIZE_TIMEOUT_MS = 5000;
+import { shouldTrackProject } from '../../shared/should-track-project.js';
 
 export const summarizeHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    // Skip Stop hook entirely when firing from an excluded project (notably
+    // OBSERVER_SESSIONS_DIR). Without this, the SDK observer's own Stop hook
+    // queues summaries against its meta-session and triggers a recovery loop.
+    if (input.cwd && !shouldTrackProject(input.cwd)) {
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     // Skip summaries in subagent context — subagents do not own the session summary.
     // Gate on agentId only: that field is present exclusively for Task-spawned subagents.
     // agentType alone (no agentId) indicates `--agent`-started main sessions, which still
-    // own their summary. Do this BEFORE ensureWorkerRunning() so a subagent Stop hook
+    // own their summary. Do this BEFORE the worker call so a subagent Stop hook
     // does not bootstrap the worker.
     if (input.agentId) {
       logger.debug('HOOK', 'Skipping summary: subagent context detected', {
@@ -31,16 +38,13 @@ export const summarizeHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    // Ensure worker is running before any other logic
-    const workerReady = await ensureWorkerRunning();
-    if (!workerReady) {
-      // Worker not available - skip summary gracefully
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-    }
-
     const { sessionId, transcriptPath } = input;
 
     // Validate required fields before processing
+    if (!sessionId) {
+      logger.warn('HOOK', 'summarize: No sessionId provided, skipping');
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
     if (!transcriptPath) {
       // No transcript available - skip summary gracefully (not an error)
       logger.debug('HOOK', `No transcriptPath in Stop hook input for session ${sessionId} - skipping summary`);
@@ -75,31 +79,20 @@ export const summarizeHandler: EventHandler = {
     const platformSource = normalizePlatformSource(input.platform);
 
     // 1. Queue summarize request — worker returns immediately with { status: 'queued' }
-    let response: Response;
-    try {
-      response = await workerHttpRequest('/api/sessions/summarize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contentSessionId: sessionId,
-          last_assistant_message: lastAssistantMessage,
-          platformSource
-        }),
-        timeoutMs: SUMMARIZE_TIMEOUT_MS
-      });
-    } catch (err) {
-      // Network error, worker crash, or timeout — exit gracefully instead of
-      // bubbling to hook runner which exits code 2 and blocks session exit (#1901)
-      logger.warn('HOOK', `Stop hook: summarize request failed: ${err instanceof Error ? err.message : err}`);
+    const queueResult = await executeWithWorkerFallback<{ status?: string }>(
+      '/api/sessions/summarize',
+      'POST',
+      {
+        contentSessionId: sessionId,
+        last_assistant_message: lastAssistantMessage,
+        platformSource,
+      },
+    );
+    if (isWorkerFallback(queueResult)) {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    if (!response.ok) {
-      return { continue: true, suppressOutput: true };
-    }
-
-    logger.debug('HOOK', 'Summary request queued');
-
+    logger.debug('HOOK', 'Summary request queued, exiting hook');
     return { continue: true, suppressOutput: true };
-  }
+  },
 };

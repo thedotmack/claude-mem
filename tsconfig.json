@@ -15,7 +15,7 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "types": ["node"],
+    "types": ["node", "bun"],
     "allowSyntheticDefaultImports": true
   },
   "include": [
@@ -24,6 +24,7 @@
   "exclude": [
     "node_modules",
     "dist",
-    "tests"
+    "tests",
+    "src/ui/viewer"
   ]
 }

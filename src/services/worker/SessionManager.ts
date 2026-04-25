@@ -14,74 +14,9 @@ import { logger } from '../../utils/logger.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
 import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
 import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
-import { getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
+import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { MAX_CONSECUTIVE_SUMMARY_FAILURES } from '../../sdk/prompts.js';
 import { RestartGuard } from './RestartGuard.js';
-
-/** Idle threshold before a stuck generator (zombie subprocess) is force-killed. */
-export const MAX_GENERATOR_IDLE_MS = 5 * 60 * 1000; // 5 minutes
-
-/** Idle threshold before a no-generator session with no pending work is reaped. */
-export const MAX_SESSION_IDLE_MS = 15 * 60 * 1000; // 15 minutes
-
-/**
- * Minimal process interface used by detectStaleGenerator — compatible with
- * both the real Bun.Subprocess / ChildProcess shapes and test mocks.
- */
-export interface StaleGeneratorProcess {
-  exitCode: number | null;
-  kill(signal?: string): boolean | void;
-}
-
-/**
- * Minimal session fields required to evaluate stale-generator status.
- * This is a subset of ActiveSession, allowing unit tests to pass plain objects.
- */
-export interface StaleGeneratorCandidate {
-  generatorPromise: Promise<void> | null;
-  lastGeneratorActivity: number;
-  abortController: AbortController;
-}
-
-/**
- * Detect whether a session's generator is stuck (zombie subprocess) and, if so,
- * SIGKILL the subprocess and abort the controller.
- *
- * Extracted from reapStaleSessions() so tests can import and exercise the exact
- * same logic rather than duplicating it locally. (Issue #1652)
- *
- * @param session  - session to inspect
- * @param proc     - tracked subprocess (may be undefined if not in ProcessRegistry)
- * @param now      - current timestamp (defaults to Date.now(); pass explicit value in tests)
- * @returns true if the session was marked stale, false otherwise
- */
-export function detectStaleGenerator(
-  session: StaleGeneratorCandidate,
-  proc: StaleGeneratorProcess | undefined,
-  now = Date.now()
-): boolean {
-  if (!session.generatorPromise) return false;
-
-  const generatorIdleMs = now - session.lastGeneratorActivity;
-  if (generatorIdleMs <= MAX_GENERATOR_IDLE_MS) return false;
-
-  // Kill subprocess to unblock stuck for-await
-  if (proc && proc.exitCode === null) {
-    try {
-      proc.kill('SIGKILL');
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn('SESSION', 'Failed to SIGKILL stale generator subprocess', {}, error);
-      } else {
-        logger.warn('SESSION', 'Failed to SIGKILL stale generator subprocess with non-Error', {}, new Error(String(error)));
-      }
-    }
-  }
-  // Signal the SDK agent loop to exit
-  session.abortController.abort();
-  return true;
-}
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -229,7 +164,6 @@ export class SessionManager {
       restartGuard: new RestartGuard(),
       processingMessageIds: [],  // CLAIM-CONFIRM: Track message IDs for confirmProcessed()
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
-      consecutiveSummaryFailures: 0,  // Circuit breaker for summary retry loop (#1633)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
       pendingAgentType: null  // (null for main-session messages)
     };
@@ -289,16 +223,28 @@ export class SessionManager {
       prompt_number: data.prompt_number,
       cwd: data.cwd,
       agentId: data.agentId,
-      agentType: data.agentType
+      agentType: data.agentType,
+      toolUseId: data.toolUseId,
     };
 
     try {
       const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
       const queueDepth = this.getPendingStore().getPendingCount(sessionDbId);
       const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
-      logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=observation | tool=${toolSummary} | depth=${queueDepth}`, {
-        sessionId: sessionDbId
-      });
+      // enqueue returns 0 on INSERT OR IGNORE conflict (UNIQUE(session_id, tool_use_id)
+      // — Plan 01 Phase 1). The duplicate is correctly suppressed by the DB; surface
+      // it visibly so it isn't misread as "messageId=0 was inserted." Per
+      // Principle 3 (UNIQUE constraint over dedup window) this is the success path
+      // for replayed transcript lines, not an error.
+      if (messageId === 0) {
+        logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
+          sessionId: sessionDbId
+        });
+      } else {
+        logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=observation | tool=${toolSummary} | depth=${queueDepth}`, {
+          sessionId: sessionDbId
+        });
+      }
     } catch (error) {
       if (error instanceof Error) {
         logger.error('SESSION', 'Failed to persist observation to DB', {
@@ -333,17 +279,10 @@ export class SessionManager {
       session = this.initializeSession(sessionDbId);
     }
 
-    // Circuit breaker: skip summarize if too many consecutive failures (#1633).
-    // This prevents the infinite loop where each failed summary spawns a new session
-    // with an ever-growing prompt. Counter is in-memory per ActiveSession — it resets
-    // on worker restart, which is acceptable because session state is already ephemeral.
-    if (session.consecutiveSummaryFailures >= MAX_CONSECUTIVE_SUMMARY_FAILURES) {
-      logger.warn('SESSION', `Circuit breaker OPEN: skipping summarize after ${session.consecutiveSummaryFailures} consecutive failures (#1633)`, {
-        sessionId: sessionDbId,
-        contentSessionId: session.contentSessionId
-      });
-      return;
-    }
+    // PATHFINDER plan 03 phase 3: summary-failure circuit breaker deleted.
+    // Each failed parse is independently marked failed via the retry ladder
+    // in PendingMessageStore.markFailed; a storm of bad parses surfaces as
+    // retry exhaustion, not as silent suppression of further requests.
 
     // CRITICAL: Persist to database FIRST
     const message: PendingMessage = {
@@ -354,9 +293,16 @@ export class SessionManager {
     try {
       const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
       const queueDepth = this.getPendingStore().getPendingCount(sessionDbId);
-      logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=summarize | depth=${queueDepth}`, {
-        sessionId: sessionDbId
-      });
+      // See queueObservation note: messageId=0 means UNIQUE-suppressed duplicate.
+      if (messageId === 0) {
+        logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
+          sessionId: sessionDbId
+        });
+      } else {
+        logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=summarize | depth=${queueDepth}`, {
+          sessionId: sessionDbId
+        });
+      }
     } catch (error) {
       if (error instanceof Error) {
         logger.error('SESSION', 'Failed to persist summarize to DB', {
@@ -402,19 +348,21 @@ export class SessionManager {
       });
     }
 
-    // 3. Verify subprocess exit with 5s timeout (Issue #737 fix)
-    const tracked = getProcessBySession(sessionDbId);
+    // 3. Verify subprocess exit with 5s timeout. Process-group teardown is
+    //    used internally so any SDK descendants are killed too (Principle 5).
+    const tracked = getSdkProcessForSession(sessionDbId);
     if (tracked && tracked.process.exitCode === null) {
-      logger.debug('SESSION', `Waiting for subprocess PID ${tracked.pid} to exit`, {
+      logger.debug('SESSION', `Waiting for subprocess PID ${tracked.pid} (pgid ${tracked.pgid}) to exit`, {
         sessionId: sessionDbId,
-        pid: tracked.pid
+        pid: tracked.pid,
+        pgid: tracked.pgid
       });
-      await ensureProcessExit(tracked, 5000);
+      await ensureSdkProcessExit(tracked, 5000);
     }
 
     // 3b. Reap all supervisor-tracked processes for this session (#1351)
-    // This catches MCP servers and other child processes not tracked by the
-    // in-memory ProcessRegistry (e.g. processes registered only in supervisor.json).
+    // Catches MCP servers and other child processes registered only in
+    // supervisor.json that the in-process tracking would not see.
     try {
       await getSupervisor().getRegistry().reapSession(sessionDbId);
     } catch (error) {
@@ -465,106 +413,6 @@ export class SessionManager {
     if (this.onSessionDeletedCallback) {
       this.onSessionDeletedCallback();
     }
-  }
-
-  /**
-   * Evict the idlest session to free a pool slot (#1868).
-   * An "idle" session has an active generator but no pending work — it's sitting
-   * in the 3-min idle wait before subprocess cleanup. Evicting it triggers abort
-   * which kills the subprocess and frees the pool slot for a waiting new session.
-   * @returns true if a session was evicted, false if no idle sessions found
-   */
-  evictIdlestSession(): boolean {
-    let idlestSessionId: number | null = null;
-    let oldestActivity = Infinity;
-
-    for (const [sessionDbId, session] of this.sessions) {
-      if (!session.generatorPromise) continue; // No generator = no slot held
-      const pendingCount = this.getPendingStore().getPendingCount(sessionDbId);
-      if (pendingCount > 0) continue; // Has work to do, don't evict
-
-      // Pick the session with the oldest lastGeneratorActivity (idlest)
-      if (session.lastGeneratorActivity < oldestActivity) {
-        oldestActivity = session.lastGeneratorActivity;
-        idlestSessionId = sessionDbId;
-      }
-    }
-
-    if (idlestSessionId === null) return false;
-
-    const session = this.sessions.get(idlestSessionId);
-    if (!session) return false;
-
-    logger.info('SESSION', 'Evicting idle session to free pool slot for new request (#1868)', {
-      sessionDbId: idlestSessionId,
-      idleDurationMs: Date.now() - oldestActivity
-    });
-
-    session.idleTimedOut = true;
-    session.abortController.abort();
-    return true;
-  }
-
-  /**
-   * Reap sessions with no active generator and no pending work that have been idle too long.
-   * Also reaps sessions whose generator has been stuck (no lastGeneratorActivity update) for
-   * longer than MAX_GENERATOR_IDLE_MS — these are zombie subprocesses that will never exit
-   * on their own because the orphan reaper skips sessions in the active sessions map. (Issue #1652)
-   *
-   * This unblocks the orphan reaper which skips processes for "active" sessions. (Issue #1168)
-   */
-  async reapStaleSessions(): Promise<number> {
-    const now = Date.now();
-    const staleSessionIds: number[] = [];
-
-    for (const [sessionDbId, session] of this.sessions) {
-      // Sessions with active generators — check for stuck/zombie generators (Issue #1652)
-      if (session.generatorPromise) {
-        const generatorIdleMs = now - session.lastGeneratorActivity;
-        if (generatorIdleMs > MAX_GENERATOR_IDLE_MS) {
-          logger.warn('SESSION', `Stale generator detected for session ${sessionDbId} (no activity for ${Math.round(generatorIdleMs / 60000)}m) — force-killing subprocess`, {
-            sessionDbId,
-            generatorIdleMs
-          });
-          // Force-kill the subprocess to unblock the stuck for-await in SDKAgent.
-          // Without this the generator is blocked on `for await (const msg of queryResult)`
-          // and will never exit even after abort() is called.
-          const trackedProcess = getProcessBySession(sessionDbId);
-          if (trackedProcess && trackedProcess.process.exitCode === null) {
-            try {
-              trackedProcess.process.kill('SIGKILL');
-            } catch (err) {
-              if (err instanceof Error) {
-                logger.warn('SESSION', 'Failed to SIGKILL subprocess for stale generator', { sessionDbId }, err);
-              } else {
-                logger.warn('SESSION', 'Failed to SIGKILL subprocess for stale generator with non-Error', { sessionDbId }, new Error(String(err)));
-              }
-            }
-          }
-          // Signal the SDK agent loop to exit after the subprocess dies
-          session.abortController.abort();
-          staleSessionIds.push(sessionDbId);
-        }
-        continue;
-      }
-
-      // Skip sessions with pending work
-      const pendingCount = this.getPendingStore().getPendingCount(sessionDbId);
-      if (pendingCount > 0) continue;
-
-      // No generator + no pending work + old enough = stale
-      const sessionAge = now - session.startTime;
-      if (sessionAge > MAX_SESSION_IDLE_MS) {
-        logger.warn('SESSION', `Reaping idle session ${sessionDbId} (no activity for >${Math.round(MAX_SESSION_IDLE_MS / 60000)}m)`, { sessionDbId });
-        staleSessionIds.push(sessionDbId);
-      }
-    }
-
-    for (const sessionDbId of staleSessionIds) {
-      await this.deleteSession(sessionDbId);
-    }
-
-    return staleSessionIds.length;
   }
 
   /**

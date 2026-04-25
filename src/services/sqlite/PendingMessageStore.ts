@@ -1,9 +1,18 @@
-import { Database } from './sqlite-compat.js';
+import { Database } from 'bun:sqlite';
 import type { PendingMessage } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
-/** Messages processing longer than this are considered stale and reset to pending by self-healing */
-const STALE_PROCESSING_THRESHOLD_MS = 60_000;
+/**
+ * Provider for the set of currently-live worker PIDs.
+ *
+ * The self-healing claim query reclaims any 'processing' row whose
+ * worker_pid is NOT a live worker (crash recovery without a timer).
+ *
+ * Default: a single-worker process supplies just its own PID. Multi-worker
+ * deployments inject a callback backed by `supervisor/process-registry.ts`
+ * (`getSupervisor().getRegistry().getAll().filter(r => r.type === 'worker').map(r => r.pid)`).
+ */
+export type LiveWorkerPidsProvider = () => readonly number[];
 
 /**
  * Persistent pending message record from database
@@ -22,8 +31,8 @@ export interface PersistentPendingMessage {
   status: 'pending' | 'processing' | 'processed' | 'failed';
   retry_count: number;
   created_at_epoch: number;
-  started_processing_at_epoch: number | null;
   completed_at_epoch: number | null;
+  worker_pid: number | null;
   // Claude Code subagent identity — NULL for main-session messages.
   agent_type: string | null;
   agent_id: string | null;
@@ -37,44 +46,76 @@ export interface PersistentPendingMessage {
  *
  * Lifecycle:
  * 1. enqueue() - Message persisted with status 'pending'
- * 2. claimNextMessage() - Atomically claims next pending message (marks as 'processing')
+ * 2. claimNextMessage() - Atomically claims next pending message (marks as 'processing'
+ *    and stamps the live worker's PID). Self-healing: reclaims any 'processing' row
+ *    whose worker_pid is no longer alive (worker crash) in the same UPDATE.
  * 3. confirmProcessed() - Deletes message after successful processing
  *
- * Self-healing:
- * - claimNextMessage() resets stale 'processing' messages (>60s) back to 'pending' before claiming
- * - This eliminates stuck messages from generator crashes without external timers
- *
- * Recovery:
- * - getSessionsWithPendingMessages() - Find sessions that need recovery on startup
+ * Self-healing semantics:
+ *   A 'processing' row is reclaimable iff worker_pid IS NULL or worker_pid is
+ *   not present in the live-pids list at claim time. No timer, no
+ *   stale-cutoff timestamp — liveness is the truth.
  */
 export class PendingMessageStore {
   private db: Database;
   private maxRetries: number;
+  private workerPid: number;
+  private getLiveWorkerPids: LiveWorkerPidsProvider;
 
-  constructor(db: Database, maxRetries: number = 3) {
+  /**
+   * @param db                  SQLite database
+   * @param maxRetries          Per-message retry ceiling for transient SDK failures (default 3)
+   * @param workerPid           PID of the worker that owns this store; stamped into worker_pid on claim.
+   *                            Defaults to process.pid so single-process deployments need no extra wiring.
+   * @param getLiveWorkerPids   Provider for the set of all currently-live worker PIDs.
+   *                            Defaults to `[workerPid]` — only this worker is alive.
+   *                            Multi-worker deployments inject a supervisor-backed provider.
+   */
+  constructor(
+    db: Database,
+    maxRetries: number = 3,
+    workerPid: number = process.pid,
+    getLiveWorkerPids?: LiveWorkerPidsProvider
+  ) {
     this.db = db;
     this.maxRetries = maxRetries;
+    this.workerPid = workerPid;
+    this.getLiveWorkerPids = getLiveWorkerPids ?? (() => [this.workerPid]);
   }
 
   /**
-   * Enqueue a new message (persist before processing)
-   * @returns The database ID of the persisted message
+   * Enqueue a new message (persist before processing).
+   *
+   * Uses `INSERT OR IGNORE` so duplicate (content_session_id, tool_use_id)
+   * pairs collapse to a single row — the UNIQUE INDEX added in plan 01 phase 1
+   * is the authority on tool-use idempotency. Per principle 3 (UNIQUE
+   * constraint over dedup window), we don't time-gate duplicates.
+   *
+   * @returns The database ID of the persisted message, or 0 when the insert
+   *          was suppressed by ON CONFLICT. Callers MUST guard with `id > 0`
+   *          before threading the value into any subsequent SQL (e.g.
+   *          `confirmProcessed`, `markFailed`, `processingMessageIds`) —
+   *          a zero id would silently target zero rows. The only two call
+   *          sites today (`SessionManager.queueObservation` and
+   *          `queueSummarize`) use the id purely for logging and both
+   *          branch on `messageId === 0`.
    */
   enqueue(sessionDbId: number, contentSessionId: string, message: PendingMessage): number {
     const now = Date.now();
     const stmt = this.db.prepare(`
-      INSERT INTO pending_messages (
-        session_db_id, content_session_id, message_type,
+      INSERT OR IGNORE INTO pending_messages (
+        session_db_id, content_session_id, tool_use_id, message_type,
         tool_name, tool_input, tool_response, cwd,
         last_assistant_message,
         prompt_number, status, retry_count, created_at_epoch,
         agent_type, agent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
     `);
 
     const result = stmt.run(
       sessionDbId,
       contentSessionId,
+      message.toolUseId ?? null,
       message.type,
       message.tool_name || null,
       message.tool_input ? JSON.stringify(message.tool_input) : null,
@@ -90,58 +131,58 @@ export class PendingMessageStore {
     return result.lastInsertRowid as number;
   }
 
-  /**
-   * Atomically claim the next pending message by marking it as 'processing'.
-   * Self-healing: resets any stale 'processing' messages (>60s) back to 'pending' first.
-   * Message stays in DB until confirmProcessed() is called.
-   * Uses a transaction to prevent race conditions.
+/**
+   * Atomically claim the next message for `sessionDbId`.
+   *
+   * A row is claimable iff:
+   *   - status = 'pending', OR
+   *   - status = 'processing' AND worker_pid is not in the live-pids set
+   *     (i.e. the previous owner crashed). This is the self-healing branch:
+   *     liveness is checked at claim time, not by a background reaper.
+   *
+   * The claim stamps the live worker's PID and flips status to 'processing'
+   * in a single UPDATE … WHERE id = (subquery).
    */
   claimNextMessage(sessionDbId: number): PersistentPendingMessage | null {
-    const claimTx = this.db.transaction((sessionId: number) => {
-      // Capture time inside transaction so it's fresh if WAL contention causes retry
-      const now = Date.now();
-      // Self-healing: reset stale 'processing' messages back to 'pending'
-      // This recovers from generator crashes without external timers
-      // Note: strict < means messages must be OLDER than threshold to be reset
-      const staleCutoff = now - STALE_PROCESSING_THRESHOLD_MS;
-      const resetStmt = this.db.prepare(`
-        UPDATE pending_messages
-        SET status = 'pending', started_processing_at_epoch = NULL
-        WHERE session_db_id = ? AND status = 'processing'
-          AND started_processing_at_epoch < ?
-      `);
-      const resetResult = resetStmt.run(sessionId, staleCutoff);
-      if (resetResult.changes > 0) {
-        logger.info('QUEUE', `SELF_HEAL | sessionDbId=${sessionId} | recovered ${resetResult.changes} stale processing message(s)`);
-      }
+    // Build a parameterized IN-list of live worker PIDs. We always include
+    // this worker's PID so that an in-flight claim doesn't accidentally
+    // self-reclaim a row we just stamped (the predicate is "NOT IN live").
+    const livePids = this.getLivePidsIncludingSelf();
+    const placeholders = livePids.map(() => '?').join(',');
 
-      const peekStmt = this.db.prepare(`
-        SELECT * FROM pending_messages
-        WHERE session_db_id = ? AND status = 'pending'
-        ORDER BY id ASC
-        LIMIT 1
-      `);
-      const msg = peekStmt.get(sessionId) as PersistentPendingMessage | null;
+    const sql = `
+      UPDATE pending_messages
+         SET status     = 'processing',
+             worker_pid = ?
+       WHERE id = (
+         SELECT id FROM pending_messages
+          WHERE session_db_id = ?
+            AND (
+              status = 'pending'
+              OR (status = 'processing' AND (worker_pid IS NULL OR worker_pid NOT IN (${placeholders})))
+            )
+          ORDER BY id ASC
+          LIMIT 1
+       )
+       RETURNING *
+    `;
 
-      if (msg) {
-        // CRITICAL FIX: Mark as 'processing' instead of deleting
-        // Message will be deleted by confirmProcessed() after successful store
-        const updateStmt = this.db.prepare(`
-          UPDATE pending_messages
-          SET status = 'processing', started_processing_at_epoch = ?
-          WHERE id = ?
-        `);
-        updateStmt.run(now, msg.id);
+    const stmt = this.db.prepare(sql);
+    const params: (number | string)[] = [this.workerPid, sessionDbId, ...livePids];
+    const claimed = stmt.get(...params) as PersistentPendingMessage | null;
 
-        // Log claim with minimal info (avoid logging full payload)
-        logger.info('QUEUE', `CLAIMED | sessionDbId=${sessionId} | messageId=${msg.id} | type=${msg.message_type}`, {
-          sessionId: sessionId
-        });
-      }
-      return msg;
-    });
+    if (claimed) {
+      logger.info('QUEUE', `CLAIMED | sessionDbId=${sessionDbId} | messageId=${claimed.id} | type=${claimed.message_type} | workerPid=${this.workerPid}`, {
+        sessionId: sessionDbId
+      });
+    }
+    return claimed;
+  }
 
-    return claimTx(sessionDbId) as PersistentPendingMessage | null;
+  private getLivePidsIncludingSelf(): number[] {
+    const pids = this.getLiveWorkerPids();
+    if (pids.includes(this.workerPid)) return [...pids];
+    return [...pids, this.workerPid];
   }
 
   /**
@@ -158,34 +199,19 @@ export class PendingMessageStore {
   }
 
   /**
-   * Reset stale 'processing' messages back to 'pending' for retry.
-   * Called on worker startup and periodically to recover from crashes.
-   * @param thresholdMs Messages processing longer than this are considered stale (default: 5 minutes)
-   * @returns Number of messages reset
+   * Delete `status='failed'` rows older than `thresholdMs`. Called once at
+   * worker startup so `pending_messages` does not grow unbounded on long-
+   * running or high-failure-rate installations; `claimNextMessage`'s
+   * self-healing subquery scans this table, so bounded rows keep claim
+   * latency predictable. Not a reaper — one-shot, idempotent.
    */
-  resetStaleProcessingMessages(thresholdMs: number = 5 * 60 * 1000, sessionDbId?: number): number {
+  clearFailedOlderThan(thresholdMs: number): number {
     const cutoff = Date.now() - thresholdMs;
-    let stmt;
-    let result;
-    if (sessionDbId !== undefined) {
-      stmt = this.db.prepare(`
-        UPDATE pending_messages
-        SET status = 'pending', started_processing_at_epoch = NULL
-        WHERE status = 'processing' AND started_processing_at_epoch < ? AND session_db_id = ?
-      `);
-      result = stmt.run(cutoff, sessionDbId);
-    } else {
-      stmt = this.db.prepare(`
-        UPDATE pending_messages
-        SET status = 'pending', started_processing_at_epoch = NULL
-        WHERE status = 'processing' AND started_processing_at_epoch < ?
-      `);
-      result = stmt.run(cutoff);
-    }
-    if (result.changes > 0) {
-      logger.info('QUEUE', `RESET_STALE | count=${result.changes} | thresholdMs=${thresholdMs}${sessionDbId !== undefined ? ` | sessionDbId=${sessionDbId}` : ''}`);
-    }
-    return result.changes;
+    const stmt = this.db.prepare(`
+      DELETE FROM pending_messages
+      WHERE status = 'failed' AND COALESCE(failed_at_epoch, completed_at_epoch, 0) < ?
+    `);
+    return stmt.run(cutoff).changes;
   }
 
   /**
@@ -201,144 +227,44 @@ export class PendingMessageStore {
   }
 
   /**
-   * Get all queue messages (for UI display)
-   * Returns pending, processing, and failed messages (not processed - they're deleted)
-   * Joins with sdk_sessions to get project name
+   * Transition pending_messages rows to a terminal status — PATHFINDER-2026-04-22
+   * Plan 06 Phase 9. One SQL UPDATE path, one place to add a new terminal status
+   * later, zero divergence between call sites.
+   *
+   * - `failed` — narrow form: only rows currently `status='processing'`.
+   *   Used during error recovery when a session generator crashes and we want
+   *   to mark its in-flight messages failed without touching rows that never
+   *   left `pending`.
+   *
+   * - `abandoned` — wide form: rows in `('pending', 'processing')`.
+   *   Used during session termination or completion drain so the session
+   *   doesn't appear in `getSessionsWithPendingMessages` forever. Both forms
+   *   write the row's `status` column to `'failed'`; `abandoned` is just the
+   *   broader WHERE clause.
+   *
+   * Cites Principle 6 (one helper, N callers) and Principle 7 (the
+   * old per-status wrapper methods were deleted in the same PR).
+   *
+   * @param status  `'failed'` (processing-only) or `'abandoned'` (pending+processing)
+   * @param filter  `{ sessionDbId: number }` — scope to one session's rows.
+   *   Required: no unscoped path exists, to prevent accidental global drain.
+   * @returns Number of rows updated
    */
-  getQueueMessages(): (PersistentPendingMessage & { project: string | null })[] {
-    const stmt = this.db.prepare(`
-      SELECT pm.*, ss.project
-      FROM pending_messages pm
-      LEFT JOIN sdk_sessions ss ON pm.content_session_id = ss.content_session_id
-      WHERE pm.status IN ('pending', 'processing', 'failed')
-      ORDER BY
-        CASE pm.status
-          WHEN 'failed' THEN 0
-          WHEN 'processing' THEN 1
-          WHEN 'pending' THEN 2
-        END,
-        pm.created_at_epoch ASC
-    `);
-    return stmt.all() as (PersistentPendingMessage & { project: string | null })[];
-  }
-
-  /**
-   * Get count of stuck messages (processing longer than threshold)
-   */
-  getStuckCount(thresholdMs: number): number {
-    const cutoff = Date.now() - thresholdMs;
-    const stmt = this.db.prepare(`
-      SELECT COUNT(*) as count FROM pending_messages
-      WHERE status = 'processing' AND started_processing_at_epoch < ?
-    `);
-    const result = stmt.get(cutoff) as { count: number };
-    return result.count;
-  }
-
-  /**
-   * Retry a specific message (reset to pending)
-   * Works for pending (re-queue), processing (reset stuck), and failed messages
-   */
-  retryMessage(messageId: number): boolean {
-    const stmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'pending', started_processing_at_epoch = NULL
-      WHERE id = ? AND status IN ('pending', 'processing', 'failed')
-    `);
-    const result = stmt.run(messageId);
-    return result.changes > 0;
-  }
-
-  /**
-   * Reset all processing messages for a session to pending
-   * Used when force-restarting a stuck session
-   */
-  resetProcessingToPending(sessionDbId: number): number {
-    const stmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'pending', started_processing_at_epoch = NULL
-      WHERE session_db_id = ? AND status = 'processing'
-    `);
-    const result = stmt.run(sessionDbId);
-    return result.changes;
-  }
-
-  /**
-   * Mark all processing messages for a session as failed
-   * Used in error recovery when session generator crashes
-   * @returns Number of messages marked failed
-   */
-  markSessionMessagesFailed(sessionDbId: number): number {
+  transitionMessagesTo(
+    status: 'failed' | 'abandoned',
+    filter: { sessionDbId: number }
+  ): number {
     const now = Date.now();
+    const statusClause = status === 'failed'
+      ? `status = 'processing'`
+      : `status IN ('pending', 'processing')`;
 
-    // Atomic update - all processing messages for session → failed
-    // Note: This bypasses retry logic since generator failures are session-level,
-    // not message-level. Individual message failures use markFailed() instead.
     const stmt = this.db.prepare(`
       UPDATE pending_messages
       SET status = 'failed', failed_at_epoch = ?
-      WHERE session_db_id = ? AND status = 'processing'
+      WHERE session_db_id = ? AND ${statusClause}
     `);
-
-    const result = stmt.run(now, sessionDbId);
-    return result.changes;
-  }
-
-  /**
-   * Mark all pending and processing messages for a session as failed (abandoned).
-   * Used when SDK session is terminated and no fallback agent is available:
-   * prevents the session from appearing in getSessionsWithPendingMessages forever.
-   * @returns Number of messages marked failed
-   */
-  markAllSessionMessagesAbandoned(sessionDbId: number): number {
-    const now = Date.now();
-    const stmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'failed', failed_at_epoch = ?
-      WHERE session_db_id = ? AND status IN ('pending', 'processing')
-    `);
-    const result = stmt.run(now, sessionDbId);
-    return result.changes;
-  }
-
-  /**
-   * Abort a specific message (delete from queue)
-   */
-  abortMessage(messageId: number): boolean {
-    const stmt = this.db.prepare('DELETE FROM pending_messages WHERE id = ?');
-    const result = stmt.run(messageId);
-    return result.changes > 0;
-  }
-
-  /**
-   * Retry all stuck messages at once
-   */
-  retryAllStuck(thresholdMs: number): number {
-    const cutoff = Date.now() - thresholdMs;
-    const stmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'pending', started_processing_at_epoch = NULL
-      WHERE status = 'processing' AND started_processing_at_epoch < ?
-    `);
-    const result = stmt.run(cutoff);
-    return result.changes;
-  }
-
-  /**
-   * Get recently processed messages (for UI feedback)
-   * Shows messages completed in the last N minutes so users can see their stuck items were processed
-   */
-  getRecentlyProcessed(limit: number = 10, withinMinutes: number = 30): (PersistentPendingMessage & { project: string | null })[] {
-    const cutoff = Date.now() - (withinMinutes * 60 * 1000);
-    const stmt = this.db.prepare(`
-      SELECT pm.*, ss.project
-      FROM pending_messages pm
-      LEFT JOIN sdk_sessions ss ON pm.content_session_id = ss.content_session_id
-      WHERE pm.status = 'processed' AND pm.completed_at_epoch > ?
-      ORDER BY pm.completed_at_epoch DESC
-      LIMIT ?
-    `);
-    return stmt.all(cutoff, limit) as (PersistentPendingMessage & { project: string | null })[];
+    return stmt.run(now, filter.sessionDbId).changes;
   }
 
   /**
@@ -358,7 +284,7 @@ export class PendingMessageStore {
       // Move back to pending for retry
       const stmt = this.db.prepare(`
         UPDATE pending_messages
-        SET status = 'pending', retry_count = retry_count + 1, started_processing_at_epoch = NULL
+        SET status = 'pending', retry_count = retry_count + 1, worker_pid = NULL
         WHERE id = ?
       `);
       stmt.run(messageId);
@@ -371,24 +297,6 @@ export class PendingMessageStore {
       `);
       stmt.run(now, messageId);
     }
-  }
-
-  /**
-   * Reset stuck messages (processing -> pending if stuck longer than threshold)
-   * @param thresholdMs Messages processing longer than this are considered stuck (0 = reset all)
-   * @returns Number of messages reset
-   */
-  resetStuckMessages(thresholdMs: number): number {
-    const cutoff = thresholdMs === 0 ? Date.now() : Date.now() - thresholdMs;
-
-    const stmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'pending', started_processing_at_epoch = NULL
-      WHERE status = 'processing' AND started_processing_at_epoch < ?
-    `);
-
-    const result = stmt.run(cutoff);
-    return result.changes;
   }
 
   /**
@@ -417,27 +325,21 @@ export class PendingMessageStore {
   }
 
   /**
-   * Check if any session has pending work.
-   * Excludes 'processing' messages stuck for >5 minutes (resets them to 'pending' as a side effect).
+   * Check if any session has work that could be claimed right now.
+   *
+   * Counts a row as work iff it is 'pending' or it is 'processing' under a
+   * worker_pid that is not currently alive (the same predicate the
+   * self-healing claim uses). No side effects — no UPDATE, no timer.
    */
   hasAnyPendingWork(): boolean {
-    // Reset stuck 'processing' messages older than 5 minutes before checking
-    const stuckCutoff = Date.now() - (5 * 60 * 1000);
-    const resetStmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'pending', started_processing_at_epoch = NULL
-      WHERE status = 'processing' AND started_processing_at_epoch < ?
-    `);
-    const resetResult = resetStmt.run(stuckCutoff);
-    if (resetResult.changes > 0) {
-      logger.info('QUEUE', `STUCK_RESET | hasAnyPendingWork reset ${resetResult.changes} stuck processing message(s) older than 5 minutes`);
-    }
-
+    const livePids = this.getLivePidsIncludingSelf();
+    const placeholders = livePids.map(() => '?').join(',');
     const stmt = this.db.prepare(`
       SELECT COUNT(*) as count FROM pending_messages
-      WHERE status IN ('pending', 'processing')
+       WHERE status = 'pending'
+          OR (status = 'processing' AND (worker_pid IS NULL OR worker_pid NOT IN (${placeholders})))
     `);
-    const result = stmt.get() as { count: number };
+    const result = stmt.get(...livePids) as { count: number };
     return result.count > 0;
   }
 
@@ -462,52 +364,6 @@ export class PendingMessageStore {
     `);
     const result = stmt.get(messageId) as { session_db_id: number; content_session_id: string } | undefined;
     return result ? { sessionDbId: result.session_db_id, contentSessionId: result.content_session_id } : null;
-  }
-
-  /**
-   * Clear all failed messages from the queue
-   * @returns Number of messages deleted
-   */
-  clearFailed(): number {
-    const stmt = this.db.prepare(`
-      DELETE FROM pending_messages
-      WHERE status = 'failed'
-    `);
-    const result = stmt.run();
-    return result.changes;
-  }
-
-  /**
-   * Clear failed messages older than the given threshold.
-   * Preserves recent failures for inspection and manual retry.
-   * @param thresholdMs - Only delete failures older than this many milliseconds
-   * @returns Number of messages deleted
-   */
-  clearFailedOlderThan(thresholdMs: number): number {
-    const cutoff = Date.now() - thresholdMs;
-    // Use COALESCE to prefer the most recent failure timestamp over creation time.
-    // failed_at_epoch is set by session-level failures, completed_at_epoch by markFailed().
-    const stmt = this.db.prepare(`
-      DELETE FROM pending_messages
-      WHERE status = 'failed'
-        AND COALESCE(failed_at_epoch, completed_at_epoch, started_processing_at_epoch, created_at_epoch) < ?
-    `);
-    const result = stmt.run(cutoff);
-    return result.changes;
-  }
-
-  /**
-   * Clear all pending, processing, and failed messages from the queue
-   * Keeps only processed messages (for history)
-   * @returns Number of messages deleted
-   */
-  clearAll(): number {
-    const stmt = this.db.prepare(`
-      DELETE FROM pending_messages
-      WHERE status IN ('pending', 'processing', 'failed')
-    `);
-    const result = stmt.run();
-    return result.changes;
   }
 
   /**

@@ -481,15 +481,6 @@ const QUERIES: Record<string, string> = {
 (import_statement) @imp
 (import_declaration) @imp
 `,
-
-  php: `
-(function_definition name: (name) @name) @func
-(method_declaration name: (name) @name) @method
-(class_declaration name: (name) @name) @cls
-(interface_declaration name: (name) @name) @iface
-(trait_declaration name: (name) @name) @trait_def
-(namespace_use_declaration) @imp
-`,
 };
 
 function getQueryKey(language: string): string {

@@ -59,31 +59,16 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     const searchSessions = searchType === 'all' || searchType === 'sessions';
     const searchPrompts = searchType === 'all' || searchType === 'prompts';
 
-    let observations: ObservationSearchResult[] = [];
-    let sessions: SessionSummarySearchResult[] = [];
-    let prompts: UserPromptSearchResult[] = [];
-
     // Build Chroma where filter for doc_type and project
     const whereFilter = this.buildWhereFilter(searchType, project);
 
     logger.debug('SEARCH', 'ChromaSearchStrategy: Querying Chroma', { query, searchType });
 
-    try {
-      return await this.executeChromaSearch(query, whereFilter, {
-        searchObservations, searchSessions, searchPrompts,
-        obsType, concepts, files, orderBy, limit, project
-      });
-    } catch (error) {
-      const errorObj = error instanceof Error ? error : new Error(String(error));
-      logger.error('WORKER', 'ChromaSearchStrategy: Search failed', {}, errorObj);
-      // Return empty result - caller may try fallback strategy
-      return {
-        results: { observations: [], sessions: [], prompts: [] },
-        usedChroma: false,
-        fellBack: false,
-        strategy: 'chroma'
-      };
-    }
+    // Fail-fast: errors propagate to orchestrator, which translates to HTTP 503.
+    return await this.executeChromaSearch(query, whereFilter, {
+      searchObservations, searchSessions, searchPrompts,
+      obsType, concepts, files, orderBy, limit, project
+    });
   }
 
   private async executeChromaSearch(
@@ -111,7 +96,6 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       return {
         results: { observations: [], sessions: [], prompts: [] },
         usedChroma: true,
-        fellBack: false,
         strategy: 'chroma'
       };
     }
@@ -123,27 +107,31 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
 
+    // Chroma already ranks by vector similarity; 'relevance' has no SQL
+    // equivalent, so drop it before hydrating rows from SessionStore.
+    const sqlOrderBy: 'date_desc' | 'date_asc' | undefined =
+      options.orderBy === 'relevance' ? undefined : options.orderBy;
+
     if (categorized.obsIds.length > 0) {
-      const obsOptions = { type: options.obsType, concepts: options.concepts, files: options.files, orderBy: options.orderBy, limit: options.limit, project: options.project };
+      const obsOptions = { type: options.obsType, concepts: options.concepts, files: options.files, orderBy: sqlOrderBy, limit: options.limit, project: options.project };
       observations = this.sessionStore.getObservationsByIds(categorized.obsIds, obsOptions);
     }
 
     if (categorized.sessionIds.length > 0) {
       sessions = this.sessionStore.getSessionSummariesByIds(categorized.sessionIds, {
-        orderBy: options.orderBy, limit: options.limit, project: options.project
+        orderBy: sqlOrderBy, limit: options.limit, project: options.project
       });
     }
 
     if (categorized.promptIds.length > 0) {
       prompts = this.sessionStore.getUserPromptsByIds(categorized.promptIds, {
-        orderBy: options.orderBy, limit: options.limit, project: options.project
+        orderBy: sqlOrderBy, limit: options.limit, project: options.project
       });
     }
 
     return {
       results: { observations, sessions, prompts },
       usedChroma: true,
-      fellBack: false,
       strategy: 'chroma'
     };
   }

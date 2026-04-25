@@ -7,18 +7,13 @@ import { logger } from '../utils/logger.js';
 import type { ModeConfig } from '../services/domain/types.js';
 
 /**
- * Marker string embedded in summary prompts — used by ResponseProcessor to detect
- * whether the most recent user message was a summary request (enables observation→summary
- * coercion for #1633). Keep in sync with buildSummaryPrompt below.
+ * Marker string embedded in summary prompts — historically used by
+ * ResponseProcessor to detect summary turns for the (now-deleted) coercion
+ * fallback. Kept here because `buildSummaryPrompt` still embeds it as the
+ * mode-switch banner; deleting the constant would require rewriting the
+ * prompt builder, which is out of scope for plan 03.
  */
 export const SUMMARY_MODE_MARKER = 'MODE SWITCH: PROGRESS SUMMARY';
-
-/**
- * Maximum consecutive summary failures before the circuit breaker opens.
- * After this many failures, SessionManager.queueSummarize will skip further
- * summarize requests to prevent the infinite retry loop (#1633).
- */
-export const MAX_CONSECUTIVE_SUMMARY_FAILURES = 3;
 
 export interface Observation {
   id: number;

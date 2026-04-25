@@ -5,38 +5,14 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
+import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
-import { isProjectExcluded } from '../../utils/project-filter.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-
-async function sendObservationToWorker(requestBody: string, toolName: string): Promise<void> {
-  const response = await workerHttpRequest('/api/sessions/observations', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: requestBody
-  });
-
-  if (!response.ok) {
-    logger.warn('HOOK', 'Observation storage failed, skipping', { status: response.status, toolName });
-    return;
-  }
-
-  logger.debug('HOOK', 'Observation sent successfully', { toolName });
-}
 
 export const observationHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
-    // Ensure worker is running before any other logic
-    const workerReady = await ensureWorkerRunning();
-    if (!workerReady) {
-      // Worker not available - skip observation gracefully
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-    }
-
     const { sessionId, cwd, toolName, toolInput, toolResponse } = input;
     const platformSource = normalizePlatformSource(input.platform);
 
@@ -49,38 +25,43 @@ export const observationHandler: EventHandler = {
 
     logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {});
 
-    // Validate required fields before sending to worker
+    // Plan 05 Phase 6: cwd is validated at the adapter boundary; the adapter
+    // rejects empty cwd before reaching the handler. We still type-narrow for
+    // TypeScript and as a belt-and-suspenders guard.
     if (!cwd) {
       throw new Error(`Missing cwd in PostToolUse hook input for session ${sessionId}, tool ${toolName}`);
     }
 
-    // Check if project is excluded from tracking
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    if (isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+    // Plan 05 Phase 5: project exclusion via single helper.
+    if (!shouldTrackProject(cwd)) {
       logger.debug('HOOK', 'Project excluded from tracking, skipping observation', { cwd, toolName });
       return { continue: true, suppressOutput: true };
     }
 
-    // Send to worker - worker handles privacy check and database operations
-    const requestBody = JSON.stringify({
-      contentSessionId: sessionId,
-      platformSource,
-      tool_name: toolName,
-      tool_input: toolInput,
-      tool_response: toolResponse,
-      cwd,
-      agentId: input.agentId,
-      agentType: input.agentType
-    });
+    // Plan 05 Phase 2: single helper for ensure-worker-alive → request → fallback.
+    const result = await executeWithWorkerFallback<{ status?: string }>(
+      '/api/sessions/observations',
+      'POST',
+      {
+        contentSessionId: sessionId,
+        platformSource,
+        tool_name: toolName,
+        tool_input: toolInput,
+        tool_response: toolResponse,
+        cwd,
+        agentId: input.agentId,
+        agentType: input.agentType,
+      },
+    );
 
-    try {
-      await sendObservationToWorker(requestBody, toolName);
-    } catch (error) {
-      // Worker unreachable — skip observation gracefully
-      logger.warn('HOOK', 'Observation fetch error, skipping', { error: error instanceof Error ? error.message : String(error) });
+    if (isWorkerFallback(result)) {
+      // Worker unreachable — fail-loud counter has already been incremented
+      // and may have escalated to exit 2. If we got here, threshold not yet
+      // reached, so degrade gracefully.
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
+    logger.debug('HOOK', 'Observation sent successfully', { toolName });
     return { continue: true, suppressOutput: true };
-  }
+  },
 };

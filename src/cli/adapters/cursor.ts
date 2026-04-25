@@ -1,4 +1,5 @@
 import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
+import { AdapterRejectedInput, isValidCwd } from './errors.js';
 
 // Maps Cursor stdin format - field names differ from Claude Code
 // Cursor uses: conversation_id, workspace_roots[], result_json, command/output
@@ -13,9 +14,14 @@ export const cursorAdapter: PlatformAdapter = {
     const r = (raw ?? {}) as any;
     // Cursor-specific: shell commands come as command/output instead of tool_name/input/response
     const isShellCommand = !!r.command && !r.tool_name;
+    // Plan 05 Phase 6 — cwd validation at the adapter boundary.
+    const cwd = r.workspace_roots?.[0] ?? r.cwd ?? process.cwd();
+    if (!isValidCwd(cwd)) {
+      throw new AdapterRejectedInput('invalid_cwd');
+    }
     return {
       sessionId: r.conversation_id || r.generation_id || r.id,
-      cwd: r.workspace_roots?.[0] ?? r.cwd ?? process.cwd(),
+      cwd,
       prompt: r.prompt ?? r.query ?? r.input ?? r.message,
       toolName: isShellCommand ? 'Bash' : r.tool_name,
       toolInput: isShellCommand ? { command: r.command } : r.tool_input,

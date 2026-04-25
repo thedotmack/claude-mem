@@ -57,7 +57,7 @@ export class SessionCompletionHandler {
     // completed session would never be picked up again.
     try {
       const pendingStore = this.sessionManager.getPendingMessageStore();
-      const drainedCount = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+      const drainedCount = pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
       if (drainedCount > 0) {
         logger.warn('SESSION', `Drained ${drainedCount} orphaned pending messages on session finalize`, {
           sessionId: sessionDbId, drainedCount

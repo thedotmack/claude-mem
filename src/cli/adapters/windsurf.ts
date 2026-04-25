@@ -1,4 +1,5 @@
 import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
+import { AdapterRejectedInput, isValidCwd } from './errors.js';
 
 // Maps Windsurf stdin format — JSON envelope with agent_action_name + tool_info payload
 //
@@ -17,9 +18,15 @@ export const windsurfAdapter: PlatformAdapter = {
     const toolInfo = r.tool_info ?? {};
     const actionName: string = r.agent_action_name ?? '';
 
+    // Plan 05 Phase 6 — cwd validation at the adapter boundary.
+    const cwd = toolInfo.cwd ?? process.cwd();
+    if (!isValidCwd(cwd)) {
+      throw new AdapterRejectedInput('invalid_cwd');
+    }
+
     const base: NormalizedHookInput = {
       sessionId: r.trajectory_id ?? r.execution_id,
-      cwd: toolInfo.cwd ?? process.cwd(),
+      cwd,
       platform: 'windsurf',
     };
 

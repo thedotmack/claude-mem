@@ -6,14 +6,65 @@
  */
 
 import express, { Request, Response } from 'express';
+import { z } from 'zod';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
-import { logger } from '../../../../utils/logger.js';
+import { validateBody } from '../middleware/validateBody.js';
 import { CorpusStore } from '../../knowledge/CorpusStore.js';
 import { CorpusBuilder } from '../../knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from '../../knowledge/KnowledgeAgent.js';
 import type { CorpusFilter } from '../../knowledge/types.js';
 
-const ALLOWED_CORPUS_TYPES = new Set(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change', 'security_alert', 'security_note']);
+const ALLOWED_CORPUS_TYPES = ['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change', 'security_alert', 'security_note'] as const;
+const ALLOWED_CORPUS_TYPE_SET = new Set<string>(ALLOWED_CORPUS_TYPES);
+
+// Plan 06 Phase 3 — per-route Zod schemas. Coercions match the legacy
+// `coerceStringArray` / `coercePositiveInteger` semantics: accept JSON
+// strings, comma-separated strings, or native arrays; reject empty fields.
+const stringArrayLike = z.preprocess((value) => {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // not JSON, fall through to comma split
+    }
+    return value.split(',').map((part) => part.trim()).filter(Boolean);
+  }
+  return value;
+}, z.array(z.string().min(1)).optional());
+
+const positiveIntegerLike = z.preprocess((value) => {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isNaN(parsed) ? value : parsed;
+  }
+  return value;
+}, z.number().int().positive().optional());
+
+const buildCorpusSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  project: z.string().optional(),
+  types: stringArrayLike.refine(
+    (arr) => arr === undefined || arr.every((t) => ALLOWED_CORPUS_TYPE_SET.has(t)),
+    { message: `types must contain only ${ALLOWED_CORPUS_TYPES.join(', ')}` }
+  ),
+  concepts: stringArrayLike,
+  files: stringArrayLike,
+  query: z.string().optional(),
+  date_start: z.string().optional(),
+  date_end: z.string().optional(),
+  limit: positiveIntegerLike,
+}).passthrough();
+
+const queryCorpusSchema = z.object({
+  question: z.string().trim().min(1),
+}).passthrough();
+
+const emptyBodySchema = z.object({}).passthrough();
 
 export class CorpusRoutes extends BaseRouteHandler {
   constructor(
@@ -25,14 +76,14 @@ export class CorpusRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
-    app.post('/api/corpus', this.handleBuildCorpus.bind(this));
+    app.post('/api/corpus', validateBody(buildCorpusSchema), this.handleBuildCorpus.bind(this));
     app.get('/api/corpus', this.handleListCorpora.bind(this));
     app.get('/api/corpus/:name', this.handleGetCorpus.bind(this));
     app.delete('/api/corpus/:name', this.handleDeleteCorpus.bind(this));
-    app.post('/api/corpus/:name/rebuild', this.handleRebuildCorpus.bind(this));
-    app.post('/api/corpus/:name/prime', this.handlePrimeCorpus.bind(this));
-    app.post('/api/corpus/:name/query', this.handleQueryCorpus.bind(this));
-    app.post('/api/corpus/:name/reprime', this.handleReprimeCorpus.bind(this));
+    app.post('/api/corpus/:name/rebuild', validateBody(emptyBodySchema), this.handleRebuildCorpus.bind(this));
+    app.post('/api/corpus/:name/prime', validateBody(emptyBodySchema), this.handlePrimeCorpus.bind(this));
+    app.post('/api/corpus/:name/query', validateBody(queryCorpusSchema), this.handleQueryCorpus.bind(this));
+    app.post('/api/corpus/:name/reprime', validateBody(emptyBodySchema), this.handleReprimeCorpus.bind(this));
   }
 
   /**
@@ -41,42 +92,18 @@ export class CorpusRoutes extends BaseRouteHandler {
    * Body: { name, description?, project?, types?, concepts?, files?, query?, date_start?, date_end?, limit? }
    */
   private handleBuildCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    if (!req.body.name) {
-      res.status(400).json({
-        error: 'Missing required field: name',
-        fix: 'Add a "name" field to your request body',
-        example: { name: 'my-corpus', query: 'hooks', limit: 100 }
-      });
-      return;
-    }
-
-    const { name, description, project, types, concepts, files, query, date_start, date_end, limit } = req.body;
-
-    const coercedTypes = this.coerceStringArray(types, 'types', res);
-    if (coercedTypes === null) return;
-    if (coercedTypes && !coercedTypes.every(type => ALLOWED_CORPUS_TYPES.has(type))) {
-      this.badRequest(res, 'types must contain valid observation types');
-      return;
-    }
-
-    const coercedConcepts = this.coerceStringArray(concepts, 'concepts', res);
-    if (coercedConcepts === null) return;
-
-    const coercedFiles = this.coerceStringArray(files, 'files', res);
-    if (coercedFiles === null) return;
-
-    const coercedLimit = this.coercePositiveInteger(limit, 'limit', res);
-    if (coercedLimit === null) return;
+    const { name, description, project, types, concepts, files, query, date_start, date_end, limit } =
+      req.body as z.infer<typeof buildCorpusSchema>;
 
     const filter: CorpusFilter = {};
     if (project) filter.project = project;
-    if (coercedTypes && coercedTypes.length > 0) filter.types = coercedTypes as CorpusFilter['types'];
-    if (coercedConcepts && coercedConcepts.length > 0) filter.concepts = coercedConcepts;
-    if (coercedFiles && coercedFiles.length > 0) filter.files = coercedFiles;
+    if (types && types.length > 0) filter.types = types as CorpusFilter['types'];
+    if (concepts && concepts.length > 0) filter.concepts = concepts;
+    if (files && files.length > 0) filter.files = files;
     if (query) filter.query = query;
     if (date_start) filter.date_start = date_start;
     if (date_end) filter.date_end = date_end;
-    if (coercedLimit !== undefined) filter.limit = coercedLimit;
+    if (limit !== undefined) filter.limit = limit;
 
     const corpus = await this.corpusBuilder.build(name, description || '', filter);
 
@@ -84,45 +111,6 @@ export class CorpusRoutes extends BaseRouteHandler {
     const { observations, ...metadata } = corpus;
     res.json(metadata);
   });
-
-  private coerceStringArray(value: unknown, fieldName: string, res: Response): string[] | null | undefined {
-    if (value === undefined || value === null || value === '') {
-      return undefined;
-    }
-
-    let parsed = value;
-    if (typeof value === 'string') {
-      try {
-        parsed = JSON.parse(value);
-      } catch (parseError: unknown) {
-        if (parseError instanceof Error) {
-          logger.debug('HTTP', `${fieldName} is not valid JSON, treating as comma-separated string`, { value });
-        }
-        parsed = value.split(',').map(part => part.trim()).filter(Boolean);
-      }
-    }
-
-    if (!Array.isArray(parsed) || !parsed.every(item => typeof item === 'string')) {
-      this.badRequest(res, `${fieldName} must be an array of strings`);
-      return null;
-    }
-
-    return parsed.map(item => item.trim()).filter(Boolean);
-  }
-
-  private coercePositiveInteger(value: unknown, fieldName: string, res: Response): number | null | undefined {
-    if (value === undefined || value === null || value === '') {
-      return undefined;
-    }
-
-    const parsed = typeof value === 'string' ? Number(value) : value;
-    if (typeof parsed !== 'number' || !Number.isInteger(parsed) || parsed <= 0) {
-      this.badRequest(res, `${fieldName} must be a positive integer`);
-      return null;
-    }
-
-    return parsed;
-  }
 
   /**
    * List all corpora with stats
@@ -234,16 +222,6 @@ export class CorpusRoutes extends BaseRouteHandler {
    */
   private handleQueryCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { name } = req.params;
-
-    if (!req.body.question || typeof req.body.question !== 'string' || req.body.question.trim().length === 0) {
-      res.status(400).json({
-        error: 'Missing required field: question',
-        fix: 'Add a non-empty "question" string to your request body',
-        example: { question: 'What architectural decisions were made about hooks?' }
-      });
-      return;
-    }
-
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {

@@ -6,14 +6,12 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
+import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { parseJsonArray } from '../../shared/timeline-formatting.js';
 import { statSync } from 'fs';
 import path from 'path';
-import { isProjectExcluded } from '../../utils/project-filter.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { getProjectContext } from '../../utils/project-name.js';
 
 /** Skip the gate for files smaller than this — timeline overhead exceeds file read cost. */
@@ -207,16 +205,9 @@ export const fileContextHandler: EventHandler = {
       logger.debug('HOOK', 'File stat failed, proceeding with gate', { error: err instanceof Error ? err.message : String(err) });
     }
 
-    // Check if project is excluded from tracking
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    if (input.cwd && isProjectExcluded(input.cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+    // Plan 05 Phase 5: project exclusion via single helper.
+    if (input.cwd && !shouldTrackProject(input.cwd)) {
       logger.debug('HOOK', 'Project excluded from tracking, skipping file context', { cwd: input.cwd });
-      return { continue: true, suppressOutput: true };
-    }
-
-    // Ensure worker is running
-    const workerReady = await ensureWorkerRunning();
-    if (!workerReady) {
       return { continue: true, suppressOutput: true };
     }
 
@@ -232,22 +223,19 @@ export const fileContextHandler: EventHandler = {
     }
     queryParams.set('limit', String(FETCH_LOOKAHEAD_LIMIT));
 
-    let data: { observations: ObservationRow[]; count: number };
-    try {
-      const response = await workerHttpRequest(`/api/observations/by-file?${queryParams.toString()}`, { method: 'GET' });
-
-      if (!response.ok) {
-        logger.warn('HOOK', 'File context query failed, skipping', { status: response.status, filePath });
-        return { continue: true, suppressOutput: true };
-      }
-
-      data = await response.json() as { observations: ObservationRow[]; count: number };
-    } catch (error) {
-      logger.warn('HOOK', 'File context fetch error, skipping', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+    // Plan 05 Phase 2: single helper for ensure-worker-alive → request → fallback.
+    const result = await executeWithWorkerFallback<{ observations: ObservationRow[]; count: number }>(
+      `/api/observations/by-file?${queryParams.toString()}`,
+      'GET',
+    );
+    if (isWorkerFallback(result)) {
       return { continue: true, suppressOutput: true };
     }
+    if (!result || !Array.isArray((result as any).observations)) {
+      logger.warn('HOOK', 'File context query returned malformed body, skipping', { filePath });
+      return { continue: true, suppressOutput: true };
+    }
+    const data = result;
 
     if (!data.observations || data.observations.length === 0) {
       return { continue: true, suppressOutput: true };

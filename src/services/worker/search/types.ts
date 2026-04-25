@@ -103,8 +103,6 @@ export interface StrategySearchResult {
   results: SearchResults;
   /** Whether Chroma was used successfully */
   usedChroma: boolean;
-  /** Whether fallback was triggered */
-  fellBack: boolean;
   /** Strategy that produced the results */
   strategy: SearchStrategyHint;
 }

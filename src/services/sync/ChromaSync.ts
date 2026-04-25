@@ -549,9 +549,10 @@ export class ChromaSync {
    * Reads from SQLite and syncs in batches
    * @param projectOverride - If provided, backfill this project instead of this.project.
    *   Used by backfillAllProjects() to iterate projects without mutating instance state.
+   * @param storeOverride - If provided, use this SessionStore instead of creating a new one.
    * Throws error if backfill fails
    */
-  async ensureBackfilled(projectOverride?: string): Promise<void> {
+  async ensureBackfilled(projectOverride?: string, storeOverride?: SessionStore): Promise<void> {
     const backfillProject = projectOverride ?? this.project;
     logger.info('CHROMA_SYNC', 'Starting smart backfill', { project: backfillProject });
 
@@ -560,7 +561,7 @@ export class ChromaSync {
     // Fetch existing IDs from Chroma (fast, metadata only)
     const existing = await this.getExistingChromaIds(backfillProject);
 
-    const db = new SessionStore();
+    const db = storeOverride ?? new SessionStore();
 
     try {
       await this.runBackfillPipeline(db, backfillProject, existing);
@@ -568,7 +569,10 @@ export class ChromaSync {
       logger.error('CHROMA_SYNC', 'Backfill failed', { project: backfillProject }, error instanceof Error ? error : new Error(String(error)));
       throw new Error(`Backfill failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      db.close();
+      // Only close if we created it
+      if (!storeOverride) {
+        db.close();
+      }
     }
   }
 
@@ -861,8 +865,8 @@ export class ChromaSync {
    * with project scoped via metadata, matching how DatabaseManager and SearchManager operate.
    * Designed to be called fire-and-forget on worker startup.
    */
-  static async backfillAllProjects(): Promise<void> {
-    const db = new SessionStore();
+  static async backfillAllProjects(storeOverride?: SessionStore): Promise<void> {
+    const db = storeOverride ?? new SessionStore();
     const sync = new ChromaSync('claude-mem');
     try {
       const projects = db.db.prepare(
@@ -873,7 +877,7 @@ export class ChromaSync {
 
       for (const { project } of projects) {
         try {
-          await sync.ensureBackfilled(project);
+          await sync.ensureBackfilled(project, db);
         } catch (error) {
           if (error instanceof Error) {
             logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, {}, error);
@@ -885,7 +889,10 @@ export class ChromaSync {
       }
     } finally {
       await sync.close();
-      db.close();
+      // Only close if we created it
+      if (!storeOverride) {
+        db.close();
+      }
     }
   }
 
