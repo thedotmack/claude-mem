@@ -857,9 +857,19 @@ export class SessionRoutes extends BaseRouteHandler {
     // Only contentSessionId is truly required — Cursor and other platforms
     // may omit prompt/project in their payload (#838, #1049)
     const project = req.body.project || 'unknown';
-    let prompt = req.body.prompt || '[media prompt]';
+    const rawPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : undefined;
     const platformSource = normalizePlatformSource(req.body.platformSource);
     const customTitle = req.body.customTitle || undefined;
+
+    // Filter on the raw prompt before truncation / [media prompt] substitution
+    // so the check is independent of those transforms.
+    if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
+      logger.debug('HTTP', 'session-init: skipping internal protocol payload before session creation', { contentSessionId });
+      res.json({ skipped: true, reason: 'internal_protocol' });
+      return;
+    }
+
+    let prompt = rawPrompt || '[media prompt]';
 
     const promptByteLength = Buffer.byteLength(prompt, 'utf8');
     if (promptByteLength > MAX_USER_PROMPT_BYTES) {
@@ -883,12 +893,6 @@ export class SessionRoutes extends BaseRouteHandler {
       prompt_length: prompt?.length,
       customTitle
     });
-
-    if (isInternalProtocolPayload(prompt)) {
-      logger.debug('HTTP', 'session-init: skipping internal protocol payload before session creation', { contentSessionId });
-      res.json({ skipped: true, reason: 'internal_protocol' });
-      return;
-    }
 
     const store = this.dbManager.getSessionStore();
 

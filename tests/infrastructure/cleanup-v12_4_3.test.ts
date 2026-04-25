@@ -144,6 +144,22 @@ describe('runOneTimeV12_4_3Cleanup', () => {
     expect(survivingPending).toBe(0);
   });
 
+  it('preserves pending_messages when stuck count is below the threshold of 10', () => {
+    const dbPath = path.join(tmpDataDir, 'claude-mem.db');
+    seedDatabase(dbPath, { observerSessions: 0, stuckCount: 9 });
+
+    runOneTimeV12_4_3Cleanup(tmpDataDir);
+
+    const markerPath = path.join(tmpDataDir, '.cleanup-v12.4.3-applied');
+    const payload = JSON.parse(readFileSync(markerPath, 'utf8'));
+    expect(payload.counts.stuckPendingMessages).toBe(0);
+
+    const verify = new Database(dbPath, { readonly: true });
+    const survivingPending = (verify.prepare('SELECT COUNT(*) AS n FROM pending_messages').get() as { n: number }).n;
+    verify.close();
+    expect(survivingPending).toBe(9);
+  });
+
   it('is idempotent: a second invocation does no work and does not create a second backup', () => {
     const dbPath = path.join(tmpDataDir, 'claude-mem.db');
     seedDatabase(dbPath, { observerSessions: 1, stuckCount: 10 });

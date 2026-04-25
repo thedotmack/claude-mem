@@ -116,8 +116,12 @@ export function stripMemoryTagsFromPrompt(content: string): string {
  */
 const PROTOCOL_ONLY_TAGS = ['task-notification'] as const;
 
+// Negative lookahead in the body keeps a payload like
+// "<task-notification>x</task-notification> hi <task-notification>y</task-notification>"
+// from matching as a single outer block (greedy [\s\S]* would otherwise span
+// the middle user text and silently drop a real prompt).
 const PROTOCOL_ONLY_REGEX = new RegExp(
-  `^\\s*<(${PROTOCOL_ONLY_TAGS.join('|')})\\b[^>]*>[\\s\\S]*</\\1>\\s*$`,
+  `^\\s*<(${PROTOCOL_ONLY_TAGS.join('|')})\\b[^>]*>(?:(?!<\\1\\b|</\\1\\b)[\\s\\S])*</\\1>\\s*$`,
 );
 
 // Bounds the unanchored `[\s\S]*` body to keep a malformed 1MB+ payload that

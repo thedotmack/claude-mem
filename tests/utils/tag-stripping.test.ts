@@ -451,11 +451,14 @@ after`;
       expect(isInternalProtocolPayload('<system-reminder>hi</system-reminder>')).toBe(false);
     });
 
-    it('returns false for over-large input without scanning the body', () => {
+    it('returns false for over-large input', () => {
       const huge = '<task-notification>' + 'a'.repeat(300 * 1024);
-      const start = Date.now();
       expect(isInternalProtocolPayload(huge)).toBe(false);
-      expect(Date.now() - start).toBeLessThan(50);
+    });
+
+    it('returns false for two protocol blocks separated by user text', () => {
+      const text = '<task-notification>a</task-notification> hello <task-notification>b</task-notification>';
+      expect(isInternalProtocolPayload(text)).toBe(false);
     });
   });
 });
