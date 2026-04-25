@@ -52,6 +52,7 @@ import {
   spawnDaemon,
   touchPidFile
 } from './infrastructure/ProcessManager.js';
+import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
 import {
   isPortInUse,
   waitForHealth,
@@ -452,6 +453,11 @@ export class WorkerService implements WorkerRef {
       } catch (err) {
         logger.warn('QUEUE', 'Startup GC for failed pending_messages rows failed', {}, err instanceof Error ? err : undefined);
       }
+
+      // One-time v12.4.3 pollution cleanup. Runs AFTER migrations have applied
+      // and BEFORE backfillAllProjects so the rebuilt Chroma sees a clean SQLite.
+      logger.info('WORKER', 'Checking for one-time v12.4.3 pollution cleanup...');
+      runOneTimeV12_4_3Cleanup();
 
       // Initialize search services
       logger.info('WORKER', 'Initializing search services...');
