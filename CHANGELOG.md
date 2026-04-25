@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.4.1] - 2026-04-25
+
+## perf(chroma): Cache backfill watermarks to skip per-restart Chroma scans
+
+Worker restarts were re-scanning Chroma's full metadata for every project on every boot to determine which sqlite ids were already embedded. With ~253 projects and ~92k embeddings, this pegged `chroma-mcp` at 100–422% CPU on each spawn.
+
+### What changed
+- New `~/.claude-mem/chroma-sync-state.json` watermark cache — per-project highest synced sqlite_id for observations, summaries, and prompts.
+- Backfill SQL changed from `id NOT IN (huge list)` to `id > watermark`.
+- Live `syncObservation` / `syncSummary` / `syncUserPrompt` bump the watermark on success.
+- One-time bootstrap derives initial watermarks from a single Chroma scan if the state file is missing — after that, Chroma metadata is never scanned again on startup.
+- Watermark advances per batch, so partial-failure runs resume cleanly.
+
+### Result
+- Chroma CPU on worker restart: **422% → 0%**.
+- State file size for 253 projects: **~3.7 KB**.
+- Backfill startup time: **seconds → near-instant** after bootstrap.
+
 ## [12.3.9] - 2026-04-22
 
 ## Highlights
