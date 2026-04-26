@@ -39,10 +39,10 @@ describe('GeminiCliHooksInstaller - event mapping', () => {
     expect(src).toContain("'SessionStart': 'context'");
   });
 
-  it('should map SessionEnd to session-complete (unchanged)', async () => {
+  it('should not map SessionEnd (worker self-completes; /clear must not drain queue)', async () => {
     const { readFileSync } = await import('fs');
     const src = readFileSync('src/services/integrations/GeminiCliHooksInstaller.ts', 'utf-8');
-    expect(src).toContain("'SessionEnd': 'session-complete'");
+    expect(src).not.toContain("'SessionEnd':");
   });
 });
 

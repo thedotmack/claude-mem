@@ -25,15 +25,14 @@ export class SessionCompletionHandler {
    * Finalize a session's persistent + broadcast state.
    *
    * Idempotent — safe to call twice. The worker calls this from the SDK-agent
-   * generator's finally-block (primary path), and the HTTP route
-   * POST /api/sessions/complete also calls it as a backward-compat shim.
-   * If the session is already marked completed in the DB, this is a no-op.
+   * generator's finally-block when work naturally completes. If the session
+   * is already marked completed in the DB, this is a no-op.
    *
    * This method intentionally does NOT touch the in-memory SessionManager map.
    * The generator's finally-block handles in-memory removal via
    * `removeSessionImmediate` (which cannot `await` the generator it's running
-   * inside); the HTTP route layers `deleteSession` on top for the case where
-   * the generator is still running and needs to be aborted.
+   * inside); explicit-delete callers layer `deleteSession` on top for the case
+   * where the generator is still running and needs to be aborted.
    */
   finalizeSession(sessionDbId: number): void {
     const sessionStore = this.dbManager.getSessionStore();
@@ -76,13 +75,11 @@ export class SessionCompletionHandler {
   }
 
   /**
-   * Complete session by database ID
-   * Used by DELETE /api/sessions/:id and POST /api/sessions/:id/complete
+   * Complete session by database ID. Used by explicit user-initiated deletion
+   * via DELETE /api/sessions/:id and POST /api/sessions/:id/complete (viewer UI).
    *
    * Calls `finalizeSession` (DB mark + drain + broadcast, idempotent) and then
-   * aborts any running SDK agent via `sessionManager.deleteSession`. The
-   * HTTP route wraps this so older callers that still POST to
-   * /api/sessions/complete keep working even after the worker self-cleans.
+   * aborts any running SDK agent via `sessionManager.deleteSession`.
    */
   async completeByDbId(sessionDbId: number): Promise<void> {
     // Finalize first so the DB and broadcast state are consistent even if

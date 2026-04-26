@@ -806,11 +806,8 @@ export class WorkerService implements WorkerRef {
         } else {
           // Successful completion with no pending work — finalize then drop
           // in-memory state. finalizeSession flips sdk_sessions.status to
-          // 'completed', drains orphaned pendings, broadcasts; idempotent so
-          // the later POST /api/sessions/complete from the Stop hook is a
-          // no-op. Without this, hooks-disabled installs (and any session
-          // whose Stop hook fails before /api/sessions/complete) leave the
-          // DB row permanently 'active'.
+          // 'completed', drains orphaned pendings, broadcasts. This is the
+          // sole completion path now that the SessionEnd hook shim is gone.
           session.restartGuard?.recordSuccess();
           session.consecutiveRestarts = 0;
           this.completionHandler.finalizeSession(session.sessionDbId);
@@ -1225,7 +1222,7 @@ async function main() {
       if (!platform || !event) {
         console.error('Usage: claude-mem hook <platform> <event>');
         console.error('Platforms: claude-code, cursor, gemini-cli, raw');
-        console.error('Events: context, session-init, observation, summarize, session-complete, user-message');
+        console.error('Events: context, session-init, observation, summarize, user-message');
         process.exit(1);
       }
 

@@ -1,7 +1,6 @@
 import path from 'path';
 import { sessionInitHandler } from '../../cli/handlers/session-init.js';
 import { fileEditHandler } from '../../cli/handlers/file-edit.js';
-import { sessionCompleteHandler } from '../../cli/handlers/session-complete.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -339,11 +338,6 @@ export class TranscriptEventProcessor {
 
   private async handleSessionEnd(session: SessionState, watch: WatchTarget): Promise<void> {
     await this.queueSummary(session);
-    await sessionCompleteHandler.execute({
-      sessionId: session.sessionId,
-      cwd: session.cwd ?? process.cwd(),
-      platform: session.platformSource
-    });
     await this.updateContext(session, watch);
     session.pendingTools?.clear();
     const key = this.getSessionKey(watch, session.sessionId);

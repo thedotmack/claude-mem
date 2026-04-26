@@ -18,7 +18,7 @@ describe('Hook Lifecycle - Event Handlers', () => {
       const { getEventHandler } = await import('../src/cli/handlers/index.js');
       const recognizedTypes = [
         'context', 'session-init', 'observation',
-        'summarize', 'session-complete', 'user-message', 'file-edit'
+        'summarize', 'user-message', 'file-edit'
       ];
       for (const type of recognizedTypes) {
         const handler = getEventHandler(type);
@@ -42,15 +42,6 @@ describe('Hook Lifecycle - Event Handlers', () => {
       expect(result.exitCode).toBe(0);
     });
 
-    it('should include session-complete as a recognized event type (#984)', async () => {
-      const { getEventHandler } = await import('../src/cli/handlers/index.js');
-      const handler = getEventHandler('session-complete');
-      // session-complete should NOT be the no-op handler
-      // We can verify this by checking it's not the same as an unknown type handler
-      expect(handler).toBeDefined();
-      // The real handler has different behavior than the no-op
-      // (it tries to call the worker, while no-op just returns immediately)
-    });
   });
 });
 
