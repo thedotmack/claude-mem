@@ -1161,8 +1161,12 @@ async function main() {
         process.exit(1);
       }
       removePidFile();
-      spawnDaemon(__filename, port);
-      logger.info('SYSTEM', 'Worker restart spawned');
+      const restartPid = spawnDaemon(__filename, port);
+      if (restartPid === undefined) {
+        console.error('Failed to spawn worker daemon during restart.');
+        process.exit(1);
+      }
+      logger.info('SYSTEM', 'Worker restart spawned', { pid: restartPid });
       process.exit(0);
       break;
     }

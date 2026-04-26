@@ -45,8 +45,11 @@ export async function shutdownWorkerAndWait(
         signal: AbortSignal.timeout(1000),
       });
       // Health endpoint still responding — worker is still alive, keep waiting.
-    } catch {
-      // Connection refused = worker is gone (expected shutdown behavior).
+    } catch (err) {
+      // AbortError = health endpoint timed out (worker still accepting
+      // connections but slow). Keep polling. Any other error
+      // (ECONNREFUSED, ECONNRESET) means the worker is gone.
+      if (err instanceof Error && err.name === 'AbortError') continue;
       return { workerWasRunning, confirmedStopped: true };
     }
   }
