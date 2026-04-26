@@ -7,7 +7,7 @@
  * Plugin hooks:
  * - tool.execute.after: Captures tool execution observations
  * - Bus events: session.created, message.updated, session.compacted,
- *   file.edited, session.deleted
+ *   file.edited, session.deleted (in-memory cleanup only; worker self-completes)
  *
  * Custom tool:
  * - claude_mem_search: Search memory database from within OpenCode
