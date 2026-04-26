@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.4.5] - 2026-04-26
+
+## Bug Fixes
+
+- **Fix observation persistence on fresh installs (#2139)**: `SessionStore` was missing migration 28's column additions, so freshly created `pending_messages` tables had no `tool_use_id` or `worker_pid` columns. Every queue claim and observation insert failed silently with "no such column" errors and nothing reached memory. Added `addPendingMessagesToolUseIdAndWorkerPidColumns` mirror in `SessionStore.ts` (matches the existing `addObservationSubagentColumns` / `addObservationsUniqueContentHashIndex` mirror pattern). Already-broken DBs at "v29 with no v28 columns" self-heal on next worker boot via column-existence guards. Dedup DELETE + UNIQUE index creation are now wrapped in a transaction matching the v29 mirror precedent.
+
+Thanks to @drdah123 for the precise diagnosis and reproduction in the issue report.
+
 ## [12.4.4] - 2026-04-26
 
 ## Bug fix: stop draining the observation queue on /clear
