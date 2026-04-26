@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.4.7] - 2026-04-26
+
+## Cynical deletion + review fixes
+
+This release wraps up the cynical-deletion sweep (PR #2141) — closing 27 issues by removing two anti-patterns that were breeding bugs:
+
+- **Defenders** (orphan cleanup, duplicate liveness probes, restart-port-steal logic) replaced with fail-fast or single-source paths.
+- **Tolerators** (silent JSON drops, drifted SSE/SQL filters, passthrough Zod schemas) replaced with strict boundaries.
+
+### Highlights
+- Multi-account isolation via `CLAUDE_MEM_DATA_DIR` + per-UID worker port (`37700 + uid % 100`), with `CLAUDE_MEM_WORKER_PORT` override (#2101)
+- New `CLAUDE_MEM_INTERNAL=1` trust boundary replaces cwd-based observer-session detection
+- Shared `shouldEmitProjectRow` predicate keeps SSE broadcast and pagination filters in sync
+- Pinned `chroma-mcp` to 0.2.6 for reproducible installs
+- Install/uninstall: shared `shutdown-helper` releases file locks before overwrite/delete (#2106)
+- Migration 30: `observations.metadata` column added (#2116)
+- Proxy env vars stripped from spawned subprocesses to prevent user proxy config leaking into AI API calls
+
+### Review-comment fixes (post-PR)
+- `worker-service` restart now exits 1 with error if `spawnDaemon` fails (Greptile P1)
+- `shutdown-helper` distinguishes `AbortError` (slow worker) from connection-refused (gone) (Greptile P2)
+- `hooks.json` `$HOME` cache lookup quoted to support paths with spaces
+- `timeline-report` SKILL works on Windows (no `process.getuid()` requirement)
+- `opencode-plugin` validates `CLAUDE_MEM_WORKER_PORT` before use
+- `uninstall` only strips alias lines, not function declarations
+- `MemoryRoutes` trims whitespace-only `project` before precedence resolution
+- Migration 21 preserves `metadata` column when rebuilding observations table
+
+### Closes
+#2087, #2089, #2094, #2099, #2101, #2103, #2106, #2116, #2139, #2140, and 17 more (see PR #2141).
+
 ## [12.4.5] - 2026-04-26
 
 ## Bug Fixes
