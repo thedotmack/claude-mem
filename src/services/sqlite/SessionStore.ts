@@ -73,6 +73,7 @@ export class SessionStore {
     this.addObservationModelColumns();
     this.ensureMergedIntoProjectColumns();
     this.addObservationSubagentColumns();
+    this.addPendingMessagesToolUseIdAndWorkerPidColumns();
     this.addObservationsUniqueContentHashIndex();
   }
 
@@ -1036,6 +1037,71 @@ export class SessionStore {
     if (!applied) {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(27, new Date().toISOString());
     }
+  }
+
+  /**
+   * Add tool_use_id and worker_pid columns + indexes to pending_messages (migration 28).
+   *
+   * Mirrors MigrationRunner.rebuildPendingMessagesForSelfHealingClaim so bundled
+   * artifacts that embed SessionStore (e.g. worker-service.cjs, context-generator.cjs)
+   * stay schema-consistent. Without this, every queue-claim cycle fails with
+   * "no such column: worker_pid" and every observation insert fails with
+   * "table pending_messages has no column named tool_use_id" (issue #2139).
+   *
+   * Uses ALTER TABLE rather than the full table rebuild from MigrationRunner because:
+   *   - It's safe on populated DBs that already reached v29 without ever applying v28.
+   *   - The legacy stale-reset epoch column the rebuild dropped never existed in
+   *     pending_messages tables created by the SessionStore migration path.
+   *
+   * Column existence is checked directly — schema_versions cannot be trusted because
+   * affected DBs may already have v29 recorded with neither column present (#2139).
+   */
+  private addPendingMessagesToolUseIdAndWorkerPidColumns(): void {
+    // pending_messages may not exist yet on freshly-created DBs at this point in
+    // the migration order — createPendingMessagesTable (v16) has already run by
+    // the time we get here, so this guard is defensive only.
+    const tables = this.db.query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'"
+    ).all() as TableNameRow[];
+    if (tables.length === 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
+      return;
+    }
+
+    const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    const hasToolUseId = cols.some(c => c.name === 'tool_use_id');
+    const hasWorkerPid = cols.some(c => c.name === 'worker_pid');
+
+    if (!hasToolUseId) {
+      this.db.run('ALTER TABLE pending_messages ADD COLUMN tool_use_id TEXT');
+    }
+    if (!hasWorkerPid) {
+      this.db.run('ALTER TABLE pending_messages ADD COLUMN worker_pid INTEGER');
+    }
+
+    // Indexes are idempotent — match runner.ts:1117-1120 + 1134-1138.
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_worker_pid ON pending_messages(worker_pid)');
+
+    // The UNIQUE partial index requires no duplicate (content_session_id, tool_use_id)
+    // pairs. Dedup before creating it (matches runner.ts:1124-1132). Safe to run
+    // unconditionally — if tool_use_id was just added, every row has it as NULL
+    // and the WHERE filter excludes them.
+    this.db.run(`
+      DELETE FROM pending_messages
+       WHERE tool_use_id IS NOT NULL
+         AND id NOT IN (
+           SELECT MIN(id) FROM pending_messages
+            WHERE tool_use_id IS NOT NULL
+            GROUP BY content_session_id, tool_use_id
+         )
+    `);
+    this.db.run(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
+      ON pending_messages(content_session_id, tool_use_id)
+      WHERE tool_use_id IS NOT NULL
+    `);
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
   }
 
   /**
