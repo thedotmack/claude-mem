@@ -56,6 +56,7 @@ import {
 } from '../utils/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 
 // ---------------------------------------------------------------------------
@@ -273,9 +274,9 @@ async function promptForIDESelection(): Promise<string[]> {
   const result = await p.multiselect({
     message: 'Which IDEs do you use?',
     options,
-    initialValues: detected
-      .filter((ide) => ide.supported)
-      .map((ide) => ide.id),
+    // No pre-selection — users must explicitly opt in to each IDE so we
+    // never wire up an integration the user did not actually request (#2106).
+    initialValues: [],
     required: true,
   });
 
@@ -459,6 +460,19 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   const needsManualInstall = selectedIDEs.some((id) => id !== 'claude-code');
 
   if (needsManualInstall) {
+    // Shut down any running worker FIRST so it isn't holding open file
+    // handles when we overwrite plugin files (#2106 item 3). Best-effort:
+    // helper swallows its own errors when no worker is running.
+    const installPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
+    try {
+      const result = await shutdownWorkerAndWait(installPort, 10000);
+      if (result.workerWasRunning) {
+        log.info('Stopped running worker before overwrite.');
+      }
+    } catch (error: unknown) {
+      console.warn('[install] Pre-overwrite worker shutdown failed:', error instanceof Error ? error.message : String(error));
+    }
+
     await runTasks([
       {
         title: 'Copying plugin files',
@@ -547,11 +561,43 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   // takes priority and the per-UID default (37700 + uid % 100) is used
   // otherwise. Required for multi-account isolation (#2101).
   const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
+
+  // Probe the actually-bound port (#2106 item 6). smart-install just
+  // started the worker; if it's reachable we report the real port the
+  // worker bound to. If the probe fails, the worker is still spinning
+  // up — say so plainly and exit cleanly. Don't loop, don't block.
+  let actualPort: number | string = workerPort;
+  let workerReady = false;
+  try {
+    const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (healthResponse.ok) {
+      workerReady = true;
+      try {
+        const body = await healthResponse.json() as { port?: number | string };
+        if (body && (typeof body.port === 'number' || typeof body.port === 'string')) {
+          actualPort = body.port;
+        }
+      } catch {
+        // Health endpoint returned non-JSON — keep using the requested port.
+      }
+    }
+  } catch {
+    // Health probe failed — worker may still be starting.
+  }
+
+  const portLine = workerReady
+    ? `Worker port: ${pc.cyan(String(actualPort))}`
+    : `Worker port: ${pc.cyan(String(workerPort))} (worker not yet ready -- still starting up; check ${pc.bold('claude-mem status')} later)`;
+
   const nextSteps = [
     'Open Claude Code and start a conversation -- memory is automatic!',
-    `View your memories: ${pc.underline(`http://localhost:${workerPort}`)}`,
+    portLine,
+    `View your memories: ${pc.underline(`http://localhost:${actualPort}`)}`,
     `Search past work: use ${pc.bold('/mem-search')} in Claude Code`,
     `Start worker: ${pc.bold('npx claude-mem start')}`,
+    `Note: Close all Claude Code sessions before uninstalling, or ${pc.cyan('~/.claude-mem')} will be recreated by active hooks.`,
   ];
 
   if (isInteractive) {
