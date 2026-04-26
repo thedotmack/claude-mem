@@ -103,7 +103,10 @@ interface SessionDeletedEvent {
  */
 function resolveWorkerPort(): string {
   const fromEnv = process.env.CLAUDE_MEM_WORKER_PORT;
-  if (fromEnv) return fromEnv;
+  const parsed = fromEnv ? Number.parseInt(fromEnv.trim(), 10) : NaN;
+  if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535) {
+    return String(parsed);
+  }
   const uid = typeof process.getuid === "function" ? process.getuid() : 77;
   return String(37700 + (uid % 100));
 }

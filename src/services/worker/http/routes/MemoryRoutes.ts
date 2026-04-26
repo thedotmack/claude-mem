@@ -57,10 +57,13 @@ export class MemoryRoutes extends BaseRouteHandler {
    */
   private handleSaveMemory = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { text, title, project, metadata } = req.body as z.infer<typeof saveMemorySchema>;
+    const explicitProject = typeof project === 'string' && project.trim()
+      ? project.trim()
+      : undefined;
     const metadataProject = typeof metadata?.project === 'string' && metadata.project.trim()
       ? metadata.project.trim()
       : undefined;
-    const targetProject = project || metadataProject || this.defaultProject;
+    const targetProject = explicitProject || metadataProject || this.defaultProject;
 
     const sessionStore = this.dbManager.getSessionStore();
     const chromaSync = this.dbManager.getChromaSync();

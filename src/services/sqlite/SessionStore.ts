@@ -716,6 +716,14 @@ export class SessionStore {
     // Clean up leftover temp table from a previously-crashed run
     this.db.run('DROP TABLE IF EXISTS observations_new');
 
+    // If the live observations table already has metadata (added in v30 or
+    // by an older bundled artifact that ran v30 before v21 was recorded),
+    // preserve it so this rebuild doesn't silently drop the column's data.
+    const observationsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const observationsHasMetadata = observationsCols.some(c => c.name === 'metadata');
+    const metadataColumnSQL = observationsHasMetadata ? ',\n        metadata TEXT' : '';
+    const metadataSelectSQL = observationsHasMetadata ? ', metadata' : '';
+
     const observationsNewSQL = `
       CREATE TABLE observations_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -733,7 +741,7 @@ export class SessionStore {
         prompt_number INTEGER,
         discovery_tokens INTEGER DEFAULT 0,
         created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
+        created_at_epoch INTEGER NOT NULL${metadataColumnSQL},
         FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
       )
     `;
@@ -741,7 +749,7 @@ export class SessionStore {
       INSERT INTO observations_new
       SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
              narrative, concepts, files_read, files_modified, prompt_number,
-             discovery_tokens, created_at, created_at_epoch
+             discovery_tokens, created_at, created_at_epoch${metadataSelectSQL}
       FROM observations
     `;
     const observationsIndexesSQL = `

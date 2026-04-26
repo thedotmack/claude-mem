@@ -79,7 +79,10 @@ function stripLegacyClaudeMemAlias(): void {
     join(home, 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1'),
   ];
 
-  const aliasLineRegex = /^\s*(alias\s+claude-mem\s*=|function\s+claude-mem\b)/;
+  // Only strip simple aliases. A function declaration would span multiple
+  // lines and can't be safely removed by a line filter — leave it for the
+  // user to remove manually.
+  const aliasLineRegex = /^\s*alias\s+claude-mem\s*=/;
 
   for (const filePath of candidateFiles) {
     if (!existsSync(filePath)) continue;

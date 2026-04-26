@@ -25,7 +25,7 @@ The claude-mem worker must be running. The project must have claude-mem observat
 **Resolve the worker port** (do this once at the start and reuse `$WORKER_PORT` in every curl call below):
 
 ```bash
-WORKER_PORT="${CLAUDE_MEM_WORKER_PORT:-$(node -e "const fs=require('fs'),p=require('path'),os=require('os');try{const s=JSON.parse(fs.readFileSync(p.join(os.homedir(),'.claude-mem','settings.json'),'utf-8'));process.stdout.write(String(s.CLAUDE_MEM_WORKER_PORT||(37700+(process.getuid()%100))));}catch{process.stdout.write(String(37700+(process.getuid()%100)));}" 2>/dev/null)}"
+WORKER_PORT="${CLAUDE_MEM_WORKER_PORT:-$(node -e "const fs=require('fs'),p=require('path'),os=require('os');const uid=(typeof process.getuid==='function'?process.getuid():77);const fallback=String(37700+(uid%100));try{const s=JSON.parse(fs.readFileSync(p.join(os.homedir(),'.claude-mem','settings.json'),'utf-8'));process.stdout.write(String(s.CLAUDE_MEM_WORKER_PORT||fallback));}catch{process.stdout.write(fallback);}" 2>/dev/null)}"
 ```
 
 This honors `CLAUDE_MEM_WORKER_PORT` env, then `~/.claude-mem/settings.json`, then falls back to the per-UID default `37700 + (uid % 100)` — matching how the worker itself picks its port. Required for multi-account setups (#2101) and any user who has overridden the default port (#2103).

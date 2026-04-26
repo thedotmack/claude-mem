@@ -10,6 +10,7 @@ import { Readable } from 'stream';
 import { readJsonFromStdin } from '../../src/cli/stdin-reader.js';
 
 const realStdin = process.stdin;
+const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
 
 function installFakeStdin(payload: string): void {
   // Build a Readable that emits the payload, then ends — matches the
@@ -17,11 +18,20 @@ function installFakeStdin(payload: string): void {
   const fake = Readable.from([payload], { objectMode: false }) as unknown as NodeJS.ReadStream;
   // The reader checks isTTY (must be falsy) and `.readable` access.
   Object.defineProperty(fake, 'isTTY', { value: false, configurable: true });
-  Object.defineProperty(process, 'stdin', { value: fake, configurable: true });
+  Object.defineProperty(process, 'stdin', {
+    configurable: true,
+    enumerable: realStdinDescriptor?.enumerable ?? true,
+    writable: true,
+    value: fake,
+  });
 }
 
 afterEach(() => {
-  Object.defineProperty(process, 'stdin', { value: realStdin, configurable: true });
+  if (realStdinDescriptor) {
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+  } else {
+    Object.defineProperty(process, 'stdin', { value: realStdin, configurable: true, writable: true });
+  }
 });
 
 describe('readJsonFromStdin — onEnd contract (#2089)', () => {
