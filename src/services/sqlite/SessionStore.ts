@@ -1079,29 +1079,40 @@ export class SessionStore {
       this.db.run('ALTER TABLE pending_messages ADD COLUMN worker_pid INTEGER');
     }
 
-    // Indexes are idempotent — match runner.ts:1117-1120 + 1134-1138.
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_worker_pid ON pending_messages(worker_pid)');
+    // Wrap dedup DELETE + UNIQUE index creation + version-record in a transaction
+    // so a crash mid-flight cannot leave duplicates removed without v28 recorded.
+    // Matches addObservationsUniqueContentHashIndex (v29) at line 1127 and
+    // runner.ts rebuildPendingMessagesForSelfHealingClaim (v28).
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      // Indexes are idempotent — match runner.ts:1117-1120 + 1134-1138.
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_worker_pid ON pending_messages(worker_pid)');
 
-    // The UNIQUE partial index requires no duplicate (content_session_id, tool_use_id)
-    // pairs. Dedup before creating it (matches runner.ts:1124-1132). Safe to run
-    // unconditionally — if tool_use_id was just added, every row has it as NULL
-    // and the WHERE filter excludes them.
-    this.db.run(`
-      DELETE FROM pending_messages
-       WHERE tool_use_id IS NOT NULL
-         AND id NOT IN (
-           SELECT MIN(id) FROM pending_messages
-            WHERE tool_use_id IS NOT NULL
-            GROUP BY content_session_id, tool_use_id
-         )
-    `);
-    this.db.run(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
-      ON pending_messages(content_session_id, tool_use_id)
-      WHERE tool_use_id IS NOT NULL
-    `);
+      // The UNIQUE partial index requires no duplicate (content_session_id, tool_use_id)
+      // pairs. Dedup before creating it (matches runner.ts:1124-1132). Safe to run
+      // unconditionally — if tool_use_id was just added, every row has it as NULL
+      // and the WHERE filter excludes them.
+      this.db.run(`
+        DELETE FROM pending_messages
+         WHERE tool_use_id IS NOT NULL
+           AND id NOT IN (
+             SELECT MIN(id) FROM pending_messages
+              WHERE tool_use_id IS NOT NULL
+              GROUP BY content_session_id, tool_use_id
+           )
+      `);
+      this.db.run(`
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
+        ON pending_messages(content_session_id, tool_use_id)
+        WHERE tool_use_id IS NOT NULL
+      `);
 
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
+      this.db.run('COMMIT');
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      throw error;
+    }
   }
 
   /**
