@@ -1279,6 +1279,26 @@ async function main() {
       process.exit(0);
     }
 
+    case 'cleanup': {
+      // CLI surface for the v12.4.3 pollution cleanup. Shares its scan logic
+      // with the auto-run-on-startup path so --dry-run reports counts that
+      // exactly match what the next startup would delete. (#2126 item 5)
+      const dryRun = process.argv.includes('--dry-run');
+      const counts = runOneTimeV12_4_3Cleanup(undefined, { dryRun });
+      const tag = dryRun ? '(dry-run, no changes made)' : '(applied)';
+      console.log(`\nv12.4.3 cleanup ${tag}`);
+      if (counts) {
+        console.log(`  Observer sessions:        ${counts.observerSessions}`);
+        console.log(`  Observer cascade rows:    ${counts.observerCascadeRows}`);
+        console.log(`  Stuck pending_messages:   ${counts.stuckPendingMessages}`);
+      } else if (dryRun) {
+        console.log('  Scan failed — see worker log for details.');
+      } else {
+        console.log('  Already applied (marker present) or skipped.');
+      }
+      process.exit(0);
+    }
+
     case '--daemon':
     default: {
       // GUARD 1: Refuse to start if another worker is already alive.
