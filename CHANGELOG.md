@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.4.4] - 2026-04-26
+
+## Bug fix: stop draining the observation queue on /clear
+
+When users typed `/clear` in Claude Code (or logged out, exited, or hit `prompt_input_exit`), every still-pending observation in the worker queue was being marked `abandoned` and never processed. The same shim was wired across Claude Code, Gemini CLI, the transcripts processor, OpenCode plugin, and OpenClaw — five surfaces, all draining the queue on what should be benign session-end signals.
+
+This release removes the `SessionEnd → session-complete` hook entirely. The worker self-completes via its SDK-agent generator's finally-block, so no external completion call is needed. Pending observations now finish processing naturally instead of being abandoned.
+
+Explicit user-initiated session deletion (via the viewer UI's `DELETE /api/sessions/:id`) still drains the queue — that's the only path that should.
+
+### What changed
+
+- Removed `SessionEnd` hook block from `plugin/hooks/hooks.json`
+- Removed `POST /api/sessions/complete` route + Zod schema in `SessionRoutes.ts`
+- Deleted `src/cli/handlers/session-complete.ts` and its registry entry
+- Removed the call from `src/services/transcripts/processor.ts`
+- Removed the call from the OpenCode plugin's `session.deleted` handler
+- Removed the Gemini CLI installer's `SessionEnd → session-complete` mapping
+- Removed `scheduleSessionComplete`, `pendingCompletionTimers`, and `completionDelayMs` from OpenClaw
+
+### Background
+
+This bug had been quietly draining queues since **November 7, 2025** (~6 months). The wiring crept in as a "cleanup hook stops the spinner" side effect (#4416), got rationalized as canonical architecture (#6682, #14793), and survived multiple refactors that preserved it instead of questioning it. Full timeline in PR #2136.
+
 ## [12.4.3] - 2026-04-25
 
 One-time pollution cleanup migration plus the v12.4.1 / v12.4.2 ship-blocker fixes folded into a single release.
