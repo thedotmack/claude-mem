@@ -75,6 +75,7 @@ export class SessionStore {
     this.addObservationSubagentColumns();
     this.addPendingMessagesToolUseIdAndWorkerPidColumns();
     this.addObservationsUniqueContentHashIndex();
+    this.addObservationsMetadataColumn();
   }
 
   /**
@@ -1157,6 +1158,29 @@ export class SessionStore {
   }
 
   /**
+   * Add metadata TEXT column to observations (migration 30).
+   *
+   * Mirrors MigrationRunner.addObservationsMetadataColumn so bundled artifacts
+   * that embed SessionStore (e.g. worker-service.cjs, context-generator.cjs)
+   * stay schema-consistent. Without this, INSERT … (..., metadata, ...) raises
+   * "table observations has no column named metadata" and POST /api/memory/save
+   * starts failing on every call once it begins persisting metadata (#2116).
+   *
+   * Idempotent via PRAGMA table_info guard.
+   */
+  private addObservationsMetadataColumn(): void {
+    const cols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasColumn = cols.some(c => c.name === 'metadata');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE observations ADD COLUMN metadata TEXT');
+      logger.debug('DB', 'Added metadata column to observations table (#2116)');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(30, new Date().toISOString());
+  }
+
+  /**
    * Update the memory session ID for a session
    * Called by SDKAgent when it captures the session ID from the first SDK message
    * Also used to RESET to null on stale resume failures (worker-service.ts)
@@ -2009,6 +2033,9 @@ export class SessionStore {
       files_modified: string[];
       agent_type?: string | null;
       agent_id?: string | null;
+      // Caller-supplied JSON metadata, stored verbatim in the metadata column (#2116).
+      // Pre-stringified by the caller so we don't double-encode an already-JSON value.
+      metadata?: string | null;
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
@@ -2027,8 +2054,8 @@ export class SessionStore {
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
        files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-       generated_by_model)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       generated_by_model, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(memory_session_id, content_hash) DO NOTHING
       RETURNING id, created_at_epoch
     `);
@@ -2051,7 +2078,8 @@ export class SessionStore {
       contentHash,
       timestampIso,
       timestampEpoch,
-      generatedByModel || null
+      generatedByModel || null,
+      observation.metadata ?? null
     ) as { id: number; created_at_epoch: number } | null;
 
     if (inserted) {

@@ -13,11 +13,22 @@ import { logger } from '../../../../utils/logger.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 
 // Plan 06 Phase 3 — per-route Zod schema.
+//
+// `metadata` is an arbitrary JSON object the caller can use to attach
+// integration-specific provenance (e.g. obsidian_note, claude_mem_version,
+// custom_key). It is stored verbatim in the observations.metadata column
+// (migration 30) — no schema enforcement on its keys (#2116).
+//
+// `metadata.project`, when present and the top-level `project` is omitted,
+// is honored as the project assignment. This lets integrating plugins file
+// observations under a project other than their own without having to know
+// the top-level field name.
 const saveMemorySchema = z.object({
   text: z.string().trim().min(1),
   title: z.string().optional(),
   project: z.string().optional(),
-}).passthrough();
+  metadata: z.record(z.string(), z.unknown()).optional(),
+}).strict();
 
 export class MemoryRoutes extends BaseRouteHandler {
   constructor(
@@ -33,11 +44,23 @@ export class MemoryRoutes extends BaseRouteHandler {
 
   /**
    * POST /api/memory/save - Save a manual memory/observation
-   * Body: { text: string, title?: string, project?: string }
+   * Body: {
+   *   text: string,
+   *   title?: string,
+   *   project?: string,
+   *   metadata?: Record<string, unknown>  // arbitrary JSON, persisted verbatim (#2116)
+   * }
+   *
+   * Project resolution order: top-level `project` → `metadata.project` (string)
+   * → this.defaultProject. Unknown top-level fields are now rejected (400) —
+   * `.strict()` replaced `.passthrough()` so silent drops can't recur.
    */
   private handleSaveMemory = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { text, title, project } = req.body as z.infer<typeof saveMemorySchema>;
-    const targetProject = project || this.defaultProject;
+    const { text, title, project, metadata } = req.body as z.infer<typeof saveMemorySchema>;
+    const metadataProject = typeof metadata?.project === 'string' && metadata.project.trim()
+      ? metadata.project.trim()
+      : undefined;
+    const targetProject = project || metadataProject || this.defaultProject;
 
     const sessionStore = this.dbManager.getSessionStore();
     const chromaSync = this.dbManager.getChromaSync();
@@ -54,7 +77,10 @@ export class MemoryRoutes extends BaseRouteHandler {
       narrative: text,
       concepts: [] as string[],
       files_read: [] as string[],
-      files_modified: [] as string[]
+      files_modified: [] as string[],
+      // Stringify here so the storage layer doesn't need to know about JSON shape.
+      // Preserved verbatim, including nested objects.
+      metadata: metadata ? JSON.stringify(metadata) : null,
     };
 
     // 3. Store to SQLite
