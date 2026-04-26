@@ -449,6 +449,10 @@ export class SearchRoutes extends BaseRouteHandler {
    * GET /api/search/help
    */
   private handleSearchHelp = this.wrapHandler((req: Request, res: Response): void => {
+    // Use the actual host:port the request came in on so example URLs always
+    // round-trip back to this same worker — matters for multi-account / non-
+    // default-port setups (#2101, #2103).
+    const baseUrl = `http://${req.headers.host ?? 'localhost'}`;
     res.json({
       title: 'Claude-Mem Search API',
       description: 'HTTP API for searching persistent memory',
@@ -551,10 +555,10 @@ export class SearchRoutes extends BaseRouteHandler {
         }
       ],
       examples: [
-        'curl "http://localhost:37777/api/search/observations?query=authentication&limit=5"',
-        'curl "http://localhost:37777/api/search/by-type?type=bugfix&limit=10"',
-        'curl "http://localhost:37777/api/context/recent?project=claude-mem&limit=3"',
-        'curl "http://localhost:37777/api/context/timeline?anchor=123&depth_before=5&depth_after=5"'
+        `curl "${baseUrl}/api/search/observations?query=authentication&limit=5"`,
+        `curl "${baseUrl}/api/search/by-type?type=bugfix&limit=10"`,
+        `curl "${baseUrl}/api/context/recent?project=claude-mem&limit=3"`,
+        `curl "${baseUrl}/api/context/timeline?anchor=123&depth_before=5&depth_after=5"`
       ]
     });
   });

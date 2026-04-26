@@ -55,7 +55,8 @@ let cachedHost: string | null = null;
 
 /**
  * Get the worker port number from settings
- * Uses CLAUDE_MEM_WORKER_PORT from settings file or default (37777)
+ * Uses CLAUDE_MEM_WORKER_PORT from settings file, or the per-UID default
+ * (37700 + uid % 100) defined in SettingsDefaultsManager.
  * Caches the port value to avoid repeated file reads
  */
 export function getWorkerPort(): number {

@@ -26,6 +26,7 @@ import {
   unlinkSync,
 } from 'fs';
 import { logger } from '../../utils/logger.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 
 // ============================================================================
 // Path Resolution
@@ -168,7 +169,7 @@ function writeOpenClawConfig(config: Record<string, any>): void {
  * and the memory slot.
  */
 function registerPluginInOpenClawConfig(
-  workerPort: number = 37777,
+  workerPort: number,
   project: string = 'openclaw',
   syncMemoryFile: boolean = true,
 ): void {
@@ -305,7 +306,11 @@ function copyPluginFilesAndRegister(
     'utf-8',
   );
 
-  registerPluginInOpenClawConfig();
+  // Resolve port via SettingsDefaultsManager so CLAUDE_MEM_WORKER_PORT env
+  // takes priority and the per-UID default (37700 + uid % 100) is used
+  // otherwise. Required for multi-account isolation (#2101).
+  const workerPort = SettingsDefaultsManager.getInt('CLAUDE_MEM_WORKER_PORT');
+  registerPluginInOpenClawConfig(workerPort);
   console.log(`  Registered in openclaw.json`);
 
   logger.info('OPENCLAW', 'Plugin installed', { destination: extensionDirectory });

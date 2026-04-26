@@ -55,6 +55,7 @@ import {
   writeJsonFileAtomic,
 } from '../utils/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 
 // ---------------------------------------------------------------------------
@@ -542,7 +543,10 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     summaryLines.forEach(l => console.log(`  ${l}`));
   }
 
-  const workerPort = process.env.CLAUDE_MEM_WORKER_PORT || '37777';
+  // Resolve port via SettingsDefaultsManager so CLAUDE_MEM_WORKER_PORT env
+  // takes priority and the per-UID default (37700 + uid % 100) is used
+  // otherwise. Required for multi-account isolation (#2101).
+  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
   const nextSteps = [
     'Open Claude Code and start a conversation -- memory is automatic!',
     `View your memories: ${pc.underline(`http://localhost:${workerPort}`)}`,
