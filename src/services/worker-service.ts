@@ -44,7 +44,6 @@ import {
   readPidFile,
   removePidFile,
   getPlatformTimeout,
-  aggressiveStartupCleanup,
   runOneTimeChromaMigration,
   runOneTimeCwdRemap,
   cleanStalePidFile,
@@ -386,7 +385,6 @@ export class WorkerService implements WorkerRef {
   private async initializeBackground(): Promise<void> {
     try {
       logger.info('WORKER', 'Background initialization starting...');
-      await aggressiveStartupCleanup();
 
       // Load mode configuration
       const { ModeManager } = await import('./domain/ModeManager.js');
@@ -1154,34 +1152,17 @@ async function main() {
     case 'restart': {
       logger.info('SYSTEM', 'Restarting worker');
       await httpShutdown(port);
-      const restartFreed = await waitForPortFree(port, getPlatformTimeout(15000));
+      const restartFreed = await waitForPortFree(port, 5000);
       if (!restartFreed) {
-        logger.error('SYSTEM', 'Port did not free up after shutdown, aborting restart', { port });
-        process.exit(0);
+        // Don't loop, don't force-kill, don't steal the port. The PID file
+        // owns the lock; if the previous worker won't release the port the
+        // user resolves it manually.
+        console.error('Port still bound after shutdown. Resolve manually.');
+        process.exit(1);
       }
       removePidFile();
-
-      const pid = spawnDaemon(__filename, port);
-      if (pid === undefined) {
-        logger.error('SYSTEM', 'Failed to spawn worker daemon during restart');
-        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
-        // The wrapper/plugin will handle restart logic if needed
-        process.exit(0);
-      }
-
-      // PID file is written by the worker itself after listen() succeeds
-      // This is race-free and works correctly on Windows where cmd.exe PID is useless
-
-      const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
-      if (!healthy) {
-        removePidFile();
-        logger.error('SYSTEM', 'Worker failed to restart');
-        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
-        // The wrapper/plugin will handle restart logic if needed
-        process.exit(0);
-      }
-
-      logger.info('SYSTEM', 'Worker restarted successfully');
+      spawnDaemon(__filename, port);
+      logger.info('SYSTEM', 'Worker restart spawned');
       process.exit(0);
       break;
     }

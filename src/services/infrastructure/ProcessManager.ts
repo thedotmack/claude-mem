@@ -541,191 +541,6 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
   logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pidsToKill.length });
 }
 
-// Patterns that should be killed immediately at startup (no age gate)
-// These are child processes that should not outlive their parent worker
-const AGGRESSIVE_CLEANUP_PATTERNS = ['worker-service.cjs', 'chroma-mcp'];
-
-// Patterns that keep the age-gated threshold (may be legitimately running)
-const AGE_GATED_CLEANUP_PATTERNS = ['mcp-server.cjs'];
-
-/**
- * Enumerate processes for aggressive startup cleanup. Aggressive patterns are
- * killed immediately; age-gated patterns only if older than ORPHAN_MAX_AGE_MINUTES.
- */
-async function enumerateAggressiveCleanupProcesses(
-  isWindows: boolean,
-  currentPid: number,
-  protectedPids: Set<number>,
-  allPatterns: string[]
-): Promise<number[]> {
-  const pidsToKill: number[] = [];
-
-  if (isWindows) {
-    // Use WQL -Filter for server-side filtering (no $_ pipeline syntax).
-    // Avoids Git Bash $_ interpretation (#1062) and PowerShell syntax errors (#1024).
-    const wqlPatternConditions = allPatterns
-      .map(p => `CommandLine LIKE '%${p}%'`)
-      .join(' OR ');
-
-    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter '(${wqlPatternConditions}) AND ProcessId != ${currentPid}' | Select-Object ProcessId, CommandLine, CreationDate | ConvertTo-Json"`;
-    const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
-
-    if (!stdout.trim() || stdout.trim() === 'null') {
-      logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Windows)');
-      return [];
-    }
-
-    const processes = JSON.parse(stdout);
-    const processList = Array.isArray(processes) ? processes : [processes];
-    const now = Date.now();
-
-    for (const proc of processList) {
-      const pid = proc.ProcessId;
-      if (!Number.isInteger(pid) || pid <= 0 || protectedPids.has(pid)) continue;
-
-      const commandLine = proc.CommandLine || '';
-      const isAggressive = AGGRESSIVE_CLEANUP_PATTERNS.some(p => commandLine.includes(p));
-
-      if (isAggressive) {
-        // Kill immediately — no age check
-        pidsToKill.push(pid);
-        logger.debug('SYSTEM', 'Found orphaned process (aggressive)', { pid, commandLine: commandLine.substring(0, 80) });
-      } else {
-        // Age-gated: only kill if older than threshold
-        const creationMatch = proc.CreationDate?.match(/\/Date\((\d+)\)\//);
-        if (creationMatch) {
-          const creationTime = parseInt(creationMatch[1], 10);
-          const ageMinutes = (now - creationTime) / (1000 * 60);
-          if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
-            pidsToKill.push(pid);
-            logger.debug('SYSTEM', 'Found orphaned process (age-gated)', { pid, ageMinutes: Math.round(ageMinutes) });
-          }
-        }
-      }
-    }
-  } else {
-    // Unix: Use ps with elapsed time
-    const patternRegex = allPatterns.join('|');
-    const { stdout } = await execAsync(
-      `ps -eo pid,etime,command | grep -E "${patternRegex}" | grep -v grep || true`
-    );
-
-    if (!stdout.trim()) {
-      logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Unix)');
-      return [];
-    }
-
-    const lines = stdout.trim().split('\n');
-    for (const line of lines) {
-      const match = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
-      if (!match) continue;
-
-      const pid = parseInt(match[1], 10);
-      const etime = match[2];
-      const command = match[3];
-
-      if (!Number.isInteger(pid) || pid <= 0 || protectedPids.has(pid)) continue;
-
-      const isAggressive = AGGRESSIVE_CLEANUP_PATTERNS.some(p => command.includes(p));
-
-      if (isAggressive) {
-        // Kill immediately — no age check
-        pidsToKill.push(pid);
-        logger.debug('SYSTEM', 'Found orphaned process (aggressive)', { pid, command: command.substring(0, 80) });
-      } else {
-        // Age-gated: only kill if older than threshold
-        const ageMinutes = parseElapsedTime(etime);
-        if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
-          pidsToKill.push(pid);
-          logger.debug('SYSTEM', 'Found orphaned process (age-gated)', { pid, ageMinutes, command: command.substring(0, 80) });
-        }
-      }
-    }
-  }
-
-  return pidsToKill;
-}
-
-/**
- * Aggressive startup cleanup for orphaned claude-mem processes.
- *
- * Unlike cleanupOrphanedProcesses() which age-gates everything at 30 minutes,
- * this function kills worker-service.cjs and chroma-mcp processes immediately
- * (they should not outlive their parent worker). Only mcp-server.cjs keeps
- * the age threshold since it may be legitimately running.
- *
- * Called once at daemon startup.
- */
-export async function aggressiveStartupCleanup(): Promise<void> {
-  const isWindows = process.platform === 'win32';
-  const currentPid = process.pid;
-  const allPatterns = [...AGGRESSIVE_CLEANUP_PATTERNS, ...AGE_GATED_CLEANUP_PATTERNS];
-
-  // Protect parent process (the hook that spawned us) from being killed.
-  // Without this, a new daemon kills its own parent hook process (#1426).
-  //
-  // Note: readPidFile() is not used here because start() writes the new PID
-  // before initializeBackground() calls this function, so readPidFile() would
-  // just return process.pid (already protected). If a pre-existing worker needs
-  // protection, ensureWorkerStarted() handles that by returning early when a
-  // healthy worker is detected — we never reach this code in that case.
-  const protectedPids = new Set<number>([currentPid]);
-  if (process.ppid && process.ppid > 0) {
-    protectedPids.add(process.ppid);
-  }
-
-  let pidsToKill: number[];
-  try {
-    pidsToKill = await enumerateAggressiveCleanupProcesses(isWindows, currentPid, protectedPids, allPatterns);
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      logger.error('SYSTEM', 'Failed to enumerate orphaned processes during aggressive cleanup', {}, error);
-    } else {
-      logger.error('SYSTEM', 'Failed to enumerate orphaned processes during aggressive cleanup', {}, new Error(String(error)));
-    }
-    return;
-  }
-
-  if (pidsToKill.length === 0) {
-    return;
-  }
-
-  logger.info('SYSTEM', 'Aggressive startup cleanup: killing orphaned processes', {
-    platform: isWindows ? 'Windows' : 'Unix',
-    count: pidsToKill.length,
-    pids: pidsToKill
-  });
-
-  if (isWindows) {
-    for (const pid of pidsToKill) {
-      if (!Number.isInteger(pid) || pid <= 0) continue;
-      try {
-        execSync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, stdio: 'ignore', windowsHide: true });
-      } catch (error: unknown) {
-        if (error instanceof Error) {
-          logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, error);
-        } else {
-          logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, new Error(String(error)));
-        }
-      }
-    }
-  } else {
-    for (const pid of pidsToKill) {
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch (error: unknown) {
-        if (error instanceof Error) {
-          logger.debug('SYSTEM', 'Process already exited', { pid }, error);
-        } else {
-          logger.debug('SYSTEM', 'Process already exited', { pid }, new Error(String(error)));
-        }
-      }
-    }
-  }
-
-  logger.info('SYSTEM', 'Aggressive startup cleanup complete', { count: pidsToKill.length });
-}
-
 const CHROMA_MIGRATION_MARKER_FILENAME = '.chroma-cleaned-v10.3';
 
 /**
@@ -929,14 +744,20 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
 }
 
 /**
- * Spawn a detached daemon process
- * Returns the child PID or undefined if spawn failed
+ * Spawn a detached daemon process.
  *
- * On Windows, uses PowerShell Start-Process with -WindowStyle Hidden to spawn
- * a truly independent process without console popups. Unlike WMIC, PowerShell
- * inherits environment variables from the parent process.
+ * Uses Node's child_process.spawn with the arg-array form on every platform.
+ * The arg-array form bypasses the shell entirely on Windows, so no quoting
+ * heuristics or PowerShell wrappers are needed (handles paths with spaces
+ * like `C:\Users\Alex Newman\...` natively).
  *
- * On Unix, uses standard detached spawn.
+ * On Unix, prefer setsid to detach from the controlling terminal so SIGHUP
+ * can't reach the daemon even if the in-process handler fails. The
+ * `detached: true` option already creates a new process group on POSIX;
+ * setsid is the belt-and-suspenders extra.
+ *
+ * Bun.spawn is intentionally NOT used here: it does not support detached
+ * spawning (see comment in process-registry.ts:633-639).
  *
  * PID file is written by the worker itself after listen() succeeds,
  * not by the spawner (race-free, works on all platforms).
@@ -946,7 +767,6 @@ export function spawnDaemon(
   port: number,
   extraEnv: Record<string, string> = {}
 ): number | undefined {
-  const isWindows = process.platform === 'win32';
   getSupervisor().assertCanSpawn('worker daemon');
 
   const env = sanitizeEnv({
@@ -957,9 +777,7 @@ export function spawnDaemon(
 
   // worker-service.cjs imports `bun:sqlite`, so the spawned runtime MUST be
   // Bun on every platform — never the current process.execPath, which may be
-  // Node when the caller is the MCP server. Resolve once before the OS branch
-  // split so we don't pay for a duplicate PATH lookup if Bun isn't found at a
-  // well-known path. See resolveWorkerRuntimePath() for the candidate list.
+  // Node when the caller is the MCP server.
   const runtimePath = resolveWorkerRuntimePath();
   if (!runtimePath) {
     logger.error(
@@ -969,65 +787,20 @@ export function spawnDaemon(
     return undefined;
   }
 
-  if (isWindows) {
-    // Use PowerShell Start-Process to spawn a hidden, independent process
-    // Unlike WMIC, PowerShell inherits environment variables from parent
-    // -WindowStyle Hidden prevents console popup
-
-    // Use -EncodedCommand to avoid all shell quoting issues with spaces in paths
-    const psScript = `Start-Process -FilePath '${runtimePath.replace(/'/g, "''")}' -ArgumentList @('${scriptPath.replace(/'/g, "''")}','--daemon') -WindowStyle Hidden`;
-    const encodedCommand = Buffer.from(psScript, 'utf16le').toString('base64');
-
-    try {
-      execSync(`powershell -NoProfile -EncodedCommand ${encodedCommand}`, {
-        stdio: 'ignore',
-        windowsHide: true,
-        env
-      });
-      // Windows success sentinel: PowerShell `Start-Process` does not return
-      // the spawned PID, and we don't want to pay for an extra `Get-Process`
-      // round-trip just to discover it. Return 0 (a conventionally invalid
-      // Unix PID) so callers can distinguish "spawn dispatched" from "spawn
-      // failed". Callers MUST use `pid === undefined` to detect failure —
-      // never falsy checks like `if (!pid)`, which would silently treat
-      // success as failure here.
-      return 0;
-    } catch (error: unknown) {
-      // APPROVED OVERRIDE: Windows daemon spawn is best-effort; log and let callers fall back to health checks/retry flow.
-      if (error instanceof Error) {
-        logger.error('SYSTEM', 'Failed to spawn worker daemon on Windows', { runtimePath }, error);
-      } else {
-        logger.error('SYSTEM', 'Failed to spawn worker daemon on Windows', { runtimePath }, new Error(String(error)));
-      }
-      return undefined;
-    }
-  }
-
-  // Unix: Use setsid to create a new session, fully detaching from the
-  // controlling terminal. This prevents SIGHUP from reaching the daemon
-  // even if the in-process SIGHUP handler somehow fails (belt-and-suspenders).
-  // Fall back to standard detached spawn if setsid is not available.
-  // `runtimePath` was resolved at the top of this function (see comment there).
+  // On Unix, prefer setsid to fully detach from the controlling terminal.
+  // On Windows or systems without setsid, spawn the runtime directly.
   const setsidPath = '/usr/bin/setsid';
-  if (existsSync(setsidPath)) {
-    const child = spawn(setsidPath, [runtimePath, scriptPath, '--daemon'], {
-      detached: true,
-      stdio: 'ignore',
-      env
-    });
+  const useSetsid = process.platform !== 'win32' && existsSync(setsidPath);
 
-    if (child.pid === undefined) {
-      return undefined;
-    }
+  const execPath = useSetsid ? setsidPath : runtimePath;
+  const args = useSetsid
+    ? [runtimePath, scriptPath, '--daemon']
+    : [scriptPath, '--daemon'];
 
-    child.unref();
-    return child.pid;
-  }
-
-  // Fallback: standard detached spawn (macOS, systems without setsid)
-  const child = spawn(runtimePath, [scriptPath, '--daemon'], {
+  const child = spawn(execPath, args, {
     detached: true,
     stdio: 'ignore',
+    windowsHide: true,
     env
   });
 
@@ -1036,7 +809,6 @@ export function spawnDaemon(
   }
 
   child.unref();
-
   return child.pid;
 }
 
