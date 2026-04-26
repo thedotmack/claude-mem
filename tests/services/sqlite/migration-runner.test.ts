@@ -132,10 +132,10 @@ describe('MigrationRunner', () => {
       expect(versions).toContain(11);  // discovery_tokens
       expect(versions).toContain(16);  // pending_messages
       expect(versions).toContain(17);  // rename columns
-      expect(versions).toContain(19);  // repair (noop)
       expect(versions).toContain(20);  // failed_at_epoch
       expect(versions).toContain(21);  // ON UPDATE CASCADE
       expect(versions).toContain(22);  // content_hash
+      expect(versions).toContain(30);  // observations.metadata
     });
   });
 
