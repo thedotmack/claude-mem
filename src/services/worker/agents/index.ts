@@ -6,7 +6,7 @@
  *
  * Usage:
  * ```typescript
- * import { processAgentResponse, shouldFallbackToClaude } from './agents/index.js';
+ * import { processAgentResponse, isAbortError } from './agents/index.js';
  * ```
  */
 
@@ -19,7 +19,6 @@ export type {
   StorageResult,
   ResponseProcessingContext,
   ParsedResponse,
-  FallbackAgent,
   BaseAgentConfig,
 } from './types.js';
 

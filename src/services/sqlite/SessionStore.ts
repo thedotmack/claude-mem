@@ -75,6 +75,7 @@ export class SessionStore {
     this.addObservationSubagentColumns();
     this.addPendingMessagesToolUseIdAndWorkerPidColumns();
     this.addObservationsUniqueContentHashIndex();
+    this.addObservationsMetadataColumn();
   }
 
   /**
@@ -715,6 +716,14 @@ export class SessionStore {
     // Clean up leftover temp table from a previously-crashed run
     this.db.run('DROP TABLE IF EXISTS observations_new');
 
+    // If the live observations table already has metadata (added in v30 or
+    // by an older bundled artifact that ran v30 before v21 was recorded),
+    // preserve it so this rebuild doesn't silently drop the column's data.
+    const observationsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const observationsHasMetadata = observationsCols.some(c => c.name === 'metadata');
+    const metadataColumnSQL = observationsHasMetadata ? ',\n        metadata TEXT' : '';
+    const metadataSelectSQL = observationsHasMetadata ? ', metadata' : '';
+
     const observationsNewSQL = `
       CREATE TABLE observations_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -732,7 +741,7 @@ export class SessionStore {
         prompt_number INTEGER,
         discovery_tokens INTEGER DEFAULT 0,
         created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
+        created_at_epoch INTEGER NOT NULL${metadataColumnSQL},
         FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
       )
     `;
@@ -740,7 +749,7 @@ export class SessionStore {
       INSERT INTO observations_new
       SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
              narrative, concepts, files_read, files_modified, prompt_number,
-             discovery_tokens, created_at, created_at_epoch
+             discovery_tokens, created_at, created_at_epoch${metadataSelectSQL}
       FROM observations
     `;
     const observationsIndexesSQL = `
@@ -1154,6 +1163,29 @@ export class SessionStore {
       this.db.run('ROLLBACK');
       throw error;
     }
+  }
+
+  /**
+   * Add metadata TEXT column to observations (migration 30).
+   *
+   * Mirrors MigrationRunner.addObservationsMetadataColumn so bundled artifacts
+   * that embed SessionStore (e.g. worker-service.cjs, context-generator.cjs)
+   * stay schema-consistent. Without this, INSERT … (..., metadata, ...) raises
+   * "table observations has no column named metadata" and POST /api/memory/save
+   * starts failing on every call once it begins persisting metadata (#2116).
+   *
+   * Idempotent via PRAGMA table_info guard.
+   */
+  private addObservationsMetadataColumn(): void {
+    const cols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasColumn = cols.some(c => c.name === 'metadata');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE observations ADD COLUMN metadata TEXT');
+      logger.debug('DB', 'Added metadata column to observations table (#2116)');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(30, new Date().toISOString());
   }
 
   /**
@@ -2009,6 +2041,9 @@ export class SessionStore {
       files_modified: string[];
       agent_type?: string | null;
       agent_id?: string | null;
+      // Caller-supplied JSON metadata, stored verbatim in the metadata column (#2116).
+      // Pre-stringified by the caller so we don't double-encode an already-JSON value.
+      metadata?: string | null;
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
@@ -2027,8 +2062,8 @@ export class SessionStore {
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
        files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-       generated_by_model)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       generated_by_model, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(memory_session_id, content_hash) DO NOTHING
       RETURNING id, created_at_epoch
     `);
@@ -2051,7 +2086,8 @@ export class SessionStore {
       contentHash,
       timestampIso,
       timestampEpoch,
-      generatedByModel || null
+      generatedByModel || null,
+      observation.metadata ?? null
     ) as { id: number; created_at_epoch: number } | null;
 
     if (inserted) {

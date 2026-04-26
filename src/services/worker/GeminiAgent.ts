@@ -25,10 +25,8 @@ import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import {
   processAgentResponse,
-  shouldFallbackToClaude,
   isAbortError,
-  type WorkerRef,
-  type FallbackAgent
+  type WorkerRef
 } from './agents/index.js';
 
 // Gemini API endpoint — use v1 (stable), not v1beta.
@@ -116,19 +114,10 @@ interface GeminiContent {
 export class GeminiAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
-  private fallbackAgent: FallbackAgent | null = null;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
     this.sessionManager = sessionManager;
-  }
-
-  /**
-   * Set the fallback agent (Claude SDK) for when Gemini API fails
-   * Must be set after construction to avoid circular dependency
-   */
-  setFallbackAgent(agent: FallbackAgent): void {
-    this.fallbackAgent = agent;
   }
 
   /**
@@ -352,26 +341,17 @@ export class GeminiAgent {
   }
 
   /**
-   * Handle errors from Gemini API calls with abort detection and Claude fallback.
+   * Handle errors from Gemini API calls with abort detection.
    * Shared by init query and message processing try blocks.
+   *
+   * Note: The previous Claude-SDK fallback path was removed in #2087 — it was
+   * never wired in production (`fallbackAgent` was always null), so 429s
+   * already threw in practice. The throw is now explicit.
    */
-  private handleGeminiError(error: unknown, session: ActiveSession, worker?: WorkerRef): Promise<void> | never {
+  private handleGeminiError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {
     if (isAbortError(error)) {
       logger.warn('SDK', 'Gemini agent aborted', { sessionId: session.sessionDbId });
       throw error;
-    }
-
-    // Check if we should fall back to Claude
-    if (shouldFallbackToClaude(error) && this.fallbackAgent) {
-      logger.warn('SDK', 'Gemini API failed, falling back to Claude SDK', {
-        sessionDbId: session.sessionDbId,
-        error: error instanceof Error ? error.message : String(error),
-        historyLength: session.conversationHistory.length
-      });
-
-      // Fall back to Claude - it will use the same session with shared conversationHistory
-      // Note: With claim-and-delete queue pattern, messages are already deleted on claim
-      return this.fallbackAgent.startSession(session, worker);
     }
 
     logger.failure('SDK', 'Gemini agent error', { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));

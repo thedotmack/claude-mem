@@ -340,61 +340,6 @@ function installUv() {
 }
 
 /**
- * Add shell alias for claude-mem command
- */
-function installCLI() {
-  const WORKER_CLI = join(ROOT, 'scripts', 'worker-service.cjs');
-  const bunPath = getBunPath() || 'bun';
-  const aliasLine = `alias claude-mem='${bunPath} "${WORKER_CLI}"'`;
-  const markerPath = join(ROOT, '.cli-installed');
-
-  // Skip if already installed
-  if (existsSync(markerPath)) return;
-
-  try {
-    if (IS_WINDOWS) {
-      // Windows: Add to PATH via PowerShell profile
-      const profilePath = join(process.env.USERPROFILE || homedir(), 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1');
-      const profileDir = join(process.env.USERPROFILE || homedir(), 'Documents', 'PowerShell');
-      const functionDef = `function claude-mem { & "${bunPath}" "${WORKER_CLI}" $args }\n`;
-
-      if (!existsSync(profileDir)) {
-        execSync(`mkdir "${profileDir}"`, { stdio: 'ignore', shell: true });
-      }
-
-      const existingContent = existsSync(profilePath) ? readFileSync(profilePath, 'utf-8') : '';
-      if (!existingContent.includes('function claude-mem')) {
-        writeFileSync(profilePath, existingContent + '\n' + functionDef);
-        console.error(`✅ PowerShell function added to profile`);
-        console.error('   Restart your terminal to use: claude-mem <command>');
-      }
-    } else {
-      // Unix: Add alias to shell configs
-      const shellConfigs = [
-        join(homedir(), '.bashrc'),
-        join(homedir(), '.zshrc')
-      ];
-
-      for (const config of shellConfigs) {
-        if (existsSync(config)) {
-          const content = readFileSync(config, 'utf-8');
-          if (!content.includes('alias claude-mem=')) {
-            writeFileSync(config, content + '\n' + aliasLine + '\n');
-            console.error(`✅ Alias added to ${config}`);
-          }
-        }
-      }
-      console.error('   Restart your terminal to use: claude-mem <command>');
-    }
-
-    writeFileSync(markerPath, new Date().toISOString());
-  } catch (error) {
-    console.error(`⚠️  Could not add shell alias: ${error.message}`);
-    console.error(`   Use directly: ${bunPath} "${WORKER_CLI}" <command>`);
-  }
-}
-
-/**
  * Check if dependencies need to be installed
  */
 function needsInstall() {
@@ -629,8 +574,8 @@ try {
     // Worker will be started fresh by next hook in chain (worker-service.cjs start)
   }
 
-  // Step 4: Install CLI to PATH
-  installCLI();
+  // Step 4 (removed in #2054): legacy `claude-mem` shell alias was deleted.
+  // Users invoke the CLI via `npx claude-mem <cmd>` or `bunx claude-mem <cmd>`.
 
   // Step 5: Warn if the bundled native binary is incompatible with this platform
   checkBinaryPlatformCompatibility();

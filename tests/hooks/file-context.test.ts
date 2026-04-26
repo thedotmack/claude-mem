@@ -1,4 +1,10 @@
-// Tests for file-context cache validation fix (#1719)
+// Tests for file-context cache validation and the #2094 deadlock fix.
+//
+// The hook used to truncate Reads to limit:1 and inject "you have enough info"
+// guidance — that combination broke Edit-after-Read because Claude Code's
+// read-state tracker saw a "read" but content was missing. Behavior now:
+// inject the timeline as supplementary context only; never set updatedInput.
+
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import { mkdtempSync, writeFileSync, utimesSync, rmSync } from 'fs';
 import { tmpdir, homedir } from 'os';
@@ -89,8 +95,8 @@ afterEach(() => {
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 });
 
-describe('fileContextHandler — cache validation fix (#1719)', () => {
-  it('truncates to limit:1 for an unconstrained Read (existing behavior)', async () => {
+describe('fileContextHandler — #2094 (no Read mutation)', () => {
+  it('injects timeline context but never sets updatedInput on an unconstrained Read', async () => {
     // File mtime is "now" (just written). Make observations newer to avoid mtime bypass.
     const future = Date.now() + 60_000;
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -105,13 +111,12 @@ describe('fileContextHandler — cache validation fix (#1719)', () => {
     });
 
     expect(result.hookSpecificOutput).toBeDefined();
-    expect(result.hookSpecificOutput!.updatedInput).toEqual({
-      file_path: testFile,
-      limit: 1,
-    });
+    expect(result.hookSpecificOutput!.additionalContext).toContain('prior observations');
+    // The whole point of #2094: do not rewrite the Read call.
+    expect((result.hookSpecificOutput as any).updatedInput).toBeUndefined();
   });
 
-  it('preserves user-supplied offset/limit on a targeted Read (#1719 fix)', async () => {
+  it('does not set updatedInput on a targeted Read either', async () => {
     const future = Date.now() + 60_000;
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
       makeObservationsResponse([{ id: 1, created_at_epoch: future }])
@@ -125,55 +130,10 @@ describe('fileContextHandler — cache validation fix (#1719)', () => {
     });
 
     expect(result.hookSpecificOutput).toBeDefined();
-    expect(result.hookSpecificOutput!.updatedInput).toEqual({
-      file_path: testFile,
-      offset: 289,
-      limit: 140,
-    });
+    expect((result.hookSpecificOutput as any).updatedInput).toBeUndefined();
   });
 
-  it('preserves user-supplied offset only', async () => {
-    const future = Date.now() + 60_000;
-    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
-      makeObservationsResponse([{ id: 1, created_at_epoch: future }])
-    );
-
-    const result = await fileContextHandler.execute({
-      sessionId: 'sess',
-      cwd: tmpDir,
-      toolName: 'Read',
-      toolInput: { file_path: testFile, offset: 100 },
-    });
-
-    expect(result.hookSpecificOutput!.updatedInput).toEqual({
-      file_path: testFile,
-      offset: 100,
-    });
-    expect((result.hookSpecificOutput!.updatedInput as any).limit).toBeUndefined();
-  });
-
-  it('preserves user-supplied limit only', async () => {
-    const future = Date.now() + 60_000;
-    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
-      makeObservationsResponse([{ id: 1, created_at_epoch: future }])
-    );
-
-    const result = await fileContextHandler.execute({
-      sessionId: 'sess',
-      cwd: tmpDir,
-      toolName: 'Read',
-      toolInput: { file_path: testFile, limit: 50 },
-    });
-
-    expect(result.hookSpecificOutput!.updatedInput).toEqual({
-      file_path: testFile,
-      limit: 50,
-    });
-    // offset must NOT be present
-    expect((result.hookSpecificOutput!.updatedInput as any).offset).toBeUndefined();
-  });
-
-  it('bypasses truncation when file mtime is newer than newest observation (#1719 fix)', async () => {
+  it('skips entirely when file mtime is newer than newest observation (#1719 still honored)', async () => {
     // Backdate observations 1 hour into the past so the just-written file is newer.
     const stale = Date.now() - 3_600_000;
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -190,12 +150,12 @@ describe('fileContextHandler — cache validation fix (#1719)', () => {
       toolInput: { file_path: testFile },
     });
 
-    // Pass-through: no hookSpecificOutput, no updatedInput rewrite
+    // Pass-through: no hookSpecificOutput
     expect(result.continue).toBe(true);
     expect(result.hookSpecificOutput).toBeUndefined();
   });
 
-  it('still truncates when file mtime is older than newest observation', async () => {
+  it('still injects context when file mtime is older than newest observation', async () => {
     // Backdate the file by 1 hour, observations stamped "now"
     const past = (Date.now() - 3_600_000) / 1000;
     utimesSync(testFile, past, past);
@@ -213,13 +173,11 @@ describe('fileContextHandler — cache validation fix (#1719)', () => {
     });
 
     expect(result.hookSpecificOutput).toBeDefined();
-    expect(result.hookSpecificOutput!.updatedInput).toEqual({
-      file_path: testFile,
-      limit: 1,
-    });
+    expect(result.hookSpecificOutput!.additionalContext).toContain('prior observations');
+    expect((result.hookSpecificOutput as any).updatedInput).toBeUndefined();
   });
 
-  it('targeted-read header line reflects that the section was read normally', async () => {
+  it('header text no longer claims the file was truncated', async () => {
     const future = Date.now() + 60_000;
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
       makeObservationsResponse([{ id: 1, created_at_epoch: future }])
@@ -229,11 +187,12 @@ describe('fileContextHandler — cache validation fix (#1719)', () => {
       sessionId: 'sess',
       cwd: tmpDir,
       toolName: 'Read',
-      toolInput: { file_path: testFile, offset: 10, limit: 20 },
+      toolInput: { file_path: testFile },
     });
 
-    const ctx = result.hookSpecificOutput!.additionalContext;
-    expect(ctx).toContain('The requested section was read normally');
+    const ctx = result.hookSpecificOutput!.additionalContext as string;
     expect(ctx).not.toContain('Only line 1 was read');
+    // The new copy explicitly states the Read result is the full requested section.
+    expect(ctx).toContain('full requested section');
   });
 });

@@ -95,7 +95,18 @@ export class SessionRoutes extends BaseRouteHandler {
    * The next generator will use the new provider with shared conversationHistory.
    */
   private static readonly STALE_GENERATOR_THRESHOLD_MS = 30_000; // 30 seconds (#1099)
-  private static readonly MAX_SESSION_WALL_CLOCK_MS = 4 * 60 * 60 * 1000; // 4 hours (#1590)
+
+  // Wall-clock cap on a single in-memory session — exists to prevent runaway
+  // API costs from a session that is somehow stuck in a re-activation loop
+  // (#1590, #2127, #2098). 4h was the original value, picked when bugs in the
+  // re-activation path made cost runaways more plausible; users in practice
+  // have legitimate long-running sessions (24h+ Claude Code days) that this
+  // killed without warning. 24h is the new ceiling — long enough that
+  // a real human workday never hits it, short enough that a runaway loop is
+  // still bounded. We deliberately do NOT expose this as a config knob: a
+  // session approaching this age is almost certainly a bug worth investigating,
+  // not a knob worth tuning.
+  private static readonly MAX_SESSION_WALL_CLOCK_MS = 24 * 60 * 60 * 1000; // 24 hours (#1590, #2127)
 
   public ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);

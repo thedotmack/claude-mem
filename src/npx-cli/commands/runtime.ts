@@ -12,6 +12,7 @@ import { join } from 'path';
 import pc from 'picocolors';
 import { resolveBunBinaryPath } from '../utils/bun-resolver.js';
 import { isPluginInstalled, marketplaceDirectory } from '../utils/paths.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 
 // ---------------------------------------------------------------------------
 // Installation guard
@@ -140,6 +141,15 @@ export function runAdoptCommand(extraArgs: string[] = []): void {
 }
 
 /**
+ * Run the one-time v12.4.3 pollution cleanup, or preview it via --dry-run.
+ * Delegates to the worker-service.cjs `cleanup` subcommand so the scan and
+ * (optional) deletion run in Bun (needed for bun:sqlite). (#2126 item 5)
+ */
+export function runCleanupCommand(extraArgs: string[] = []): void {
+  spawnBunWorkerCommand('cleanup', extraArgs);
+}
+
+/**
  * Search the worker API at `GET /api/search?query=<query>`.
  */
 export async function runSearchCommand(queryParts: string[]): Promise<void> {
@@ -151,7 +161,10 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const workerPort = process.env.CLAUDE_MEM_WORKER_PORT || '37777';
+  // Resolve port via SettingsDefaultsManager so CLAUDE_MEM_WORKER_PORT env
+  // takes priority and the per-UID default (37700 + uid % 100) is used
+  // otherwise. Required for multi-account isolation (#2101).
+  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
   const searchUrl = `http://127.0.0.1:${workerPort}/api/search?query=${encodeURIComponent(query)}`;
 
   let response: Response;

@@ -5,6 +5,12 @@
 export const DEFAULT_SETTINGS = {
   CLAUDE_MEM_MODEL: 'claude-sonnet-4-6',
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
+  // Build-time placeholder only. The viewer runs in-browser served by the
+  // worker itself, so actual API calls use window.location and the real port
+  // is fetched from /api/settings into useSettings(). This literal is just a
+  // form-field fallback rendered for the brief moment before the API response
+  // arrives. Multi-account / per-UID port resolution lives in
+  // SettingsDefaultsManager (server-side); see CLAUDE.md → Multi-account.
   CLAUDE_MEM_WORKER_PORT: '37777',
   CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
 

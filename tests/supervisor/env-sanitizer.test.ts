@@ -133,6 +133,34 @@ describe('sanitizeEnv', () => {
     expect(result.HOME).toBe('/home/user');
   });
 
+  it('strips proxy env vars (uppercase and lowercase) so the worker subprocess is not routed through the user proxy', () => {
+    const result = sanitizeEnv({
+      HTTP_PROXY: 'http://bad-proxy:1234',
+      HTTPS_PROXY: 'http://bad-proxy:1234',
+      ALL_PROXY: 'socks5://bad-proxy:1080',
+      NO_PROXY: 'localhost,127.0.0.1',
+      http_proxy: 'http://bad-proxy:1234',
+      https_proxy: 'http://bad-proxy:1234',
+      all_proxy: 'socks5://bad-proxy:1080',
+      no_proxy: 'localhost,127.0.0.1',
+      npm_config_proxy: 'http://bad-proxy:1234',
+      npm_config_https_proxy: 'http://bad-proxy:1234',
+      PATH: '/usr/bin'
+    });
+
+    expect(result.HTTP_PROXY).toBeUndefined();
+    expect(result.HTTPS_PROXY).toBeUndefined();
+    expect(result.ALL_PROXY).toBeUndefined();
+    expect(result.NO_PROXY).toBeUndefined();
+    expect(result.http_proxy).toBeUndefined();
+    expect(result.https_proxy).toBeUndefined();
+    expect(result.all_proxy).toBeUndefined();
+    expect(result.no_proxy).toBeUndefined();
+    expect(result.npm_config_proxy).toBeUndefined();
+    expect(result.npm_config_https_proxy).toBeUndefined();
+    expect(result.PATH).toBe('/usr/bin');
+  });
+
   it('selectively preserves only allowed CLAUDE_CODE_* vars while stripping others', () => {
     const result = sanitizeEnv({
       CLAUDE_CODE_OAUTH_TOKEN: 'my-oauth-token',

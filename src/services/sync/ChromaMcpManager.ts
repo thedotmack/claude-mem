@@ -31,6 +31,24 @@ const RECONNECT_BACKOFF_MS = 10_000; // Don't retry connections faster than this
 const DEFAULT_CHROMA_DATA_DIR = path.join(os.homedir(), '.claude-mem', 'chroma');
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 
+/**
+ * Pinned chroma-mcp version for deterministic installs.
+ *
+ * Why pin: `uvx chroma-mcp` (unpinned) resolves whatever version PyPI happens
+ * to serve at install time. That has bitten us multiple ways:
+ *   - #2046: transient missing httpcore/httpx after dependency resolver shifts
+ *   - #2085: surprise breaking changes between point releases
+ *   - #2102: subprocess spawn storms triggered by version drift in chromadb deps
+ *
+ * Pinning to a specific known-good version makes installs reproducible across
+ * machines and across time. Bump deliberately, not accidentally.
+ *
+ * Verified 2026-04-25 with `uvx --python 3.13 chroma-mcp==0.2.6 --help` in a
+ * clean uv cache: starts cleanly, no httpcore/httpx ImportError, no `--with`
+ * flags required. If that changes on a future bump, re-add the flags here.
+ */
+const CHROMA_MCP_PINNED_VERSION = '0.2.6';
+
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
   private client: Client | null = null;
@@ -212,7 +230,7 @@ export class ChromaMcpManager {
 
       const args = [
         '--python', pythonVersion,
-        'chroma-mcp',
+        `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
         '--client-type', 'http',
         '--host', chromaHost,
         '--port', chromaPort
@@ -238,7 +256,7 @@ export class ChromaMcpManager {
     // Local mode: persistent client with data directory
     return [
       '--python', pythonVersion,
-      'chroma-mcp',
+      `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
       '--client-type', 'persistent',
       '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
     ];

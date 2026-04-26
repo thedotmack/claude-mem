@@ -217,6 +217,13 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
   // 2. Override SDK entrypoint marker
   isolatedEnv.CLAUDE_CODE_ENTRYPOINT = 'sdk-ts';
 
+  // 2a. Mark this as an internal claude-mem subprocess so spawned hooks can
+  // skip tracking unconditionally. This is the single trust boundary for
+  // observer-session detection — every consumer can check
+  // process.env.CLAUDE_MEM_INTERNAL instead of repeating cwd-based exclusion
+  // checks (which inevitably drift; see #2118 / #2126).
+  isolatedEnv.CLAUDE_MEM_INTERNAL = '1';
+
   // 3. Re-inject managed credentials from claude-mem's .env file
   if (includeCredentials) {
     const credentials = loadClaudeMemEnv();

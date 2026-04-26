@@ -50,27 +50,50 @@ interface MarkerPayload {
  * the marker file ensures the work runs at most once per data directory.
  *
  * @param dataDirectory - Override for DATA_DIR (used in tests)
+ * @param options.dryRun - When true, scans + reports counts but performs NO
+ *        DB writes, NO backup, NO chroma wipe, and does NOT write the marker.
+ *        Used by `claude-mem cleanup --dry-run` to preview what would happen
+ *        without mutating user state. (#2126 item 5)
  */
-export function runOneTimeV12_4_3Cleanup(dataDirectory?: string): void {
+export function runOneTimeV12_4_3Cleanup(
+  dataDirectory?: string,
+  options: { dryRun?: boolean } = {},
+): CleanupCounts | undefined {
+  const dryRun = options.dryRun === true;
   const effectiveDataDir = dataDirectory ?? DATA_DIR;
   const markerPath = path.join(effectiveDataDir, MARKER_FILENAME);
 
-  if (existsSync(markerPath)) {
+  if (existsSync(markerPath) && !dryRun) {
     logger.debug('SYSTEM', 'v12.4.3 cleanup marker exists, skipping');
     return;
   }
 
-  if (process.env.CLAUDE_MEM_SKIP_CLEANUP_V12_4_3 === '1') {
+  if (process.env.CLAUDE_MEM_SKIP_CLEANUP_V12_4_3 === '1' && !dryRun) {
     logger.warn('SYSTEM', 'v12.4.3 cleanup skipped via CLAUDE_MEM_SKIP_CLEANUP_V12_4_3=1; marker not written');
     return;
   }
 
   const dbPath = path.join(effectiveDataDir, 'claude-mem.db');
   if (!existsSync(dbPath)) {
+    if (dryRun) {
+      logger.info('SYSTEM', 'v12.4.3 cleanup --dry-run: no DB present, nothing to scan', { dbPath });
+      return emptyCounts();
+    }
     mkdirSync(effectiveDataDir, { recursive: true });
     writeMarker(markerPath, { appliedAt: new Date().toISOString(), backupPath: null, chromaWiped: false, counts: emptyCounts(), skipped: 'no-db' });
     logger.debug('SYSTEM', 'No DB present, v12.4.3 cleanup marker written without work', { dbPath });
     return;
+  }
+
+  if (dryRun) {
+    logger.info('SYSTEM', 'Running v12.4.3 cleanup --dry-run (read-only scan, no writes)', { dbPath });
+    try {
+      return scanCleanupCounts(dbPath);
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      logger.error('SYSTEM', 'v12.4.3 cleanup --dry-run scan failed', {}, error);
+      return undefined;
+    }
   }
 
   logger.warn('SYSTEM', 'Running one-time v12.4.3 pollution cleanup', { dbPath });
@@ -81,6 +104,43 @@ export function runOneTimeV12_4_3Cleanup(dataDirectory?: string): void {
     const error = err instanceof Error ? err : new Error(String(err));
     logger.error('SYSTEM', 'v12.4.3 cleanup failed, marker not written (will retry on next startup)', {}, error);
   }
+}
+
+/**
+ * Read-only scan: count what runOneTimeV12_4_3Cleanup *would* delete.
+ * Mirrors the COUNT(*) queries from runObserverSessionsPurge and
+ * runStuckPendingPurge. Opens the DB read-only — never mutates.
+ */
+function scanCleanupCounts(dbPath: string): CleanupCounts {
+  const counts = emptyCounts();
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    counts.observerSessions = (
+      db.prepare(`SELECT COUNT(*) AS n FROM sdk_sessions WHERE project = ?`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }
+    ).n;
+    counts.observerCascadeRows =
+      (db.prepare(`SELECT COUNT(*) AS n FROM user_prompts WHERE content_session_id IN (SELECT content_session_id FROM sdk_sessions WHERE project = ?)`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n
+      + (db.prepare(`SELECT COUNT(*) AS n FROM observations WHERE memory_session_id IN (SELECT memory_session_id FROM sdk_sessions WHERE project = ? AND memory_session_id IS NOT NULL)`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n
+      + (db.prepare(`SELECT COUNT(*) AS n FROM session_summaries WHERE memory_session_id IN (SELECT memory_session_id FROM sdk_sessions WHERE project = ? AND memory_session_id IS NOT NULL)`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n;
+    counts.stuckPendingMessages = (db.prepare(
+      `SELECT COUNT(*) AS n FROM pending_messages
+         WHERE status IN ('failed', 'processing')
+           AND session_db_id IN (
+             SELECT session_db_id FROM pending_messages
+              WHERE status IN ('failed', 'processing')
+              GROUP BY session_db_id
+              HAVING COUNT(*) >= ?
+           )`
+    ).get(STUCK_PENDING_THRESHOLD) as { n: number }).n;
+  } finally {
+    db.close();
+  }
+  logger.info('SYSTEM', 'v12.4.3 cleanup --dry-run scan complete', {
+    observerSessions: counts.observerSessions,
+    observerCascadeRows: counts.observerCascadeRows,
+    stuckPendingMessages: counts.stuckPendingMessages,
+  });
+  return counts;
 }
 
 function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: string): void {

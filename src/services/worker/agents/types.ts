@@ -99,17 +99,6 @@ export interface ParsedResponse {
 }
 
 // ============================================================================
-// Fallback Agent Interface
-// ============================================================================
-
-/**
- * Interface for fallback agent (used by Gemini/OpenRouter to fall back to Claude)
- */
-export interface FallbackAgent {
-  startSession(session: ActiveSession, worker?: WorkerRef): Promise<void>;
-}
-
-// ============================================================================
 // Agent Configuration Types
 // ============================================================================
 

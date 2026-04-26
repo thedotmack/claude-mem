@@ -6,6 +6,16 @@
 // Solution: JSON is self-delimiting. We detect complete JSON by attempting
 // to parse after each chunk. Once we have valid JSON, we resolve immediately
 // without waiting for EOF. This is the proper fix, not a timeout workaround.
+//
+// Resolve/reject contract:
+//   - Resolves with parsed JSON value when stdin yields valid JSON.
+//   - Resolves with `undefined` when stdin is unavailable, closes empty,
+//     or emits a stream error.
+//   - Rejects with an Error when stdin closes (or the safety timeout fires)
+//     after non-empty bytes that never form valid JSON. Malformed input is
+//     a handler/client bug — surfacing it lets the upstream exit-code
+//     strategy treat it as a blocking error (exit 2) rather than silently
+//     proceeding as if no input was given. (#2089)
 
 import { logger } from '../utils/logger.js';
 
@@ -157,8 +167,14 @@ export async function readJsonFromStdin(): Promise<unknown> {
       // stdin closed - parse whatever we have
       if (!resolved) {
         if (!tryResolveWithJson()) {
-          // Empty or invalid - resolve with undefined
-          resolveWith(input.trim() ? undefined : undefined);
+          // Mirror the safety-timeout semantics (#2089):
+          // non-empty bytes that never parsed = malformed input, surface it.
+          // Empty stdin = "no input given", resolve undefined.
+          if (input.trim()) {
+            rejectWith(new Error(`Malformed JSON at stdin EOF: ${input.slice(0, 100)}...`));
+          } else {
+            resolveWith(undefined);
+          }
         }
       }
     };

@@ -40,6 +40,7 @@ export class MigrationRunner {
     this.addObservationSubagentColumns();
     this.rebuildPendingMessagesForSelfHealingClaim();
     this.addObservationsUniqueContentHashIndex();
+    this.addObservationsMetadataColumn();
   }
 
   /**
@@ -1203,5 +1204,28 @@ export class MigrationRunner {
       }
       throw new Error(`Migration 29 failed: ${String(error)}`);
     }
+  }
+
+  /**
+   * Add metadata TEXT column to observations (migration 30).
+   *
+   * Backward-compatible: nullable, no default. Holds JSON-encoded arbitrary
+   * metadata supplied by callers of POST /api/memory/save (#2116). Without
+   * this column, the route's Zod `.passthrough()` accepted unknown fields
+   * but the INSERT silently dropped them — a quiet contract violation.
+   *
+   * Idempotent via PRAGMA table_info guard so cross-machine DB sync that
+   * leaves schema_versions ahead of actual schema still self-heals.
+   */
+  private addObservationsMetadataColumn(): void {
+    const cols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasColumn = cols.some(c => c.name === 'metadata');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE observations ADD COLUMN metadata TEXT');
+      logger.debug('DB', 'Added metadata column to observations table (#2116)');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(30, new Date().toISOString());
   }
 }

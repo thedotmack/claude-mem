@@ -9,7 +9,8 @@
  */
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
-import { existsSync, rmSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
 import { join } from 'path';
 import {
   claudeSettingsPath,
@@ -21,6 +22,8 @@ import {
   writeJsonFileAtomic,
 } from '../utils/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
 
 // ---------------------------------------------------------------------------
 // Cleanup helpers
@@ -60,12 +63,138 @@ function removeFromInstalledPlugins(): void {
   }
 }
 
+/**
+ * Strip the legacy `claude-mem` shell alias/function from common shell rc files
+ * (#2054). The alias used to be added by `installCLI()` in smart-install.js;
+ * that function was deleted, but existing users still have the line. This is
+ * a one-time best-effort cleanup — idempotent (no-op if the line is absent),
+ * and safely matches only lines that BEGIN with `alias claude-mem=` or
+ * `function claude-mem` to avoid mangling unrelated code.
+ */
+function stripLegacyClaudeMemAlias(): void {
+  const home = homedir();
+  const candidateFiles = [
+    join(home, '.bashrc'),
+    join(home, '.zshrc'),
+    join(home, 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1'),
+  ];
+
+  // Only strip simple aliases. A function declaration would span multiple
+  // lines and can't be safely removed by a line filter — leave it for the
+  // user to remove manually.
+  const aliasLineRegex = /^\s*alias\s+claude-mem\s*=/;
+
+  for (const filePath of candidateFiles) {
+    if (!existsSync(filePath)) continue;
+    let content: string;
+    try {
+      content = readFileSync(filePath, 'utf-8');
+    } catch (error: unknown) {
+      console.warn(`[uninstall] Could not read ${filePath}:`, error instanceof Error ? error.message : String(error));
+      continue;
+    }
+    const lines = content.split('\n');
+    const filtered = lines.filter((line) => !aliasLineRegex.test(line));
+    if (filtered.length === lines.length) continue; // no match — leave file untouched
+    try {
+      writeFileSync(filePath, filtered.join('\n'));
+      console.error(`Removed legacy claude-mem alias from ${filePath}`);
+    } catch (error: unknown) {
+      console.warn(`[uninstall] Could not rewrite ${filePath}:`, error instanceof Error ? error.message : String(error));
+    }
+  }
+}
+
 function removeFromClaudeSettings(): void {
   const settings = readJsonSafe<Record<string, any>>(claudeSettingsPath(), {});
   if (settings.enabledPlugins?.['claude-mem@thedotmack'] !== undefined) {
     delete settings.enabledPlugins['claude-mem@thedotmack'];
     writeJsonFileAtomic(claudeSettingsPath(), settings);
   }
+}
+
+/**
+ * Best-effort cleanup of stray claude-mem residue (#2106 item 4) that
+ * accumulates outside of `~/.claude/plugins/marketplaces/thedotmack/`:
+ *
+ *   - `~/.npm/_npx/<hash>/node_modules/claude-mem` (npx install caches)
+ *   - `~/.cache/claude-cli-nodejs/<project>/mcp-logs-plugin-claude-mem-*`
+ *   - `~/.claude/plugins/data/claude-mem-thedotmack/`
+ *
+ * Each step is wrapped in its own try/catch — a failure on one path
+ * (e.g. permissions denied on a single npx hash dir) must not abort
+ * the rest. We log the failure and continue.
+ *
+ * Returns the count of paths actually removed (purely for reporting).
+ */
+function removeStrayClaudeMemPaths(): number {
+  const home = homedir();
+  let removedCount = 0;
+
+  // 1. ~/.npm/_npx/*/node_modules/claude-mem
+  const npxRoot = join(home, '.npm', '_npx');
+  if (existsSync(npxRoot)) {
+    let hashDirs: string[] = [];
+    try {
+      hashDirs = readdirSync(npxRoot);
+    } catch (error: unknown) {
+      console.warn(`[uninstall] Could not read ${npxRoot}:`, error instanceof Error ? error.message : String(error));
+    }
+    for (const hashDir of hashDirs) {
+      const candidate = join(npxRoot, hashDir, 'node_modules', 'claude-mem');
+      if (!existsSync(candidate)) continue;
+      try {
+        rmSync(candidate, { recursive: true, force: true });
+        removedCount++;
+      } catch (error: unknown) {
+        console.warn(`[uninstall] Could not remove ${candidate}:`, error instanceof Error ? error.message : String(error));
+      }
+    }
+  }
+
+  // 2. ~/.cache/claude-cli-nodejs/*/mcp-logs-plugin-claude-mem-*
+  const cacheRoot = join(home, '.cache', 'claude-cli-nodejs');
+  if (existsSync(cacheRoot)) {
+    let projectDirs: string[] = [];
+    try {
+      projectDirs = readdirSync(cacheRoot);
+    } catch (error: unknown) {
+      console.warn(`[uninstall] Could not read ${cacheRoot}:`, error instanceof Error ? error.message : String(error));
+    }
+    for (const projectDir of projectDirs) {
+      const projectPath = join(cacheRoot, projectDir);
+      let logEntries: string[] = [];
+      try {
+        logEntries = readdirSync(projectPath);
+      } catch (error: unknown) {
+        console.warn(`[uninstall] Could not read ${projectPath}:`, error instanceof Error ? error.message : String(error));
+        continue;
+      }
+      for (const entry of logEntries) {
+        if (!entry.startsWith('mcp-logs-plugin-claude-mem-')) continue;
+        const logPath = join(projectPath, entry);
+        try {
+          rmSync(logPath, { recursive: true, force: true });
+          removedCount++;
+        } catch (error: unknown) {
+          console.warn(`[uninstall] Could not remove ${logPath}:`, error instanceof Error ? error.message : String(error));
+        }
+      }
+    }
+  }
+
+  // 3. ~/.claude/plugins/data/claude-mem-thedotmack/
+  const pluginDataDir = join(home, '.claude', 'plugins', 'data', 'claude-mem-thedotmack');
+  if (existsSync(pluginDataDir)) {
+    try {
+      rmSync(pluginDataDir, { recursive: true, force: true });
+      removedCount++;
+    } catch (error: unknown) {
+      console.warn(`[uninstall] Could not remove ${pluginDataDir}:`, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  return removedCount;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,30 +234,23 @@ export async function runUninstallCommand(): Promise<void> {
     }
   }
 
-  // Stop the worker and wait for it to exit before deleting files
-  const workerPort = process.env.CLAUDE_MEM_WORKER_PORT || '37777';
+  // Stop the worker and wait for it to exit before deleting files.
+  // Resolve port via SettingsDefaultsManager so CLAUDE_MEM_WORKER_PORT env
+  // takes priority and the per-UID default (37700 + uid % 100) is used
+  // otherwise. Required for multi-account isolation (#2101).
+  //
+  // The worker's graceful shutdown also stops chroma-mcp via
+  // GracefulShutdown -> ChromaMcpManager.stop(), so this single call
+  // cascades to the chroma-mcp subprocess as well.
+  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
   try {
-    await fetch(`http://127.0.0.1:${workerPort}/api/admin/shutdown`, {
-      method: 'POST',
-      signal: AbortSignal.timeout(5000),
-    });
-    // Poll health endpoint until worker is gone (max 10s)
-    for (let attempt = 0; attempt < 20; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      try {
-        await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
-          signal: AbortSignal.timeout(1000),
-        });
-        // Still alive — keep waiting
-      } catch (error: unknown) {
-        // Connection refused = worker is gone (expected shutdown behavior)
-        console.error('[uninstall] Worker health check failed (worker stopped):', error instanceof Error ? error.message : String(error));
-        break;
-      }
+    const result = await shutdownWorkerAndWait(workerPort, 10000);
+    if (result.workerWasRunning) {
+      p.log.info('Worker service stopped.');
     }
-    p.log.info('Worker service stopped.');
-  } catch {
-    // Worker may not be running — that is fine
+  } catch (error: unknown) {
+    // shutdownWorkerAndWait swallows its own errors, but guard anyway.
+    console.warn('[uninstall] Worker shutdown attempt failed:', error instanceof Error ? error.message : String(error));
   }
 
   await p.tasks([
@@ -169,6 +291,22 @@ export async function runUninstallCommand(): Promise<void> {
       task: async () => {
         removeFromClaudeSettings();
         return `Claude settings updated ${pc.green('OK')}`;
+      },
+    },
+    {
+      title: 'Removing legacy claude-mem shell alias',
+      task: async () => {
+        stripLegacyClaudeMemAlias();
+        return `Legacy alias check complete ${pc.green('OK')}`;
+      },
+    },
+    {
+      title: 'Removing stray claude-mem caches and logs',
+      task: async () => {
+        const removed = removeStrayClaudeMemPaths();
+        return removed > 0
+          ? `Stray paths removed: ${removed} ${pc.green('OK')}`
+          : `No stray paths found ${pc.dim('skipped')}`;
       },
     },
   ]);
