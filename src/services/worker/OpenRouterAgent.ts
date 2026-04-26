@@ -24,8 +24,6 @@ import { SessionManager } from './SessionManager.js';
 import {
   isAbortError,
   processAgentResponse,
-  shouldFallbackToClaude,
-  type FallbackAgent,
   type WorkerRef
 } from './agents/index.js';
 
@@ -65,19 +63,10 @@ interface OpenRouterResponse {
 export class OpenRouterAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
-  private fallbackAgent: FallbackAgent | null = null;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
     this.sessionManager = sessionManager;
-  }
-
-  /**
-   * Set the fallback agent (Claude SDK) for when OpenRouter API fails
-   * Must be set after construction to avoid circular dependency
-   */
-  setFallbackAgent(agent: FallbackAgent): void {
-    this.fallbackAgent = agent;
   }
 
   /**
@@ -327,25 +316,16 @@ export class OpenRouterAgent {
   }
 
   /**
-   * Handle errors from session processing: abort re-throw, fallback to Claude, or log and re-throw.
+   * Handle errors from session processing: abort re-throw or log and re-throw.
+   *
+   * Note: The previous Claude-SDK fallback path was removed in #2087 — it was
+   * never wired in production (`fallbackAgent` was always null), so 429s
+   * already threw in practice. The throw is now explicit.
    */
-  private async handleSessionError(error: unknown, session: ActiveSession, worker?: WorkerRef): Promise<never | void> {
+  private async handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): Promise<never> {
     if (isAbortError(error)) {
       logger.warn('SDK', 'OpenRouter agent aborted', { sessionId: session.sessionDbId });
       throw error;
-    }
-
-    if (shouldFallbackToClaude(error) && this.fallbackAgent) {
-      logger.warn('SDK', 'OpenRouter API failed, falling back to Claude SDK', {
-        sessionDbId: session.sessionDbId,
-        error: error instanceof Error ? error.message : String(error),
-        historyLength: session.conversationHistory.length
-      });
-
-      // Fall back to Claude - it will use the same session with shared conversationHistory
-      // Note: With claim-and-delete queue pattern, messages are already deleted on claim
-      await this.fallbackAgent.startSession(session, worker);
-      return;
     }
 
     logger.failure('SDK', 'OpenRouter agent error', { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));

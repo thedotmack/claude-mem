@@ -15,7 +15,7 @@ Claude-mem supports Google's Gemini API as an alternative to the Claude Agent SD
 
 - **Cost savings**: The free tier covers most individual usage patterns
 - **Same quality**: Gemini extracts observations using the same XML format as Claude
-- **Seamless fallback**: Automatically falls back to Claude if Gemini is unavailable
+- **Errors throw clearly**: 429s, 5xx, and network failures throw — leaving messages pending so they can be retried
 - **Hot-swappable**: Switch providers without restarting the worker
 
 ## Getting a Free API Key
@@ -103,23 +103,16 @@ You can switch between Claude and Gemini at any time:
 }
 ```
 
-## Fallback Behavior
+## Error Behavior
 
-If Gemini is selected but encounters errors, claude-mem automatically falls back to the Claude Agent SDK:
+If Gemini is selected and the API errors, claude-mem logs the failure and re-throws so the message stays pending for later retry. There is no Claude SDK fallback — earlier docs claimed automatic Claude fallback, but the wiring was never actually engaged in production (#2087). To switch providers, change `CLAUDE_MEM_PROVIDER` in settings.
 
-**Triggers fallback:**
+**Throwing conditions:**
 - Rate limiting (HTTP 429)
 - Server errors (HTTP 5xx)
 - Network issues (connection refused, timeout)
-
-**Does not trigger fallback:**
-- Missing API key (logs warning, uses Claude from start)
-- Invalid API key (fails with error)
-
-When fallback occurs:
-1. A warning is logged
-2. Any in-progress messages are reset to pending
-3. Claude SDK takes over with the full conversation context
+- 4xx errors other than 429
+- Missing API key
 
 ## Troubleshooting
 

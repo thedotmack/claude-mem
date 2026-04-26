@@ -16,7 +16,7 @@ Claude-mem supports [OpenRouter](https://openrouter.ai) as an alternative provid
 - **Access to 100+ models**: Choose from models across multiple providers through one API
 - **Free tier options**: Several high-quality models are completely free to use
 - **Cost flexibility**: Pay-as-you-go pricing on premium models with no commitments
-- **Seamless fallback**: Automatically falls back to Claude if OpenRouter is unavailable
+- **Errors throw clearly**: 429s, 5xx, and network failures throw — leaving messages pending so they can be retried
 - **Hot-swappable**: Switch providers without restarting the worker
 - **Multi-turn conversations**: Full conversation history maintained across API calls
 
@@ -187,28 +187,16 @@ You can switch between providers at any time:
 }
 ```
 
-## Fallback Behavior
+## Error Behavior
 
-If OpenRouter encounters errors, claude-mem automatically falls back to the Claude Agent SDK:
+If OpenRouter errors, claude-mem logs the failure and re-throws so the message stays pending for later retry. There is no Claude SDK fallback — earlier docs claimed automatic Claude fallback, but the wiring was never actually engaged in production (#2087). To switch providers, change `CLAUDE_MEM_PROVIDER` in settings.
 
-**Triggers fallback:**
+**Throwing conditions:**
 - Rate limiting (HTTP 429)
 - Server errors (HTTP 500, 502, 503)
 - Network issues (connection refused, timeout)
-- Generic fetch failures
-
-**Does not trigger fallback:**
-- Missing API key (logs warning, uses Claude from start)
-- Invalid API key (fails with error)
-
-When fallback occurs:
-1. A warning is logged
-2. Any in-progress messages are reset to pending
-3. Claude SDK takes over with the full conversation context
-
-<Note>
-**Fallback is transparent**: Your observations continue processing without interruption. The fallback preserves all conversation context.
-</Note>
+- 4xx errors other than 429
+- Missing API key
 
 ## Multi-Turn Conversation Support
 
@@ -245,7 +233,7 @@ Either:
 ### Rate Limiting
 
 Free models may have rate limits during peak usage. If you hit rate limits:
-- Claude-mem automatically falls back to Claude SDK
+- The agent throws and leaves the message pending — it will be retried later
 - Consider switching to a different free model
 - Add credits for premium model access
 
@@ -268,7 +256,7 @@ If you see warnings about high token usage (>50,000 per request):
 If you see connection errors:
 - Check your internet connection
 - Verify OpenRouter service status at [status.openrouter.ai](https://status.openrouter.ai)
-- The agent will automatically fall back to Claude
+- The agent throws and leaves the message pending for later retry
 
 ## API Details
 
@@ -305,7 +293,7 @@ Content-Type: application/json
 | **Models** | Claude only | Gemini only | 100+ models |
 | **Quality** | Highest | High | Varies by model |
 | **Rate limits** | Based on tier | 5-4000 RPM | Varies by model |
-| **Fallback** | N/A (primary) | → Claude | → Claude |
+| **On error** | Throws | Throws | Throws |
 | **Setup** | Automatic | API key required | API key required |
 
 <Tip>

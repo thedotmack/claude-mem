@@ -251,7 +251,10 @@ describe('GeminiAgent', () => {
     expect(session.cumulativeInputTokens).toBeGreaterThan(0);
   });
 
-  it('should fallback to Claude on rate limit error', async () => {
+  it('should throw on rate limit (429) error — no Claude fallback (#2087)', async () => {
+    // The Claude-SDK fallback path was removed in #2087: it was never wired in
+    // production (`fallbackAgent` was always null) so 429s already threw.
+    // This test pins the new explicit behavior.
     const session = {
       sessionDbId: 1,
       contentSessionId: 'test-session',
@@ -273,19 +276,10 @@ describe('GeminiAgent', () => {
 
     global.fetch = mock(() => Promise.resolve(new Response('Resource has been exhausted (e.g. check quota).', { status: 429 })));
 
-    const fallbackAgent = {
-      startSession: mock(() => Promise.resolve())
-    };
-    agent.setFallbackAgent(fallbackAgent);
-
-    await agent.startSession(session);
-
-    // Verify fallback to Claude was triggered
-    expect(fallbackAgent.startSession).toHaveBeenCalledWith(session, undefined);
-    // Note: resetStuckMessages is called by worker-service.ts, not by GeminiAgent
+    await expect(agent.startSession(session)).rejects.toThrow(/429/);
   });
 
-  it('should NOT fallback on other errors', async () => {
+  it('should throw on other errors', async () => {
     const session = {
       sessionDbId: 1,
       contentSessionId: 'test-session',
@@ -307,13 +301,7 @@ describe('GeminiAgent', () => {
 
     global.fetch = mock(() => Promise.resolve(new Response('Invalid argument', { status: 400 })));
 
-    const fallbackAgent = {
-      startSession: mock(() => Promise.resolve())
-    };
-    agent.setFallbackAgent(fallbackAgent);
-
     await expect(agent.startSession(session)).rejects.toThrow('Gemini API error: 400 - Invalid argument');
-    expect(fallbackAgent.startSession).not.toHaveBeenCalled();
   });
 
   it('should respect rate limits when rate limiting enabled', async () => {

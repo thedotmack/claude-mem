@@ -9,7 +9,8 @@
  */
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
-import { existsSync, rmSync } from 'fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
 import { join } from 'path';
 import {
   claudeSettingsPath,
@@ -57,6 +58,45 @@ function removeFromInstalledPlugins(): void {
   if (installedPlugins.plugins?.['claude-mem@thedotmack']) {
     delete installedPlugins.plugins['claude-mem@thedotmack'];
     writeJsonFileAtomic(installedPluginsPath(), installedPlugins);
+  }
+}
+
+/**
+ * Strip the legacy `claude-mem` shell alias/function from common shell rc files
+ * (#2054). The alias used to be added by `installCLI()` in smart-install.js;
+ * that function was deleted, but existing users still have the line. This is
+ * a one-time best-effort cleanup — idempotent (no-op if the line is absent),
+ * and safely matches only lines that BEGIN with `alias claude-mem=` or
+ * `function claude-mem` to avoid mangling unrelated code.
+ */
+function stripLegacyClaudeMemAlias(): void {
+  const home = homedir();
+  const candidateFiles = [
+    join(home, '.bashrc'),
+    join(home, '.zshrc'),
+    join(home, 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1'),
+  ];
+
+  const aliasLineRegex = /^\s*(alias\s+claude-mem\s*=|function\s+claude-mem\b)/;
+
+  for (const filePath of candidateFiles) {
+    if (!existsSync(filePath)) continue;
+    let content: string;
+    try {
+      content = readFileSync(filePath, 'utf-8');
+    } catch (error: unknown) {
+      console.warn(`[uninstall] Could not read ${filePath}:`, error instanceof Error ? error.message : String(error));
+      continue;
+    }
+    const lines = content.split('\n');
+    const filtered = lines.filter((line) => !aliasLineRegex.test(line));
+    if (filtered.length === lines.length) continue; // no match — leave file untouched
+    try {
+      writeFileSync(filePath, filtered.join('\n'));
+      console.error(`Removed legacy claude-mem alias from ${filePath}`);
+    } catch (error: unknown) {
+      console.warn(`[uninstall] Could not rewrite ${filePath}:`, error instanceof Error ? error.message : String(error));
+    }
   }
 }
 
@@ -169,6 +209,13 @@ export async function runUninstallCommand(): Promise<void> {
       task: async () => {
         removeFromClaudeSettings();
         return `Claude settings updated ${pc.green('OK')}`;
+      },
+    },
+    {
+      title: 'Removing legacy claude-mem shell alias',
+      task: async () => {
+        stripLegacyClaudeMemAlias();
+        return `Legacy alias check complete ${pc.green('OK')}`;
       },
     },
   ]);
