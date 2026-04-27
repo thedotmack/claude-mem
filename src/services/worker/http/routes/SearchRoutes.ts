@@ -31,7 +31,7 @@ Bash, and search Claude makes turns into a compressed observation.
 
 To kick things off:
 
-- Run \`/learn-codebase\` to teach claude-mem your repo (free structural pass + optional cost-bounded prime)
+- Run \`/learn-codebase\` to have Claude read every file in this repo
 - Browse the viewer at {viewer_url}
 - Ask "did we already solve X?" or use \`/mem-search\` to recall past work
 

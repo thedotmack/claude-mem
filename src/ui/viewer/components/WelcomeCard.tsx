@@ -58,7 +58,7 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
         <li><code>ask:</code> what did we change in this codebase last week?</li>
         <li><code>ask:</code> did we already solve X?</li>
         <li><code>/mem-search</code> to dig into past work</li>
-        <li><code>/learn-codebase</code> to teach claude-mem this repo</li>
+        <li><code>/learn-codebase</code> — have Claude read every file in this repo</li>
       </ul>
       <footer className="welcome-card-footer">
         <a href="https://docs.claude-mem.ai" target="_blank" rel="noopener noreferrer">

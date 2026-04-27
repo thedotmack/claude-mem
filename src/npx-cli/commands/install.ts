@@ -861,7 +861,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   const nextSteps = (workerStarted || workerReady)
     ? [
         `${pc.green('✓')} Worker running at ${pc.underline(`http://localhost:${actualPort}`)}`,
-        `→ Open Claude Code in a project, then run ${pc.bold('/learn-codebase')} to teach claude-mem your repo`,
+        `→ Open Claude Code in a project, then run ${pc.bold('/learn-codebase')} to have Claude read your repo end-to-end`,
         `→ Search past work: ask "did we already solve X?" or use ${pc.bold('/mem-search')}`,
         `→ Build focused brains: ${pc.bold('/knowledge-agent')}`,
         `Note: Close all Claude Code sessions before uninstalling, or ${pc.cyan('~/.claude-mem')} will be recreated by active hooks.`,
