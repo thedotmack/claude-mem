@@ -12,7 +12,31 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
+import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
+import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
+
+/**
+ * Welcome-hint body returned by /api/context/inject when a project has zero
+ * observations. Self-healing — disappears once the first observation lands.
+ * The literal `{viewer_url}` token is replaced at request time with the
+ * worker's local URL.
+ */
+const WELCOME_HINT_TEMPLATE = `# Welcome to claude-mem
+
+This is your first session in this project. claude-mem will start
+building memory as you and Claude work together — every Read, Edit,
+Bash, and search Claude makes turns into a compressed observation.
+
+To kick things off:
+
+- Run \`/learn-codebase\` to teach claude-mem your repo (free structural pass + optional cost-bounded prime)
+- Browse the viewer at {viewer_url}
+- Ask "did we already solve X?" or use \`/mem-search\` to recall past work
+
+This message will disappear once your first observation lands.
+`;
 
 // Plan 06 Phase 3 — per-route Zod schema. The semantic-context endpoint
 // also accepts query-string fallbacks, so the body itself is fully optional.
@@ -363,6 +387,25 @@ export class SearchRoutes extends BaseRouteHandler {
     if (projects.length === 0) {
       this.badRequest(res, 'At least one project is required');
       return;
+    }
+
+    // Welcome hint: if the project has zero observations, return a templated
+    // onboarding message instead of empty context. Self-healing — once any
+    // observation lands the count crosses 0 and normal context generation
+    // takes over.
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const hintEnabled = String(settings.CLAUDE_MEM_WELCOME_HINT_ENABLED ?? '').toLowerCase() === 'true';
+    if (hintEnabled) {
+      const sessionStore = this.searchManager.getSessionStore();
+      const observationCount = countObservationsByProjects(sessionStore, projects);
+      if (observationCount === 0) {
+        const port = settings.CLAUDE_MEM_WORKER_PORT;
+        const viewerUrl = `http://localhost:${port}`;
+        const hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.send(hintBody);
+        return;
+      }
     }
 
     // Import context generator (runs in worker, has access to database)

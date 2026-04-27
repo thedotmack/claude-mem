@@ -6,9 +6,9 @@
  * - Broadcast new summaries to SSE clients
  * - Handle worker reference safely (null checks)
  *
- * BUGFIX: This module fixes the incorrect field names in SDKAgent:
- * - SDKAgent used `obs.files` which doesn't exist - should be `obs.files_read`
- * - SDKAgent used hardcoded `files_modified: JSON.stringify([])` - should use `obs.files_modified`
+ * BUGFIX: This module fixes the incorrect field names in ClaudeProvider:
+ * - ClaudeProvider used `obs.files` which doesn't exist - should be `obs.files_read`
+ * - ClaudeProvider used hardcoded `files_modified: JSON.stringify([])` - should use `obs.files_modified`
  */
 
 import type { WorkerRef, ObservationSSEPayload, SummarySSEPayload } from './types.js';

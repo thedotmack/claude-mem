@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:te
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { GeminiAgent } from '../src/services/worker/GeminiAgent';
+import { GeminiProvider } from '../src/services/worker/GeminiProvider';
 import { DatabaseManager } from '../src/services/worker/DatabaseManager';
 import { SessionManager } from '../src/services/worker/SessionManager';
 import { ModeManager } from '../src/services/domain/ModeManager';
@@ -30,8 +30,8 @@ let loadFromFileSpy: ReturnType<typeof spyOn>;
 let getSpy: ReturnType<typeof spyOn>;
 let modeManagerSpy: ReturnType<typeof spyOn>;
 
-describe('GeminiAgent', () => {
-  let agent: GeminiAgent;
+describe('GeminiProvider', () => {
+  let agent: GeminiProvider;
   let originalFetch: typeof global.fetch;
 
   // Mocks
@@ -122,7 +122,7 @@ describe('GeminiAgent', () => {
       getPendingMessageStore: () => mockPendingMessageStore
     } as unknown as SessionManager;
 
-    agent = new GeminiAgent(mockDbManager, mockSessionManager);
+    agent = new GeminiProvider(mockDbManager, mockSessionManager);
     originalFetch = global.fetch;
   });
 

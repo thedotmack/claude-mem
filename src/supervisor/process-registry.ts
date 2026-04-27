@@ -536,7 +536,7 @@ export async function ensureSdkProcessExit(
 // Pool slot waiters — backpressure without eviction
 // ---------------------------------------------------------------------------
 //
-// waitForSlot is used by SDKAgent to avoid starting more concurrent SDK
+// waitForSlot is used by ClaudeProvider to avoid starting more concurrent SDK
 // subprocesses than configured. It is event-driven: when a process exits and
 // is unregistered, notifySlotAvailable() wakes exactly one waiter. There is
 // no polling. There is no idle-session eviction (Principle 1 — do not kick

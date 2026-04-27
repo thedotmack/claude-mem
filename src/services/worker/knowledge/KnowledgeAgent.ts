@@ -19,12 +19,12 @@ import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../../s
 import { buildIsolatedEnv } from '../../../shared/EnvManager.js';
 import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
 
-// Import Agent SDK (V1 API — same pattern as SDKAgent.ts)
+// Import Agent SDK (V1 API — same pattern as ClaudeProvider.ts)
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 // Knowledge agent is Q&A only — all 12 tools blocked
-// Copied from SDKAgent.ts:55-67
+// Copied from ClaudeProvider.ts:55-67
 const KNOWLEDGE_AGENT_DISALLOWED_TOOLS = [
   'Bash',           // Prevent infinite loops
   'Read',           // No file reading
@@ -232,7 +232,7 @@ export class KnowledgeAgent {
   }
 
   /**
-   * Get model ID from user settings — same as SDKAgent.getModelId()
+   * Get model ID from user settings — same as ClaudeProvider.getModelId()
    */
   private getModelId(): string {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -241,7 +241,7 @@ export class KnowledgeAgent {
 
   /**
    * Find the Claude executable path.
-   * Mirrors SDKAgent.findClaudeExecutable() logic.
+   * Mirrors ClaudeProvider.findClaudeExecutable() logic.
    */
   private findClaudeExecutable(): string {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);

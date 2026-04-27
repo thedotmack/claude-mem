@@ -142,7 +142,7 @@ describe('Session ID Critical Invariants', () => {
 
     it('should NOT reset memorySessionId when it is still NULL (first prompt scenario)', () => {
       // When memory_session_id is NULL, createSDKSession should NOT reset it
-      // This is the normal first-prompt scenario where SDKAgent hasn't captured the ID yet
+      // This is the normal first-prompt scenario where ClaudeProvider hasn't captured the ID yet
       const contentSessionId = 'new-session';
 
       // First createSDKSession - creates row with NULL memory_session_id

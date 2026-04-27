@@ -17,6 +17,7 @@ interface HeaderProps {
   themePreference: ThemePreference;
   onThemeChange: (theme: ThemePreference) => void;
   onContextPreviewToggle: () => void;
+  onShowHelp?: () => void;
 }
 
 function formatSourceLabel(source: string): string {
@@ -43,7 +44,8 @@ export function Header({
   queueDepth,
   themePreference,
   onThemeChange,
-  onContextPreviewToggle
+  onContextPreviewToggle,
+  onShowHelp
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
   const availableSources = buildSourceTabs(sources);
@@ -125,6 +127,18 @@ export function Header({
           preference={themePreference}
           onThemeChange={onThemeChange}
         />
+        <button
+          className="settings-btn"
+          onClick={() => onShowHelp?.()}
+          title="Show welcome card"
+          aria-label="Show welcome card"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+          </svg>
+        </button>
         <button
           className="settings-btn"
           onClick={onContextPreviewToggle}

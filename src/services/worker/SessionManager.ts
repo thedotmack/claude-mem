@@ -469,7 +469,7 @@ export class SessionManager {
   }
 
   /**
-   * Get message iterator for SDKAgent to consume (event-driven, no polling)
+   * Get message iterator for ClaudeProvider to consume (event-driven, no polling)
    * Auto-initializes session if not in memory but exists in database
    *
    * CRITICAL: Uses PendingMessageStore for crash-safe message persistence.
@@ -518,7 +518,7 @@ export class SessionManager {
   }
 
   /**
-   * Get the PendingMessageStore (for SDKAgent to mark messages as processed)
+   * Get the PendingMessageStore (for ClaudeProvider to mark messages as processed)
    */
   getPendingMessageStore(): PendingMessageStore {
     return this.getPendingStore();

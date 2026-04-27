@@ -106,7 +106,7 @@ function main() {
     console.log('\nTimestamp Logic Validation:\n');
     console.log('✅ Code Flow:');
     console.log('   1. SessionManager.yieldNextMessage() tracks earliestPendingTimestamp');
-    console.log('   2. SDKAgent captures originalTimestamp before processing');
+    console.log('   2. ClaudeProvider captures originalTimestamp before processing');
     console.log('   3. processSDKResponse passes originalTimestamp to storeObservation/storeSummary');
     console.log('   4. SessionStore uses overrideTimestampEpoch ?? Date.now()');
     console.log('   5. earliestPendingTimestamp reset after batch completes\n');

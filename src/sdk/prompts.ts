@@ -174,7 +174,7 @@ ${mode.prompts.summary_footer}`;
  *
  * CRITICAL: Why contentSessionId Parameter is Required
  * ====================================================
- * This function receives contentSessionId from SDKAgent.ts, which comes from:
+ * This function receives contentSessionId from ClaudeProvider.ts, which comes from:
  * - SessionManager.initializeSession (fetched from database)
  * - SessionStore.createSDKSession (stored by new-hook.ts)
  * - new-hook.ts receives it from Claude Code's hook context
@@ -187,7 +187,7 @@ ${mode.prompts.summary_footer}`;
  * This is how everything stays connected - ONE session_id threading through
  * all hooks and prompts in the same conversation.
  *
- * Called when: promptNumber > 1 (see SDKAgent.ts line 150)
+ * Called when: promptNumber > 1 (see ClaudeProvider.ts line 150)
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
  */
 export function buildContinuationPrompt(userPrompt: string, promptNumber: number, contentSessionId: string, mode: ModeConfig): string {

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 
 /**
- * Tests for SDKAgent resume parameter logic
+ * Tests for ClaudeProvider resume parameter logic
  *
  * The resume parameter should ONLY be passed when:
  * 1. memorySessionId exists (was captured from a previous SDK response)
@@ -10,10 +10,10 @@ import { describe, it, expect } from 'bun:test';
  * On worker restart or crash recovery, memorySessionId may exist from a previous
  * SDK session but we must NOT resume because the SDK context was lost.
  */
-describe('SDKAgent Resume Parameter Logic', () => {
+describe('ClaudeProvider Resume Parameter Logic', () => {
   /**
-   * Helper function that mirrors the logic in SDKAgent.startSession()
-   * This is the exact condition used at SDKAgent.ts line 99
+   * Helper function that mirrors the logic in ClaudeProvider.startSession()
+   * This is the exact condition used at ClaudeProvider.ts line 99
    */
   function shouldPassResumeParameter(session: {
     memorySessionId: string | null;

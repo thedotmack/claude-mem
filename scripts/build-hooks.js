@@ -334,6 +334,11 @@ async function buildHooks() {
         'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
         'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
         'buffer', 'querystring', 'readline', 'tty', 'assert',
+        // Bun-only modules — present in transitive imports (ProcessManager
+        // pulls bun:sqlite via require for stale-PID detection). Mark external
+        // so esbuild leaves the require() string alone; npx-cli paths that hit
+        // these are guarded by Bun-runtime checks at call sites.
+        'bun:sqlite',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
