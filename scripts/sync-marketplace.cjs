@@ -69,6 +69,62 @@ function getPluginVersion() {
   }
 }
 
+// Preflight: if a worker is running on an older version than what we're about
+// to build, Claude Code's plugin loader is pinned to that older version and
+// hooks will keep respawning the worker from the old cache path no matter how
+// many times we sync. Bail loudly so the user updates the plugin first.
+function preflightVersionCheck(buildVersion) {
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR || path.join(os.homedir(), '.claude-mem');
+  const settingsPath = path.join(dataDir, 'settings.json');
+  let port = parseInt(process.env.CLAUDE_MEM_WORKER_PORT, 10);
+  if (!port && existsSync(settingsPath)) {
+    try {
+      const s = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      if (s.CLAUDE_MEM_WORKER_PORT) port = parseInt(s.CLAUDE_MEM_WORKER_PORT, 10);
+    } catch {}
+  }
+  if (!port) {
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 77;
+    port = 37700 + (uid % 100);
+  }
+  let healthBody;
+  try {
+    healthBody = execSync(`curl -s --max-time 2 http://127.0.0.1:${port}/api/health`, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString().trim();
+  } catch {
+    return; // No worker running — nothing to compare against; sync proceeds.
+  }
+  if (!healthBody) return;
+  let installedVersion;
+  let installedPath;
+  try {
+    const j = JSON.parse(healthBody);
+    installedVersion = j.version;
+    installedPath = j.workerPath;
+  } catch {
+    return;
+  }
+  if (!installedVersion || installedVersion === buildVersion) return;
+  console.log('');
+  console.log('\x1b[31m%s\x1b[0m', `Version mismatch:`);
+  console.log(`  Building:   ${buildVersion}`);
+  console.log(`  Installed:  ${installedVersion}`);
+  if (installedPath) console.log(`  Worker path: ${installedPath}`);
+  console.log('');
+  console.log('Claude Code is pinned to the installed version, so syncing will not');
+  console.log('actually change which worker runs. Update the plugin first:');
+  console.log('');
+  console.log('\x1b[36m%s\x1b[0m', '  claude plugin update thedotmack/claude-mem');
+  console.log('');
+  console.log('then re-run build-and-sync. To sync anyway, pass --force.');
+  process.exit(1);
+}
+
+if (!isForce) {
+  preflightVersionCheck(getPluginVersion());
+}
+
 // Normal rsync for main branch or fresh install
 console.log('Syncing to marketplace...');
 try {
@@ -108,10 +164,25 @@ try {
   // Trigger worker restart after file sync
   console.log('\n🔄 Triggering worker restart...');
   const http = require('http');
-  const os = require('os');
-  // Use per-user port derivation (#1936)
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR || path.join(os.homedir(), '.claude-mem');
+  const settingsPath = path.join(dataDir, 'settings.json');
+  let settingsPort = null;
+  if (existsSync(settingsPath)) {
+    try {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      if (settings.CLAUDE_MEM_WORKER_PORT) {
+        settingsPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+      }
+    } catch {
+      // fall through to env / default
+    }
+  }
   const uid = typeof process.getuid === 'function' ? process.getuid() : 77;
-  const workerPort = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || String(37700 + (uid % 100)), 10);
+  const defaultPort = 37700 + (uid % 100);
+  const workerPort =
+    parseInt(process.env.CLAUDE_MEM_WORKER_PORT, 10) ||
+    settingsPort ||
+    defaultPort;
   const req = http.request({
     hostname: '127.0.0.1',
     port: workerPort,
@@ -120,17 +191,17 @@ try {
     timeout: 2000
   }, (res) => {
     if (res.statusCode === 200) {
-      console.log('\x1b[32m%s\x1b[0m', '✓ Worker restart triggered');
+      console.log('\x1b[32m%s\x1b[0m', `✓ Worker restart triggered on port ${workerPort}`);
     } else {
-      console.log('\x1b[33m%s\x1b[0m', `ℹ Worker restart returned status ${res.statusCode}`);
+      console.log('\x1b[33m%s\x1b[0m', `ℹ Worker restart on port ${workerPort} returned status ${res.statusCode}`);
     }
   });
   req.on('error', () => {
-    console.log('\x1b[33m%s\x1b[0m', 'ℹ Worker not running, will start on next hook');
+    console.log('\x1b[33m%s\x1b[0m', `ℹ No worker reachable on port ${workerPort}; the next worker:restart step will start one.`);
   });
   req.on('timeout', () => {
     req.destroy();
-    console.log('\x1b[33m%s\x1b[0m', 'ℹ Worker restart timed out');
+    console.log('\x1b[33m%s\x1b[0m', `ℹ Worker restart on port ${workerPort} timed out`);
   });
   req.end();
 
