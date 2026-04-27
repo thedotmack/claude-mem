@@ -1448,6 +1448,126 @@
       color: var(--color-observation-badge-text);
     }
 
+    /* Welcome card — pinned, dismissable, re-openable */
+    .welcome-card {
+      margin-bottom: 24px;
+      padding: 20px 24px;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-left: 3px solid var(--color-accent-primary);
+      border-radius: 8px;
+      transition: all 0.15s ease;
+      animation: slideIn 0.3s ease-out;
+      line-height: 1.7;
+    }
+
+    .welcome-card:hover {
+      border-color: var(--color-border-hover);
+      border-left-color: var(--color-accent-primary);
+    }
+
+    .welcome-card-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+
+    .welcome-card-header img {
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .welcome-card-lede {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .welcome-card-lede h2 {
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--color-text-title);
+      margin: 0 0 4px 0;
+      letter-spacing: -0.01em;
+      line-height: 1.4;
+    }
+
+    .welcome-card-lede p {
+      margin: 0;
+      font-size: 13px;
+      color: var(--color-text-secondary);
+      line-height: 1.6;
+    }
+
+    .welcome-card-dismiss {
+      flex-shrink: 0;
+      background: transparent;
+      border: 1px solid var(--color-border-primary);
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--color-text-muted);
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      padding: 0;
+    }
+
+    .welcome-card-dismiss:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-border-focus);
+      color: var(--color-text-primary);
+      transform: scale(1.05);
+    }
+
+    .welcome-card-dismiss:active {
+      transform: scale(0.95);
+    }
+
+    .welcome-card-prompts {
+      list-style: none;
+      margin: 0 0 14px 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .welcome-card-prompts li {
+      font-size: 13px;
+      color: var(--color-text-primary);
+      line-height: 1.6;
+    }
+
+    .welcome-card-prompts code {
+      display: inline-block;
+      padding: 1px 6px;
+      margin-right: 4px;
+      background: var(--color-bg-tertiary);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 4px;
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      font-size: 12px;
+      color: var(--color-accent-primary);
+    }
+
+    .welcome-card-footer {
+      font-size: 12px;
+      color: var(--color-text-muted);
+    }
+
+    .welcome-card-footer a {
+      color: var(--color-accent-primary);
+      text-decoration: none;
+      font-weight: 500;
+    }
+
+    .welcome-card-footer a:hover {
+      text-decoration: underline;
+    }
+
     .card-content {
       margin-top: 14px;
       margin-bottom: 12px;

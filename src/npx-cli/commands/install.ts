@@ -10,8 +10,21 @@
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import { execSync } from 'child_process';
-import { cpSync, existsSync, readFileSync, rmSync } from 'fs';
-import { join } from 'path';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
+import { dirname, join } from 'path';
+import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { ensureWorkerStarted } from '../../services/worker-spawner.js';
+
+/**
+ * Read a setting with file-first priority: ~/.claude-mem/settings.json wins
+ * over hardcoded defaults so the installer respects values it just persisted
+ * within the same process. Env-var override is preserved by loadFromFile.
+ */
+function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
+  return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
+}
 
 // Non-TTY detection: @clack/prompts crashes with ENOENT in non-TTY environments
 const isInteractive = process.stdin.isTTY === true;
@@ -55,7 +68,6 @@ import {
   writeJsonFileAtomic,
 } from '../utils/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 
@@ -385,12 +397,237 @@ function runSmartInstall(): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Settings file read-merge-write
+// ---------------------------------------------------------------------------
+
+/**
+ * Path to the user's claude-mem settings file. Mirrors the resolution used
+ * inside SettingsDefaultsManager (CLAUDE_MEM_DATA_DIR default = ~/.claude-mem).
+ */
+function settingsFilePath(): string {
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+  return join(dataDir, 'settings.json');
+}
+
+/**
+ * Read-merge-write only the changed keys to ~/.claude-mem/settings.json.
+ *
+ * Mirrors the merge-then-write pattern from SettingsDefaultsManager.loadFromFile.
+ * Does NOT rewrite the entire defaults object — only the keys passed in `updates`
+ * are mutated. On permission/IO failure, logs an error and returns false; never
+ * throws and never aborts the install.
+ *
+ * IMPORTANT: never include API key values in log lines.
+ */
+function mergeSettings(updates: Record<string, string>): boolean {
+  const path = settingsFilePath();
+  try {
+    let current: Record<string, unknown> = {};
+    if (existsSync(path)) {
+      try {
+        const raw = readFileSync(path, 'utf-8');
+        const parsed = JSON.parse(raw);
+        // Handle legacy nested { env: {...} } schema same way the manager does.
+        if (parsed && typeof parsed === 'object' && parsed.env && typeof parsed.env === 'object') {
+          current = { ...parsed.env };
+        } else if (parsed && typeof parsed === 'object') {
+          current = { ...parsed };
+        }
+      } catch (parseError: unknown) {
+        console.warn('[install] Failed to parse existing settings.json, starting from empty:', parseError instanceof Error ? parseError.message : String(parseError));
+        current = {};
+      }
+    } else {
+      const dir = dirname(path);
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
+    }
+
+    for (const [key, value] of Object.entries(updates)) {
+      current[key] = value;
+    }
+
+    writeFileSync(path, JSON.stringify(current, null, 2), 'utf-8');
+    return true;
+  } catch (error: unknown) {
+    log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Provider and model prompts
+// ---------------------------------------------------------------------------
+
+type ProviderId = 'claude' | 'gemini' | 'openrouter';
+
+/**
+ * Provider selection prompt (Sub-surface 1.A). Returns the resolved provider id.
+ *
+ * - On non-TTY: returns the existing setting (or default 'claude') without writes.
+ * - On `options.provider`: writes settings non-interactively (key prompt still
+ *   fires for non-claude branches when interactive — caller passes flag through).
+ * - On interactive: prompts and persists settings on the gemini/openrouter branch.
+ *
+ * SECURITY: API keys are read with `p.password` (masked). Never logged.
+ */
+async function promptProvider(options: InstallOptions): Promise<ProviderId> {
+  const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
+
+  const persistClaudeProvider = () => {
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'claude' });
+    if (wrote) log.info('Saved provider=claude to ~/.claude-mem/settings.json');
+  };
+
+  // Non-interactive: honor explicit --provider flag if present, else leave alone.
+  if (!isInteractive) {
+    if (options.provider) {
+      if (options.provider === 'claude') {
+        persistClaudeProvider();
+        return 'claude';
+      }
+      // Non-TTY scripted install with a non-claude provider — we cannot prompt
+      // for an API key, but we still persist CLAUDE_MEM_PROVIDER so the worker
+      // actually selects the requested provider on next start. The user supplies
+      // the API key via env var or by editing settings.json.
+      const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: options.provider });
+      if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
+      log.warn(`Provider=${options.provider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${options.provider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
+      return options.provider;
+    }
+    return initialProvider;
+  }
+
+  let selectedProvider: ProviderId;
+  if (options.provider) {
+    selectedProvider = options.provider;
+  } else {
+    const result = await p.select<ProviderId>({
+      message: 'Which LLM provider should claude-mem use to compress observations?',
+      options: [
+        { value: 'claude', label: 'Claude Code auth (default — no extra setup, uses your existing Claude Code subscription)' },
+        { value: 'gemini', label: 'Gemini API key (free tier available — fast and cheap)' },
+        { value: 'openrouter', label: 'OpenRouter API key (BYO model — wide selection of frontier and open models)' },
+      ],
+      initialValue: initialProvider,
+    });
+
+    if (p.isCancel(result)) {
+      p.cancel('Installation cancelled.');
+      process.exit(0);
+    }
+    selectedProvider = result as ProviderId;
+  }
+
+  // Claude branch: persist so we overwrite any previously saved non-claude provider.
+  // Defer to model prompt (1.B) for model selection.
+  if (selectedProvider === 'claude') {
+    persistClaudeProvider();
+    return 'claude';
+  }
+
+  // gemini / openrouter branch: prompt for API key with masked input.
+  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
+  const keyEnvName = selectedProvider === 'gemini'
+    ? 'CLAUDE_MEM_GEMINI_API_KEY'
+    : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+
+  // If a non-empty key is already saved, skip silently to avoid clobbering.
+  const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
+  if (existingKey && existingKey.trim().length > 0) {
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider });
+    if (wrote) log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
+    return selectedProvider;
+  }
+
+  const apiKeyResult = await p.password({
+    message: `Paste your ${providerLabel} API key:`,
+    mask: '*',
+    validate: (v: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
+  });
+
+  if (p.isCancel(apiKeyResult)) {
+    log.warn(`API key prompt cancelled — falling back to Claude provider.`);
+    persistClaudeProvider();
+    return 'claude';
+  }
+
+  const apiKey = String(apiKeyResult).trim();
+  const wrote = mergeSettings({
+    CLAUDE_MEM_PROVIDER: selectedProvider,
+    [keyEnvName]: apiKey,
+  });
+  if (wrote) {
+    // NEVER echo the key. Confirm only the destination.
+    log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
+  }
+  return selectedProvider;
+}
+
+/**
+ * Claude model selection prompt (Sub-surface 1.B). Only fires when the active
+ * provider is 'claude'. Writes CLAUDE_MEM_MODEL via read-merge-write.
+ */
+async function promptClaudeModel(options: InstallOptions): Promise<void> {
+  const allowed = new Set([
+    'claude-haiku-4-5-20251001',
+    'claude-sonnet-4-6',
+    'claude-opus-4-7',
+  ]);
+
+  if (options.model) {
+    if (!allowed.has(options.model)) {
+      log.error(`Unknown Claude model: ${options.model}. Allowed: ${[...allowed].join(', ')}`);
+      return;
+    }
+    const wrote = mergeSettings({ CLAUDE_MEM_MODEL: options.model });
+    if (wrote) {
+      log.info(`Saved Claude model=${options.model} to ~/.claude-mem/settings.json`);
+    }
+    return;
+  }
+
+  if (!isInteractive) return;
+
+  const initialModel = getSetting('CLAUDE_MEM_MODEL');
+  const initialValue = allowed.has(initialModel) ? initialModel : 'claude-haiku-4-5-20251001';
+
+  const result = await p.select<string>({
+    message: 'Which Claude model should claude-mem use to compress observations?\nThis runs whenever you and Claude touch a file — keep it cheap and fast.',
+    options: [
+      { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (recommended — fast, cheap, great for compression)' },
+      { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6 (balanced quality and cost)' },
+      { value: 'claude-opus-4-7', label: 'Opus 4.7 (highest quality, most expensive)' },
+    ],
+    initialValue,
+  });
+
+  if (p.isCancel(result)) {
+    p.cancel('Installation cancelled.');
+    process.exit(0);
+  }
+  const selectedModel = result as string;
+
+  const wrote = mergeSettings({ CLAUDE_MEM_MODEL: selectedModel });
+  if (wrote) {
+    log.info(`Saved Claude model=${selectedModel} to ~/.claude-mem/settings.json`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 export interface InstallOptions {
   /** When provided, skip the interactive IDE multi-select and use this IDE. */
   ide?: string;
+  /** When provided, skip the interactive provider prompt and use this provider. */
+  provider?: 'claude' | 'gemini' | 'openrouter';
+  /** When provided, skip the interactive Claude model prompt and use this model id. */
+  model?: string;
+  /** When true, skip the worker auto-start runTasks entry. */
+  noAutoStart?: boolean;
 }
 
 export async function runInstallCommand(options: InstallOptions = {}): Promise<void> {
@@ -455,15 +692,25 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     selectedIDEs = ['claude-code'];
   }
 
+  // Provider + Claude model selection (1.A + 1.B). Skipped entirely on non-TTY
+  // unless --provider/--model flags are supplied (handled inside the helpers).
+  const selectedProvider = await promptProvider(options);
+  if (selectedProvider === 'claude') {
+    await promptClaudeModel(options);
+  }
+
   // Non-Claude-Code IDEs need the manual file copy / registration flow.
   // Claude Code handles its own installation via `claude plugin install`.
   const needsManualInstall = selectedIDEs.some((id) => id !== 'claude-code');
+
+  // Capture worker-start status for the Next Steps branch (1.C → 1.D).
+  let workerStarted = false;
 
   if (needsManualInstall) {
     // Shut down any running worker FIRST so it isn't holding open file
     // handles when we overwrite plugin files (#2106 item 3). Best-effort:
     // helper swallows its own errors when no worker is running.
-    const installPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
+    const installPort = getSetting('CLAUDE_MEM_WORKER_PORT');
     try {
       const result = await shutdownWorkerAndWait(installPort, 10000);
       if (result.workerWasRunning) {
@@ -539,6 +786,30 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   // IDE-specific setup
   const failedIDEs = await setupIDEs(selectedIDEs);
 
+  // Worker auto-start (1.C). Runs AFTER setupIDEs so the marketplace plugin
+  // scripts exist on disk on a fresh `claude-code` install. Skipped on non-TTY
+  // or with --no-auto-start. Failure does not abort install.
+  await runTasks([
+    {
+      title: 'Starting worker daemon',
+      task: async (message) => {
+        if (!isInteractive || options.noAutoStart) {
+          return isInteractive
+            ? `Skipped (--no-auto-start)`
+            : `Skipped (non-TTY)`;
+        }
+        const port = Number(getSetting('CLAUDE_MEM_WORKER_PORT'));
+        const scriptPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
+        message(`Spawning worker on port ${port}...`);
+        const ok = await ensureWorkerStarted(port, scriptPath);
+        workerStarted = ok;
+        return ok
+          ? `Worker running at http://localhost:${port} ${pc.green('OK')}`
+          : `Worker did not start — try \`npx claude-mem start\` manually ${pc.yellow('!')}`;
+      },
+    },
+  ]);
+
   // Summary
   const installStatus = failedIDEs.length > 0 ? 'Installation Partial' : 'Installation Complete';
   const summaryLines = [
@@ -557,10 +828,10 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     summaryLines.forEach(l => console.log(`  ${l}`));
   }
 
-  // Resolve port via SettingsDefaultsManager so CLAUDE_MEM_WORKER_PORT env
+  // Resolve port via file-first getSetting so CLAUDE_MEM_WORKER_PORT env
   // takes priority and the per-UID default (37700 + uid % 100) is used
   // otherwise. Required for multi-account isolation (#2101).
-  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
+  const workerPort = getSetting('CLAUDE_MEM_WORKER_PORT');
 
   // Probe the actually-bound port (#2106 item 6). smart-install just
   // started the worker; if it's reachable we report the real port the
@@ -587,18 +858,19 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     // Health probe failed — worker may still be starting.
   }
 
-  const portLine = workerReady
-    ? `Worker port: ${pc.cyan(String(actualPort))}`
-    : `Worker port: ${pc.cyan(String(workerPort))} (worker not yet ready -- still starting up; check ${pc.bold('claude-mem status')} later)`;
-
-  const nextSteps = [
-    'Open Claude Code and start a conversation -- memory is automatic!',
-    portLine,
-    `View your memories: ${pc.underline(`http://localhost:${actualPort}`)}`,
-    `Search past work: use ${pc.bold('/mem-search')} in Claude Code`,
-    `Start worker: ${pc.bold('npx claude-mem start')}`,
-    `Note: Close all Claude Code sessions before uninstalling, or ${pc.cyan('~/.claude-mem')} will be recreated by active hooks.`,
-  ];
+  const nextSteps = (workerStarted || workerReady)
+    ? [
+        `${pc.green('✓')} Worker running at ${pc.underline(`http://localhost:${actualPort}`)}`,
+        `→ Open Claude Code in a project, then run ${pc.bold('/learn-codebase')} to have Claude read your repo end-to-end`,
+        `→ Search past work: ask "did we already solve X?" or use ${pc.bold('/mem-search')}`,
+        `→ Build focused brains: ${pc.bold('/knowledge-agent')}`,
+        `Note: Close all Claude Code sessions before uninstalling, or ${pc.cyan('~/.claude-mem')} will be recreated by active hooks.`,
+      ]
+    : [
+        `${pc.yellow('!')} Worker not yet ready on port ${pc.cyan(String(workerPort))} -- still starting up; check ${pc.bold('claude-mem status')} later, or start manually: ${pc.bold('npx claude-mem start')}`,
+        `→ View your memories: ${pc.underline(`http://localhost:${workerPort}`)}`,
+        `→ Search past work: ask "did we already solve X?" or use ${pc.bold('/mem-search')}`,
+      ];
 
   if (isInteractive) {
     p.note(nextSteps.join('\n'), 'Next Steps');

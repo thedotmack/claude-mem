@@ -71,6 +71,14 @@ export class SearchManager {
   }
 
   /**
+   * Accessor for the session store. Used by HTTP routes that need direct
+   * SQLite reads (e.g. observation-count gating for the welcome hint).
+   */
+  getSessionStore(): SessionStore {
+    return this.sessionStore;
+  }
+
+  /**
    * Query Chroma vector database via ChromaSync
    * @deprecated Use orchestrator.search() instead
    */

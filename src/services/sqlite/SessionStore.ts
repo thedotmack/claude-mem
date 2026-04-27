@@ -1190,7 +1190,7 @@ export class SessionStore {
 
   /**
    * Update the memory session ID for a session
-   * Called by SDKAgent when it captures the session ID from the first SDK message
+   * Called by ClaudeProvider when it captures the session ID from the first SDK message
    * Also used to RESET to null on stale resume failures (worker-service.ts)
    */
   updateMemorySessionId(sessionDbId: number, memorySessionId: string | null): void {
@@ -1971,7 +1971,7 @@ export class SessionStore {
     }
 
     // New session - insert fresh row
-    // NOTE: memory_session_id starts as NULL. It is captured by SDKAgent from the first SDK
+    // NOTE: memory_session_id starts as NULL. It is captured by ClaudeProvider from the first SDK
     // response and stored via ensureMemorySessionIdRegistered(). CRITICAL: memory_session_id
     // must NEVER equal contentSessionId - that would inject memory messages into the user's transcript!
     this.db.prepare(`

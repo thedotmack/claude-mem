@@ -57,7 +57,7 @@ export const geminiCliAdapter: PlatformAdapter = {
 
     // AfterAgent: synthesize observation shape from the full agent response
     if (hookEventName === 'AfterAgent' && r.prompt_response) {
-      toolName = toolName ?? 'GeminiAgent';
+      toolName = toolName ?? 'GeminiProvider';
       toolInput = toolInput ?? { prompt: r.prompt };
       toolResponse = toolResponse ?? { response: r.prompt_response };
     }

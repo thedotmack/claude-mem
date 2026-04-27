@@ -153,6 +153,24 @@ export function queryObservationsMulti(
 }
 
 /**
+ * Count observations across multiple projects.
+ *
+ * Used by the SessionStart welcome-hint logic to detect "fresh project"
+ * (zero observations across the cwd + worktree projects).
+ * Mirrors the IN-clause pattern from queryObservationsMulti.
+ */
+export function countObservationsByProjects(db: SessionStore, projects: string[]): number {
+  if (projects.length === 0) return 0;
+  const projectPlaceholders = projects.map(() => '?').join(',');
+  const row = db.db.prepare(`
+    SELECT COUNT(*) as count FROM observations
+    WHERE project IN (${projectPlaceholders})
+       OR merged_into_project IN (${projectPlaceholders})
+  `).get(...projects, ...projects) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
+/**
  * Query session summaries from multiple projects (for worktree support)
  *
  * Returns summaries from all specified projects, interleaved chronologically.

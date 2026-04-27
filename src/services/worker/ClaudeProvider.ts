@@ -1,5 +1,5 @@
 /**
- * SDKAgent: SDK query loop handler
+ * ClaudeProvider: SDK query loop handler
  *
  * Responsibility:
  * - Spawn Claude subprocess via Agent SDK
@@ -33,7 +33,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-export class SDKAgent {
+export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
 

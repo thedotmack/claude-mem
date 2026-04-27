@@ -22,9 +22,9 @@ interface AntiPattern {
 }
 
 const CRITICAL_PATHS = [
-  'SDKAgent.ts',
-  'GeminiAgent.ts',
-  'OpenRouterAgent.ts',
+  'ClaudeProvider.ts',
+  'GeminiProvider.ts',
+  'OpenRouterProvider.ts',
   'SessionStore.ts',
   'worker-service.ts'
 ];

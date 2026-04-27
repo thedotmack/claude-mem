@@ -8,7 +8,7 @@
  * - Broadcast to SSE clients
  * - Clean up processed messages
  *
- * This module extracts 150+ lines of duplicate code from SDKAgent, GeminiAgent, and OpenRouterAgent.
+ * This module extracts 150+ lines of duplicate code from ClaudeProvider, GeminiProvider, and OpenRouterProvider.
  */
 
 import { logger } from '../../../utils/logger.js';
@@ -108,7 +108,7 @@ export async function processAgentResponse(
   }
 
   // SAFETY NET (Issue #846 / Multi-terminal FK fix):
-  // The PRIMARY fix is in SDKAgent.ts where ensureMemorySessionIdRegistered() is called
+  // The PRIMARY fix is in ClaudeProvider.ts where ensureMemorySessionIdRegistered() is called
   // immediately when the SDK returns a memory_session_id. This call is a defensive safety net
   // in case the DB was somehow not updated (race condition, crash, etc.).
   // In multi-terminal scenarios, createSDKSession() now resets memory_session_id to NULL

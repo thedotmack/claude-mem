@@ -78,10 +78,10 @@ import {
 import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
-import { SDKAgent } from './worker/SDKAgent.js';
+import { ClaudeProvider } from './worker/ClaudeProvider.js';
 import type { WorkerRef } from './worker/agents/types.js';
-import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from './worker/GeminiAgent.js';
-import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterAgent.js';
+import { GeminiProvider, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
+import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
@@ -153,9 +153,9 @@ export class WorkerService implements WorkerRef {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
   public sseBroadcaster: SSEBroadcaster;
-  private sdkAgent: SDKAgent;
-  private geminiAgent: GeminiAgent;
-  private openRouterAgent: OpenRouterAgent;
+  private sdkAgent: ClaudeProvider;
+  private geminiAgent: GeminiProvider;
+  private openRouterAgent: OpenRouterProvider;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -193,9 +193,9 @@ export class WorkerService implements WorkerRef {
     this.dbManager = new DatabaseManager();
     this.sessionManager = new SessionManager(this.dbManager);
     this.sseBroadcaster = new SSEBroadcaster();
-    this.sdkAgent = new SDKAgent(this.dbManager, this.sessionManager);
-    this.geminiAgent = new GeminiAgent(this.dbManager, this.sessionManager);
-    this.openRouterAgent = new OpenRouterAgent(this.dbManager, this.sessionManager);
+    this.sdkAgent = new ClaudeProvider(this.dbManager, this.sessionManager);
+    this.geminiAgent = new GeminiProvider(this.dbManager, this.sessionManager);
+    this.openRouterAgent = new OpenRouterProvider(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
@@ -611,7 +611,7 @@ export class WorkerService implements WorkerRef {
    * Get the appropriate agent based on provider settings.
    * Same logic as SessionRoutes.getActiveAgent() for consistency.
    */
-  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
+  private getActiveAgent(): ClaudeProvider | GeminiProvider | OpenRouterProvider {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return this.openRouterAgent;
     }

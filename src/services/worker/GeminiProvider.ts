@@ -1,7 +1,7 @@
 /**
- * GeminiAgent: Gemini-based observation extraction
+ * GeminiProvider: Gemini-based observation extraction
  *
- * Alternative to SDKAgent that uses Google's Gemini API directly
+ * Alternative to ClaudeProvider that uses Google's Gemini API directly
  * for extracting observations from tool usage.
  *
  * Responsibility:
@@ -111,7 +111,7 @@ interface GeminiContent {
   parts: Array<{ text: string }>;
 }
 
-export class GeminiAgent {
+export class GeminiProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
 

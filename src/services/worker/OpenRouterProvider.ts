@@ -1,7 +1,7 @@
 /**
- * OpenRouterAgent: OpenRouter-based observation extraction
+ * OpenRouterProvider: OpenRouter-based observation extraction
  *
- * Alternative to SDKAgent that uses OpenRouter's unified API
+ * Alternative to ClaudeProvider that uses OpenRouter's unified API
  * for accessing 100+ models from different providers.
  *
  * Responsibility:
@@ -60,7 +60,7 @@ interface OpenRouterResponse {
   };
 }
 
-export class OpenRouterAgent {
+export class OpenRouterProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
 
