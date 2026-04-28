@@ -478,6 +478,12 @@ export class SearchManager {
     const { anchor, query, depth_before, depth_after, project } = args;
     const depthBefore = depth_before != null ? Number(depth_before) : 10;
     const depthAfter = depth_after != null ? Number(depth_after) : 10;
+    const anchorAsNumber =
+      typeof anchor === 'number'
+        ? anchor
+        : (typeof anchor === 'string' && /^\d+$/.test(anchor.trim()))
+          ? Number(anchor.trim())
+          : null;
     const cwd = process.cwd();
 
     // Validate: must provide either anchor or query, not both
@@ -550,21 +556,21 @@ export class SearchManager {
       timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project);
     }
     // MODE 2: Anchor-based timeline
-    else if (typeof anchor === 'number') {
+    else if (anchorAsNumber !== null) {
       // Observation ID
-      const obs = this.sessionStore.getObservationById(anchor);
+      const obs = this.sessionStore.getObservationById(anchorAsNumber);
       if (!obs) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Observation #${anchor} not found`
+            text: `Observation #${anchorAsNumber} not found`
           }],
           isError: true
         };
       }
-      anchorId = anchor;
+      anchorId = anchorAsNumber;
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depthBefore, depthAfter, project);
+      timelineData = this.sessionStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project);
     } else if (typeof anchor === 'string') {
       // Session ID or ISO timestamp
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
