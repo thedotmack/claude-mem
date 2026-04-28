@@ -159,8 +159,11 @@ describe('SearchManager.timeline() anchor dispatch', () => {
     expect(response.isError).not.toBe(true);
     const text: string = response.content[0].text;
     const returnedIds = extractObservationIds(text);
-    expect(returnedIds.sort((a, b) => a - b)).toEqual(expectedIds.sort((a, b) => a - b));
-    expect(returnedIds).toContain(middle.id);
+    // Exact sequence equality — chronological order matters, not just membership.
+    expect(returnedIds).toEqual(expectedIds);
+    // Header must echo the anchor ID and the anchor row must be marked.
+    expect(text).toContain(`# Timeline around anchor: ${middle.id}`);
+    expect(text).toMatch(new RegExp(`\\|\\s*#${middle.id}\\b[^\\n]*<- \\*\\*ANCHOR\\*\\*`));
   });
 
   it('(b) numeric anchor passed as STRING returns the 7-id window around the anchor (THE bug case)', async () => {
@@ -180,8 +183,9 @@ describe('SearchManager.timeline() anchor dispatch', () => {
     expect(response.isError).not.toBe(true);
     const text: string = response.content[0].text;
     const returnedIds = extractObservationIds(text);
-    expect(returnedIds.sort((a, b) => a - b)).toEqual(expectedIds.sort((a, b) => a - b));
-    expect(returnedIds).toContain(middle.id);
+    expect(returnedIds).toEqual(expectedIds);
+    expect(text).toContain(`# Timeline around anchor: ${middle.id}`);
+    expect(text).toMatch(new RegExp(`\\|\\s*#${middle.id}\\b[^\\n]*<- \\*\\*ANCHOR\\*\\*`));
   });
 
   it('(b2) numeric anchor with surrounding whitespace is coerced and returns the same window', async () => {
@@ -197,8 +201,10 @@ describe('SearchManager.timeline() anchor dispatch', () => {
     expect(response.isError).not.toBe(true);
     const text: string = response.content[0].text;
     const returnedIds = extractObservationIds(text);
-    expect(returnedIds.sort((a, b) => a - b)).toEqual(expectedIds.sort((a, b) => a - b));
-    expect(returnedIds).toContain(middle.id);
+    expect(returnedIds).toEqual(expectedIds);
+    // Whitespace must be trimmed in the rendered header — the trimmed numeric ID, not the padded string.
+    expect(text).toContain(`# Timeline around anchor: ${middle.id}`);
+    expect(text).toMatch(new RegExp(`\\|\\s*#${middle.id}\\b[^\\n]*<- \\*\\*ANCHOR\\*\\*`));
   });
 
   it('(c) session-ID anchor "S<n>" routes to the timestamp branch and returns a non-error response', async () => {
