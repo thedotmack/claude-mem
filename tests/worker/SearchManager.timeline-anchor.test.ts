@@ -184,6 +184,23 @@ describe('SearchManager.timeline() anchor dispatch', () => {
     expect(returnedIds).toContain(middle.id);
   });
 
+  it('(b2) numeric anchor with surrounding whitespace is coerced and returns the same window', async () => {
+    const middle = seeded[24];
+    const expectedIds = seeded.slice(21, 28).map((o) => o.id);
+
+    const response = await manager.timeline({
+      anchor: `  ${middle.id}  `,
+      depth_before: 3,
+      depth_after: 3,
+    });
+
+    expect(response.isError).not.toBe(true);
+    const text: string = response.content[0].text;
+    const returnedIds = extractObservationIds(text);
+    expect(returnedIds.sort((a, b) => a - b)).toEqual(expectedIds.sort((a, b) => a - b));
+    expect(returnedIds).toContain(middle.id);
+  });
+
   it('(c) session-ID anchor "S<n>" routes to the timestamp branch and returns a non-error response', async () => {
     // Look up the SDK session row id directly. The timeline session
     // anchor branch (SearchManager.timeline ~line 576) parses the integer
@@ -261,5 +278,17 @@ describe('SearchManager.timeline() anchor dispatch', () => {
     // anti-pattern guard from PLAN.md Phase 2).
     expect(typeof text).toBe('string');
     expect(text.length).toBeGreaterThan(0);
+  });
+
+  it('(f) numeric anchor not found returns Observation #... not found with isError', async () => {
+    const response = await manager.timeline({
+      anchor: '99999999',
+      depth_before: 3,
+      depth_after: 3,
+    });
+
+    expect(response.isError).toBe(true);
+    const text: string = response.content[0].text;
+    expect(text).toContain('Observation #99999999 not found');
   });
 });

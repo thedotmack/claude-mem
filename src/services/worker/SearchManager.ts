@@ -471,6 +471,14 @@ export class SearchManager {
     };
   }
 
+  private parseNumericAnchor(anchor: unknown): number | null {
+    if (typeof anchor === 'number') return anchor;
+    if (typeof anchor === 'string' && /^\d+$/.test(anchor.trim())) {
+      return Number(anchor.trim());
+    }
+    return null;
+  }
+
   /**
    * Tool handler: timeline
    */
@@ -478,12 +486,7 @@ export class SearchManager {
     const { anchor, query, depth_before, depth_after, project } = args;
     const depthBefore = depth_before != null ? Number(depth_before) : 10;
     const depthAfter = depth_after != null ? Number(depth_after) : 10;
-    const anchorAsNumber =
-      typeof anchor === 'number'
-        ? anchor
-        : (typeof anchor === 'string' && /^\d+$/.test(anchor.trim()))
-          ? Number(anchor.trim())
-          : null;
+    const anchorAsNumber = this.parseNumericAnchor(anchor);
     const cwd = process.cwd();
 
     // Validate: must provide either anchor or query, not both
