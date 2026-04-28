@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.4.8] - 2026-04-28
+
+## Bug Fixes
+
+- **timeline tool:** Coerce stringified numeric anchors (e.g. `"123"`) into the observation-ID dispatch path so they no longer fall through to ISO-timestamp parsing and return wrong-epoch windows. The HTTP layer always sends anchor as a string, so this fixes anchor lookups via MCP and HTTP across the board. (#2176)
+
+## Tests
+
+- Added a 7-case regression suite covering JS-number anchors, stringified-number anchors (incl. whitespace-padded), session-ID anchors (`S<n>`), ISO-timestamp anchors, garbage anchors, and explicit numeric-not-found behavior. The suite runs against a real in-memory SQLite `SessionStore` to exercise the full dispatch path.
+
+## Refactors
+
+- Extracted `parseNumericAnchor` helper in `SearchManager` to centralize anchor coercion across timeline handlers.
+
 ## [12.4.7] - 2026-04-26
 
 ## Cynical deletion + review fixes
