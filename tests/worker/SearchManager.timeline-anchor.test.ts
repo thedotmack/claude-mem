@@ -116,6 +116,15 @@ function extractObservationIds(formattedText: string): number[] {
   return ids;
 }
 
+function expectAnchorRendered(text: string, anchorId: number): void {
+  expect(text).toContain(`# Timeline around anchor: ${anchorId}`);
+  const anchorRow = text
+    .split('\n')
+    .find((line) => line.startsWith(`| #${anchorId} `));
+  expect(anchorRow).toBeDefined();
+  expect(anchorRow).toContain('<- **ANCHOR**');
+}
+
 describe('SearchManager.timeline() anchor dispatch', () => {
   let db: Database;
   let store: SessionStore;
@@ -162,8 +171,7 @@ describe('SearchManager.timeline() anchor dispatch', () => {
     // Exact sequence equality — chronological order matters, not just membership.
     expect(returnedIds).toEqual(expectedIds);
     // Header must echo the anchor ID and the anchor row must be marked.
-    expect(text).toContain(`# Timeline around anchor: ${middle.id}`);
-    expect(text).toMatch(new RegExp(`\\|\\s*#${middle.id}\\b[^\\n]*<- \\*\\*ANCHOR\\*\\*`));
+    expectAnchorRendered(text, middle.id);
   });
 
   it('(b) numeric anchor passed as STRING returns the 7-id window around the anchor (THE bug case)', async () => {
@@ -184,8 +192,7 @@ describe('SearchManager.timeline() anchor dispatch', () => {
     const text: string = response.content[0].text;
     const returnedIds = extractObservationIds(text);
     expect(returnedIds).toEqual(expectedIds);
-    expect(text).toContain(`# Timeline around anchor: ${middle.id}`);
-    expect(text).toMatch(new RegExp(`\\|\\s*#${middle.id}\\b[^\\n]*<- \\*\\*ANCHOR\\*\\*`));
+    expectAnchorRendered(text, middle.id);
   });
 
   it('(b2) numeric anchor with surrounding whitespace is coerced and returns the same window', async () => {
@@ -203,8 +210,7 @@ describe('SearchManager.timeline() anchor dispatch', () => {
     const returnedIds = extractObservationIds(text);
     expect(returnedIds).toEqual(expectedIds);
     // Whitespace must be trimmed in the rendered header — the trimmed numeric ID, not the padded string.
-    expect(text).toContain(`# Timeline around anchor: ${middle.id}`);
-    expect(text).toMatch(new RegExp(`\\|\\s*#${middle.id}\\b[^\\n]*<- \\*\\*ANCHOR\\*\\*`));
+    expectAnchorRendered(text, middle.id);
   });
 
   it('(c) session-ID anchor "S<n>" routes to the timestamp branch and returns a non-error response', async () => {
@@ -278,12 +284,10 @@ describe('SearchManager.timeline() anchor dispatch', () => {
 
     expect(response.isError).toBe(true);
     const text: string = response.content[0].text;
-    // Either the "Invalid timestamp" or "Invalid anchor" error path is
-    // acceptable — both are surfaced as isError. We only require that
-    // the anchor was NOT silently coerced to a number (the parseInt
-    // anti-pattern guard from PLAN.md Phase 2).
-    expect(typeof text).toBe('string');
-    expect(text.length).toBeGreaterThan(0);
+    // Garbage strings must hit the ISO-timestamp branch and surface its
+    // concrete "Invalid timestamp" error — not the numeric-observation
+    // branch (which would mean `anchorAsNumber` silently coerced "123abc").
+    expect(text).toBe('Invalid timestamp: 123abc');
   });
 
   it('(f) numeric anchor not found returns Observation #... not found with isError', async () => {
