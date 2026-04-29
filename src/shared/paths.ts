@@ -71,10 +71,6 @@ export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
 export const DB_PATH = join(DATA_DIR, 'claude-mem.db');
 export const VECTOR_DB_DIR = join(DATA_DIR, 'vector-db');
 
-// Lockfile recording the live chroma-mcp child PID and its parent worker PID,
-// used by the orphan reaper to identify chroma-mcp processes whose worker is gone.
-export const CHROMA_MCP_PID_PATH = join(DATA_DIR, 'chroma-mcp.pid');
-
 // Observer sessions directory - used as cwd for SDK queries
 // Sessions here won't appear in user's `claude --resume` for their actual projects
 export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');

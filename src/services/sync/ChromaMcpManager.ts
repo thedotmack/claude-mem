@@ -20,7 +20,7 @@ import os from 'os';
 import fs from 'fs';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { CHROMA_MCP_PID_PATH, USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 
@@ -189,7 +189,6 @@ export class ChromaMcpManager {
 
     this.connected = true;
     this.registerManagedProcess();
-    this.writeLockfile();
 
     logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
 
@@ -454,7 +453,6 @@ export class ChromaMcpManager {
     this.transport = null;
     this.connected = false;
     this.connecting = null;
-    this.removeLockfile();
 
     logger.info('CHROMA_MCP', 'chroma-mcp MCP connection stopped');
   }
@@ -590,46 +588,6 @@ export class ChromaMcpManager {
 
     chromaProcess.once('exit', () => {
       getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
-      this.removeLockfile();
     });
-  }
-
-  /**
-   * Write the singleton lockfile recording the chroma-mcp child PID and the
-   * worker PID that spawned it. The orphan reaper reads this file to identify
-   * chroma-mcp processes whose parent worker is gone.
-   *
-   * Atomic via tmp+rename so a crashed mid-write doesn't leave a half file.
-   * Best-effort: lockfile write failure is non-fatal — the reaper falls back
-   * to ppid==1 detection if the file is absent or stale.
-   */
-  private writeLockfile(): void {
-    const chromaProcess = (this.transport as unknown as { _process?: import('child_process').ChildProcess })._process;
-    if (!chromaProcess?.pid) {
-      return;
-    }
-    const tmpPath = CHROMA_MCP_PID_PATH + '.tmp';
-    try {
-      const dir = path.dirname(CHROMA_MCP_PID_PATH);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(tmpPath, `${chromaProcess.pid}\n${process.pid}\n`);
-      fs.renameSync(tmpPath, CHROMA_MCP_PID_PATH);
-    } catch (error) {
-      logger.debug('CHROMA_MCP', 'Failed to write chroma-mcp lockfile', {
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  }
-
-  private removeLockfile(): void {
-    try {
-      if (fs.existsSync(CHROMA_MCP_PID_PATH)) {
-        fs.unlinkSync(CHROMA_MCP_PID_PATH);
-      }
-    } catch {
-      // best effort — reaper will skip stale entries
-    }
   }
 }
