@@ -1669,12 +1669,13 @@ export class SessionStore {
    */
   getObservationsByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string; type?: string | string[]; concepts?: string | string[]; files?: string | string[] } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; type?: string | string[]; concepts?: string | string[]; files?: string | string[] } = {}
   ): ObservationSearchResult[] {
     if (ids.length === 0) return [];
 
     const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
-    const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
+    const preserveIdOrder = orderBy === 'relevance';
+    const orderClause = preserveIdOrder ? '' : `ORDER BY created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
     const limitClause = limit ? `LIMIT ${limit}` : '';
 
     // Build placeholders for IN clause
@@ -1730,11 +1731,16 @@ export class SessionStore {
       SELECT *
       FROM observations
       ${whereClause}
-      ORDER BY created_at_epoch ${orderClause}
+      ${orderClause}
       ${limitClause}
     `);
 
-    return stmt.all(...params) as ObservationSearchResult[];
+    const rows = stmt.all(...params) as ObservationSearchResult[];
+    if (!preserveIdOrder) return rows;
+
+    // Preserve caller-provided ID order (Chroma vector similarity ranking)
+    const rowMap = new Map(rows.map(r => [r.id, r]));
+    return ids.map(id => rowMap.get(id)).filter((r): r is ObservationSearchResult => !!r);
   }
 
   /**
@@ -2466,12 +2472,13 @@ export class SessionStore {
    */
   getSessionSummariesByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string } = {}
   ): SessionSummarySearchResult[] {
     if (ids.length === 0) return [];
 
     const { orderBy = 'date_desc', limit, project } = options;
-    const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
+    const preserveIdOrder = orderBy === 'relevance';
+    const orderClause = preserveIdOrder ? '' : `ORDER BY created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
     const limitClause = limit ? `LIMIT ${limit}` : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
@@ -2485,11 +2492,15 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       SELECT * FROM session_summaries
       ${whereClause}
-      ORDER BY created_at_epoch ${orderClause}
+      ${orderClause}
       ${limitClause}
     `);
 
-    return stmt.all(...params) as SessionSummarySearchResult[];
+    const rows = stmt.all(...params) as SessionSummarySearchResult[];
+    if (!preserveIdOrder) return rows;
+
+    const rowMap = new Map(rows.map(r => [r.id, r]));
+    return ids.map(id => rowMap.get(id)).filter((r): r is SessionSummarySearchResult => !!r);
   }
 
   /**
@@ -2498,12 +2509,13 @@ export class SessionStore {
    */
   getUserPromptsByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string } = {}
   ): UserPromptRecord[] {
     if (ids.length === 0) return [];
 
     const { orderBy = 'date_desc', limit, project } = options;
-    const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
+    const preserveIdOrder = orderBy === 'relevance';
+    const orderClause = preserveIdOrder ? '' : `ORDER BY up.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
     const limitClause = limit ? `LIMIT ${limit}` : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
@@ -2520,11 +2532,15 @@ export class SessionStore {
       FROM user_prompts up
       JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
       WHERE up.id IN (${placeholders}) ${projectFilter}
-      ORDER BY up.created_at_epoch ${orderClause}
+      ${orderClause}
       ${limitClause}
     `);
 
-    return stmt.all(...params) as UserPromptRecord[];
+    const rows = stmt.all(...params) as UserPromptRecord[];
+    if (!preserveIdOrder) return rows;
+
+    const rowMap = new Map(rows.map(r => [r.id, r]));
+    return ids.map(id => rowMap.get(id)).filter((r): r is UserPromptRecord => !!r);
   }
 
   /**
