@@ -1,0 +1,34 @@
+name: Windows
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'plugin/scripts/**'
+      - 'package.json'
+      - 'bunfig.toml'
+      - '.github/workflows/windows.yml'
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Bun (worker runtime)
+        run: |
+          irm bun.sh/install.ps1 | iex
+        shell: pwsh
+
+      - run: npm install --no-audit --no-fund
+
+      # Build only — the build-and-sync script also runs marketplace sync + worker
+      # restart from a hardcoded ~/.claude/plugins path that doesn't exist on CI.
+      - run: npm run build

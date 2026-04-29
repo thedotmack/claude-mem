@@ -787,10 +787,47 @@ export function spawnDaemon(
     return undefined;
   }
 
+  // On Windows, child_process.spawn with `detached: true` ignores
+  // `windowsHide: true` (Node docs: behavior is undefined). Spawning the
+  // worker via PowerShell `Start-Process -WindowStyle Hidden` is the only
+  // approach that reliably hides the console window AND inherits parent
+  // env vars (WMIC was tried in PR #751 but is deprecated/absent on
+  // modern Windows 11). Re-applies the fix that PR #751 (e6ae0176)
+  // introduced and commit d13662d5 reverted. See issues #2150, #2186,
+  // #2187, #2190, #2198.
+  if (process.platform === 'win32') {
+    // Use -EncodedCommand so paths with spaces don't need shell quoting.
+    const psScript = `Start-Process -FilePath '${runtimePath.replace(/'/g, "''")}' -ArgumentList @('${scriptPath.replace(/'/g, "''")}','--daemon') -WindowStyle Hidden`;
+    const encodedCommand = Buffer.from(psScript, 'utf16le').toString('base64');
+
+    try {
+      execSync(`powershell -NoProfile -EncodedCommand ${encodedCommand}`, {
+        stdio: 'ignore',
+        windowsHide: true,
+        env
+      });
+      // Windows success sentinel: PowerShell `Start-Process` does not return
+      // the spawned PID, and we don't want to pay for an extra `Get-Process`
+      // round-trip just to discover it. Return 0 (a conventionally invalid
+      // Unix PID) so callers can distinguish "spawn dispatched" from "spawn
+      // failed". Callers MUST use `pid === undefined` to detect failure —
+      // never falsy checks like `if (!pid)`, which would silently treat
+      // success as failure here.
+      return 0;
+    } catch (error: unknown) {
+      logger.error(
+        'SYSTEM',
+        'Failed to spawn worker daemon on Windows',
+        { runtimePath },
+        error instanceof Error ? error : new Error(String(error))
+      );
+      return undefined;
+    }
+  }
+
   // On Unix, prefer setsid to fully detach from the controlling terminal.
-  // On Windows or systems without setsid, spawn the runtime directly.
   const setsidPath = '/usr/bin/setsid';
-  const useSetsid = process.platform !== 'win32' && existsSync(setsidPath);
+  const useSetsid = existsSync(setsidPath);
 
   const execPath = useSetsid ? setsidPath : runtimePath;
   const args = useSetsid
@@ -800,7 +837,6 @@ export function spawnDaemon(
   const child = spawn(execPath, args, {
     detached: true,
     stdio: 'ignore',
-    windowsHide: true,
     env
   });
 

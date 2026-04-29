@@ -179,9 +179,20 @@ let spawnCmd = bunPath;
 let spawnArgs = args;
 
 if (IS_WINDOWS) {
-  // On Windows, bun.cmd must be executed via cmd /c
-  spawnCmd = 'cmd';
-  spawnArgs = ['/c', bunPath, ...args];
+  // On Windows, npm-installed bun is bun.cmd (a batch file) which spawn()
+  // can't execute directly. The previous `cmd /c` wrapper made a visible
+  // console window flash on every hook (issues #2150, #2186, #2187).
+  // shell:true lets Node resolve via PATHEXT *and* respects windowsHide,
+  // unlike an explicit cmd.exe wrapper. bun.exe paths work the same way.
+  //
+  // With shell:true we must pass a single fully-quoted command string and
+  // an empty args array. Passing args separately concatenates them
+  // unescaped, which breaks paths/args containing spaces and triggers
+  // DEP0190 on Node 22+. Mirrors the quoting in findBun().
+  const quote = (s) => `"${String(s).replace(/"/g, '\\"')}"`;
+  spawnOptions.shell = true;
+  spawnCmd = [bunPath, ...args].map(quote).join(' ');
+  spawnArgs = [];
 }
 
 const child = spawn(spawnCmd, spawnArgs, spawnOptions);
