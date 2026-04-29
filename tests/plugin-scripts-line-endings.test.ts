@@ -9,7 +9,6 @@ const SHEBANG_SCRIPTS = [
   'worker-service.cjs',
   'context-generator.cjs',
   'bun-runner.js',
-  'smart-install.js',
   'worker-cli.js',
 ];
 

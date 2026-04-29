@@ -134,7 +134,7 @@ describe('Plugin Distribution - Setup Hook (#1547)', () => {
     expect(content).not.toContain('setup.sh');
   });
 
-  it('should call smart-install.js in the Setup hook', () => {
+  it('should call version-check.js in the Setup hook', () => {
     const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
     const setupHooks: any[] = parsed.hooks['Setup'] ?? [];
@@ -145,14 +145,14 @@ describe('Plugin Distribution - Setup Hook (#1547)', () => {
 
     expect(commandHooks.length).toBeGreaterThan(0);
 
-    const smartInstallHooks = commandHooks.filter((h: any) =>
-      h.command?.includes('smart-install.js')
+    const versionCheckHooks = commandHooks.filter((h: any) =>
+      h.command?.includes('version-check.js')
     );
-    expect(smartInstallHooks.length).toBeGreaterThan(0);
+    expect(versionCheckHooks.length).toBeGreaterThan(0);
   });
 
-  it('smart-install.js referenced by Setup hook should exist on disk', () => {
-    const smartInstallPath = path.join(projectRoot, 'plugin/scripts/smart-install.js');
-    expect(existsSync(smartInstallPath)).toBe(true);
+  it('version-check.js referenced by Setup hook should exist on disk', () => {
+    const versionCheckPath = path.join(projectRoot, 'plugin/scripts/version-check.js');
+    expect(existsSync(versionCheckPath)).toBe(true);
   });
 });
